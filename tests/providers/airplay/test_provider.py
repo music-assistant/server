@@ -4,9 +4,10 @@ import asyncio
 import logging
 import time
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -26,10 +27,7 @@ from music_assistant.providers.airplay.sendspin_bridge import (
 )
 from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
-from music_assistant.providers.airplay_receiver import airplay_receiver_port
-
-if TYPE_CHECKING:
-    import pytest
+from music_assistant.providers.airplay_receiver import airplay_receiver_ports
 
 INSTANCE_ID = "airplay"
 START_UNIX_MS = 1_750_000_000_000
@@ -814,51 +812,69 @@ async def test_build_cli_args_none_falls_back_to_daemon_readiness() -> None:
 
 # --- Own AirPlay Receiver filtering in discovery -------------------------------
 
-RECEIVER_INSTANCE_ID = "airplay_receiver--test1234"
+RECEIVER_INSTANCE_ID = "airplay_receiver"
+RECEIVER_PLAYER_ID = "player_garage"
 HOST_IPS = ("192.168.1.10", "172.30.32.1")
 
 
 def _receiver_filter_provider(
     provider_configs: dict[str, dict[str, object]],
     receiver_instances: tuple[MagicMock, ...] = (),
+    stored_player_names: dict[str, str] | None = None,
+    live_player_names: dict[str, str] | None = None,
 ) -> AirPlayProvider:
-    """Build a bare provider wired to raw provider configs and running receiver instances."""
+    """Build a bare provider wired to raw provider/player configs and running instances."""
+    if stored_player_names is None:
+        stored_player_names = {RECEIVER_PLAYER_ID: "Garage"}
+    live_player_names = live_player_names or {}
 
-    def get_setup_value(instance_id: str, key: str) -> object | None:
-        setup_data = provider_configs.get(instance_id, {}).get("setup_data")
-        return setup_data.get(key) if isinstance(setup_data, dict) else None
+    def get_raw_player_config_value(
+        player_id: str, key: str, default: object | None = None
+    ) -> object | None:
+        if key == "name":
+            return stored_player_names.get(player_id, default)
+        return default
+
+    def get_player(player_id: str) -> MagicMock | None:
+        if player_id not in live_player_names:
+            return None
+        player = MagicMock()
+        player.display_name = live_player_names[player_id]
+        return player
 
     prov = AirPlayProvider.__new__(AirPlayProvider)
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
     prov.mass.config.get.return_value = provider_configs
-    prov.mass.config.get_provider_setup_value.side_effect = get_setup_value
+    prov.mass.config.get_raw_player_config_value.side_effect = get_raw_player_config_value
+    prov.mass.players.get_player.side_effect = get_player
     prov.mass.get_provider_instances.return_value = list(receiver_instances)
     return prov
 
 
 def _receiver_config(
-    airplay_name: str | None = "Garage [AirPlay]",
+    player_ids: tuple[str, ...] = (RECEIVER_PLAYER_ID,),
+    template: str | None = None,
     enabled: bool = True,
-    use_setup_data: bool = False,
 ) -> dict[str, dict[str, object]]:
     """Build the raw provider config store with a single AirPlay Receiver instance."""
-    values: dict[str, object] = (
-        {"airplay_name": airplay_name} if airplay_name and not use_setup_data else {}
-    )
-    setup_data: dict[str, object] = (
-        {"airplay_name": airplay_name} if airplay_name and use_setup_data else {}
-    )
+    values: dict[str, object] = {"connected_players": list(player_ids)}
+    if template is not None:
+        values["publish_name_template"] = template
     return {
         RECEIVER_INSTANCE_ID: {
             "domain": "airplay_receiver",
             "instance_id": RECEIVER_INSTANCE_ID,
             "enabled": enabled,
             "values": values,
-            "setup_data": setup_data,
         },
         "spotify": {"domain": "spotify", "instance_id": "spotify", "values": {}},
     }
+
+
+def _receiver_player_port() -> int:
+    """Return the derived AirPlay port of the default connected player."""
+    return airplay_receiver_ports(RECEIVER_INSTANCE_ID, [RECEIVER_PLAYER_ID])[RECEIVER_PLAYER_ID]
 
 
 def _discovery_info(
@@ -890,25 +906,27 @@ async def test_own_receiver_filtered_by_name_without_txt_record() -> None:
     info = _discovery_info(["172.30.32.1"], port=9999)
 
     with _patch_host_ips():
-        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is True
+        assert await prov._is_own_airplay_receiver("Garage | Music Assistant", info) is True
 
 
-async def test_own_receiver_filtered_with_default_name() -> None:
-    """A receiver instance without an explicit name advertises the default name."""
-    prov = _receiver_filter_provider(_receiver_config(airplay_name=None))
+async def test_own_receiver_filtered_with_plain_player_name_template() -> None:
+    """The advertised name follows the configured publish-name template."""
+    prov = _receiver_filter_provider(_receiver_config(template="player"))
     info = _discovery_info(["192.168.1.10"])
 
     with _patch_host_ips():
-        assert await prov._is_own_airplay_receiver("Music Assistant", info) is True
+        assert await prov._is_own_airplay_receiver("Garage", info) is True
 
 
-async def test_own_receiver_filtered_with_setup_flow_name() -> None:
-    """A receiver name stored by its setup flow is used before the instance loads."""
-    prov = _receiver_filter_provider(_receiver_config(use_setup_data=True))
+async def test_own_receiver_filtered_with_live_player_name() -> None:
+    """A registered player's live name wins over its stored config name."""
+    prov = _receiver_filter_provider(
+        _receiver_config(), live_player_names={RECEIVER_PLAYER_ID: "Garage Live"}
+    )
     info = _discovery_info(["192.168.1.10"], port=9999)
 
     with _patch_host_ips():
-        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is True
+        assert await prov._is_own_airplay_receiver("Garage Live | Music Assistant", info) is True
 
 
 async def test_own_receiver_filtered_on_loopback() -> None:
@@ -916,7 +934,7 @@ async def test_own_receiver_filtered_on_loopback() -> None:
     prov = _receiver_filter_provider(_receiver_config())
     info = _discovery_info(["127.0.0.1"])
 
-    assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is True
+    assert await prov._is_own_airplay_receiver("Garage | Music Assistant", info) is True
 
 
 async def test_own_receiver_filtered_by_port_and_model() -> None:
@@ -924,7 +942,7 @@ async def test_own_receiver_filtered_by_port_and_model() -> None:
     prov = _receiver_filter_provider(_receiver_config())
     info = _discovery_info(
         ["192.168.1.10"],
-        port=airplay_receiver_port(RECEIVER_INSTANCE_ID),
+        port=_receiver_player_port(),
         properties={"am": "ShairportSync"},
     )
 
@@ -932,10 +950,23 @@ async def test_own_receiver_filtered_by_port_and_model() -> None:
         assert await prov._is_own_airplay_receiver("Renamed Receiver", info) is True
 
 
+async def test_own_receiver_with_unknown_player_name_still_filtered_by_port() -> None:
+    """Without any resolvable player name the port match remains the strong signal."""
+    prov = _receiver_filter_provider(_receiver_config(), stored_player_names={})
+    info = _discovery_info(
+        ["192.168.1.10"],
+        port=_receiver_player_port(),
+        properties={"am": "ShairportSync"},
+    )
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Garage | Music Assistant", info) is True
+
+
 async def test_own_receiver_filtered_by_running_instance_port() -> None:
-    """The port of a running receiver instance is honoured next to the derived ports."""
+    """The ports of a running receiver instance are honoured next to the derived ports."""
     receiver = MagicMock()
-    receiver.airplay_port = 7555
+    receiver.airplay_ports = {7555}
     prov = _receiver_filter_provider(_receiver_config(), receiver_instances=(receiver,))
     info = _discovery_info(["192.168.1.10"], port=7555, properties={"am": "ShairportSync"})
 
@@ -949,7 +980,7 @@ async def test_same_name_receiver_on_other_host_not_filtered() -> None:
     info = _discovery_info(["192.168.1.55"], properties={"am": "ShairportSync"})
 
     with _patch_host_ips():
-        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is False
+        assert await prov._is_own_airplay_receiver("Garage | Music Assistant", info) is False
 
 
 async def test_user_shairport_on_same_host_not_filtered() -> None:
@@ -964,7 +995,7 @@ async def test_user_shairport_on_same_host_not_filtered() -> None:
 async def test_local_receiver_with_other_model_not_filtered_on_port_collision() -> None:
     """A non-shairport local receiver is kept even when its port collides (e.g. macOS on 7000)."""
     receiver = MagicMock()
-    receiver.airplay_port = 7000
+    receiver.airplay_ports = {7000}
     prov = _receiver_filter_provider(_receiver_config(), receiver_instances=(receiver,))
     info = _discovery_info(["192.168.1.10"], port=7000, properties={"am": "MacBookAir10,1"})
 
@@ -978,7 +1009,16 @@ async def test_disabled_receiver_config_not_filtered() -> None:
     info = _discovery_info(["192.168.1.10"])
 
     with _patch_host_ips():
-        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is False
+        assert await prov._is_own_airplay_receiver("Garage | Music Assistant", info) is False
+
+
+async def test_receiver_without_connected_players_not_filtered() -> None:
+    """A receiver instance without connected players runs no daemons, so nothing is ours."""
+    prov = _receiver_filter_provider(_receiver_config(player_ids=()))
+    info = _discovery_info(["192.168.1.10"], properties={"am": "ShairportSync"})
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Garage | Music Assistant", info) is False
 
 
 async def test_no_receiver_configs_never_filters() -> None:
@@ -1005,3 +1045,145 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
 
     prov.mass.discovery.async_find_mdns_service.assert_not_called()
     prov.mass.players.register.assert_not_called()
+
+
+def _password_marker_provider(
+    reviewed: bool, markers: dict[str, bool], player_type: str = "player"
+) -> tuple[AirPlayProvider, MagicMock]:
+    """Build a provider whose stored configs hold the given password markers."""
+    prov = _make_provider()
+    config = cast("MagicMock", prov.mass.config)
+    config.get_raw_provider_config_value.return_value = reviewed
+    config.get.return_value = {
+        player_id: {"player_id": player_id, "provider": INSTANCE_ID, "player_type": player_type}
+        for player_id in markers
+    } | {"other": {"player_id": "other", "provider": "sonos", "player_type": "player"}}
+    config.get_raw_player_config_value.side_effect = lambda player_id, _key, _default: markers[
+        player_id
+    ]
+    return prov, config
+
+
+def test_stale_password_markers_are_dropped_once() -> None:
+    """Verdicts from releases that could not tell a refusal apart are not trusted."""
+    prov, config = _password_marker_provider(
+        reviewed=False, markers={"ap_latched": True, "ap_clean": False}
+    )
+
+    prov._drop_unverified_password_markers()
+
+    config.set_raw_player_config_value.assert_called_once_with(
+        "ap_latched", "password_invalid", False
+    )
+    config.set_raw_provider_config_value.assert_called_once_with(
+        INSTANCE_ID, "password_markers_reviewed", True
+    )
+
+
+def test_protocol_players_are_reviewed_too() -> None:
+    """
+    Every non-Apple receiver is registered as a protocol player.
+
+    Those are exactly the ones a password applies to, and the config controller's
+    own listing drops them, so the review has to read the stored configs itself.
+    """
+    prov, config = _password_marker_provider(
+        reviewed=False, markers={"spb_latched": True}, player_type="protocol"
+    )
+
+    prov._drop_unverified_password_markers()
+
+    config.set_raw_player_config_value.assert_called_once_with(
+        "spb_latched", "password_invalid", False
+    )
+
+
+def test_password_markers_are_reviewed_only_on_the_first_load() -> None:
+    """
+    A later restart must leave a fresh verdict alone.
+
+    Once the review has run, a stored marker was written by code that separates a
+    password challenge from a refusal, so it is real and has to survive.
+    """
+    prov, config = _password_marker_provider(reviewed=True, markers={"ap_latched": True})
+
+    prov._drop_unverified_password_markers()
+
+    config.set_raw_player_config_value.assert_not_called()
+    config.get.assert_not_called()
+
+
+def test_a_failed_review_is_retried_on_the_next_load() -> None:
+    """
+    A review that dies part-way leaves nothing behind claiming it ran.
+
+    Marking it done regardless would strand exactly the players it never reached,
+    which is the state this review exists to undo.
+    """
+    prov, config = _password_marker_provider(reviewed=False, markers={"ap_latched": True})
+    config.set_raw_player_config_value.side_effect = RuntimeError("config write failed")
+
+    with pytest.raises(RuntimeError):
+        prov._drop_unverified_password_markers()
+
+    config.set_raw_provider_config_value.assert_not_called()
+
+
+def _compat_pin_provider(
+    reviewed: bool, modes: dict[str, str]
+) -> tuple[AirPlayProvider, MagicMock]:
+    """Build a provider whose stored configs hold the given streaming modes."""
+    prov = _make_provider()
+    config = cast("MagicMock", prov.mass.config)
+    config.get_raw_provider_config_value.return_value = reviewed
+    config.get.return_value = {
+        player_id: {"player_id": player_id, "provider": INSTANCE_ID, "player_type": "player"}
+        for player_id in modes
+    } | {"other": {"player_id": "other", "provider": "sonos", "player_type": "player"}}
+    config.get_raw_player_config_value.side_effect = lambda player_id, _key, _default=None: modes[
+        player_id
+    ]
+    return prov, config
+
+
+def test_stale_compat_pins_are_reset_once() -> None:
+    """
+    Machine-written compatibility pins go back to Automatic on the first load.
+
+    Only the compatibility mode was ever pinned by the removed control-channel
+    auto-downgrade; any other stored mode is the user's own choice and survives.
+    """
+    prov, config = _compat_pin_provider(
+        reviewed=False,
+        modes={"ap_pinned": "ap2_compat", "ap_auto": "auto", "ap_ntp": "ap2_ntp"},
+    )
+
+    prov._reset_auto_pinned_compat_modes()
+
+    config.set_raw_player_config_value.assert_called_once_with(
+        "ap_pinned", "streaming_mode", "auto"
+    )
+    config.set_raw_provider_config_value.assert_called_once_with(
+        INSTANCE_ID, "compat_pins_reviewed", True
+    )
+
+
+def test_compat_pins_are_reset_only_on_the_first_load() -> None:
+    """A compatibility mode pinned after the reset ran is the user's choice and survives."""
+    prov, config = _compat_pin_provider(reviewed=True, modes={"ap_pinned": "ap2_compat"})
+
+    prov._reset_auto_pinned_compat_modes()
+
+    config.set_raw_player_config_value.assert_not_called()
+    config.get.assert_not_called()
+
+
+def test_a_failed_compat_pin_reset_is_retried_on_the_next_load() -> None:
+    """A reset that dies part-way leaves nothing behind claiming it ran."""
+    prov, config = _compat_pin_provider(reviewed=False, modes={"ap_pinned": "ap2_compat"})
+    config.set_raw_player_config_value.side_effect = RuntimeError("config write failed")
+
+    with pytest.raises(RuntimeError):
+        prov._reset_auto_pinned_compat_modes()
+
+    config.set_raw_provider_config_value.assert_not_called()

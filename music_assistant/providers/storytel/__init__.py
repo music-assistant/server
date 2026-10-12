@@ -46,6 +46,10 @@ from .constants import (
     CACHE_CATEGORY_PODCAST,
     CACHE_CATEGORY_PODCAST_EPISODE,
     CACHE_CATEGORY_PODCAST_EPISODES,
+    CACHE_EXPIRATION_AUDIOBOOK,
+    CACHE_EXPIRATION_PODCAST,
+    CACHE_EXPIRATION_PODCAST_EPISODE,
+    CACHE_EXPIRATION_PODCAST_EPISODES,
     CONF_KIDS_MODE,
     CONF_LANGUAGES,
     CONF_PASSWORD,
@@ -275,7 +279,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         return True
 
     # -------------------
-    # Library: Audiobooks
+    # Library - Audiobooks
     # -------------------
 
     @handle_login_failed_generator
@@ -292,7 +296,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             except (MediaNotFoundError, ProviderUnavailableError, InvalidDataError) as err:
                 if isinstance(err, ProviderUnavailableError):
                     failed_provider_error = failed_provider_error or err
-                self.logger.debug("Skipping Storytel book %s: %s", consumable_id, err)
+                self.report_skipped_sync_item(MediaType.AUDIOBOOK, consumable_id, err)
 
         if not yielded_any and failed_provider_error is not None:
             raise failed_provider_error
@@ -326,6 +330,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             provider=self.instance_id,
             category=CACHE_CATEGORY_AUDIOBOOK,
             data=media_item.to_dict(),
+            expiration=CACHE_EXPIRATION_AUDIOBOOK,
         )
         return cast("Audiobook", media_item)
 
@@ -442,6 +447,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST,
             data=podcast.to_dict(),
+            expiration=CACHE_EXPIRATION_PODCAST,
         )
         return podcast
 
@@ -476,6 +482,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST_EPISODE,
             data=podcast_episode.to_dict(),
+            expiration=CACHE_EXPIRATION_PODCAST_EPISODE,
         )
         return cast("PodcastEpisode", podcast_episode)
 
@@ -547,6 +554,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                     provider=self.instance_id,
                     category=CACHE_CATEGORY_PODCAST_EPISODES,
                     data=podcast_episodes,
+                    expiration=CACHE_EXPIRATION_PODCAST_EPISODES,
                 )
             async with TaskGroup() as tg:
                 live_tasks: list[Task[PodcastEpisode | None]] = []
@@ -584,7 +592,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             except (MediaNotFoundError, ProviderUnavailableError, InvalidDataError) as err:
                 if isinstance(err, ProviderUnavailableError):
                     failed_provider_error = failed_provider_error or err
-                self.logger.debug("Skipping Storytel podcast %s: %s", podcast_id, err)
+                self.report_skipped_sync_item(MediaType.PODCAST, podcast_id or None, err)
 
         if not yielded_any and failed_provider_error is not None:
             raise failed_provider_error

@@ -68,7 +68,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, PlayerType, ProviderFeature, QueueOption
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature, QueueOption
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -78,12 +78,13 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Track
 
-from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENABLED
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
 )
 from music_assistant.helpers import guest_access
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
@@ -334,7 +335,10 @@ class MusicQuizPlugin(PluginProvider):
             self._quiz_type = None
             self._answer_type = None
         await self._close_playback_session()
-        if is_removed:
+        # the config is saved as disabled before unload, so this reads the new value
+        if is_removed or not self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_ENABLED, default=True
+        ):
             await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
         await super().unload(is_removed)
 
@@ -1802,7 +1806,7 @@ class MusicQuizPlugin(PluginProvider):
             and not state.needs_setup
             and state.synced_to is None
             and state.active_group is None
-            and state.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
+            and state.type in PLAYBACK_TARGET_TYPES
             and any(protocol.available for protocol in state.output_protocols)
             and not is_remote_session_host(self.mass, player.player_id)
         )

@@ -1,0 +1,10 @@
+{
+  "config_entries": {
+    "intro": {
+      "label": "Create an application using the instruction in the provider page. Paste the Client ID for the application below."
+    },
+    "client_id": {
+      "label": "[%key:common::config_entries::client_id::label%]"
+    }
+  }
+}

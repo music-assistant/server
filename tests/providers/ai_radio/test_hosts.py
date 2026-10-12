@@ -10,12 +10,17 @@ from typing import Any
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.providers.ai_radio.constants import DEFAULT_LLM_INSTRUCTIONS
+from music_assistant.providers.ai_radio.constants import (
+    DEFAULT_LLM_INSTRUCTIONS,
+    EVENT_HOSTS_UPDATED,
+)
 from music_assistant.providers.ai_radio.hosts import AIRadioHostsMixin
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
+from .events import ProviderEventRecorder
 
-class DummyHosts(AIRadioHostsMixin, AIRadioStorageMixin):
+
+class DummyHosts(ProviderEventRecorder, AIRadioHostsMixin, AIRadioStorageMixin):
     """Minimal harness combining host and storage helpers."""
 
     def __init__(self) -> None:
@@ -583,3 +588,14 @@ def test_music_nerd_preset_compiles_its_recurring_segments_as_optional() -> None
             ],
         },
     ]
+
+
+def test_write_hosts_emits_a_hosts_hint(tmp_path: Any) -> None:
+    """Persisting the hosts announces a refetch hint."""
+    dummy = DummyHosts()
+    dummy._hosts_file = tmp_path / "hosts.json"
+    dummy._hosts = {"rick": {"id": "rick", "name": "Rick", "instructions": "x", "tts_engine": ""}}
+
+    asyncio.run(dummy._write_hosts())
+
+    assert dummy.provider_events == [{"event": EVENT_HOSTS_UPDATED}]

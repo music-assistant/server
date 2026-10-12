@@ -30,9 +30,12 @@ from music_assistant.constants import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
+    set_current_user,
+    set_impersonated_user,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.models.core_controller import CoreController
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
+from music_assistant.models.core_controller import CORE_DOCS_URL, CoreController
 
 from .constants import (
     ACTIVE_TASK_ID,
@@ -83,6 +86,7 @@ class TasksController(CoreController):
         self.manifest.name = "Background tasks"
         self.manifest.description = "Manage long running scheduled, user and system tasks."
         self.manifest.icon = "playlist-play"
+        self.manifest.documentation = f"{CORE_DOCS_URL}#background-tasks-configuration"
         self._tasks: dict[str, ManagedTask] = {}
         self._pending_task_ids: deque[str] = deque()
         self._log_handler: TaskLogHandler | None = None
@@ -147,7 +151,7 @@ class TasksController(CoreController):
 
     @api_command("tasks/run", required_scope=Scope.SYSTEM_MANAGE)
     def run_task(self, task_id: str) -> BackgroundTask:
-        """Queue a task for immediate execution."""
+        """Queue a task to run next, ahead of other pending tasks."""
         managed = self._get_managed_task(task_id)
         if not managed.is_scheduled:
             raise InvalidDataError(f"Task {task_id} can not be run manually")
@@ -156,12 +160,13 @@ class TasksController(CoreController):
             managed,
             reset_logs=True,
             run_user_id=user.user_id if user else None,
+            priority=True,
         )
         return managed.task_info
 
     @api_command("tasks/retry", required_scope=Scope.SYSTEM_MANAGE)
     def retry_task(self, task_id: str) -> BackgroundTask:
-        """Retry a failed or cancelled task."""
+        """Retry a failed or cancelled task, ahead of other pending tasks."""
         managed = self._get_managed_task(task_id)
         if not managed.task_info.allow_retry:
             raise InvalidDataError(f"Task {task_id} can not be retried")
@@ -176,6 +181,7 @@ class TasksController(CoreController):
             managed,
             reset_logs=True,
             run_user_id=user.user_id if user else None,
+            priority=True,
         )
         return managed.task_info
 
@@ -489,6 +495,29 @@ class TasksController(CoreController):
             return
         self.update_task_progress(task_id, progress, text)
 
+    def set_task_report(self, task_id: str, markdown: str | None) -> None:
+        """
+        Set the Markdown report for a task.
+
+        :param task_id: The id of the task to update.
+        :param markdown: Markdown report content or None to clear.
+        """
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(self.set_task_report, task_id, markdown)
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        self._update_task_report(managed, markdown)
+
+    def set_current_task_report(self, markdown: str | None) -> None:
+        """
+        Set the Markdown report for the task active in the current async context.
+
+        :param markdown: Markdown report content or None to clear.
+        """
+        if task_context := ACTIVE_TASK_CONTEXT.get():
+            task_context.set_report(markdown)
+
     def add_task_failure(self, task_id: str, message: str) -> None:
         """
         Record a non-fatal failure for a task.
@@ -580,6 +609,37 @@ class TasksController(CoreController):
         managed.task_info.updated_at = utcnow()
         self._schedule_task_update()
 
+    def _set_task_report_for_run(
+        self,
+        task_id: str,
+        markdown: str | None,
+        *,
+        run_token: str,
+    ) -> None:
+        """Set a task report only while its originating run is active."""
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(
+                partial(
+                    self._set_task_report_for_run,
+                    task_id,
+                    markdown,
+                    run_token=run_token,
+                )
+            )
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        if managed.run_token != run_token or managed.task_info.status != TaskStatus.RUNNING:
+            return
+        self._update_task_report(managed, markdown)
+
+    def _update_task_report(self, managed: ManagedTask, markdown: str | None) -> None:
+        """Update a managed task report and notify task consumers."""
+        managed.task_info.report = markdown
+        managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
+        self._schedule_task_update()
+
     def _append_task_lifecycle_log(
         self,
         task_id: str,
@@ -638,13 +698,26 @@ class TasksController(CoreController):
         *,
         reset_logs: bool,
         run_user_id: str | None = None,
+        priority: bool | None = None,
     ) -> None:
-        """Queue a task for execution."""
+        """Queue a task for execution, at the front of the queue when priority is set."""
         if managed.removed:
             raise InvalidDataError(f"Task {managed.task_info.id} is no longer available")
-        if managed.task_info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        if priority is None:
+            priority = managed.priority
+        if managed.task_info.status == TaskStatus.RUNNING:
+            return
+        if managed.task_info.status == TaskStatus.PENDING:
+            if priority:
+                self._remove_from_pending(managed.task_info.id)
+                self._pending_task_ids.appendleft(managed.task_info.id)
+                managed.task_info.last_run_user_id = run_user_id
+                managed.task_info.updated_at = utcnow()
+                self._persist_scheduled_task_state(managed)
+                self._schedule_task_update(force=True)
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
+        managed.run_token = uuid4().hex
         if reset_logs:
             managed.task_info.logs.clear()
             managed.task_info.progress = None
@@ -652,14 +725,16 @@ class TasksController(CoreController):
             managed.task_info.last_error = None
             managed.task_info.failure_count = 0
             managed.task_info.failure_messages.clear()
+            managed.task_info.report = None
             managed.task_info.finished_at = None
         managed.task_info.status = TaskStatus.PENDING
         managed.task_info.last_run_user_id = run_user_id
         managed.task_info.started_at = None
         managed.task_info.next_run = None
         managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
         if managed.task_info.id not in self._pending_task_ids:
-            if managed.priority:
+            if priority:
                 self._pending_task_ids.appendleft(managed.task_info.id)
             else:
                 self._pending_task_ids.append(managed.task_info.id)
@@ -693,9 +768,19 @@ class TasksController(CoreController):
             update_progress=self.update_task_progress,
             update_progress_text=self.update_task_progress_text,
             add_failure=self.add_task_failure,
+            update_report=partial(
+                self._set_task_report_for_run,
+                run_token=managed.run_token,
+            ),
         )
         token = ACTIVE_TASK_ID.set(task_info.id)
         context_token = ACTIVE_TASK_CONTEXT.set(task_context)
+        # a managed task is a server-side job: it inherits the context of whoever queued it
+        # or of the task that finished before it, so it must not act as that user nor
+        # make its requests with that caller's throttler priority
+        set_current_user(None)
+        set_impersonated_user(None)
+        set_request_priority(RequestPriority.LOW)
         try:
             await managed.handler()
         except asyncio.CancelledError:
@@ -825,6 +910,10 @@ class TasksController(CoreController):
 
     def _set_persisted_task_states(self, states: dict[str, Any]) -> None:
         """Persist runtime state for scheduled tasks."""
+        # this state lives next to the config values rather than inside them, so the core
+        # config block has to be created up front. a bare set() would build the parent
+        # dicts on the fly and leave a block that no longer parses as a CoreConfig.
+        self.mass.config.ensure_core_config_base(self.domain)
         self.mass.config.set(f"core/{self.domain}/{TASK_STATE_CONFIG_KEY}", states)
 
     @staticmethod

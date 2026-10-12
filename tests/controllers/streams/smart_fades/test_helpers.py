@@ -8,9 +8,13 @@ import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.helpers import (
+    SEGUE_ENERGY_FRACTION,
+    camelot_affinity,
     db_ramp,
     detect_effective_audio_end,
     detect_groove_entry,
+    detect_mix_out_point,
+    detect_rise_point,
 )
 
 
@@ -81,6 +85,33 @@ def test_all_nan_rms_returns_buffer_duration() -> None:
     assert detect_effective_audio_end(bins, 240.0, 45.0) == 45.0
 
 
+@pytest.mark.parametrize(
+    ("key_a", "mode_a", "key_b", "mode_b", "expected"),
+    [
+        ("C", "major", "C", "major", 1.0),
+        ("C", "major", "G", "major", 0.9),
+        ("C", "major", "D", "major", 0.55),
+        ("C", "major", "A", "minor", 0.9),
+        ("C", "major", "E", "minor", 0.45),
+        ("C", "major", "F#", "major", 0.1),
+    ],
+)
+def test_camelot_affinity(
+    key_a: str,
+    mode_a: str,
+    key_b: str,
+    mode_b: str,
+    expected: float,
+) -> None:
+    """Camelot affinity distinguishes close harmonic moves from clashes."""
+    assert camelot_affinity(key_a, mode_a, key_b, mode_b) == pytest.approx(expected)
+
+
+def test_camelot_affinity_unknown_key_is_neutral() -> None:
+    """Unknown harmonic data is left for the caller to treat neutrally."""
+    assert camelot_affinity(None, None, "C", "major") is None
+
+
 class TestGrooveEntry:
     """Groove entry = first sustained per-bar energy step (the drums coming in)."""
 
@@ -106,6 +137,69 @@ class TestGrooveEntry:
         assert detect_groove_entry(None, 240.0, downbeats) == 0.0
         bins = np.full(1800, 0.5, dtype=np.float32)
         assert detect_groove_entry(bins, 240.0, downbeats[:4]) == 0.0
+
+
+def _head(quiet_until: float, duration: float = 240.0) -> np.ndarray:
+    """Build a 1800-bin rms array that is quiet before ``quiet_until`` and loud after."""
+    bins = np.full(1800, 0.5, dtype=np.float32)
+    t = np.arange(1800) * (duration / 1800)
+    bins[t < quiet_until] = 0.05
+    return bins
+
+
+class TestMixOutPoint:
+    """The mix-out point is the end of the last bar-smoothed bin at the energy floor."""
+
+    def test_step_down_marks_the_last_loud_bin(self) -> None:
+        """A tail that drops below the floor at media 230s mixes out at buffer-local 35s."""
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        bins[np.arange(1800) * (240.0 / 1800) >= 230.0] = 0.1
+
+        point = detect_mix_out_point(bins, 240.0, 45.0, 120.0, fraction=SEGUE_ENERGY_FRACTION)
+
+        assert point == pytest.approx(35.0, abs=0.15)
+
+    def test_isolated_loud_bin_in_the_tail_does_not_move_the_point(self) -> None:
+        """One loud bin inside the quiet tail is smoothed away by the one-bar median."""
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        t = np.arange(1800) * (240.0 / 1800)
+        bins[t >= 230.0] = 0.1
+        bins[np.argmax(t >= 236.0)] = 0.9
+
+        point = detect_mix_out_point(bins, 240.0, 45.0, 120.0, fraction=SEGUE_ENERGY_FRACTION)
+
+        assert point == pytest.approx(35.0, abs=0.15)
+
+
+class TestRisePoint:
+    """The rise point is where the head first reaches a share of the sustained energy."""
+
+    def test_quiet_intro_rises_where_it_gets_loud(self) -> None:
+        """A 6s quiet intro rises at 6s."""
+        rise = detect_rise_point(_head(6.0), 240.0, 120.0, SEGUE_ENERGY_FRACTION)
+        assert rise == pytest.approx(6.0, abs=0.15)
+
+    def test_isolated_loud_bin_in_the_intro_does_not_count(self) -> None:
+        """A click inside the quiet intro is smoothed away by the one-bar median."""
+        bins = _head(6.0)
+        bins[15] = 0.9
+
+        assert detect_rise_point(bins, 240.0, 120.0, SEGUE_ENERGY_FRACTION) == pytest.approx(
+            6.0, abs=0.15
+        )
+
+    def test_loud_head_rises_at_zero(self) -> None:
+        """A track that opens loud has no quiet head."""
+        assert detect_rise_point(_head(0.0), 240.0, 120.0, SEGUE_ENERGY_FRACTION) == 0.0
+
+    def test_head_quiet_throughout_rises_at_the_window_end(self) -> None:
+        """A head that stays quiet over the whole window rises at the window end."""
+        rise = detect_rise_point(_head(60.0), 240.0, 120.0, SEGUE_ENERGY_FRACTION, window=45.0)
+        assert rise == 45.0
+
+    def test_missing_data_rises_at_zero(self) -> None:
+        """Without energy data there is no quiet head to claim."""
+        assert detect_rise_point(None, 240.0, 120.0, SEGUE_ENERGY_FRACTION) == 0.0
 
 
 class TestDbRamp:

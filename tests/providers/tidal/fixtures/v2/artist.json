@@ -1,0 +1,117 @@
+{
+  "data": {
+    "id": "4184211",
+    "type": "artists",
+    "attributes": {
+      "name": "Lukas Graham",
+      "popularity": 0.8177526593208313,
+      "externalLinks": [
+        {
+          "href": "https://www.facebook.com/LukasGraham",
+          "meta": {
+            "type": "FACEBOOK"
+          }
+        },
+        {
+          "href": "http://instagram.com/lukasinstagraham",
+          "meta": {
+            "type": "INSTAGRAM"
+          }
+        },
+        {
+          "href": "https://www.twitter.com/LukeTheDuke_",
+          "meta": {
+            "type": "TWITTER"
+          }
+        },
+        {
+          "href": "https://tidal.com/browse/artist/4184211",
+          "meta": {
+            "type": "TIDAL_SHARING"
+          }
+        }
+      ],
+      "spotlighted": false,
+      "contributionsEnabled": false,
+      "ownerType": "LABEL"
+    },
+    "relationships": {
+      "biography": {
+        "data": {
+          "id": "4184211",
+          "type": "artistBiographies"
+        },
+        "links": {
+          "self": "/artists/4184211/relationships/biography?countryCode=AT&locale=en-US"
+        }
+      },
+      "profileArt": {
+        "data": [
+          {
+            "id": "AmhFAmq4OGQS9r2Hufh",
+            "type": "artworks"
+          }
+        ],
+        "links": {
+          "self": "/artists/4184211/relationships/profileArt?countryCode=AT&locale=en-US"
+        }
+      }
+    }
+  },
+  "links": {
+    "self": "/artists/4184211?include=biography%2CprofileArt&countryCode=AT&locale=en-US"
+  },
+  "included": [
+    {
+      "id": "4184211",
+      "type": "artistBiographies",
+      "attributes": {
+        "text": "At first glance, this story might seem more suited to Brooklyn, Compton, or even Dublin than Copenhagen, Denmark. There’s a community in the center of Copenhagen called Christiania. In this 30-block radius, there are no cars, streetlights, or police. A personal toilet and running water were considered luxuries in the early nineties. Dogs roam the cobblestone streets without leashes, and plumes of smoke billow out of the windows. However, people are happy, and they help each other out.<br/>Lukas Graham calls Christiania home. It’s why he makes the music he does. It’s why he is who he is.<br/>“We were those kids who were always dirtier than the other kids because our scope away from home was so huge,” he explains. “We weren’t poor. We just didn’t have enough. When you grow up like that, you end up showing more than you need to. I do that in my music. Instead of making up a pretty little love story about some girl I like, I end up singing about my boys in jail and how I feel. It’s easier for me to be honest about who I am than to start making up some fairytale.”<br/>Mom worked nightshifts cleaning, while dad repaired and refurbished antique stoves and ovens. In a tiny house where he was “encouraged but not pushed to perform,” Lukas fondly recalls a family tradition that shaped his ear.<br/>“One of the big things was the musical kitchen and dining room,” he says. “When you were cooking, cleaning, or washing the dishes, you could choose your favorite album and play it almost as loudly as you wanted to. We had everything from The Beatles and Rolling Stones to Gregory Isaacs, James Brown, Al Green, and The Prodigy.”<br/>At eight-years-old, Lukas joined the Copenhagen Boys’ Choir and developed not only an appreciation for classical music but a finely trained voice. He honed that instrument touring the States and Europe in the years to follow. In between, he became fascinated with his father’s Irish roots and the country’s folk music. Coupled with hip-hop—as he admits, “Dr. Dre’s 2001 changed my life”—he began to architect a singular style that transcended international barriers and cultural boundaries.<br/>“Folk music and classical mixed with soul, rock ‘n’ roll, and rap would be my main base of operations,” he says. “What I can do is make you laugh, dance, and cry within 60 minutes of a show, if you let me. It’s a mix of poorer musical styles. We get down and dirty, and we talk about all the little things.”<br/>After spending six months in Buenos Aires to clear his head and get away from the darker side of his hometown, Lukas brought that sound back to Christiania in 2010 where he joined forces with his writing team Future Animals . Writing lyrics first and telling stories, the style felt alive. It defined his 2012 self-titled first full-length album, which would go quadruple-platinum in Denmark and yield three smashes—“Drunk In The Morning” and “Better Than Yourself” would go #1 and “Ordinary Things” peaked at #2. All in all, cumulative single sales in Denmark would surpass 150,000 with nearly 40 million collective streams.<br/>That success translated to the rest of Europe. In Germany, “Drunk In The Morning” became a staple and the record reached #1 on iTunes. “Happy Home” would give him his third number one in Denmark in 2014 and went multi-platinum in Norway and Sweden. Also known for a phenomenal live show, he’d go on to play countless sold out shows and earn festival main stage spots alongside his “boys” in the band, Mark “Lovestick” Falgren, Magnús “Magnúm” Larsson, and Kasper Daugaard, becoming the most popular live act in Denmark. Christiania is always on his mind though.<br/> <br/> “I made it out,” he sighs. “I did something with my life. When my father passed, instead of just mourning, I built my mom a house. I got myself an apartment a block from Christiania. All of the same plumbers, carpenters, and gangsters meet me at that local bar. I’m not going to a fancy club and buying champagne.”<br/>Sighing, Lukas interjects, “That’s not to say I haven’t done that, because I have. I maxed out my credit cards, and I was stupid with the money that followed the fame. I was lucky to quickly realize that wasn’t the goal.”<br/>He has no problem being candid and admitting mistakes. That kind of honesty and heart attracted the attention of Warner Bros. Records who signed him after a 2013 Los Angeles showcase. His 2015 follow-up Lukas Graham (Blue Album) captures the spirit that turned everyone into believers in the first place, and it also serves as his proper introduction stateside.<br/>The first single “Mama Said” begins with a children’s choir and bright production. As the verse kicks in, Lukas weaves together a confessional narrative that culminates on a striking and soulful refrain.<br/>Album opener “7 Years” begins with his emotional delivery and a soft piano line. He looks back over his life and what’s ahead.<br/>“I couldn’t go any further than 60 because my father died at 61,” he admits. “I need to pass it to believe it. It’s a song about growing older. I’m also coming to a realization that being a father is the most important thing. My biggest dream is not to be some negative old dude, but to have my kids’ friends say, ‘You’re going to visit your dad? Say hi! He’s fucking awesome.’ I had a perfect father. When he died, all of my friends were like, ‘It’s hard for me to feel bad for you, because I just lost one of my best friends.”<br/>Dad would be proud, because his son’s story has the power to change lives. “I want people to walk away becoming music lovers,” Lukas leaves off. “A lot of artists want the riches and the fame. I want to tell stories you can put into the context of your life.”",
+        "source": "TIDAL",
+        "editable": true
+      }
+    },
+    {
+      "id": "AmhFAmq4OGQS9r2Hufh",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/4b92c829/c654/4a4d/a00c/0e17b1be4ffa/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4b92c829/c654/4a4d/a00c/0e17b1be4ffa/480x480.jpg",
+            "meta": {
+              "width": 480,
+              "height": 480
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4b92c829/c654/4a4d/a00c/0e17b1be4ffa/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/4b92c829/c654/4a4d/a00c/0e17b1be4ffa/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#675242",
+          "blurHash": "UBLhMSE1h2t6_4M_-;Mx5Ut700j?%MoLV[oz",
+          "status": "OK"
+        }
+      }
+    }
+  ]
+}

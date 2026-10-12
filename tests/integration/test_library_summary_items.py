@@ -15,7 +15,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import patch
 
+from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import ImageType
 from music_assistant_models.media_items import (
     Audiobook,
@@ -35,6 +37,8 @@ from tests.integration.conftest import wait_for
 if TYPE_CHECKING:
     from music_assistant.controllers.music.media.base import MediaControllerBase
     from music_assistant.mass import MusicAssistant
+
+GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
 
 # object-level fields a summary item may carry; compared against the full item when present
 COMPARED_FIELDS = (
@@ -159,8 +163,8 @@ async def _seed_playlist_and_radio(mass: MusicAssistant) -> None:
 async def test_library_summary_items_parity(e2e_mass: MusicAssistant) -> None:
     """Summary items must match their full counterparts on every retained field."""
     mass = e2e_mass
-    # wait for the initial (auto-scheduled) sync of the test provider and the
-    # follow-up genre scan so the library is fully populated
+    # wait for the sync of the test provider and the follow-up genre scan
+    # so the library is fully populated
     async with wait_for_sync_completion(mass):
         await mass.music.start_sync()
     await wait_for(lambda: not mass.music.active_sync_tasks)
@@ -263,8 +267,10 @@ async def test_library_summary_items_filters(e2e_mass: MusicAssistant) -> None:
     full_search = await mass.music.tracks.library_items(search=needle)
     summary_search = await mass.music.tracks.library_items(search=needle, summary=True)
     assert sorted(x.item_id for x in summary_search) == sorted(x.item_id for x in full_search)
-    # favorite filter
-    await mass.music.tracks.set_favorite(full_items[0].item_id, True)
-    favorites = await mass.music.tracks.library_items(favorite=True, summary=True)
+    # favorite filter: a favorite belongs to a user, so the listing needs one too
+    user = await mass.webserver.auth.create_user(username="listener", role=UserRole.USER)
+    await mass.music.tracks.set_favorite(full_items[0].item_id, True, [user.user_id])
+    with patch(GET_CURRENT_USER, return_value=user):
+        favorites = await mass.music.tracks.library_items(favorite=True, summary=True)
     assert [x.item_id for x in favorites] == [full_items[0].item_id]
     assert favorites[0].favorite is True

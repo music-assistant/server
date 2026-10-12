@@ -20,7 +20,7 @@ from aiohttp import ClientConnectorError, WSMsgType, web
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
-    is_request_from_ingress,
+    is_request_from_ingress_proxy,
 )
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class SendspinProxyHandler:
         self.logger.debug("Sendspin proxy connection from %s", request.remote)
 
         # Check for ingress authentication (HA handles auth via headers)
-        if is_request_from_ingress(request):
+        if is_request_from_ingress_proxy(request):
             user = await get_authenticated_user(request)
             if not user:
                 self.logger.warning(
@@ -105,7 +105,7 @@ class SendspinProxyHandler:
                     await wsock.close(code=1011, message=b"Internal server error")
                     return wsock
             if internal_ws is None:
-                raise RuntimeError("Retry loop exited without connecting or returning")
+                raise RuntimeError("Retry loop exited without connecting or returning")  # noqa: TRY301 - handled by except below
         except Exception:
             self.logger.exception("Failed to connect to internal Sendspin server")
             await wsock.close(code=1011, message=b"Internal server error")

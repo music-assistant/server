@@ -21,6 +21,7 @@ from aiosendspin.models.types import UndefinedField
 from aiosendspin.models.visualizer import (
     ClientHelloVisualizerSpectrum,
     ClientHelloVisualizerSupport,
+    VisualizerStatePayload,
 )
 from hue_entertainment import EntertainmentSession
 from music_assistant_models.enums import PlayerType
@@ -34,17 +35,14 @@ from music_assistant.providers.sendspin.bridge_role import (
 
 from .analyzer import HueAudioAnalyzer
 from .constants import (
-    CONF_BRIGHTNESS,
     CONF_CLIENTKEY,
-    CONF_COLOR_MODE,
-    CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
-    DEFAULT_HUE_LATENCY_MS,
     SPECTRUM_BINS,
     SPECTRUM_F_MAX,
     SPECTRUM_F_MIN,
     SPECTRUM_SCALE,
 )
+from .settings import get_brightness, get_color_mode, get_hue_latency_ms
 
 if TYPE_CHECKING:
     from aiosendspin.models.core import ServerStatePayload
@@ -109,24 +107,14 @@ class HueEntertainmentBridge:
         self._start_task: asyncio.Task[None] | None = None
         self._render_handle: asyncio.TimerHandle | None = None
         self._entertainment_starting: bool = False
-        self._hue_latency_us: int = (
-            int(
-                float(
-                    str(
-                        self.provider.config.get_value(CONF_HUE_LATENCY_MS)
-                        or DEFAULT_HUE_LATENCY_MS
-                    )
-                )
-            )
-            * 1000
-        )
+        self._hue_latency_us: int = get_hue_latency_ms(self.provider.config) * 1000
 
     async def start(self) -> None:
         """Start the bridge — register as an in-process Sendspin visualizer client."""
         self._analyzer = HueAudioAnalyzer(
             channels=self.area.channels,
-            color_mode=str(self.provider.config.get_value(CONF_COLOR_MODE) or "smooth"),
-            brightness=int(float(str(self.provider.config.get_value(CONF_BRIGHTNESS) or 100))),
+            color_mode=get_color_mode(self.provider.config),
+            brightness=get_brightness(self.provider.config),
         )
 
         client_id = f"hue-{self.area.id.replace('-', '')[:16]}"
@@ -137,11 +125,11 @@ class HueEntertainmentBridge:
         if sendspin_prov:
             sendspin_prov.register_bridge_player_type(client_id, PlayerType.LIGHT)
 
-        support = ClientHelloVisualizerSupport(
-            # Beat + small bundle of periodic features. Each periodic frame
-            # is ~20-30 bytes; one second's worth fits comfortably under
-            # the buffer cap below.
-            buffer_capacity=2048,
+        # Beat + small bundle of periodic features. Each periodic frame
+        # is ~20-30 bytes; one second's worth fits comfortably under
+        # the buffer cap below.
+        support = ClientHelloVisualizerSupport(buffer_capacity=2048)
+        request = VisualizerStatePayload(
             rate_max=_VISUALIZER_RATE_HZ,
             # Peaks requested as a fallback for when beats aren't computed yet.
             types=["beat", "peak", "spectrum"],
@@ -177,7 +165,7 @@ class HueEntertainmentBridge:
                 on_stream_clear=self._on_stream_clear,
                 on_stream_end=self._on_stream_end,
             )
-            viz_role.setup_visualizer(support)
+            viz_role.setup_visualizer(request)
         if color_roles := self._sendspin_client.roles_by_family("color"):
             color_role = cast("BridgeColorRole", color_roles[0])
             color_role.set_callbacks(on_color=self._on_color)

@@ -1,21 +1,29 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import codecs
 import contextlib
 import gc
+import logging
+import os
 import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import ifaddr
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Track
 
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
+    TaskManager,
+    detect_charset,
+    get_folder_size,
     get_source_ip_for_target,
     guard_single_request,
     import_module_in_thread,
@@ -24,12 +32,114 @@ from music_assistant.helpers.util import (
     load_provider_module,
     sanitize_http_header_value,
     select_free_port,
+    try_parse_duration,
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import collect_loop_errors
 
 GUARDED_PROVIDER_ID = "test_guarded_prov"
+
+# a CUE sheet as Russian rips ship them: ASCII keywords with only the titles in
+# the local ANSI codepage (support #6093)
+CYRILLIC_CUE = """REM GENRE "Punk Rock"
+REM DATE 2002
+PERFORMER "Король и Шут"
+TITLE "Как в старой сказке"
+FILE "CDImage.ape" WAVE
+  TRACK 01 AUDIO
+    TITLE "Проклятый старый дом"
+    INDEX 01 00:00:00
+"""
+
+
+def _cue_sheet(performer: str, title: str, track: str) -> str:
+    """Build a CUE sheet with the same ASCII-heavy shape as CYRILLIC_CUE."""
+    return (
+        'REM GENRE "Rock"\n'
+        "REM DATE 1998\n"
+        f'PERFORMER "{performer}"\n'
+        f'TITLE "{title}"\n'
+        'FILE "CDImage.ape" WAVE\n'
+        "  TRACK 01 AUDIO\n"
+        f'    TITLE "{track}"\n'
+        "    INDEX 01 00:00:00\n"
+    )
+
+
+# the other codepages rippers wrote; every one of these sits next to a neighbour
+# that decodes the same bytes into plausible but wrong text
+LEGACY_CUES = {
+    "cp1251": CYRILLIC_CUE,
+    "koi8-r": _cue_sheet("Аквариум", "Русский альбом", "Никита Рязанский"),
+    "cp1250": _cue_sheet("Kabát", "Šťastný člověk", "Zůstaň"),
+    "cp1252": _cue_sheet("Björk", "Homogenic", "Jóga"),
+    # the dotless i is what a detector has to get right to tell cp1254 from cp1252
+    "cp1254": _cue_sheet("Barış Manço", "Mağusa'da", "Gülpembe"),  # noqa: RUF001
+    "cp1253": _cue_sheet("Μίκης Θεοδωράκης", "Άξιον Εστί", "Ένα το χελιδόνι"),
+    "cp1255": _cue_sheet("עידן רייכל", "הפרויקט של עידן רייכל", "בואי"),
+    "cp1257": _cue_sheet("Prāta Vētra", "Lupatkājis", "Jūra"),
+    # a multi-byte charset, where a wrong guess costs whole characters rather than
+    # single letters
+    "gbk": _cue_sheet("周杰伦", "叶惠美", "东风破"),
+}
+
+
+class TestDetectCharset:
+    """detect_charset names the charset raw text has to be decoded with."""
+
+    async def test_ascii_and_utf8_are_taken_as_utf8(self) -> None:
+        """Anything that is already valid UTF-8 needs no detection."""
+        assert await detect_charset(b'TITLE "Greatest Hits"') == "utf-8"
+        assert await detect_charset(CYRILLIC_CUE.encode()) == "utf-8"
+
+    async def test_byte_order_mark_is_stripped(self) -> None:
+        """A UTF-8 BOM must not survive into the decoded text."""
+        raw = codecs.BOM_UTF8 + CYRILLIC_CUE.encode()
+        encoding = await detect_charset(raw)
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    @pytest.mark.parametrize("charset", list(LEGACY_CUES))
+    async def test_legacy_charsets_survive_a_round_trip(self, charset: str) -> None:
+        """
+        Text in a legacy charset comes back readable instead of as replacement chars.
+
+        Mostly-ASCII files such as CUE sheets hold very little non-ASCII text, so the
+        charset has to be resolved from a thin sample rather than given up on and
+        decoded as UTF-8 (support #6093). The round trip is what is asserted, not the
+        charset name, because neighbouring codepages decode these bytes identically.
+        """
+        source = LEGACY_CUES[charset]
+        raw = source.encode(charset)
+        assert raw.decode(await detect_charset(raw)) == source
+
+    async def test_undetectable_data_uses_the_fallback(self) -> None:
+        """Bytes that hold no readable text at all fall back to the given charset."""
+        assert await detect_charset(b"\xff\x00\xff", fallback="cp1257") == "cp1257"
+
+    async def test_declared_charset_wins_over_detection(self) -> None:
+        """A charset the source declares itself beats guessing at the bytes."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        assert await detect_charset(raw, preferred="cp1251") == "cp1251"
+
+    async def test_byte_order_mark_beats_the_declared_charset(self) -> None:
+        """A source declaring plain utf-8 must not leave its own BOM in the text."""
+        raw = codecs.BOM_UTF8 + CYRILLIC_CUE.encode()
+        encoding = await detect_charset(raw, preferred="utf-8")
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    async def test_unknown_declared_charset_is_ignored(self) -> None:
+        """A charset name Python has no codec for must not reach decode()."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        encoding = await detect_charset(raw, preferred="utf8mb4")
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    @pytest.mark.parametrize("charset", ["base64", "zlib", "rot_13", "idna", "undefined"])
+    async def test_declared_charset_that_cannot_decode_text_is_ignored(self, charset: str) -> None:
+        """A charset name that resolves to a codec but cannot decode text is ignored."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        encoding = await detect_charset(raw, preferred=charset)
+        assert raw.decode(encoding) == CYRILLIC_CUE
 
 
 class TestGetSourceIpForTarget:
@@ -541,6 +651,89 @@ class TestJoinTask:
         assert await task == "done"
 
 
+class TestTaskManager:
+    """TaskManager hands its tasks the name the caller gave, so its work is identifiable."""
+
+    @pytest.mark.asyncio
+    async def test_task_is_named_when_a_name_is_given(self, mass_minimal: MusicAssistant) -> None:
+        """A name reaches the task, which is what the slow-callback warning reports."""
+
+        async def _work() -> None:
+            return
+
+        async with TaskManager(mass_minimal) as manager:
+            task = manager.create_task(_work(), "sync_provider_somewhere")
+            assert task.get_name() == "sync_provider_somewhere"
+
+    @pytest.mark.asyncio
+    async def test_limited_task_is_named_too(self, mass_minimal: MusicAssistant) -> None:
+        """The semaphore-limited entry point names its task the same way."""
+        started = asyncio.Event()
+
+        async def _work() -> None:
+            started.set()
+
+        async with TaskManager(mass_minimal, limit=1) as manager:
+            await manager.create_task_with_limit(_work(), "sync_provider_elsewhere")
+            await started.wait()
+            assert [t.get_name() for t in manager._tasks] == ["sync_provider_elsewhere"]
+
+    @pytest.mark.asyncio
+    async def test_task_without_a_name_is_left_to_asyncio(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """Without a name asyncio numbers the task, rather than a task id standing in."""
+
+        async def _work() -> None:
+            return
+
+        async with TaskManager(mass_minimal) as manager:
+            task = manager.create_task(_work())
+            assert task.get_name().startswith("Task-")
+
+
+class TestGetFolderSize:
+    """get_folder_size adds up the files in a folder tree."""
+
+    async def test_symlinks_are_not_followed(self, tmp_path: Path) -> None:
+        """A symlink counts as itself, not as the (possibly huge) file it points to."""
+        folder = tmp_path / "folder"
+        (folder / "nested").mkdir(parents=True)
+        (folder / "nested" / "file.bin").write_bytes(b"x" * 4096)
+        (tmp_path / "outside.bin").write_bytes(b"x" * 1024 * 1024)
+        (folder / "link.bin").symlink_to(tmp_path / "outside.bin")
+        (folder / "broken.bin").symlink_to(tmp_path / "gone.bin")
+        links = (folder / "link.bin").lstat().st_size + (folder / "broken.bin").lstat().st_size
+
+        assert await get_folder_size(str(folder)) * (1 << 30) == 4096 + links
+
+    async def test_excluded_folder_is_left_out(self, tmp_path: Path) -> None:
+        """A folder inside the measured one can be left out, e.g. a cache inside the data."""
+        (tmp_path / ".cache" / "images").mkdir(parents=True)
+        (tmp_path / "data.db").write_bytes(b"x" * 4096)
+        (tmp_path / ".cache" / "images" / "cover.jpg").write_bytes(b"x" * 1024)
+        (tmp_path / ".cache-old").mkdir()
+        (tmp_path / ".cache-old" / "kept.bin").write_bytes(b"x" * 512)
+
+        size = await get_folder_size(str(tmp_path), exclude=(f"{tmp_path}/.cache/",))
+
+        assert size * (1 << 30) == 4096 + 512
+
+    async def test_vanished_file_is_skipped(self, tmp_path: Path) -> None:
+        """A file removed while the folder is walked does not fail the measurement."""
+        (tmp_path / "kept.bin").write_bytes(b"x" * 2048)
+        (tmp_path / "journal.bin").write_bytes(b"x" * 100)
+        real_lstat = os.lstat
+
+        def _lstat(path: str) -> object:
+            if path.endswith("journal.bin"):
+                raise FileNotFoundError(path)
+            return real_lstat(path)
+
+        with patch.object(os, "lstat", _lstat):
+            assert await get_folder_size(str(tmp_path)) * (1 << 30) == 2048
+
+
 class TestSanitizeHttpHeaderValue:
     """sanitize_http_header_value strips characters aiohttp forbids in response headers."""
 
@@ -574,6 +767,30 @@ class TestSanitizeHttpHeaderValue:
         assert sanitize_http_header_value("\x00Artist - Track\x1f") == "Artist - Track"
 
 
+class TestTryParseDuration:
+    """try_parse_duration reads a duration string as a number of seconds."""
+
+    def test_hours_minutes_seconds(self) -> None:
+        """A full HH:MM:SS duration counts the hours."""
+        assert try_parse_duration("12:34:56") == 45296.0
+
+    def test_fractional_seconds(self) -> None:
+        """The fraction after the seconds is kept."""
+        assert try_parse_duration("00:01:02.500") == 62.5
+
+    def test_comma_as_decimal_separator(self) -> None:
+        """SubRip transcripts write the fraction after a comma."""
+        assert try_parse_duration("00:01:02,500") == 62.5
+
+    def test_hours_are_optional(self) -> None:
+        """A WebVTT cue may leave out the hour part."""
+        assert try_parse_duration("01:02.500") == 62.5
+
+    def test_bare_seconds(self) -> None:
+        """A duration without any colon is read as seconds."""
+        assert try_parse_duration("62") == 62.0
+
+
 class TestGuardSingleRequest:
     """guard_single_request collapses identical concurrent calls into a single request."""
 
@@ -595,6 +812,37 @@ class TestGuardSingleRequest:
         assert isinstance(results[0], asyncio.CancelledError)
         assert results[1:] == ["result-123", "result-123"]
         assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_failure_reaches_the_caller_without_being_logged(
+        self, mass_minimal: MusicAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failure raised at the caller is not also warned about as an unhandled one."""
+        caller = _GuardedCaller(mass_minimal)
+        caller.error = ProviderUnavailableError("some_provider is not available")
+        caller.release.set()
+
+        with pytest.raises(ProviderUnavailableError):
+            await caller.fetch("123")
+
+        # the task's done callback runs an iteration after the task itself finished
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not [
+            record
+            for record in caplog.records
+            if record.levelno >= logging.WARNING and "Exception in task" in record.getMessage()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_argument_named_after_a_task_option_reaches_the_wrapped_method(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A parameter sharing its name with a create_task option is still passed through."""
+        caller = _GuardedCaller(mass_minimal)
+        caller.release.set()
+
+        assert await caller.fetch_named(task_name="abc", task_id="123") == "abc-123"
 
     @pytest.mark.asyncio
     async def test_instances_get_their_own_request(self, mass_minimal: MusicAssistant) -> None:
@@ -771,13 +1019,23 @@ class _GuardedCaller:
         self.mass = mass
         self.calls = 0
         self.release = asyncio.Event()
+        self.error: Exception | None = None
 
     @guard_single_request
     async def fetch(self, item_id: str) -> str:
         """Return the result for the given item id, once released."""
         self.calls += 1
         await self.release.wait()
+        if self.error is not None:
+            raise self.error
         return f"result-{item_id}"
+
+    @guard_single_request
+    async def fetch_named(self, task_name: str, task_id: str) -> str:
+        """Return the arguments, which are named after options of mass.create_task."""
+        self.calls += 1
+        await self.release.wait()
+        return f"{task_name}-{task_id}"
 
     @guard_single_request
     async def fetch_item(

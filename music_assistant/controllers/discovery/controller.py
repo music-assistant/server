@@ -12,9 +12,8 @@ from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, EventType
 from zeroconf import (
     NonUniqueNameException,
     ServiceStateChange,
@@ -28,12 +27,14 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.helpers.hassio import supervisor_request
 from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.event import MassEvent
 
     from music_assistant.models import ProviderInstanceType
 
@@ -82,18 +83,25 @@ class DiscoveryController(CoreController):
 
     @property
     def aiozc(self) -> AsyncZeroconf:
-        """Return the shared AsyncZeroconf instance for discovery consumers."""
+        """Return the shared AsyncZeroconf instance, which lives for the whole server run."""
         assert self._aiozc is not None, "DiscoveryController is not initialized"
         return self._aiozc
+
+    async def start_zeroconf(self) -> None:
+        """Create the shared zeroconf instance (aiozc), once per server run and ahead of setup."""
+        if self._aiozc is None:
+            config = await self.mass.config.get_core_config(self.domain)
+            self._aiozc = self._create_aiozc(config)
 
     async def setup(self, config: CoreConfig) -> None:
         """Initialize discovery controller."""
         self.config = config
-        if self._aiozc is None:
-            self._aiozc = self._create_aiozc(config)
         self._configure_library_loggers()
         await self._setup_mdns_browser()
         await self._register_mass_service()
+        # the mdns record embeds the server info, so refresh it when that info
+        # changes (e.g. the server was renamed or its state/urls changed)
+        self.mass.subscribe(self._on_core_state_updated, EventType.CORE_STATE_UPDATED)
         if self.mass.running_as_hass_addon:
             # (re)announce to HA supervisor to make sure that HA picks it up
             await self._announce_to_homeassistant()
@@ -149,18 +157,19 @@ class DiscoveryController(CoreController):
         self._schedule_periodic_upnp_discovery()
 
     async def async_find_mdns_service(
-        self, service_type: str, name_filter: str, timeout: float = 3.0
+        self, service_type: str, name_filter: str | None = None, timeout: float = 3.0
     ) -> AsyncServiceInfo | None:
         """
-        Find an mDNS service by exact device name match, checking cache first then waiting.
+        Find an mDNS service of the given type, checking cache first then waiting.
 
         :param service_type: The mDNS service type (e.g., "_raop._tcp.local.").
-        :param name_filter: Device name that must exactly match the service name portion.
+        :param name_filter: Device name that must exactly match the service name portion,
+            or None to accept whichever instance of the service type answers first.
         :param timeout: Maximum time to wait in seconds.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         # Cache keys are lowercased DNS names, so we must match case-insensitively
-        name_filter_lower = name_filter.lower()
+        name_filter_lower = None if name_filter is None else name_filter.lower()
         service_type_lower = service_type.lower()
         event = asyncio.Event()
         self._mdns_waiters.append(event)
@@ -168,21 +177,38 @@ class DiscoveryController(CoreController):
             while True:
                 # Clear before scanning so events arriving during the scan are not lost
                 event.clear()
-                # Check cache for a matching entry
+                # Check cache for matching entries
+                candidates: list[str] = []
                 for mdns_name in set(self.aiozc.zeroconf.cache.cache):
                     if service_type_lower not in mdns_name or mdns_name == service_type_lower:
                         continue
-                    # Use exact matching on the device name portion to prevent a device named
-                    # "Foo" from cross-matching another device named "ATV Foo".
-                    # mDNS names are either "MAC@DeviceName.service.local." or "DeviceName.service.local."
-                    # Strip the MAC prefix only when present, so device names that legitimately
-                    # contain "@" are not truncated.
-                    device_part = mdns_name.split(".")[0]
-                    device_name = RAOP_MAC_PREFIX.sub("", device_part, count=1)
-                    if device_name != name_filter_lower:
-                        continue
+                    if name_filter_lower is not None:
+                        # Use exact matching on the device name portion to prevent a device named
+                        # "Foo" from cross-matching another device named "ATV Foo".
+                        # mDNS names are either "MAC@DeviceName.service.local."
+                        # or "DeviceName.service.local".
+                        # Strip the MAC prefix only when present, so device names that legitimately
+                        # contain "@" are not truncated.
+                        device_part = mdns_name.split(".")[0]
+                        device_name = RAOP_MAC_PREFIX.sub("", device_part, count=1)
+                        if device_name != name_filter_lower:
+                            continue
+                    candidates.append(mdns_name)
+                for index, mdns_name in enumerate(candidates):
+                    # Share what is left of the budget between the candidates still to try, so a
+                    # record that never answers can neither push the wait past the caller's
+                    # timeout nor starve a live one behind it in the (unordered) cache.
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        return None
+                    # An unfiltered lookup keeps one share back so a candidate that goes
+                    # unanswered cannot swallow the deadline an instance announcing itself
+                    # mid-request needs to be rescanned into. A named lookup wants one specific
+                    # record, which no rescan can produce sooner, so it spends the lot.
+                    rescan_share = 1 if name_filter_lower is None else 0
+                    attempt_timeout = remaining / (len(candidates) - index + rescan_share)
                     info = AsyncServiceInfo(service_type, mdns_name)
-                    if await info.async_request(self.aiozc.zeroconf, 3000):
+                    if await info.async_request(self.aiozc.zeroconf, attempt_timeout * 1000):
                         return info
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
@@ -275,6 +301,12 @@ class DiscoveryController(CoreController):
                 "Music Assistant instance with identical name present in the local network!"
             )
 
+    async def _on_core_state_updated(self, event: MassEvent) -> None:
+        """Refresh the advertised mdns record after the server info changed."""
+        if self._aiozc is None or self.mass.closing:
+            return
+        await self._register_mass_service()
+
     def _on_mdns_service_state_change(
         self,
         zeroconf: Zeroconf,
@@ -308,7 +340,10 @@ class DiscoveryController(CoreController):
             if not provider.available or not provider.manifest.mdns_discovery:
                 continue
             if service_type in provider.manifest.mdns_discovery:
-                self.mass.create_task(process_mdns_state_change(provider))
+                self.mass.create_task(
+                    process_mdns_state_change(provider),
+                    task_name=f"mdns_state_change_{provider.instance_id}",
+                )
 
     async def _replay_mdns_discovery(self, provider: ProviderInstanceType) -> None:
         """Replay cached mDNS results for a provider after it loads."""
@@ -446,7 +481,6 @@ class DiscoveryController(CoreController):
 
     async def _announce_to_homeassistant(self) -> None:
         """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
         addon_hostname = os.environ["HOSTNAME"]
         ha_integration_token = await self.mass.webserver.auth.get_homeassistant_system_user_token()
         discovery_payload = {
@@ -458,18 +492,13 @@ class DiscoveryController(CoreController):
             },
         }
         try:
-            async with self.mass.http_session_no_ssl.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json=discovery_payload,
-                timeout=ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
-                self.logger.debug(
-                    "Successfully announced to Home Assistant. Discovery UUID: %s",
-                    result.get("uuid"),
-                )
+            result = await supervisor_request(
+                self.mass, "post", "/discovery", json_data=discovery_payload
+            )
+            self.logger.debug(
+                "Successfully announced to Home Assistant. Discovery UUID: %s",
+                result.get("uuid") if isinstance(result, dict) else None,
+            )
         except Exception as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
 

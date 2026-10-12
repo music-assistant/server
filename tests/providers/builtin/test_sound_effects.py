@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import SoundEffect
+from music_assistant_models.media_items import Radio, SoundEffect, Track
 
 from music_assistant.helpers.playlists import PlaylistItem, ProviderMappingInfo
 from music_assistant.providers.builtin import BuiltinProvider
@@ -143,3 +143,73 @@ async def test_get_stream_details_detects_radio_from_icyname_tag() -> None:
     )
 
     assert result.media_type == MediaType.RADIO
+
+
+@pytest.mark.asyncio
+async def test_parse_item_returns_sound_effect_for_an_untagged_url() -> None:
+    """A plain URL without music tags is a one-off clip, not a track."""
+    provider = _make_provider()
+    provider._get_media_info = AsyncMock(  # type: ignore[method-assign]
+        return_value=DummyMediaInfo(title="notification", duration=3)
+    )
+
+    result = await provider.parse_item(
+        "http://example.com/notification.mp3",
+        requested_media_type=MediaType.UNKNOWN,
+    )
+
+    assert isinstance(result, SoundEffect)
+    assert result.name == "notification"
+    assert result.duration == 3
+
+
+@pytest.mark.asyncio
+async def test_parse_item_returns_track_for_a_tagged_url() -> None:
+    """A plain URL carrying music tags stays a track, with its artists."""
+    provider = _make_provider()
+    provider._get_media_info = AsyncMock(  # type: ignore[method-assign]
+        return_value=DummyMediaInfo(
+            title="Song", duration=240, artists=["Artist"], extra={"artist": "Artist"}
+        )
+    )
+
+    result = await provider.parse_item(
+        "http://example.com/song.mp3",
+        requested_media_type=MediaType.UNKNOWN,
+    )
+
+    assert isinstance(result, Track)
+    assert result.name == "Song"
+    assert [artist.name for artist in result.artists] == ["Artist"]
+
+
+@pytest.mark.asyncio
+async def test_parse_item_keeps_an_untagged_stream_a_radio_station() -> None:
+    """An untagged stream without a duration is still recognized as radio."""
+    provider = _make_provider()
+    provider._get_media_info = AsyncMock(  # type: ignore[method-assign]
+        return_value=DummyMediaInfo(title="Stream", duration=None)
+    )
+
+    result = await provider.parse_item(
+        "http://example.com/stream.mp3",
+        requested_media_type=MediaType.UNKNOWN,
+    )
+
+    assert isinstance(result, Radio)
+
+
+@pytest.mark.asyncio
+async def test_parse_item_keeps_an_untagged_url_a_track_when_asked_for_one() -> None:
+    """A URL stored in the library as a track stays a track, tags or not."""
+    provider = _make_provider()
+    provider._get_media_info = AsyncMock(  # type: ignore[method-assign]
+        return_value=DummyMediaInfo(title="Clip", duration=3)
+    )
+
+    result = await provider.parse_item(
+        "http://example.com/clip.mp3",
+        requested_media_type=MediaType.TRACK,
+    )
+
+    assert isinstance(result, Track)

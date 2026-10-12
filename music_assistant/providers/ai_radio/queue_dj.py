@@ -12,9 +12,11 @@ import aiofiles
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.helpers.json import async_json_loads
 
-from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID
+from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID, EVENT_QUEUE_DJ_UPDATED
+from .helpers import check_player_access, has_player_access
 from .models import DJQueueState, PlannedSection, SessionState
 
 if TYPE_CHECKING:
@@ -64,6 +66,7 @@ class AIRadioQueueDJMixin:
         queue_id = str(queue_id).strip()
         if not queue_id:
             raise InvalidDataError("queue_id is required")
+        check_player_access(queue_id)
         armed: DJQueueState | None = None
         try:
             async with self._dj_lock:
@@ -72,7 +75,7 @@ class AIRadioQueueDJMixin:
                 else:
                     host_id = str(host_id).strip()
                     if host_id not in self._hosts:
-                        raise InvalidDataError(f"Unknown host id: {host_id}")
+                        raise InvalidDataError(f"Unknown host id: {host_id}")  # noqa: TRY301 - re-raised after cleanup
                     armed = self._arm_dj_state(queue_id, host_id)
                 await self._write_queue_dj()
             # stale clips carry the old host's persona, so they must go before a replan
@@ -85,6 +88,7 @@ class AIRadioQueueDJMixin:
                 async with self._dj_lock:
                     if self._dj_queues.get(queue_id) is armed:
                         del self._dj_queues[queue_id]
+                        self.signal_provider_event({"event": EVENT_QUEUE_DJ_UPDATED})
             raise
         if armed is not None:
             if self._dj_queues.get(queue_id) is armed:
@@ -95,8 +99,12 @@ class AIRadioQueueDJMixin:
         return await self.get_queue_dj_status()
 
     async def get_queue_dj_status(self) -> dict[str, str]:
-        """Return the queue-to-host mapping of all active queue DJs."""
-        return {queue_id: state.host_id for queue_id, state in self._dj_queues.items()}
+        """Return the queue-to-host mapping of the queue DJs the calling user may see."""
+        return {
+            queue_id: state.host_id
+            for queue_id, state in self._dj_queues.items()
+            if has_player_access(queue_id)
+        }
 
     async def _load_queue_dj(self) -> None:
         """Load persisted queue DJ assignments and arm their states."""
@@ -134,6 +142,7 @@ class AIRadioQueueDJMixin:
             },
         }
         await self._write_json_file(self._dj_file, payload)
+        self.signal_provider_event({"event": EVENT_QUEUE_DJ_UPDATED})
 
     def _arm_dj_state(self, queue_id: str, host_id: str) -> DJQueueState:
         """Create fresh in-memory DJ state for a queue."""
@@ -221,7 +230,11 @@ class AIRadioQueueDJMixin:
             if self._repair_dj_clips(queue_id, state, items, guard_index):
                 items = self._dj_queue_items(queue_id)
             # tracks that left the queue keep no decision, so the set cannot grow unbounded
-            state.decided_gap_ids &= {item.queue_item_id for item in items}
+            decided_before = state.decided_gap_ids
+            state.decided_gap_ids = decided_before & {item.queue_item_id for item in items}
+            if decided_before and not state.decided_gap_ids:
+                # nothing this history was recorded against is left, so its queue is gone
+                self._drop_unaired_dj_history(state, items, guard_index)
 
             window = self._dj_window(items, guard_index)
             if len(window) < 2:
@@ -231,9 +244,12 @@ class AIRadioQueueDJMixin:
                 return
             # measured from the same point the planner counts from, or OPTIONAL guard
             # positions drift between passes. recomputed every pass so state self-corrects
-            state.songs_before_window, state.minutes_before_window = self._dj_window_offsets(
-                items, window[0].queue_item_id
-            )
+            offsets = self._dj_window_offsets(items, window[0].queue_item_id)
+            # a lower song count means the queue rewound under the history, e.g. a clear or a
+            # jump back to the top; minutes dip on their own when a probed duration lands
+            if offsets[0] < state.songs_before_window:
+                self._rebase_dj_history(state, *offsets)
+            state.songs_before_window, state.minutes_before_window = offsets
             host = self._hosts.get(state.host_id)
             if host is None:
                 self.logger.warning(
@@ -397,9 +413,8 @@ class AIRadioQueueDJMixin:
         """Return the highest queue index the player already owns."""
         # the player owns the current and the already buffered item, and the slot right
         # after the buffered one may be handed to the player at any moment
-        current_index = queue.current_index if queue.current_index is not None else -1
-        index_in_buffer = queue.index_in_buffer if queue.index_in_buffer is not None else -1
-        return max(current_index, index_in_buffer)
+        boundary_index = committed_index(queue)
+        return boundary_index if boundary_index is not None else -1
 
     def _repair_dj_clips(
         self, queue_id: str, state: DJQueueState, items: list[QueueItem], guard_index: int
@@ -450,6 +465,41 @@ class AIRadioQueueDJMixin:
                 behind.append(item)
         minutes = sum(item.duration or FALLBACK_TRACK_SECONDS for item in behind) / 60.0
         return len(behind), minutes
+
+    def _drop_unaired_dj_history(
+        self, state: DJQueueState, items: list[QueueItem], guard_index: int
+    ) -> None:
+        """Forget the guard history of breaks that were planned but never reached the player."""
+        # events strictly behind the window start have aired; one exactly on it is ambiguous,
+        # since its clip may be owned by the player (airing or buffered) or still one slot
+        # beyond the guard. a clip surviving in the owned head is what tells the two apart
+        owns_clip = any(
+            item.extra_attributes.get(ATTR_QUEUE_DJ) for item in items[: guard_index + 1]
+        )
+        boundary = state.songs_before_window if owns_clip else state.songs_before_window - 1
+        state.history = {
+            section_id: [(song, minute) for song, minute in events if song <= boundary]
+            for section_id, events in state.history.items()
+        }
+
+    def _rebase_dj_history(
+        self, state: DJQueueState, songs_before_window: int, minutes_before_window: float
+    ) -> None:
+        """Re-anchor the guard history onto the given start of the planning window."""
+        # events behind the window move with it so they keep their distance, while the ones
+        # ahead are capped at the window start: their old position no longer means anything
+        song_delta = min(songs_before_window - state.songs_before_window, 0)
+        minute_delta = min(minutes_before_window - state.minutes_before_window, 0.0)
+        state.history = {
+            section_id: [
+                (
+                    min(song + song_delta, songs_before_window),
+                    min(minute + minute_delta, minutes_before_window),
+                )
+                for song, minute in events
+            ]
+            for section_id, events in state.history.items()
+        }
 
     def _dj_queue_items(self, queue_id: str) -> list[QueueItem]:
         """Return all items of a queue."""

@@ -6,11 +6,27 @@
     "sxm_password": {
       "label": "[%key:common::config_entries::password::label%]"
     },
-    "sxm_region": {
-      "label": "Region",
+    "bitrate": {
+      "label": "Stream quality",
+      "description": "Preferred bitrate. Channels that do not offer it fall back to the closest available.",
       "options": {
-        "US": "United States",
-        "CA": "Canada"
+        "256k": "256 kbps",
+        "96k": "96 kbps",
+        "64k": "64 kbps",
+        "32k": "32 kbps"
+      }
+    }
+  },
+  "media": {
+    "folder": {
+      "channels": {
+        "name": "Channels"
+      },
+      "genres": {
+        "name": "Genres"
+      },
+      "xtra_channels": {
+        "name": "Xtra Channels"
       }
     }
   },

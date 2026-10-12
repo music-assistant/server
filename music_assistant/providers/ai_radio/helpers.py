@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import datetime
 import random
 import re
 from typing import Any
 
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import InsufficientPermissions, MusicAssistantError
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    has_player_access as user_has_player_access,
+)
 from music_assistant.helpers.datetime import utc
 
 from .constants import EMPTY_SECTION_ID
@@ -17,6 +24,12 @@ from .models import Slot
 def utc_now_iso() -> str:
     """Return a UTC ISO timestamp."""
     return utc().isoformat()
+
+
+def format_ai_radio_timestamp(moment: datetime.datetime) -> str:
+    """Format a moment for the <timestamp> placeholder, spelling out the weekday and month."""
+    # spelled out so the LLM never has to derive the weekday from a numeric date
+    return moment.strftime("%A %d %B %Y, %H:%M %Z")
 
 
 def slugify(value: str) -> str:
@@ -150,3 +163,26 @@ def coerce_int(value: Any, default: int) -> int:
         return int(value)
     except TypeError, ValueError:
         return default
+
+
+def has_player_access(*player_ids: str | None) -> bool:
+    """
+    Return whether the calling user may use every given player or queue.
+
+    :param player_ids: The players or queues to check, None entries are skipped.
+    """
+    user = get_current_user()
+    return all(
+        user_has_player_access(user, player_id) for player_id in player_ids if player_id is not None
+    )
+
+
+def check_player_access(*player_ids: str | None) -> None:
+    """
+    Raise when the calling user may not use one of the given players or queues.
+
+    :param player_ids: The players or queues to check, None entries are skipped.
+    """
+    for player_id in player_ids:
+        if player_id is not None and not has_player_access(player_id):
+            raise InsufficientPermissions(f"No access to player {player_id}")

@@ -46,9 +46,9 @@ on:
         required: true
 
 env:
-  BASE_IMAGE_VERSION_STABLE: "1.6.0"
-  BASE_IMAGE_VERSION_BETA: "1.6.0"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
+  BASE_IMAGE_VERSION_STABLE: "1.6.3"
+  BASE_IMAGE_VERSION_BETA: "1.7.0"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.7.0"
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
 
@@ -82,6 +82,17 @@ jobs:
       sdist_size: ${{ steps.state.outputs.sdist_size }}
       sdist_sha256: ${{ steps.state.outputs.sdist_sha256 }}
     steps:
+      # The dispatch ref picks the release tooling (github.workflow_sha), so keep it on dev.
+      # Under workflow_call, github.ref is the ref the calling workflow ran from.
+      - name: Require dispatch from dev
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/dev" ]; then
+            echo "::error::Run this workflow from the dev branch, not $DISPATCH_REF. The channel still decides which branch gets released."
+            exit 1
+          fi
+
       - name: Check out release workflow
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -335,6 +346,7 @@ jobs:
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ needs.resolve.outputs.source_sha }}
+      base_image_version: ${{ needs.resolve.outputs.base_image_version }}
 
   build_artifacts:
     name: Build or recover release assets
@@ -452,16 +464,6 @@ jobs:
         if: needs.resolve.outputs.assets_ready != 'true'
         run: python3 -m pip install build tomli tomli-w
 
-      - name: Provision app secrets
-        if: needs.resolve.outputs.assets_ready != 'true'
-        env:
-          GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
-        run: |
-          gh api \
-            -H "Accept: application/vnd.github.raw+json" \
-            "repos/music-assistant/appvars/contents/app_secrets.json" \
-            > source/music_assistant/helpers/app_secrets.json
-
       - name: Set package version
         if: needs.resolve.outputs.assets_ready != 'true'
         working-directory: source
@@ -479,10 +481,27 @@ jobs:
           with open("pyproject.toml", "wb") as file_handle:
               tomli_w.dump(pyproject, file_handle)
 
-      - name: Build wheel and source distribution
+      # The app secrets are not covered by the Apache-2.0 license (see NOTICE), so they ship in
+      # the wheel (and the image built from it) but never in the source distribution.
+      - name: Build source distribution
         if: needs.resolve.outputs.assets_ready != 'true'
         working-directory: source
-        run: python3 -m build
+        run: python3 -m build --sdist
+
+      - name: Provision app secrets
+        if: needs.resolve.outputs.assets_ready != 'true'
+        env:
+          GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github.raw" \
+            "repos/music-assistant/appvars/contents/app_secrets.json" \
+            > source/music_assistant/helpers/app_secrets.json
+
+      - name: Build wheel
+        if: needs.resolve.outputs.assets_ready != 'true'
+        working-directory: source
+        run: python3 -m build --wheel
 
       - name: Verify exact assets
         id: assets
@@ -499,6 +518,14 @@ jobs:
             --directory source/dist \
             "${extra_args[@]}" \
             --github-output "$GITHUB_OUTPUT"
+
+      - name: Verify bundled app secrets
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py verify-app-secrets \
+            --version "$VERSION" \
+            --directory source/dist
 
       - name: Preserve release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -609,7 +636,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IS_PRERELEASE: ${{ needs.resolve.outputs.is_prerelease }}
           RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
-          RELEASE_NOTES: ${{ steps.notes.outputs.release-notes }}
+          RELEASE_NOTES_FILE: ${{ steps.notes.outputs.release-notes-file }}
           RELEASE_TITLE: ${{ steps.title.outputs.title }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
@@ -635,7 +662,7 @@ jobs:
             --arg tag "$VERSION" \
             --arg target "$SOURCE_SHA" \
             --arg name "$RELEASE_TITLE" \
-            --arg body "$RELEASE_NOTES" \
+            --rawfile body "$RELEASE_NOTES_FILE" \
             --argjson prerelease "$IS_PRERELEASE" \
             '{
               tag_name: $tag,
@@ -848,7 +875,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
       - name: Inspect exact image
         id: existing
@@ -887,7 +914,7 @@ jobs:
       - name: Build and push exact image
         if: steps.existing.outputs.exists != 'true'
         id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: source
           platforms: linux/amd64,linux/arm64
@@ -897,6 +924,8 @@ jobs:
           provenance: true
           build-args: |
             MASS_VERSION=${{ inputs.version }}
+            MASS_REVISION=${{ needs.resolve.outputs.source_sha }}
+            MASS_WHEEL_SHA256=${{ needs.prepare_draft.outputs.wheel_sha256 }}
             BASE_IMAGE_VERSION=${{ needs.resolve.outputs.base_image_version }}
           labels: |
             org.opencontainers.image.version=${{ inputs.version }}
@@ -956,6 +985,30 @@ jobs:
                .config.Labels["io.music-assistant.wheel.sha256"] == $wheel' \
               "$RUNNER_TEMP/image-config.json" > /dev/null
           done
+
+      # Runs the server's own official build check inside the image, without starting the
+      # server, so a release can never flag all of its installs as unsupported. A release
+      # source without that check has nothing to verify.
+      - name: Verify official build info
+        if: hashFiles('source/music_assistant/helpers/build_info.py') != ''
+        env:
+          DIGEST: ${{ steps.verify.outputs.digest }}
+          IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/server
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          WHEEL_SHA256: ${{ needs.resolve.outputs.release_state == 'published' && needs.resolve.outputs.wheel_sha256 || needs.prepare_draft.outputs.wheel_sha256 }}
+        run: |
+          docker run --rm --platform linux/amd64 --network none \
+            --entrypoint python "$IMAGE_REPOSITORY@$DIGEST" -c '
+          import asyncio, json
+          from music_assistant.helpers.build_info import get_official_build_info
+          print(json.dumps(asyncio.run(get_official_build_info())))
+          ' > "$RUNNER_TEMP/build-info.json"
+          python3 .release-workflow/scripts/release_workflow.py verify-build-info \
+            --build-info-json "$RUNNER_TEMP/build-info.json" \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --wheel-sha256 "$WHEEL_SHA256"
 
   publish_release:
     name: Publish and verify immutable release
@@ -1200,7 +1253,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
       - name: Verify published exact image
         env:
@@ -1246,7 +1299,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
       - name: Promote exact digest to rolling aliases
         env:
@@ -1587,7 +1640,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           gh api \
-            -H "Accept: application/vnd.github.raw+json" \
+            -H "Accept: application/vnd.github.raw" \
             repos/music-assistant/app.music-assistant.io/contents/channels.json \
             > "$RUNNER_TEMP/channels.json"
           current_version=$(jq -r \

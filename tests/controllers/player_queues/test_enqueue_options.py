@@ -9,8 +9,9 @@ side-effecting ``play_index`` and ``signal_update`` are stubbed out.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.media_items import (
     Album,
@@ -33,6 +34,7 @@ def _controller() -> PlayerQueuesController:
     """Create a bare controller instance with the noisy ``signal_update`` stubbed out."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl.mass = MagicMock()
     return ctrl
 
 
@@ -269,6 +271,58 @@ def _dynamic_controller() -> PlayerQueuesController:
     return ctrl
 
 
+async def test_enter_dynamic_mode_hands_the_replacement_to_the_player() -> None:
+    """
+    The rebuilt pool reaches the player once the queue has settled.
+
+    The rebuild publishes its items while the queue is still transitioning, which suppresses the
+    hand-over, so it has to be repeated afterwards or the player keeps a track that is gone.
+    """
+    ctrl = _dynamic_controller()
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    calls: list[str] = []
+    ctrl.update_next_item_on_player = Mock(  # type: ignore[method-assign]
+        side_effect=lambda *_a, **_kw: calls.append("notified")
+    )
+    original_set_transitioning = ctrl._set_transitioning
+
+    def _spy(queue_id: str, value: bool) -> None:
+        calls.append(f"transitioning={value}")
+        original_set_transitioning(queue_id, value)
+
+    ctrl._set_transitioning = _spy  # type: ignore[method-assign]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.ADD)
+
+    assert calls[-2:] == ["transitioning=False", "notified"]
+
+
+async def test_enter_dynamic_mode_hands_over_nothing_when_it_fails() -> None:
+    """A rebuild that cannot start playback leaves the player alone rather than half-applying."""
+    ctrl = _dynamic_controller()
+    ctrl.play_index = AsyncMock(side_effect=RuntimeError("could not start"))  # type: ignore[method-assign]
+    ctrl._enqueue_next_item = Mock()  # type: ignore[method-assign]
+    ctrl._cleanup_queue_audio_data = AsyncMock()  # type: ignore[method-assign]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    queue_data = PlayerQueueData(queue=queue)
+    ctrl._queue_data = {"q1": queue_data}
+    items = [QueueItem.from_media_item("q1", _track(f"old{index}")) for index in range(3)]
+    queue_data.items = items
+    queue.items = len(items)
+    queue.state = PlaybackState.PLAYING
+    queue.current_index = 0
+    queue.current_item = items[0]
+    queue.index_in_buffer = 0
+
+    with pytest.raises(RuntimeError):
+        await ctrl._enter_dynamic_mode("q1", QueueOption.PLAY)
+
+    assert not queue_data.transitioning
+    ctrl._enqueue_next_item.assert_not_called()
+
+
 async def test_enter_dynamic_mode_add_on_idle_does_not_start_playback() -> None:
     """ADD of a dynamic source onto an idle/empty queue stages the pool but does not start playing."""
     ctrl = _dynamic_controller()
@@ -452,7 +506,7 @@ def _shuffled_queue(ctrl: PlayerQueuesController) -> PlayerQueue:
     ctrl._smart_shuffle = Mock()
     ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
     ctrl._smart_shuffle.arrange = AsyncMock(
-        side_effect=lambda _queue, items: list(items)[::-1],
+        side_effect=lambda _queue, items, **_kw: list(items)[::-1],
     )
     queue = PlayerQueue(
         queue_id="q1",
@@ -527,3 +581,35 @@ async def test_play_with_start_item_keeps_order_when_shuffle_is_off() -> None:
 
     assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == ["chosen", "b", "c"]
     play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_add_with_shuffle_reorders_only_mutable_tail_and_passes_anchor() -> None:
+    """ADD keeps the protected prefix fixed and only reshuffles the movable tail."""
+    ctrl = _controller()
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
+    ctrl._smart_shuffle = Mock()
+    ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
+    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=lambda _queue, items, **_kw: list(items))
+    existing = _items("q1", ["history", "current", "buffered", "protected", "tail1", "tail2"])
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(existing),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        index_in_buffer=2,
+        shuffle_enabled=True,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
+    added = _items("q1", ["new"])
+
+    await ctrl._enqueue_with_option("q1", added, QueueOption.ADD)
+
+    call = ctrl._smart_shuffle.arrange.await_args
+    assert call is not None
+    assert call.kwargs["preceding_item"] is existing[3]
+    assert [item.queue_item_id for item in call.args[1]] == ["new", "tail1", "tail2"]
+    assert ctrl._queue_data["q1"].items[:4] == existing[:4]

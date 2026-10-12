@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -18,7 +19,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import PlayerUnavailableError, UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
 from propcache import under_cached_property as cached_property
 
@@ -31,6 +32,7 @@ from music_assistant.constants import (
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
 )
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
@@ -75,7 +77,11 @@ class UniversalGroupPlayer(Player):
         """Initialize UniversalGroupPlayer instance."""
         super().__init__(provider, player_id)
         self.stream: UGPStream | None = None
-        self._attr_name = self.config.name or f"Universal Group {player_id}"
+        # the default name, not the custom one: display_name already prefers the
+        # custom name, while update_state persists this one as the default name
+        self._attr_name = (
+            self.config.default_name or self.config.name or f"Universal Group {player_id}"
+        )
         self._attr_available = True
         # See SyncGroupPlayer: groups have no opinion on power by default; the
         # session lifecycle is what governs activity. Fake power control is the
@@ -203,7 +209,7 @@ class UniversalGroupPlayer(Player):
                 options=[
                     ConfigValueOption(x.player_id, title=x.display_name)
                     for x in self.mass.players.all_players(True, False)
-                    if x.type != PlayerType.GROUP
+                    if x.type not in (PlayerType.GROUP, PlayerType.UNKNOWN, PlayerType.SOURCE)
                 ],
             ),
             ConfigEntry(
@@ -277,7 +283,8 @@ class UniversalGroupPlayer(Player):
                 self, only_powered=True, active_only=True
             ):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, False)
+                    with suppress(PlayerUnavailableError):
+                        await self.mass.players.cmd_power(member.player_id, False)
 
         if not powered:
             # reset the original group members when powered off
@@ -329,16 +336,16 @@ class UniversalGroupPlayer(Player):
             for member in self.mass.players.iter_group_members(self, only_powered=True):
                 # Use internal handler to get protocol selection and avoid redirect
                 tg.create_task(
-                    self.mass.players._handle_play_media(
+                    self._play_media_on_member(
                         member.player_id,
                         PlayerMedia(
                             uri=f"{base_url}?player_id={member.player_id}",
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
                             source_id=self.player_id,
+                            queue_session_id=self.stream.session_id,
                             custom_data={
                                 "ugp_player_id": self.player_id,
-                                "session_id": self.stream.session_id,
                             },
                         ),
                     )
@@ -384,16 +391,16 @@ class UniversalGroupPlayer(Player):
                 )
                 base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
                 # Use internal handler to get protocol selection and avoid redirect
-                await self.mass.players._handle_play_media(
+                await self._play_media_on_member(
                     player_id,
                     PlayerMedia(
                         uri=f"{base_url}?player_id={player_id}",
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
                         source_id=self.player_id,
+                        queue_session_id=self.stream.session_id,
                         custom_data={
                             "ugp_player_id": self.player_id,
-                            "session_id": self.stream.session_id,
                         },
                     ),
                 )
@@ -433,6 +440,11 @@ class UniversalGroupPlayer(Player):
             # tear down any in-flight session before unloading
             await self.stop()
             self._attr_powered = False
+
+    async def _play_media_on_member(self, player_id: str, media: PlayerMedia) -> None:
+        """Play media directly on a group member under its playback lock."""
+        async with self.mass.players.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            await self.mass.players._handle_play_media(player_id, media)
 
     async def _capture_members(self) -> None:
         """
@@ -496,7 +508,8 @@ class UniversalGroupPlayer(Player):
                 # member is part of a syncgroup — release it first
                 await member.ungroup()
             if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                await self.mass.players.cmd_power(member.player_id, True)
+                with suppress(PlayerUnavailableError):
+                    await self.mass.players.cmd_power(member.player_id, True)
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""

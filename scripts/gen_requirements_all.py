@@ -8,6 +8,7 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 PACKAGE_REGEX = re.compile(r"^(?:--.+\s)?([-_\.\w\d]+).*==.+$")
 GIT_REPO_REGEX = re.compile(r"^(git\+https:\/\/[-_\.\w\d\/]+[-@_\.\w\d\/]*)$")
@@ -15,13 +16,13 @@ GIT_REPO_REGEX = re.compile(r"^(git\+https:\/\/[-_\.\w\d\/]+[-@_\.\w\d\/]*)$")
 # ruff: noqa: T201
 
 
-def _load_pyproject() -> dict:
+def _load_pyproject() -> dict[str, Any]:
     """Load pyproject.toml once."""
     with open("pyproject.toml", "rb") as fp:
         return tomllib.load(fp)
 
 
-def gather_uv_index_config(data: dict) -> tuple[list[str], dict[str, str]]:
+def gather_uv_index_config(data: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
     """
     Read [tool.uv.index] and [tool.uv.sources] from pyproject.toml.
 
@@ -59,9 +60,10 @@ def gather_uv_index_config(data: dict) -> tuple[list[str], dict[str, str]]:
     return extra_urls, pkg_suffixes
 
 
-def gather_core_requirements(data: dict) -> list[str]:
+def gather_core_requirements(data: dict[str, Any]) -> list[str]:
     """Gather core requirements out of pyproject.toml."""
-    return data["project"]["dependencies"]
+    dependencies: list[str] = data["project"]["dependencies"]
+    return dependencies
 
 
 def gather_requirements_from_manifests() -> list[str]:
@@ -70,12 +72,12 @@ def gather_requirements_from_manifests() -> list[str]:
     providers_path = "music_assistant/providers"
     for dir_str in sorted(os.listdir(providers_path)):  # noqa: PTH208, RUF100
         dir_path = os.path.join(providers_path, dir_str)
-        if not os.path.isdir(dir_path):
+        if not Path(dir_path).is_dir():
             continue
         # get files in subdirectory
         for file_str in os.listdir(dir_path):  # noqa: PTH208, RUF100
             file_path = os.path.join(dir_path, file_str)
-            if not os.path.isfile(file_path):
+            if not Path(file_path).is_file():
                 continue
             if file_str != "manifest.json":
                 continue
@@ -89,7 +91,7 @@ def gather_requirements_from_manifests() -> list[str]:
 
 def main() -> int:
     """Run the script."""
-    if not os.path.isfile("requirements_all.txt"):
+    if not Path("requirements_all.txt").is_file():
         print("Run this from MA root dir")
         return 1
 

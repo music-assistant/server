@@ -3,29 +3,42 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import subprocess
 from array import array
 from collections.abc import AsyncGenerator, Sequence
 from math import sqrt
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import AudioError
+from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
+    CACHE_ATTR_HLS_CMAF_BLOCKED,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
     _build_overlay_mixer,
     _get_overlay_volume_filter,
+    _parse_ffprobe_stream_info,
+    apply_stream_info,
+    check_ffmpeg_version,
     get_ffmpeg_args,
+    get_ffmpeg_hls_cmaf_input_args,
     get_ffmpeg_overlay_stream,
+    get_ffmpeg_stream,
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
+    probe_audio_stream,
 )
+from music_assistant.models.music_provider import ProviderStreamLimitError
 
 
 def test_get_ffmpeg_args_does_not_mutate_filters() -> None:
@@ -70,6 +83,80 @@ def test_get_ffmpeg_args_downmixes_multichannel_for_single_channel_output() -> N
     assert filter_graph.index("aformat=channel_layouts=stereo") < filter_graph.index(
         "pan=mono|c0=0.5*FL+0.5*FR"
     )
+
+
+_PCM_OUT = AudioFormat(
+    content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
+)
+
+
+def _input_fflags(args: list[str]) -> list[str]:
+    """Return the values of every -fflags option given to the main input."""
+    input_args = args[: args.index("-i")]
+    return [input_args[i + 1] for i, arg in enumerate(input_args) if arg == "-fflags"]
+
+
+@pytest.mark.parametrize("content_type", [ContentType.MP3, ContentType.MPEG])
+def test_get_ffmpeg_args_fastseeks_http_mp3_seek(content_type: ContentType) -> None:
+    """A seek into an http mp3 byte-seeks instead of parsing every frame before the target."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=content_type),
+        _PCM_OUT,
+        [],
+        input_path="https://example.invalid/book.mp3",
+        extra_input_args=["-ss", "27553"],
+    )
+
+    assert _input_fflags(args) == ["+fastseek"]
+
+
+def test_get_ffmpeg_args_fastseek_keeps_provider_fflags() -> None:
+    """Fastseek joins the provider's -fflags, since ffmpeg only honours the last one per input."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path="https://example.invalid/book.mp3",
+        extra_input_args=["-fflags", "genpts", "-fflags", "nobuffer", "-ss", "27553"],
+    )
+
+    assert _input_fflags(args) == ["genpts", "nobuffer+fastseek"]
+
+
+def test_get_ffmpeg_args_fastseek_not_added_twice() -> None:
+    """Input args that already ask for fastseek keep a single +fastseek."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path="https://example.invalid/book.mp3",
+        extra_input_args=["-fflags", "+fastseek", "-ss", "27553"],
+    )
+
+    assert _input_fflags(args) == ["+fastseek"]
+
+
+@pytest.mark.parametrize(
+    ("content_type", "input_path", "extra_input_args"),
+    [
+        (ContentType.MP3, "https://example.invalid/book.mp3", []),
+        (ContentType.FLAC, "https://example.invalid/track.flac", ["-ss", "30"]),
+        (ContentType.MP3, "/media/book.mp3", ["-ss", "30"]),
+    ],
+)
+def test_get_ffmpeg_args_no_fastseek_outside_http_mp3_seek(
+    content_type: ContentType, input_path: str, extra_input_args: list[str]
+) -> None:
+    """Sources other than a seeked http mp3 keep ffmpeg's accurate seek."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=content_type),
+        _PCM_OUT,
+        [],
+        input_path=input_path,
+        extra_input_args=extra_input_args,
+    )
+
+    assert _input_fflags(args) == []
 
 
 def _split_at_input(args: list[str]) -> tuple[list[str], list[str]]:
@@ -179,6 +266,38 @@ def _output_args(args: list[str]) -> list[str]:
     return args[args.index("-i") + 2 :]
 
 
+def test_flac_keeps_its_block_size_at_a_high_sample_rate() -> None:
+    """The pin is on the sample count, so a 96kHz stream is not left on ffmpeg's 2304."""
+    args = _output_args(
+        get_ffmpeg_args(
+            input_format=AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=96000),
+            output_format=AudioFormat(content_type=ContentType.FLAC, sample_rate=96000),
+            filter_params=[],
+        )
+    )
+
+    assert args[args.index("-frame_size") + 1] == "4096"
+
+
+def test_flac_output_uses_the_block_size_real_files_carry() -> None:
+    """
+    FLAC output is pinned to a 4096 sample block, whatever the sample rate.
+
+    Compression level 0, which we use for encoding speed, otherwise sizes the block by
+    time: 1152 samples at 44.1kHz. That is three and a half times as many frame headers
+    and CRCs for the same audio, which costs on both the encode and the decode.
+    """
+    args = _output_args(
+        get_ffmpeg_args(
+            input_format=AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100),
+            output_format=AudioFormat(content_type=ContentType.FLAC, sample_rate=44100),
+            filter_params=[],
+        )
+    )
+
+    assert args[args.index("-frame_size") + 1] == "4096"
+
+
 @pytest.mark.parametrize(
     ("content_type", "encoder_args"),
     [
@@ -187,7 +306,18 @@ def _output_args(args: list[str]) -> list[str]:
         (ContentType.WAV, ["-ar", "44100", "-acodec", "pcm_s16le", "-f", "wav"]),
         (
             ContentType.FLAC,
-            ["-sample_fmt", "s16", "-ar", "44100", "-f", "flac", "-compression_level", "0"],
+            [
+                "-sample_fmt",
+                "s16",
+                "-ar",
+                "44100",
+                "-f",
+                "flac",
+                "-compression_level",
+                "0",
+                "-frame_size",
+                "4096",
+            ],
         ),
     ],
 )
@@ -229,6 +359,46 @@ def test_get_ffmpeg_args_single_channel_output_declares_mono() -> None:
         "wav",
         "-",
     ]
+
+
+def test_get_ffmpeg_args_pcm_input_ignores_stale_source_codec() -> None:
+    """A PCM input keeps its raw decoder even when a source codec is still attached."""
+    # background analysis builds its PCM format from the track's own AudioFormat,
+    # which swaps content_type but carries the encoded codec_type over
+    input_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        codec_type=ContentType.FLAC,
+        sample_rate=96000,
+        bit_depth=16,
+        channels=2,
+    )
+
+    args = get_ffmpeg_args(input_format, input_format, [], input_path="-", output_path="NULL")
+    input_args = args[: args.index("-i")]
+
+    assert input_args.count("-acodec") == 1
+    assert input_args[input_args.index("-acodec") + 1] == "pcm_s16le"
+    assert "flac" not in input_args
+
+
+def test_get_ffmpeg_args_encoded_input_still_declares_source_codec() -> None:
+    """A non-PCM input keeps declaring the codec ffmpeg should decode with."""
+    input_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        codec_type=ContentType.FLAC,
+        sample_rate=96000,
+        bit_depth=16,
+        channels=2,
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=96000, bit_depth=16, channels=2
+    )
+
+    args = get_ffmpeg_args(input_format, output_format, [], input_path="-")
+    input_args = args[: args.index("-i")]
+
+    assert input_args.count("-acodec") == 1
+    assert input_args[input_args.index("-acodec") + 1] == "flac"
 
 
 @pytest.mark.parametrize(
@@ -523,6 +693,197 @@ async def _silence(seconds: int) -> AsyncGenerator[bytes]:
 
 async def _collect_chunks(stream: AsyncGenerator[bytes]) -> list[bytes]:
     return [chunk async for chunk in stream]
+
+
+@pytest.mark.parametrize("source_error", [RuntimeError("source failed"), BrokenPipeError()])
+async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception) -> None:
+    """An input generator failure is surfaced after FFmpeg emits its buffered output."""
+
+    async def failing_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise source_error
+
+    with pytest.raises(AudioError, match="Error while feeding audio to FFmpeg") as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=failing_input(),
+                input_format=AudioFormat(
+                    content_type=ContentType.PCM_S16LE,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    channels=2,
+                ),
+                output_format=_PCM_FORMAT,
+            )
+        )
+
+    assert err.value.__cause__ is source_error
+
+
+def _limit_error() -> ProviderStreamLimitError:
+    """Build a provider capacity error for a provider with a single stream slot."""
+    provider = Mock(max_concurrent_streams=1, instance_id="spotify--test")
+    provider.name = "Spotify"
+    return ProviderStreamLimitError(provider, 5.0)
+
+
+async def test_ffmpeg_stream_logs_provider_stream_limit_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A provider capacity error from the input generator is not logged as a warning."""
+    limit_error = _limit_error()
+
+    async def busy_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise limit_error
+
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=busy_input(),
+                input_format=AudioFormat(
+                    content_type=ContentType.PCM_S16LE,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    channels=2,
+                ),
+                output_format=_PCM_FORMAT,
+            )
+        )
+
+    # the typed error still surfaces to the caller
+    assert err.value is limit_error
+    feeder_records = [
+        record for record in caplog.records if "stdin feeder task ended" in record.getMessage()
+    ]
+    assert feeder_records
+    assert all(record.levelno == logging.DEBUG for record in feeder_records)
+
+
+async def _busy_input(limit_error: ProviderStreamLimitError) -> AsyncGenerator[bytes]:
+    """Fail with the given capacity error before any audio is produced."""
+    raise limit_error
+    yield b""  # type: ignore[unreachable]  # pragma: no cover
+
+
+async def test_ffmpeg_stream_keeps_provider_stream_limit_through_nested_stages() -> None:
+    """A capacity error that crosses two FFmpeg stages still surfaces as itself."""
+    limit_error = _limit_error()
+    item_stream = get_ffmpeg_stream(
+        audio_input=_busy_input(limit_error),
+        input_format=_PCM_FORMAT,
+        output_format=_PCM_FORMAT,
+        filter_params=["volume=-3dB"],
+    )
+
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=item_stream,
+                input_format=_PCM_FORMAT,
+                output_format=AudioFormat(content_type=ContentType.FLAC),
+            )
+        )
+
+    assert err.value is limit_error
+
+
+async def test_overlay_stream_keeps_provider_stream_limit(overlay_file: Path) -> None:
+    """A capacity error in the main input surfaces as itself from the overlay mixer."""
+    limit_error = _limit_error()
+
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=_busy_input(limit_error),
+                overlay_input=str(overlay_file),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+
+    assert err.value is limit_error
+
+
+async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:
+    """A cancelled input generator ends the FFmpeg stream without an error."""
+
+    async def cancelled_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise asyncio.CancelledError
+
+    chunks = await _collect_chunks(
+        get_ffmpeg_stream(
+            audio_input=cancelled_input(),
+            input_format=AudioFormat(
+                content_type=ContentType.PCM_S16LE,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            ),
+            output_format=_PCM_FORMAT,
+        )
+    )
+
+    assert b"".join(chunks) == b"\x00" * _BYTES_PER_SECOND
+
+
+async def test_cancelled_stdin_feeder_does_not_hang_on_a_full_pipe() -> None:
+    """A cancelled stdin feeder blocked on a full pipe returns instead of waiting on the EOF."""
+
+    async def endless_input() -> AsyncGenerator[bytes]:
+        chunk = b"\x00" * (1024 * 1024)
+        while True:
+            yield chunk
+
+    # nothing reads the output, so ffmpeg stops reading its input once stdout fills up
+    ffmpeg = FFMpeg(
+        audio_input=endless_input(), input_format=_PCM_FORMAT, output_format=_PCM_FORMAT
+    )
+    await ffmpeg.start()
+    try:
+        feeder = ffmpeg._stdin_feeder_task
+        assert feeder is not None
+        await asyncio.sleep(0.5)
+        assert not feeder.done()
+        feeder.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(feeder, timeout=2)
+    finally:
+        await ffmpeg.close()
+
+
+async def test_ffmpeg_stream_ignores_early_stdin_close() -> None:
+    """FFmpeg ending its input early does not report a source failure."""
+    chunks = await _collect_chunks(
+        get_ffmpeg_stream(
+            audio_input=_silence(30),
+            input_format=_PCM_FORMAT,
+            output_format=_PCM_FORMAT,
+            extra_input_args=["-t", "0.1"],
+        )
+    )
+
+    assert chunks
+
+
+async def test_overlay_stream_surfaces_stdin_feeder_error(overlay_file: Path) -> None:
+    """A failure in the main input is surfaced after the mixed output is emitted."""
+
+    async def failing_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise RuntimeError("source failed")
+
+    with pytest.raises(AudioError, match="Error while feeding audio to FFmpeg") as err:
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=failing_input(),
+                overlay_input=str(overlay_file),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+
+    assert isinstance(err.value.__cause__, RuntimeError)
 
 
 def _samples(pcm: bytes, channel: int | None = None) -> Sequence[int]:
@@ -870,6 +1231,42 @@ async def test_abort_survives_send_signal_racing_process_exit() -> None:
     assert ffmpeg.closed
 
 
+# -- _log_reader_task (concat-demuxer demux-error gating) --
+
+
+async def test_log_reader_ignores_demuxing_error_without_concat_demuxer() -> None:
+    """A demux error from a non-concat input (e.g. HTTP reconnect at EOF) is not fatal."""
+    ffmpeg = FFMpeg(audio_input="-", input_format=_PCM_FORMAT, output_format=_PCM_FORMAT)
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        yield "[in#0/mp3 @ 0x600000e58fc0] Error during demuxing: Input/output error"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+
+    assert ffmpeg.concat_error is False
+
+
+async def test_log_reader_sets_concat_error_for_concat_demuxer() -> None:
+    """A demux error while the concat demuxer is in use still marks the stream as failed."""
+    ffmpeg = FFMpeg(
+        audio_input="-",
+        input_format=_PCM_FORMAT,
+        output_format=_PCM_FORMAT,
+        extra_input_args=["-safe", "0", "-f", "concat"],
+    )
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        yield "[concat @ 0x600000e58fc0] Error during demuxing: Input/output error"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+
+    assert ffmpeg.concat_error is True
+
+
 # -- _build_filtergraph_args (DSP chain assembly) --
 
 
@@ -1091,3 +1488,325 @@ def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     assert abs(_rms_db(out) - _rms_db(main)) < 0.5
+
+
+async def test_get_ffmpeg_hls_cmaf_input_args_relax_a_build_that_blocks_cmaf() -> None:
+    """A build whose HLS demuxer rejects CMAF gets the extension check turned off."""
+    await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: True})
+
+    assert get_ffmpeg_hls_cmaf_input_args() == ["-extension_picky", "0"]
+
+
+async def test_get_ffmpeg_hls_cmaf_input_args_leave_a_capable_build_alone() -> None:
+    """A build that accepts CMAF keeps its extension check, which guards hostile playlists."""
+    await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: False})
+
+    assert get_ffmpeg_hls_cmaf_input_args() == []
+
+
+# Trimmed `ffmpeg -h demuxer=hls` output for the three generations of the segment extension
+# check: absent before 7.1.1, present without CMAF in 7.1.1, present with CMAF from 7.1.2 on.
+_HLS_OPTIONS_WITHOUT_CHECK = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav")
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_HLS_OPTIONS_BLOCKING_CMAF = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav")
+  -extension_picky   <boolean>    .D......... Be picky with all extensions matching (default true)
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_HLS_OPTIONS_ALLOWING_CMAF = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav,cmfv,cmfa,ec3,fmp4")
+  -allowed_segment_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav,cmfv,cmfa,ec3,fmp4,html")
+  -extension_picky   <boolean>    .D......... Be picky with all extensions matching (default true)
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_FFMPEG_VERSION_OUTPUT = (
+    b"ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers\n"
+    b"configuration: --enable-libsoxr\n"
+)
+
+
+def _fake_ffmpeg_probes(
+    monkeypatch: pytest.MonkeyPatch, hls_options: bytes, hls_returncode: int = 0
+) -> None:
+    """Answer the version and HLS demuxer probes with canned output."""
+
+    async def _check_output(
+        *args: str, _env: dict[str, str] | None = None, _timeout: float | None = None
+    ) -> tuple[int, bytes]:
+        if "-h" in args:
+            return (hls_returncode, hls_options)
+        return (0, _FFMPEG_VERSION_OUTPUT)
+
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.check_output", _check_output)
+
+
+async def test_check_ffmpeg_version_finds_a_demuxer_that_blocks_cmaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that is picky about extensions but does not know CMAF blocks those segments."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_BLOCKING_CMAF)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is True
+
+
+async def test_check_ffmpeg_version_leaves_a_demuxer_that_whitelists_cmaf_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that lists CMAF among the extensions it accepts needs no relaxation."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_ALLOWING_CMAF)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_leaves_a_demuxer_without_the_check_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that never gained the extension check accepts CMAF as it is."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_WITHOUT_CHECK)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable probe must not relax a check that may well be doing its job."""
+    _fake_ffmpeg_probes(monkeypatch, b"Unknown demuxer 'hls'.\n", hls_returncode=1)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Output that reads as blocking is worthless once the probe itself reported failure."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_BLOCKING_CMAF, hls_returncode=1)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+# -- probe_audio_stream --
+
+
+class _FakeProbeProcess:
+    """Stand-in for the ffprobe AsyncProcess that records how it was run."""
+
+    def __init__(self, output: bytes = b"", exit_code: int = 0, hang: bool = False) -> None:
+        """Initialize the fake with the output and exit code ffprobe should produce."""
+        self.output = output
+        self.exit_code = exit_code
+        self.hang = hang
+        self.args: list[str] = []
+        self.returncode: int | None = None
+        self.killed = False
+
+    def __call__(self, args: list[str], **_kwargs: object) -> _FakeProbeProcess:
+        """Act as the AsyncProcess constructor."""
+        self.args = args
+        return self
+
+    async def start(self) -> None:
+        """Start the fake process."""
+
+    async def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        """Return the configured output, or never finish when hanging."""
+        if self.hang:
+            await asyncio.wait_for(asyncio.Event().wait(), timeout)
+        self.returncode = self.exit_code
+        return self.output, b""
+
+    async def kill(self) -> None:
+        """Record that the process was killed."""
+        self.killed = True
+
+
+def _probe_output(**stream: object) -> bytes:
+    """Return ffprobe json output describing a single stream."""
+    return json.dumps({"programs": [], "streams": [stream]}).encode()
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        (
+            {
+                "codec_name": "flac",
+                "sample_fmt": "s32",
+                "sample_rate": "48000",
+                "channels": 2,
+                "bits_per_raw_sample": "24",
+            },
+            FFMpegStreamInfo(codec=ContentType.FLAC, sample_rate=48000, bit_depth=24, channels=2),
+        ),
+        (
+            {
+                "codec_name": "alac",
+                "sample_fmt": "s16p",
+                "sample_rate": "44100",
+                "channels": 2,
+                "bits_per_raw_sample": "16",
+            },
+            FFMpegStreamInfo(codec=ContentType.ALAC, sample_rate=44100, bit_depth=16, channels=2),
+        ),
+        (
+            {"codec_name": "alac", "sample_fmt": "s16p", "sample_rate": "44100", "channels": 2},
+            FFMpegStreamInfo(codec=ContentType.ALAC, sample_rate=44100, bit_depth=16, channels=2),
+        ),
+        (
+            {"codec_name": "aac", "sample_fmt": "fltp", "sample_rate": "48000", "channels": 1},
+            FFMpegStreamInfo(codec=ContentType.AAC, sample_rate=48000, channels=1),
+        ),
+    ],
+    ids=["flac-24-48", "alac-16-44", "alac-from-sample-fmt", "aac-lossy"],
+)
+def test_parse_ffprobe_stream_info(stream: dict[str, object], expected: FFMpegStreamInfo) -> None:
+    """The raw sample depth wins; the sample format only counts for lossless codecs."""
+    assert _parse_ffprobe_stream_info(_probe_output(**stream)) == expected
+
+
+@pytest.mark.parametrize(
+    "output",
+    [b"", b"not json", b'{"programs": [], "streams": []}', b'{"streams": [{"channels": 2}]}'],
+    ids=["empty", "garbage", "no-audio-stream", "no-codec"],
+)
+def test_parse_ffprobe_stream_info_rejects_unusable_output(output: bytes) -> None:
+    """Output that does not describe an audio stream yields nothing."""
+    assert _parse_ffprobe_stream_info(output) is None
+
+
+async def test_probe_audio_stream_opens_the_input_like_the_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe reads with the decoder's input options plus the source's own args."""
+    proc = _FakeProbeProcess(
+        _probe_output(codec_name="flac", sample_rate="96000", channels=2, bits_per_raw_sample="24")
+    )
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    info = await probe_audio_stream("https://example.com/a.flac", ["-user_agent", "test"])
+
+    assert info == FFMpegStreamInfo(
+        codec=ContentType.FLAC, sample_rate=96000, bit_depth=24, channels=2
+    )
+    assert proc.args[0] == "ffprobe"
+    read_args_start = proc.args.index(_INPUT_READ_ARGS[0])
+    assert proc.args[read_args_start : read_args_start + len(_INPUT_READ_ARGS)] == _INPUT_READ_ARGS
+    assert proc.args.index("-user_agent") < proc.args.index("-i")
+    assert proc.args[-2:] == ["-i", "https://example.com/a.flac"]
+
+
+async def test_probe_audio_stream_returns_nothing_on_a_failed_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source ffprobe can not open yields nothing instead of an error."""
+    monkeypatch.setattr(
+        "music_assistant.helpers.ffmpeg.AsyncProcess", _FakeProbeProcess(exit_code=1)
+    )
+
+    assert await probe_audio_stream("https://example.com/missing.flac") is None
+
+
+async def test_probe_audio_stream_kills_ffprobe_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source that never answers is given up on and its ffprobe killed."""
+    proc = _FakeProbeProcess(hang=True)
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    assert await probe_audio_stream("https://example.com/stalled.flac", timeout=0.01) is None
+    assert proc.killed
+
+
+async def test_probe_audio_stream_kills_ffprobe_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that goes away takes its ffprobe with it."""
+    proc = _FakeProbeProcess(hang=True)
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    task = asyncio.create_task(probe_audio_stream("https://example.com/stalled.flac"))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.killed
+
+
+@pytest.fixture
+def tagged_wav(tmp_path: Path) -> Path:
+    """Return a 24-bit stereo WAV whose data chunk does not start on a whole frame."""
+    source = tmp_path / "tagged.wav"
+    # a title tag shifts the data chunk off a whole 24-bit stereo frame
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=1:sample_rate=48000",
+            "-ac",
+            "2",
+            "-c:a",
+            "pcm_s24le",
+            "-metadata",
+            "title=x",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return source
+
+
+async def test_probed_wav_is_not_decoded_as_raw_pcm(tagged_wav: Path) -> None:
+    """A probed WAV keeps its container auto-detected, so its header never plays as audio."""
+    audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
+
+    stream_info = await probe_audio_stream(str(tagged_wav))
+    assert stream_info is not None
+    apply_stream_info(audio_format, stream_info)
+
+    assert audio_format.content_type == ContentType.UNKNOWN
+    assert audio_format.codec_type == ContentType.PCM_S24LE
+    assert (audio_format.sample_rate, audio_format.bit_depth) == (48000, 24)
+    output_format = AudioFormat(
+        content_type=ContentType.PCM_S24LE, sample_rate=48000, bit_depth=24, channels=2
+    )
+    args = get_ffmpeg_args(audio_format, output_format, [], input_path=str(tagged_wav))
+    input_args = args[: args.index("-i")]
+    assert "-f" not in input_args
+    assert input_args[input_args.index("-acodec") + 1] == "pcm_s24le"
+
+
+def test_apply_stream_info_keeps_a_declared_content_type() -> None:
+    """Detected values land in place, without replacing the container the provider set."""
+    audio_format = AudioFormat(content_type=ContentType.MP4)
+
+    apply_stream_info(
+        audio_format,
+        FFMpegStreamInfo(codec=ContentType.ALAC, sample_rate=48000, bit_depth=24, channels=1),
+    )
+
+    assert audio_format.content_type == ContentType.MP4
+    assert audio_format.codec_type == ContentType.ALAC
+    assert (audio_format.sample_rate, audio_format.bit_depth, audio_format.channels) == (
+        48000,
+        24,
+        1,
+    )

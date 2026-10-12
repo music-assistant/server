@@ -17,12 +17,18 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
-from zeroconf.asyncio import AsyncZeroconf
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
-from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
+from tests.common import (
+    adopt_bound_sendspin_port,
+    suppress_auto_loaded_providers,
+    suppress_initial_library_sync,
+    use_ephemeral_server_ports,
+    wait_for_boot_to_settle,
+)
 
 NUM_DEMO_PLAYERS = 3
 
@@ -93,9 +99,8 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     Boot a hermetic MusicAssistant with only the fake `test` + demo player providers.
 
     No real network discovery happens: mDNS (zeroconf) and SSDP are mocked, the
-    default device providers (dlna/sonos/...) are suppressed and so is local_audio,
-    which would otherwise register the host's sound devices as players. The `test`
-    music provider and three grouped-capable demo players are configured and ready.
+    default device providers (dlna/sonos/...) are suppressed. The `test` music
+    provider and three grouped-capable demo players are configured and ready.
     """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
@@ -117,6 +122,12 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=NonCallableMagicMock(),
         ),
+        # the Sendspin server runs its own zeroconf instance
+        patch("aiosendspin.server.server.AsyncZeroconf", return_value=_create_mock_zeroconf()),
+        patch(
+            "aiosendspin.server.server.AsyncServiceBrowser",
+            return_value=MagicMock(spec=AsyncServiceBrowser),
+        ),
         patch(
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
@@ -126,8 +137,19 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.discovery.controller.async_upnp_search",
             new=AsyncMock(),
         ),
+        # hermetic: MusicBrainz knows none of the fake library items
+        patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_data",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_browse_data",
+            new=AsyncMock(return_value=None),
+        ),
         # hermetic: no auto-loaded device providers and no host-audio bridging
         suppress_auto_loaded_providers(),
+        # no library sync starting on its own inside a running test
+        suppress_initial_library_sync(),
     ):
         try:
             await mass_instance.start()
@@ -137,6 +159,8 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
                 "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
             )
             await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
+            await wait_for_boot_to_settle(mass_instance)
+            adopt_bound_sendspin_port(mass_instance)
             yield mass_instance
         finally:
             # also stop after a failed boot, or the half-started server's open database

@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+from collections.abc import Sequence
 
 import numpy as np
 import pytest
@@ -20,9 +21,14 @@ from music_assistant.controllers.streams.smart_fades.models import (
     TransitionStrategy,
     TransitionTier,
 )
-from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner, assembly
+from music_assistant.controllers.streams.smart_fades.planner import (
+    SmartCrossFadePlanner,
+    assembly,
+    candidates,
+)
 from music_assistant.controllers.streams.smart_fades.planner.assembly import PlanAssembler
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    Candidate,
     CandidateFactory,
     CandidateSpec,
 )
@@ -30,8 +36,19 @@ from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
 )
+from music_assistant.controllers.streams.smart_fades.planner.selection import (
+    CandidateSelector,
+    ScoredCandidate,
+)
+from music_assistant.controllers.streams.smart_fades.vocal import (
+    COLLISION_SECONDS_LIMIT,
+    WEIGHTED_COLLISION_LIMIT,
+)
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
+from tests.controllers.streams.smart_fades.conftest import (
+    _analysis_with_bands,
+    disable_dressed_transitions,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -185,7 +202,9 @@ class TestSmartCrossFadePlanner:
         inc.downbeats = (np.asarray(inc.downbeats, dtype=np.float32) + 33.0).tolist()
         plan = _plan(_analysis(120.0, duration=240.0), inc)
         assert plan.crossfade_duration == pytest.approx(8.0)
-        assert plan.fadein_trim_start == pytest.approx(33.0)
+        # an 8s overlap cannot justify cutting a 33s intro the listener never
+        # hears any part of, so the incoming track plays from its head
+        assert plan.fadein_trim_start is None
 
     def test_valid_entry_too_late_for_the_bars_duration_reduces_the_rungs_too(self) -> None:
         """A found entry point that still overflows the buffer also demotes the candidate."""
@@ -197,7 +216,8 @@ class TestSmartCrossFadePlanner:
         inc.downbeats = [20.0]
         plan = _plan(out, inc)
         assert plan.crossfade_duration == pytest.approx(16.0)
-        assert plan.fadein_trim_start == pytest.approx(20.0)
+        # the 20s cut exceeds the 16s the overlap plays under the outgoing track
+        assert plan.fadein_trim_start is None
 
     def test_entry_fit_uses_the_tempo_compensated_duration(self) -> None:
         """A valid entry is not rejected when tempo compensation makes the overlap fit."""
@@ -434,9 +454,7 @@ def _with_vocal_activity(
 ) -> AudioAnalysisData:
     """Attach a valid vocal_activity list, active only inside ``active_windows``."""
     assert analysis.duration is not None
-    analysis.extra_data = {
-        "vocal_activity": _vocal_probabilities(analysis.duration, active_windows)
-    }
+    analysis.vocal_activity = _vocal_probabilities(analysis.duration, active_windows)
     return analysis
 
 
@@ -444,14 +462,216 @@ class TestRescuePassBeforeEmergencyHandoff:
     """When the rescue pass also fails, the emergency handoff ships as the last resort."""
 
     def test_emergency_handoff_still_ships_when_the_rescue_pass_also_fails(self) -> None:
-        """Wall-to-wall vocal collision on both decks rejects the rescue rung too: handoff ships."""
-        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 40.0)])
+        """
+        A sung outro tail against a sung intro head rejects the rescue rung too: handoff ships.
+
+        Both masks stay structured (well under saturation, so the collision
+        guard does not abstain), yet every rung's overlap collides, and the
+        8s fallback crossfade breaches its severity ceiling (twice the
+        candidate limits) so the click-free handoff remains the last resort.
+        """
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(225.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
 
         plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
 
         assert plan.metrics.strategy is TransitionStrategy.SHORT_VOCAL_HANDOFF
         assert 0.4 <= plan.crossfade_duration <= 1.0
+
+
+class TestFallbackCrossfade:
+    """All candidates rejected but the collision mild: a plain volume crossfade ships."""
+
+    def _mild_pair(self) -> tuple[AudioAnalysisData, AudioAnalysisData]:
+        """
+        Wall-to-wall outgoing vocal against two short incoming phrases.
+
+        The early phrase (~0.93-2.0s) breaches the weighted collision limit at
+        every 1/2/4-bar rung; the late phrase (10-12.1s) breaches the raw limit
+        at the 8-bar rung but sits beyond the 8s fallback window, whose own
+        weighted collision (~0.63) lands between the candidate limit and the
+        fallback's severity ceiling.
+        """
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(1.0, 1.9), (10.0, 12.1)])
+        return out, inc
+
+    def test_the_mild_pair_really_rejects_every_phrased_rung(self) -> None:
+        """Confirm the mild pair's ladder rungs all breach the candidate-level limits."""
+        out, inc = self._mild_pair()
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        factory = CandidateFactory(ctx, LOGGER)
+        for bars in (8, 4, 2, 1):
+            candidate = factory.build(
+                CandidateSpec(tier=ctx.tier, bars=bars, anchor_s=None, entry_s=None)
+            )
+            assert candidate is not None
+            assert (
+                candidate.metrics.collision_seconds >= COLLISION_SECONDS_LIMIT
+                or candidate.metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
+            ), bars
+
+    def test_mild_all_rejected_collision_ships_the_fallback_crossfade(self) -> None:
+        """A mild collision ships the plain 8s equal-power crossfade, not the handoff."""
+        out, inc = self._mild_pair()
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        assert 1.0 < plan.crossfade_duration <= 8.0
+        assert not plan.tempo_plan.steps
+        assert plan.fadein_trim_start is None
+        eq = plan.eq_plan
+        assert eq.low_out is None
+        assert eq.low_in is None
+        assert eq.high_out is None
+        assert eq.high_in is None
+
+    def test_colliding_fallback_ducks_the_outgoing_mid(self) -> None:
+        """Weighted collision at/over the candidate limit engages the -8dB duck on A only."""
+        out, inc = self._mild_pair()
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        assert plan.metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
+        assert plan.eq_plan.mid_out is not None
+        assert plan.eq_plan.mid_out.steps[0] == (0.0, 0.0)
+        assert plan.eq_plan.mid_out.steps[-1][1] == pytest.approx(-8.0)
+        assert plan.eq_plan.mid_in is None
+
+    def test_sub_limit_collision_ships_the_fallback_without_the_duck(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        A fallback whose own window stays under the candidate limit skips the duck.
+
+        The quick-fade pair's 1-bar rungs all collide with B's opening phrase,
+        but that phrase sits so early in the 8s fallback window that its
+        weighted collision stays under the candidate limit: no duck needed.
+        """
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(150.0, duration=240.0), [(0.0, 1.0)])
+        # an 8s filter out rides the same early phrase and would win the rescue pass
+        disable_dressed_transitions(monkeypatch)
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        assert plan.metrics.weighted_collision_seconds < WEIGHTED_COLLISION_LIMIT
+        assert plan.eq_plan.mid_out is None
+        assert plan.eq_plan.mid_in is None
+
+
+class TestPlanSummaryLog:
+    """Every plan logs one DEBUG line naming what shipped and why."""
+
+    def test_blend_names_its_generator_and_bars(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A full blend logs tier, strategy, source, bars, overlap and the tempo gap."""
+        # A minor and C major are relative major/minor: the same Camelot slot
+        line = _summary_line(
+            caplog, _analysis(120.0, key="A", mode="minor"), _analysis(120.0, key="C", mode="major")
+        )
+
+        assert line == (
+            "planned transition: style=blend tier=full_blend strategy=energy_aligned "
+            "source=energy-ladder bars=8 overlap=16.00s bpm=120.0->120.0 (+0.0%) stretch=off"
+        )
+
+    def test_a_ramped_blend_logs_its_stretch(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A blend that ships its tempo ramp logs it."""
+        line = _summary_line(caplog, _analysis(120.0), _analysis(122.0))
+
+        assert line.startswith("planned transition: style=blend ")
+        assert line.endswith(" bpm=120.0->122.0 (+1.7%) stretch=on")
+
+    def test_quick_fade_names_its_trigger_and_signed_tempo_gap(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A tempo-gap quick fade logs the tempo trigger and a negative gap for a slower B."""
+        line = _summary_line(caplog, _analysis(150.0), _analysis(120.0))
+
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=tempo ")
+        assert line.endswith(" bpm=150.0->120.0 (-20.0%)")
+
+    def test_cross_meter_quick_fade_names_the_meter_trigger(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A cross-meter quick fade logs the meter trigger."""
+        inc = _analysis(120.0)
+        inc.beats_per_bar = 3
+
+        line = _summary_line(caplog, _analysis(120.0), inc)
+
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=meter ")
+
+    def test_re_anchored_quick_fade_names_the_beat_grid(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blend context whose shipped candidate re-anchored into a quick fade logs the grid."""
+        out = _analysis(120.0, key="A", mode="minor")
+        inc = _analysis(120.0, key="C", mode="major")
+        assert build_transition_context(out, inc, 45.0, LOGGER).tier is TransitionTier.FULL_BLEND
+        # every candidate's re-anchored tail reads as unblendable
+        monkeypatch.setattr(
+            candidates, "choose_tier", lambda *_args: (False, TransitionTier.QUICK_FADE)
+        )
+
+        line = _summary_line(caplog, out, inc)
+
+        assert line.startswith("planned transition: style=cut tier=quick_fade trigger=beat_grid ")
+
+    def test_rescue_pass_winner_is_marked(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A candidate shipped by the rescue pass is marked as such."""
+        select = CandidateSelector.select
+        calls = itertools.count()
+
+        def reject_main_pass(
+            selector: CandidateSelector, built: Sequence[Candidate], ctx: TransitionContext
+        ) -> ScoredCandidate | None:
+            return None if next(calls) == 0 else select(selector, built, ctx)
+
+        monkeypatch.setattr(CandidateSelector, "select", reject_main_pass)
+
+        line = _summary_line(caplog, _analysis(120.0), _analysis(150.0))
+
+        assert " source=trim-closing-anchor (rescue pass) bars=1 " in line
+
+    def test_fallback_logs_its_source_without_bars(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The plain fallback crossfade logs its own source name and no bar count."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(1.0, 1.9), (10.0, 12.1)])
+
+        line = _summary_line(caplog, out, inc)
+
+        assert " strategy=fallback_crossfade source=fallback-crossfade overlap=" in line
+
+    def test_handoff_logs_its_source_without_bars(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The emergency handoff logs its own source name and no bar count."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(225.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
+
+        line = _summary_line(caplog, out, inc)
+
+        assert " strategy=short_vocal_handoff source=emergency-handoff overlap=" in line
+
+
+def _summary_line(
+    caplog: pytest.LogCaptureFixture, fade_out: AudioAnalysisData, fade_in: AudioAnalysisData
+) -> str:
+    """Plan one pair and return its single DEBUG summary line."""
+    with caplog.at_level(logging.DEBUG, logger=LOGGER.name):
+        _plan(fade_out, fade_in)
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("planned transition: ")
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    return records[0].getMessage()
 
 
 def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, AudioAnalysisData]:

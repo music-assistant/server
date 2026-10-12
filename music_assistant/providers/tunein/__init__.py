@@ -67,6 +67,11 @@ class TuneInProvider(MusicProvider):
     _throttler: Throttler
     _browse_url_map: dict[str, str]
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return ()
@@ -169,43 +174,11 @@ class TuneInProvider(MusicProvider):
 
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
-
-        async def parse_items(
-            items: list[dict[str, Any]], folder: str | None = None
-        ) -> AsyncGenerator[Radio]:
-            for item in items:
-                item_type = item.get("type", "")
-                if "unavailable" in item.get("key", ""):
-                    continue
-                if not item.get("is_available", True):
-                    continue
-                if item_type == "audio":
-                    if "preset_id" not in item:
-                        continue
-                    # each radio station can have multiple streams add each one as different quality
-                    stream_info = await self._get_stream_info(item["preset_id"])
-                    yield self._parse_radio(item, stream_info, folder)
-                elif item_type == "link" and item.get("item") == "url":
-                    # custom url
-                    try:
-                        yield self._parse_radio(item)
-                    except InvalidDataError as err:
-                        # there may be invalid custom urls, ignore those
-                        self.logger.warning(str(err))
-                elif item_type == "link":
-                    # stations are in sublevel (new style)
-                    if sublevel := await self.__get_data(item["URL"], render="json"):
-                        async for subitem in parse_items(sublevel["body"], item["text"]):
-                            yield subitem
-                elif item.get("children"):
-                    # stations are in sublevel (old style ?)
-                    async for subitem in parse_items(item["children"], item["text"]):
-                        yield subitem
-
         data = await self.__get_data("Browse.ashx", c="presets")
-        if data and "body" in data:
-            async for item in parse_items(data["body"]):
-                yield item
+        if data is None or not isinstance(data.get("body"), list):
+            raise InvalidDataError("TuneIn preset response contains no item list")
+        async for item in self._parse_library_radio_items(data["body"]):
+            yield item
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_radio(self, prov_radio_id: str) -> Radio:
@@ -291,7 +264,8 @@ class TuneInProvider(MusicProvider):
         if "--" in item_id:
             # handle this for backwards compatibility
             item_id = item_id.split("--", maxsplit=1)[0]
-        if stream_info := await self._get_stream_info(item_id):
+        # stations move to new stream hosts, so resolve the current url at playback time
+        if stream_info := await self._get_stream_info(item_id, refresh=True):
             # assuming here that the streams are sorted by quality (bitrate)
             # and the first one is the best quality
             preferred_stream = stream_info[0]
@@ -329,6 +303,100 @@ class TuneInProvider(MusicProvider):
                         break
         result.radio = radios
         return result
+
+    async def _parse_library_radio_items(
+        self, items: list[Any], folder: str | None = None
+    ) -> AsyncGenerator[Radio]:
+        """Parse playable radios from a TuneIn preset list."""
+        for item in items:
+            if not isinstance(item, dict):
+                self.report_skipped_sync_item(
+                    MediaType.RADIO,
+                    None,
+                    InvalidDataError("TuneIn preset listing contains a non-object entry"),
+                )
+                continue
+            item_type = item.get("type", "")
+            if "unavailable" in item.get("key", ""):
+                continue
+            if not item.get("is_available", True):
+                continue
+            if item_type == "audio":
+                preset_id = item.get("preset_id")
+                if not isinstance(preset_id, str) or not preset_id:
+                    # not a favourite (audio entries are keyed by preset id), so it can never match a
+                    # library item; skip it like browse does instead of holding back deletions
+                    self.logger.debug("Skipping TuneIn audio entry without preset id: %s", item)
+                    continue
+                item_text = item.get("text")
+                if not isinstance(item_text, str) or not item_text:
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        preset_id,
+                        InvalidDataError("TuneIn audio preset has no name"),
+                    )
+                    continue
+                # each radio station can have multiple streams add each one as different quality
+                stream_info = await self._get_stream_info(preset_id)
+                if not stream_info:
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        preset_id,
+                        InvalidDataError("TuneIn audio preset has no streams"),
+                    )
+                    continue
+                yield self._parse_radio(item, stream_info, folder)
+            elif item_type == "link":
+                item_url = item.get("URL")
+                item_text = item.get("text")
+                if (
+                    not isinstance(item_url, str)
+                    or not item_url
+                    or not isinstance(item_text, str)
+                    or not item_text
+                ):
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        None,
+                        InvalidDataError("TuneIn link preset has no URL or name"),
+                    )
+                    continue
+                if item.get("item") == "url":
+                    # custom url
+                    try:
+                        yield self._parse_radio(item)
+                    except InvalidDataError as err:
+                        # there may be invalid custom urls, ignore those
+                        self.report_skipped_sync_item(MediaType.RADIO, item_url, err)
+                    continue
+                # stations are in sublevel (new style)
+                sublevel = await self.__get_data(item_url, render="json")
+                if sublevel is None or not isinstance(sublevel.get("body"), list):
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        None,
+                        InvalidDataError("TuneIn preset folder contains no item list"),
+                    )
+                    continue
+                async for subitem in self._parse_library_radio_items(sublevel["body"], item_text):
+                    yield subitem
+            elif "children" in item:
+                # stations are in sublevel (old style ?)
+                children = item["children"]
+                item_text = item.get("text")
+                if (
+                    not isinstance(children, list)
+                    or not isinstance(item_text, str)
+                    or not item_text
+                ):
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        None,
+                        InvalidDataError("TuneIn preset folder contains no item list or name"),
+                    )
+                    continue
+                async for subitem in self._parse_library_radio_items(children, item_text):
+                    yield subitem
 
     @staticmethod
     def _browse_path_key(text: str) -> str:
@@ -455,19 +523,22 @@ class TuneInProvider(MusicProvider):
             )
         return radio
 
-    async def _get_stream_info(self, preset_id: str) -> list[dict[str, Any]]:
-        """Get stream info for a radio station."""
+    async def _get_stream_info(
+        self, preset_id: str, *, refresh: bool = False
+    ) -> list[dict[str, Any]]:
+        """Get stream info for a radio station, optionally bypassing the cache."""
         cached_data = await self.mass.cache.get(
             preset_id, provider=self.instance_id, category=CACHE_CATEGORY_STREAMS
         )
-        if cached_data is not None:
-            # We know from cache this is the right type
-            assert isinstance(cached_data, list)
+        # We know from cache this is the right type
+        assert cached_data is None or isinstance(cached_data, list)
+        if cached_data and not refresh:
             return cached_data
 
         data = await self.__get_data("Tune.ashx", id=preset_id)
-        if not data:
-            return []
+        if not data or not data.get("body"):
+            # fall back to the last known streams when TuneIn returns none
+            return cached_data or []
 
         body_data = data["body"]
         assert isinstance(body_data, list)

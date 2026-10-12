@@ -7,7 +7,7 @@ import logging
 from typing import Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, PlayerFeature
+from music_assistant_models.enums import ConfigEntryType
 from requests.exceptions import RequestException
 from soco import SoCo, events_asyncio, zonegroupstate
 from soco import config as soco_config
@@ -106,11 +106,11 @@ class SonosPlayerProvider(PlayerProvider):
                 await self._setup_player(player)
             except RequestException as err:
                 # player is offline
-                self.logger.debug("Failed to add SonosPlayer %s: %s", player, err)
+                self.logger.debug("Failed to add SonosPlayer %s: %s", ip_address, err)
             except Exception as err:
                 self.logger.warning(
                     "Failed to add SonosPlayer %s: %s",
-                    player,
+                    ip_address,
                     err,
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
@@ -195,12 +195,7 @@ class SonosPlayerProvider(PlayerProvider):
         if not is_visible:
             return
         try:
-            sonos_player = SonosPlayer(self, soco)
-            if not fixed_volume:
-                sonos_player._attr_supported_features = {
-                    *sonos_player._attr_supported_features,
-                    PlayerFeature.VOLUME_SET,
-                }
+            sonos_player = SonosPlayer(self, soco, fixed_volume=fixed_volume)
 
             # Register with Music Assistant
             await sonos_player.setup()

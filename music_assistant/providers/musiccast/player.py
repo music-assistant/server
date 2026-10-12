@@ -246,7 +246,7 @@ class MusicCastPlayer(Player):
                 PlayerSoundMode(id=source_id, name=friendly_name, passive=False)
             )
 
-    async def set_dynamic_attributes(self, update_state: bool = True) -> None:
+    async def set_dynamic_attributes(self, update_state: bool = True) -> None:  # noqa: C901, PLR0912
         """Update Player attributes."""
         # ruff: noqa: PLR0915
         self._attr_available = True
@@ -369,7 +369,7 @@ class MusicCastPlayer(Player):
             _server_player = cast(
                 "MusicCastPlayer | None", self.mass.players.get_player(_server_id)
             )
-            _server_update_helper: None | UpnpUpdateHelper = None
+            _server_update_helper: UpnpUpdateHelper | None = None
             if _server_player is not None:
                 _server_update_helper = _server_player.upnp_update_helper
             if (

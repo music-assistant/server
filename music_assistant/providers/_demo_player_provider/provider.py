@@ -146,6 +146,7 @@ class DemoPlayerprovider(PlayerProvider):
             return
         # handle update for existing device
         # (state change is either updated or added)
+        cur_address = get_primary_ip_address_from_zeroconf(info)
         # check if we have an existing player in the player manager
         # note that you can use this point to update the player connection info
         # if that changed (e.g. ip address)
@@ -153,7 +154,6 @@ class DemoPlayerprovider(PlayerProvider):
             # existing player found in the player manager,
             # this is an existing player that has been updated/reconnected
             # or simply a re-announcement on mdns.
-            cur_address = get_primary_ip_address_from_zeroconf(info)
             if cur_address and cur_address != mass_player.device_info.ip_address:
                 self.logger.debug(
                     "Address updated to %s for player %s", cur_address, mass_player.display_name

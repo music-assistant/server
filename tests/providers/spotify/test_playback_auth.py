@@ -9,11 +9,12 @@ and must be sent back through the setup flow.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,12 +23,17 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
 from music_assistant.helpers.oauth import authorization_code_from_url
 from music_assistant.models.setup_flow import SetupFlowError
+from music_assistant.providers.spotify import helpers as spotify_helpers
+from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
 from music_assistant.providers.spotify.constants import (
     CONF_LIBRESPOT_CREDENTIALS,
     CREDENTIALS_FILE,
     PAIRING_DEVICE_NAME,
 )
-from music_assistant.providers.spotify.helpers import _log_pairing_output
+from music_assistant.providers.spotify.helpers import (
+    _log_pairing_output,
+    librespot_credentials_via_pairing,
+)
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 STORED_CREDENTIALS = '{"username": "tester", "auth_type": 1, "auth_data": "blob"}'
@@ -44,7 +50,6 @@ def _make_provider(credentials: str | None, cache_dir: str) -> SpotifyProvider:
     prov.logger = MagicMock()
     prov.available = True
     prov.cache_dir = cache_dir
-    prov._librespot_bin = "/bin/librespot"
     setup_data = {CONF_LIBRESPOT_CREDENTIALS: credentials} if credentials is not None else {}
     mass = MagicMock()
     # get_setup_value reads the live setup_data blob from the store
@@ -56,34 +61,47 @@ def _make_provider(credentials: str | None, cache_dir: str) -> SpotifyProvider:
     return prov
 
 
+def _make_backend(prov: SpotifyProvider, monkeypatch: pytest.MonkeyPatch) -> LibrespotBackend:
+    """Return a LibrespotBackend for the given provider with a stubbed binary lookup."""
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.backends.librespot.get_librespot_binary",
+        AsyncMock(return_value="/bin/librespot"),
+    )
+    return LibrespotBackend(prov)
+
+
 async def test_stored_credential_is_installed_for_librespot(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The stored credential is written to librespot's cache so login5 accepts it."""
     cache_dir = tmp_path / "cache"
     prov = _make_provider(STORED_CREDENTIALS, str(cache_dir))
-    await prov._setup_librespot_auth()
+    await _make_backend(prov, monkeypatch).setup()
     written = json.loads((cache_dir / CREDENTIALS_FILE).read_text(encoding="utf-8"))
     assert written["auth_data"] == "blob"
 
 
-async def test_stale_cached_credential_is_replaced(tmp_path: Path) -> None:
+async def test_stale_cached_credential_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A credential left in the cache from an earlier (now rejected) mint is overwritten."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     credentials_file = cache_dir / CREDENTIALS_FILE
     credentials_file.write_text('{"username": "tester", "auth_data": "stale"}', encoding="utf-8")
     prov = _make_provider(STORED_CREDENTIALS, str(cache_dir))
-    await prov._setup_librespot_auth()
+    await _make_backend(prov, monkeypatch).setup()
     written = json.loads(credentials_file.read_text(encoding="utf-8"))
     assert written["auth_data"] == "blob"
 
 
-async def test_missing_credential_requires_reauth(tmp_path: Path) -> None:
+async def test_missing_credential_requires_reauth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without a stored credential the provider fails with an auth error (AUTH_REQUIRED)."""
     prov = _make_provider(None, str(tmp_path / "cache"))
     with pytest.raises(LoginFailed) as err:
-        await prov._setup_librespot_auth()
+        await _make_backend(prov, monkeypatch).setup()
     # the error code is what actually drives the provider to AUTH_REQUIRED (and so the
     # reconfigure prompt); the translation key is what the user reads
     assert err.value.error_code in _AUTH_ERROR_CODES
@@ -102,15 +120,47 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
         side_effect=[_raising(LoginFailed("nope")), _returning(STORED_CREDENTIALS)]
     )
     monkeypatch.setattr(setup_flow, "librespot_credentials_via_pairing", pairing_mock)
+    monkeypatch.setattr(setup_flow, "get_ip_addresses", AsyncMock(return_value=("192.168.1.50",)))
     session = MagicMock()
+    session.mass.streams.publish_ip = "192.168.1.50"
     session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
     session.progress_until = AsyncMock(side_effect=_run_awaitable)
 
-    assert await setup_flow._authorize_playback(session) == STORED_CREDENTIALS
+    assert await setup_flow._authorize_playback(session, None) == STORED_CREDENTIALS
     # the form was re-shown, carrying the failure reason rather than aborting the flow
     assert session.form.await_count == 2
     assert session.form.await_args_list[1].kwargs["errors"] == {"base": "playback_auth_failed"}
-    pairing_mock.assert_called_with("/bin/librespot", PAIRING_DEVICE_NAME)
+    pairing_mock.assert_called_with("/bin/librespot", PAIRING_DEVICE_NAME, "192.168.1.50")
+
+
+@pytest.mark.parametrize(
+    ("publish_ip", "expected_interface"),
+    [
+        ("192.168.1.50", "192.168.1.50"),
+        ("203.0.113.7", None),
+    ],
+)
+async def test_pairing_interface_is_a_local_address(
+    monkeypatch: pytest.MonkeyPatch, publish_ip: str, expected_interface: str | None
+) -> None:
+    """Pairing is pinned to the publish IP only when it is an address of this host."""
+    from music_assistant.providers.spotify import setup_flow  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        setup_flow, "get_librespot_binary", AsyncMock(return_value="/bin/librespot")
+    )
+    pairing_mock = MagicMock(side_effect=[_returning(STORED_CREDENTIALS)])
+    monkeypatch.setattr(setup_flow, "librespot_credentials_via_pairing", pairing_mock)
+    monkeypatch.setattr(
+        setup_flow, "get_ip_addresses", AsyncMock(return_value=("192.168.1.50", "172.17.0.1"))
+    )
+    session = MagicMock()
+    session.mass.streams.publish_ip = publish_ip
+    session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
+    session.progress_until = AsyncMock(side_effect=_run_awaitable)
+
+    assert await setup_flow._authorize_playback(session, None) == STORED_CREDENTIALS
+    pairing_mock.assert_called_once_with("/bin/librespot", PAIRING_DEVICE_NAME, expected_interface)
 
 
 def test_pairing_device_name_matches_setup_text() -> None:
@@ -123,6 +173,61 @@ def test_pairing_device_name_matches_setup_text() -> None:
     assert PAIRING_DEVICE_NAME in strings["setup_flow"]["playback_pairing"]["title"]
     assert PAIRING_DEVICE_NAME in strings["setup_flow"]["playback_pairing"]["progress_text"]
     assert PAIRING_DEVICE_NAME in strings["errors"]["pairing_not_completed"]
+
+
+class _FakePairingProcess:
+    """AsyncProcess stand-in for the pairing librespot run, recording its argv."""
+
+    def __init__(self, args: list[str], **_kwargs: Any) -> None:
+        self.args = args
+        self._stderr_task: asyncio.Task[None] | None = None
+        recorded_pairing_argv.append(args)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        if self._stderr_task is not None:
+            await self._stderr_task
+
+    def attach_stderr_reader(self, task: asyncio.Task[None]) -> None:
+        self._stderr_task = task
+
+    async def iter_stderr(self) -> AsyncIterator[str]:
+        # nothing to log; the fake daemon pairs immediately
+        return
+        yield  # pragma: no cover
+
+
+recorded_pairing_argv: list[list[str]] = []
+
+
+@pytest.mark.parametrize(
+    ("zeroconf_interface", "expected_flag_present"),
+    [
+        ("192.168.1.169", True),
+        (None, False),
+    ],
+)
+async def test_pairing_advertises_only_the_configured_interface(
+    monkeypatch: pytest.MonkeyPatch, zeroconf_interface: str | None, expected_flag_present: bool
+) -> None:
+    """The pairing daemon is told which interface to advertise its mDNS record on."""
+    recorded_pairing_argv.clear()
+    monkeypatch.setattr(spotify_helpers, "AsyncProcess", _FakePairingProcess)
+    monkeypatch.setattr(
+        spotify_helpers, "_await_credentials_file", AsyncMock(return_value=STORED_CREDENTIALS)
+    )
+
+    result = await librespot_credentials_via_pairing(
+        "/bin/librespot", PAIRING_DEVICE_NAME, zeroconf_interface
+    )
+
+    assert result == STORED_CREDENTIALS
+    argv = recorded_pairing_argv[0]
+    assert ("--zeroconf-interface" in argv) is expected_flag_present
+    if expected_flag_present:
+        assert argv[argv.index("--zeroconf-interface") + 1] == zeroconf_interface
 
 
 async def test_pairing_output_demotes_duplicate_warnings(
@@ -198,3 +303,67 @@ def test_authorization_code_from_url_rejects_unusable(url: str) -> None:
     """A denied, empty or malformed paste is reported instead of silently proceeding."""
     with pytest.raises(SetupFlowError):
         authorization_code_from_url(url)
+
+
+@pytest.mark.parametrize(
+    ("credentials", "account_id", "differs"),
+    [
+        # the same account: the credential is accepted
+        ('{"username": "u1", "auth_data": "blob"}', "u1", False),
+        # a Spotify app logged in as someone else
+        ('{"username": "u2", "auth_data": "blob"}', "u1", True),
+        # a near miss is still another account
+        ('{"username": "u10", "auth_data": "blob"}', "u1", True),
+        # the canonical username Spotify hands librespot is the lowercased account id
+        ('{"username": "u1", "auth_data": "blob"}', "U1", False),
+        # non-ASCII usernames are stored percent-encoded; still the same account
+        ('{"username": "us%C3%A9rnam%C3%A9", "auth_data": "blob"}', "usérnamé", False),
+        # and a percent-encoded name that decodes to someone else is still spotted
+        ('{"username": "s%C3%B6meone_else", "auth_data": "blob"}', "usérnamé", True),
+        # either side unknown, or an unreadable credential: never block the setup
+        ('{"username": "u2", "auth_data": "blob"}', None, False),
+        ('{"auth_data": "blob"}', "u1", False),
+        ('{"username": null, "auth_data": "blob"}', "u1", False),
+        ('{"username": "", "auth_data": "blob"}', "u1", False),
+        ("not json", "u1", False),
+        ("[]", "u1", False),
+    ],
+)
+def test_credential_account_comparison(
+    credentials: str, account_id: str | None, differs: bool
+) -> None:
+    """A playback credential from another Spotify account is spotted, and only that."""
+    from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
+        _credential_account_differs,
+    )
+
+    assert _credential_account_differs(credentials, account_id) is differs
+
+
+async def test_playback_authorized_with_another_account_loops_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pairing with the wrong Spotify account re-shows the step instead of storing it."""
+    from music_assistant.providers.spotify import setup_flow  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        setup_flow, "get_librespot_binary", AsyncMock(return_value="/bin/librespot")
+    )
+    # first attempt pairs the wrong account, second one gets it right
+    pairing_mock = MagicMock(
+        side_effect=[
+            _returning('{"username": "someone_else", "auth_data": "blob"}'),
+            _returning('{"username": "u1", "auth_data": "blob"}'),
+        ]
+    )
+    monkeypatch.setattr(setup_flow, "librespot_credentials_via_pairing", pairing_mock)
+    session = MagicMock()
+    session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
+    session.progress_until = AsyncMock(side_effect=_run_awaitable)
+
+    result = await setup_flow._authorize_playback(session, "u1")
+
+    assert result == '{"username": "u1", "auth_data": "blob"}'
+    # the mismatch re-showed the method step carrying the reason
+    assert session.form.await_count == 2
+    assert session.form.await_args_list[1].kwargs["errors"] == {"base": "playback_account_mismatch"}

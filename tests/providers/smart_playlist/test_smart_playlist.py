@@ -5,12 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import AlbumType, ImageType, ProviderFeature, ProviderType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import (
+    AlbumType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    ProviderSharing,
+    ProviderType,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Genre,
@@ -25,6 +35,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.helpers.track_filter import track_filter
 from music_assistant.models.plugin import AIEngine, PluginProvider
+from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 from music_assistant.providers.smart_playlist import (
     CONF_AI_DESCRIPTIONS,
     CONF_AI_ENGINE,
@@ -38,7 +49,7 @@ from music_assistant.providers.smart_playlist.helpers import (
     SmartPlaylistRules,
     write_json,
 )
-from tests.common import use_real_create_task
+from tests.common import set_music_source_access, use_real_create_task
 
 # ---------------------------------------------------------------------------
 # SmartPlaylistRules unit tests
@@ -357,6 +368,29 @@ async def test_rules_persist_to_disk(tmp_path: Any) -> None:
 
     assert "42" in plugin2._rules_store
     assert plugin2._rules_store["42"] == rules
+
+
+@pytest.mark.asyncio
+async def test_create_smart_playlist_accepts_slash_in_name(tmp_path: Any) -> None:
+    """A smart playlist name may contain a slash."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    mass.music.playlists.add_item_to_library = AsyncMock(return_value=MagicMock())
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+    plugin._save_rules = AsyncMock()  # type: ignore[method-assign]
+    plugin._build_playlist = AsyncMock()  # type: ignore[method-assign]
+    plugin._schedule_ai_description_refresh = MagicMock()  # type: ignore[method-assign]
+    plugin.signal_provider_event = MagicMock()  # type: ignore[method-assign,misc]
+
+    await plugin.create_smart_playlist("AC/DC Mix", {"favorites_only": True})
+
+    assert "AC/DC Mix" in plugin._names_store.values()
 
 
 # ---------------------------------------------------------------------------
@@ -868,13 +902,33 @@ async def test_seed_mode_uses_tracks_from_seeds() -> None:
     cast("Any", plugin)._tracks_from_seeds.assert_awaited_once()
     awaited_args = cast("Any", plugin)._tracks_from_seeds.await_args
     assert awaited_args.args[0] == ["library://artist/5", "library://album/9"]
+    assert awaited_args.kwargs["target_size"] == 10
+    assert awaited_args.kwargs["is_dynamic"] is True
     cast("Any", plugin)._get_library_tracks.assert_not_awaited()
     assert len(result) == 1
 
 
+def _radio_track(item_id: str, duration: int = 200) -> MagicMock:
+    """Build a minimal mock track usable by the real RadioPlaylistProvider generator."""
+    track = MagicMock()
+    track.item_id = item_id
+    track.provider = "test"
+    track.uri = f"test://track/{item_id}"
+    track.name = f"Track {item_id}"
+    track.duration = duration
+    return track
+
+
+def _real_radio_provider(mass: MagicMock) -> RadioPlaylistProvider:
+    """Build a real RadioPlaylistProvider bound to a mocked mass, without full provider setup."""
+    prov = RadioPlaylistProvider.__new__(RadioPlaylistProvider)
+    prov.mass = mass
+    return prov
+
+
 @pytest.mark.asyncio
 async def test_tracks_from_seeds_pools_base_and_similar() -> None:
-    """_tracks_from_seeds gathers each seed's base tracks plus similar tracks, deduped."""
+    """_tracks_from_seeds accumulates a seed's endless-mix batches, deduped, in call order."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -890,16 +944,24 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
     ctrl = MagicMock()
     ctrl.get = AsyncMock(return_value=seed)
     mass.music.get_controller = MagicMock(return_value=ctrl)
-    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=[base])
-    # similar repeats the base track, which must be deduped out of the pool
-    mass.music.tracks.similar_tracks = AsyncMock(return_value=[sim1, sim2, base])
 
-    result = await plugin._tracks_from_seeds(["library://track/10"], target_size=10)
+    radio_prov = MagicMock()
+    radio_prov.get_dynamic_tracks = AsyncMock(return_value=[base, sim1, sim2])
+    mass.get_provider = MagicMock(return_value=radio_prov)
+
+    result = await plugin._tracks_from_seeds(
+        ["library://track/10"], target_size=10, is_dynamic=True
+    )
+
+    first_call = radio_prov.get_dynamic_tracks.await_args_list[0]
+    assert first_call.args[0] == [seed]
+    assert first_call.kwargs["include_base_tracks"] is True
+    assert first_call.kwargs["target_size"] == 10
 
     ids = [track.item_id for track in result]
-    assert "base" in ids
-    assert {"sim1", "sim2"} <= set(ids)
-    assert ids.count("base") == 1
+    assert ids == ["base", "sim1", "sim2"]
+    # the mock returns the same batch every call, so it stops after two batches add nothing new
+    assert radio_prov.get_dynamic_tracks.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -916,23 +978,27 @@ async def test_tracks_from_seeds_samples_evenly_across_seeds() -> None:
     seed_b = _make_mock_track("seed_b", "library://track/seed_b")
     base_a = _make_mock_track("base_a", "library://track/base_a")
     base_b = _make_mock_track("base_b", "library://track/base_b")
-    # Seed A yields far more similar tracks than seed B; the old sequential fill let A alone
-    # reach the pool cap so B never contributed a single track.
-    a_similar = [_make_mock_track(f"a_sim_{i}", f"library://track/a_sim_{i}") for i in range(30)]
-    b_similar = [_make_mock_track("b_sim_0", "library://track/b_sim_0")]
+    # Seed A's endless mix yields far more tracks than seed B's; the round-robin interleave
+    # must still let B contribute before A's pool is exhausted.
+    a_batch = [
+        base_a,
+        *(_make_mock_track(f"a_sim_{i}", f"library://track/a_sim_{i}") for i in range(30)),
+    ]
+    b_batch = [base_b, _make_mock_track("b_sim_0", "library://track/b_sim_0")]
+    batches = {seed_a: a_batch, seed_b: b_batch}
 
     ctrl = MagicMock()
     ctrl.get = AsyncMock(side_effect=[seed_a, seed_b])
     mass.music.get_controller = MagicMock(return_value=ctrl)
-    mass.player_queues.get_tracks_for_playback = AsyncMock(
-        side_effect=lambda seed: {seed_a: [base_a], seed_b: [base_b]}[seed]
+
+    radio_prov = MagicMock()
+    radio_prov.get_dynamic_tracks = AsyncMock(
+        side_effect=lambda seeds, **_kwargs: batches[seeds[0]]
     )
-    mass.music.tracks.similar_tracks = AsyncMock(
-        side_effect=lambda item_id, _provider: {"base_a": a_similar, "base_b": b_similar}[item_id]
-    )
+    mass.get_provider = MagicMock(return_value=radio_prov)
 
     result = await plugin._tracks_from_seeds(
-        ["library://track/seed_a", "library://track/seed_b"], target_size=4
+        ["library://track/seed_a", "library://track/seed_b"], target_size=4, is_dynamic=True
     )
 
     ids = {track.item_id for track in result}
@@ -946,8 +1012,8 @@ async def test_tracks_from_seeds_samples_evenly_across_seeds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tracks_from_seeds_shuffles_seed_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Base tracks are drawn from across the seed, not just its first few (stored-order) items."""
+async def test_tracks_from_seeds_single_batch_meets_dynamic_target() -> None:
+    """A single endless-mix batch already meeting the target stops after one round."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -955,24 +1021,176 @@ async def test_tracks_from_seeds_shuffles_seed_tracks(monkeypatch: pytest.Monkey
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    # a large seed whose tracks resolve in stored order; without shuffling only t0.. would be used
-    seed_tracks = [_make_mock_track(f"t{i}", f"library://track/t{i}") for i in range(20)]
-
+    # a playlist seed is the realistic multi-track case; a track seed resolves to just itself
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
     ctrl = MagicMock()
-    ctrl.get = AsyncMock(return_value=_make_mock_track("seed", "library://track/seed"))
+    ctrl.get = AsyncMock(return_value=seed)
     mass.music.get_controller = MagicMock(return_value=ctrl)
-    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=seed_tracks)
-    mass.music.tracks.similar_tracks = AsyncMock(return_value=[])
-    # deterministic "shuffle": reverse in place, so tail tracks land at the head
-    monkeypatch.setattr(
-        "music_assistant.providers.smart_playlist.random.shuffle", lambda seq: seq.reverse()
+
+    base_tracks = [_radio_track(f"base_{i}") for i in range(40)]
+    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=base_tracks)
+    mass.music.tracks.similar_tracks = AsyncMock(
+        side_effect=lambda item_id, _provider, **_kwargs: [
+            _radio_track(f"{item_id}_sim_{i}") for i in range(25)
+        ]
+    )
+    mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
+
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=25, is_dynamic=True
     )
 
-    result = await plugin._tracks_from_seeds(["library://track/seed"], target_size=2)
+    mass.player_queues.get_tracks_for_playback.assert_awaited_once()
+    base_ids = {track.item_id for track in base_tracks}
+    assert sum(1 for track in result if track.item_id in base_ids) >= 5
+    assert len(result) <= 75
 
-    ids = {track.item_id for track in result}
-    assert "t19" in ids
-    assert "t0" not in ids
+
+@pytest.mark.asyncio
+async def test_tracks_from_seeds_accumulates_batches_for_large_target() -> None:
+    """Static: a single ~55-track batch can't fill a target of 100, so batches accumulate."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # a playlist seed is the realistic multi-track case; a track seed resolves to just itself
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(return_value=seed)
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+
+    base_tracks = [_radio_track(f"base_{i}") for i in range(40)]
+    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=base_tracks)
+    mass.music.tracks.similar_tracks = AsyncMock(
+        side_effect=lambda item_id, _provider, **_kwargs: [
+            _radio_track(f"{item_id}_sim_{i}") for i in range(25)
+        ]
+    )
+    mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
+
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=100, is_dynamic=False
+    )
+
+    assert mass.player_queues.get_tracks_for_playback.await_count > 1
+    assert len(result) >= 100
+
+
+@pytest.mark.asyncio
+async def test_tracks_from_seeds_static_gets_headroom_above_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Static generation accumulates well past target_size, giving post-filters headroom."""
+    # the radio provider re-samples base tracks per batch, and each mocked similar-track lookup
+    # returns fresh mocks, so a base track drawn twice re-adds ids the provider cannot dedupe;
+    # pin the provider's draws so the unique-id count does not depend on entropy
+    monkeypatch.setattr("music_assistant.providers.radio_playlist.random", random.Random(1))  # noqa: S311 - test data
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(return_value=seed)
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+
+    base_tracks = [_radio_track(f"base_{i}") for i in range(40)]
+    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=base_tracks)
+    mass.music.tracks.similar_tracks = AsyncMock(
+        side_effect=lambda item_id, _provider, **_kwargs: [
+            _radio_track(f"{item_id}_sim_{i}") for i in range(25)
+        ]
+    )
+    mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
+
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=100, is_dynamic=False
+    )
+
+    assert len({track.item_id for track in result}) > 200
+
+
+@pytest.mark.asyncio
+async def test_tracks_from_seeds_survives_an_unproductive_radio_batch() -> None:
+    """A batch that redraws only already-seen base tracks must not end accumulation."""
+    # this seed makes an early batch redraw only base tracks it has already used
+    random.seed(141)
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(return_value=seed)
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+
+    base_tracks = [_radio_track(f"base_{i}") for i in range(40)]
+    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=base_tracks)
+    # a base track always yields the same similar tracks, so redraws dedupe like real Tracks do
+    similar_by_base: dict[str, list[MagicMock]] = {}
+
+    def _similar(item_id: str, _provider: str, **_kwargs: Any) -> list[MagicMock]:
+        if item_id not in similar_by_base:
+            similar_by_base[item_id] = [_radio_track(f"{item_id}_sim_{i}") for i in range(25)]
+        return similar_by_base[item_id]
+
+    mass.music.tracks.similar_tracks = AsyncMock(side_effect=_similar)
+    mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
+
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=100, is_dynamic=False
+    )
+
+    # static generation accumulates up to target_size * 3 so post-filters keep headroom
+    assert len({track.item_id for track in result}) == 300
+
+
+@pytest.mark.asyncio
+async def test_tracks_from_seeds_low_yield_batches_keep_accumulating() -> None:
+    """Batches yielding few (but new) tracks keep accumulating until the budget is met."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(return_value=seed)
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+
+    # every batch yields exactly 5 fresh tracks; a round cap sized for ~25-track batches
+    # would stop far short of the 150-track static budget (50 * 3)
+    counter = iter(range(10_000))
+    radio_prov = MagicMock()
+    radio_prov.get_dynamic_tracks = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: [
+            _radio_track(f"track_{next(counter)}") for _ in range(5)
+        ]
+    )
+    mass.get_provider = MagicMock(return_value=radio_prov)
+
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=50, is_dynamic=False
+    )
+
+    assert len(result) == 150
+    assert radio_prov.get_dynamic_tracks.await_count == 30
 
 
 @pytest.mark.asyncio
@@ -1321,11 +1539,63 @@ async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(
 
 
 @pytest.mark.asyncio
-async def test_get_playlist_tracks_dynamic_cache_key_differs_by_provider_filter(
+async def test_get_playlist_tracks_favorites_only_sample_is_keyed_on_the_user(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Different provider filters produce different cache keys for dynamic playlists."""
+    """A favorites-only dynamic sample is the asking user's own, so its cache key names them."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True, favorites_only=True)
+    cached_dynamic_sample_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", cached_dynamic_sample_mock)
+    set_music_source_access(mass, {})
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.get_current_user",
+        lambda: User(user_id="user-a", username="a", role=UserRole.USER),
+    )
+
+    await plugin.get_playlist_tracks("abc", 0)
+
+    cached_dynamic_sample_mock.assert_awaited_once_with("abc", (), favorites_user_id="user-a")
+
+
+async def test_get_playlist_tracks_serves_a_cached_sample_with_the_asking_users_state(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The favorite state whoever filled a cached sample left on its tracks is not served on."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True)
+    cached = Track(item_id="1", provider="library", name="Cached", provider_mappings=set())
+    cached.favorite = True
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", AsyncMock(return_value=[cached]))
+    set_music_source_access(mass, {})
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: None)
+
+    result = await plugin.get_playlist_tracks("abc", 0)
+
+    assert [track.favorite for track in result] == [None]
+
+
+async def test_get_playlist_tracks_dynamic_cache_key_differs_by_music_sources(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Different sets of music sources produce different cache keys for dynamic playlists."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     manifest = MagicMock()
@@ -1340,16 +1610,24 @@ async def test_get_playlist_tracks_dynamic_cache_key_differs_by_provider_filter(
     cached_dynamic_sample_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(plugin, "_cached_dynamic_sample", cached_dynamic_sample_mock)
 
-    # Call once with no user (no provider filter)
+    set_music_source_access(
+        mass,
+        {
+            "spotify_instance_id": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            "tidal_instance_id": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            "qobuz_instance_id": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+
+    # Call once with no user (no restriction)
     monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: None)
     await plugin.get_playlist_tracks("abc")
 
-    # Call again with a user that has a provider filter
-    user_with_filter = MagicMock()
-    user_with_filter.provider_filter = ["spotify_instance_id", "tidal_instance_id"]
+    # Call again with a user that only owns two of the three music sources
+    restricted_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
     monkeypatch.setattr(
         "music_assistant.providers.smart_playlist.get_current_user",
-        lambda: user_with_filter,
+        lambda: restricted_user,
     )
     await plugin.get_playlist_tracks("abc")
 

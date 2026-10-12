@@ -16,7 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -55,6 +55,34 @@ DATA_CHANNEL_CHUNK_OVERHEAD = 128
 # Preferred body chunk size on the dedicated http proxy channel. Raw binary needs no escaping,
 # so this sits close to libdatachannel's 256 KiB cap; the channel's negotiated limit still wins.
 HTTP_PROXY_BODY_CHUNK_SIZE = 192 * 1024
+
+# How long one proxied frame may wait for the client to drain its receive buffer. That wait
+# holds the channel's send lock and a semaphore slot, so a client that stops draining would
+# otherwise park both for the life of the session.
+HTTP_PROXY_SEND_TIMEOUT = 10
+
+# Budget for one proxied fetch, in place of aiohttp's five minute default: the response body
+# is buffered whole and holds a semaphore slot until it has been handed to the client.
+# Both budgets sit inside the 30 seconds a client waits before it abandons a proxied request,
+# so neither works on (or answers) a request nobody is listening for any more.
+HTTP_PROXY_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=20)
+
+# Lowercased request headers a remote peer may not set on the local request: hop-by-hop
+# headers, the target host, and the body length aiohttp derives itself.
+HTTP_PROXY_DROPPED_HEADERS: Final = frozenset(
+    {
+        "host",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",  # codespell:ignore te
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+    }
+)
 
 DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
@@ -563,11 +591,26 @@ class WebRTCGateway:
 
         async with self._http_proxy_semaphore:
             try:
+                # a Connection header may nominate more hop-by-hop headers to drop
+                dropped = HTTP_PROXY_DROPPED_HEADERS | {
+                    token.strip().lower()
+                    for name, value in headers.items()
+                    if name.lower() == "connection"
+                    for token in str(value).split(",")
+                }
+                forwarded_headers = {
+                    name: value for name, value in headers.items() if name.lower() not in dropped
+                }
                 # Use shared HTTP session for this request
                 # this dial never leaves the host: TLS verification would fail on the bind
                 # address, and an unfollowed redirect cannot take the unverified dial off-host
                 async with self.http_session.request(
-                    method, local_http_url, headers=headers, ssl=False, allow_redirects=False
+                    method,
+                    local_http_url,
+                    headers=forwarded_headers,
+                    ssl=False,
+                    allow_redirects=False,
+                    timeout=HTTP_PROXY_FETCH_TIMEOUT,
                 ) as response:
                     body = await response.read()
                     await self._send_http_proxy_response(
@@ -578,14 +621,24 @@ class WebRTCGateway:
                         body,
                         send_lock,
                     )
-            except Exception as err:
+            except TimeoutError:
+                self.logger.warning("Timeout proxying %s %s", method, local_http_url)
+                await self._send_http_proxy_response(
+                    channel,
+                    request_id,
+                    504,
+                    {"Content-Type": "text/plain"},
+                    b"Gateway Timeout",
+                    send_lock,
+                )
+            except Exception:
                 self.logger.exception("Error handling HTTP proxy request")
                 await self._send_http_proxy_response(
                     channel,
                     request_id,
                     500,
                     {"Content-Type": "text/plain"},
-                    str(err).encode(),
+                    b"Internal server error",
                     send_lock,
                 )
 
@@ -605,45 +658,65 @@ class WebRTCGateway:
             JSON header followed by the body as raw binary frames. Without it the response goes
             out hex-encoded inside one JSON message, as clients on the API channel expect.
         """
-        if send_lock is None:
-            await self._send_chunked(
-                channel,
-                json.dumps(
-                    {
-                        "type": "http-proxy-response",
-                        "id": request_id,
-                        "status": status,
-                        "headers": headers,
-                        "body": body.hex(),
-                    }
-                ),
-            )
-            return
-
-        header = json.dumps(
-            {
-                "type": "http-proxy-response",
-                "id": request_id,
-                "status": status,
-                "headers": headers,
-                "size": len(body),
-            }
-        )
-        # The body frames carry no request id, so an interleaved response would be
-        # indistinguishable from this one's body: hold the channel for header plus body.
-        # Responses therefore queue whole rather than frame by frame, which costs nothing on
-        # a channel that already sends one message at a time.
-        async with send_lock:
-            await self._send_on_channel(channel, header)
-            if channel is None or not channel.is_open:
+        try:
+            if send_lock is None:
+                await self._send_chunked(
+                    channel,
+                    json.dumps(
+                        {
+                            "type": "http-proxy-response",
+                            "id": request_id,
+                            "status": status,
+                            "headers": headers,
+                            "body": body.hex(),
+                        }
+                    ),
+                    timeout=HTTP_PROXY_SEND_TIMEOUT,
+                )
                 return
-            # a peer that advertises no limit in its SDP is assumed to accept only 64 KiB
-            chunk_size = min(HTTP_PROXY_BODY_CHUNK_SIZE, channel.max_message_size)
-            for offset in range(0, len(body), chunk_size):
-                await self._send_on_channel(channel, body[offset : offset + chunk_size])
 
-    async def _send_chunked(self, channel: DataChannel | None, text: str) -> None:
-        """Send a text message on a data channel, chunking it if it exceeds the size limit."""
+            header = json.dumps(
+                {
+                    "type": "http-proxy-response",
+                    "id": request_id,
+                    "status": status,
+                    "headers": headers,
+                    "size": len(body),
+                }
+            )
+            # The body frames carry no request id, so an interleaved response would be
+            # indistinguishable from this one's body: hold the channel for header plus body.
+            # Responses therefore queue whole rather than frame by frame, which costs nothing on
+            # a channel that already sends one message at a time.
+            async with send_lock:
+                await self._send_on_channel(channel, header, timeout=HTTP_PROXY_SEND_TIMEOUT)
+                if channel is None or not channel.is_open:
+                    return
+                # a peer that advertises no limit in its SDP is assumed to accept only 64 KiB
+                chunk_size = min(HTTP_PROXY_BODY_CHUNK_SIZE, channel.max_message_size)
+                for offset in range(0, len(body), chunk_size):
+                    await self._send_on_channel(
+                        channel,
+                        body[offset : offset + chunk_size],
+                        timeout=HTTP_PROXY_SEND_TIMEOUT,
+                    )
+        except TimeoutError:
+            # abandon this response rather than keep the send lock (and the semaphore slot the
+            # caller holds) on a client that is no longer taking what it asked for
+            self.logger.warning(
+                "Timeout sending proxy response %s: client is not draining the channel",
+                request_id,
+            )
+
+    async def _send_chunked(
+        self, channel: DataChannel | None, text: str, timeout: float | None = None
+    ) -> None:
+        """
+        Send a text message on a data channel, chunking it if it exceeds the size limit.
+
+        :param timeout: Seconds a single frame may wait for the client to drain, raising
+            TimeoutError once it elapses. Waits indefinitely when omitted.
+        """
         # reading the limit off a closed channel raises, and it has nothing left to receive
         if channel is None or channel.is_closed:
             return
@@ -651,7 +724,7 @@ class WebRTCGateway:
         limit = channel.max_message_size
         data = text.encode()
         if len(data) <= min(DATA_CHANNEL_CHUNK_SIZE, limit):
-            await self._send_on_channel(channel, text)
+            await self._send_on_channel(channel, text, timeout=timeout)
             return
 
         # Oversized messages are split into base64 frames the client reassembles by group id
@@ -680,6 +753,7 @@ class WebRTCGateway:
                         "b64": base64.b64encode(piece).decode(),
                     }
                 ),
+                timeout=timeout,
             )
 
     async def _close_session(self, session_id: str) -> None:
@@ -998,12 +1072,22 @@ class WebRTCGateway:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def _send_on_channel(self, channel: DataChannel | None, data: str | bytes) -> None:
-        """Send data on a data channel if it is currently open."""
+    async def _send_on_channel(
+        self, channel: DataChannel | None, data: str | bytes, timeout: float | None = None
+    ) -> None:
+        """
+        Send data on a data channel if it is currently open.
+
+        :param timeout: Seconds to wait for the client to drain enough of its receive buffer
+            to take this message, raising TimeoutError once it elapses. A send only suspends
+            before it hands over any bytes, so a timed-out message is never half-delivered.
+            Waits indefinitely when omitted.
+        """
         if channel is None or not channel.is_open:
             return
         try:
-            await channel.send(data)
+            async with asyncio.timeout(timeout):
+                await channel.send(data)
         except ConnectionClosedError:
             pass
         except RTCError as err:

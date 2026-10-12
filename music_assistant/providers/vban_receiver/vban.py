@@ -22,7 +22,7 @@ class VBANListenerProtocolMod(VBANListenerProtocol):  # type: ignore[misc]
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Handle received datagram."""
         # No need to process the datagram if no queue is currently streaming us
-        if self.controller and not self.controller._in_use_by_queue:
+        if self.controller and not self.controller._in_use_by_player:
             return
         super().datagram_received(data, addr)
 
@@ -33,7 +33,7 @@ class AsyncVBANClientMod(AsyncVBANClient):  # type: ignore[misc]
 
     async def listen(
         self,
-        address: str = "0.0.0.0",
+        address: str = "0.0.0.0",  # noqa: S104 - user-configurable bind address
         port: int = 6980,
         loop: asyncio.AbstractEventLoop | None = None,
         controller: VBANReceiverProvider | None = None,

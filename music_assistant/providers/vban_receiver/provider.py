@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
-from music_assistant_models.errors import AudioError, MediaNotFoundError, SetupFailedError
+from music_assistant_models.errors import MediaNotFoundError, SetupFailedError
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -66,7 +66,7 @@ class VBANReceiverProvider(PluginProvider):
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         # Setup values fall back to legacy option values for existing instances.
         self._bind_port: int = cast("int", self.get_setup_value(CONF_BIND_PORT) or DEFAULT_UDP_PORT)
-        self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")
+        self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")  # noqa: S104 - user-configurable bind address
         self._sender_host: str = cast("str", self.get_setup_value(CONF_SENDER_HOST) or "127.0.0.1")
         self._vban_stream_name: str = cast(
             "str", self.get_setup_value(CONF_VBAN_STREAM_NAME) or "Network AUX"
@@ -98,7 +98,7 @@ class VBANReceiverProvider(PluginProvider):
         self._udp_socket_fut: asyncio.Future[Any] | None = None
         self._stats_reporter: VBANStatsReporter | None = None
         self._active_stream_id: str = ""
-        self._in_use_by_queue: str | None = None
+        self._in_use_by_player: str | None = None
         # _active_session_id is the controller-provided token for the current
         # stream request — used to reject stale on_source_unselected callbacks
         # after a same-queue reconnect supersedes the previous request.
@@ -128,8 +128,6 @@ class VBANReceiverProvider(PluginProvider):
             can_next_previous=False,
             exclusive=True,
             allow_external_trigger=False,
-            # MA opens the UDP listener on demand; get_audio_stream raises if
-            # the configured sender never sends
             can_initiate=True,
         )
 
@@ -201,9 +199,9 @@ class VBANReceiverProvider(PluginProvider):
 
         self._cancel_stats_reporter()
 
-        if self._in_use_by_queue:
+        if self._in_use_by_player:
             # Allow the running stream to stop cleanly
-            self._in_use_by_queue = None
+            self._in_use_by_player = None
             await asyncio.sleep(1)
 
         if self._vban_receiver:
@@ -256,9 +254,9 @@ class VBANReceiverProvider(PluginProvider):
         assert self._udp_socket_fut  # for type checking
         _stream_id = str(uuid4())
         self._active_stream_id = _stream_id
-        consumer_queue = self._in_use_by_queue
+        consumer_queue = self._in_use_by_player
         # Snapshot the active session id so a same-queue reconnect (which
-        # refreshes _active_session_id but not _in_use_by_queue) supersedes
+        # refreshes _active_session_id but not _in_use_by_player) supersedes
         # this stream: the loop exits and the finally release skips so it
         # doesn't clobber the new session's claim.
         captured_session_id = self._active_session_id
@@ -280,7 +278,7 @@ class VBANReceiverProvider(PluginProvider):
 
         try:
             while True:
-                if self._in_use_by_queue != consumer_queue:
+                if self._in_use_by_player != consumer_queue:
                     self.logger.debug(
                         "Stopping VBAN PCM audio stream receiver: %s - Reason: plugin is no "
                         "longer in use by queue %s",
@@ -328,15 +326,6 @@ class VBANReceiverProvider(PluginProvider):
                         )
                     yield packet.body.data
                 except TimeoutError:
-                    # cold-start: fail fast if the configured sender never sends
-                    if not _stream_acquired:
-                        raise AudioError(
-                            f"VBAN sender {self._sender_host!r} did not send any packets "
-                            f"on stream {self._vban_stream_name!r}",
-                            translation_key="no_packets",
-                            translation_owner=self.translation_owner,
-                            translation_args=[self._sender_host, self._vban_stream_name],
-                        ) from None
                     continue
                 except asyncio.QueueShutDown:
                     self.logger.error(
@@ -351,14 +340,14 @@ class VBANReceiverProvider(PluginProvider):
             # teardown after a same-queue reconnect doesn't clear the new
             # session's claim.
             if (
-                self._in_use_by_queue == consumer_queue
+                self._in_use_by_player == consumer_queue
                 and self._active_session_id == captured_session_id
             ):
-                self._in_use_by_queue = None
+                self._in_use_by_player = None
             self.logger.debug("Stopped VBAN PCM audio stream receiver: %s", _stream_details)
 
     async def on_source_selected(
-        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Claim the source for this queue and let any prior stream wind down."""
         if source_id != AUDIO_SOURCE_ID:
@@ -371,28 +360,28 @@ class VBANReceiverProvider(PluginProvider):
         # passive UDP receiver with no concept of an "active player" — the
         # previous queue's get_audio_stream loop notices the queue change on
         # its 1s timeout and exits cleanly on its own.
-        self._in_use_by_queue = queue_id
+        self._in_use_by_player = owner_player_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
         self._active_session_id = stream_session_id
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
         # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
+        # session. A owner_player_id check alone is not sufficient — same-queue
         # reconnects (player drops + reopens the same stream URL before the
         # original request's finally fires) would otherwise let the old
         # request's late callback clear the live claim of the new stream.
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_queue == queue_id:
-            self._in_use_by_queue = None
+        if self._in_use_by_player == owner_player_id:
+            self._in_use_by_player = None
 
     def _cancel_stats_reporter(self, instance_id: str | None = None) -> None:
         """Cancel a running stats reporter."""

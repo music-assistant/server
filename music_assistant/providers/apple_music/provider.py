@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -19,6 +20,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.external_ids import normalize_external_id
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
@@ -31,6 +33,7 @@ from .constants import (
     SUPPORTED_FEATURES,
 )
 from .helpers import browse_playlists
+from .helpers.utils import is_apple_id
 from .library import AppleMusicLibraryManager
 from .media import AppleMusicMediaManager
 from .recommendations import AppleMusicRecommendationManager
@@ -40,7 +43,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.enums import MediaType
+    from music_assistant_models.enums import ExternalID, MediaType
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -67,6 +70,11 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self.media_manager = AppleMusicMediaManager(self)
         self.recommendation_manager = AppleMusicRecommendationManager(self)
         self.streaming_manager = AppleMusicStreamingManager(self)
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Apple Music accounts allow a single active playback session."""
+        return 1
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -147,50 +155,92 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        _require_apple_id(prov_artist_id)
         return await self.media_manager.get_artist(prov_artist_id)
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
+        _require_apple_id(prov_album_id)
         return await self.media_manager.get_album(prov_album_id)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
+        _require_apple_id(prov_track_id)
         return await self.media_manager.get_track(prov_track_id)
 
-    async def get_playlist(self, prov_playlist_id: str, is_favourite: bool = False) -> Playlist:
+    async def get_playlist(
+        self, prov_playlist_id: str, is_favourite: bool | None = None
+    ) -> Playlist:
         """Get full playlist details by id."""
+        _require_apple_id(prov_playlist_id)
         if prov_playlist_id.startswith("ra."):
             return await self.recommendation_manager.get_station_playlist(prov_playlist_id)
         return await self.media_manager.get_playlist(prov_playlist_id, is_favourite)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
+        if not is_apple_id(prov_album_id):
+            return []
         return await self.media_manager.get_album_tracks(prov_album_id)
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve an artwork token to a freshly signed artwork URL."""
         media_type, _, item_id = path.partition("/")
+        if not is_apple_id(item_id):
+            return ""
         return await self.media_manager.get_artwork_url(media_type, item_id) or ""
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
+        if not is_apple_id(prov_playlist_id):
+            return []
         return await self.media_manager.get_playlist_tracks(prov_playlist_id, page)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
+        if not is_apple_id(prov_artist_id):
+            return []
         return await self.media_manager.get_artist_albums(prov_artist_id)
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
+        if not is_apple_id(prov_artist_id):
+            return []
         return await self.media_manager.get_artist_toptracks(prov_artist_id)
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
+        if not is_apple_id(prov_track_id):
+            return []
         return await self.recommendation_manager.get_similar_tracks(prov_track_id, limit)
 
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Retrieve a list of artists similar to the provided artist."""
+        if not is_apple_id(prov_artist_id):
+            return []
         return await self.recommendation_manager.get_similar_artists(prov_artist_id, limit)
+
+    # ------------------------------------------------------------------
+    # External ID lookups
+    # ------------------------------------------------------------------
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC)."""
+        normalized_external_id = normalize_external_id(external_id_type, external_id)
+        return await self.media_manager.get_track_by_external_id(
+            normalized_external_id, external_id_type
+        )
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve album by external ID (UPC/Barcode)."""
+        normalized_external_id = normalize_external_id(external_id_type, external_id)
+        return await self.media_manager.get_album_by_external_id(
+            normalized_external_id, external_id_type
+        )
 
     # ------------------------------------------------------------------
     # Library generators
@@ -240,7 +290,9 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Remove track(s) from playlist."""
         await self.library_manager.remove_playlist_tracks(prov_playlist_id, positions_to_remove)
 
-    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
         """Set the favorite status of an item."""
         await self.library_manager.set_favorite(prov_item_id, media_type, favorite)
 
@@ -255,3 +307,13 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders with items)."""
         return await self.recommendation_manager.get_personal_recommendations()
+
+
+def _require_apple_id(item_id: str) -> None:
+    """
+    Raise MediaNotFoundError for an id that cannot exist on Apple Music, without a request.
+
+    :param item_id: The provider item id to check.
+    """
+    if not is_apple_id(item_id):
+        raise MediaNotFoundError(f"{item_id} is not an Apple Music id")

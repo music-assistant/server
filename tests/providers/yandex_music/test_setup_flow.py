@@ -7,6 +7,7 @@ import base64
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from types import TracebackType
 from typing import Any
 from unittest import mock
 from urllib.parse import unquote
@@ -87,7 +88,35 @@ class _HangingClient(_FakeClient):
         raise AssertionError("unreachable")
 
 
-def _async_cm(client: _FakeClient) -> mock.MagicMock:
+class _ControlledTimeout:
+    """Timeout context that expires when explicitly triggered by the test."""
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task[Any] | None = None
+
+    async def __aenter__(self) -> None:
+        self._task = asyncio.current_task()
+        assert self._task is not None
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> bool:
+        if exc_type is not asyncio.CancelledError:
+            return False
+        assert self._task is not None
+        self._task.uncancel()
+        raise TimeoutError
+
+    def expire(self) -> None:
+        """Expire the context at the next suspension point."""
+        assert self._task is not None
+        self._task.cancel()
+
+
+def _async_cm(client: Any) -> mock.MagicMock:
     """Wrap a fake client as the async context manager PassportClient.create returns."""
     ctx = mock.MagicMock()
     ctx.__aenter__ = mock.AsyncMock(return_value=client)
@@ -131,18 +160,29 @@ async def _assert_login_has_hard_timeout(
     creds = Credentials(x_token=SecretStr("XT"), music_token=SecretStr("MT"))
     client = _HangingClient(creds)
     session = mock.Mock(spec=SetupSession)
+    loop = mock.Mock()
+    loop.time.side_effect = [100.0, 100.0]
+    timeout = _ControlledTimeout()
+    provider_asyncio = mock.Mock(wraps=asyncio)
+    provider_asyncio.get_running_loop.return_value = loop
+    provider_asyncio.timeout_at.return_value = timeout
 
     async def progress_until(awaitable: Awaitable[Credentials], **_kwargs: Any) -> Credentials:
+        timeout.expire()
         return await awaitable
 
     session.progress_until = mock.AsyncMock(side_effect=progress_until)
     with (
-        mock.patch.object(ym_flow, "_AUTH_FLOW_TIMEOUT_SECONDS", 0.01),
+        mock.patch.object(ym_flow, "_AUTH_FLOW_TIMEOUT_SECONDS", 10),
         mock.patch.object(ym_flow, "PassportClient") as passport_client,
+        mock.patch.object(ym_flow, "asyncio", provider_asyncio),
     ):
         passport_client.create.return_value = _async_cm(client)
         with pytest.raises(StepExpiredError):
-            await asyncio.wait_for(login(session), timeout=0.2)
+            await login(session)
+
+    provider_asyncio.timeout_at.assert_called_once_with(110)
+    assert client.qr_starts + client.device_starts == 1
 
 
 def test_qr_image_has_opaque_white_quiet_zone() -> None:
@@ -170,6 +210,11 @@ async def test_device_countdown_respects_hard_timeout() -> None:
     client = _FakeClient(creds)
     session = mock.Mock(spec=SetupSession)
     shown_expiry: float | None = None
+    loop = mock.Mock()
+    loop.time.side_effect = [100.0, 100.0]
+    provider_asyncio = mock.Mock(wraps=asyncio)
+    provider_asyncio.get_running_loop.return_value = loop
+    provider_asyncio.timeout_at.return_value = _async_cm(None)
 
     async def progress_until(
         awaitable: Awaitable[Credentials], *, expires_in: float, **_kwargs: Any
@@ -182,12 +227,12 @@ async def test_device_countdown_respects_hard_timeout() -> None:
     with (
         mock.patch.object(ym_flow, "_AUTH_FLOW_TIMEOUT_SECONDS", 10),
         mock.patch.object(ym_flow, "PassportClient") as passport_client,
+        mock.patch.object(ym_flow, "asyncio", provider_asyncio),
     ):
         passport_client.create.return_value = _async_cm(client)
         await ym_flow._device_login(session)
 
-    assert shown_expiry is not None
-    assert 0 < shown_expiry <= 10
+    assert shown_expiry == 10
 
 
 def test_device_image_makes_verification_address_prominent() -> None:

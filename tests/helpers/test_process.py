@@ -4,16 +4,39 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
+import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers import process as process_module
+from music_assistant.helpers.process import (
+    AsyncProcess,
+    check_output,
+    collect_child_process_counts,
+    get_subprocess_env,
+    parse_child_process_name,
+)
 
 # Comfortably beyond the OS pipe capacity plus asyncio's default high-water mark,
 # so the bytes are guaranteed to still be queued in our own write buffer.
 _MORE_THAN_THE_PIPE_HOLDS = b"\x00" * (4 * 1024 * 1024)
+
+# Ignores SIGINT and keeps stdout open, so nothing but SIGKILL ends it and its
+# pipe never reaches EOF. The marker tells the test the handler is installed.
+_WEDGED_CHILD = (
+    "import signal, sys, time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+    "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)"
+)
+
+# Writes more than a pipe buffer holds and never exits, so its output is still
+# undelivered when the process is killed.
+_NOISY_CHILD = (
+    "import sys, time; sys.stdout.write('x' * 300000); sys.stdout.flush(); time.sleep(30)"
+)
 
 
 @pytest.fixture(name="piped_process")
@@ -148,3 +171,282 @@ async def test_stdin_quiesced_is_a_noop_without_a_process() -> None:
 
     async with proc.stdin_quiesced() as quiesced:
         assert quiesced is True
+
+
+@pytest.mark.asyncio
+async def test_iter_stdout_drains_lines_buffered_after_exit() -> None:
+    """
+    Output written just before the process exits is still delivered.
+
+    A short-lived process can write everything and be reaped before the reader
+    runs, so keying the stdout reader off the returncode would drop exactly the
+    output that explains why it exited.
+    """
+    proc = AsyncProcess(
+        ["sh", "-c", "for i in $(seq 1 50); do echo line$i; done"],
+        stdout=True,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    await proc.start()
+    await proc.wait()
+
+    lines = [line async for line in proc.iter_stdout()]
+
+    assert lines == [f"line{index}" for index in range(1, 51)]
+    await proc.close()
+
+
+@pytest.mark.asyncio
+async def test_write_eof_marks_stdin_closed_while_the_process_lives() -> None:
+    """
+    A process that was sent EOF keeps running but can no longer be fed.
+
+    Writing EOF closes the pipe for good, so a caller that hands the write end to
+    someone else (or means to keep feeding it) has to be able to tell.
+    """
+    proc = AsyncProcess(["cat"], stdin=True, stdout=True)
+    await proc.start()
+    await proc.write(b"hello\n")
+
+    await proc.write_eof()
+
+    assert proc.stdin_closed
+    assert not proc.closed
+    assert proc.returncode is None
+    # neither a further write nor a second EOF may reach the closed pipe
+    await proc.write(b"more\n")
+    await proc.write_eof()
+    assert await proc.read_stdout() == b"hello\n"
+    await proc.close()
+
+
+@pytest.mark.asyncio
+async def test_read_stdout_stops_once_the_process_is_closed() -> None:
+    """A closed process reports EOF instead of waiting on a stream it no longer owns."""
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
+    await proc.start()
+    await proc.close()
+
+    assert await proc.read_stdout() == b""
+
+
+@pytest.mark.asyncio
+async def test_second_close_returns_without_waiting_out_the_stream_locks() -> None:
+    """
+    Closing an already-closed process is cheap.
+
+    close() keeps the stdin/stdout locks it takes, so a second call used to sit
+    through both 5s acquire timeouts - a delay paid on every supervised restart
+    that closes the process before its own cleanup runs.
+    """
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
+    await proc.start()
+    await proc.close()
+
+    started = time.monotonic()
+    await proc.close()
+
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_kill_retrieves_the_exception_of_a_finished_stdin_feeder(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A stdin feeder that already failed is awaited and its failure logged.
+
+    Awaiting only a still-pending task leaves the exception of one that already
+    ended unretrieved, which asyncio reports as unhandled when it is collected;
+    retrieving it without logging would drop the only trace of the failure.
+    """
+
+    async def _failing_feeder() -> None:
+        raise RuntimeError("feeder blew up")
+
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
+    await proc.start()
+    feeder = asyncio.create_task(_failing_feeder())
+    await asyncio.wait([feeder])  # let it fail without retrieving the exception
+    proc._stdin_feeder_task = feeder
+
+    await proc.kill()
+
+    # asyncio clears this flag once the exception has been retrieved; while it is
+    # set the task is the one that triggers "Task exception was never retrieved"
+    assert feeder._log_traceback is False
+    assert "feeder blew up" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_kill_returns_promptly_with_output_left_in_the_pipes() -> None:
+    """
+    Killing a process whose pipes still hold output returns without delay.
+
+    The reap only completes once every pipe has disconnected, and nothing reads
+    them after a kill, so the pipes have to be drained for it to finish.
+    """
+    proc = AsyncProcess([sys.executable, "-c", _NOISY_CHILD], stdout=True, stderr=True)
+    await proc.start()
+    await asyncio.sleep(0.5)
+
+    started = time.monotonic()
+    await proc.kill()
+
+    assert proc.returncode is not None
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_that_never_closes_its_pipes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A child holding its pipes open must not keep close() from reaping it.
+
+    Draining stdout is what lets a healthy process flush before it is reaped, so
+    an unbounded drain waits out a wedged child forever and the terminate/SIGKILL
+    escalation is never reached.
+    """
+    monkeypatch.setattr(process_module, "PIPE_DRAIN_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+
+    async with asyncio.timeout(20):
+        await proc.close()
+
+    assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_when_cancelled_mid_drain() -> None:
+    """
+    Cancellation landing while a pipe is draining must not leave the child running.
+
+    Walking away there skips the terminate/SIGKILL escalation, and nothing else
+    ever comes back for the process.
+    """
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+
+    # well inside PIPE_DRAIN_TIMEOUT, so the cancellation lands on the stdout drain
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.5):
+            await proc.close()
+
+    assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_when_cancelled_while_waiting_for_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Cancellation landing while waiting for the process to exit must still reap it.
+
+    That wait is where close() spends most of its time, so it is the likeliest place
+    for a cancellation to land, and giving up there skips the SIGKILL escalation.
+    """
+    # short enough that the drain is over well before the cancellation below
+    monkeypatch.setattr(process_module, "PIPE_DRAIN_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.5):
+            await proc.close()
+
+    assert proc.returncode is not None
+
+
+def test_parse_child_process_name() -> None:
+    """Test that a /proc stat line yields the process name only for a matching parent."""
+    # comm may contain spaces and parentheses; ppid is the field after the state field
+    stat = "4321 (ffmpeg (edit)) S 100 4321 4321 0 -1 4194304\n"
+    assert parse_child_process_name(stat, parent_pid=100) == "ffmpeg (edit)"
+    assert parse_child_process_name(stat, parent_pid=999) is None
+    assert parse_child_process_name("garbage without fields", parent_pid=100) is None
+
+
+def test_collect_child_process_counts(tmp_path: Path) -> None:
+    """Test that children of the given pid are counted by name from a fake /proc."""
+
+    def _write(pid: int, comm: str, ppid: int, state: str = "S") -> None:
+        proc_dir = tmp_path / str(pid)
+        proc_dir.mkdir()
+        (proc_dir / "stat").write_text(f"{pid} ({comm}) {state} {ppid} {pid} {pid} 0 -1\n")
+
+    _write(11, "ffmpeg", ppid=100)
+    _write(12, "ffmpeg", ppid=100)
+    _write(13, "librespot", ppid=100)
+    _write(14, "ffmpeg", ppid=999)  # child of another process, not counted
+    _write(15, "ffmpeg", ppid=100, state="Z")  # a defunct child is the leak signal, still counted
+    (tmp_path / "self").mkdir()  # non-numeric entries are skipped
+    (tmp_path / "42").mkdir()  # a process that exits mid-walk leaves no stat file
+    assert collect_child_process_counts(tmp_path, parent_pid=100) == {"ffmpeg": 3, "librespot": 1}
+    # no children of this pid
+    assert collect_child_process_counts(tmp_path, parent_pid=555) == {}
+    # /proc absent, for example on non-Linux platforms
+    assert collect_child_process_counts(tmp_path / "nowhere", parent_pid=100) is None
+
+
+def test_collect_child_process_counts_tolerates_non_utf8_comm(tmp_path: Path) -> None:
+    """Test that a child whose name holds non-UTF-8 bytes is counted, not raised on."""
+    proc_dir = tmp_path / "16"
+    proc_dir.mkdir()
+    (proc_dir / "stat").write_bytes(b"16 (odd\xff name) S 100 16 16 0 -1\n")
+    counts = collect_child_process_counts(tmp_path, parent_pid=100)
+    assert counts is not None
+    assert sum(counts.values()) == 1
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
+async def test_check_output_timeout_kills_child_processes(tmp_path: Path) -> None:
+    """A command that does not finish in time is killed with everything it started."""
+    pid_file = tmp_path / "child.pid"
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await check_output("sh", "-c", f"sleep 30 & echo $! > {pid_file}; wait", timeout=0.5)
+    assert time.monotonic() - start < 10
+
+    child_pid = int(pid_file.read_text())
+    for _ in range(50):
+        if not _is_running(child_pid):
+            return
+        await asyncio.sleep(0.05)
+    pytest.fail("the child process outlived the timeout")
+
+
+def test_get_subprocess_env_drops_supervisor_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child processes do not inherit the Supervisor tokens but keep everything else."""
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
+    monkeypatch.setenv("HASSIO_TOKEN", "secret")
+    monkeypatch.setenv("MA_TEST_KEEP", "kept")
+
+    env = get_subprocess_env({"MA_TEST_OVERRIDE": "1", "MA_TEST_KEEP": "overridden"})
+
+    assert "SUPERVISOR_TOKEN" not in env
+    assert "HASSIO_TOKEN" not in env
+    assert env["MA_TEST_KEEP"] == "overridden"
+    assert env["MA_TEST_OVERRIDE"] == "1"
+    assert get_subprocess_env()["MA_TEST_KEEP"] == "kept"
+
+
+def _is_running(pid: int) -> bool:
+    """Return whether a process runs; a killed one nobody reaped yet (a zombie) does not."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    # the state follows the command name, which is wrapped in parentheses
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"

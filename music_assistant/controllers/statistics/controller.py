@@ -19,7 +19,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_PLAY_HISTORY,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -91,7 +91,7 @@ class StatisticsController(CoreController):
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this controller to include in diagnostics reports."""
         return {
-            "playlog_entries": await self.mass.music.database.get_count(DB_TABLE_PLAYLOG),
+            "playlog_entries": await self.mass.music.database.get_count(DB_TABLE_PLAY_HISTORY),
         }
 
     @cache_statistics()
@@ -127,11 +127,8 @@ class StatisticsController(CoreController):
                 media_type,
                 MAX(name) as name,
                 MAX(image) as image,
-                COUNT(*) as play_count,
-                SUM(seconds_played) as total_seconds,
-                MIN(timestamp) as first_played,
-                MAX(timestamp) as last_played
-            FROM {DB_TABLE_PLAYLOG}
+                COUNT(*) as play_count
+            FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND media_type = :media_type
                 AND timestamp >= :cutoff_timestamp
@@ -228,7 +225,7 @@ class StatisticsController(CoreController):
                     json_extract(artist_data.value, '$.item_id') as item_id,
                     json_extract(artist_data.value, '$.provider') as provider,
                     json_extract(artist_data.value, '$.name') as name
-                FROM {DB_TABLE_PLAYLOG},
+                FROM {DB_TABLE_PLAY_HISTORY},
                      json_each(artists) as artist_data
                 WHERE userid = :user_id
                     AND media_type = :media_type
@@ -332,7 +329,7 @@ class StatisticsController(CoreController):
             SELECT
                 strftime('{date_format}', datetime(timestamp, 'unixepoch')) as time_bucket,
                 COUNT(*) as play_count
-            FROM {DB_TABLE_PLAYLOG}
+            FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND timestamp >= :cutoff_timestamp
             GROUP BY time_bucket
@@ -372,7 +369,7 @@ class StatisticsController(CoreController):
                 CAST(strftime('%H', datetime(timestamp, 'unixepoch')) AS INTEGER) as hour,
                 CAST((CAST(strftime('%w', datetime(timestamp, 'unixepoch')) AS INTEGER) + 6) % 7 AS INTEGER) as weekday,
                 COUNT(*) as play_count
-            FROM {DB_TABLE_PLAYLOG}
+            FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND timestamp >= :cutoff_timestamp
             GROUP BY hour, weekday
@@ -414,29 +411,27 @@ class StatisticsController(CoreController):
 
         cutoff_timestamp = self._get_period_cutoff(period)
 
-        # Group by artist using artist plays
-        # Estimate listening time: each artist play ≈ 3 minutes (180 seconds)
+        # Estimate artist listening time from completed track plays.
         if group_by != "artist":
             # Only artist grouping supported for now
             return []
 
         query = f"""
-            SELECT
-                item_id,
-                provider,
-                name,
+            SELECT json_extract(artist_data.value, '$.name') as name,
                 COUNT(*) * 180 as estimated_seconds
-            FROM {DB_TABLE_PLAYLOG}
-            WHERE userid = :user_id
-                AND media_type = :media_type
-                AND timestamp >= :cutoff_timestamp
-            GROUP BY item_id, provider
+            FROM {DB_TABLE_PLAY_HISTORY} as play_history,
+                json_each(play_history.artists) as artist_data
+            WHERE play_history.userid = :user_id
+                AND play_history.media_type = :media_type
+                AND play_history.timestamp >= :cutoff_timestamp
+                AND play_history.artists IS NOT NULL
+            GROUP BY name
             ORDER BY estimated_seconds DESC
         """
 
         params = {
             "user_id": user_id,
-            "media_type": MediaType.ARTIST.value,
+            "media_type": MediaType.TRACK.value,
             "cutoff_timestamp": cutoff_timestamp,
         }
 
@@ -473,7 +468,7 @@ class StatisticsController(CoreController):
             SELECT
                 (albums.year / 10) * 10 as decade,
                 COUNT(*) as play_count
-            FROM {DB_TABLE_PLAYLOG} as playlog
+            FROM {DB_TABLE_PLAY_HISTORY} as playlog
             INNER JOIN {DB_TABLE_ALBUM_TRACKS} as album_tracks
                 ON playlog.item_id = album_tracks.track_id
             INNER JOIN {DB_TABLE_ALBUMS} as albums
@@ -494,7 +489,9 @@ class StatisticsController(CoreController):
 
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
 
-        return [{"name": f"{int(row['decade'])}s", "value": row["play_count"]} for row in rows]
+        return [
+            DistributionItem(name=f"{int(row['decade'])}s", value=row["play_count"]) for row in rows
+        ]
 
     @cache_statistics()
     @api_command("statistics/play_history", required_scope=Scope.LIBRARY_READ)
@@ -524,7 +521,7 @@ class StatisticsController(CoreController):
 
         query = f"""
             SELECT *
-            FROM {DB_TABLE_PLAYLOG}
+            FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND media_type IN {media_types_str}
         """
@@ -578,7 +575,7 @@ class StatisticsController(CoreController):
 
         query = f"""
             SELECT COUNT(*) as count
-            FROM {DB_TABLE_PLAYLOG}
+            FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND item_id = :item_id
                 AND provider = :provider
@@ -617,7 +614,7 @@ class StatisticsController(CoreController):
 
         query = f"""
             SELECT DISTINCT provider, item_id
-            FROM {DB_TABLE_PLAYLOG}
+            FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND media_type = :media_type
                 AND timestamp >= :since_timestamp

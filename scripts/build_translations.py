@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import orjson
@@ -37,7 +38,7 @@ import orjson
 # ruff: noqa: T201
 
 # repo paths (this file lives at <repo>/scripts/build_translations.py)
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
 PACKAGE_ROOT = os.path.join(_REPO_ROOT, "music_assistant")
 PROVIDERS_PATH = os.path.join(PACKAGE_ROOT, "providers")
 CONTROLLERS_PATH = os.path.join(PACKAGE_ROOT, "controllers")
@@ -79,7 +80,7 @@ def _collect_source_files() -> list[tuple[str, str]]:
     """Discover all English source strings.json files as (key prefix, path) pairs."""
     source_files: list[tuple[str, str]] = []
     # shared/common strings at the package root
-    if os.path.isfile(ROOT_STRINGS_FILE):
+    if Path(ROOT_STRINGS_FILE).is_file():
         source_files.append((COMMON_PREFIX, ROOT_STRINGS_FILE))
     # per-provider strings (sibling of manifest.json); skip template/test providers (their
     # strings must not reach Lokalise as translator noise)
@@ -87,24 +88,24 @@ def _collect_source_files() -> list[tuple[str, str]]:
         if entry.startswith("_") or entry == "test":
             continue
         path = os.path.join(PROVIDERS_PATH, entry, "strings.json")
-        if os.path.isfile(path):
+        if Path(path).is_file():
             source_files.append((f"provider.{entry}.", path))
     # per-package-controller strings
     for entry in _iter_subdirs(CONTROLLERS_PATH):
         path = os.path.join(CONTROLLERS_PATH, entry, "strings.json")
-        if os.path.isfile(path):
+        if Path(path).is_file():
             source_files.append((f"core.{entry}.", path))
     return source_files
 
 
 def _iter_subdirs(path: str) -> list[str]:
     """Return non-hidden subdirectory names of a path (empty if it does not exist)."""
-    if not os.path.isdir(path):
+    if not Path(path).is_dir():
         return []
     return [
         entry
         for entry in os.listdir(path)  # noqa: PTH208
-        if not entry.startswith(".") and os.path.isdir(os.path.join(path, entry))
+        if not entry.startswith(".") and Path(os.path.join(path, entry)).is_dir()
     ]
 
 
@@ -192,7 +193,7 @@ def main() -> int:
     rendered = _render(source)
     if "--check" in sys.argv[1:]:
         existing = b""
-        if os.path.isfile(SOURCE_FILE):
+        if Path(SOURCE_FILE).is_file():
             with open(SOURCE_FILE, "rb") as file:
                 existing = file.read()
         if existing != rendered:
@@ -203,7 +204,7 @@ def main() -> int:
             )
             return 1
         return 0
-    os.makedirs(TRANSLATIONS_PATH, exist_ok=True)
+    Path(TRANSLATIONS_PATH).mkdir(parents=True, exist_ok=True)
     with open(SOURCE_FILE, "wb") as file:
         file.write(rendered)
     print(f"Wrote {len(source)} source strings to {SOURCE_FILE}")

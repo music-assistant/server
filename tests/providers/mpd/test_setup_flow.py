@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +13,6 @@ from music_assistant_models.enums import FlowStepType
 from music_assistant.constants import CONF_PASSWORD, CONF_PLAYERS
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.mpd.player import MPDPlayer
-from tests.common import MockProvider, create_mock_config
 
 
 @pytest.fixture
@@ -36,39 +35,35 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
             sweep_handle.cancel()
 
 
-def _make_player(player_id: str = "mpd_test") -> MPDPlayer:
-    """Build a real MPDPlayer with a decoupled (mocked) provider/mass."""
-    provider = MockProvider("mpd", instance_id="mpd--1")
-    provider.mass.config.get_base_player_config.return_value = create_mock_config("MPD Test")
-    return MPDPlayer(provider=provider, player_id=player_id, host="10.0.0.6")  # type: ignore[arg-type]
-
-
-async def test_get_config_entries_excludes_password() -> None:
+async def test_get_config_entries_excludes_password(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
     """The password is flow-managed now and must not appear in the options config entries."""
-    player = _make_player()
+    player = make_mpd_player()
     entries = await player.get_config_entries()
     assert CONF_PASSWORD not in {entry.key for entry in entries}
 
 
-async def test_on_config_updated_reads_password_via_setup_value() -> None:
+async def test_on_config_updated_reads_password_via_setup_value(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
     """on_config_updated resolves the password from setup_data, not the options config."""
-    player = _make_player()
+    player = make_mpd_player()
     cast("MagicMock", player.mass.config.get).return_value = {CONF_PASSWORD: "encrypted-blob"}
     cast("MagicMock", player.mass.config.decrypt_string).return_value = "secret"
-    with (
-        patch.object(player, "_connect", AsyncMock()),
-        patch.object(player, "_disconnect", AsyncMock()),
-    ):
+    with patch.object(player, "_connect", AsyncMock()):
         await player.on_config_updated()
     assert player.password == "secret"
     assert player.needs_setup is False
     assert player.setup_reason is None
 
 
-async def test_setup_flow_collects_and_persists_password(flow_mass: MusicAssistant) -> None:
+async def test_setup_flow_collects_and_persists_password(
+    flow_mass: MusicAssistant, make_mpd_player: Callable[..., MPDPlayer]
+) -> None:
     """The setup flow shows a single password field and persists it encrypted."""
     player_id = "mpd_test"
-    player = _make_player(player_id)
+    player = make_mpd_player(player_id)
     flow_mass.config.set(
         f"{CONF_PLAYERS}/{player_id}",
         {"player_id": player_id, "provider": player.provider_id, "enabled": True},

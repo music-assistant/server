@@ -243,13 +243,17 @@ def _mass_serving_info(info: dict[str, Any], status: int = 200) -> MagicMock:
 
 
 def test_default_buffer_depth_family_table() -> None:
-    """The family table maps both LinkPlay generations to the deep queue."""
-    # Newer platform: Linkplay named as manufacturer.
+    """
+    Every family defaults to Automatic since buffered became the auto-route.
+
+    The LinkPlay generations that used to need a deepened realtime queue
+    (WiiM 1750 ms, Edifier MS50A 2500 ms) manage their own buffer on the
+    buffered stream; the per-player depth setting remains as the manual
+    override for field reports.
+    """
     assert (
-        default_buffer_depth("Linkplay Technology Inc.", "WiiM Pro Receiver", "p20.4.8.814756")
-        == 1750
+        default_buffer_depth("Linkplay Technology Inc.", "WiiM Pro Receiver", "p20.4.8.814756") == 0
     )
-    # Older platform: OEM brand, the platform only marked in fv.
-    assert default_buffer_depth("Edifier Inc", "Edifier MS50A", "p20.Linkplay.4.6.430230") == 2500
+    assert default_buffer_depth("Edifier Inc", "Edifier MS50A", "p20.Linkplay.4.6.430230") == 0
     assert default_buffer_depth("Sonos", "Era 100", "p20.96.0-79160") == 0
     assert default_buffer_depth("Apple Inc.", "AppleTV11,1", None) == 0

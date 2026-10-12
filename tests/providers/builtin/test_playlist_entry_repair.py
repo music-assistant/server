@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from music_assistant_models.enums import ImageType, MediaType
 
 from music_assistant.helpers.playlists import (
@@ -12,7 +13,7 @@ from music_assistant.helpers.playlists import (
     PlaylistItem,
     ProviderMappingInfo,
 )
-from music_assistant.providers.builtin import BuiltinProvider
+from music_assistant.providers.builtin import BuiltinProvider, _is_orphaned_entry_path
 from music_assistant.providers.builtin.constants import StoredItem
 
 STREAM_URL = "http://stream.example.com/live"
@@ -209,3 +210,24 @@ def test_restore_without_stored_item_changes_nothing() -> None:
     assert entry.metadata is not None
     assert entry.metadata["name"] == "Broadcast Name"
     assert entry.title == "Broadcast Name"
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # leftover text from a title/name that once contained a line break
+        ("elyn Brown)", True),
+        ("Some Song Title", True),
+        # real references, which all carry a URI, URL or path separator
+        ("spotify://track/abc123", False),
+        ("spotify:track:abc123", False),
+        ("builtin://radio/http://stream.example.com/live", False),
+        ("https://stream.example.com/live", False),
+        ("/media/music/song.mp3", False),
+        ("Music/song.mp3", False),
+        ("C:\\Music\\song.mp3", False),
+    ],
+)
+def test_orphaned_entry_path_detection(path: str, expected: bool) -> None:
+    """Only leftover text is treated as an orphan, never a resolvable reference."""
+    assert _is_orphaned_entry_path(path) is expected

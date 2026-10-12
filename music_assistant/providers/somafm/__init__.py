@@ -59,6 +59,11 @@ async def setup(
 class SomaFMProvider(MusicProvider):
     """Provider implementation for SomaFM Radio."""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (
@@ -116,9 +121,7 @@ class SomaFMProvider(MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         stations = await self._get_stations()  # May be cached
-        if stations:
-            radio = stations.get(prov_radio_id)
-        if radio:
+        if radio := stations.get(prov_radio_id):
             return self._parse_channel(radio)
         msg = f"Item {prov_radio_id} not found"
         raise MediaNotFoundError(msg)

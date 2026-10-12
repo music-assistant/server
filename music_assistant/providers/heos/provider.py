@@ -138,6 +138,7 @@ class HeosPlayerProvider(PlayerProvider):
 
         try:
             self._heos.add_on_controller_event(self._handle_controller_event)
+            self._heos.add_on_disconnected(self._on_heos_disconnected)
             await self._populate_sources()
         except HeosError as err:
             self.logger.error("Unexpected error setting up HEOS controller: %s", err)
@@ -264,6 +265,14 @@ class HeosPlayerProvider(PlayerProvider):
             with suppress(Exception):
                 await self._heos_queue.disconnect()
             self._heos_queue = None
+
+    async def _on_heos_disconnected(self) -> None:
+        """Mark all HEOS players unavailable when the controller loses connection."""
+        self.logger.warning("HEOS controller disconnected, marking players unavailable")
+        for player in self.mass.players.all_players(provider_filter=self.instance_id):
+            assert isinstance(player, HeosPlayer)
+            player.set_device_info()
+            player.update_state()
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""

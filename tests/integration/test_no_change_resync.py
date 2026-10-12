@@ -14,33 +14,49 @@ from contextlib import ExitStack
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
+from music_assistant_models.enums import TaskStatus
 from music_assistant_models.media_items import Album, Artist, Audiobook, Podcast, Track
 
 from tests.common import wait_for_sync_completion
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from music_assistant.mass import MusicAssistant
 
 
-async def _wait_until_sync_idle(mass: MusicAssistant, timeout: float = 60.0) -> None:
-    """Wait until no provider sync tasks and no genre scan are pending or running."""
+@pytest.fixture(autouse=True)
+def _no_musicbrainz_link_pacing() -> Iterator[None]:
+    """Run the MusicBrainz link run a finished sync queues without the pause between items."""
+    # the test waits for the link run to finish, which at its real pace takes two seconds
+    # per library album
+    with patch("music_assistant.controllers.metadata.controller.MUSICBRAINZ_LINK_ITEM_INTERVAL", 0):
+        yield
+
+
+async def _wait_until_idle(mass: MusicAssistant, timeout: float = 60.0) -> None:
+    """Wait until no background task, like a sync or the work it queues, is pending or running."""
     elapsed = 0.0
     while elapsed < timeout:
-        if not mass.music.active_sync_tasks and not mass.music.genres._genre_scan_running:
+        if not any(
+            task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+            for task in mass.tasks.list_tasks_for_user(None)
+        ):
             return
         await asyncio.sleep(0.25)
         elapsed += 0.25
-    raise TimeoutError("sync tasks did not become idle in time")
+    raise TimeoutError("background tasks did not become idle in time")
 
 
 async def test_no_change_resync_is_hydration_free(e2e_mass: MusicAssistant) -> None:
     """A re-sync where nothing changed performs no writes and hydrates no media items."""
     mass = e2e_mass
-    # the initial sync is auto-scheduled when the test provider loads;
-    # wait for it (and the follow-up genre scan) to fully complete
+    # wait for the initial sync and the work it queues (genre scan, MusicBrainz linking)
+    # to fully complete, so none of it lands in the re-sync measured below
     async with wait_for_sync_completion(mass):
         await mass.music.start_sync()
-    await _wait_until_sync_idle(mass)
+    await _wait_until_idle(mass)
 
     counts_before = {
         ctrl.media_type: await ctrl.library_count()
@@ -81,8 +97,8 @@ async def test_no_change_resync_is_hydration_free(e2e_mass: MusicAssistant) -> N
 
         async with wait_for_sync_completion(mass):
             await mass.music.start_sync()
-        # keep the spies active until the follow-up genre scan has fully completed
-        await _wait_until_sync_idle(mass)
+        # keep the spies active until the work the re-sync queues has fully completed
+        await _wait_until_idle(mass)
 
     for name, spy in write_spies.items():
         assert not spy.called, f"unexpected library write during no-change re-sync: {name}"

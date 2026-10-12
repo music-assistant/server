@@ -4,8 +4,8 @@ ARG BASE_IMAGE_VERSION=latest
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.
-ARG CLIAIRPLAY_VERSION=v0.4.15
-ARG CLIAIRPLAY_CHECKSUMS_SHA256=53a1c027feccb8d61b9ec4bee267dbd4854deebbb6f6ff0cc80debdd6f30e28c
+ARG CLIAIRPLAY_VERSION=v0.5.6
+ARG CLIAIRPLAY_CHECKSUMS_SHA256=92b9b079c1c82d7ecd8c7ba6a9bbe20d634cad295638f522ee9cd69740077bce
 ARG TARGETARCH
 
 # Download the cliairplay release asset for this image architecture.
@@ -49,7 +49,7 @@ COPY requirements_all.txt .
 #         rm -rf /var/lib/apt/lists/*; \
 #     fi
 
-# TODO: Remove git after aiodatalibchannel is installed from pypi
+# TODO: Remove git and the compilers once aiolibdatachannel and yappi are installed from PyPI
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git gcc g++ && \
     rm -rf /var/lib/apt/lists/*
@@ -101,6 +101,12 @@ RUN SITE_PACKAGES="$("$VIRTUAL_ENV/bin/python" -c \
 
 # Pre-compile Python bytecode for faster startup
 RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
+
+# Identifies the official release image, see music_assistant/helpers/build_info.py
+ARG MASS_REVISION
+ARG MASS_WHEEL_SHA256
+RUN printf '{"version": "%s", "revision": "%s", "wheel_sha256": "%s"}\n' \
+    "$MASS_VERSION" "$MASS_REVISION" "$MASS_WHEEL_SHA256" > /app/build_info.json
 
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root

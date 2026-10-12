@@ -16,7 +16,7 @@ from uuid import uuid4
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 
 
@@ -74,7 +74,7 @@ async def test_start_from_beginning_ignores_saved_resume(mass: MusicAssistant) -
 
     # the saved progress row must be left untouched (non-destructive)
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "media_type": MediaType.PODCAST_EPISODE.value,
             "item_id": episode.item_id,

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers import audio as audio_helper
 from music_assistant.helpers.audio import (
     build_concat_filelist,
     calculate_content_length,
+    get_output_format_key,
     parse_loudnorm,
+    realtime_pcm_pacer,
     resolve_output_player_ids,
 )
 from music_assistant.helpers.ffmpeg import DEFAULT_MP3_BIT_RATE
@@ -118,3 +124,46 @@ def test_parse_loudnorm_reads_a_report_from_further_down_the_filter_chain() -> N
     """The marker carries the filter's position, which is not zero behind another filter."""
     chained = FFMPEG_LOUDNORM_OUTPUT.replace(b"[Parsed_loudnorm_0 @", b"[Parsed_loudnorm_1 @")
     assert parse_loudnorm(chained) == -17.86
+
+
+@pytest.mark.asyncio
+async def test_realtime_pcm_pacer_grants_bounded_initial_burst() -> None:
+    """The pacer lets a bounded head start through unpaced, then enforces realtime."""
+    # tiny format keeps the test fast: 16000 B/s, so 1s of audio is 16000 bytes
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=8000,
+        bit_depth=16,
+        channels=1,
+    )
+
+    async def _instant_producer() -> AsyncGenerator[bytes]:
+        for _ in range(10):
+            yield b"\x00" * 1600  # 0.1s of audio per chunk, produced instantly
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    async for _ in realtime_pcm_pacer(_instant_producer(), pcm_format):
+        pass
+    elapsed = loop.time() - start
+
+    # 1.0s of audio with a 0.5s burst allowance should take ~0.5s: clearly less
+    # than realtime (burst granted) but still paced (not instant). Bounds are
+    # deliberately wide to stay robust on loaded CI runners.
+    assert 0.3 < elapsed < 0.9
+
+
+def test_the_content_length_key_moves_with_the_encoder_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A measured content length must not outlive the encoder settings it was measured under.
+
+    The cached value is a byte count announced to the player as Content-Length, so an
+    entry from an older encoder leaves it waiting out a body that already ended.
+    """
+    fmt = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2)
+    before = get_output_format_key(fmt)
+    monkeypatch.setattr(audio_helper, "OUTPUT_ENCODING_REVISION", 99)
+
+    assert get_output_format_key(fmt) != before

@@ -6,12 +6,12 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 from math import ceil
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import ClientResponseError
 from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import (
@@ -21,6 +21,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
     CONF_URL,
@@ -669,14 +670,18 @@ def _mock_tts_response(provider: HomeAssistantProvider) -> MagicMock:
     return post
 
 
-def _mock_tts_error_response(provider: HomeAssistantProvider, error_message: str) -> MagicMock:
-    """Let the tts_get_url endpoint fail with a 400 carrying the given HA error body."""
+def _mock_tts_error_response(
+    provider: HomeAssistantProvider, error_message: str | None, status: int = 400
+) -> MagicMock:
+    """Let the tts_get_url endpoint fail with the given status and HA error body."""
     response = AsyncMock()
     response.ok = False
-    response.json.return_value = {"error": error_message}
-    response.raise_for_status = MagicMock(
-        side_effect=ClientResponseError(MagicMock(), (), status=400, message=error_message)
-    )
+    response.status = status
+    response.reason = HTTPStatus(status).phrase
+    if error_message is None:
+        response.json.side_effect = ValueError("not json")
+    else:
+        response.json.return_value = {"error": error_message}
     post = cast("MagicMock", provider.mass.http_session.post)
     post.return_value.__aenter__.return_value = response
     return post
@@ -756,23 +761,127 @@ async def test_tts_invalid_option_raises_music_assistant_error() -> None:
 
 
 async def test_tts_error_body_that_is_not_json_still_raises_the_generic_way() -> None:
-    """An unparsable error body leaves the status error to speak for itself."""
+    """An unparsable error body raises the generic error naming the endpoint and status."""
     async with _start_provider([_state("tts.first", "First")]) as (provider, _):
-        post = _mock_tts_error_response(provider, "Invalid options found: ['x']")
-        response = post.return_value.__aenter__.return_value
-        response.json.side_effect = ValueError("not json")
+        _mock_tts_error_response(provider, None, status=400)
 
-        with pytest.raises(ClientResponseError):
+        with pytest.raises(MusicAssistantError, match=r"tts_get_url") as excinfo:
             await provider.get_tts_message("Hello", options={"x": 1})
 
+        assert "400" in str(excinfo.value)
 
-async def test_tts_unsupported_language_still_raises_the_generic_way() -> None:
-    """An unsupported-language 400 keeps raising as before, so the caller's retry still fires."""
+
+async def test_tts_unsupported_language_raises_typed_error() -> None:
+    """An unsupported-language 400 raises the typed error naming the language."""
     async with _start_provider([_state("tts.first", "First")]) as (provider, _):
         _mock_tts_error_response(provider, "Language 'xx' not supported")
 
-        with pytest.raises(ClientResponseError):
+        with pytest.raises(TTSLanguageNotSupportedError, match=r"'xx'"):
             await provider.get_tts_message("Hello", language="xx")
+
+
+async def test_tts_bare_500_with_language_is_classified_as_possible_language_rejection() -> None:
+    """A bare 500 (HA's masked validation failure) with a language is a possible rejection."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=500)
+
+        with pytest.raises(TTSLanguageNotSupportedError) as excinfo:
+            await provider.get_tts_message("Hello", language="en-US")
+
+        assert "500" in str(excinfo.value)
+        assert "possibly" in str(excinfo.value)
+
+
+async def test_tts_401_points_at_the_access_token() -> None:
+    """An auth failure points at the connection settings instead of the core log."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=401)
+
+        with pytest.raises(MusicAssistantError) as excinfo:
+            await provider.get_tts_message("Hello", language="en-US")
+
+        assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
+        assert "401 (Unauthorized)" in str(excinfo.value)
+        assert "access token" in str(excinfo.value)
+
+
+async def test_tts_bare_503_with_language_raises_generic_error() -> None:
+    """A bodyless 5xx other than 500 is an outage, not a masked validation error."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=503)
+
+        with pytest.raises(MusicAssistantError) as excinfo:
+            await provider.get_tts_message("Hello", language="en-US")
+
+        assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
+        assert "503" in str(excinfo.value)
+
+
+async def test_tts_bare_500_without_language_raises_generic_error() -> None:
+    """A bare 500 with no language requested has nothing to blame on a rejection."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=500)
+
+        with pytest.raises(MusicAssistantError) as excinfo:
+            await provider.get_tts_message("Hello")
+
+        assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
+        assert "tts_get_url" in str(excinfo.value)
+        assert "500" in str(excinfo.value)
+
+
+def _mock_image_response(
+    provider: HomeAssistantProvider, chunks: list[bytes], content_type: str = "image/jpeg"
+) -> MagicMock:
+    """Let Home Assistant answer an image request with the given body and return the get mock."""
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.content_type = content_type
+    response.content_length = None
+    response.content.read = AsyncMock(side_effect=[*chunks, b""])
+    get = cast("MagicMock", provider.mass.http_session.get)
+    get.return_value.__aenter__.return_value = response
+    return get
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/media_player_proxy/media_player.kitchen?token=abc&cache=123",
+        "/local/cover..jpg?v=1..2",
+    ],
+)
+async def test_resolve_image_fetches_an_entity_picture_with_the_token(path: str) -> None:
+    """An entity picture path is fetched from Home Assistant with the access token."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+        get = _mock_image_response(provider, [b"\xff\xd8", b"jpeg"])
+
+        assert await provider.resolve_image(path) == b"\xff\xd8jpeg"
+
+        get.assert_called_once_with(
+            f"http://homeassistant.local:8123{path}",
+            headers={"Authorization": "Bearer token"},
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/states",
+        "/api/media_player_proxy/../states",
+        "/api/media_player_proxy/%2e%2e/states",
+        "api/media_player_proxy/media_player.kitchen",
+    ],
+)
+async def test_resolve_image_rejects_paths_outside_the_image_endpoints(path: str) -> None:
+    """A path that is not an HA image endpoint is refused before anything is requested."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+        get = _mock_image_response(provider, [b"{}"])
+
+        with pytest.raises(FileNotFoundError):
+            await provider.resolve_image(path)
+
+        get.assert_not_called()
 
 
 async def test_registry_update_refreshes_the_engines() -> None:
@@ -819,7 +928,7 @@ async def test_changed_engines_notify_the_consumers_once() -> None:
 
         events = _providers_updated_events(provider)
         assert len(events) == 1
-        assert events[0].kwargs["data"] is mass.get_providers.return_value
+        assert events[0].kwargs["data"] is mass.providers
 
 
 async def test_a_lost_ai_engine_notifies_the_consumers() -> None:

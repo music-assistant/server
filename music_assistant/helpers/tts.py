@@ -28,6 +28,10 @@ TTS_QUERY_TIMEOUT_SECONDS = 180
 REMOTE_STREAM_SCHEMES = ("http://", "https://", "rtsp://", "rtmp://")
 
 
+class TTSLanguageNotSupportedError(MusicAssistantError):
+    """The TTS engine rejected (or likely rejected) the requested language."""
+
+
 async def query_tts_engine(
     engine: TTSEngine,
     message: str,
@@ -48,8 +52,9 @@ async def query_tts_engine(
     """
     if timeout is None:
         timeout = TTS_QUERY_TIMEOUT_SECONDS
+    query_timeout = asyncio.timeout(timeout)
     try:
-        async with asyncio.timeout(timeout) as query_timeout:
+        async with query_timeout:
             return await engine.provider.get_tts_message(
                 message, language=language, engine_id=engine.id, options=options
             )
@@ -71,7 +76,7 @@ async def query_tts_engine_with_language_fallback(
     options: dict[str, Any] | None = None,
 ) -> StreamDetails:
     """
-    Render a message through a TTS engine, retrying without the language if it is rejected.
+    Render a message through a TTS engine, retrying without the language if the engine rejects it.
 
     :param engine: The TTS engine to speak the message.
     :param message: The text to speak.
@@ -84,21 +89,11 @@ async def query_tts_engine_with_language_fallback(
     """
     try:
         return await query_tts_engine(engine, message, language, timeout, options)
-    except TimeoutError, MusicAssistantError:
-        # a timeout or our own structured failure is not a language rejection, so a
-        # language-less retry would not help and would only double the wait
-        raise
-    except Exception as err:
-        if language is None:
+    except TTSLanguageNotSupportedError as err:
+        if not language:
             raise
-        # some engines reject a language they don't support; fall back to the engine's
-        # own default voice rather than losing the audio entirely
-        (logger or LOGGER).warning(
-            "TTS engine '%s' rejected language '%s' (%s), retrying with its default voice",
-            engine.uid,
-            language,
-            err,
-        )
+        # the error message carries the classifier's certainty, so it is logged as-is
+        (logger or LOGGER).warning("%s, retrying with the engine's default voice", err)
         return await query_tts_engine(engine, message, None, timeout, options)
 
 

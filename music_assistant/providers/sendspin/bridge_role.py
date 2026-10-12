@@ -29,7 +29,7 @@ from music_assistant.mass import LOGGER
 if TYPE_CHECKING:
     from aiosendspin.models.core import ServerStatePayload
     from aiosendspin.models.types import ServerMessage
-    from aiosendspin.models.visualizer import BeatTiming, ClientHelloVisualizerSupport
+    from aiosendspin.models.visualizer import BeatTiming, VisualizerStatePayload
     from aiosendspin.server import SendspinClient
     from aiosendspin.server.roles import AudioChunk
     from aiosendspin.server.roles.visualizer.features import ExtractedFrame
@@ -69,6 +69,7 @@ class BridgePlayerRole(Role):
         self._on_mute_change_cb: Callable[[bool], None] | None = None
         self._on_stream_start_cb: Callable[[], None] | None = None
         self._on_stream_end_cb: Callable[[], None] | None = None
+        self._on_explicit_stop_cb: Callable[[], None] | None = None
         self._audio_requirements: AudioRequirements | None = None
         self._volume: int = 100
         self._muted: bool = False
@@ -85,7 +86,9 @@ class BridgePlayerRole(Role):
         on_mute_change: Callable[[bool], None],
         on_stream_start: Callable[[], None],
         on_stream_end: Callable[[], None],
+        on_explicit_stop: Callable[[], None] | None = None,
         initial_volume: int = 100,
+        initial_muted: bool = False,
     ) -> None:
         """
         Wire up bridge callbacks after role creation.
@@ -95,17 +98,19 @@ class BridgePlayerRole(Role):
         :param on_mute_change: Callback when mute state changes.
         :param on_stream_start: Callback when the stream starts.
         :param on_stream_end: Callback when the stream ends.
+        :param on_explicit_stop: Callback when playback was ended by an explicit
+            user command (stop, or removal from the group), so the bridge can
+            silence its player at once instead of keeping its transport warm.
         :param initial_volume: Initial volume level (0-100).
+        :param initial_muted: Initial mute state.
         """
         self._on_audio_chunk_cb = on_audio_chunk
         self._on_volume_change_cb = on_volume_change
         self._on_mute_change_cb = on_mute_change
         self._on_stream_start_cb = on_stream_start
         self._on_stream_end_cb = on_stream_end
-        volume_changed = self._volume != initial_volume
-        self._volume = initial_volume
-        if volume_changed:
-            self._emit_volume_changed()
+        self._on_explicit_stop_cb = on_explicit_stop
+        self.update_player_state(volume=initial_volume, muted=initial_muted)
 
     @property
     def role_id(self) -> str:
@@ -176,7 +181,12 @@ class BridgePlayerRole(Role):
         return self._muted
 
     def set_player_volume(self, volume: int) -> None:
-        """Set volume and notify bridge."""
+        """
+        Set volume and notify bridge.
+
+        The level is on the scale the role reports, and is stored, announced to
+        the client and handed to the bridge unchanged.
+        """
         self._volume = volume
         self._emit_volume_changed()
         if self._on_volume_change_cb:
@@ -188,6 +198,28 @@ class BridgePlayerRole(Role):
         self._emit_volume_changed()
         if self._on_mute_change_cb:
             self._on_mute_change_cb(muted)
+
+    def update_player_state(self, *, volume: int | None = None, muted: bool | None = None) -> None:
+        """
+        Adopt volume/mute state the bridged player is already in.
+
+        Use this instead of set_player_volume/set_player_mute for state that came
+        from the player's own side (device feedback, a mute applied elsewhere): the
+        bridge callbacks are not invoked, so the value is not pushed back at the
+        player it was just read from.
+
+        :param volume: Volume level (0-100) the player is at, or None to leave it.
+        :param muted: Mute state the player is in, or None to leave it.
+        """
+        changed = False
+        if volume is not None and volume != self._volume:
+            self._volume = volume
+            changed = True
+        if muted is not None and muted != self._muted:
+            self._muted = muted
+            changed = True
+        if changed:
+            self._emit_volume_changed()
 
     def on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Receive audio chunk from PushStream and forward to callback."""
@@ -222,6 +254,18 @@ class BridgePlayerRole(Role):
         if self._on_stream_end_cb:
             self._on_stream_end_cb()
 
+    def notify_explicit_stop(self) -> None:
+        """
+        Notify the bridge that playback ended on an explicit user command.
+
+        Call this after the stop (or group removal) has ended the stream, so
+        the bridge can tear its downstream transport down at once instead of
+        keeping it warm for a next track that will not come.
+        """
+        LOGGER.debug("BridgePlayerRole explicit stop for client %s", self._client.client_id)
+        if self._on_explicit_stop_cb:
+            self._on_explicit_stop_cb()
+
     def _emit_volume_changed(self) -> None:
         """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""
         self.emit_client_event(VolumeChangedEvent(volume=self._volume, muted=self._muted))
@@ -249,7 +293,7 @@ class BridgeVisualizerRole(Role):
         :param client: The Sendspin client this role belongs to.
         """
         self._client = client
-        self._support: ClientHelloVisualizerSupport | None = None
+        self._request: VisualizerStatePayload | None = None
         self._extractor: VisualizerFeatureExtractor | None = None
         self._beat_availability = BeatAvailability.PENDING
         self._on_frame_cb: Callable[[ExtractedFrame], None] | None = None
@@ -286,13 +330,13 @@ class BridgeVisualizerRole(Role):
         self._on_stream_clear_cb = on_stream_clear
         self._on_stream_end_cb = on_stream_end
 
-    def setup_visualizer(self, support: ClientHelloVisualizerSupport) -> None:
+    def setup_visualizer(self, request: VisualizerStatePayload) -> None:
         """
-        Configure feature extraction from the registered hello's support object.
+        Configure feature extraction for the stream the bridge requests.
 
-        :param support: The visualizer support object from the client hello.
+        :param request: The visualizer stream configuration, as a client/state would carry it.
         """
-        self._support = support
+        self._request = request
 
     @property
     def role_id(self) -> str:
@@ -329,8 +373,8 @@ class BridgeVisualizerRole(Role):
     def wants_beats(self) -> bool:
         """True if the bridge requested beats and beats are not unavailable."""
         return (
-            self._support is not None
-            and "beat" in self._support.types
+            self._request is not None
+            and "beat" in self._request.types
             and self._beat_availability is not BeatAvailability.UNAVAILABLE
         )
 
@@ -360,12 +404,12 @@ class BridgeVisualizerRole(Role):
 
     def on_stream_start(self) -> None:
         """Build a fresh extractor for the new stream and notify the bridge."""
-        if self._support is not None:
+        if self._request is not None:
             req = self.get_audio_requirements()
             self._extractor = VisualizerFeatureExtractor(
                 sample_rate=req.sample_rate,
                 channels=req.channels,
-                config=StreamStartVisualizer.from_support(self._support),
+                config=StreamStartVisualizer.from_request(self._request),
             )
         LOGGER.debug("BridgeVisualizerRole stream started for client %s", self._client.client_id)
         if self._on_stream_start_cb:

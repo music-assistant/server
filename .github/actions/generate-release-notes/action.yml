@@ -26,9 +26,9 @@ inputs:
     required: false
     default: ''
 outputs:
-  release-notes:
-    description: 'The complete generated release notes including frontend changes'
-    value: ${{ steps.generate.outputs.release-notes }}
+  release-notes-file:
+    description: 'Path to a file with the complete generated release notes including frontend changes'
+    value: ${{ steps.generate.outputs.release-notes-file }}
 runs:
   using: 'composite'
   steps:
@@ -55,6 +55,7 @@ runs:
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_SERVER_URL: ${{ github.server_url }}
         IMPORTANT_NOTES: ${{ inputs.important-notes }}
+        RELEASE_NOTES_FILE: ${{ runner.temp }}/release-notes.md
       run: |
         cd "${{ inputs.repository-path }}"
         chmod +x ${{ github.action_path }}/generate_notes.py

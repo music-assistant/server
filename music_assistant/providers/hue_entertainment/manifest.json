@@ -1,6 +1,6 @@
 {
   "type": "plugin",
-  "stage": "experimental",
+  "stage": "beta",
   "domain": "hue_entertainment",
   "name": "Hue Lights Sync",
   "description": "Sync Philips Hue lights to music using Entertainment Mode.",

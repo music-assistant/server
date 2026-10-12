@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -666,6 +667,188 @@ def test_mrp_idle_update_clears_external_media() -> None:
     assert player.current_media is None
 
 
+def test_mrp_loading_snapshot_without_playback_stays_idle() -> None:
+    """A Loading snapshot on an idle player maps to idle, not playing."""
+    # HomePods can hold a stale Loading session (with the cached metadata of a
+    # long-dead AirPlay sender) for days; trusting it would show an eternal
+    # "playing" at position 0.
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.metadata.app = App("Music", "com.apple.Music")
+    player._mrp_device = device
+    playing = Playing(
+        media_type=PyatvMediaType.Music,
+        device_state=DeviceState.Loading,
+        title="King of Spain",
+        total_time=209,
+        position=0,
+    )
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(playing)
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+
+
+def test_mrp_loading_update_during_playback_stays_playing() -> None:
+    """A Loading update while already playing means buffering, so keep playing."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.metadata.app = App("Music", "com.apple.Music")
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "com.apple.Music"
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(Playing(device_state=DeviceState.Loading, title="Next track"))
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_source == "com.apple.Music"
+    assert player.current_media is not None
+    assert player.current_media.title == "Next track"
+
+
+async def test_disconnect_control_services_clears_external_state() -> None:
+    """A forced teardown drops the external snapshot owned by the closed MRP link."""
+    # _handle_connection_closed ignores the late close callback for a device
+    # that was already detached, so the teardown itself must clear the snapshot.
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "com.apple.Music"
+    player._attr_current_media = MagicMock()
+
+    with patch.object(player, "update_state"):
+        await player._disconnect_control_services()
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+
+
+def test_lost_mrp_connection_clears_external_state() -> None:
+    """Losing MRP playback monitoring clears the last external snapshot."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = "com.netflix.Netflix"
+    player._attr_current_media = MagicMock()
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection") as schedule_connection,
+    ):
+        player._handle_connection_closed("mrp", device)
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+    schedule_connection.assert_called_once()
+
+
+def test_failed_mrp_push_updates_clear_external_state() -> None:
+    """A dropped MRP push updater clears the last external snapshot."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = "com.netflix.Netflix"
+    player._attr_current_media = MagicMock()
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_push_error(device, RuntimeError("push failed"))
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+
+
+def test_lost_mrp_connection_keeps_streaming_state() -> None:
+    """A lost MRP connection never overrules the state owned by our own stream."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=True)
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "com.netflix.Netflix"
+    media = MagicMock()
+    player._attr_current_media = media
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_connection_closed("mrp", device)
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_source == "com.netflix.Netflix"
+    assert player.current_media is media
+
+
+def test_lost_companion_connection_keeps_external_state() -> None:
+    """External playback comes from MRP only, so a Companion drop leaves it alone."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._companion_device = device
+    player._mrp_device = MagicMock(spec=AppleTV)
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = "com.netflix.Netflix"
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_connection_closed("companion", device)
+
+    assert player.playback_state == PlaybackState.PAUSED
+    assert player.active_source == "com.netflix.Netflix"
+
+
+@pytest.mark.parametrize("source", ["companion", "mrp"])
+def test_lost_connection_closes_pyatv_facade(source: str) -> None:
+    """A dropped connection closes the facade instead of leaking its aiohttp session."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    if source == "companion":
+        player._companion_device = device
+    else:
+        player._mrp_device = device
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_connection_closed(source, device)
+
+    device.close.assert_called_once_with()
+
+
+def test_close_callback_for_detached_device_leaves_connection_alone() -> None:
+    """A late callback for an already-replaced device never closes the live one."""
+    player = _make_control_player()
+    detached = MagicMock(spec=AppleTV)
+    connected = MagicMock(spec=AppleTV)
+    player._mrp_device = connected
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection") as schedule_connection,
+    ):
+        player._handle_connection_closed("mrp", detached)
+
+    detached.close.assert_not_called()
+    connected.close.assert_not_called()
+    assert player._mrp_device is connected
+    schedule_connection.assert_not_called()
+
+
 async def test_mrp_retry_does_not_recycle_connected_companion() -> None:
     """A failed MRP monitor leaves an active Companion control channel intact."""
     player = _make_control_player()
@@ -699,6 +882,33 @@ async def test_connection_retains_listener_references() -> None:
     assert player._companion_listener is None
 
 
+async def test_cancelled_connect_closes_the_device_it_creates() -> None:
+    """A cancelled connect still closes the device it ends up with."""
+    player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
+    device = MagicMock(spec=AppleTV)
+    started = asyncio.Event()
+    connected = asyncio.Event()
+
+    async def _connect(*_args: object, **_kwargs: object) -> AppleTV:
+        started.set()
+        await connected.wait()
+        return device
+
+    with patch(
+        "music_assistant.providers.airplay.control_player.pyatv.connect", side_effect=_connect
+    ):
+        task = asyncio.create_task(player._connect_companion())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        connected.set()
+        await asyncio.sleep(0.01)
+
+    device.close.assert_called_once()
+    assert player._companion_device is None
+
+
 async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
     """Playback monitoring connects with pyatv's complete AirPlay credentials."""
     credentials = "ltpk:ltsk:accessory-id:client-id"
@@ -723,6 +933,7 @@ async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
     service = config.get_service(Protocol.AirPlay)
     assert service is not None
     assert service.credentials == credentials
+    assert connect.await_args.kwargs["session"] is player.mass.http_session
     assert player._mrp_state_listener is not None
     assert player._mrp_push_listener is not None
 

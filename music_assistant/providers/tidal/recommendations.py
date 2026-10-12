@@ -63,7 +63,15 @@ class TidalRecommendationManager:
 
             for module_info in parser.modules:
                 title = module_info.get("title", "Unknown")
-                if not title or title == "Unknown" or "Videos" in title:
+                # Drop video content: VIDEO_LIST modules outright, plus any module whose
+                # title mentions video (e.g. "Video Playlists", which is a PLAYLIST_LIST
+                # the old "Videos"-substring check missed).
+                if (
+                    not title
+                    or title == "Unknown"
+                    or module_info.get("type") == "VIDEO_LIST"
+                    or "video" in title.lower()
+                ):
                     continue
 
                 items, content_type = parser.get_module_items(module_info)

@@ -16,7 +16,8 @@ from functools import partial
 from itertools import batched
 from sys import intern
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
+from urllib.parse import unquote
 
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
@@ -44,6 +45,7 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.helpers.util import lock, try_parse_int
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 
@@ -85,7 +87,7 @@ if TYPE_CHECKING:
 
 DOMAIN = "hass"
 CONF_URL = "url"
-CONF_AUTH_TOKEN = "token"
+CONF_AUTH_TOKEN = "token"  # noqa: S105 - config key
 CONF_VERIFY_SSL = "verify_ssl"
 FEATURE_DISCOVERY_TIMEOUT = 30
 STATE_FETCH_TIMEOUT = 30
@@ -100,6 +102,16 @@ DEVICE_REGISTRY_CACHE_TTL = 60
 AREA_REGISTRY_CACHE_TTL = 60
 
 SEARCH_CONTROL_ENTITIES_COMMAND = f"{DOMAIN}/search_control_entities"
+
+# HA paths a media player's entity_picture points at, the only images this provider resolves
+IMAGE_PATH_PREFIXES: Final = (
+    "/api/media_player_proxy/",
+    "/api/image_proxy/",
+    "/api/image/serve/",
+    "/local/",
+)
+IMAGE_MAX_BYTES: Final = 10 * 1024 * 1024
+IMAGE_READ_CHUNK_SIZE: Final = 64 * 1024
 
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
@@ -602,11 +614,31 @@ class HomeAssistantProvider(PluginProvider):
         return states
 
     async def resolve_image(self, path: str) -> bytes:
-        """Resolve an image from an image path."""
+        """
+        Fetch an entity picture from Home Assistant.
+
+        :param path: The HA-relative image path, as found in a media player's entity_picture.
+        :raises FileNotFoundError: When the path is not an HA image path, or HA does not
+            answer with an image within the size limit.
+        """
+        # the HTTP client resolves percent-encoded dot segments, so check the decoded form
+        path_segments = unquote(path.split("?", 1)[0]).split("/")
+        if not path.startswith(IMAGE_PATH_PREFIXES) or ".." in path_segments:
+            raise FileNotFoundError("Image not found")
         ha_url, headers, http_session = self._get_ha_http()
         async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
             response.raise_for_status()
-            return await response.read()
+            if not response.content_type.startswith("image/"):
+                raise FileNotFoundError("Image not found")
+            if (response.content_length or 0) > IMAGE_MAX_BYTES:
+                raise FileNotFoundError("Image too large")
+            # the declared length can be absent or wrong, so cap what is actually read
+            data = bytearray()
+            while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
+                data.extend(chunk)
+                if len(data) > IMAGE_MAX_BYTES:
+                    raise FileNotFoundError("Image too large")
+            return bytes(data)
 
     async def get_ai_engines(self) -> list[AIEngine]:
         """Return the Home Assistant AI Task entities as AI engines."""
@@ -686,7 +718,7 @@ class HomeAssistantProvider(PluginProvider):
         async with http_session.post(
             f"{ha_url}/api/tts_get_url", headers=headers, json=payload
         ) as response:
-            await self._raise_for_tts_error(response)
+            await self._raise_for_tts_error(response, entity_id, language)
             data = await response.json()
         url = str(data["url"])
         return StreamDetails(
@@ -825,7 +857,7 @@ class HomeAssistantProvider(PluginProvider):
             if not hass_state:
                 control.volume_muted = False
             elif entity_platform == "media_player":
-                control.volume_muted = hass_state["attributes"].get("volume_muted")
+                control.volume_muted = bool(hass_state["attributes"].get("is_volume_muted"))
             else:
                 control.volume_muted = hass_state["state"] not in OFF_STATES
             control.mute_set = partial(self._handle_player_control_mute_set, entity_id)
@@ -915,7 +947,7 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_volume and "volume_level" in attributes:
                 player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
             if player_control.supports_mute and "is_volume_muted" in attributes:
-                player_control.volume_muted = attributes.get("is_volume_muted")
+                player_control.volume_muted = bool(attributes.get("is_volume_muted"))
         self.mass.players.update_player_control(entity_id)
 
     async def _fetch_states(self, entity_ids: list[str]) -> list[State]:
@@ -955,8 +987,10 @@ class HomeAssistantProvider(PluginProvider):
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         return ha_url, headers, http_session
 
-    async def _raise_for_tts_error(self, response: ClientResponse) -> None:
-        """Raise for a failed tts_get_url response without masking a language rejection."""
+    async def _raise_for_tts_error(
+        self, response: ClientResponse, entity_id: str, language: str | None
+    ) -> None:
+        """Raise a classified error for a failed tts_get_url response."""
         if response.ok:
             return
         try:
@@ -965,10 +999,27 @@ class HomeAssistantProvider(PluginProvider):
         except ValueError:
             body = None
         error_message = body.get("error") if isinstance(body, dict) else None
-        # HA returns the same 400 for a rejected option and an unsupported language
-        if isinstance(error_message, str) and "Invalid options found" in error_message:
+        if isinstance(error_message, str):
+            if error_message.startswith("Language '") and error_message.endswith("' not supported"):
+                raise TTSLanguageNotSupportedError(f"TTS engine '{entity_id}': {error_message}")
             raise MusicAssistantError(error_message)
-        response.raise_for_status()
+        if response.status == 500 and language:
+            # HA masks tts_get_url validation errors as a bare 500 (the error body fails
+            # to serialize), so a rejected language is the one recoverable cause left
+            raise TTSLanguageNotSupportedError(
+                f"TTS request to engine '{entity_id}' for language '{language}' failed "
+                f"(HTTP {response.status} from Home Assistant, which hides the reason, "
+                "possibly an unsupported language)"
+            )
+        failure = (
+            f"TTS request to engine '{entity_id}' failed: Home Assistant returned "
+            f"HTTP {response.status} ({response.reason}) on tts_get_url."
+        )
+        if response.status in (401, 403):
+            raise MusicAssistantError(
+                f"{failure} Check your Home Assistant connection settings and access token."
+            )
+        raise MusicAssistantError(f"{failure} Check the Home Assistant core log for the reason.")
 
     async def _disconnect_hass(self) -> None:
         """Stop listening for Home Assistant events and disconnect the client."""
@@ -1068,7 +1119,7 @@ class HomeAssistantProvider(PluginProvider):
         # the lists straight from their handler, so this has to stay below the assignments.
         # during startup the load itself signals once we are done.
         if changed and self._startup_complete:
-            self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+            self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
     async def _subscribe_entity_registry(self) -> None:
         """Watch the Home Assistant entity registry to keep the engine lists up to date."""

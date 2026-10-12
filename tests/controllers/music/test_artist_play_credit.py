@@ -13,11 +13,15 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 from music_assistant_models.enums import AlbumType, MediaType
-from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_ARTISTS, DB_TABLE_PLAYLOG
+from music_assistant.constants import (
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
+)
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
@@ -74,6 +78,14 @@ async def _add_album(mass: MusicAssistant, name: str, artists: list[Artist]) -> 
     return await mass.music.albums.get_library_item(added.item_id)
 
 
+def _queue_data(enqueued: list[Album]) -> PlayerQueueData:
+    """Build the queue record the album-credit decision reads (only the enqueued items matter)."""
+    return PlayerQueueData(
+        queue=cast("PlayerQueue", Mock(queue_id="q1")),
+        enqueued_media_items=list(enqueued),
+    )
+
+
 async def _play_count(mass: MusicAssistant, table: str, item_id: str) -> int:
     """Read the play_count for a library item directly from the database."""
     row = await mass.music.database.get_row(table, {"item_id": item_id})
@@ -84,7 +96,7 @@ async def _play_count(mass: MusicAssistant, table: str, item_id: str) -> int:
 async def _artist_user_initiated(mass: MusicAssistant, item_id: str, userid: str) -> int:
     """Read the user_initiated flag of an artist playlog row."""
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {"media_type": MediaType.ARTIST.value, "item_id": item_id, "userid": userid},
     )
     assert row is not None
@@ -99,14 +111,14 @@ async def test_played_track_credits_all_track_artists(mass: MusicAssistant) -> N
     track = await _add_track(mass, "Collab", [primary, featured])
 
     await mass.music.mark_item_played(
-        track, fully_played=True, user_initiated=True, userid=user.user_id
+        track, fully_played=True, queue_id="q1", user_initiated=True, userid=user.user_id
     )
 
     assert await _play_count(mass, DB_TABLE_ARTISTS, primary.item_id) == 1
     assert await _play_count(mass, DB_TABLE_ARTISTS, featured.item_id) == 1
     for artist in (primary, featured):
         rows = await mass.music.database.get_rows(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "media_type": MediaType.ARTIST.value,
                 "item_id": artist.item_id,
@@ -118,12 +130,18 @@ async def test_played_track_credits_all_track_artists(mass: MusicAssistant) -> N
 
 async def test_album_play_credits_album_artists_with_dedup(mass: MusicAssistant) -> None:
     """Marking an album played credits its album artists, skipping any in skip_artist_ids."""
+    user = await mass.webserver.auth.create_user("albumcreditdedup")
     kept = await _add_artist(mass, "Kept Artist")
     skipped = await _add_artist(mass, "Skipped Artist")
     album = await _add_album(mass, "An Album", [kept, skipped])
 
     await mass.music.mark_item_played(
-        album, fully_played=True, user_initiated=True, skip_artist_ids=[skipped.item_id]
+        album,
+        fully_played=True,
+        queue_id="q1",
+        user_initiated=True,
+        skip_artist_ids=[skipped.item_id],
+        userid=user.user_id,
     )
 
     assert await _play_count(mass, DB_TABLE_ALBUMS, album.item_id) == 1
@@ -138,7 +156,7 @@ async def test_track_credit_does_not_flag_artist_user_initiated(mass: MusicAssis
     track = await _add_track(mass, "A Song", [artist])
 
     await mass.music.mark_item_played(
-        track, fully_played=True, user_initiated=True, userid=user.user_id
+        track, fully_played=True, queue_id="q1", user_initiated=True, userid=user.user_id
     )
 
     assert await _artist_user_initiated(mass, artist.item_id, user.user_id) == 0
@@ -158,13 +176,49 @@ async def test_explicit_artist_play_survives_track_credit(mass: MusicAssistant) 
 
     # later, one of the artist's tracks auto-plays (not user-initiated)
     await mass.music.mark_item_played(
-        track, fully_played=True, user_initiated=False, userid=user.user_id
+        track,
+        fully_played=True,
+        queue_id="q1",
+        user_initiated=False,
+        userid=user.user_id,
     )
     assert await _artist_user_initiated(mass, artist.item_id, user.user_id) == 1
 
 
+async def test_track_and_album_play_write_separate_history_media_types(
+    mass: MusicAssistant,
+) -> None:
+    """A completed album credit creates its own album event beside the track event."""
+    user = await mass.webserver.auth.create_user("trackalbumhistory")
+    artist = await _add_artist(mass, "History Artist")
+    track = await _add_track(mass, "History Track", [artist])
+    album = await _add_album(mass, "History Album", [artist])
+
+    await mass.music.mark_item_played(
+        track,
+        fully_played=True,
+        queue_id="history-queue",
+        user_initiated=True,
+        userid=user.user_id,
+    )
+    await mass.music.mark_item_played(
+        album,
+        fully_played=True,
+        queue_id="history-queue",
+        user_initiated=True,
+        skip_artist_ids=[artist.item_id],
+        userid=user.user_id,
+    )
+
+    rows = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id})
+    assert {(row["media_type"], row["item_id"]) for row in rows} == {
+        (MediaType.TRACK.value, track.item_id),
+        (MediaType.ALBUM.value, album.item_id),
+    }
+
+
 def test_enqueued_album_decision() -> None:
-    """An album is credited only when enqueued and only on the first track of its run."""
+    """An album is credited only when enqueued, and only once per enqueue."""
     album_x = Album(
         item_id="ax",
         provider="library",
@@ -182,16 +236,170 @@ def test_enqueued_album_decision() -> None:
     t1 = Track(item_id="t1", provider="library", name="T1", provider_mappings=set(), album=album_x)
     t2 = Track(item_id="t2", provider="library", name="T2", provider_mappings=set(), album=album_x)
     t3 = Track(item_id="t3", provider="library", name="T3", provider_mappings=set(), album=album_y)
-    items = [QueueItem.from_media_item("q1", track) for track in (t1, t2, t3)]
 
     tracker = PlayerQueuesController.__new__(PlayerQueuesController)
-    queue = cast("PlayerQueue", Mock(queue_id="q1"))
-    data = PlayerQueueData(queue=queue, items=items, enqueued_media_items=[album_x])
-    tracker._queue_data = {"q1": data}
+    data = _queue_data(enqueued=[album_x])
 
-    # first track of the enqueued album -> credit it
-    assert tracker._enqueued_album_for_track(data, items[0], t1) is album_x
-    # second track shares the previous queue item's album -> already handled
-    assert tracker._enqueued_album_for_track(data, items[1], t2) is None
+    # first of the album's tracks to complete -> credit it
+    assert tracker._claim_enqueued_album_credit(data, t1) is album_x
+    # any further track of the same album -> already credited for this enqueue
+    assert tracker._claim_enqueued_album_credit(data, t2) is None
     # a track whose album was never enqueued -> not credited
-    assert tracker._enqueued_album_for_track(data, items[2], t3) is None
+    assert tracker._claim_enqueued_album_credit(data, t3) is None
+
+
+def test_enqueued_album_credited_once_however_its_tracks_are_ordered() -> None:
+    """Album tracks split up or reordered in the queue still credit the album exactly once."""
+    album_x = Album(
+        item_id="ax",
+        provider="library",
+        name="X",
+        provider_mappings=set(),
+        album_type=AlbumType.ALBUM,
+    )
+    album_y = Album(
+        item_id="ay",
+        provider="library",
+        name="Y",
+        provider_mappings=set(),
+        album_type=AlbumType.ALBUM,
+    )
+    x_tracks = [
+        Track(
+            item_id=f"x{i}",
+            provider="library",
+            name=f"X{i}",
+            provider_mappings=set(),
+            album=album_x,
+        )
+        for i in range(4)
+    ]
+    y_track = Track(
+        item_id="y1", provider="library", name="Y1", provider_mappings=set(), album=album_y
+    )
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    # 'play next' on a track from another album splits the album's run in two
+    data = _queue_data(enqueued=[album_x])
+    played = [x_tracks[0], x_tracks[1], y_track, x_tracks[2], x_tracks[3]]
+    credited = [tracker._claim_enqueued_album_credit(data, track) for track in played]
+    assert [c for c in credited if c is not None] == [album_x]
+
+    # the album's first track is skipped, so it never completes and the claim arrives from a
+    # later track that sits behind a same-album predecessor; the album is still credited once
+    data = _queue_data(enqueued=[album_x])
+    played = x_tracks[1:]
+    credited = [tracker._claim_enqueued_album_credit(data, track) for track in played]
+    assert [c for c in credited if c is not None] == [album_x]
+
+
+def test_reenqueued_album_in_another_shape_is_credited_again() -> None:
+    """Re-enqueueing an album from a different listing arms its credit again."""
+    mapping = ProviderMapping(
+        item_id="album-prov-1", provider_domain="spotify", provider_instance="spotify--abc"
+    )
+    provider_album = Album(
+        item_id="album-prov-1",
+        provider="spotify--abc",
+        name="Kind of Blue",
+        provider_mappings={mapping},
+        album_type=AlbumType.ALBUM,
+    )
+    library_album = Album(
+        item_id="7",
+        provider="library",
+        name="Kind of Blue",
+        provider_mappings={mapping},
+        album_type=AlbumType.ALBUM,
+    )
+    track = Track(
+        item_id="t1", provider="library", name="T1", provider_mappings=set(), album=library_album
+    )
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    # played from the provider listing first, then queued again from the library view
+    data = _queue_data(enqueued=[provider_album])
+    assert tracker._claim_enqueued_album_credit(data, track) is library_album
+    data.enqueued_media_items.append(library_album)
+    data.credited_albums.discard(library_album)
+
+    assert tracker._claim_enqueued_album_credit(data, track) is library_album
+
+
+def test_enqueued_provider_album_credits_its_library_tracks() -> None:
+    """An album picked from a provider listing is credited, though its tracks are library ones."""
+    mapping = ProviderMapping(
+        item_id="album-prov-1", provider_domain="spotify", provider_instance="spotify--abc"
+    )
+    # the album object a provider listing hands to play_media
+    provider_album = Album(
+        item_id="album-prov-1",
+        provider="spotify--abc",
+        name="Kind of Blue",
+        provider_mappings={mapping},
+        album_type=AlbumType.ALBUM,
+    )
+    # the album its tracks carry, because the album is also in the library
+    library_album = Album(
+        item_id="7",
+        provider="library",
+        name="Kind of Blue",
+        provider_mappings={mapping},
+        album_type=AlbumType.ALBUM,
+    )
+    other_album = Album(
+        item_id="8",
+        provider="library",
+        name="Sketches of Spain",
+        provider_mappings={
+            ProviderMapping(
+                item_id="album-prov-2",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+        album_type=AlbumType.ALBUM,
+    )
+    t1 = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    t2 = Track(item_id="t2", provider="library", name="T2", provider_mappings=set())
+    t3 = Track(item_id="t3", provider="library", name="T3", provider_mappings=set())
+    # loading an item for playback puts the full library album on it
+    t1.album = library_album
+    t2.album = library_album
+    t3.album = other_album
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    data = _queue_data(enqueued=[provider_album])
+
+    # the enqueued album is credited on the first of its tracks to complete, under the
+    # library identity so it shares the row an explicit library play writes
+    assert tracker._claim_enqueued_album_credit(data, t1) is library_album
+    # and only once for that enqueue
+    assert tracker._claim_enqueued_album_credit(data, t2) is None
+    # a track from an album the user never enqueued is not credited
+    assert tracker._claim_enqueued_album_credit(data, t3) is None
+
+
+def test_album_outside_the_library_is_credited_as_the_provider_album() -> None:
+    """An album that is not in the library is credited under the provider identity."""
+    provider_album = Album(
+        item_id="album-prov-1",
+        provider="spotify--abc",
+        name="Kind of Blue",
+        provider_mappings={
+            ProviderMapping(
+                item_id="album-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+        album_type=AlbumType.ALBUM,
+    )
+    track = Track(item_id="t1", provider="spotify--abc", name="T1", provider_mappings=set())
+    # with no library album to swap in, the track keeps the provider album as a mapping
+    track.album = ItemMapping.from_item(provider_album)
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    data = _queue_data(enqueued=[provider_album])
+
+    assert tracker._claim_enqueued_album_credit(data, track) is provider_album

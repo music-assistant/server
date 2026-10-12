@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "teddycloud",
-  "stage": "experimental",
+  "stage": "beta",
   "name": "TeddyCloud",
   "description": "Browse and stream the audiobooks from your self-hosted TeddyCloud (Toniebox) library.",
   "codeowners": ["@yoyixms"],

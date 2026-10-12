@@ -39,7 +39,6 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import (
     ContentType,
-    EventType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -55,12 +54,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import SourceControl
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import (
         BrowseFolder,
         ItemMapping,
@@ -68,6 +66,7 @@ if TYPE_CHECKING:
         RecommendationFolder,
         Track,
     )
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -84,12 +83,12 @@ SUPPORTED_FEATURES = {
     # MANDATORY
     # this constant should contain a set of provider-level features
     # that your provider supports or an empty set if none.
-    # see the ProviderFeature enum for all available features
-    # at time of writing the only plugin-specific feature is the
-    # 'AUDIO_SOURCE' feature which indicates that this provider can
-    # provide a (single) audio source to Music Assistant, such as a live stream.
-    # we add this feature here to demonstrate the concept.
-    ProviderFeature.AUDIO_SOURCE
+    # see the ProviderFeature enum for all available features.
+    # this demo declares two of the plugin-specific features to demonstrate the concept:
+    # 'AUDIO_SOURCE' means the provider exposes a (live) audio source to Music Assistant
+    # and 'SCROBBLE' means it receives a report of every media item that is played.
+    ProviderFeature.AUDIO_SOURCE,
+    ProviderFeature.SCROBBLE,
 }
 
 
@@ -123,10 +122,10 @@ class MyDemoPluginprovider(PluginProvider):
     # tracks which queue currently owns the exclusive AudioSource. Set in
     # on_source_selected (NOT in get_stream_details — that path also runs from
     # queue preload, where claiming would block a later cross-queue handoff).
-    _in_use_by_queue: str | None = None
+    _in_use_by_player: str | None = None
     # tracks the active stream_session_id for the current stream request.
-    # Paired with _in_use_by_queue: same-queue reconnects refresh this token
-    # without changing _in_use_by_queue, so stream loops and generator
+    # Paired with _in_use_by_player: same-queue reconnects refresh this token
+    # without changing _in_use_by_player, so stream loops and generator
     # finallys must guard their lock release on both still matching.
     _active_session_id: str | None = None
 
@@ -149,15 +148,6 @@ class MyDemoPluginprovider(PluginProvider):
         # it will be called after the provider has been fully loaded into Music Assistant.
         # you can use this for instance to trigger custom (non-mdns) discovery of plugins
         # or any other logic that needs to run after the provider is fully loaded.
-
-        # as reference we will subscribe here to an event on the MA eventbus
-        # this is just an example and you can remove this if not needed.
-        async def handle_event(event: MassEvent) -> None:
-            if event.event == EventType.MEDIA_ITEM_PLAYED:
-                # example implementation of handling a media item played event
-                self.logger.info("Media item played event received: %s", event.data)
-
-        self.mass.subscribe(handle_event, EventType.MEDIA_ITEM_PLAYED)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -182,8 +172,8 @@ class MyDemoPluginprovider(PluginProvider):
         # "Live Inputs" browse node and can be played on any player via
         # the standard play_media flow. Capability flags (can_play_pause,
         # can_seek, can_next_previous) drive which control buttons the UI
-        # surfaces and which commands the player controller proxies through
-        # to on_source_control.
+        # surfaces and which commands the server proxies through to
+        # on_source_control.
         #
         # Most plugins expose a single source; for those, build it once in
         # __init__ and return the cached instance here. Plugins that expose
@@ -232,8 +222,7 @@ class MyDemoPluginprovider(PluginProvider):
         # an async generator (get_audio_stream below), or stream_type=NAMED_PIPE
         # plus a path when audio comes from a named pipe / file. stream_metadata
         # carries the initial track info; update it at runtime via
-        # mass.streams.update_stream_metadata(queue_id, ...) — same mechanism
-        # ICY radio metadata uses.
+        # mass.players.update_source_metadata(player_id, ...).
         #
         # Silence-during-pause contract:
         # - stream_type=CUSTOM: the server wraps your audio generator with a
@@ -278,7 +267,7 @@ class MyDemoPluginprovider(PluginProvider):
         # on_source_selected fires again with a fresh stream_session_id (but
         # the same queue id), and the prior generator's teardown would
         # otherwise clear the lock that now belongs to the new session.
-        consumer_queue = self._in_use_by_queue
+        consumer_queue = self._in_use_by_player
         captured_session_id = self._active_session_id
         # 100ms of silence at 44.1kHz/16bit/stereo PCM — matches the audio_format
         # declared in get_stream_details. Replace with your actual byte source.
@@ -288,16 +277,16 @@ class MyDemoPluginprovider(PluginProvider):
                 yield pcm_chunk
         finally:
             if (
-                self._in_use_by_queue == consumer_queue
+                self._in_use_by_player == consumer_queue
                 and self._active_session_id == captured_session_id
             ):
-                self._in_use_by_queue = None
+                self._in_use_by_player = None
 
     async def on_source_control(
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Handle a playback control command for the active AudioSource."""
         # OPTIONAL
@@ -318,8 +307,22 @@ class MyDemoPluginprovider(PluginProvider):
         # Fired only on the direct queue owner — group volume changes fire once
         # at the group level, not per child.
 
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """React to a playback progress report of a media item."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.SCROBBLE is declared.
+        # Fired throughout the playback of a media item and whenever its playback state
+        # changes (pause, end, skip); the report says whether the item is still playing and
+        # whether it was played to completion, and names the playing user and player so you
+        # can filter on those. It can fire before loaded_in_mass ran, so ignore reports
+        # until everything the plugin needs is set up.
+        # Scrobblers typically forward the report to a ScrobblerHelper subclass
+        # (music_assistant.helpers.scrobbler), which handles now-playing updates, duplicate
+        # suppression and the shared user/player filter options.
+        self.logger.info("Media item played report received: %s", report)
+
     async def on_source_selected(
-        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """React to an AudioSource being selected for playback on a player."""
         # OPTIONAL — fires only on the actual stream request (not on queue
@@ -335,7 +338,7 @@ class MyDemoPluginprovider(PluginProvider):
         #
         #     if self._active_player_id and self._active_player_id != player_id:
         #         await self.mass.players.cmd_stop(self._active_player_id)
-        #     self._in_use_by_queue = queue_id  # claim (overwrites prior queue's)
+        #     self._in_use_by_player = owner_player_id  # claim (overwrites prior queue's)
         #     self._active_session_id = stream_session_id
         #     self._active_player_id = player_id
         #
@@ -345,7 +348,7 @@ class MyDemoPluginprovider(PluginProvider):
         # continue into get_stream_details and stream to the wrong player.
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """React to MA tearing down this AudioSource's stream from a queue."""
         # OPTIONAL — fires in the queue-item stream handler's finally block, so
@@ -353,7 +356,7 @@ class MyDemoPluginprovider(PluginProvider):
         # disconnect, exception). Lets NAMED_PIPE plugins release ownership
         # without depending on an external session event.
         #
-        # Guard with a stream_session_id match — NOT just a queue_id match —
+        # Guard with a stream_session_id match — NOT just a owner_player_id match —
         # so a stale callback from a superseded same-queue request (player
         # drops + reopens the same URL before the prior finally fires) cannot
         # clear the live claim of the new stream:
@@ -361,8 +364,8 @@ class MyDemoPluginprovider(PluginProvider):
         #     if self._active_session_id != stream_session_id:
         #         return
         #     self._active_session_id = None
-        #     if self._in_use_by_queue == queue_id:
-        #         self._in_use_by_queue = None
+        #     if self._in_use_by_player == owner_player_id:
+        #         self._in_use_by_player = None
 
     async def search(
         self,

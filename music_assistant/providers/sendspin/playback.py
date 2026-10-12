@@ -31,6 +31,10 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from music_assistant_models.streamdetails import StreamDetails
+
     from music_assistant.helpers.dsp import ComplexFilter
 
     from .player import SendspinPlayer
@@ -51,16 +55,18 @@ _DEFAULT_SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     channels=2,
     sample_type="float",
 )
-# Media types whose upstream feeds at realtime rate, so the Sendspin queue cannot
-# grow after playback begins, so their send-ahead stays at the min_buffer_ms floor.
-# Buffered types (tracks, podcasts, etc.) race ahead and fill the queue naturally, so
-# their send-ahead may extend to a larger required_lead_time_ms without lasting cost.
+# Media types whose upstream always feeds at realtime rate, so the Sendspin queue
+# cannot grow after playback begins and their send-ahead stays at the min_buffer_ms
+# floor. Buffered types (tracks, podcasts, etc.) race ahead and fill the queue
+# naturally, so their send-ahead may extend to a larger required_lead_time_ms without
+# lasting cost. Media type alone does not settle it: a track can come from a source
+# that also feeds just-in-time, which is what StreamDetails.is_realtime marks - see
+# _is_live_source().
 _LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
     {
         MediaType.RADIO,
         MediaType.AUDIO_SOURCE,
         MediaType.PLUGIN_SOURCE,
-        MediaType.FLOW_STREAM,
     }
 )
 
@@ -357,6 +363,8 @@ class SendspinPlaybackSession:
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
         self._queue_id: str | None = None
         self._queue_session_id: str | None = None
+        # stream details of the session's first item, which the session sample rate follows
+        self._start_streamdetails: StreamDetails | None = None
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
         """
@@ -468,6 +476,7 @@ class SendspinPlaybackSession:
             # role requirements and prepared audio stay on the same channel.
             self._preassigned_channels.setdefault(player_id, uuid4())
         try:
+            await self._follow_session_sample_rate([player_id])
             await self._start_join_catchup(player_id)
         except Exception:
             async with self._state_lock:
@@ -734,7 +743,7 @@ class SendspinPlaybackSession:
 
     # -- Playback pipeline -----------------------------------------------------
 
-    async def _run_playback(self, media: PlayerMedia) -> None:  # noqa: PLR0915
+    async def _run_playback(self, media: PlayerMedia) -> None:  # noqa: C901, PLR0915
         """
         Run the playback pipeline for a single media session.
 
@@ -749,9 +758,14 @@ class SendspinPlaybackSession:
         await import_module_in_thread("av")
         push_stream: PushStream | None = None
         try:
+            # let automatic Sendspin formats follow the first item's sample rate, then
             # refresh the session PCM format from the leader's preferred output before
             # building any pipelines; member ffmpeg pipelines and pre-computed filter
             # params depend on this rate so the cache must also be cleared
+            self._start_streamdetails = self._get_start_streamdetails(media)
+            await self._follow_session_sample_rate(
+                [client.client_id for client in self.player.api.group.clients]
+            )
             self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
             self._queue_id = media.source_id
             self._queue_session_id = get_media_session_id(media)
@@ -761,8 +775,7 @@ class SendspinPlaybackSession:
                 self._pcm_format.sample_rate,
             )
             push_stream = self._create_push_stream()
-            is_live = media.media_type in _LIVE_MEDIA_TYPES
-            push_stream.set_live_source(is_live)
+            push_stream.set_live_source(self._is_live_source(media))
             async with self._state_lock:
                 self._push_stream = push_stream
                 self._playback_running = True
@@ -788,7 +801,7 @@ class SendspinPlaybackSession:
         # Shadow deque mirroring pending_chunks for join-catchup backlog peeking.
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
-        last_elapsed_update_s = 0.0
+        last_elapsed_update_s: float | None = None
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
@@ -913,7 +926,10 @@ class SendspinPlaybackSession:
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
                 if self._timeline_start_us is not None:
                     elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
-                    if elapsed_real_s - last_elapsed_update_s >= 1.0:
+                    if (
+                        last_elapsed_update_s is None
+                        or elapsed_real_s - last_elapsed_update_s >= 1.0
+                    ):
                         last_elapsed_update_s = elapsed_real_s
                         self.player._attr_elapsed_time = elapsed_real_s
                         self.player._attr_elapsed_time_last_updated = time.time()
@@ -970,7 +986,9 @@ class SendspinPlaybackSession:
                     producer_stopped_cleanly = False
             with suppress(Exception):
                 # Same condition as the group.stop() below, so we snapshot on exactly the
-                # paths where a group STOP - and therefore a freeze - is already emitted.
+                # paths where a group STOP is already emitted. That stop resets the reported
+                # position to 0 (spec: stop rewinds), so the snapshot only carries the
+                # position if the stop below raises.
                 self._stop_push_stream(
                     snapshot_progress=producer_stopped_cleanly and not self._cancel_requested,
                 )
@@ -1291,6 +1309,22 @@ class SendspinPlaybackSession:
             filter_params=filter_params,
         )
 
+    def _get_start_streamdetails(self, media: PlayerMedia) -> StreamDetails | None:
+        """Return the resolved stream details of the queue item a session starts with."""
+        if not media.source_id or not media.queue_item_id:
+            return None
+        queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        return queue_item.streamdetails if queue_item else None
+
+    async def _follow_session_sample_rate(self, player_ids: Iterable[str]) -> None:
+        """Let the given players' Sendspin formats follow the sample rate of this session."""
+        from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
+
+        for player_id in player_ids:
+            player = self.player.mass.players.get_player(player_id)
+            if isinstance(player, SendspinPlayer):
+                await player.follow_session_sample_rate(self._start_streamdetails)
+
     def _select_session_pcm_formats(self) -> tuple[AudioFormat, SendspinAudioFormat]:
         """
         Pick the session PCM format (MA-side + wire) from the leader's preferred format.
@@ -1482,6 +1516,7 @@ class SendspinPlaybackSession:
             self._first_commit_monotonic_us = None
             self._produced_audio_us = 0
             self._history.clear()
+            self._start_streamdetails = None
             # Drop cached DSP decisions so next playback reflects latest config.
             self._pipeline_config_cache.clear()
 
@@ -1533,3 +1568,22 @@ class SendspinPlaybackSession:
         frame_size = bytes_per_sample * int(self._pcm_format.channels)
         samples = max(0, round((duration_us / 1_000_000) * int(self._pcm_format.sample_rate)))
         return b"\x00" * (samples * frame_size)
+
+    def _is_live_source(self, media: PlayerMedia) -> bool:
+        """
+        Return whether this media is fed to the server at playback pace.
+
+        Radio and live sources always are; a track is when its provider hands
+        over the audio just-in-time (a queue flow of such items included, which
+        the media type cannot express because it names the first item).
+
+        :param media: The media about to be played.
+        """
+        if media.media_type in _LIVE_MEDIA_TYPES:
+            return True
+        if not media.source_id or not media.queue_item_id:
+            return False
+        queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        return bool(
+            queue_item and queue_item.streamdetails and queue_item.streamdetails.is_realtime
+        )

@@ -48,6 +48,9 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
+from music_assistant.helpers.podcast_parsers import get_publisher_number
+
 from .constants import (
     API_DEFAULT_RESOURCE_VERSION,
     API_ENCRYPTION_IV,
@@ -478,7 +481,6 @@ class StorytelHelper:
                     provider_instance=self.provider_id,
                 )
             },
-            favorite=False,
             total_episodes=episode_count,
         )
 
@@ -492,8 +494,7 @@ class StorytelHelper:
         if language:
             podcast.metadata.languages = UniqueList([language])
         genre = list_metadata.get("genre") or ""
-        if genre:
-            podcast.metadata.genres = {genre}
+        podcast.metadata.genres = {genre} if genre else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         podcast.metadata.performers = set(hosts)
         latest_episode_date_text = (list_metadata.get("followingInfo") or {}).get(
             "newestItemReleaseDate"
@@ -819,7 +820,7 @@ class StorytelHelper:
                 stream_url = (response.get("result") or {}).get("signedUrl") or ""
                 if stream_url == "":
                     self.logger.error("No signed URL returned for %s", item_id)
-                    raise MediaNotFoundError("No signed URL returned")
+                    raise MediaNotFoundError("No signed URL returned")  # noqa: TRY301 - re-raised by except below
                 headers.pop("authorization", None)
                 headers["range"] = "bytes=0-1"
                 current_stream_url = URL(stream_url, encoded=True)
@@ -851,7 +852,9 @@ class StorytelHelper:
                         resolved_stream_url = str(current_stream_url)
                         break
                 else:
-                    raise UnplayableMediaError("Too many redirects while resolving Storytel stream")
+                    raise UnplayableMediaError(  # noqa: TRY301 - re-raised by except below
+                        "Too many redirects while resolving Storytel stream"
+                    )
         except (
             ClientError,
             ConnectionError,
@@ -1132,6 +1135,7 @@ class StorytelHelper:
             name=title,
             duration=duration_seconds,
             position=0,
+            episode_number=get_publisher_number(episode_number),
             provider_mappings={
                 ProviderMapping(
                     item_id=consumable_id,
@@ -1166,7 +1170,6 @@ class StorytelHelper:
                 )
             },
             publisher=publisher,
-            favorite=False,
         )
         chapters = await self._fetch_chapters(consumable_id=consumable_id)
         chapters_list = self._parse_chapters(chapters)
@@ -1227,7 +1230,6 @@ class StorytelHelper:
                     provider_instance=self.provider_id,
                 )
             },
-            favorite=False,
         )
         if authors:
             media_item.authors.set(authors)
@@ -1267,6 +1269,7 @@ class StorytelHelper:
                 )
             },
         )
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         cover_url = (
             (item_data.get("cover") or {}).get("url")
             if isinstance(item_data.get("cover"), dict)

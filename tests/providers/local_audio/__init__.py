@@ -1,1 +1,1 @@
-"""Tests for the Local Audio Out provider."""
+"""Tests for the retired Local Audio Out provider."""

@@ -2,10 +2,10 @@
   "type": "music",
   "domain": "digitally_incorporated",
   "stage": "stable",
-  "name": "Digitally Incorporated Streaming Network",
+  "name": "Digitally Imported Streaming Network",
   "description": "Stream curated internet radio from DI.FM, RadioTunes, RockRadio, JazzRadio, ClassicalRadio, and ZenRadio.",
   "codeowners": ["@benklop"],
   "requirements": [],
-  "documentation": "https://music-assistant.io/music-providers/digitally-incorporated/",
+  "documentation": "https://music-assistant.io/music-providers/digitally-imported/",
   "multi_instance": false
 }

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Generator
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from collections.abc import Generator
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.media_items import ItemMapping
 
+from music_assistant.providers.tidal.api_client import TidalAPIClient
 from music_assistant.providers.tidal.media import TidalMediaManager
 
 if TYPE_CHECKING:
@@ -33,18 +34,12 @@ def provider_mock() -> Mock:
 
     provider.api = AsyncMock()
     provider.api.get.return_value = {}
-    # paginate is an async generator, so it cannot be an AsyncMock child: it yields the
-    # items a test assigns to paginate.return_value
-    provider.api.paginate = MagicMock()
-
-    async def paginate(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any]:
-        for item in provider.api.paginate.return_value:
-            yield item
-
-    provider.api.paginate.side_effect = paginate
-    provider.api.paginate.return_value = []
 
     provider.get_track = AsyncMock()
+    # Churn-healing collaborators: the cache-only redirect defaults to identity
+    # (id is not known-stale) and the reactive resolver to unresolvable.
+    provider.redirect_cached_id = AsyncMock(side_effect=lambda item_id: item_id)
+    provider.resolve_live_track_id = AsyncMock(return_value=None)
 
     def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
@@ -79,8 +74,8 @@ def no_throttling() -> Generator[None]:
     Disable rate limiting and retry backoff during tests.
 
     The API client's throttler is class-level shared state: its real-time
-    rate window would otherwise carry over between tests and make every
-    test wait it out.
+    rate window and a rate limit cooldown would otherwise carry over between
+    tests and make every test wait it out, or fail on it.
 
     Note: the sleep patch targets the attribute on the shared asyncio
     module, so asyncio.sleep is mocked process-wide while each test in
@@ -95,5 +90,6 @@ def no_throttling() -> Generator[None]:
             "music_assistant.helpers.throttle_retry.asyncio.sleep",
             new_callable=AsyncMock,
         ),
+        patch.object(TidalAPIClient.throttler, "_cooldown_until", 0.0),
     ):
         yield

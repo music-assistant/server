@@ -5,13 +5,12 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.siriusxm import (
     CONF_SXM_PASSWORD,
-    CONF_SXM_REGION,
     CONF_SXM_USERNAME,
 )
 
@@ -21,22 +20,12 @@ if TYPE_CHECKING:
 _ENTRIES = (
     ConfigEntry(key=CONF_SXM_USERNAME, type=ConfigEntryType.STRING, required=True),
     ConfigEntry(key=CONF_SXM_PASSWORD, type=ConfigEntryType.SECURE_STRING, required=True),
-    ConfigEntry(
-        key=CONF_SXM_REGION,
-        type=ConfigEntryType.STRING,
-        default_value="US",
-        options=[
-            ConfigValueOption("US"),
-            ConfigValueOption("CA"),
-        ],
-        required=True,
-    ),
 )
 
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the credentials and create the provider."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     while True:
         entries = [
@@ -48,4 +37,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

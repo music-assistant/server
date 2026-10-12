@@ -21,7 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import (
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
+    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_AAC,
     CONF_PASSWORD,
     CONF_SSL_FINGERPRINT,
     CONF_USE_SSL,
@@ -124,7 +124,9 @@ class FullyKioskPlayer(Player):
                 required=False,
                 advanced=True,
             ),
-            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
+            # Fully Kiosk aborts a long lived MP3 stream after roughly 8m45s and re-requests
+            # the url, so radio and long queues never play through. AAC is not affected.
+            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_AAC,
         ]
 
     async def on_config_updated(self) -> None:
@@ -145,14 +147,14 @@ class FullyKioskPlayer(Player):
         entries = [
             ConfigEntry(key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, required=True)
         ]
-        errors: dict[str, str] | None = None
+        errors: dict[str, str | SetupFlowError] | None = None
         while True:
             values = await session.form(entries, step_id="user", errors=errors, last_step=True)
             try:
                 await session.finish({CONF_PASSWORD: str(values[CONF_PASSWORD])})
                 return
             except SetupFlowError as err:
-                errors = {"base": err.translation_key or str(err)}
+                errors = {"base": err}
 
     async def poll(self) -> None:
         """Poll player for state updates."""

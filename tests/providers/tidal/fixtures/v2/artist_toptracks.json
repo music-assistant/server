@@ -1,0 +1,2931 @@
+{
+  "data": [
+    {
+      "id": "58503071",
+      "type": "tracks"
+    },
+    {
+      "id": "94189625",
+      "type": "tracks"
+    },
+    {
+      "id": "58503073",
+      "type": "tracks"
+    },
+    {
+      "id": "58503080",
+      "type": "tracks"
+    },
+    {
+      "id": "121563484",
+      "type": "tracks"
+    },
+    {
+      "id": "402225792",
+      "type": "tracks"
+    },
+    {
+      "id": "58503075",
+      "type": "tracks"
+    },
+    {
+      "id": "150847283",
+      "type": "tracks"
+    },
+    {
+      "id": "46675793",
+      "type": "tracks"
+    },
+    {
+      "id": "118421111",
+      "type": "tracks"
+    },
+    {
+      "id": "13536359",
+      "type": "tracks"
+    },
+    {
+      "id": "242149003",
+      "type": "tracks"
+    },
+    {
+      "id": "46675784",
+      "type": "tracks"
+    },
+    {
+      "id": "79492732",
+      "type": "tracks"
+    },
+    {
+      "id": "46675792",
+      "type": "tracks"
+    },
+    {
+      "id": "46675790",
+      "type": "tracks"
+    },
+    {
+      "id": "242744824",
+      "type": "tracks"
+    },
+    {
+      "id": "104340964",
+      "type": "tracks"
+    },
+    {
+      "id": "204855617",
+      "type": "tracks"
+    },
+    {
+      "id": "58503074",
+      "type": "tracks"
+    }
+  ],
+  "links": {
+    "self": "/artists/4184211/relationships/tracks?include=tracks.albums.coverArt%2Ctracks.artists&countryCode=AT&collapseBy=FINGERPRINT",
+    "next": "/artists/4184211/relationships/tracks?include=tracks.albums.coverArt%2Ctracks.artists&countryCode=AT&collapseBy=FINGERPRINT&page%5Bcursor%5D=3nI1Esi",
+    "meta": {
+      "nextCursor": "3nI1Esi"
+    }
+  },
+  "included": [
+    {
+      "id": "104340961",
+      "type": "albums",
+      "attributes": {
+        "title": "Lukas Graham (International Version)",
+        "barcodeId": "00602577549045",
+        "numberOfVolumes": 1,
+        "numberOfItems": 13,
+        "duration": "PT44M26S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2012-03-26",
+        "copyright": {
+          "text": "© 2012 Copenhagen Records / Universal Music"
+        },
+        "popularity": 0.28222558579746027,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/104340961",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "ALBUM",
+        "albumType": "ALBUM"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "2xpmpI1s9DzHlApMH8dCWP",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/104340961/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "118421110",
+      "type": "albums",
+      "attributes": {
+        "title": "Lie",
+        "barcodeId": "00602508242403",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT3M",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2019-09-27",
+        "copyright": {
+          "text": "© 2019 Universal Music (Denmark) A/S"
+        },
+        "popularity": 0.2251062561289688,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/118421110",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "2xpmpI1s9DzHqa0tvts1Fg",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/118421110/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "121563483",
+      "type": "albums",
+      "attributes": {
+        "title": "HERE (For Christmas)",
+        "barcodeId": "00602508479434",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT4M1S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2019-11-08",
+        "copyright": {
+          "text": "© 2019 Universal Music (Denmark) A/S"
+        },
+        "popularity": 0.2651028850675421,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/121563483",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "2xpmpI1s9DzHvl1FGtArb9",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/121563483/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "13536358",
+      "type": "albums",
+      "attributes": {
+        "title": "Drunk In The Morning",
+        "barcodeId": "00602527963853",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT3M29S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2012-02-13",
+        "copyright": {
+          "text": "© 2012 Copenhagen Records / Universal Music"
+        },
+        "popularity": 0.43792587518692017,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/13536358",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "iWOu0yW0IP0yLMFG6iZU",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/13536358/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "150847282",
+      "type": "albums",
+      "attributes": {
+        "title": "Share That Love (feat. G-Eazy)",
+        "barcodeId": "054391936868",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT2M52S",
+        "explicit": true,
+        "ai": false,
+        "releaseDate": "2020-08-20",
+        "copyright": {
+          "text": "© 2020 Warner Records Inc. for the world excluding Germany, Austria, Switzerland, Finland, Sweden, Norway, Denmark, and France."
+        },
+        "popularity": 0.4399145841598511,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/150847282",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "2xpmpI1s9DzIBhooiwvXaU",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/150847282/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "204855615",
+      "type": "albums",
+      "attributes": {
+        "title": "Most People",
+        "barcodeId": "00602445086368",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT2M21S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2021-12-24",
+        "copyright": {
+          "text": "© 2021 CYB3RPVNK, under exclusive license to Universal Music GmbH"
+        },
+        "popularity": 0.22120009547372382,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/204855615",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE",
+        "createdAt": "2021-11-12T00:37:03Z"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "2xpmpI1s9Dzdjr8V9qdZSv",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/204855615/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "242149002",
+      "type": "albums",
+      "attributes": {
+        "title": "Wish You Were Here (feat. Khalid)",
+        "barcodeId": "054391888525",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT2M56S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2022-08-19",
+        "copyright": {
+          "text": "© 2022 Warner Records Inc. for the world excluding Germany, Austria, Switzerland, Finland, Sweden, Norway, Denmark, and France."
+        },
+        "popularity": 0.48744139075279236,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/242149002",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "2xpmpI1s9Dze56cXwCJWpm",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/242149002/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "242744823",
+      "type": "albums",
+      "attributes": {
+        "title": "Wish You Were Here",
+        "barcodeId": "00602448253804",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT2M56S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2022-08-19",
+        "copyright": {
+          "text": "© 2022 Universal Music (Denmark) A/S"
+        },
+        "popularity": 0.18676196311960816,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/242744823",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE",
+        "createdAt": "2022-08-12T01:43:27Z"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "2xpmpI1s9Dze56eQ56UBe7",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/242744823/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "402225791",
+      "type": "albums",
+      "attributes": {
+        "title": "Du ligner din mor",
+        "barcodeId": "196872697094",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT3M6S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2024-12-27",
+        "copyright": {
+          "text": "(P) 2024 Sony Music Entertainment Denmark A/S"
+        },
+        "popularity": 0.5139883160591125,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/402225791",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "2xpmpI1s9E0LhB5vluPuVt",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/402225791/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "46675782",
+      "type": "albums",
+      "attributes": {
+        "title": "Lukas Graham (Blue Album)",
+        "barcodeId": "00602547421586",
+        "numberOfVolumes": 1,
+        "numberOfItems": 12,
+        "duration": "PT40M9S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2015-05-29",
+        "copyright": {
+          "text": "© 2015 Then We Take The World / Copenhagen Records / Universal Music"
+        },
+        "popularity": 0.6042775586194471,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/46675782",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "ALBUM",
+        "albumType": "ALBUM",
+        "createdAt": "2015-06-11T00:43:15Z"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "iWOu0yW0IPH0I1XB5kJu",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/46675782/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58503070",
+      "type": "albums",
+      "attributes": {
+        "title": "Lukas Graham",
+        "barcodeId": "093624920496",
+        "numberOfVolumes": 1,
+        "numberOfItems": 11,
+        "duration": "PT40M5S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2015-05-29",
+        "copyright": {
+          "text": "© 2016 Warner Records Inc."
+        },
+        "popularity": 0.7911876602126244,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/58503070",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "ALBUM",
+        "albumType": "ALBUM"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "iWOu0yW0IPMMt532Fc2K",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/58503070/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "79492731",
+      "type": "albums",
+      "attributes": {
+        "title": "Off To See The World",
+        "barcodeId": "00602567109679",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT3M4S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2017-09-22",
+        "copyright": {
+          "text": "© 2017 Universal Music (Denmark) A/S"
+        },
+        "popularity": 0.0527633318074913,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/79492731",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "iWOu0yW0IPX2DkbBYAT3",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/79492731/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "94189624",
+      "type": "albums",
+      "attributes": {
+        "title": "Love Someone",
+        "barcodeId": "054391948205",
+        "numberOfVolumes": 1,
+        "numberOfItems": 1,
+        "duration": "PT3M25S",
+        "explicit": false,
+        "ai": false,
+        "releaseDate": "2018-09-07",
+        "copyright": {
+          "text": "© 2018 Warner Records Inc. for the world excluding Germany, Austria, Switzerland, Finland, Sweden, Norway, Denmark, and France."
+        },
+        "popularity": 0.0724703375051117,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/album/94189624",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "type": "SINGLE",
+        "albumType": "SINGLE",
+        "createdAt": "2018-08-28T01:10:09Z"
+      },
+      "relationships": {
+        "coverArt": {
+          "data": [
+            {
+              "id": "iWOu0yW0IPhZoDX2OjnY",
+              "type": "artworks"
+            }
+          ],
+          "links": {
+            "self": "/albums/94189624/relationships/coverArt?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "3526386",
+      "type": "artists",
+      "attributes": {
+        "name": "My Little Pony",
+        "popularity": 0.585465669631958,
+        "externalLinks": [
+          {
+            "href": "https://facebook.com/mylittlepony",
+            "meta": {
+              "type": "FACEBOOK"
+            }
+          },
+          {
+            "href": "https://instagram.com/mylittlepony",
+            "meta": {
+              "type": "INSTAGRAM"
+            }
+          },
+          {
+            "href": "https://tiktok.com/@mylittlepony",
+            "meta": {
+              "type": "TIKTOK"
+            }
+          },
+          {
+            "href": "https://tidal.com/browse/artist/3526386",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "3637952",
+      "type": "artists",
+      "attributes": {
+        "name": "R3HAB",
+        "popularity": 0.804061444829247,
+        "externalLinks": [
+          {
+            "href": "https://www.facebook.com/r3hab/",
+            "meta": {
+              "type": "FACEBOOK"
+            }
+          },
+          {
+            "href": "http://instagram.com/r3hab/ ",
+            "meta": {
+              "type": "INSTAGRAM"
+            }
+          },
+          {
+            "href": "https://twitter.com/r3hab",
+            "meta": {
+              "type": "TWITTER"
+            }
+          },
+          {
+            "href": "https://tidal.com/browse/artist/3637952",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "4184211",
+      "type": "artists",
+      "attributes": {
+        "name": "Lukas Graham",
+        "popularity": 0.8177526593208313,
+        "externalLinks": [
+          {
+            "href": "https://www.facebook.com/LukasGraham",
+            "meta": {
+              "type": "FACEBOOK"
+            }
+          },
+          {
+            "href": "http://instagram.com/lukasinstagraham",
+            "meta": {
+              "type": "INSTAGRAM"
+            }
+          },
+          {
+            "href": "https://www.twitter.com/LukeTheDuke_",
+            "meta": {
+              "type": "TWITTER"
+            }
+          },
+          {
+            "href": "https://tidal.com/browse/artist/4184211",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "4916222",
+      "type": "artists",
+      "attributes": {
+        "name": "Khalid",
+        "popularity": 0.8778374699379375,
+        "externalLinks": [
+          {
+            "href": "https://www.facebook.com/thegreatkhalid/",
+            "meta": {
+              "type": "FACEBOOK"
+            }
+          },
+          {
+            "href": "https://twitter.com/thegreatkhalid/",
+            "meta": {
+              "type": "TWITTER"
+            }
+          },
+          {
+            "href": "https://tidal.com/browse/artist/4916222",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "5072967",
+      "type": "artists",
+      "attributes": {
+        "name": "G-Eazy",
+        "popularity": 0.8324434757232666,
+        "externalLinks": [
+          {
+            "href": "https://twitter.com/g_eazy",
+            "meta": {
+              "type": "TWITTER"
+            }
+          },
+          {
+            "href": "https://tidal.com/browse/artist/5072967",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "8051290",
+      "type": "artists",
+      "attributes": {
+        "name": "Benjamin Hav",
+        "popularity": 0.6843016147613525,
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/artist/8051290",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "contributionsEnabled": false,
+        "ownerType": "LABEL"
+      }
+    },
+    {
+      "id": "2xpmpI1s9DzHlApMH8dCWP",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/53c2b303/af21/422d/9b60/0e3189e43d70/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/53c2b303/af21/422d/9b60/0e3189e43d70/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/53c2b303/af21/422d/9b60/0e3189e43d70/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/53c2b303/af21/422d/9b60/0e3189e43d70/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/53c2b303/af21/422d/9b60/0e3189e43d70/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/53c2b303/af21/422d/9b60/0e3189e43d70/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/53c2b303/af21/422d/9b60/0e3189e43d70/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#5B411E",
+          "blurHash": "U6E2dm?E.5wI:Q~9RkV[9waLxZR+0NEN9b-.",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2xpmpI1s9DzHqa0tvts1Fg",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/eb57ec8b/fcd5/4c75/9009/b90c2938bc3e/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/eb57ec8b/fcd5/4c75/9009/b90c2938bc3e/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/eb57ec8b/fcd5/4c75/9009/b90c2938bc3e/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/eb57ec8b/fcd5/4c75/9009/b90c2938bc3e/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/eb57ec8b/fcd5/4c75/9009/b90c2938bc3e/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/eb57ec8b/fcd5/4c75/9009/b90c2938bc3e/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/eb57ec8b/fcd5/4c75/9009/b90c2938bc3e/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#7E4329",
+          "blurHash": "UBHdW.@Z01X9~B[U%0I@0$I@=ZJB9vK5Vsoz",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2xpmpI1s9DzHvl1FGtArb9",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/56d1d0ac/1ba4/417e/b36e/7deeb3edd4eb/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/56d1d0ac/1ba4/417e/b36e/7deeb3edd4eb/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/56d1d0ac/1ba4/417e/b36e/7deeb3edd4eb/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/56d1d0ac/1ba4/417e/b36e/7deeb3edd4eb/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/56d1d0ac/1ba4/417e/b36e/7deeb3edd4eb/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/56d1d0ac/1ba4/417e/b36e/7deeb3edd4eb/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/56d1d0ac/1ba4/417e/b36e/7deeb3edd4eb/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#7A6458",
+          "blurHash": "UmKK+gMxIpxs~Tt6kAae%Ns,t7aes:W;oeWB",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2xpmpI1s9DzIBhooiwvXaU",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/67930f16/33b7/43da/84b8/5de7505543e3/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/67930f16/33b7/43da/84b8/5de7505543e3/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/67930f16/33b7/43da/84b8/5de7505543e3/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/67930f16/33b7/43da/84b8/5de7505543e3/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/67930f16/33b7/43da/84b8/5de7505543e3/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/67930f16/33b7/43da/84b8/5de7505543e3/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/67930f16/33b7/43da/84b8/5de7505543e3/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#992E31",
+          "blurHash": "U5Fem6M{1cEfw|t7iwOr2[Ri|_ae1HS~AC].",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2xpmpI1s9Dzdjr8V9qdZSv",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/5abd7c43/0a4b/404d/854e/a93a52277c87/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/5abd7c43/0a4b/404d/854e/a93a52277c87/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/5abd7c43/0a4b/404d/854e/a93a52277c87/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/5abd7c43/0a4b/404d/854e/a93a52277c87/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/5abd7c43/0a4b/404d/854e/a93a52277c87/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/5abd7c43/0a4b/404d/854e/a93a52277c87/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/5abd7c43/0a4b/404d/854e/a93a52277c87/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#AF413A",
+          "blurHash": "U5RUQo%L*Hx[zynjXSbH[nbaMfoe+hniTbaf",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2xpmpI1s9Dze56cXwCJWpm",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/c9a20903/e4c7/413e/ba2a/7a3dec280a76/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/c9a20903/e4c7/413e/ba2a/7a3dec280a76/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/c9a20903/e4c7/413e/ba2a/7a3dec280a76/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/c9a20903/e4c7/413e/ba2a/7a3dec280a76/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/c9a20903/e4c7/413e/ba2a/7a3dec280a76/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/c9a20903/e4c7/413e/ba2a/7a3dec280a76/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/c9a20903/e4c7/413e/ba2a/7a3dec280a76/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#243B43",
+          "blurHash": "UPKx6c01xYD*~V?aNGIVxt%Lt7RkxtWCRjt6",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2xpmpI1s9Dze56eQ56UBe7",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/113ce480/4bd3/4a1b/b169/a60c0fee21a4/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/113ce480/4bd3/4a1b/b169/a60c0fee21a4/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/113ce480/4bd3/4a1b/b169/a60c0fee21a4/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/113ce480/4bd3/4a1b/b169/a60c0fee21a4/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/113ce480/4bd3/4a1b/b169/a60c0fee21a4/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/113ce480/4bd3/4a1b/b169/a60c0fee21a4/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/113ce480/4bd3/4a1b/b169/a60c0fee21a4/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#243B43",
+          "blurHash": "UPKx6d01xZD*~V?aNGIVxt%Lt7RkxtWCRjt6",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "2xpmpI1s9E0LhB5vluPuVt",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/3687955c/d67e/4624/9529/5fdac9363b1f/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/3687955c/d67e/4624/9529/5fdac9363b1f/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/3687955c/d67e/4624/9529/5fdac9363b1f/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/3687955c/d67e/4624/9529/5fdac9363b1f/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/3687955c/d67e/4624/9529/5fdac9363b1f/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/3687955c/d67e/4624/9529/5fdac9363b1f/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/3687955c/d67e/4624/9529/5fdac9363b1f/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#2C160B",
+          "blurHash": "USQ=pWWA{3oyL%xa%1ae-:RkE#j[;3j@OXoL",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "iWOu0yW0IP0yLMFG6iZU",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/b332ccc0/345c/4876/9a1c/dd18f441d5f7/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b332ccc0/345c/4876/9a1c/dd18f441d5f7/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b332ccc0/345c/4876/9a1c/dd18f441d5f7/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b332ccc0/345c/4876/9a1c/dd18f441d5f7/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b332ccc0/345c/4876/9a1c/dd18f441d5f7/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b332ccc0/345c/4876/9a1c/dd18f441d5f7/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b332ccc0/345c/4876/9a1c/dd18f441d5f7/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#1B0E09",
+          "blurHash": "U3EL1aKH0%Dm01}q0Osp0BIu=vtN0zAasC%K",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "iWOu0yW0IPH0I1XB5kJu",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/e18fa4a5/8015/40c1/8076/b88240d3ff4a/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e18fa4a5/8015/40c1/8076/b88240d3ff4a/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e18fa4a5/8015/40c1/8076/b88240d3ff4a/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e18fa4a5/8015/40c1/8076/b88240d3ff4a/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e18fa4a5/8015/40c1/8076/b88240d3ff4a/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e18fa4a5/8015/40c1/8076/b88240d3ff4a/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/e18fa4a5/8015/40c1/8076/b88240d3ff4a/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#486094",
+          "blurHash": "ULAUUgtVtRRitp%iV?kDWCROt8a$ISV=RPt8",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "iWOu0yW0IPMMt532Fc2K",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/b77a9395/fdf7/454f/8b9c/907fde6d07e6/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b77a9395/fdf7/454f/8b9c/907fde6d07e6/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b77a9395/fdf7/454f/8b9c/907fde6d07e6/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b77a9395/fdf7/454f/8b9c/907fde6d07e6/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b77a9395/fdf7/454f/8b9c/907fde6d07e6/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b77a9395/fdf7/454f/8b9c/907fde6d07e6/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/b77a9395/fdf7/454f/8b9c/907fde6d07e6/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#765438",
+          "blurHash": "ULM7cP9G_29E?wxv%L%1~ojXD+NK_1ocE3xv",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "iWOu0yW0IPX2DkbBYAT3",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/ee2c3f74/e0f3/4dad/aec0/501d956b7878/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/ee2c3f74/e0f3/4dad/aec0/501d956b7878/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/ee2c3f74/e0f3/4dad/aec0/501d956b7878/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/ee2c3f74/e0f3/4dad/aec0/501d956b7878/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/ee2c3f74/e0f3/4dad/aec0/501d956b7878/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/ee2c3f74/e0f3/4dad/aec0/501d956b7878/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/ee2c3f74/e0f3/4dad/aec0/501d956b7878/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#7B7233",
+          "blurHash": "U9B|T^Ma00wZvypJNERn00o#~oWu9XMx-?xn",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "iWOu0yW0IPhZoDX2OjnY",
+      "type": "artworks",
+      "attributes": {
+        "mediaType": "IMAGE",
+        "files": [
+          {
+            "href": "https://resources.tidal.com/images/0ac915da/e558/403a/b8fe/5f346de96ce2/1280x1280.jpg",
+            "meta": {
+              "width": 1280,
+              "height": 1280
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/0ac915da/e558/403a/b8fe/5f346de96ce2/1080x1080.jpg",
+            "meta": {
+              "width": 1080,
+              "height": 1080
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/0ac915da/e558/403a/b8fe/5f346de96ce2/750x750.jpg",
+            "meta": {
+              "width": 750,
+              "height": 750
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/0ac915da/e558/403a/b8fe/5f346de96ce2/640x640.jpg",
+            "meta": {
+              "width": 640,
+              "height": 640
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/0ac915da/e558/403a/b8fe/5f346de96ce2/320x320.jpg",
+            "meta": {
+              "width": 320,
+              "height": 320
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/0ac915da/e558/403a/b8fe/5f346de96ce2/160x160.jpg",
+            "meta": {
+              "width": 160,
+              "height": 160
+            }
+          },
+          {
+            "href": "https://resources.tidal.com/images/0ac915da/e558/403a/b8fe/5f346de96ce2/80x80.jpg",
+            "meta": {
+              "width": 80,
+              "height": 80
+            }
+          }
+        ],
+        "visualMetadata": {
+          "selectedPaletteColor": "#5B2728",
+          "blurHash": "UCHB0z00?^9F=g~WE1NGACn4t69Z02NH-TD%",
+          "status": "OK"
+        }
+      }
+    },
+    {
+      "id": "104340964",
+      "type": "tracks",
+      "attributes": {
+        "title": "Drunk In The Morning",
+        "version": null,
+        "isrc": "DKUM71200883",
+        "duration": "PT3M26S",
+        "copyright": {
+          "text": "℗ 2012 Copenhagen Records / Universal Music"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MAJOR",
+        "bpm": 92.0,
+        "popularity": 0.49679726287862863,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/104340964",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2019-02-18T16:37:06Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/104340964/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "104340961",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/104340964/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "118421111",
+      "type": "tracks",
+      "attributes": {
+        "title": "Lie",
+        "version": null,
+        "isrc": "USWB11902022",
+        "duration": "PT3M",
+        "copyright": {
+          "text": "a Copenhagen Records / Then We Take The World release; ℗ 2019 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "F",
+        "keyScale": "MAJOR",
+        "bpm": 92.0,
+        "popularity": 0.39150648633849927,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/118421111",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2019-09-20T06:50:27Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/118421111/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "118421110",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/118421111/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "121563484",
+      "type": "tracks",
+      "attributes": {
+        "title": "HERE (For Christmas)",
+        "version": null,
+        "isrc": "USWB11902814",
+        "duration": "PT4M1S",
+        "copyright": {
+          "text": "a Copenhagen Records / Then We Take The World release; ℗ 2019 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MAJOR",
+        "bpm": 115.0,
+        "popularity": 0.556719500381777,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/121563484",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2019-11-01T19:56:22Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/121563484/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "121563483",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/121563484/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "13536359",
+      "type": "tracks",
+      "attributes": {
+        "title": "Drunk In The Morning",
+        "version": null,
+        "isrc": "DKUM71200030",
+        "duration": "PT3M29S",
+        "copyright": {
+          "text": "℗ 2012 Copenhagen Records / Universal Music"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MAJOR",
+        "bpm": 92.0,
+        "popularity": 0.1261610177324897,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/13536359",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2012-02-04T11:50:10Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/13536359/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "13536358",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/13536359/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "150847283",
+      "type": "tracks",
+      "attributes": {
+        "title": "Share That Love (feat. G-Eazy)",
+        "version": null,
+        "isrc": "USWB12002076",
+        "duration": "PT2M52S",
+        "copyright": {
+          "text": "℗ 2020 Warner Records Inc. for the world excluding Germany, Austria, Switzerland, Finland, Sweden, Norway, Denmark, and France."
+        },
+        "explicit": true,
+        "ai": false,
+        "key": "D",
+        "keyScale": "MAJOR",
+        "bpm": 156.0,
+        "popularity": 0.37235357249051326,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/150847283",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2020-08-03T21:35:07Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            },
+            {
+              "id": "5072967",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/150847283/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "150847282",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/150847283/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "204855617",
+      "type": "tracks",
+      "attributes": {
+        "title": "Most People",
+        "version": null,
+        "isrc": "AEA2D2100143",
+        "duration": "PT2M21S",
+        "copyright": {
+          "text": "℗ 2021 CYB3RPVNK, under exclusive license to Universal Music GmbH"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "E",
+        "keyScale": "MAJOR",
+        "bpm": 114.0,
+        "popularity": 0.41894942234550386,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/204855617",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2021-11-12T00:37:03Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "3637952",
+              "type": "artists"
+            },
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/204855617/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "204855615",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/204855617/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "242149003",
+      "type": "tracks",
+      "attributes": {
+        "title": "Wish You Were Here (feat. Khalid)",
+        "version": null,
+        "isrc": "USWB12201688",
+        "duration": "PT2M56S",
+        "copyright": {
+          "text": "℗ 2022 Warner Records Inc. for the world excluding Germany, Austria, Switzerland, Finland, Sweden, Norway, Denmark, and France."
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Ab",
+        "keyScale": "MAJOR",
+        "bpm": 106.0,
+        "popularity": 0.1603768922218786,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/242149003",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2022-08-09T03:47:24Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            },
+            {
+              "id": "4916222",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/242149003/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "242149002",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/242149003/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "242744824",
+      "type": "tracks",
+      "attributes": {
+        "title": "Wish You Were Here",
+        "version": null,
+        "isrc": "USWB12201688",
+        "duration": "PT2M56S",
+        "copyright": {
+          "text": "℗ 2022 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Ab",
+        "keyScale": "MAJOR",
+        "bpm": 106.0,
+        "popularity": 0.4384265456172178,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/242744824",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2022-08-12T01:43:27Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            },
+            {
+              "id": "4916222",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/242744824/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "242744823",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/242744824/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "402225792",
+      "type": "tracks",
+      "attributes": {
+        "title": "Du ligner din mor",
+        "version": null,
+        "isrc": "DKADG2400768",
+        "duration": "PT3M6S",
+        "copyright": {
+          "text": "(P) 2024 Sony Music Entertainment Denmark A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "E",
+        "keyScale": "MAJOR",
+        "bpm": 107.0,
+        "popularity": 0.672352135181427,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "HIRES_LOSSLESS",
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/402225792",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2024-11-27T11:31:36Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "8051290",
+              "type": "artists"
+            },
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/402225792/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "402225791",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/402225792/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "46675784",
+      "type": "tracks",
+      "attributes": {
+        "title": "Take The World By Storm",
+        "version": null,
+        "isrc": "USWB11506517",
+        "duration": "PT3M12S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Bb",
+        "keyScale": "MINOR",
+        "bpm": 88.0,
+        "popularity": 0.2032164290373476,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/46675784",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2015-06-11T00:43:15Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/46675784/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "46675782",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/46675784/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "46675790",
+      "type": "tracks",
+      "attributes": {
+        "title": "What Happened To Perfect",
+        "version": null,
+        "isrc": "USWB11506523",
+        "duration": "PT3M57S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "A",
+        "keyScale": "MAJOR",
+        "bpm": 140.0,
+        "popularity": 0.214944888484677,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/46675790",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2015-06-11T00:43:15Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/46675790/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "46675782",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/46675790/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "46675792",
+      "type": "tracks",
+      "attributes": {
+        "title": "Strip No More",
+        "version": null,
+        "isrc": "USWB11506525",
+        "duration": "PT3M28S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Bb",
+        "keyScale": "MAJOR",
+        "bpm": 131.0,
+        "popularity": 0.6362892389297485,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/46675792",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2015-06-11T00:43:15Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/46675792/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "46675782",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/46675792/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "46675793",
+      "type": "tracks",
+      "attributes": {
+        "title": "You're Not There",
+        "version": null,
+        "isrc": "USWB11506526",
+        "duration": "PT3M21S",
+        "copyright": {
+          "text": "℗ 2015 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "F",
+        "keyScale": "MAJOR",
+        "bpm": 92.0,
+        "popularity": 0.2314735970992938,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/46675793",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2015-06-11T00:43:15Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/46675793/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "46675782",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/46675793/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58503071",
+      "type": "tracks",
+      "attributes": {
+        "title": "7 Years",
+        "version": null,
+        "isrc": "USWB11506516",
+        "duration": "PT3M57S",
+        "copyright": {
+          "text": "℗ 2015 Warner Records Inc."
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MAJOR",
+        "bpm": 120.0,
+        "popularity": 0.5438648964509503,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58503071",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-18T18:20:27Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503071/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58503070",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503071/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58503073",
+      "type": "tracks",
+      "attributes": {
+        "title": "Mama Said",
+        "version": null,
+        "isrc": "USWB11600081",
+        "duration": "PT3M27S",
+        "copyright": {
+          "text": "℗ 2016 Warner Records Inc."
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Bb",
+        "keyScale": "MAJOR",
+        "bpm": 84.0,
+        "popularity": 0.35428630692972113,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58503073",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-18T18:20:27Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503073/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58503070",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503073/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58503074",
+      "type": "tracks",
+      "attributes": {
+        "title": "Happy Home",
+        "version": null,
+        "isrc": "USWB11600034",
+        "duration": "PT3M39S",
+        "copyright": {
+          "text": "℗ 2016 Warner Records Inc."
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "Eb",
+        "keyScale": "MINOR",
+        "bpm": 128.0,
+        "popularity": 0.1261610177324897,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58503074",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-18T18:20:27Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503074/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58503070",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503074/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58503075",
+      "type": "tracks",
+      "attributes": {
+        "title": "Drunk in the Morning",
+        "version": null,
+        "isrc": "USWB11600035",
+        "duration": "PT3M23S",
+        "copyright": {
+          "text": "℗ 2015 Warner Records Inc."
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "D",
+        "keyScale": "MAJOR",
+        "bpm": 93.0,
+        "popularity": 0.1845211686977195,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58503075",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-18T18:20:27Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503075/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58503070",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503075/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "58503080",
+      "type": "tracks",
+      "attributes": {
+        "title": "You're Not There",
+        "version": null,
+        "isrc": "USWB11600037",
+        "duration": "PT3M23S",
+        "copyright": {
+          "text": "℗ 2016 Warner Records Inc."
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "F",
+        "keyScale": "MAJOR",
+        "bpm": 92.0,
+        "popularity": 0.1943943385832289,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/58503080",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2016-03-18T18:20:27Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503080/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "58503070",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/58503080/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "79492732",
+      "type": "tracks",
+      "attributes": {
+        "title": "Off To See The World",
+        "version": null,
+        "isrc": "USWB11701563",
+        "duration": "PT3M4S",
+        "copyright": {
+          "text": "A Copenhagen Records / Then We Take The World release; ℗ 2017 Universal Music (Denmark) A/S"
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "G",
+        "keyScale": "MAJOR",
+        "bpm": 107.0,
+        "popularity": 0.35981553269930383,
+        "accessType": "PUBLIC",
+        "availability": [
+          "STREAM",
+          "DJ"
+        ],
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/79492732",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2017-10-02T22:30:02Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            },
+            {
+              "id": "3526386",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/79492732/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "79492731",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/79492732/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    },
+    {
+      "id": "94189625",
+      "type": "tracks",
+      "attributes": {
+        "title": "Love Someone",
+        "version": null,
+        "isrc": "USWB11801903",
+        "duration": "PT3M25S",
+        "copyright": {
+          "text": "℗ 2018 Warner Records Inc."
+        },
+        "explicit": false,
+        "ai": false,
+        "key": "E",
+        "keyScale": "MAJOR",
+        "bpm": 86.0,
+        "popularity": 0.48828778148762936,
+        "accessType": "PUBLIC",
+        "mediaTags": [
+          "LOSSLESS"
+        ],
+        "toneTags": [],
+        "externalLinks": [
+          {
+            "href": "https://tidal.com/browse/track/94189625",
+            "meta": {
+              "type": "TIDAL_SHARING"
+            }
+          }
+        ],
+        "spotlighted": false,
+        "createdAt": "2018-08-28T01:10:09Z"
+      },
+      "relationships": {
+        "artists": {
+          "data": [
+            {
+              "id": "4184211",
+              "type": "artists"
+            }
+          ],
+          "links": {
+            "self": "/tracks/94189625/relationships/artists?countryCode=AT"
+          }
+        },
+        "albums": {
+          "data": [
+            {
+              "id": "94189624",
+              "type": "albums"
+            }
+          ],
+          "links": {
+            "self": "/tracks/94189625/relationships/albums?countryCode=AT"
+          }
+        }
+      }
+    }
+  ]
+}

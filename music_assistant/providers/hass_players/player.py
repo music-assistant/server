@@ -16,14 +16,21 @@ from music_assistant_models.enums import (
 from music_assistant_models.media_items import MediaItemImage
 
 from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-    HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
     create_output_codec_config_entry,
 )
 from music_assistant.helpers.datetime import from_iso_string
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
+from music_assistant.models.player import (
+    AnnouncementFeature,
+    DeviceInfo,
+    Player,
+    PlayerMedia,
+    PlayerSource,
+)
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
     OFF_STATES,
@@ -51,6 +58,10 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,)
 
 class HomeAssistantPlayer(Player):
     """Home Assistant Player implementation."""
+
+    # the wrapped entity keeps reporting an abandoned external session as paused, and
+    # Home Assistant pushes no event when it goes stale.
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     def __init__(
         self,
@@ -105,6 +116,9 @@ class HomeAssistantPlayer(Player):
 
         self.extra_data["hass_supported_features"] = hass_supported_features
         self._hass_attributes: dict[str, Any] = {}
+        self._ma_playback_active = False
+        self._ma_playback_started = False
+        self._reports_stream_url = False
 
         # Add External source to support next/prev commands when playing external content
         self._attr_source_list.append(
@@ -135,6 +149,13 @@ class HomeAssistantPlayer(Player):
         # hass media players are a hot mess so play it safe and always use flow mode
         return True
 
+    @property
+    def announcement_features(self) -> set[AnnouncementFeature]:
+        """Drop SUPPORTS_VOLUME for native announcements: the HA pipeline ignores the level."""
+        if PlayerFeature.PLAY_ANNOUNCEMENT in self._attr_supported_features:
+            return set()
+        return {AnnouncementFeature.SUPPORTS_VOLUME}
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
@@ -163,14 +184,7 @@ class HomeAssistantPlayer(Player):
             if codec is not None:
                 config_entries.append(create_output_codec_config_entry(True, codec))
 
-            config_entries.extend(
-                [
-                    CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-                    # although the Voice PE supports announcements,
-                    # it does not support volume for announcements
-                    *HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
-                ]
-            )
+            config_entries.append(CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN)
 
             return config_entries
 
@@ -207,6 +221,8 @@ class HomeAssistantPlayer(Player):
             if PlayerFeature.PAUSE in self.supported_features:
                 await self.pause()
         finally:
+            self._ma_playback_active = False
+            self._ma_playback_started = False
             self._attr_current_media = None
             self.update_state()
 
@@ -291,6 +307,13 @@ class HomeAssistantPlayer(Player):
         )
 
         # Optimistically update state
+        self._ma_playback_active = True
+        # the entity may still be reporting the previous session, so our stream only
+        # counts as started once it is seen playing
+        self._ma_playback_started = False
+        # a source the entity played before is over, and it may never report an
+        # attribute change to tell us so
+        self._attr_active_source = None
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
@@ -353,6 +376,7 @@ class HomeAssistantPlayer(Player):
             self._attr_available = state["s"] not in UNAVAILABLE_STATES
             if PlayerFeature.POWER in self.supported_features:
                 self._attr_powered = state["s"] not in OFF_STATES
+            self._track_ma_playback(state["s"])
         if "a" in state:
             self._update_attributes(state["a"])
         self.update_state()
@@ -402,7 +426,7 @@ class HomeAssistantPlayer(Player):
                 group_members: list[str] = (
                     [
                         # ignore integrations that incorrectly set the group members attribute
-                        # (e.g. linkplay)
+                        # such as linkplay
                         x
                         for x in value
                         if x.startswith("media_player.")
@@ -426,16 +450,30 @@ class HomeAssistantPlayer(Player):
                 self.extra_data["hass_supported_features"] = hass_supported_features
                 self._update_hass_features(hass_supported_features)
 
+        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # the media attributes describe the announcement instead of the source that
+            # is restored afterwards, so they tell us nothing about who owns playback.
+            # Drop the announcement's id so a later partial update can not judge by it.
+            self._hass_attributes.pop("media_content_id", None)
+            return
+
         # Check for external playback (not from Music Assistant).
-        # Without media_content_id we cannot reliably determine the source,
-        # so we later only react to state updates that include it.
+        # Not every integration echoes the stream URL we handed it back in
+        # media_content_id; some report device or cloud provided metadata instead. Only
+        # entities that were seen echoing it can be judged by it - for the others the
+        # play command we issued is what tells the two sources apart. Without either
+        # signal the source stays as it was.
         media_content_id = self._hass_attributes.get("media_content_id", "")
-        is_ma_playback = media_content_id.startswith(self.mass.streams.base_url)
+        if media_content_id.startswith(self.mass.streams.base_url):
+            self._reports_stream_url = True
+            is_ma_playback = True
+        else:
+            is_ma_playback = not self._reports_stream_url and self._ma_playback_active
         media_title = self._hass_attributes.get("media_title")
 
-        if media_content_id and is_ma_playback:
-            # MA playback - ensure active_source points to player_id for queue lookup.
-            # The actual current_media will be set by MA's queue controller.
+        if is_ma_playback:
+            # MA playback - the queue controller resolves the active source and
+            # provides the actual current_media.
             self._attr_active_source = None
         elif (
             media_content_id
@@ -465,6 +503,22 @@ class HomeAssistantPlayer(Player):
             ):
                 self._attr_current_media = None
                 self._attr_active_source = None
+
+    def _track_ma_playback(self, hass_state: str) -> None:
+        """
+        Follow the entity's state to tell whether the stream MA handed it is still playing.
+
+        :param hass_state: The raw state as reported by the entity.
+        """
+        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # an announcement takes the entity over, its states say nothing about our stream
+            return
+        if self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            self._ma_playback_started = True
+        elif hass_state not in UNAVAILABLE_STATES and self._ma_playback_started:
+            # the entity played our stream and stopped again, so the session ended with it
+            self._ma_playback_active = False
+            self._ma_playback_started = False
 
     def _get_image_url(self, attributes: dict[str, Any]) -> str | None:
         """Get the image URL from the attributes."""

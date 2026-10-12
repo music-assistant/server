@@ -17,7 +17,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -48,6 +48,10 @@ class _StubPodcastProvider(MusicProvider):
         """Yield the prepared episodes for the given podcast id."""
         for episode in self.episodes:
             yield episode
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Return the prepared episode matching the given item id."""
+        return next(x for x in self.episodes if x.item_id == prov_episode_id)
 
 
 def _episode(index: int, **kwargs: Any) -> PodcastEpisode:
@@ -96,7 +100,7 @@ async def _add_playlog_row(
 ) -> None:
     """Seed one playlog row for a podcast episode."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": PROVIDER_ID,
@@ -123,7 +127,7 @@ def count_playlog_queries_fixture(
 
         async def _wrapper(table: str, *args: Any, **kwargs: Any) -> Any:
             nonlocal calls
-            if table == DB_TABLE_PLAYLOG:
+            if table == DB_TABLE_MEDIA_PROGRESS:
                 calls += 1
             return await original(table, *args, **kwargs)
 
@@ -162,6 +166,31 @@ async def _list_episodes(
         ]
 
 
+async def _get_episode(
+    mass: MusicAssistant,
+    episodes: list[PodcastEpisode],
+    item_id: str,
+    user: User | None = None,
+) -> PodcastEpisode:
+    """
+    Run the controller's single-episode lookup for a stub provider.
+
+    :param mass: The MusicAssistant instance to run against.
+    :param episodes: The episodes the stub provider can resolve by item id.
+    :param item_id: The item id of the episode to fetch.
+    :param user: The session user the request is made for, if any.
+    """
+    provider = _StubPodcastProvider(episodes)
+    with (
+        patch.object(mass, "get_provider", return_value=provider),
+        patch(
+            "music_assistant.controllers.music.media.podcasts.get_current_user",
+            return_value=user,
+        ),
+    ):
+        return await mass.music.podcasts.episode(item_id, PROVIDER_ID)
+
+
 async def _explain_resume_query(mass: MusicAssistant, user: User | None) -> list[str]:
     """
     Return the query plan rows for the batched resume query as the controller emits it.
@@ -180,7 +209,7 @@ async def _explain_resume_query(mass: MusicAssistant, user: User | None) -> list
     original = database._db.execute_fetchall
 
     async def _spy(sql: str, params: Any = None) -> Any:
-        if DB_TABLE_PLAYLOG in sql and sql.startswith("SELECT"):
+        if DB_TABLE_MEDIA_PROGRESS in sql and sql.startswith("SELECT"):
             captured["sql"], captured["params"] = sql, params
         return await original(sql, params)
 
@@ -295,9 +324,9 @@ async def test_resume_query_uses_the_provider_media_type_index(mass: MusicAssist
 
     details = await _explain_resume_query(mass, user)
 
-    assert any(f"USING INDEX {DB_TABLE_PLAYLOG}_provider_media_type_idx" in x for x in details), (
-        details
-    )
+    assert any(
+        f"USING INDEX {DB_TABLE_MEDIA_PROGRESS}_provider_media_type_idx" in x for x in details
+    ), details
     # with userid in the filter the equality prefix reaches timestamp, so the index satisfies
     # the ORDER BY on its own. That part does not survive userid dropping out of the filter -
     # the test below covers what still holds there
@@ -320,9 +349,9 @@ async def test_resume_query_uses_the_index_without_a_session_user(mass: MusicAss
     ):
         details = await _explain_resume_query(mass, None)
 
-    assert any(f"USING INDEX {DB_TABLE_PLAYLOG}_provider_media_type_idx" in x for x in details), (
-        details
-    )
+    assert any(
+        f"USING INDEX {DB_TABLE_MEDIA_PROGRESS}_provider_media_type_idx" in x for x in details
+    ), details
 
 
 async def test_without_a_session_user_the_newest_progress_wins(mass: MusicAssistant) -> None:
@@ -340,3 +369,36 @@ async def test_without_a_session_user_the_newest_progress_wins(mass: MusicAssist
         result = await _list_episodes(mass, [_episode(1)], user=None)
 
     assert result[0].resume_position_ms == 240000
+
+
+async def test_single_episode_lookup_fills_resume_info_from_playlog(
+    mass: MusicAssistant,
+) -> None:
+    """The single-episode endpoint applies resume info the provider does not report."""
+    user = await mass.webserver.auth.create_user("podcastsingleepisode")
+    await _add_playlog_row(mass, "ep-001", user.user_id, seconds_played=45, fully_played=False)
+
+    episode = await _get_episode(mass, [_episode(1)], "ep-001", user=user)
+
+    assert episode.resume_position_ms == 45000
+    assert episode.fully_played is False
+
+
+async def test_single_episode_lookup_without_a_session_user_uses_newest_row(
+    mass: MusicAssistant,
+) -> None:
+    """With no user to scope to, the single-episode lookup applies the newest playlog row."""
+    # the older row is inserted first so an unordered lookup would surface it
+    await _add_playlog_row(
+        mass, "ep-001", "user-a", seconds_played=30, fully_played=False, timestamp=1000
+    )
+    await _add_playlog_row(
+        mass, "ep-001", "user-b", seconds_played=240, fully_played=False, timestamp=2000
+    )
+
+    with patch.object(
+        mass.music, "_get_user_for_provider", new_callable=AsyncMock, return_value=None
+    ):
+        episode = await _get_episode(mass, [_episode(1)], "ep-001", user=None)
+
+    assert episode.resume_position_ms == 240000

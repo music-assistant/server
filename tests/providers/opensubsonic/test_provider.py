@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from libopensonic.errors import DataNotFoundError
+from libopensonic.media import PodcastChannel
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 
@@ -527,3 +529,18 @@ async def test_get_artist_toptracks_avoids_per_track_lyrics_fetch(
     provider.conn.get_top_songs.assert_awaited_once()
     provider.conn.get_lyrics.assert_not_awaited()
     provider.conn.get_lyrics_by_song_id.assert_not_awaited()
+
+
+async def test_podcast_episodes_positioned_by_publish_date(provider: OpenSonicProvider) -> None:
+    """The newest episode gets the highest position, whatever order the server lists them in."""
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "podcasts" / "gonic-sample.podcast.json"
+    channel = PodcastChannel.from_json(fixture.read_text(encoding="utf-8"))
+    provider._enable_podcasts = True
+    provider.conn = Mock()
+    provider.conn.get_podcasts = AsyncMock(return_value=[channel])
+
+    episodes = [ep async for ep in provider.get_podcast_episodes("chan-1")]
+
+    # the fixture lists newest-first, so the positions run the other way
+    positions = {ep.item_id.split(EP_CHAN_SEP)[1]: ep.position for ep in episodes}
+    assert positions == {"pe-4805": 5, "pe-1857": 4, "pe-1858": 3, "pe-1859": 2, "pe-1860": 1}

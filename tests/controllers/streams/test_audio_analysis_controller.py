@@ -15,6 +15,11 @@ from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer, AudioBufferDiscarded
+from music_assistant.controllers.streams.smart_fades.vocal import (
+    VOCAL_ACTIVITY_BINS,
+    first_vocal_onset,
+)
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
     AudioAnalysisProvider,
@@ -43,6 +48,7 @@ def _create_mock_provider(
     prov.process_pcm_chunk = AsyncMock()
     prov.finalize = AsyncMock()
     prov.cancel = AsyncMock()
+    prov.abort = AsyncMock()
     return prov
 
 
@@ -116,7 +122,9 @@ def mock_stream_details() -> MagicMock:
 @pytest.fixture
 def controller(mock_streams: MagicMock) -> AudioAnalysisController:
     """Return an AudioAnalysisController wired to mock_streams."""
-    return AudioAnalysisController(mock_streams)
+    controller = AudioAnalysisController(mock_streams)
+    controller._database_ready = True
+    return controller
 
 
 @pytest.fixture
@@ -430,6 +438,44 @@ async def test_idle_monitor_keeps_models_while_sessions_active(
     await asyncio.gather(controller._idle_unload_task, return_exceptions=True)
 
 
+@pytest.mark.asyncio
+async def test_idle_monitor_keeps_models_while_finalize_in_flight(
+    controller: AudioAnalysisController,
+    mock_mass: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-flight finalize keeps the models loaded, and releases them once it completes."""
+    prov = _unloadable_provider()
+    prov.instance_id = "prov_1"
+    release = asyncio.Event()
+
+    async def _blocking_finalize(_session_id: str) -> None:
+        await release.wait()
+
+    prov.finalize = AsyncMock(side_effect=_blocking_finalize)
+    mock_mass.get_provider = MagicMock(return_value=prov)
+    monkeypatch.setattr(controller.__class__, "providers", property(lambda _self: [prov]))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_CHECK_INTERVAL_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_UNLOAD_SECONDS", 0.0
+    )
+
+    controller._active_sessions["sess"] = {"prov_1"}
+    controller._mark_analysis_activity()
+    controller._finalize_providers("sess")
+    assert "sess" not in controller._active_sessions
+
+    await asyncio.sleep(0.05)  # several monitor ticks while the finalize is still running
+    prov.unload_idle_models.assert_not_called()
+
+    release.set()
+    assert controller._idle_unload_task is not None
+    await asyncio.wait_for(controller._idle_unload_task, timeout=2.0)
+    prov.unload_idle_models.assert_awaited_once()
+
+
 # -- Edge cases --
 
 
@@ -474,7 +520,8 @@ async def test_provider_error_during_chunk_processing_evicts_provider(
 
     The first chunk processes successfully. The second chunk's exception
     triggers eviction. The third chunk is not delivered. The provider's
-    cancel hook is dispatched (replaces finalize for evicted providers).
+    abort hook is dispatched (replaces finalize for evicted providers) so
+    the track is recorded as failed rather than silently left pending.
     """
     call_count = 0
 
@@ -491,9 +538,10 @@ async def test_provider_error_during_chunk_processing_evicts_provider(
 
     # Provider was called twice: chunk 1 (success), chunk 2 (raised → evicted)
     assert call_count == 2
-    # Evicted provider does NOT get finalize, but does get cancel
+    # Evicted provider gets abort (which records the failure), not finalize or cancel
     mock_provider.finalize.assert_not_called()
-    mock_provider.cancel.assert_called_once()
+    mock_provider.cancel.assert_not_called()
+    mock_provider.abort.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -580,6 +628,8 @@ async def test_finalize_cleans_up_provider_sessions() -> None:
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.logger = MagicMock()
     provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
+    provider._finalize_tasks = set()
+    provider.unloading = False
     provider._finalize = AsyncMock(return_value=None)
 
     await AudioAnalysisProvider.finalize(provider, "test_session")
@@ -599,6 +649,7 @@ async def test_provider_start_analysis_uses_media_type_for_version_gating() -> N
     provider.domain = "test_domain"
     provider.analysis_version = 1
     provider.max_analysis_duration = None
+    provider.unloading = False
 
     streamdetails = MagicMock()
     streamdetails.item_id = "shared_id"
@@ -632,6 +683,8 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.logger = MagicMock()
     provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
+    provider._finalize_tasks = set()
+    provider.unloading = False
     provider._finalize = AsyncMock(side_effect=RuntimeError("analysis failed"))
 
     # MUST NOT raise — exception is swallowed and logged
@@ -639,3 +692,28 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
 
     assert "test_session" not in provider._sessions
     provider.logger.error.assert_called_once()
+
+
+async def test_get_vocal_onset_is_none_without_analysis(
+    controller: AudioAnalysisController,
+) -> None:
+    """A track without stored analysis has no known vocal onset."""
+    controller.get_audio_analysis = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    assert await controller.get_vocal_onset("test_123", "test_prov") is None
+    controller.get_audio_analysis.assert_awaited_once_with("test_123", "test_prov", MediaType.TRACK)
+
+
+async def test_get_vocal_onset_reads_the_stored_vocal_timeline(
+    controller: AudioAnalysisController,
+) -> None:
+    """The onset comes from the vocal-activity timeline of the stored analysis."""
+    vocal_activity = [0.0] * VOCAL_ACTIVITY_BINS
+    vocal_activity[300:400] = [0.9] * 100
+    analysis = AudioAnalysisData(duration=180.0, vocal_activity=vocal_activity)
+    controller.get_audio_analysis = AsyncMock(return_value=analysis)  # type: ignore[method-assign]
+
+    onset = await controller.get_vocal_onset("test_123", "test_prov")
+
+    assert onset is not None
+    assert onset == first_vocal_onset(analysis)

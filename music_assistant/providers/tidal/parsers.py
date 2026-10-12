@@ -26,7 +26,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
-from .constants import BROWSE_URL, FAVORITE_TRACKS_PLAYLIST_ID, RESOURCES_URL
+from .constants import (
+    BROWSE_URL,
+    FAVORITE_TRACKS_PLAYLIST_ID,
+    RESOURCES_URL,
+    SKIPPABLE_ITEM_ERRORS,
+)
 
 if TYPE_CHECKING:
     from .provider import TidalProvider
@@ -55,7 +60,7 @@ def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
     # metadata
     if "created" in artist_obj:
         with suppress(ValueError):
-            artist.date_added = datetime.fromisoformat(artist_obj["created"])
+            artist.date_added = datetime.fromisoformat(artist_obj["created"]).replace(microsecond=0)
     if artist_obj_data.get("picture"):
         picture_id = artist_obj_data["picture"].replace("-", "/")
         image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
@@ -108,7 +113,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
             if artist_obj.get("name") == "Various Artists":
                 various_artist_album = True
             album.artists.append(parse_artist(provider, artist_obj))
-        except (KeyError, TypeError) as err:
+        except SKIPPABLE_ITEM_ERRORS as err:
             provider.logger.warning("Error parsing artist in album %s: %s", name, err)
 
     # Safely determine album type
@@ -139,7 +144,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
     # Safely set metadata
     if "created" in album_obj:
         with suppress(ValueError):
-            album.date_added = datetime.fromisoformat(album_obj["created"])
+            album.date_added = datetime.fromisoformat(album_obj["created"]).replace(microsecond=0)
     upc = album_obj_data.get("upc")
     if upc:
         album.external_ids.add((ExternalID.BARCODE, upc))
@@ -210,14 +215,14 @@ def parse_track(
     for track_artist in track_obj_data.get("artists", []):
         try:
             artist = parse_artist(provider, track_artist)
-        except (KeyError, TypeError) as err:
+        except SKIPPABLE_ITEM_ERRORS as err:
             provider.logger.warning("Error parsing artist in track %s: %s", name, err)
             continue
         track.artists.append(artist)
     # metadata
     if "created" in track_obj:
         with suppress(ValueError):
-            track.date_added = datetime.fromisoformat(track_obj["created"])
+            track.date_added = datetime.fromisoformat(track_obj["created"]).replace(microsecond=0)
     track.metadata.explicit = track_obj_data.get("explicit", False)
     track.metadata.popularity = track_obj_data.get("popularity", 0)
     if "copyright" in track_obj_data:
@@ -304,7 +309,9 @@ def parse_playlist(
     # Metadata - different fields based on type
     if "created" in playlist_obj:
         with suppress(ValueError):
-            playlist.date_added = datetime.fromisoformat(playlist_obj["created"])
+            playlist.date_added = datetime.fromisoformat(playlist_obj["created"]).replace(
+                microsecond=0
+            )
     # Add the description from the subtitle for mixes
     if is_mix:
         subtitle = playlist_obj_data.get("subTitle")

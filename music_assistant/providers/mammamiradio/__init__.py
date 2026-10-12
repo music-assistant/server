@@ -294,6 +294,11 @@ class MammamiradioProvider(MusicProvider):
     _audio_format_dict: dict[str, Any] | None
     _stream_path: str
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         raw = self.get_setup_value(CONF_MAMMAMIRADIO_URL)

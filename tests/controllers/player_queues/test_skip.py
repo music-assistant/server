@@ -1,0 +1,288 @@
+"""Tests for the relative skip command on the player queues controller."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from unittest.mock import AsyncMock, MagicMock, Mock
+
+import pytest
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import InvalidCommand
+from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
+
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.players import controller as players_controller
+from tests.common import bare_player_controller
+
+QUEUE_ID = "q1"
+DURATION = 3600
+
+
+def _controller(
+    *,
+    elapsed_time: float = 100.0,
+    anchor_age: float = 2.0,
+    state: PlaybackState = PlaybackState.PLAYING,
+    playback_speed: float = 1.0,
+    duration: int | None = DURATION,
+    real_lock: bool = False,
+) -> tuple[PlayerQueuesController, PlayerQueue, AsyncMock]:
+    """Build a bare controller playing a single audiobook-sized item, with seek stubbed out."""
+    ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
+    queue = PlayerQueue(queue_id=QUEUE_ID, active=True, display_name="Q1", available=True, items=1)
+    item = QueueItem(
+        queue_id=QUEUE_ID, queue_item_id="item1", name="chapter one", duration=duration
+    )
+    queue.current_index = 0
+    queue.current_item = item
+    queue.state = state
+    queue.playback_speed = playback_speed
+    queue.elapsed_time = elapsed_time
+    queue.elapsed_time_last_updated = time.time() - anchor_age
+    queue_data = PlayerQueueData(queue=queue)
+    queue_data.items = [item]
+    ctrl._queue_data = {QUEUE_ID: queue_data}
+    ctrl.mass = MagicMock()
+    # a MagicMock satisfies `async with` but serializes nothing, so the tests that care about
+    # overlapping presses ask for the real lock instead
+    ctrl.mass.players.get_group_and_player_lock = (
+        bare_player_controller().get_group_and_player_lock if real_lock else MagicMock()
+    )
+    ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl.on_player_update = Mock()  # type: ignore[method-assign]
+    seek = AsyncMock()
+    ctrl.seek = seek  # type: ignore[method-assign]
+    return ctrl, queue, seek
+
+
+def _seeked_position(seek: AsyncMock) -> int:
+    """Return the absolute position the stubbed seek was called with."""
+    seek.assert_awaited_once()
+    assert seek.await_args is not None
+    position: int = seek.await_args.args[1]
+    return position
+
+
+def _anchoring_seek(
+    ctrl: PlayerQueuesController, queue: PlayerQueue, gate: asyncio.Event | None = None
+) -> list[int]:
+    """Stub seek to record its targets and anchor the queue there, optionally held on a gate."""
+    positions: list[int] = []
+
+    async def _fake_seek(_queue_id: str, position: int) -> None:
+        positions.append(position)
+        # stand in for the stream rebuild, then anchor the queue the way play_index does
+        if gate is None:
+            await asyncio.sleep(0.01)
+        else:
+            await gate.wait()
+        queue.elapsed_time = position
+        queue.elapsed_time_last_updated = time.time()
+
+    ctrl.seek = AsyncMock(side_effect=_fake_seek)  # type: ignore[method-assign]
+    return positions
+
+
+async def test_skip_uses_live_position_while_playing() -> None:
+    """The queue clock only ticks once a second, so a skip must work out the position now."""
+    ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=2.0)
+
+    await ctrl.skip(QUEUE_ID, 10)
+
+    # reading the stored anchor directly would give 110 and lose the two elapsed seconds
+    assert _seeked_position(seek) == pytest.approx(112, abs=1)
+
+
+async def test_skip_accounts_for_playback_speed() -> None:
+    """At 1.5x an audiobook has covered more of itself than wall clock time suggests."""
+    ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=2.0, playback_speed=1.5)
+
+    await ctrl.skip(QUEUE_ID, 10)
+
+    assert _seeked_position(seek) == pytest.approx(113, abs=1)
+
+
+async def test_skip_while_paused_uses_the_stored_position() -> None:
+    """A paused queue's anchor is not stale, so its age must not be added to the target."""
+    ctrl, _queue, seek = _controller(
+        elapsed_time=100.0, anchor_age=900.0, state=PlaybackState.PAUSED
+    )
+
+    await ctrl.skip(QUEUE_ID, 10)
+
+    assert _seeked_position(seek) == 110
+
+
+async def test_skip_forward_near_the_end_clamps_instead_of_raising() -> None:
+    """Pressing skip forward in the last seconds of a chapter must not error out."""
+    ctrl, _queue, seek = _controller(elapsed_time=DURATION - 2, anchor_age=0.0)
+
+    await ctrl.skip(QUEUE_ID, 30)
+
+    assert _seeked_position(seek) == DURATION - 1
+
+
+async def test_skip_back_past_the_start_clamps_to_zero() -> None:
+    """Skipping back further than the current position lands at the start of the item."""
+    ctrl, _queue, seek = _controller(elapsed_time=5.0, anchor_age=0.0)
+
+    await ctrl.skip(QUEUE_ID, -30)
+
+    assert _seeked_position(seek) == 0
+
+
+async def test_repeated_presses_accumulate() -> None:
+    """Each seek must start from where the previous one left off, not the same stale position."""
+    ctrl, queue, _seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
+    positions = _anchoring_seek(ctrl, queue)
+
+    await asyncio.gather(*(ctrl.skip(QUEUE_ID, -10) for _ in range(3)))
+
+    # the first press finds the lock free and seeks at once; the other two wait for it and
+    # land together from the position it published
+    assert positions == [90, 70]
+
+
+async def test_rapid_presses_coalesce_into_one_seek() -> None:
+    """Presses that pile up behind a running seek are applied as a single jump."""
+    ctrl, queue, _seek = _controller(elapsed_time=180.0, anchor_age=0.0, real_lock=True)
+    gate = asyncio.Event()
+    positions = _anchoring_seek(ctrl, queue, gate)
+
+    presses = [asyncio.create_task(ctrl.skip(QUEUE_ID, -10)) for _ in range(6)]
+    await asyncio.sleep(0.01)
+    gate.set()
+    await asyncio.gather(*presses)
+
+    assert positions == [170, 120]
+
+
+async def test_pending_skips_are_dropped_when_the_item_changes() -> None:
+    """Presses meant for one chapter must not move the next one."""
+    ctrl, queue, _seek = _controller(elapsed_time=180.0, anchor_age=0.0, real_lock=True)
+    gate = asyncio.Event()
+    positions = _anchoring_seek(ctrl, queue, gate)
+
+    presses = [asyncio.create_task(ctrl.skip(QUEUE_ID, -10)) for _ in range(3)]
+    await asyncio.sleep(0.01)
+    queue.current_item = QueueItem(
+        queue_id=QUEUE_ID, queue_item_id="item2", name="chapter two", duration=DURATION
+    )
+    gate.set()
+    await asyncio.gather(*presses)
+
+    assert positions == [170]
+
+
+async def test_pending_skips_start_from_a_position_set_meanwhile() -> None:
+    """Waiting presses are relative to wherever playback is once they get their turn."""
+    ctrl, queue, _seek = _controller(elapsed_time=180.0, anchor_age=0.0, real_lock=True)
+    positions = _anchoring_seek(ctrl, queue)
+
+    async with ctrl.mass.players.get_group_and_player_lock(QUEUE_ID):
+        presses = [asyncio.create_task(ctrl.skip(QUEUE_ID, -10)) for _ in range(2)]
+        await asyncio.sleep(0.01)
+        queue.elapsed_time = 500
+        queue.elapsed_time_last_updated = time.time()
+    await asyncio.gather(*presses)
+
+    assert positions == [480]
+
+
+async def test_failed_seek_does_not_carry_into_the_next_skip() -> None:
+    """A skip that could not be applied must not add its offset to a later one."""
+    ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=0.0)
+    seek.side_effect = [InvalidCommand("seek failed"), None]
+
+    with pytest.raises(InvalidCommand, match="seek failed"):
+        await ctrl.skip(QUEUE_ID, -30)
+    await ctrl.skip(QUEUE_ID, 10)
+
+    assert seek.await_args is not None
+    assert seek.await_args.args[1] == 110
+    assert ctrl._queue_data[QUEUE_ID].pending_skip_item_id is None
+
+
+async def test_cancelled_skip_does_not_carry_into_the_next_skip() -> None:
+    """A press cancelled while waiting for its turn must not add its offset to a later one."""
+    ctrl, queue, _seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
+    positions = _anchoring_seek(ctrl, queue)
+
+    async with ctrl.mass.players.get_group_and_player_lock(QUEUE_ID):
+        press = asyncio.create_task(ctrl.skip(QUEUE_ID, -30))
+        await asyncio.sleep(0.01)
+        press.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await press
+    await ctrl.skip(QUEUE_ID, 10)
+
+    assert positions == [110]
+
+
+async def test_skip_requires_an_item_with_a_duration() -> None:
+    """Radio and not-yet-probed items have no range to skip within."""
+    ctrl, _queue, seek = _controller(duration=None)
+
+    with pytest.raises(InvalidCommand, match="without duration"):
+        await ctrl.skip(QUEUE_ID, 10)
+
+    seek.assert_not_awaited()
+
+
+async def test_skip_requires_an_active_queue() -> None:
+    """An inactive queue has no playback position to move."""
+    ctrl, queue, seek = _controller()
+    queue.active = False
+
+    with pytest.raises(InvalidCommand, match="not active"):
+        await ctrl.skip(QUEUE_ID, 10)
+
+    seek.assert_not_awaited()
+
+
+async def test_previous_restarts_the_track_when_past_the_threshold() -> None:
+    """A stale anchor must not make a 6s-in previous jump back to the preceding track."""
+    ctrl, queue, _seek = _controller(elapsed_time=4.5, anchor_age=2.0)
+    queue.current_index = 1
+    ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
+    ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
+    ctrl.get_item = Mock(return_value=queue.current_item)  # type: ignore[method-assign]
+
+    await ctrl.previous(QUEUE_ID)
+
+    # corrected position is 6.5s, so the current track restarts rather than stepping back
+    assert queue.current_index == 1
+
+
+async def test_overlapping_presses_stay_serialized_past_the_lock_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A play action waits for the running one however long it takes, never runs alongside it."""
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 1.0)
+    ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
+    release = asyncio.Event()
+    seeks: list[int] = []
+
+    async def _slow_seek(_queue_id: str, position: int) -> None:
+        seeks.append(position)
+        # the first press stands in for a play request that outlasts the lock timeout
+        if len(seeks) == 1:
+            await release.wait()
+
+    seek.side_effect = _slow_seek
+
+    first = asyncio.create_task(ctrl.skip(QUEUE_ID, 10))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(ctrl.skip(QUEUE_ID, 10))
+    # well past the point where the lock used to be given up on
+    await asyncio.sleep(0.1)
+    assert len(seeks) == 1
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert len(seeks) == 2

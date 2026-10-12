@@ -35,6 +35,11 @@ if TYPE_CHECKING:
 class ABCRadioProvider(MusicProvider):
     """ABC Radio Music Provider for Music Assistant."""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         if prov_radio_id not in ABC_RADIO_STATIONS:

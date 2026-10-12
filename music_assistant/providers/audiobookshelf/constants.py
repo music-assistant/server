@@ -15,9 +15,9 @@ STREAMDETAILS_EXPIRATION_S = 300
 # CONFIG
 CONF_URL = "url"
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-CONF_OLD_TOKEN = "token"
-CONF_API_TOKEN = "api_token"  # with jwt api token (>= v2.26)
+CONF_PASSWORD = "password"  # noqa: S105 - config key
+CONF_OLD_TOKEN = "token"  # noqa: S105 - config key
+CONF_API_TOKEN = "api_token"  # with jwt api token (>= v2.26)  # noqa: S105 - config key
 CONF_VERIFY_SSL = "verify_ssl"
 # optionally hide podcasts with no episodes
 CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"
@@ -48,7 +48,6 @@ class AbsBrowseItemsBookTranslationKey(StrEnum):
     AUTHORS = "authors"
     NARRATORS = "narrators"
     SERIES = "series_plural"
-    SERIES_ENTRY = "series_entry"
     COLLECTIONS = "collections"
     PLAYLISTS = "playlists"  # not abs specific
     AUDIOBOOKS = "audiobooks"  # not abs specific
@@ -67,7 +66,6 @@ ABS_BROWSE_ITEMS_BOOK_TO_PATH: dict[str, str] = {
     AbsBrowseItemsBookTranslationKey.AUTHORS: AbsBrowsePaths.AUTHORS,
     AbsBrowseItemsBookTranslationKey.NARRATORS: AbsBrowsePaths.NARRATORS,
     AbsBrowseItemsBookTranslationKey.SERIES: AbsBrowsePaths.SERIES,
-    AbsBrowseItemsBookTranslationKey.SERIES_ENTRY: AbsBrowsePaths.SERIES,
     AbsBrowseItemsBookTranslationKey.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS_LIBRARY: AbsBrowsePaths.AUDIOBOOKS,

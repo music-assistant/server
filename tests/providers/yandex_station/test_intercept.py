@@ -25,7 +25,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 if TYPE_CHECKING:
@@ -1167,6 +1167,8 @@ async def test_target_dropdown_lists_all_players_except_self() -> None:
     DLNA / BT bridges that don't expose ``PLAY_MEDIA`` directly).  Mirror
     helpers (volume / pause / seek) gracefully no-op via
     ``UnsupportedFeaturedException`` when the chosen target lacks them.
+    Non-audio player types (capture-only sources, lights, displays) are
+    the exception: they can never render a track, so they are excluded.
     The list is sorted by display name for predictable UX.
     """
     player = _make_intercept_player()
@@ -1174,6 +1176,7 @@ async def test_target_dropdown_lists_all_players_except_self() -> None:
     full = MagicMock()
     full.player_id = "full"
     full.display_name = "Full"
+    full.type = PlayerType.PLAYER
     full.supported_features = {
         PlayerFeature.PLAY_MEDIA,
         PlayerFeature.PAUSE,
@@ -1183,26 +1186,47 @@ async def test_target_dropdown_lists_all_players_except_self() -> None:
     play_media_only = MagicMock()
     play_media_only.player_id = "minimal"
     play_media_only.display_name = "Minimal"
+    play_media_only.type = PlayerType.PLAYER
     play_media_only.supported_features = {PlayerFeature.PLAY_MEDIA}
     no_play_media = MagicMock()
     no_play_media.player_id = "no_play_media"
     no_play_media.display_name = "No Play Media"
+    no_play_media.type = PlayerType.PLAYER
     no_play_media.supported_features = {PlayerFeature.PAUSE, PlayerFeature.VOLUME_SET}
+    group_player = MagicMock()
+    group_player.player_id = "group"
+    group_player.display_name = "Group"
+    group_player.type = PlayerType.GROUP
+    group_player.supported_features = set()
     self_player = MagicMock()
     self_player.player_id = player.player_id
     self_player.display_name = "Self"
+    self_player.type = PlayerType.PLAYER
     self_player.supported_features = {PlayerFeature.PLAY_MEDIA}
+    display_player = MagicMock()
+    display_player.player_id = "display"
+    display_player.display_name = "Display"
+    display_player.type = PlayerType.DISPLAY
+    display_player.supported_features = set()
     player.mass.players.all_players = MagicMock(
-        return_value=[full, play_media_only, no_play_media, self_player]
+        return_value=[
+            full,
+            play_media_only,
+            no_play_media,
+            group_player,
+            self_player,
+            display_player,
+        ]
     )
 
     entries = await YandexStationPlayer.get_config_entries(player)
     target_entry = next(e for e in entries if getattr(e, "key", None) == CONF_INTERCEPT_TARGET)
     listed_ids = [opt.value for opt in target_entry.options]
 
-    # Every non-self player appears, regardless of supported_features,
-    # sorted alphabetically by display name (Full, Minimal, No Play Media).
-    assert listed_ids == ["full", "minimal", "no_play_media"]
+    # Every audio-capable non-self player appears, regardless of supported_features,
+    # sorted alphabetically by display name (Full, Group, Minimal, No Play Media).
+    # The non-playback display player is excluded by type.
+    assert listed_ids == ["full", "group", "minimal", "no_play_media"]
 
 
 async def test_concurrent_mirror_volume_serialised() -> None:

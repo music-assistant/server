@@ -61,6 +61,11 @@ MERGE_SECTION_PROMPT = (
 )
 DEFAULT_WEATHER_PROVIDER = "open_meteo"
 DEFAULT_WEATHER_TIMEOUT_SECONDS = 20
+
+# countries and US territories that use Fahrenheit for everyday temperatures
+FAHRENHEIT_COUNTRY_CODES = frozenset(
+    {"US", "PR", "GU", "VI", "AS", "MP", "LR", "MM", "BS", "BZ", "KY", "PW"}
+)
 DEFAULT_MAX_CONCURRENT_RUNS = 1
 MAX_FINISHED_SESSIONS = 20
 
@@ -115,13 +120,47 @@ ATTR_RENDERED_TEXT = "ai_radio_rendered_text"
 ATTR_HOST_ID = "ai_radio_host_id"
 ATTR_QUEUE_DJ = "ai_radio_queue_dj"
 ATTR_GAP_NEXT_ID = "ai_radio_gap_next_id"
+ATTR_WEATHER_REQUIRED = "ai_radio_weather_required"
+# per-section opt-in: a break from a section that allows it may carry its tail over the
+# next record's intro (a "post")
+ATTR_ALLOW_POST = "ai_radio_allow_post"
+
+# A post plays the last `overlap` seconds of a break over the next record's intro, with the
+# record ducked under the voice. With a break of B seconds and W seconds of intro before the
+# vocal:
+#
+#   overlap = min(W - VOICE_OVER_RAMP, B - POST_MIN_HEAD_SECONDS)  # noqa: ERA001
+#
+# so the music is back at full level (the stream controller's ramp) when the vocal enters.
+POST_MIN_SECONDS = 1.5  # shortest overlap worth doing; below it the break plays whole
+POST_MIN_HEAD_SECONDS = 1.0  # the break keeps at least this much before the record comes in
+# MA's lyrics lookup walks every metadata provider; past this budget the break plays whole
+POST_LYRICS_TIMEOUT = 8.0
+# loading the next record resolves its stream details with its provider; same budget
+POST_LOAD_TIMEOUT = 8.0
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays
 DEFERRED_PLACEHOLDERS = frozenset({"<timestamp>", "<weather_hourly>", "<weather_daily>"})
+
+# the deferred placeholders that need a successful weather fetch to say anything at all
+WEATHER_PLACEHOLDER_TOKENS = ("<weather_hourly>", "<weather_daily>")
+
+# substituted for an unresolved weather token in clips that still air
+NO_WEATHER_DATA_INSTRUCTION = (
+    "(no weather data available - leave out all weather talk, do not invent a forecast)"
+)
 
 # HA drops a tts_proxy token 60s after its last use at the lowest configurable time_memory
 CLIP_STREAMDETAILS_EXPIRATION = 60
 
 # a cached clip with less life than this left is not worth handing out, so it is re-minted
 MIN_CLIP_MEDIA_LIFETIME = 5
+
+# refetch hints broadcast as PROVIDER_EVENT payloads ({"event": <name>}); they carry no
+# state, so the unfiltered broadcast cannot bypass the per-user filtering of the endpoints
+EVENT_HOSTS_UPDATED = "hosts_updated"
+EVENT_STATIONS_UPDATED = "stations_updated"
+EVENT_SECTIONS_UPDATED = "sections_updated"
+EVENT_QUEUE_DJ_UPDATED = "queue_dj_updated"
+EVENT_SESSIONS_UPDATED = "sessions_updated"

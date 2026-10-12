@@ -15,8 +15,8 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
-from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.media_items import AudioFormat, Track
+from music_assistant_models.streamdetails import StreamDetails, TailOverlap
 
 from music_assistant.constants import (
     CONF_VALUE_DISABLED,
@@ -25,6 +25,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
 )
+from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
 from music_assistant.helpers.audio import parse_loudnorm
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.process import check_output
@@ -36,25 +37,35 @@ from music_assistant.helpers.tts import (
 )
 
 from .constants import (
+    ATTR_ALLOW_POST,
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_TTS_LOUDNESS_BOOST,
     DEFERRED_PLACEHOLDERS,
+    EVENT_SESSIONS_UPDATED,
     LOUDNESS_MEASURE_TIMEOUT,
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
+    NO_WEATHER_DATA_INSTRUCTION,
+    POST_LOAD_TIMEOUT,
+    POST_LYRICS_TIMEOUT,
+    POST_MIN_HEAD_SECONDS,
+    POST_MIN_SECONDS,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SERVER_ERROR_MARKERS,
     TTS_SPEECHNORM_FILTER,
+    WEATHER_PLACEHOLDER_TOKENS,
 )
-from .helpers import coerce_int, soft_limit_text
+from .helpers import coerce_int, format_ai_radio_timestamp, soft_limit_text
+from .post_window import lyric_onset
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -102,6 +113,8 @@ class AIRadioRenderMixin:
     _render_locks: dict[str, asyncio.Lock]
     _media_cache: dict[str, _CachedClipMedia]
     _engine_loudness: dict[tuple[str, str, str], float]
+    # clip id -> (next queue item id or None, the post planned against it)
+    _post_plans: dict[str, tuple[str | None, TailOverlap | None]]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -126,6 +139,11 @@ class AIRadioRenderMixin:
                 # the signal is what marks the items cache dirty and schedules the persist
                 self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
             media = await self._cached_clip_media(queue_item, text, item_id)
+            tail_overlap = (
+                await self._plan_post(queue_item, item_id, media.duration)
+                if queue_item.extra_attributes.get(ATTR_ALLOW_POST)
+                else None
+            )
 
         streamdetails = StreamDetails(
             provider=self.instance_id,
@@ -142,6 +160,7 @@ class AIRadioRenderMixin:
             # a cache hit serves a url that was minted earlier, so it may only claim the life
             # that url has left or the stream outlives the token behind it
             expiration=self._remaining_media_lifetime(media),
+            tail_overlap=tail_overlap,
         )
         gain_db = self._loudness_gain(queue_item.queue_id, media.loudness)
         if gain_db is not None:
@@ -190,6 +209,7 @@ class AIRadioRenderMixin:
         """Return the clip's minted media, re-minting only once the cache entry has expired."""
         if not hasattr(self, "_media_cache"):
             self._media_cache = {}
+            self._post_plans = {}
         now = asyncio.get_running_loop().time()
         cached = self._media_cache.get(clip_id)
         if cached is not None and self._remaining_media_lifetime(cached) > MIN_CLIP_MEDIA_LIFETIME:
@@ -208,6 +228,7 @@ class AIRadioRenderMixin:
             if now - entry.minted_at >= CLIP_STREAMDETAILS_EXPIRATION
         ]:
             del self._media_cache[expired_id]
+            self._post_plans.pop(expired_id, None)
         self._media_cache[clip_id] = media
         return media
 
@@ -295,6 +316,22 @@ class AIRadioRenderMixin:
         """Resolve the deferred placeholders and generate the spoken script."""
         attributes = queue_item.extra_attributes
         deferred = await self._resolve_deferred_placeholders(prompt)
+        empty_weather_tokens = [
+            token
+            for token in WEATHER_PLACEHOLDER_TOKENS
+            if token in prompt and not deferred.get(token)
+        ]
+        if empty_weather_tokens:
+            if attributes.get(ATTR_WEATHER_REQUIRED):
+                error = "weather data unavailable for a weather-required clip"
+                self.logger.warning(
+                    "AI Radio clip %s (%s) skipped: %s", clip_id, queue_item.name, error
+                )
+                self._record_skip(queue_item, error)
+                raise MediaNotFoundError(f"AI Radio clip {clip_id} has no weather data")
+            # weather is optional in this clip, so the LLM must skip it rather than invent it
+            for token in empty_weather_tokens:
+                deferred[token] = NO_WEATHER_DATA_INSTRUCTION
         resolved = prompt
         for key, value in deferred.items():
             resolved = resolved.replace(key, value)
@@ -329,11 +366,10 @@ class AIRadioRenderMixin:
     async def _resolve_deferred_placeholders(self, prompt: str) -> dict[str, str]:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
-        values["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
+        values["<timestamp>"] = format_ai_radio_timestamp(self._configured_now())
         # weather is the only deferred placeholder that costs a network round-trip, so it is
         # only fetched when the prompt actually references it
-        weather_tokens = ("<weather_hourly>", "<weather_daily>")
-        if any(token in prompt for token in weather_tokens):
+        if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):
             values.update(await self._prepare_weather_tokens())
         return values
 
@@ -437,9 +473,13 @@ class AIRadioRenderMixin:
             tags = await async_parse_tags(path, require_duration=True)
         except (InvalidDataError, OSError) as err:
             if any(marker in str(err) for marker in TTS_SERVER_ERROR_MARKERS):
+                # the engine reports no reason of its own (Home Assistant answers a failed
+                # render with an empty 500), so the probe's message is the only clue there is
                 raise MusicAssistantError(
-                    "Error during TTS generation. Does your TTS provider have enough credit? "
-                    "Check the logs of your TTS provider for the reason."
+                    f"{err}. The TTS engine failed to generate the audio it handed out. "
+                    "Check the logs of the TTS engine for the reason (for a Home Assistant "
+                    "engine that is the Home Assistant core log). A cloud engine may be "
+                    "out of credit or having an outage."
                 ) from err
             self.logger.warning("Could not determine AI Radio clip duration: %s", err)
             return None
@@ -452,3 +492,124 @@ class AIRadioRenderMixin:
             return
         session.skipped_sections += 1
         session.last_render_error = error
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
+
+    async def _plan_post(
+        self, queue_item: QueueItem, clip_id: str, clip_duration: int | None
+    ) -> TailOverlap | None:
+        """Return how far the clip may carry over the next track's intro, or None."""
+        next_item = self.mass.player_queues.get_next_item(
+            queue_item.queue_id, queue_item.queue_item_id
+        )
+        next_item_id = next_item.queue_item_id if next_item is not None else None
+        # every path that resolves the clip asks again, the lyrics lookup is not cheap and
+        # a skip should log once until the next item changes
+        planned = self._post_plans.get(clip_id)
+        if planned is not None and planned[0] == next_item_id:
+            return planned[1]
+        tail_overlap = await self._plan_post_over(queue_item, next_item, clip_duration)
+        self._post_plans[clip_id] = (next_item_id, tail_overlap)
+        return tail_overlap
+
+    async def _plan_post_over(
+        self, queue_item: QueueItem, next_item: QueueItem | None, clip_duration: int | None
+    ) -> TailOverlap | None:
+        """Return how far the clip may carry over the next track's intro, or None."""
+        if next_item is None or not isinstance(next_item.media_item, Track):
+            self._post_skipped(queue_item.name, "no next track in the queue")
+            return None
+        # the overlap is only mixed at a flow stream's boundary; a show requires flow mode
+        # before its first play start, so its first clip already passes here
+        queue = self.mass.player_queues.get(queue_item.queue_id)
+        if queue is None or not (
+            queue.flow_mode or self.mass.streams.flow_mode_required(queue.queue_id)
+        ):
+            self._post_skipped(next_item.name, "the player does not stream in flow mode")
+            return None
+        # which copy of the track streams is only known once its stream details are
+        # resolved: the queue resolves them now rather than when the clip nears its end,
+        # as it will again then, and moves on to the item after a track it cannot play
+        loaded, reason = await self._load_next_item(queue_item)
+        if loaded is None:
+            self._post_skipped(next_item.name, reason)
+            return None
+        if not isinstance(loaded.media_item, Track):
+            self._post_skipped(loaded.name, "the item that plays next is not a track")
+            return None
+        next_item = loaded
+        onset, reason = await self._resolve_vocal_onset(next_item)
+        if onset is None:
+            self._post_skipped(next_item.name, reason)
+            return None
+        window = onset - VOICE_OVER_RAMP
+        if window < POST_MIN_SECONDS:
+            self._post_skipped(
+                next_item.name, f"vocal enters at {onset:.1f}s, too little instrumental intro"
+            )
+            return None
+        overlap = min(window, (clip_duration or 0) - POST_MIN_HEAD_SECONDS)
+        if overlap < POST_MIN_SECONDS:
+            self._post_skipped(
+                next_item.name,
+                f"break is only {clip_duration or 0:.1f}s, too short to carry over",
+            )
+            return None
+        self.logger.info(
+            "AI Radio post armed on %s: last %.1fs of the break over the intro, vocal at %.1fs",
+            next_item.name,
+            overlap,
+            onset,
+        )
+        return TailOverlap(duration=round(overlap, 3), next_queue_item_id=next_item.queue_item_id)
+
+    async def _load_next_item(self, queue_item: QueueItem) -> tuple[QueueItem | None, str]:
+        """Return the item the queue plays after the clip, loaded, or the reason it has none."""
+        try:
+            # a show starts on its opening clip, whose playback start waits for this
+            async with asyncio.timeout(POST_LOAD_TIMEOUT):
+                next_item = await self.mass.player_queues.load_next_queue_item(
+                    queue_item.queue_id, queue_item.queue_item_id
+                )
+        except TimeoutError:
+            return None, f"loading the next track took longer than {POST_LOAD_TIMEOUT:.0f}s"
+        except MusicAssistantError as err:
+            return None, f"the next track could not be loaded ({err})"
+        return next_item, ""
+
+    async def _resolve_vocal_onset(self, queue_item: QueueItem) -> tuple[float | None, str]:
+        """Return the second the track's vocal enters, and the reason when there is none."""
+        media_item = cast("Track", queue_item.media_item)
+        if (onset := await self._analysis_vocal_onset(queue_item)) is not None:
+            return onset, ""
+        if (onset := lyric_onset(media_item.metadata.lrc_lyrics)) is not None:
+            return onset, ""
+        try:
+            # the lookup walks every metadata provider, longer than a clip about to air can wait
+            async with asyncio.timeout(POST_LYRICS_TIMEOUT):
+                plain, lrc_lyrics = await self.mass.metadata.get_track_lyrics(media_item)
+        except TimeoutError:
+            return None, f"lyrics lookup took longer than {POST_LYRICS_TIMEOUT:.0f}s"
+        except MusicAssistantError as err:
+            return None, f"lyrics lookup failed ({err})"
+        if (onset := lyric_onset(lrc_lyrics)) is not None:
+            return onset, ""
+        if lrc_lyrics:
+            return None, "synced lyrics have no sung line"
+        if plain:
+            return None, "only unsynced lyrics available, so no vocal timing"
+        return None, "no lyrics found"
+
+    async def _analysis_vocal_onset(self, queue_item: QueueItem) -> float | None:
+        """Return the track's vocal onset from its stored audio analysis, or None."""
+        # the analysis is keyed by the provider-native id of the copy that streams
+        if (streamdetails := queue_item.streamdetails) is None:
+            return None
+        return await self.mass.streams.audio_analysis.get_vocal_onset(
+            streamdetails.item_id, streamdetails.provider
+        )
+
+    def _post_skipped(self, item_name: str, reason: str) -> None:
+        """Log why an opted-in break does not carry over the next track."""
+        # INFO: only sections that opted in reach here, and a post that quietly does not
+        # happen looks the same as one that was never enabled
+        self.logger.info("AI Radio post skipped on %s: %s", item_name, reason)
