@@ -109,7 +109,7 @@ class AIRadioRuntimeMixin:
         config: ProviderConfig
         logger: logging.Logger
         _sessions: dict[str, SessionState]
-        _flow_mode_queues: dict[str, str]
+        _boundary_mix_queues: dict[str, str]
 
         def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
             """Return a value collected by this provider's setup flow."""
@@ -286,14 +286,14 @@ class AIRadioRuntimeMixin:
             keep_played=False,
             shuffle=False,
         )
-        # the server carries a break over the next track only on a flow stream or on a
-        # player that plays gapless, so a show that posts holds any other player's queue in
-        # flow mode. The queue DJ does not: its breaks post only on a player that does
-        # either anyway
-        posts = any(section.allow_post for section in planned_sections)
-        if posts and not self.mass.streams.mixes_item_boundaries(queue_id):
-            self.mass.streams.set_flow_mode_required(queue_id, self.instance_id, True)
-            self._flow_mode_queues[queue_id] = session.session_id
+        # a show that posts needs its breaks mixed into the next track: the server does
+        # that between the item streams of a player that plays gapless and streams any
+        # other player in flow mode, decided at the play start from the output protocol
+        # it selects. The queue DJ does not ask for it: its breaks post only on a player
+        # that mixes boundaries anyway
+        if any(section.allow_post for section in planned_sections):
+            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, True)
+            self._boundary_mix_queues[queue_id] = session.session_id
         try:
             await self.mass.player_queues.play_index(queue_id, 0)
             self._set_session_progress(
@@ -310,9 +310,9 @@ class AIRadioRuntimeMixin:
         finally:
             # a show that took the queue over holds the requirement now, so only the
             # session that set it releases it
-            if self._flow_mode_queues.get(queue_id) == session.session_id:
-                del self._flow_mode_queues[queue_id]
-                self.mass.streams.set_flow_mode_required(queue_id, self.instance_id, False)
+            if self._boundary_mix_queues.get(queue_id) == session.session_id:
+                del self._boundary_mix_queues[queue_id]
+                self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
         return {
             "ended_reason": ended_reason,
             "source_playlist_name": playlist_name,

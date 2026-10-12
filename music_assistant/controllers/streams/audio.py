@@ -2046,44 +2046,45 @@ class StreamsAudio:
                     bytes_written += len(pcm_slice)
                     del tail_window[: len(pcm_slice)]
                     await asyncio.sleep(0)
+
+            #### HANDLE END OF TRACK
+
+            # get next track for crossfade; without a fade out of this item, the next
+            # item's own request loads it
+            crossfade_start_time = asyncio.get_event_loop().time()
+            next_queue_item: QueueItem | None = None
+            if crossfade_mode != CrossfadeMode.DISABLED:
+                try:
+                    self.logger.debug(
+                        "Preloading NEXT track for crossfade for queue %s", queue.display_name
+                    )
+                    next_queue_item = await self.mass.player_queues.load_next_queue_item(
+                        queue.queue_id, queue_item.queue_item_id
+                    )
+                    # set index_in_buffer to prevent our next track is overwritten while
+                    # preloading
+                    if next_queue_item.streamdetails is None:
+                        raise InvalidDataError(
+                            f"No streamdetails for next queue item {next_queue_item.queue_item_id}"
+                        )
+                    queue.index_in_buffer = self.mass.player_queues.index_by_id(
+                        queue.queue_id, next_queue_item.queue_item_id
+                    )
+                except QueueEmpty:
+                    # end of queue reached, no next item
+                    next_queue_item = None
+                except MusicAssistantError as err:
+                    # the held tail plays out plainly; the next item's own request loads it
+                    self.logger.warning(
+                        "Not fading into the next item on queue %s, it could not be loaded: %s",
+                        queue.display_name,
+                        err,
+                    )
+                    next_queue_item = None
         except BaseException:
             # the stream ends before its boundary: nothing will be mixed for a waiter
             self._release_handoff(queue.queue_id, handoff)
             raise
-
-        #### HANDLE END OF TRACK
-
-        # get next track for crossfade; without a fade out of this item, the next
-        # item's own request loads it
-        crossfade_start_time = asyncio.get_event_loop().time()
-        next_queue_item: QueueItem | None = None
-        if crossfade_mode != CrossfadeMode.DISABLED:
-            try:
-                self.logger.debug(
-                    "Preloading NEXT track for crossfade for queue %s", queue.display_name
-                )
-                next_queue_item = await self.mass.player_queues.load_next_queue_item(
-                    queue.queue_id, queue_item.queue_item_id
-                )
-                # set index_in_buffer to prevent our next track is overwritten while preloading
-                if next_queue_item.streamdetails is None:
-                    raise InvalidDataError(
-                        f"No streamdetails for next queue item {next_queue_item.queue_item_id}"
-                    )
-                queue.index_in_buffer = self.mass.player_queues.index_by_id(
-                    queue.queue_id, next_queue_item.queue_item_id
-                )
-            except QueueEmpty:
-                # end of queue reached, no next item
-                next_queue_item = None
-            except MusicAssistantError as err:
-                # the held tail plays out plainly; the next item's own request loads it
-                self.logger.warning(
-                    "Not fading into the next item on queue %s, it could not be loaded: %s",
-                    queue.display_name,
-                    err,
-                )
-                next_queue_item = None
 
         crossfade_allowed = False
         transition_mode = CrossfadeMode.DISABLED

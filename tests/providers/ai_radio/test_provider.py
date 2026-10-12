@@ -577,7 +577,7 @@ def _make_engine_provider(
     provider.mass = cast("Any", mass)
     provider.logger = logging.getLogger("test.ai_radio")
     provider._dj_queues = {}
-    provider._flow_mode_queues = {}
+    provider._boundary_mix_queues = {}
     provider._unloading = False
     provider._engine_recheck_task = None
     provider._unregister_handles = []
@@ -888,19 +888,19 @@ async def test_unload_cancels_an_in_flight_queue_dj_replan() -> None:
         await asyncio.wait_for(replan_task, timeout=5)
 
 
-async def test_unload_releases_the_flow_mode_its_shows_still_hold() -> None:
-    """Unloading lets go of every queue a show still holds in flow mode."""
+async def test_unload_releases_the_boundary_mix_its_shows_still_hold() -> None:
+    """Unloading lets go of every queue a show still requires mixed boundaries on."""
     provider, _, _ = _make_engine_provider([])
-    provider._flow_mode_queues = {"queue-1": "sess1", "queue-2": "sess2"}
+    provider._boundary_mix_queues = {"queue-1": "sess1", "queue-2": "sess2"}
 
     await provider.unload()
 
-    set_flow_mode_required = cast("Any", provider.mass).streams.set_flow_mode_required
-    assert set_flow_mode_required.call_args_list == [
+    set_boundary_mix_required = cast("Any", provider.mass).streams.set_boundary_mix_required
+    assert set_boundary_mix_required.call_args_list == [
         call("queue-1", "ai_radio", False),
         call("queue-2", "ai_radio", False),
     ]
-    assert provider._flow_mode_queues == {}
+    assert provider._boundary_mix_queues == {}
 
 
 async def test_engine_recheck_stays_silent_when_the_provider_unloads_during_the_wait(

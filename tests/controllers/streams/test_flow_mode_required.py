@@ -21,6 +21,7 @@ def _controller() -> Any:
     controller: Any = StreamsController.__new__(StreamsController)
     controller._base_url = "http://mass:8097"
     controller._flow_mode_owners = {}
+    controller._boundary_mix_owners = {}
     controller.mass = mass = MagicMock()
     player = MagicMock()
     player.config.get_value.side_effect = lambda _key, default=None: default
@@ -97,6 +98,55 @@ def test_flow_mode_stays_required_while_any_owner_requires_it() -> None:
     assert still_required
     assert not controller.flow_mode_required("queue-1")
     assert not controller.flow_mode_required("queue-2")
+
+
+@pytest.mark.parametrize(
+    ("supports_gapless", "expected_route"),
+    [(True, "single"), (False, "flow")],
+    ids=["gapless player mixes per item", "other player goes to flow mode"],
+)
+async def test_a_boundary_mix_requirement_puts_only_a_player_without_gapless_in_flow_mode(
+    supports_gapless: bool, expected_route: str
+) -> None:
+    """Mixed boundaries need flow mode only on a player that cannot play gapless."""
+    controller = _controller()
+    controller.mass.players.get_player.return_value.supports_gapless = supports_gapless
+    controller.set_boundary_mix_required("queue-1", "ai_radio", True)
+
+    url = await controller.resolve_stream_url("player-1", _media())
+
+    assert url == f"http://mass:8097/{expected_route}/session-1/queue-1/item-1/player-1.flac"
+
+
+def test_a_boundary_mix_requirement_gets_the_flow_stream_without_gapless() -> None:
+    """The raw PCM helper streams a queue with mixed boundaries as a flow on such a player."""
+    controller = _controller()
+    controller.audio = MagicMock()
+    controller._get_flow_start_item = MagicMock()
+    controller._update_audio_processing_context = MagicMock()
+    controller._count_as_output_stream = lambda stream: stream
+    controller.mass.players.get_player.return_value.supports_gapless = False
+    controller.set_boundary_mix_required("queue-1", "ai_radio", True)
+
+    controller.get_stream(_media(), PCM_FORMAT, player_id="player-1")
+
+    controller.audio.get_queue_flow_stream.assert_called_once()
+    controller.audio.get_queue_item_stream.assert_not_called()
+
+
+def test_boundary_mix_stays_required_while_any_owner_requires_it() -> None:
+    """Releasing one owner's claim leaves the boundaries required while another holds one."""
+    controller = _controller()
+
+    controller.set_boundary_mix_required("queue-1", "ai_radio", True)
+    controller.set_boundary_mix_required("queue-1", "other_plugin", True)
+    controller.set_boundary_mix_required("queue-1", "ai_radio", False)
+    still_required = controller.boundary_mix_required("queue-1")
+    controller.set_boundary_mix_required("queue-1", "other_plugin", False)
+
+    assert still_required
+    assert not controller.boundary_mix_required("queue-1")
+    assert not controller.flow_mode_required("queue-1")
 
 
 @pytest.mark.parametrize(

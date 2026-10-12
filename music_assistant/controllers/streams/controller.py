@@ -284,6 +284,7 @@ class StreamsController(CoreController):
         self._active_output_streams = 0
         # owners (e.g. a plugin) that require flow mode for a queue, by queue id
         self._flow_mode_owners: dict[str, set[str]] = {}
+        self._boundary_mix_owners: dict[str, set[str]] = {}
 
     @property
     def audio_analysis(self) -> AudioAnalysisController:
@@ -438,14 +439,7 @@ class StreamsController(CoreController):
         :param owner: Identifier of the requester, e.g. a provider instance id.
         :param required: True to require flow mode, False to release this owner's claim.
         """
-        if required:
-            self._flow_mode_owners.setdefault(queue_id, set()).add(owner)
-            return
-        if (owners := self._flow_mode_owners.get(queue_id)) is None:
-            return
-        owners.discard(owner)
-        if not owners:
-            del self._flow_mode_owners[queue_id]
+        self._set_required(self._flow_mode_owners, queue_id, owner, required)
 
     def flow_mode_required(self, queue_id: str) -> bool:
         """
@@ -454,6 +448,29 @@ class StreamsController(CoreController):
         :param queue_id: Queue to check.
         """
         return queue_id in self._flow_mode_owners
+
+    def set_boundary_mix_required(self, queue_id: str, owner: str, required: bool) -> None:
+        """
+        Require (or release) that the queue's item boundaries are mixed, on behalf of an owner.
+
+        A queue with items that declare a tail overlap needs them mixed into the next
+        item. A player that plays gapless does that between its item streams; any other
+        player is streamed in flow mode while an owner requires it, decided at each play
+        start from the output protocol that start selects.
+
+        :param queue_id: Queue whose boundaries must be mixed.
+        :param owner: Identifier of the requester, e.g. a provider instance id.
+        :param required: True to require it, False to release this owner's claim.
+        """
+        self._set_required(self._boundary_mix_owners, queue_id, owner, required)
+
+    def boundary_mix_required(self, queue_id: str) -> bool:
+        """
+        Return whether any owner requires the queue's item boundaries to be mixed.
+
+        :param queue_id: Queue to check.
+        """
+        return queue_id in self._boundary_mix_owners
 
     def mixes_item_boundaries(self, queue_id: str) -> bool:
         """
@@ -732,7 +749,7 @@ class StreamsController(CoreController):
                 protocol_player.flow_mode
                 or crossfade_needs_flow_mode
                 or overlay_needs_flow_mode
-                or (queue_id is not None and self.flow_mode_required(queue_id))
+                or (queue_id is not None and self._needs_flow_mode(queue_id, protocol_player))
             )
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
@@ -1359,10 +1376,11 @@ class StreamsController(CoreController):
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            # a declared tail overlap is mixed like a crossfade, and a queue held in flow
-            # mode by a plugin is about to carry such items
+            # a declared tail overlap is mixed like a crossfade, and a queue a plugin holds
+            # in flow mode or has the boundaries mixed of is about to carry such items
             crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED
             or self.flow_mode_required(queue_id)
+            or self.boundary_mix_required(queue_id)
             or (
                 start_queue_item.streamdetails is not None
                 and start_queue_item.streamdetails.tail_overlap is not None
@@ -1755,7 +1773,7 @@ class StreamsController(CoreController):
                 or (protocol_player is not None and protocol_player.flow_mode)
                 or crossfade_needs_flow_mode
                 or overlay_needs_flow_mode
-                or self.flow_mode_required(queue_id)
+                or self._needs_flow_mode(queue_id, protocol_player)
             )
             if media.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
                 # flow_mode for live/infinite streams is pointless
@@ -2536,6 +2554,43 @@ class StreamsController(CoreController):
     async def _handle_info_preflight(self, request: web.Request) -> web.Response:
         """Answer the CORS preflight a browser may send ahead of a probe."""
         return web.Response(status=204, headers=_INFO_CORS_HEADERS)
+
+    def _needs_flow_mode(self, queue_id: str, protocol_player: Player | None) -> bool:
+        """
+        Return whether a plugin's requirements put the queue in flow mode on this player.
+
+        :param queue_id: Queue about to be streamed.
+        :param protocol_player: The player (protocol) that will render the stream.
+        """
+        if self.flow_mode_required(queue_id):
+            return True
+        # mixed boundaries only need flow mode on a player that cannot play gapless
+        return (
+            self.boundary_mix_required(queue_id)
+            and protocol_player is not None
+            and not protocol_player.supports_gapless
+        )
+
+    @staticmethod
+    def _set_required(
+        owners: dict[str, set[str]], queue_id: str, owner: str, required: bool
+    ) -> None:
+        """
+        Record or release one owner's requirement on a queue.
+
+        :param owners: The registry of owners per queue.
+        :param queue_id: Queue the requirement applies to.
+        :param owner: Identifier of the requester.
+        :param required: True to record the requirement, False to release it.
+        """
+        if required:
+            owners.setdefault(queue_id, set()).add(owner)
+            return
+        if (queue_owners := owners.get(queue_id)) is None:
+            return
+        queue_owners.discard(owner)
+        if not queue_owners:
+            del owners[queue_id]
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:

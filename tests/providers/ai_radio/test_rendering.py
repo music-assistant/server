@@ -1202,6 +1202,7 @@ def _attach_post(
     lyrics: tuple[str | None, str | None] = (None, None),
     flow_mode: bool = True,
     flow_mode_required: bool = False,
+    boundary_mix_required: bool = False,
     mixes_item_boundaries: bool = False,
     load_next: QueueItem | Exception | None = None,
 ) -> tuple[AsyncMock, AsyncMock]:
@@ -1229,6 +1230,7 @@ def _attach_post(
         queue_id=queue_id, flow_mode=flow_mode
     )
     mass.streams.flow_mode_required = MagicMock(return_value=flow_mode_required)
+    mass.streams.boundary_mix_required = MagicMock(return_value=boundary_mix_required)
     mass.streams.mixes_item_boundaries = MagicMock(return_value=mixes_item_boundaries)
     get_vocal_onset = AsyncMock(return_value=analysis_onset)
     mass.streams.audio_analysis = SimpleNamespace(get_vocal_onset=get_vocal_onset)
@@ -1475,6 +1477,21 @@ async def test_a_post_is_armed_on_a_gapless_player_outside_flow_mode() -> None:
 
     assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
     cast("Any", renderer).mass.streams.mixes_item_boundaries.assert_called_once_with("player_a")
+
+
+async def test_a_post_is_armed_when_the_show_requires_mixed_boundaries() -> None:
+    """A show's requirement settles the player's side, whatever its protocol looks like now."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, flow_mode=False, boundary_mix_required=True
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
+    cast("Any", renderer).mass.streams.mixes_item_boundaries.assert_not_called()
 
 
 @pytest.mark.parametrize(

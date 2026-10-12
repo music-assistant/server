@@ -442,3 +442,23 @@ async def test_a_clip_torn_down_before_its_boundary_releases_the_early_claim(
 
     assert not audio.fade_into_pending("queue-1", "item-2")
     assert "queue-1" not in audio._crossfade_pending
+
+
+async def test_a_failed_next_item_load_releases_the_early_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A load that blows up after the clip's body leaves nothing for the track's request to wait on."""
+    clip = _clip()
+    track = _declared_track()
+    audio, _mass = _item_audio(monkeypatch, next_item=track, load_next=[RuntimeError("boom")])
+    _install_item_streams(monkeypatch, audio)
+
+    clip_stream = _request(audio, clip, CrossfadeMode.VOICE_OVER)
+    await anext(clip_stream)
+    assert audio.fade_into_pending("queue-1", "item-2")
+
+    with pytest.raises(RuntimeError):
+        await _drain(clip_stream)
+
+    assert not audio.fade_into_pending("queue-1", "item-2")
+    assert "queue-1" not in audio._crossfade_pending

@@ -76,7 +76,7 @@ class DummyRuntime(ProviderEventRecorder, AIRadioRuntimeMixin):
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
         self._sections: dict[str, dict[str, Any]] = {}
-        self._flow_mode_queues: dict[str, str] = {}
+        self._boundary_mix_queues: dict[str, str] = {}
         self.config = cast("Any", StubConfig())
         self.instance_id = "ai_radio_test"
         self.domain = "ai_radio"
@@ -2396,22 +2396,17 @@ class PostShowRuntime(ShowRuntime):
         return "source_exhausted"
 
 
-def _posting_show_mass(
-    runtime: ShowRuntime, call_order: list[str], *, mixes_item_boundaries: bool = False
-) -> None:
-    """Wire a show mass stub that records play starts and flow-mode requirements."""
+def _posting_show_mass(runtime: ShowRuntime, call_order: list[str]) -> None:
+    """Wire a show mass stub that records play starts and boundary-mix requirements."""
 
     async def _play_index(_queue_id: str, index: int) -> None:
         call_order.append(f"play_index:{index}")
 
-    def _set_flow_mode_required(queue_id: str, owner: str, required: bool) -> None:
-        call_order.append(f"flow:{queue_id}:{owner}:{required}")
+    def _set_boundary_mix_required(queue_id: str, owner: str, required: bool) -> None:
+        call_order.append(f"mix:{queue_id}:{owner}:{required}")
 
     mass = _show_mass_stub(play_index=_play_index)
-    mass.streams = SimpleNamespace(
-        set_flow_mode_required=_set_flow_mode_required,
-        mixes_item_boundaries=lambda _queue_id: mixes_item_boundaries,
-    )
+    mass.streams = SimpleNamespace(set_boundary_mix_required=_set_boundary_mix_required)
     _set_runtime_mass(runtime, mass)
 
 
@@ -2422,8 +2417,8 @@ def _posting_station() -> dict[str, Any]:
     return station
 
 
-async def test_a_posting_show_holds_its_queue_in_flow_mode_until_it_ends() -> None:
-    """Flow mode is required before playback starts and released once the show ends."""
+async def test_a_posting_show_requires_mixed_boundaries_until_it_ends() -> None:
+    """The requirement is placed before playback starts and released once the show ends."""
     runtime = PostShowRuntime()
     call_order: list[str] = []
     _posting_show_mass(runtime, call_order)
@@ -2431,18 +2426,18 @@ async def test_a_posting_show_holds_its_queue_in_flow_mode_until_it_ends() -> No
 
     task = asyncio.create_task(runtime._run_show(session, _posting_station()))
     await asyncio.sleep(0)
-    assert call_order == ["flow:living_room:ai_radio_test:True", "play_index:0"]
-    assert runtime._flow_mode_queues == {"living_room": "sess"}
+    assert call_order == ["mix:living_room:ai_radio_test:True", "play_index:0"]
+    assert runtime._boundary_mix_queues == {"living_room": "sess"}
 
     runtime.show_end.set()
     await asyncio.wait_for(task, timeout=1)
 
-    assert call_order[-1] == "flow:living_room:ai_radio_test:False"
-    assert runtime._flow_mode_queues == {}
+    assert call_order[-1] == "mix:living_room:ai_radio_test:False"
+    assert runtime._boundary_mix_queues == {}
 
 
-async def test_a_cancelled_posting_show_releases_flow_mode() -> None:
-    """A show stopped while on air releases the flow-mode requirement too."""
+async def test_a_cancelled_posting_show_releases_its_requirement() -> None:
+    """A show stopped while on air releases the boundary-mix requirement too."""
     runtime = PostShowRuntime()
     call_order: list[str] = []
     _posting_show_mass(runtime, call_order)
@@ -2455,11 +2450,11 @@ async def test_a_cancelled_posting_show_releases_flow_mode() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert call_order[-1] == "flow:living_room:ai_radio_test:False"
-    assert runtime._flow_mode_queues == {}
+    assert call_order[-1] == "mix:living_room:ai_radio_test:False"
+    assert runtime._boundary_mix_queues == {}
 
 
-async def test_a_show_taken_over_by_another_leaves_its_flow_mode_alone() -> None:
+async def test_a_show_taken_over_by_another_leaves_its_requirement_alone() -> None:
     """Only the session that holds the requirement releases it."""
     runtime = PostShowRuntime()
     call_order: list[str] = []
@@ -2469,16 +2464,16 @@ async def test_a_show_taken_over_by_another_leaves_its_flow_mode_alone() -> None
         runtime._run_show(SessionState(session_id="sess", station_id="st"), _posting_station())
     )
     await asyncio.sleep(0)
-    runtime._flow_mode_queues["living_room"] = "other"
+    runtime._boundary_mix_queues["living_room"] = "other"
     runtime.show_end.set()
     await asyncio.wait_for(task, timeout=1)
 
-    assert "flow:living_room:ai_radio_test:False" not in call_order
-    assert runtime._flow_mode_queues == {"living_room": "other"}
+    assert "mix:living_room:ai_radio_test:False" not in call_order
+    assert runtime._boundary_mix_queues == {"living_room": "other"}
 
 
-async def test_a_show_without_posting_sections_leaves_flow_mode_alone() -> None:
-    """A show whose breaks never carry over does not touch the queue's flow mode."""
+async def test_a_show_without_posting_sections_asks_for_nothing() -> None:
+    """A show whose breaks never carry over places no requirement on the queue."""
     runtime = PostShowRuntime()
     call_order: list[str] = []
     _posting_show_mass(runtime, call_order)
@@ -2487,16 +2482,3 @@ async def test_a_show_without_posting_sections_leaves_flow_mode_alone() -> None:
     await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
 
     assert call_order == ["play_index:0"]
-
-
-async def test_a_posting_show_leaves_flow_mode_alone_on_a_gapless_player() -> None:
-    """A player that already gets item boundaries mixed keeps streaming per item."""
-    runtime = PostShowRuntime()
-    call_order: list[str] = []
-    _posting_show_mass(runtime, call_order, mixes_item_boundaries=True)
-    runtime.show_end.set()
-
-    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _posting_station())
-
-    assert call_order == ["play_index:0"]
-    assert runtime._flow_mode_queues == {}

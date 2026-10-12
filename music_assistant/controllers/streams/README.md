@@ -181,7 +181,7 @@ Smart fades mix the outgoing track's held-back tail (up to 45 seconds) with the 
 - `STANDARD_CROSSFADE`: `StandardCrossFade`, a fixed-length overlap after stripping trailing silence
 - `VOICE_OVER`: `VoiceOverFade`, a declared transition that plays as declared and is never planned
 
-An item that declares a tail overlap (`StreamDetails.tail_overlap`) plays it as `VOICE_OVER` into the item it was planned against, whatever the queue's crossfade setting: on the flow stream, and per item on a player that plays gapless, where the incoming item's request takes the smart fade stream to pick the mix up. A direct PCM stream of a single item never mixes its boundary.
+An item that declares a tail overlap (`StreamDetails.tail_overlap`) plays it as `VOICE_OVER` into the item it was planned against, whatever the queue's crossfade setting: on the flow stream, and per item on a player that plays gapless, where the incoming item's request takes the smart fade stream to pick the mix up. A direct PCM stream of a single item never mixes its boundary. A plugin about to queue such items asks for the queue's boundaries to be mixed with `set_boundary_mix_required`; at each play start the controller then puts only a player whose selected output protocol cannot play gapless in flow mode.
 
 A smart crossfade falls back to the standard crossfade when a track has no analysis row with BPM and beats, when the planner raises `SmartFadeNotApplicable` (the held-back tail falls silent within its first 8 seconds, or no candidate fits), or when the build fails.
 
