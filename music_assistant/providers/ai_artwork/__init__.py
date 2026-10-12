@@ -34,7 +34,6 @@ from music_assistant_models.media_items import MediaItemImage, Playlist, Track
 from music_assistant_models.unique_list import UniqueList
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from music_assistant.constants import DB_TABLE_ARTISTS, DB_TABLE_TRACK_ARTISTS, DB_TABLE_TRACKS
 from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
@@ -693,25 +692,17 @@ class AIArtworkProvider(MetadataProvider):
         """Return the listener's most-played library tracks by the given artists."""
         if not artists:
             return "n/a"
-        query = (
-            f"SELECT {DB_TABLE_TRACKS}.name AS track, {DB_TABLE_ARTISTS}.name AS artist, "
-            f"{DB_TABLE_TRACKS}.play_count AS plays FROM {DB_TABLE_TRACKS} "
-            f"JOIN {DB_TABLE_TRACK_ARTISTS} "
-            f"ON {DB_TABLE_TRACK_ARTISTS}.track_id = {DB_TABLE_TRACKS}.item_id "
-            f"JOIN {DB_TABLE_ARTISTS} "
-            f"ON {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id "
-            f"WHERE {DB_TABLE_ARTISTS}.name IN :artists AND {DB_TABLE_TRACKS}.play_count > 0 "
-            f"GROUP BY {DB_TABLE_TRACKS}.item_id ORDER BY plays DESC"
-        )
         try:
-            rows = await self.mass.music.database.get_rows_from_query(
-                query, {"artists": artists[:MAX_CONTEXT_ITEMS]}, limit=MAX_FAVORITES
+            tracks = await self.mass.music.tracks.most_played_by_artists(
+                artists[:MAX_CONTEXT_ITEMS], limit=MAX_FAVORITES
             )
         except Exception as err:
             self.logger.warning("Could not read the play counts: %s", err, exc_info=err)
             return "n/a"
         return (
-            "; ".join(f"{row['artist']} - {row['track']} ({row['plays']} plays)" for row in rows)
+            "; ".join(
+                f"{track.artist} - {track.name} ({track.play_count} plays)" for track in tracks
+            )
             or "n/a"
         )
 

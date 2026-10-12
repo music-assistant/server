@@ -30,6 +30,7 @@ from music_assistant_models.unique_list import UniqueList
 from PIL import Image, ImageDraw
 
 from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.controllers.music.media.tracks import TrackPlayCount
 from music_assistant.providers.ai_artwork import AIArtworkProvider, _fit_title, _format_template
 from music_assistant.providers.ai_artwork.constants import (
     CONF_ACTION_PREVIEW,
@@ -556,8 +557,10 @@ def test_a_word_wider_than_the_cover_is_split_not_dropped() -> None:
 
 async def test_writes_a_description_for_a_smart_playlist(provider: AIArtworkProvider) -> None:
     """A smart playlist gets a description from its rules and the listener's play counts."""
-    _mass(provider).music.database.get_rows_from_query = AsyncMock(
-        return_value=[{"artist": "Lane 8", "track": "Brightest Lights", "plays": 42}]
+    _mass(provider).music.tracks.most_played_by_artists = AsyncMock(
+        return_value=[
+            TrackPlayCount(item_id=1, name="Brightest Lights", artist="Lane 8", play_count=42)
+        ]
     )
     playlist = _smart_playlist()
     playlist.metadata.description = "[Smart Playlist] Similar to Innerbloom"
@@ -573,7 +576,7 @@ async def test_writes_a_description_for_a_smart_playlist(provider: AIArtworkProv
     ) in query
     assert "(use for flavor, mention at most one): Lane 8 - Brightest Lights (42 plays)" in query
     assert "140 characters max" in query
-    artists = _mass(provider).music.database.get_rows_from_query.await_args.args[1]["artists"]
+    artists = _mass(provider).music.tracks.most_played_by_artists.await_args.args[0]
     assert artists == ["Ben Böhmer", "RÜFÜS DU SOL", "Lane 8", "Jerro"]
 
 
@@ -863,7 +866,7 @@ def _make_provider(tmp_path: Path) -> AIArtworkProvider:
     mass.storage_path = str(tmp_path / "data")
     mass.call_later = MagicMock()
     mass.cache = _FakeCache()
-    mass.music.database.get_rows_from_query = AsyncMock(return_value=[])
+    mass.music.tracks.most_played_by_artists = AsyncMock(return_value=[])
     mass.music.playlists.tracks = MagicMock(side_effect=lambda *_: _async_iter([]))
     smart_playlist_provider = MagicMock()
     smart_playlist_provider.domain = "smart_playlist"
