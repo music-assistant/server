@@ -108,6 +108,39 @@ async def test_process_deletions_prunes_survivors_not_removed_albums() -> None:
     prune.assert_awaited_once_with(albums, "10")
 
 
+async def test_moved_track_still_gets_its_album_pruned() -> None:
+    """A moved file matched to its library track before the old path is deleted still prunes."""
+    provider, controllers = _create_provider()
+    prune = AsyncMock()
+    provider._prune_missing_local_refs = prune  # type: ignore[method-assign]
+    old_path, new_path = "Artist/Old/01.mp3", "Artist/New/01.mp3"
+    controllers[MediaType.TRACK].get_library_item_by_prov_id = AsyncMock(
+        return_value=MagicMock(
+            media_type=MediaType.TRACK,
+            item_id="1",
+            album=MagicMock(item_id="10"),
+            artists=[],
+            provider_mappings=[
+                ProviderMapping(
+                    item_id=path,
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--test",
+                )
+                for path in (old_path, new_path)
+            ],
+        )
+    )
+    albums = cast("MagicMock", provider.mass.music.albums)
+    albums.get_library_item = AsyncMock(return_value=MagicMock(artists=[]))
+    albums.tracks = AsyncMock(return_value=[1])
+    albums.remove_item_from_library = AsyncMock()
+
+    await provider._process_deletions({old_path})
+
+    albums.remove_item_from_library.assert_not_called()
+    prune.assert_awaited_once_with(albums, "10")
+
+
 async def test_empty_id_is_skipped() -> None:
     """A stored empty id is left alone."""
     provider, controllers = _create_provider()

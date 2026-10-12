@@ -2639,8 +2639,13 @@ class LocalFileSystemProvider(MusicProvider):
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
         # process deleted tracks/playlists
-        album_ids = set()
-        artist_ids = set()
+        album_ids: set[str] = set()
+        artist_ids: set[str] = set()
+        # a moved file is matched to its library track before its old path is removed
+        # here, so the album and artists of a track that keeps another mapping are no
+        # orphans but may still reference the old folder
+        kept_album_ids: set[str] = set()
+        kept_artist_ids: set[str] = set()
         for file_path in deleted_files:
             if self.media_content_type == "podcasts":
                 # a podcast is tracked by its folder
@@ -2672,23 +2677,20 @@ class LocalFileSystemProvider(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                is_last_mapping = all(
-                    x.provider_instance == self.instance_id and x.item_id == file_path
-                    for x in library_item.provider_mappings
-                )
-                # a track that is kept via another provider still references its
-                # album and artists, so those need no orphan check
-                if is_track(library_item) and is_last_mapping:
-                    if library_item.album:
-                        album_ids.add(library_item.album.item_id)
-                        # need to fetch the library album to resolve the itemmapping
-                        db_album = await self.mass.music.albums.get_library_item(
-                            library_item.album.item_id
-                        )
-                        for artist in db_album.artists:
-                            artist_ids.add(artist.item_id)
-                    for artist in library_item.artists:
-                        artist_ids.add(artist.item_id)
+                if is_track(library_item):
+                    is_last_mapping = all(
+                        x.provider_instance == self.instance_id and x.item_id == file_path
+                        for x in library_item.provider_mappings
+                    )
+                    track_album_ids, track_artist_ids = await self._album_and_artist_ids(
+                        library_item
+                    )
+                    if is_last_mapping:
+                        album_ids |= track_album_ids
+                        artist_ids |= track_artist_ids
+                    else:
+                        kept_album_ids |= track_album_ids
+                        kept_artist_ids |= track_artist_ids
                 # the library item may also be mapped to other providers,
                 # so only drop this file's mapping
                 await controller.remove_provider_mapping(
@@ -2700,6 +2702,8 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.music.albums.remove_item_from_library(album_id)
             else:
                 await self._prune_missing_local_refs(self.mass.music.albums, album_id)
+        for album_id in kept_album_ids - album_ids:
+            await self._prune_missing_local_refs(self.mass.music.albums, album_id)
         # check if any artists need to be cleaned up
         for artist_id in artist_ids:
             artist_albums = await self.mass.music.artists.albums(artist_id, "library")
@@ -2708,6 +2712,19 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
             else:
                 await self._prune_missing_local_refs(self.mass.music.artists, artist_id)
+        for artist_id in kept_artist_ids - artist_ids:
+            await self._prune_missing_local_refs(self.mass.music.artists, artist_id)
+
+    async def _album_and_artist_ids(self, track: Track) -> tuple[set[str], set[str]]:
+        """Return the library ids of a track's album and of its album and track artists."""
+        album_ids: set[str] = set()
+        artist_ids = {artist.item_id for artist in track.artists}
+        if track.album:
+            album_ids.add(track.album.item_id)
+            # need to fetch the library album to resolve the itemmapping
+            db_album = await self.mass.music.albums.get_library_item(track.album.item_id)
+            artist_ids.update(artist.item_id for artist in db_album.artists)
+        return album_ids, artist_ids
 
     async def _prune_missing_local_refs(
         self, controller: AlbumsController | ArtistsController, item_id: str | int
