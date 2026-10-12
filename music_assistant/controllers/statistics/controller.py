@@ -13,7 +13,13 @@ from music_assistant_models.enums import ImageType, MediaType
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.media_items.metadata import MediaItemImage
-from music_assistant_models.statistics import DistributionItem, TopItemResult
+from music_assistant_models.statistics import (
+    DistributionItem,
+    HeatmapPoint,
+    ListeningTimeItem,
+    TimeSeriesPoint,
+    TopItemResult,
+)
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
@@ -185,7 +191,7 @@ class StatisticsController(CoreController):
         self,
         period: str = "week",
         limit: int = 10,
-    ) -> list[dict[str, str | int]]:
+    ) -> list[DistributionItem]:
         """
         Get genre distribution (play counts by genre).
 
@@ -302,7 +308,7 @@ class StatisticsController(CoreController):
         self,
         period: str = "week",
         granularity: str = "day",
-    ) -> list[dict[str, str | int]]:
+    ) -> list[TimeSeriesPoint]:
         """
         Get play counts over time (time series data).
 
@@ -343,14 +349,16 @@ class StatisticsController(CoreController):
 
         rows = await self.mass.music.database.get_rows_from_query(query, params)
 
-        return [{"timestamp": row["time_bucket"], "value": row["play_count"]} for row in rows]
+        return [
+            TimeSeriesPoint(timestamp=row["time_bucket"], value=row["play_count"]) for row in rows
+        ]
 
     @cache_statistics()
     @api_command("statistics/listening_activity", required_scope=Scope.LIBRARY_READ)
     async def get_listening_activity(
         self,
         period: str = "week",
-    ) -> list[dict[str, int]]:
+    ) -> list[HeatmapPoint]:
         """
         Get listening activity heatmap (plays by hour of day and weekday).
 
@@ -384,7 +392,7 @@ class StatisticsController(CoreController):
         rows = await self.mass.music.database.get_rows_from_query(query, params)
 
         return [
-            {"hour": row["hour"], "weekday": row["weekday"], "value": row["play_count"]}
+            HeatmapPoint(hour=row["hour"], weekday=row["weekday"], value=row["play_count"])
             for row in rows
         ]
 
@@ -395,7 +403,7 @@ class StatisticsController(CoreController):
         period: str = "week",
         group_by: str = "artist",
         limit: int = 10,
-    ) -> list[dict[str, str | float]]:
+    ) -> list[ListeningTimeItem]:
         """
         Get total listening time grouped by artist or genre.
 
@@ -438,7 +446,7 @@ class StatisticsController(CoreController):
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
 
         return [
-            {"name": row["name"], "minutes": round(row["estimated_seconds"] / 60, 1)}
+            ListeningTimeItem(name=row["name"], minutes=round(row["estimated_seconds"] / 60, 1))
             for row in rows
             if row["estimated_seconds"] is not None and row["estimated_seconds"] > 0
         ]

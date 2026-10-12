@@ -23,11 +23,12 @@ async def test_top_items_counts_history_not_media_progress(mass: MusicAssistant)
         DB_TABLE_PLAY_HISTORY,
         {**item, "user_initiated": True},
     )
-    for timestamp in (1_100, 1_200, 1_300):
+    for item_index, timestamp in enumerate((1_100, 1_200, 1_300), start=2):
         await mass.music.database.insert(
             DB_TABLE_MEDIA_PROGRESS,
             {
                 **item,
+                "item_id": f"progress-only-track-{item_index}",
                 "timestamp": timestamp,
                 "fully_played": False,
                 "seconds_played": timestamp,
