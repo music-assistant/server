@@ -305,7 +305,7 @@ def parse_audiobook(
     if title is None:
         title = "UNKNOWN TITLE"
     subtitle = abs_audiobook.media.metadata.subtitle
-    if subtitle is not None or subtitle:
+    if subtitle:
         title += f" | {subtitle}"
     mass_audiobook = MassAudiobook(
         item_id=abs_audiobook.id_,
