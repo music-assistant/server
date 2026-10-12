@@ -151,6 +151,7 @@ class MASTokenVerifier(TokenVerifier):
         self._mass = mass
         self._public_resource_uri = public_resource_uri
         self._enforce_audience = enforce_audience
+        self._audience_mismatch_reported = False
         if identity_registry is None:
             from .token_identity import TokenIdentityRegistry  # noqa: PLC0415
 
@@ -247,7 +248,13 @@ class MASTokenVerifier(TokenVerifier):
                 "Token has no `aud` claim; accepting because enforce_audience=False",
             )
         else:
-            LOGGER.warning(
+            # Every MA-issued token carries the same non-resource audience, so a
+            # per-request warning would fire on every MCP message. Tell the
+            # operator once per verifier; the unverified ``aud`` is never stored.
+            level = logging.DEBUG if self._audience_mismatch_reported else logging.WARNING
+            self._audience_mismatch_reported = True
+            LOGGER.log(
+                level,
                 "Token aud=%r does not match resource URI %r; accepting because "
                 "enforce_audience=False (set CONF_ENFORCE_AUDIENCE to enforce).",
                 aud,

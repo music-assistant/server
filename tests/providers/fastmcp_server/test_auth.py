@@ -212,6 +212,46 @@ async def test_legacy_token_passes_in_soft_mode(mock_mass: MagicMock, mock_user:
 
 
 @pytest.mark.asyncio
+async def test_soft_mode_audience_mismatch_warns_once(
+    mock_mass: MagicMock, mock_user: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Repeated soft-mode audience mismatches log one warning, then only debug."""
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=False)
+    first = _make_jwt({"sub": "u1", "aud": "music-assistant"})
+    second = _make_jwt({"sub": "u2", "aud": "http://other.example/api"})
+
+    with caplog.at_level(logging.DEBUG):
+        for token in (first, first, second, first):
+            assert await verifier.verify_token(token) is not None
+
+    mismatches = [r for r in caplog.records if "does not match resource URI" in r.getMessage()]
+    assert [r.levelno for r in mismatches] == [
+        logging.WARNING,
+        logging.DEBUG,
+        logging.DEBUG,
+        logging.DEBUG,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_audience_rejections_always_warn(
+    mock_mass: MagicMock, mock_user: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every strict-mode rejection stays visible at warning level."""
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True)
+    token = _make_jwt({"sub": "u1", "aud": "music-assistant"})
+
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(3):
+            assert await verifier.verify_token(token) is None
+
+    rejections = [r for r in caplog.records if r.getMessage().startswith("Rejected token")]
+    assert [r.levelno for r in rejections] == [logging.WARNING] * 3
+
+
+@pytest.mark.asyncio
 async def test_legacy_token_rejected_in_strict_mode(
     mock_mass: MagicMock, mock_user: MagicMock
 ) -> None:
