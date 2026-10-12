@@ -86,7 +86,6 @@ from music_assistant.constants import (
     CONF_CACHED_ARP_MAC,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
-    CONF_ENTRY_NATIVE_VOLUME,
     CONF_GROUP_MEMBERS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
@@ -4324,15 +4323,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             "auto",
         ):
             return
+        # Opt-in: skip when unset so upgrades do not force Softvol 100.
         raw_level = self.mass.config.get_raw_player_config_value(
             player.player_id,
             CONF_NATIVE_VOLUME,
-            CONF_ENTRY_NATIVE_VOLUME.default_value,
         )
+        if raw_level is None:
+            return
         try:
-            level = int(cast("int", raw_level)) if raw_level is not None else 100
+            level = int(cast("int", raw_level))
         except TypeError, ValueError:
-            level = 100
+            return
         level = max(0, min(100, level))
         try:
             await player.volume_set(level)

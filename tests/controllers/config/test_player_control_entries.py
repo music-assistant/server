@@ -151,7 +151,8 @@ async def test_native_volume_hidden_when_volume_control_is_native(
         stored_volume_control=PLAYER_CONTROL_NATIVE,
     )[CONF_NATIVE_VOLUME]
     assert entry.hidden is True
-    assert entry.default_value == 100
+    assert entry.default_value is None
+    assert entry.required is False
     assert entry.range == (0, 100)
     assert entry.category == "player_controls"
 

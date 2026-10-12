@@ -87,8 +87,8 @@ class TestApplyNativeVolumePin:
 
         volume_set.assert_awaited_once_with(100)
 
-    async def test_uses_default_100_when_unset(self, mock_mass: MagicMock) -> None:
-        """Missing pin value falls back to the ConfigEntry default of 100."""
+    async def test_skips_when_pin_unset(self, mock_mass: MagicMock) -> None:
+        """Missing pin value is opt-in: do not apply Softvol 100."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NONE})
         )
@@ -97,7 +97,21 @@ class TestApplyNativeVolumePin:
 
         await controller._apply_native_volume_pin(player)
 
-        volume_set.assert_awaited_once_with(100)
+        volume_set.assert_not_awaited()
+
+    async def test_skips_when_pin_value_invalid(self, mock_mass: MagicMock) -> None:
+        """Invalid stored pin values are skipped rather than forced to 100."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_config_side_effect(
+                {CONF_VOLUME_CONTROL: "media_player.denon", CONF_NATIVE_VOLUME: "loud"}
+            )
+        )
+        controller = PlayerController(mock_mass)
+        player, volume_set = _make_player(mock_mass)
+
+        await controller._apply_native_volume_pin(player)
+
+        volume_set.assert_not_awaited()
 
     async def test_skips_when_volume_control_is_native(self, mock_mass: MagicMock) -> None:
         """No pin when UI volume already drives the native player."""
@@ -184,7 +198,8 @@ class TestNativeVolumePinOnConfigChange:
                 CONF_NATIVE_VOLUME: ConfigEntry(
                     key=CONF_NATIVE_VOLUME,
                     type=ConfigEntryType.INTEGER,
-                    default_value=100,
+                    default_value=None,
+                    required=False,
                     value=85,
                 )
             },
@@ -226,10 +241,11 @@ class TestNativeVolumeConfigEntry:
     """Static checks on the shared ConfigEntry definition."""
 
     def test_entry_defaults(self) -> None:
-        """Entry is integer 0-100, default 100, under player_controls."""
+        """Entry is optional integer 0-100, unset by default, under player_controls."""
         entry = CONF_ENTRY_NATIVE_VOLUME
         assert entry.key == CONF_NATIVE_VOLUME
         assert entry.type == ConfigEntryType.INTEGER
         assert entry.range == (0, 100)
-        assert entry.default_value == 100
+        assert entry.default_value is None
+        assert entry.required is False
         assert entry.category == "player_controls"

@@ -469,7 +469,8 @@ CONF_ENTRY_NATIVE_VOLUME = ConfigEntry(
     key=CONF_NATIVE_VOLUME,
     type=ConfigEntryType.INTEGER,
     range=(0, 100),
-    default_value=100,
+    default_value=None,
+    required=False,
     category="player_controls",
     depends_on=CONF_VOLUME_CONTROL,
 )
