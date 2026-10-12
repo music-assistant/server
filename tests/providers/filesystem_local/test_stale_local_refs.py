@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from music_assistant_models.enums import ImageType
 from music_assistant_models.media_items import MediaItemImage, ProviderMapping
@@ -112,3 +113,39 @@ async def test_prune_keeps_one_mapping_when_all_are_stale(tmp_path: Path) -> Non
     await provider._prune_missing_local_refs(controller, 3)
 
     controller.remove_provider_mapping.assert_awaited_once_with(3, INSTANCE_ID, "Artist/OldFolder1")
+
+
+async def test_prune_all_visits_every_album_and_artist_of_this_instance(tmp_path: Path) -> None:
+    """Every album and artist mapped to this instance gets its missing local refs pruned."""
+    provider = _make_provider(str(tmp_path))
+    mass = cast("MagicMock", provider.mass)
+    get_rows = AsyncMock(side_effect=[[{"item_id": 1}, {"item_id": 2}], [{"item_id": 3}]])
+    mass.music.database.get_rows_from_query = get_rows
+    prune = AsyncMock()
+    provider._prune_missing_local_refs = prune  # type: ignore[method-assign]
+    provider._unreachable_folders = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    assert await provider._prune_all_missing_local_refs()
+
+    album_query, artist_query = (query_call.args[0] for query_call in get_rows.await_args_list)
+    assert f"provider_instance = '{INSTANCE_ID}'" in album_query
+    assert "media_type = 'album'" in album_query
+    assert f"provider_instance = '{INSTANCE_ID}'" in artist_query
+    assert "media_type = 'artist'" in artist_query
+    assert prune.await_args_list == [
+        call(mass.music.albums, 1),
+        call(mass.music.albums, 2),
+        call(mass.music.artists, 3),
+    ]
+
+
+async def test_prune_all_is_skipped_while_a_folder_is_unavailable(tmp_path: Path) -> None:
+    """Files below an unavailable folder read as missing, so the pass waits for a later sync."""
+    provider = _make_provider(str(tmp_path))
+    provider._unreachable_folders = AsyncMock(return_value=["Artist"])  # type: ignore[method-assign]
+    prune = AsyncMock()
+    provider._prune_missing_local_refs = prune  # type: ignore[method-assign]
+
+    assert not await provider._prune_all_missing_local_refs()
+
+    prune.assert_not_called()

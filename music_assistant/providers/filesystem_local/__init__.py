@@ -120,6 +120,7 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
+    CONF_STALE_REFS_PRUNE_DONE,
     CUE_EXTENSIONS,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
@@ -764,6 +765,13 @@ class LocalFileSystemProvider(MusicProvider):
             deleted_files = await self._without_unreachable_files(prev_filenames - cur_filenames)
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
+            if (
+                not self.mass.config.get_raw_provider_config_value(
+                    self.instance_id, CONF_STALE_REFS_PRUNE_DONE, False
+                )
+                and await self._prune_all_missing_local_refs()
+            ):
+                self._update_config_value(CONF_STALE_REFS_PRUNE_DONE, True, immediate=True)
 
         # disable a full rescan after promoting authors/ narrators to artists once the scan completed without errors
         if self._force_full_reparse and not scan_errors.incomplete:
@@ -2553,6 +2561,48 @@ class LocalFileSystemProvider(MusicProvider):
             limit=100000,
         ):
             await self.mass.music.artists.remove_item_from_library(db_row["item_id"])
+
+    async def _prune_all_missing_local_refs(self) -> bool:
+        """
+        Prune the mappings and images of all albums and artists that point to missing files.
+
+        :return: False when the pass was skipped because part of the storage is unavailable.
+        """
+        # run only once per source: every mapping and image costs a stat on possibly
+        # remote storage, and the deletion pass keeps new cases clean
+        assert self.mass.music.database
+        # a folder whose storage is gone reads as empty, its files are still there
+        try:
+            unreachable = await self._unreachable_folders()
+        except ActionUnavailable as err:
+            self.logger.warning("Skipping the check for missing files of %s: %s", self.name, err)
+            return False
+        if unreachable:
+            self.logger.warning(
+                "Skipping the check for missing files of %s below unavailable folder(s): %s",
+                self.name,
+                ", ".join(unreachable),
+            )
+            return False
+        query = (
+            f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{self.instance_id}' AND media_type = "
+        )
+        album_rows = await self.mass.music.database.get_rows_from_query(f"{query}'album'", limit=0)
+        for db_row in album_rows:
+            await self._prune_missing_local_refs(self.mass.music.albums, db_row["item_id"])
+        artist_rows = await self.mass.music.database.get_rows_from_query(
+            f"{query}'artist'", limit=0
+        )
+        for db_row in artist_rows:
+            await self._prune_missing_local_refs(self.mass.music.artists, db_row["item_id"])
+        self.logger.info(
+            "Checked %d albums and %d artists of %s for missing files",
+            len(album_rows),
+            len(artist_rows),
+            self.name,
+        )
+        return True
 
     async def _without_unreachable_files(self, deleted_files: set[str]) -> set[str]:
         """
