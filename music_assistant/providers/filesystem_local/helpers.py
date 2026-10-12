@@ -570,11 +570,13 @@ def open_real_path(real_base_path: str, path: str, flags: int = os.O_RDONLY) -> 
         check_real_path(real_base_path, path)
         raise
     try:
-        if not is_safe_path(_real_path_of(fd), real_base_path):
-            raise _path_outside_folder(path)
+        inside = is_safe_path(_real_path_of(fd), real_base_path)
     except BaseException:
         os.close(fd)
         raise
+    if not inside:
+        os.close(fd)
+        raise _path_outside_folder(path)
     return fd
 
 
