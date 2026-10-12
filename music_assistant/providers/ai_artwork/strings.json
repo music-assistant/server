@@ -35,7 +35,7 @@
       "description": "Off: the image engine designs the playlist name into the artwork. This looks the most natural, but some engines misspell it. On: the image engine makes artwork without any text and Music Assistant prints the playlist name on top, so it is always spelled correctly."
     },
     "preview_playlist": {
-      "label": "Preview with playlist",
+      "label": "Preview playlist",
       "description": "The playlist to make a preview cover for."
     },
     "preview_style": {

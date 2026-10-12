@@ -1021,7 +1021,7 @@
   "provider.ai_artwork.config_entries.preview_description.label": "Description: {0}",
   "provider.ai_artwork.config_entries.preview_image.label": "Preview",
   "provider.ai_artwork.config_entries.preview_playlist.description": "The playlist to make a preview cover for.",
-  "provider.ai_artwork.config_entries.preview_playlist.label": "Preview with playlist",
+  "provider.ai_artwork.config_entries.preview_playlist.label": "Preview playlist",
   "provider.ai_artwork.config_entries.preview_style.description": "The styles to try, shown side by side. Each style is one image generation.",
   "provider.ai_artwork.config_entries.preview_style.label": "Styles to preview",
   "provider.ai_artwork.config_entries.preview_style.options.apple_music": "Apple Music",
