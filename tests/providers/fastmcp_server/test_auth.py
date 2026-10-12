@@ -235,6 +235,31 @@ async def test_soft_mode_audience_mismatch_warns_once(
 
 
 @pytest.mark.asyncio
+async def test_unauthenticated_token_does_not_consume_mismatch_warning(
+    mock_mass: MagicMock, mock_user: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A forged JWT that fails authentication cannot silence the operator warning."""
+    forged = _make_jwt({"sub": "attacker", "aud": "http://other.example/api"})
+    valid = _make_jwt({"sub": "u1", "aud": "music-assistant"})
+
+    async def authenticate(token: str) -> MagicMock | None:
+        return mock_user if token == valid else None
+
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(side_effect=authenticate)
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=False)
+
+    with caplog.at_level(logging.DEBUG):
+        assert await verifier.verify_token(forged) is None
+        assert await verifier.verify_token(forged) is None
+        assert await verifier.verify_token(valid) is not None
+        assert await verifier.verify_token(valid) is not None
+
+    mismatches = [r for r in caplog.records if "does not match resource URI" in r.getMessage()]
+    assert [r.levelno for r in mismatches] == [logging.WARNING, logging.DEBUG]
+    assert "music-assistant" in mismatches[0].getMessage()
+
+
+@pytest.mark.asyncio
 async def test_strict_mode_audience_rejections_always_warn(
     mock_mass: MagicMock, mock_user: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
