@@ -30,3 +30,16 @@ def test_client_contexts_advertise_http11_alpn(monkeypatch: pytest.MonkeyPatch) 
     )
     for context in contexts:
         assert advertised.get(id(context)) == ["http/1.1"]
+
+
+def test_client_contexts_enable_post_handshake_auth() -> None:
+    """Verified and unverified client contexts send the post-handshake auth extension."""
+    ssl_helper._client_context_no_verify.cache_clear()
+    contexts = (
+        ssl_helper.create_client_context(),
+        ssl_helper.create_client_context(ssl_helper.SSLCipherList.MODERN),
+        ssl_helper.create_no_verify_ssl_context(),
+        ssl_helper.create_no_verify_ssl_context(ssl_helper.SSLCipherList.INSECURE),
+    )
+    for context in contexts:
+        assert context.post_handshake_auth is True
