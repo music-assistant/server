@@ -2396,7 +2396,9 @@ class PostShowRuntime(ShowRuntime):
         return "source_exhausted"
 
 
-def _posting_show_mass(runtime: ShowRuntime, call_order: list[str]) -> None:
+def _posting_show_mass(
+    runtime: ShowRuntime, call_order: list[str], *, mixes_item_boundaries: bool = False
+) -> None:
     """Wire a show mass stub that records play starts and flow-mode requirements."""
 
     async def _play_index(_queue_id: str, index: int) -> None:
@@ -2406,7 +2408,10 @@ def _posting_show_mass(runtime: ShowRuntime, call_order: list[str]) -> None:
         call_order.append(f"flow:{queue_id}:{owner}:{required}")
 
     mass = _show_mass_stub(play_index=_play_index)
-    mass.streams = SimpleNamespace(set_flow_mode_required=_set_flow_mode_required)
+    mass.streams = SimpleNamespace(
+        set_flow_mode_required=_set_flow_mode_required,
+        mixes_item_boundaries=lambda _queue_id: mixes_item_boundaries,
+    )
     _set_runtime_mass(runtime, mass)
 
 
@@ -2482,3 +2487,16 @@ async def test_a_show_without_posting_sections_leaves_flow_mode_alone() -> None:
     await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
 
     assert call_order == ["play_index:0"]
+
+
+async def test_a_posting_show_leaves_flow_mode_alone_on_a_gapless_player() -> None:
+    """A player that already gets item boundaries mixed keeps streaming per item."""
+    runtime = PostShowRuntime()
+    call_order: list[str] = []
+    _posting_show_mass(runtime, call_order, mixes_item_boundaries=True)
+    runtime.show_end.set()
+
+    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _posting_station())
+
+    assert call_order == ["play_index:0"]
+    assert runtime._flow_mode_queues == {}

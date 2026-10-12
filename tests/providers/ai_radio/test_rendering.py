@@ -1202,10 +1202,11 @@ def _attach_post(
     lyrics: tuple[str | None, str | None] = (None, None),
     flow_mode: bool = True,
     flow_mode_required: bool = False,
+    mixes_item_boundaries: bool = False,
     load_next: QueueItem | Exception | None = None,
 ) -> tuple[AsyncMock, AsyncMock]:
     """
-    Wire the next queue item, the queue's flow mode, its stored analysis and its lyrics.
+    Wire the next queue item, how the queue mixes it, its stored analysis and its lyrics.
 
     The queue's load of the next item yields ``load_next``, or raises it; by default it
     is the next item itself, resolved to its own provider mapping.
@@ -1228,6 +1229,7 @@ def _attach_post(
         queue_id=queue_id, flow_mode=flow_mode
     )
     mass.streams.flow_mode_required = MagicMock(return_value=flow_mode_required)
+    mass.streams.mixes_item_boundaries = MagicMock(return_value=mixes_item_boundaries)
     get_vocal_onset = AsyncMock(return_value=analysis_onset)
     mass.streams.audio_analysis = SimpleNamespace(get_vocal_onset=get_vocal_onset)
     get_track_lyrics = AsyncMock(return_value=lyrics)
@@ -1400,10 +1402,10 @@ async def test_a_repeated_resolve_does_not_look_the_lyrics_up_again() -> None:
     get_track_lyrics.assert_awaited_once()
 
 
-async def test_a_post_is_skipped_when_the_player_does_not_stream_in_flow_mode(
+async def test_a_post_is_skipped_when_the_player_neither_plays_gapless_nor_streams_in_flow_mode(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Outside flow mode nothing would mix the overlap, so the onset is never looked up."""
+    """Nothing would mix the overlap on such a player, so the onset is never looked up."""
     renderer = DummyRenderer()
     clip = _posting_clip_item()
     _attach_queue(renderer, [clip])
@@ -1420,7 +1422,11 @@ async def test_a_post_is_skipped_when_the_player_does_not_stream_in_flow_mode(
     cast("Any", renderer).mass.player_queues.load_next_queue_item.assert_not_awaited()
     get_vocal_onset.assert_not_awaited()
     get_track_lyrics.assert_not_awaited()
-    skips = [r for r in caplog.records if "does not stream in flow mode" in r.getMessage()]
+    skips = [
+        r
+        for r in caplog.records
+        if "neither plays gapless nor streams in flow mode" in r.getMessage()
+    ]
     assert len(skips) == 1
 
 
@@ -1454,6 +1460,21 @@ async def test_a_show_that_holds_the_queue_in_flow_mode_posts_before_it_streams(
 
     assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
     cast("Any", renderer).mass.streams.flow_mode_required.assert_called_once_with("player_a")
+
+
+async def test_a_post_is_armed_on_a_gapless_player_outside_flow_mode() -> None:
+    """A player that plays gapless gets the overlap mixed between its item streams."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, flow_mode=False, mixes_item_boundaries=True
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
+    cast("Any", renderer).mass.streams.mixes_item_boundaries.assert_called_once_with("player_a")
 
 
 @pytest.mark.parametrize(

@@ -286,10 +286,12 @@ class AIRadioRuntimeMixin:
             keep_played=False,
             shuffle=False,
         )
-        # the server carries a break over the next track only on a flow stream, so a show
-        # that posts holds its queue in flow mode. The queue DJ does not: its breaks post
-        # only on a player that streams in flow mode anyway
-        if any(section.allow_post for section in planned_sections):
+        # the server carries a break over the next track only on a flow stream or on a
+        # player that plays gapless, so a show that posts holds any other player's queue in
+        # flow mode. The queue DJ does not: its breaks post only on a player that does
+        # either anyway
+        posts = any(section.allow_post for section in planned_sections)
+        if posts and not self.mass.streams.mixes_item_boundaries(queue_id):
             self.mass.streams.set_flow_mode_required(queue_id, self.instance_id, True)
             self._flow_mode_queues[queue_id] = session.session_id
         try:
