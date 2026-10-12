@@ -608,8 +608,12 @@ async def test_with_library_tracks_only_a_copy_outside_the_library_is_replaced(
         # the first copy is in the library under another artist, without saved tracks
         library_item = mass.music.albums.get_library_item_by_prov_id
 
-        async def _library_item(item_id: str, provider: str) -> Album | None:
-            return first if item_id == first.item_id else await library_item(item_id, provider)
+        async def _library_item(item_id: str, provider_instance_id_or_domain: str) -> Album | None:
+            return (
+                first
+                if item_id == first.item_id
+                else await library_item(item_id, provider_instance_id_or_domain)
+            )
 
         mass.music.albums.get_library_item_by_prov_id = _library_item  # type: ignore[method-assign]
     mass.config.set_raw_core_config_value(
