@@ -3164,7 +3164,7 @@ class YandexMusicProvider(MusicProvider):
             # smart-captcha. Skipped after the last batch.
             if i + batch_size < len(track_ids):
                 await asyncio.sleep(
-                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S
+                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S  # noqa: S311 - request jitter
                 )
 
         # Create track ID to full track mapping by track ID directly
