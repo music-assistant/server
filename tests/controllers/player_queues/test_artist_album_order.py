@@ -728,6 +728,50 @@ async def test_a_failing_provider_keeps_the_albums_of_the_others(mass: MusicAssi
     assert _names(result) == ["Arrival 1"]
 
 
+async def test_an_artist_whose_albums_cant_be_listed_plays_nothing(mass: MusicAssistant) -> None:
+    """When no provider can list the artist's albums, the artist plays nothing, not shuffled songs."""
+    artist = Artist(
+        item_id="abba",
+        provider="offline",
+        name="ABBA",
+        provider_mappings={
+            ProviderMapping(item_id="abba", provider_domain="offline", provider_instance="offline")
+        },
+    )
+    mass.music.get_unique_providers = Mock(return_value=["offline"])  # type: ignore[method-assign]
+    mass.music.artists.albums = AsyncMock(side_effect=MediaNotFoundError("provider is offline"))  # type: ignore[method-assign]
+    mass.player_queues._media_resolver._provider_artist_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[_track("Dancing Queen")]
+    )
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    assert await mass.player_queues._media_resolver.get_artist_tracks(artist) == []
+
+
+async def test_library_albums_play_when_no_provider_can_list_albums(mass: MusicAssistant) -> None:
+    """When no provider can list the artist's albums, the library albums still play."""
+    artist = await _artist_with_albums(mass)
+    artist.provider_mappings.add(
+        ProviderMapping(item_id="abba", provider_domain="offline", provider_instance="offline")
+    )
+    library_albums = mass.music.artists.albums
+
+    async def _albums(
+        item_id: str, provider_instance_id_or_domain: str, provider_filter: str | None = None
+    ) -> list[Album]:
+        if provider_instance_id_or_domain == "offline":
+            raise MediaNotFoundError("provider is offline")
+        return await library_albums(item_id, provider_instance_id_or_domain, provider_filter)
+
+    mass.music.get_unique_providers = Mock(return_value=["offline"])  # type: ignore[method-assign]
+    mass.music.artists.albums = _albums  # type: ignore[method-assign]
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
+
+    assert _names(result)[::3] == ["Waterloo 1", "Voulez-Vous 1"]
+
+
 def _unsaved_mapping() -> set[ProviderMapping]:
     """Create a provider mapping for an item MA knows but the user didn't save."""
     return {
