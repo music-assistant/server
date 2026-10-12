@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlaybackState
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_FLOW_MODE
@@ -33,6 +33,7 @@ def _flow_player() -> RaumfeldPlayer:
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player._attr_elapsed_time = None
     player._attr_elapsed_time_last_updated = None
+    player._external_source = None
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
     player.mass = mass
@@ -61,15 +62,13 @@ def test_flow_position_follows_a_drop_instead_of_jumping_ahead() -> None:
 
 
 def test_external_source_position_is_used_directly() -> None:
-    """Line-In (not our stream) reports its own clock and is reflected as current media."""
+    """Line-In (not our stream) reports its own clock."""
     player = _flow_player()
-    with patch.object(RaumfeldPlayer, "set_current_media") as set_current_media:
-        player._apply_position(
-            {"TrackURI": "http://192.168.1.40:8888/stream.flac", "RelTime": "0:00:30"},
-            playing=True,
-        )
+    player._apply_position(
+        {"TrackURI": "http://192.168.1.40:8888/stream.flac", "RelTime": "0:00:30"},
+        playing=True,
+    )
     assert player._attr_elapsed_time == 30.0
-    set_current_media.assert_called_once()
 
 
 def test_position_not_updated_while_stopped() -> None:
@@ -508,3 +507,178 @@ async def test_no_zone_for_the_room_is_reported() -> None:
         pytest.raises(PlayerCommandFailed, match="no zone for Bar"),
     ):
         await player._ensure_playable_zone()
+
+
+_SPOTIFY_META: dict[str, str | None] = {
+    "title": "Who's That",
+    "artist": "The War On Drugs",
+    "album": "Who's That",
+    "image_url": "http://i.scdn.co/image/cover",
+    "section": "Spotify",
+    "item_id": "0/Spotify/Track",
+}
+_RADIO_META: dict[str, str | None] = {
+    "title": "Sublime",
+    "artist": None,
+    "album": None,
+    "image_url": None,
+    "section": "RadioTime",
+    "item_id": "0/RadioTime/Search/s-s25777",
+}
+
+
+def _external_player() -> tuple[RaumfeldPlayer, MagicMock]:
+    """Build a RaumfeldPlayer with the state the external-source handling touches."""
+    player = _room_player()
+    player._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_SET}
+    player._attr_source_list = []
+    player._static_sources = []
+    player._attr_active_source = None
+    player._attr_current_media = None
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._external_via_room = False
+    player._play_started_at = 0.0
+    player.logger = MagicMock()
+    host = MagicMock()
+    for command in (
+        "async_room_pause",
+        "async_zone_pause",
+        "async_room_play",
+        "async_zone_play",
+        "async_room_next_track",
+        "async_zone_next_track",
+    ):
+        setattr(host, command, AsyncMock())
+    provider = MagicMock()
+    provider.host = host
+    provider.get_zone_for_room.return_value = ["Bar"]
+    provider.zone_location.return_value = "http://192.168.1.41:52552/zone.xml"
+    provider.room_renderer_location.return_value = _RENDERER
+    player._provider = provider
+    return player, host
+
+
+def test_spotify_connect_offers_the_controls_the_host_allows() -> None:
+    """An external source is reported with exactly the controls the host lists for it."""
+    player, _ = _external_player()
+    player._set_external(
+        _SPOTIFY_META, "Pause,Previous,Next,Seek,Repeat,Shuffle", 315, via_room=True
+    )
+    assert player._attr_active_source == "spotify"
+    assert [source.name for source in player._attr_source_list] == ["Spotify"]
+    source = player._attr_source_list[0]
+    assert (source.passive, source.can_play_pause, source.can_next_previous, source.can_seek) == (
+        True,
+        True,
+        True,
+        True,
+    )
+    assert {
+        PlayerFeature.PAUSE,
+        PlayerFeature.NEXT_PREVIOUS,
+        PlayerFeature.SEEK,
+    } <= player._attr_supported_features
+    media = player._attr_current_media
+    assert media is not None
+    assert (media.title, media.artist, media.duration) == ("Who's That", "The War On Drugs", 315)
+    assert media.uri == "raumfeld://0/Spotify/Track"
+
+
+def test_radio_offers_no_transport_controls() -> None:
+    """A source the host only allows to stop gets no pause, skip or seek."""
+    player, _ = _external_player()
+    player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    assert player._attr_active_source == "tunein"
+    source = player._attr_source_list[0]
+    assert (source.can_play_pause, source.can_next_previous, source.can_seek) == (
+        False,
+        False,
+        False,
+    )
+    assert not player._attr_supported_features & {
+        PlayerFeature.PAUSE,
+        PlayerFeature.NEXT_PREVIOUS,
+        PlayerFeature.SEEK,
+    }
+
+
+def test_controls_are_dropped_when_the_external_source_ends() -> None:
+    """Pause must not stay available for Music Assistant's own streams."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause,Next,Seek", 315, via_room=True)
+    player._clear_external()
+    assert player._attr_active_source is None
+    assert player._attr_source_list == []
+    assert player._external_via_room is False
+    assert player._attr_supported_features == {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_SET}
+
+
+async def test_own_stream_is_not_an_external_source() -> None:
+    """Music Assistant's own stream drops a previously active external source."""
+    player, _ = _external_player()
+    player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    await player._update_zone_source({"TrackURI": f"{BASE_URL}/flow/x/y/z.flac"}, ["Bar"])
+    assert player._external_source is None
+    assert player._attr_active_source is None
+
+
+async def test_zone_playback_from_the_raumfeld_app_is_followed() -> None:
+    """Playback the host started is reported, without the address it streams from."""
+    player, _ = _external_player()
+    track_uri = "https://audio.example.com/track.flac?token=secret"
+    with patch.object(player, "_read_zone_actions", AsyncMock(return_value="Pause,Next")):
+        await player._update_zone_source({"TrackURI": track_uri, "TrackMetaData": ""}, ["Bar"])
+    assert player._attr_active_source == "raumfeld"
+    assert PlayerFeature.PAUSE in player._attr_supported_features
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.uri == "raumfeld://raumfeld"
+
+
+async def test_pause_goes_to_the_renderer_that_plays() -> None:
+    """Spotify Connect is paused on the room itself, other sources on the zone."""
+    player, host = _external_player()
+    with patch.object(player, "update_state"):
+        player._set_external(_SPOTIFY_META, "Pause", 315, via_room=True)
+        await player.pause()
+        host.async_room_pause.assert_awaited_once_with("Bar")
+        host.async_zone_pause.assert_not_awaited()
+        assert player._attr_playback_state == PlaybackState.PAUSED
+        player._set_external(_RADIO_META, "Pause", None, via_room=False)
+        with patch.object(player, "_active_zone", return_value=["Bar"]):
+            await player.pause()
+    host.async_zone_pause.assert_awaited_once_with(["Bar"])
+
+
+async def test_resume_continues_the_external_source() -> None:
+    """Play on a paused external source resumes it instead of starting the queue."""
+    player, host = _external_player()
+    player._set_external(_SPOTIFY_META, "Play", 315, via_room=True)
+    player._attr_playback_state = PlaybackState.PAUSED
+    with patch.object(player, "update_state"):
+        await player.play()
+    host.async_room_play.assert_awaited_once_with("Bar")
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+async def test_seek_sends_an_absolute_time() -> None:
+    """Seeking addresses the playing renderer with an HH:MM:SS target."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Seek", 315, via_room=True)
+    with (
+        patch("music_assistant.providers.raumfeld.player.hassfeld_upnp") as upnp,
+        patch.object(player, "update_state"),
+    ):
+        upnp.async_seek = AsyncMock()
+        await player.seek(3725)
+    upnp.async_seek.assert_awaited_once_with(
+        player.mass.http_session, _RENDERER, "ABS_TIME", "01:02:05"
+    )
+    assert player._attr_elapsed_time == 3725.0
+
+
+def test_paused_external_source_shows_where_it_stopped() -> None:
+    """A source paused from its own app reports the position it paused at."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Play", 315, via_room=True)
+    player._apply_position({"RelTime": "0:01:10"}, playing=False)
+    assert player._attr_elapsed_time == 70.0

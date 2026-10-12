@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from music_assistant.providers.raumfeld.helpers import (
+    external_source,
+    parse_control_url,
     parse_didl_metadata,
     parse_duration,
+    parse_last_change,
     parse_line_in,
     parse_serial_number,
     room_udn_to_player_id,
@@ -73,6 +76,8 @@ def test_parse_didl_metadata_empty() -> None:
         "artist": None,
         "album": None,
         "image_url": None,
+        "section": None,
+        "item_id": None,
     }
     assert parse_didl_metadata("NOT_IMPLEMENTED")["title"] is None
 
@@ -102,3 +107,67 @@ def test_parse_serial_number_missing_or_malformed() -> None:
     assert parse_serial_number("<root><unclosed>") is None
     assert parse_serial_number("") is None
     assert parse_serial_number(None) is None
+
+
+_SPOTIFY_DIDL = (
+    '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+    'xmlns:raumfeld="urn:schemas-raumfeld-com:meta-data/raumfeld" '
+    'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '
+    'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+    '<item id="0/Spotify/Track" parentID="0/Spotify" restricted="0">'
+    "<raumfeld:section>Spotify</raumfeld:section>"
+    "<dc:title>Who's That</dc:title>"
+    "<upnp:artist>The War On Drugs</upnp:artist>"
+    "</item></DIDL-Lite>"
+)
+
+
+def test_parse_didl_metadata_section_and_item() -> None:
+    """The section and item id of a playing item are read along with its title."""
+    meta = parse_didl_metadata(_SPOTIFY_DIDL)
+    assert meta["title"] == "Who's That"
+    assert meta["section"] == "Spotify"
+    assert meta["item_id"] == "0/Spotify/Track"
+
+
+def test_external_source() -> None:
+    """Known sections map to the source Music Assistant knows; others are used as they are."""
+    assert external_source("Spotify") == ("spotify", "Spotify")
+    assert external_source("RadioTime") == ("tunein", "TuneIn")
+    assert external_source("Tidal") == ("tidal", "Tidal")
+    assert external_source("My Music") == ("my_music", "My Music")
+    assert external_source(None) == ("raumfeld", "Raumfeld")
+    assert external_source("  ") == ("raumfeld", "Raumfeld")
+
+
+def test_parse_last_change() -> None:
+    """Every state variable of a LastChange event is returned with its value."""
+    event = (
+        '<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/"><InstanceID val="0">'
+        '<TransportState val="PLAYING"/>'
+        '<CurrentTransportActions val="Pause,Previous,Next,Seek"/>'
+        '<AVTransportURIMetaData val="&lt;DIDL-Lite/&gt;"/>'
+        "</InstanceID></Event>"
+    )
+    state = parse_last_change(event)
+    assert state["TransportState"] == "PLAYING"
+    assert state["CurrentTransportActions"] == "Pause,Previous,Next,Seek"
+    assert state["AVTransportURIMetaData"] == "<DIDL-Lite/>"
+    assert parse_last_change("<Event><unclosed>") == {}
+    assert parse_last_change(None) == {}
+
+
+def test_parse_control_url() -> None:
+    """The control URL of the requested service is read from the description."""
+    description = (
+        '<root xmlns="urn:schemas-upnp-org:device-1-0"><device><serviceList>'
+        "<service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>"
+        "<controlURL>/RenderingControl/ctrl</controlURL></service>"
+        "<service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>"
+        "<controlURL>/AVTransport/ctrl</controlURL></service>"
+        "</serviceList></device></root>"
+    )
+    assert parse_control_url(description, "AVTransport") == "/AVTransport/ctrl"
+    assert parse_control_url(description, "ContentDirectory") is None
+    assert parse_control_url("<root><unclosed>", "AVTransport") is None
+    assert parse_control_url(None, "AVTransport") is None

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, cast
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 import hassfeld
@@ -41,6 +41,7 @@ from .constants import (
     RECONNECT_INTERVAL,
 )
 from .helpers import (
+    parse_control_url,
     parse_line_in,
     parse_serial_number,
     room_udn_to_player_id,
@@ -66,6 +67,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
+    # room name -> AVTransport control URL of its renderer, from the same description
+    _room_transport_urls: dict[str, str]
     # room name -> player_id, derived from _room_serials on every sync (see _assign_room_ids)
     _room_ids: dict[str, str]
     # rooms already warned about sharing a serial, so the warning goes out once per room
@@ -77,6 +80,27 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return None
         return self._line_in.get(renderer_uuid.lower())
 
+    def room_transport_url(self, room: str) -> str | None:
+        """
+        Return the AVTransport control URL of a room's own renderer, or ``None``.
+
+        :param room: The Raumfeld room name to look up.
+        """
+        return self._room_transport_urls.get(room)
+
+    def zone_location(self, zone: list[str]) -> str | None:
+        """
+        Return the device description URL of a zone's renderer, or ``None``.
+
+        :param zone: The rooms of the zone.
+        """
+        try:
+            zone_udn = self.host.roomlst_to_zoneudn(zone)
+            location: str | None = self.host.resolve["udn_to_devloc"].get(zone_udn)
+        except KeyError, AttributeError:
+            return None
+        return location
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider (setup input is in setup_flow)."""
         return ()
@@ -87,6 +111,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
         self._line_in = {}
         self._room_serials = {}
+        self._room_transport_urls = {}
         self._room_ids = {}
         self._shared_serial_warned = set()
         # a background supervisor owns the connection so a missing or (temporarily)
@@ -365,6 +390,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
             self.logger.debug("Renderer of room %s reports no serial number", room)
             return None
         self._room_serials[room] = serial
+        if (control_url := parse_control_url(description, "AVTransport")) is not None:
+            self._room_transport_urls[room] = urljoin(location, control_url)
         return serial
 
     def _ensure_icy_default(self, player_id: str) -> None:

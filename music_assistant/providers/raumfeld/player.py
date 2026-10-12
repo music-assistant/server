@@ -6,7 +6,9 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
+from async_upnp_client.exceptions import UpnpError
 from hassfeld import upnp as hassfeld_upnp
+from hassfeld.constants import SERVICE_AV_TRANSPORT
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
@@ -20,9 +22,11 @@ from .constants import (
     SOURCE_LINE_IN,
     SUPPORTED_SAMPLE_RATES,
 )
-from .helpers import parse_didl_metadata, parse_duration
+from .helpers import external_source, parse_didl_metadata, parse_duration, query_last_change
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     import hassfeld
     from music_assistant_models.config_entries import ConfigEntry
 
@@ -83,6 +87,15 @@ POWER_STATE_OFF = "MANUAL_STANDBY"
 POWER_SETTLE_TIME = 5.0
 
 
+# Features that only apply while something other than Music Assistant is playing, and then
+# only as far as the host lists the matching transport action for that source.
+EXTERNAL_SOURCE_FEATURES = {
+    PlayerFeature.PAUSE,
+    PlayerFeature.NEXT_PREVIOUS,
+    PlayerFeature.SEEK,
+}
+
+
 def _map_transport_state(state: str | None) -> PlaybackState:
     """Map a UPnP ``CurrentTransportState`` value to a Music Assistant PlaybackState."""
     value = (state or "").upper()
@@ -107,6 +120,9 @@ class RaumfeldPlayer(Player):
     """A single Raumfeld room, exposed to Music Assistant as a player."""
 
     _attr_type = PlayerType.PLAYER
+    # the host reports what is playing accurately, so a source Music Assistant has no name
+    # of its own for counts as a takeover too
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
@@ -130,6 +146,12 @@ class RaumfeldPlayer(Player):
         self._advance_armed = False
         self._prev_playing = False
         self._near_end = False
+        # The source of playback Music Assistant did not start (Spotify Connect, the
+        # Raumfeld app), and whether the room's own renderer plays it rather than its zone:
+        # Spotify Connect in single-room mode takes the room out of every zone.
+        self._external_source: PlayerSource | None = None
+        self._static_sources: list[PlayerSource] = []
+        self._external_via_room = False
         # timestamp of the last power command, see POWER_SETTLE_TIME
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
@@ -175,7 +197,7 @@ class RaumfeldPlayer(Player):
         # expose the room's analog input as a selectable source when it has one
         if self._line_in is not None:
             self._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
-            self._attr_source_list = [
+            self._static_sources = [
                 PlayerSource(
                     id=SOURCE_LINE_IN,
                     name="Line-in",
@@ -185,6 +207,7 @@ class RaumfeldPlayer(Player):
                     can_seek=False,
                 )
             ]
+            self._attr_source_list = list(self._static_sources)
 
     @property
     def raumfeld(self) -> RaumfeldPlayerProvider:
@@ -251,6 +274,14 @@ class RaumfeldPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY/resume command."""
+        if self._external_source is not None:
+            # resume what the host or the speaker itself was playing, where it paused
+            await self._external_command(
+                self.raumfeld.host.async_room_play, self.raumfeld.host.async_zone_play
+            )
+            self._attr_playback_state = PlaybackState.PLAYING
+            self.update_state()
+            return
         self._mark_play_started()
         try:
             zone = await self._ensure_playable_zone()
@@ -271,7 +302,12 @@ class RaumfeldPlayer(Player):
         hard_stop = self._attr_active_source == SOURCE_LINE_IN
         # only a room that is part of an active zone has something to stop; a
         # standby/unassigned room has no zone the host can address
-        if (zone := self._active_zone()) is not None:
+        if self._external_via_room:
+            # Spotify Connect plays on the room's own renderer, outside any zone
+            location = self.raumfeld.room_renderer_location(self.room)
+            if location is not None:
+                await hassfeld_upnp.async_stop(self.mass.http_session, location)
+        elif (zone := self._active_zone()) is not None:
             try:
                 await self.raumfeld.host.async_zone_stop(zone)
                 if hard_stop:
@@ -280,8 +316,49 @@ class RaumfeldPlayer(Player):
             except HOST_ERRORS as err:
                 # do not report IDLE while the renderer may still be playing
                 raise PlayerCommandFailed(f"Failed to stop {self.room}: {err!r}") from err
+        self._clear_external()
         self._attr_active_source = None
         self._attr_playback_state = PlaybackState.IDLE
+        self.update_state()
+
+    async def pause(self) -> None:
+        """Send PAUSE command (only offered while an external source is playing)."""
+        await self._external_command(
+            self.raumfeld.host.async_room_pause, self.raumfeld.host.async_zone_pause
+        )
+        self._freeze_elapsed()
+        self._attr_playback_state = PlaybackState.PAUSED
+        self.update_state()
+
+    async def next_track(self) -> None:
+        """Send NEXT TRACK command (only offered while an external source is playing)."""
+        await self._external_command(
+            self.raumfeld.host.async_room_next_track, self.raumfeld.host.async_zone_next_track
+        )
+
+    async def previous_track(self) -> None:
+        """Send PREVIOUS TRACK command (only offered while an external source is playing)."""
+        await self._external_command(
+            self.raumfeld.host.async_room_previous_track,
+            self.raumfeld.host.async_zone_previous_track,
+        )
+
+    async def seek(self, position: int) -> None:
+        """Send SEEK command (only offered while an external source is playing)."""
+        if self._external_via_room:
+            location = self.raumfeld.room_renderer_location(self.room)
+        elif (zone := self._active_zone()) is not None:
+            location = self.raumfeld.zone_location(zone)
+        else:
+            location = None
+        if location is None:
+            raise PlayerCommandFailed(f"Failed to seek on {self.room}: nothing is playing")
+        hours, remainder = divmod(max(position, 0), 3600)
+        target = f"{hours:02d}:{remainder // 60:02d}:{remainder % 60:02d}"
+        await hassfeld_upnp.async_seek(self.mass.http_session, location, "ABS_TIME", target)
+        self._attr_elapsed_time = float(position)
+        self._attr_elapsed_time_last_updated = time.time()
+        self._play_started_at = time.time()
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -296,6 +373,7 @@ class RaumfeldPlayer(Player):
         self._mark_play_started()
         # a new item supersedes the queued next one; MA enqueues the next after it again
         self._clear_next()
+        self._clear_external()
         self._advance_armed = not self.flow_mode
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url)
@@ -445,7 +523,12 @@ class RaumfeldPlayer(Player):
         # only be read from a zone - asking anyway costs two round-trips per poll and
         # leaves the host resolving a missing zone. Read just the volume instead.
         if (zone := self._active_zone()) is None:
+            # ... unless Spotify Connect plays on the room itself, outside any zone
+            if self._plays_spotify_connect():
+                await self._poll_room_playback(host)
+                return
             await self._update_volume(host)
+            self._clear_external()
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_poll_interval = IDLE_POLL_INTERVAL
             self.update_state()
@@ -470,6 +553,7 @@ class RaumfeldPlayer(Player):
             ended = raw_state in ("STOPPED", "NO_MEDIA_PRESENT")
 
         if position is not None:
+            await self._update_zone_source(position, zone)
             self._apply_position(position, playing)
             if playing:
                 self._near_end = _near_track_end(position)
@@ -499,23 +583,11 @@ class RaumfeldPlayer(Player):
 
     def _apply_position(self, pos: dict[str, str], playing: bool) -> None:
         """Report the device position to MA (in flow mode: the position within the flow)."""
-        device_uri = pos.get("TrackURI", "") or ""
-        our_stream = device_uri.startswith(self.mass.streams.base_url)
-        # Line-In is an external source with no queue item behind it, so reflect what the
-        # device reports. Our own flow stream is owned by MA's queue controller (it holds
-        # the queue_item_id progress tracking needs), so never overwrite current_media there.
-        if playing and device_uri and not our_stream:
-            meta = parse_didl_metadata(pos.get("TrackMetaData"))
-            self.set_current_media(
-                uri=device_uri,
-                clear_all=True,
-                title=meta["title"],
-                artist=meta["artist"],
-                album=meta["album"],
-                image_url=meta["image_url"],
-                duration=parse_duration(pos.get("TrackDuration")),
-            )
         raw_elapsed = parse_duration(pos.get("RelTime"))
+        if raw_elapsed is not None and not playing and self._external_source is not None:
+            # a source paused from its own app: show where it stopped
+            self._attr_elapsed_time = float(raw_elapsed)
+            self._attr_elapsed_time_last_updated = time.time()
         if raw_elapsed is None or not playing:
             return
         # In flow mode the zone clock runs on across the whole queue (ICY changes only the
@@ -555,6 +627,189 @@ class RaumfeldPlayer(Player):
             self._attr_volume_level = volume
         if muted is not None:
             self._attr_volume_muted = muted
+
+    def _plays_spotify_connect(self) -> bool:
+        """Return whether Spotify Connect is playing on this room's own renderer."""
+        try:
+            return bool(self.raumfeld.host.room_is_spotify_single_room(self.room))
+        except HOST_ERRORS:
+            return False
+
+    async def _poll_room_playback(self, host: hassfeld.RaumfeldHost) -> None:
+        """Read what the room's own renderer plays (Spotify Connect), outside any zone."""
+        location = self.raumfeld.room_renderer_location(self.room)
+        control_url = self.raumfeld.room_transport_url(self.room)
+        if location is None or control_url is None:
+            await self._update_volume(host)
+            self.update_state()
+            return
+        _, state, position = await asyncio.gather(
+            self._update_volume(host),
+            self._read_room_state(control_url),
+            # not through hassfeld: its position read expects the track metadata a zone
+            # returns, which a room's own renderer does not have
+            self._call_transport(location, "GetPositionInfo"),
+        )
+        if state:
+            self._attr_playback_state = _map_transport_state(state.get("TransportState"))
+        active = self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+        if state and active:
+            meta = parse_didl_metadata(state.get("AVTransportURIMetaData"))
+            self._set_external(
+                meta,
+                state.get("CurrentTransportActions"),
+                parse_duration(state.get("CurrentTrackDuration")),
+                via_room=True,
+            )
+        elif not active:
+            self._clear_external()
+        if position:
+            self._apply_position(position, self._attr_playback_state == PlaybackState.PLAYING)
+        self._update_poll_interval()
+        self.update_state()
+
+    async def _read_room_state(self, control_url: str) -> dict[str, str] | None:
+        """Read the room renderer's transport state, or ``None`` if it could not be read."""
+        try:
+            return await query_last_change(self.mass.http_session, control_url) or None
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to read transport state of %s: %r", self.room, err)
+            return None
+
+    async def _update_zone_source(self, pos: dict[str, str], zone: list[str]) -> None:
+        """Follow what the zone plays when Music Assistant did not start it."""
+        device_uri = pos.get("TrackURI", "") or ""
+        active = self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+        if (
+            not active
+            or not device_uri
+            or device_uri.startswith(self.mass.streams.base_url)
+            or self._attr_active_source == SOURCE_LINE_IN
+        ):
+            # idle, our own stream (owned by MA's queue controller, which holds the
+            # queue_item_id progress tracking needs) or the Line-In started from here
+            if self._attr_active_source != SOURCE_LINE_IN or not active:
+                self._clear_external()
+            return
+        self._set_external(
+            parse_didl_metadata(pos.get("TrackMetaData")),
+            await self._read_zone_actions(zone),
+            parse_duration(pos.get("TrackDuration")),
+            via_room=False,
+        )
+
+    async def _read_zone_actions(self, zone: list[str]) -> str | None:
+        """Read the transport actions the zone allows right now, or ``None``."""
+        if (location := self.raumfeld.zone_location(zone)) is None:
+            return None
+        response = await self._call_transport(location, "GetCurrentTransportActions")
+        actions: str | None = (response or {}).get("Actions")
+        return actions
+
+    async def _call_transport(self, location: str, action_name: str) -> dict[str, str] | None:
+        """
+        Call a parameterless AVTransport action, returning ``None`` if it failed.
+
+        :param location: The device description URL of the renderer to call.
+        :param action_name: The AVTransport action to call.
+        """
+        try:
+            action = await hassfeld_upnp.get_dlna_action(
+                location, SERVICE_AV_TRANSPORT, action_name, session=self.mass.http_session
+            )
+            response: dict[str, str] = await action.async_call(InstanceID=0)
+        except (*HOST_ERRORS, UpnpError) as err:
+            self.logger.debug("%s failed on %s: %r", action_name, location, err)
+            return None
+        return response
+
+    def _set_external(
+        self,
+        meta: dict[str, str | None],
+        actions: str | None,
+        duration: int | None,
+        via_room: bool,
+    ) -> None:
+        """
+        Report an external source as active, with the controls the host allows for it.
+
+        :param meta: The parsed DIDL metadata of the playing item.
+        :param actions: The comma separated transport actions the host allows, if known.
+        :param duration: The duration of the playing item in seconds, if it has one.
+        :param via_room: Whether the room's own renderer plays it rather than its zone.
+        """
+        allowed = {action.strip() for action in (actions or "").split(",")}
+        source_id, name = external_source(meta["section"])
+        source = PlayerSource(
+            id=source_id,
+            name=name,
+            passive=True,
+            can_play_pause=bool(allowed & {"Pause", "Play"}),
+            can_next_previous=bool(allowed & {"Next", "Previous"}),
+            can_seek="Seek" in allowed,
+        )
+        self._external_source = source
+        self._external_via_room = via_room
+        self._attr_active_source = source.id
+        self._attr_source_list = [*self._static_sources, source]
+        self._attr_supported_features -= EXTERNAL_SOURCE_FEATURES
+        if source.can_play_pause:
+            self._attr_supported_features.add(PlayerFeature.PAUSE)
+        if source.can_next_previous:
+            self._attr_supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if source.can_seek:
+            self._attr_supported_features.add(PlayerFeature.SEEK)
+        # the uri names the item, never the address the host streams it from
+        self.set_current_media(
+            uri=f"raumfeld://{meta['item_id'] or source.id}",
+            clear_all=True,
+            title=meta["title"],
+            artist=meta["artist"],
+            album=meta["album"],
+            image_url=meta["image_url"],
+            duration=duration or None,
+        )
+
+    def _clear_external(self) -> None:
+        """Drop the external source, and the controls that only applied to it."""
+        if self._external_source is None:
+            return
+        if self._attr_active_source == self._external_source.id:
+            self._attr_active_source = None
+        self._external_source = None
+        self._external_via_room = False
+        self._attr_source_list = list(self._static_sources)
+        self._attr_supported_features -= EXTERNAL_SOURCE_FEATURES
+
+    async def _external_command(
+        self,
+        room_command: Callable[[str], Awaitable[None]],
+        zone_command: Callable[[list[str]], Awaitable[None]],
+    ) -> None:
+        """
+        Send a transport command to whichever renderer plays the external source.
+
+        :param room_command: The host call that addresses the room's own renderer.
+        :param zone_command: The host call that addresses the room's zone.
+        """
+        try:
+            if self._external_via_room:
+                await room_command(self.room)
+            elif (zone := self._active_zone()) is not None:
+                await zone_command(zone)
+        except HOST_ERRORS as err:
+            raise PlayerCommandFailed(f"Command failed on {self.room}: {err!r}") from err
+        # poll fast for a while so the new state and track show up promptly
+        self._play_started_at = time.time()
+
+    def _update_poll_interval(self) -> None:
+        """Poll at the playing rate while something plays, and slowly otherwise."""
+        if (time.time() - self._play_started_at) < STARTUP_POLL_WINDOW:
+            self._attr_poll_interval = FAST_POLL_INTERVAL
+        elif self._attr_playback_state == PlaybackState.PLAYING:
+            self._attr_poll_interval = PLAYING_POLL_INTERVAL
+        else:
+            self._attr_poll_interval = IDLE_POLL_INTERVAL
 
     async def _read_volume(self, host: hassfeld.RaumfeldHost) -> int | None:
         """Read this room's volume (0-100), or ``None`` on a host error."""
