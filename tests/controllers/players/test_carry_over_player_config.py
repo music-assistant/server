@@ -91,3 +91,32 @@ async def test_parent_lists_the_replacement(mass: MusicAssistant) -> None:
         OLD_ID,
         NEW_ID,
     ]
+
+
+async def test_previous_parent_no_longer_lists_the_replacement(mass: MusicAssistant) -> None:
+    """A parent the replacement leaves can not disable it later through its stored list."""
+    _store_old_player(mass)
+    mass.config.set(
+        f"{CONF_PLAYERS}/{NEW_ID}",
+        {
+            "player_id": NEW_ID,
+            "provider": "sendspin",
+            "player_type": "protocol",
+            "enabled": True,
+            "values": {CONF_PROTOCOL_PARENT_ID: "up_duplicate"},
+        },
+    )
+    mass.config.set(
+        f"{CONF_PLAYERS}/up_duplicate",
+        {
+            "player_id": "up_duplicate",
+            "provider": "universal_player",
+            "player_type": "player",
+            "enabled": False,
+            "values": {CONF_LINKED_PROTOCOL_IDS: [NEW_ID]},
+        },
+    )
+
+    mass.players.carry_over_player_config(OLD_ID, NEW_ID)
+
+    assert mass.config.get(f"{CONF_PLAYERS}/up_duplicate/values/{CONF_LINKED_PROTOCOL_IDS}") == []

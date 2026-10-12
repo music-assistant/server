@@ -1965,6 +1965,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
         target_key = f"{CONF_PLAYERS}/{replacement_player_id}"
         target_raw = self.mass.config.get(target_key)
+        previous_parent_id = self._get_cached_protocol_parent_id(replacement_player_id)
         if not isinstance(target_raw, dict):
             self.mass.config.set(
                 target_key, {**deepcopy(source_raw), "player_id": replacement_player_id}
@@ -1986,8 +1987,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         source_dsp = self.mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}")
         if source_dsp and not self.mass.config.get(f"{CONF_PLAYER_DSP}/{replacement_player_id}"):
             self.mass.config.set(f"{CONF_PLAYER_DSP}/{replacement_player_id}", deepcopy(source_dsp))
-        # a parent that gets enabled again only re-enables the protocol players it lists
+        # a parent that gets enabled or disabled only cascades to the protocol players it lists
         parent_id = self._get_cached_protocol_parent_id(replacement_player_id)
+        if previous_parent_id and previous_parent_id != parent_id:
+            if previous_parent := self.get_player(previous_parent_id):
+                self._remove_protocol_ids_from_parent(previous_parent, {replacement_player_id})
+            else:
+                self._remove_protocol_id_from_cache(previous_parent_id, replacement_player_id)
         if parent_id and (parent := self.get_player(parent_id)):
             self._migrate_protocol_ids_to_parent(parent, {replacement_player_id})
         elif parent_id and isinstance(self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"), dict):
