@@ -31,8 +31,12 @@ class RenderHealth:
         self.cooldown_until = now + RENDER_COOLDOWN_SECONDS
         return True
 
-    def record_success(self) -> None:
-        """Clear the failure count, the DJ renders freely again."""
+    def record_success(self, now: float) -> None:
+        """Clear the failure count after a render that succeeded outside the cool-down."""
+        # a render that was already in flight when the pause started proves nothing about
+        # the engine now, so the pause runs its course and the first render after it decides
+        if self.cooling_down(now):
+            return
         self.failures = 0
         self.cooldown_until = None
 

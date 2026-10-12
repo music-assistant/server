@@ -421,7 +421,7 @@ class AIRadioRenderMixin:
             )
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
         if (health := self._render_health(queue_item)) is not None:
-            health.record_success()
+            health.record_success(asyncio.get_running_loop().time())
         # measuring costs a fetch and a decode on the just-in-time render path, so it only
         # runs where the reading has somewhere to go
         loudness = (

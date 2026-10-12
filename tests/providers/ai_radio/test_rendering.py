@@ -773,8 +773,8 @@ async def test_a_failure_after_the_cool_down_restarts_it(caplog: pytest.LogCaptu
     assert [item_id for _queue_id, item_id in renderer.paused] == ["qi_djlive_003", "qi_djlive_004"]
 
 
-def test_a_late_failure_during_the_cool_down_leaves_it_alone() -> None:
-    """A render that was in flight when the pause started fails without extending the pause."""
+def test_a_late_result_during_the_cool_down_leaves_it_alone() -> None:
+    """A render that was in flight when the pause started neither extends nor ends the pause."""
     health = RenderHealth()
     assert [health.record_failure(100.0) for _ in range(3)] == [False, False, True]
     paused_until = health.cooldown_until
@@ -782,9 +782,16 @@ def test_a_late_failure_during_the_cool_down_leaves_it_alone() -> None:
     assert health.record_failure(105.0) is False
     assert health.failures == 4
     assert health.cooldown_until == paused_until
-    # once the pause is over a failure starts a new one
+    health.record_success(110.0)
+    assert health.failures == 4
+    assert health.cooldown_until == paused_until
+    # once the pause is over the next render decides: a failure starts a new pause, a
+    # success lifts it
     assert paused_until is not None
     assert health.record_failure(paused_until) is True
+    health.record_success(paused_until)
+    assert health.failures == 0
+    assert health.cooldown_until is None
 
 
 async def test_a_success_after_the_cool_down_lifts_it() -> None:
