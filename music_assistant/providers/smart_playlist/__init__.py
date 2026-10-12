@@ -2,7 +2,7 @@
 Smart Playlist Plugin Provider for Music Assistant.
 
 Allows creating rule-based playlists (dynamic or fixed) from library tracks,
-filtered by genres, artists, albums, favorites, popularity and similar tracks.
+filtered by genres, artists, albums, folders, favorites, popularity and similar tracks.
 
 # TODO (future PR): refactor this file into a package (e.g. __init__.py + evaluator.py +
 # filters.py) — it is growing large and the evaluation / filter logic would benefit from
@@ -779,7 +779,7 @@ class SmartPlaylistProvider(PluginProvider):
         seed_uris = rules.all_seed_uris()
         if seed_uris:
             # Seed mode: a similar-tracks pool derived from the seeds is the exclusive source.
-            # artist_ids and album_ids are ignored per design.
+            # artist_ids, album_ids and folder_paths are ignored per design.
             tracks = await self._tracks_from_seeds(
                 seed_uris, target_size=rules.limit, is_dynamic=rules.is_dynamic
             )
@@ -1166,8 +1166,9 @@ class SmartPlaylistProvider(PluginProvider):
         has_genre = bool(rules.genre_ids)
         has_artist = bool(rules.artist_ids)
         has_album = bool(rules.album_ids)
+        has_folder = bool(rules.folder_paths)
 
-        no_structural_filter = not has_genre and not has_artist and not has_album
+        no_structural_filter = not has_genre and not has_artist and not has_album and not has_folder
 
         if no_structural_filter and not rules.favorites_only:
             return await self._get_library_tracks(
@@ -1186,6 +1187,7 @@ class SmartPlaylistProvider(PluginProvider):
             explicit=rules.explicit,
             limit=min(rules.limit * 5, 2000),
             user_provider_filter=user_provider_filter,
+            folder_paths=rules.folder_paths if has_folder else None,
         )
 
         # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
@@ -1244,6 +1246,16 @@ class SmartPlaylistProvider(PluginProvider):
                 if track.uri:
                     track_sets[track.uri] = track
 
+        if rules.folder_paths:
+            for track in await self._get_library_tracks(
+                explicit=rules.explicit,
+                limit=fetch_limit,
+                user_provider_filter=user_provider_filter,
+                folder_paths=rules.folder_paths,
+            ):
+                if track.uri:
+                    track_sets[track.uri] = track
+
         if rules.artist_ids or rules.album_ids:
             all_tracks = await self._get_library_tracks(
                 explicit=rules.explicit,
@@ -1276,6 +1288,7 @@ class SmartPlaylistProvider(PluginProvider):
             and not rules.genre_ids
             and not rules.artist_ids
             and not rules.album_ids
+            and not rules.folder_paths
         )
         if no_filters:
             for track in await self._get_library_tracks(
@@ -1295,6 +1308,7 @@ class SmartPlaylistProvider(PluginProvider):
         explicit: bool | None = None,
         limit: int = 500,
         user_provider_filter: list[str] | None = None,
+        folder_paths: list[str] | None = None,
     ) -> list[Track]:
         """Fetch library tracks with optional filters."""
         return await self.mass.music.tracks.library_items(
@@ -1305,6 +1319,7 @@ class SmartPlaylistProvider(PluginProvider):
             sort_field=SortField.RANDOM,
             provider=user_provider_filter,
             summary=False,
+            folder=folder_paths,
         )
 
     async def _tracks_from_seeds(

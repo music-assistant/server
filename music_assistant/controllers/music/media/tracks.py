@@ -44,6 +44,7 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
@@ -306,6 +307,7 @@ class TracksController(MediaControllerBase[Track]):
         sort_direction: SortDirection | None = None,
         summary: bool = True,
         reachable_via: list[str] | None = None,
+        folder: str | list[str] | None = None,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -327,6 +329,8 @@ class TracksController(MediaControllerBase[Track]):
         :param reachable_via: Restrict results to items with a provider mapping reachable
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
+        :param folder: Only include tracks located (recursively) in these folder(s), given as
+            browse path of a filesystem provider, e.g. `filesystem_local--abc://Rock/Classic`.
         """
         field, direction = self.resolve_sort(sort_field, sort_direction, order_by)
         reachable_via = self._resolve_reachable_via(reachable_via)
@@ -345,6 +349,13 @@ class TracksController(MediaControllerBase[Track]):
                     "(json_extract(tracks.metadata, '$.explicit') IS NULL "
                     "OR json_extract(tracks.metadata, '$.explicit') = 0)"
                 )
+
+        if folder:
+            extra_query_parts.append(
+                self._folder_filter_clause(
+                    [folder] if isinstance(folder, str) else folder, extra_query_params
+                )
+            )
 
         artist_join_added = False
         if field == SortField.ARTIST_NAME:
@@ -1000,6 +1011,33 @@ class TracksController(MediaControllerBase[Track]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_track.item_id, match)
                 cur_provider_domains.add(provider.domain)
+
+    def _folder_filter_clause(self, folders: list[str], query_params: dict[str, Any]) -> str:
+        """
+        Return the SQL clause that restricts tracks to files within the given folder(s).
+
+        :param folders: Browse paths of filesystem folders (`<provider_instance>://<path>`).
+        :param query_params: Query params dict; the clause's bound params are added to it.
+        """
+        folder_conditions = []
+        for idx, folder in enumerate(folders):
+            prov_instance, _, rel_path = folder.partition("://")
+            query_params[f"folder_prov_{idx}"] = prov_instance
+            condition = f"folder_pm.provider_instance = :folder_prov_{idx}"
+            if rel_path := rel_path.strip("/"):
+                # substr instead of LIKE: case-sensitive and no wildcard escaping needed
+                query_params[f"folder_path_{idx}"] = f"{rel_path}/"
+                condition += (
+                    f" AND substr(folder_pm.provider_item_id, 1, length(:folder_path_{idx}))"
+                    f" = :folder_path_{idx}"
+                )
+            folder_conditions.append(f"({condition})")
+        return (
+            f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS folder_pm "
+            f"WHERE folder_pm.item_id = {self.db_table}.item_id "
+            "AND folder_pm.media_type = 'track' "
+            f"AND ({' OR '.join(folder_conditions)}))"
+        )
 
     async def _match_provider_by_isrc(
         self,

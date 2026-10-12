@@ -47,6 +47,7 @@ from music_assistant.providers.smart_playlist.helpers import (
     LOGIC_OR,
     RULES_FILENAME,
     SmartPlaylistRules,
+    validate_rules,
     write_json,
 )
 from tests.common import set_music_source_access, use_real_create_task
@@ -80,6 +81,7 @@ class TestSmartPlaylistRules:
             genre_ids=[1, 2, 3],
             artist_ids=[10],
             album_ids=[],
+            folder_paths=["filesystem_local--abc://Rock/Classic"],
             favorites_only=True,
             seed_track_uris=["library://track/42", "library://track/43"],
             seed_artist_uris=["library://artist/7"],
@@ -109,6 +111,19 @@ class TestSmartPlaylistRules:
         assert rules.favorites_only is True
         assert rules.genre_ids == []
         assert rules.logic == LOGIC_AND
+
+    def test_human_readable_folders(self) -> None:
+        """human_readable lists the folder paths without the provider prefix."""
+        rules = SmartPlaylistRules(
+            folder_paths=["filesystem_local--abc://Rock/Classic", "filesystem_local--abc://"]
+        )
+        assert rules.human_readable() == "Folders: Rock/Classic, /"
+
+    def test_validate_rejects_folder_without_provider(self) -> None:
+        """A folder path must name the filesystem provider instance it lives on."""
+        with pytest.raises(InvalidDataError):
+            validate_rules(SmartPlaylistRules(folder_paths=["Rock/Classic"]))
+        validate_rules(SmartPlaylistRules(folder_paths=["filesystem_local--abc://Rock"]))
 
     def test_human_readable_no_rules(self) -> None:
         """human_readable for empty rules returns fallback message."""
@@ -687,6 +702,42 @@ async def test_explicit_filter_generates_sql_query_parts() -> None:
     await plugin._get_library_tracks(explicit=None, limit=10)
     call_kwargs = library_items_mock.call_args.kwargs
     assert call_kwargs["explicit"] is None
+
+
+@pytest.mark.asyncio
+async def test_folder_rule_passed_to_library_query() -> None:
+    """Folder paths restrict the library query in AND logic and add a source in OR logic."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    folders = ["filesystem_local--abc://Rock"]
+
+    folder_track = _make_mock_track("1", uri="library://track/1")
+    fav_track = _make_mock_track("2", uri="library://track/2")
+
+    async def mock_get_library(**kwargs: Any) -> list[MagicMock]:
+        if kwargs.get("folder_paths"):
+            return [folder_track]
+        return [fav_track]
+
+    library_mock = AsyncMock(side_effect=mock_get_library)
+    cast("Any", plugin)._get_library_tracks = library_mock
+
+    result = await plugin._evaluate_and(SmartPlaylistRules(folder_paths=folders, limit=10))
+    assert result == [folder_track]
+    assert library_mock.call_args.kwargs["folder_paths"] == folders
+
+    result = await plugin._evaluate_or(
+        SmartPlaylistRules(folder_paths=folders, favorites_only=True, logic=LOGIC_OR, limit=10)
+    )
+    assert {t.uri for t in result} == {"library://track/1", "library://track/2"}
+
+    mass.music.tracks.library_items = AsyncMock(return_value=[])
+    await SmartPlaylistProvider._get_library_tracks(plugin, folder_paths=folders)
+    assert mass.music.tracks.library_items.call_args.kwargs["folder"] == folders
 
 
 @pytest.mark.asyncio
