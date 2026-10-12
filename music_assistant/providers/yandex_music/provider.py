@@ -682,7 +682,7 @@ class YandexMusicProvider(MusicProvider):
             name=name,
         )
 
-    async def browse(  # noqa: PLR0911, PLR0915
+    async def browse(  # noqa: C901, PLR0911, PLR0912, PLR0915
         self, path: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
@@ -3368,7 +3368,7 @@ class YandexMusicProvider(MusicProvider):
             # smart-captcha. Skipped after the last batch.
             if i + batch_size < len(track_ids):
                 await asyncio.sleep(
-                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S
+                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S  # noqa: S311 - request jitter
                 )
 
         # Create track ID to full track mapping by track ID directly

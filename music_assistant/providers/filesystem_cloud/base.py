@@ -62,8 +62,8 @@ AUDIO_STREAM_EXTENSIONS = TRACK_EXTENSIONS | AUDIOBOOK_EXTENSIONS | PODCAST_EPIS
 
 # config keys shared by the cloud filesystem providers, all collected by the setup flow
 CONF_CLIENT_ID = "client_id"
-CONF_CLIENT_SECRET = "client_secret"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_CLIENT_SECRET = "client_secret"  # noqa: S105 - config key
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 CONF_FOLDER_ID = "folder_id"
 
 

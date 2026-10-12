@@ -9565,7 +9565,7 @@ class TestNativePlayerSiblingLinking:
         # AirPlay has cached parent set but parent hasn't registered yet
         ap_player.set_protocol_parent_id("2140037800")
 
-        # Sendspin (registered, not linked)
+        # Sendspin, registered but not linked
         spb_provider = MockProvider("sendspin", mass=mock_mass)
         spb_player = MockPlayer(
             spb_provider,

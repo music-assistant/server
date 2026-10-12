@@ -84,7 +84,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     """  # noqa: D401
 
     @functools.wraps(func)
-    async def wrapper(self: PlayActionHostT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: PlayActionHostT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
@@ -244,7 +244,7 @@ def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
     for items in groups:
         total = len(items)
         for offset, item in enumerate(items):
-            positioned.append(((offset + random.random()) / total, item))
+            positioned.append(((offset + random.random()) / total, item))  # noqa: S311 - shuffle order
     positioned.sort(key=lambda entry: entry[0])
     return [item for _, item in positioned]
 

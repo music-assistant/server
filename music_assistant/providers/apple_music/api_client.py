@@ -43,7 +43,7 @@ def _retry_transient_transport_errors[ClientT, **P, R](
     """
 
     @functools.wraps(func)
-    async def wrapper(self: ClientT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: ClientT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return await func(self, *args, **kwargs)
         except (ClientConnectionError, ClientPayloadError, TimeoutError) as err:
@@ -108,7 +108,7 @@ class AppleMusicAPIClient:
 
     @throttle_with_retries
     @_retry_transient_transport_errors
-    async def get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    async def get_data(self, /, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """GET data from the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         if self._language and "l" not in kwargs:
@@ -149,7 +149,7 @@ class AppleMusicAPIClient:
             return cast("dict[str, Any]", await response.json(loads=json_loads))
 
     @throttle_with_retries
-    async def delete_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
+    async def delete_data(self, /, endpoint: str, data: Any = None, **kwargs: Any) -> None:
         """DELETE data from the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
@@ -173,7 +173,7 @@ class AppleMusicAPIClient:
             response.raise_for_status()
 
     @throttle_with_retries
-    async def put_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
+    async def put_data(self, /, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """PUT data to the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
@@ -200,7 +200,7 @@ class AppleMusicAPIClient:
             return {}
 
     @throttle_with_retries
-    async def post_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
+    async def post_data(self, /, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """POST data to the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (

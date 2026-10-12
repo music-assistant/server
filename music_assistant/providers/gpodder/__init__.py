@@ -81,11 +81,11 @@ if TYPE_CHECKING:
 # Config for "classic" gpodder api
 CONF_URL = "url"
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
+CONF_PASSWORD = "password"  # noqa: S105 - config key
 CONF_DEVICE_ID = "device_id"
 
 # Config for nextcloud
-CONF_TOKEN_NC = "token"
+CONF_TOKEN_NC = "token"  # noqa: S105 - config key
 CONF_URL_NC = "url_nc"
 
 # General config

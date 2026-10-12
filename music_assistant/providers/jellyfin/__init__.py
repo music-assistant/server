@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 
 CONF_URL = "url"
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
+CONF_PASSWORD = "password"  # noqa: S105 - config key
 CONF_VERIFY_SSL = "verify_ssl"
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,

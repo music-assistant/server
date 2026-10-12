@@ -847,7 +847,7 @@ class RadiothekProvider(MusicProvider):
             pe.metadata.description = ep.description
         pe.metadata.release_date = release_date
 
-        # image (episode-level)
+        # image of the episode
         if ep.image:
             best = ep.image.best()
             if best:

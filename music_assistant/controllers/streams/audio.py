@@ -1556,7 +1556,7 @@ class StreamsAudio:
         finally:
             streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
 
-    async def get_queue_item_stream(
+    async def get_queue_item_stream(  # noqa: C901, PLR0912
         self,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
@@ -1848,7 +1848,7 @@ class StreamsAudio:
                 streamdetails, finished, seconds_streamed, start_reported
             )
 
-    async def get_queue_item_stream_with_smartfade(
+    async def get_queue_item_stream_with_smartfade(  # noqa: C901, PLR0912
         self,
         player: Player,
         queue_item: QueueItem,
@@ -2338,7 +2338,7 @@ class StreamsAudio:
             ),
         )
 
-    async def get_queue_flow_stream(
+    async def get_queue_flow_stream(  # noqa: C901, PLR0912
         self,
         queue: PlayerQueue,
         start_queue_item: QueueItem,
