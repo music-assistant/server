@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -19,6 +20,7 @@ from music_assistant.helpers.process import (
     check_output,
     collect_child_process_counts,
     get_subprocess_env,
+    open_in_thread,
     parse_child_process_name,
 )
 
@@ -586,3 +588,38 @@ def _is_running(pid: int) -> bool:
         return False
     # the state follows the command name, which is wrapped in parentheses
     return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+async def test_open_in_thread_closes_a_descriptor_opened_after_cancellation(
+    tmp_path: Path,
+) -> None:
+    """An open that only completes after its caller was cancelled leaves no descriptor behind."""
+    path = tmp_path / "track.flac"
+    path.write_bytes(b"x")
+    started = threading.Event()
+    release = threading.Event()
+    opened: list[int] = []
+
+    def _slow_open(file: str, flags: int) -> int:
+        started.set()
+        release.wait(5)
+        opened.append(os.open(file, flags))
+        return opened[0]
+
+    task = asyncio.create_task(open_in_thread(_slow_open, str(path), os.O_RDONLY))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+
+    async with asyncio.timeout(5):
+        while not opened:
+            await asyncio.sleep(0.01)
+        # the late descriptor is closed on the event loop once the open completes
+        while True:
+            try:
+                os.fstat(opened[0])
+            except OSError:
+                break
+            await asyncio.sleep(0.01)
