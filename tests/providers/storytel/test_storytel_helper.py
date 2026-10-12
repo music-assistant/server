@@ -131,10 +131,15 @@ async def test_login_populates_available_and_default_languages(helper: StorytelH
     assert helper.default_languages == {"Norwegian": "nn"}
 
 
-async def test_revalidate_account_does_not_overwrite_default_languages(
+async def test_revalidate_account_refreshes_default_languages(
     helper: StorytelHelper,
 ) -> None:
-    """Revalidation refreshes available languages but leaves the account's defaults untouched."""
+    """
+    Revalidation refreshes default-checked languages too, not just available ones.
+
+    A stale default (from login time) would make ``_reconcile_languages`` fall back to an
+    outdated choice if the account's region/entitlements changed since login.
+    """
     helper._request_json = AsyncMock(  # type: ignore[method-assign]
         return_value={
             "accountInfo": {
@@ -163,7 +168,7 @@ async def test_revalidate_account_does_not_overwrite_default_languages(
     )
     await helper.revalidate_account()
     assert helper.available_languages == {"Norwegian": "nn", "English": "en"}
-    assert helper.default_languages == {"Norwegian": "nn"}
+    assert helper.default_languages == {"English": "en"}
 
 
 async def test_revalidate_account_drops_selected_language_no_longer_available(

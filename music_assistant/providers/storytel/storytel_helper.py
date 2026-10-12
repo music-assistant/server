@@ -181,8 +181,6 @@ class StorytelHelper:
         Return the account's own default-checked content languages, mapping name to ISO value.
 
         Mirrors the languages the Storytel app itself checks by default for this account.
-        Only populated on login (not on revalidation), since it is only consulted for a
-        provider instance's initial setup.
         """
         return self._default_languages
 
@@ -275,7 +273,7 @@ class StorytelHelper:
             msg = data.get("message") or "Revalidation failed"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
-        self._available_languages, _ = self._parse_languages(acc)
+        self._available_languages, self._default_languages = self._parse_languages(acc)
         self._reconcile_languages()
         return self._auth
 

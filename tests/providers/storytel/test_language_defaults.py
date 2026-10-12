@@ -112,6 +112,9 @@ async def test_stale_language_selection_falls_back_to_account_default_languages(
 
     # The account's own default is "Norwegian", not the static default ("English").
     assert provider._languages == {"Norwegian": "nn"}
+    cast("MagicMock", provider.mass.config.set_raw_provider_config_value).assert_called_once_with(
+        "storytel--test", CONF_LANGUAGES, ["Norwegian"], encrypted=False, immediate=True
+    )
 
 
 async def test_stale_language_selection_falls_back_to_any_available_language(
@@ -132,6 +135,9 @@ async def test_stale_language_selection_falls_back_to_any_available_language(
         await provider.handle_async_init()
 
     assert provider._languages == {"Swedish": "sv"}
+    cast("MagicMock", provider.mass.config.set_raw_provider_config_value).assert_called_once_with(
+        "storytel--test", CONF_LANGUAGES, ["Swedish"], encrypted=False, immediate=True
+    )
 
 
 async def test_missing_account_language_data_falls_back_to_static_default(
@@ -150,3 +156,36 @@ async def test_missing_account_language_data_falls_back_to_static_default(
         await provider.handle_async_init()
 
     assert provider._languages == DEFAULT_LANGUAGES
+
+
+async def test_partially_stale_language_selection_persists_the_normalized_set(
+    provider: Storytel,
+) -> None:
+    """
+    A selection with one valid and one no-longer-available language is normalized on save.
+
+    Only filtering in memory (without persisting) would leave the UI showing the stale,
+    unavailable language even though requests only use the still-valid one.
+    """
+    cast("MagicMock", provider.mass.config.get).return_value = {
+        "username": "user",
+        "password": "pass",
+    }
+    cast("MagicMock", provider.mass.config.decrypt_string).side_effect = lambda value: value
+    # "Swedish" is still available, but "Danish" is no longer accessible to this account.
+    cast("MagicMock", provider.mass.config.get_raw_provider_config_value).return_value = [
+        "Swedish",
+        "Danish",
+    ]
+
+    helper_factory = _make_helper_with_account(
+        available_languages={"Swedish": "sv", "English": "en"},
+        default_languages={"English": "en"},
+    )
+    with patch("music_assistant.providers.storytel.StorytelHelper", side_effect=helper_factory):
+        await provider.handle_async_init()
+
+    assert provider._languages == {"Swedish": "sv"}
+    cast("MagicMock", provider.mass.config.set_raw_provider_config_value).assert_called_once_with(
+        "storytel--test", CONF_LANGUAGES, ["Swedish"], encrypted=False, immediate=True
+    )

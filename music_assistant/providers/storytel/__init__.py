@@ -265,13 +265,16 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             self.instance_id, CONF_LANGUAGES
         )
         if isinstance(languages_list, list) and languages_list:
+            persisted_names = {name for name in languages_list if isinstance(name, str)}
             self._languages = {
                 name: available_languages[name]
-                for name in languages_list
-                if isinstance(name, str) and name in available_languages
+                for name in persisted_names
+                if name in available_languages
             }
             if not self._languages:
                 self._languages = fallback_languages
+            if set(self._languages) != persisted_names:
+                self._update_config_value(CONF_LANGUAGES, sorted(self._languages), immediate=True)
         else:
             # Initial setup: mirror account's own defaults
             self._languages = fallback_languages
