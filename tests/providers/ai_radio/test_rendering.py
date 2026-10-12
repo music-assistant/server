@@ -54,6 +54,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
+    CONF_TTS_ENGINE,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_LLM_INSTRUCTIONS,
     MIN_LOUDNESS_REFERENCE_SECONDS,
@@ -87,6 +88,7 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
         self.weather_calls = 0
         self.fail_generation = False
         self.fail_tts = False
+        self.unavailable_tts_engines: set[str] = set()
         self.measure_calls: list[str] = []
         self.measured_loudness: float | None = None
 
@@ -117,10 +119,17 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
         self.weather_calls += 1
         return {"<weather_hourly>": f"fresh weather {self.weather_calls}"}
 
+    async def _get_tts_engine(self, engine_uid: str | None = None) -> TTSEngine:
+        """Return a stand-in for the host's engine, or for the default when it is unavailable."""
+        available = engine_uid and engine_uid not in self.unavailable_tts_engines
+        engine = MagicMock(spec=TTSEngine)
+        engine.uid = engine_uid if available else self.get_setup_value(CONF_TTS_ENGINE)
+        return engine
+
     async def _render_tts_media(
         self,
         text: str,
-        engine_uid: str | None = None,
+        engine: TTSEngine,
         language: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[str, StreamType, AudioFormat]:
@@ -492,7 +501,7 @@ async def test_tts_failure_raises_media_not_found_and_logs_the_skip(
         async def _render_tts_media(
             self,
             text: str,
-            engine_uid: str | None = None,
+            engine: TTSEngine,
             language: str | None = None,
             options: dict[str, Any] | None = None,
         ) -> tuple[str, StreamType, AudioFormat]:
@@ -722,6 +731,24 @@ async def test_three_failed_renders_in_a_row_pause_the_breaks(
         record.levelno == logging.DEBUG and "breaks are paused" in record.getMessage()
         for record in caplog.records
     )
+
+
+async def test_the_pause_names_the_engine_that_rendered_after_a_fallback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A host whose engine is unavailable renders on the default, and the pause names that one."""
+    renderer, state = _failing_dj_renderer(3, **{ATTR_HOST_ID: "rick"})
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
+    renderer.unavailable_tts_engines = {"tts.rick_voice"}
+
+    with caplog.at_level(logging.WARNING, logger="tests.ai_radio.rendering"):
+        await _fail_renders(renderer, "djlive_001", "djlive_002", "djlive_003")
+
+    assert state.render_health.cooling_down(asyncio.get_running_loop().time())
+    warnings = _pause_warnings(caplog)
+    assert len(warnings) == 1
+    assert "TTS engine 'engine-x'" in warnings[0]
+    assert "tts.rick_voice" not in warnings[0]
 
 
 async def test_a_successful_render_resets_the_failure_count() -> None:
@@ -1087,13 +1114,13 @@ async def test_render_tts_media_forwards_the_hosts_tts_options() -> None:
 async def test_render_tts_media_streams_a_url_over_http() -> None:
     """A TTS engine returning a proxy URL yields an HTTP stream with the MP3 default format."""
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    path, stream_type, audio_format = await renderer._render_tts_media("hello world")
+    path, stream_type, audio_format = await renderer._render_tts_media("hello world", engine)
 
     assert path == "http://example.test/api/tts_proxy/abc123.mp3"
     assert stream_type == StreamType.HTTP
     assert audio_format.content_type == ContentType.MP3
-    engine = cast("Any", renderer)._get_tts_engine.return_value
     # the provider-scoped engine.id, never engine.uid, and never omitted
     engine.provider.get_tts_message.assert_awaited_once_with(
         "hello world", language=None, engine_id="tts.cloud", options=None
@@ -1106,8 +1133,9 @@ async def test_render_tts_media_streams_a_local_file_from_disk(tmp_path: Path) -
     clip.write_bytes(b"")
     renderer = _tts_renderer(str(clip))
     _attach_queue(renderer, [_clip_item("sess_001")])
+    engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    path, stream_type, _ = await renderer._render_tts_media("hello world")
+    path, stream_type, _ = await renderer._render_tts_media("hello world", engine)
 
     assert path == str(clip)
     assert stream_type == StreamType.LOCAL_FILE
@@ -1118,8 +1146,9 @@ async def test_render_tts_media_keeps_a_declared_audio_format(tmp_path: Path) ->
     clip = tmp_path / "section.wav"
     clip.write_bytes(b"")
     renderer = _tts_renderer(str(clip), AudioFormat(content_type=ContentType.WAV))
+    engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    _, _, audio_format = await renderer._render_tts_media("hello world")
+    _, _, audio_format = await renderer._render_tts_media("hello world", engine)
 
     assert audio_format.content_type == ContentType.WAV
 
@@ -1128,9 +1157,10 @@ async def test_render_tts_media_keeps_a_declared_audio_format(tmp_path: Path) ->
 async def test_render_tts_media_rejects_an_unplayable_path(path: str) -> None:
     """A path that is neither a URL nor an existing file fails loudly instead of degrading."""
     renderer = _tts_renderer(path)
+    engine = cast("Any", renderer)._get_tts_engine.return_value
 
     with pytest.raises(InvalidDataError, match="unusable stream path"):
-        await renderer._render_tts_media("hello world")
+        await renderer._render_tts_media("hello world", engine)
 
 
 async def test_render_tts_media_gives_up_on_a_stalled_engine(
@@ -1151,7 +1181,7 @@ async def test_render_tts_media_gives_up_on_a_stalled_engine(
     engine.provider.get_tts_message = AsyncMock(side_effect=_answers_too_late)
 
     with pytest.raises(MusicAssistantError, match="did not respond within"):
-        await renderer._render_tts_media("hello world")
+        await renderer._render_tts_media("hello world", engine)
 
 
 async def test_render_tts_media_reports_an_engine_side_timeout_as_is() -> None:
@@ -1161,7 +1191,7 @@ async def test_render_tts_media_reports_an_engine_side_timeout_as_is() -> None:
     engine.provider.get_tts_message = AsyncMock(side_effect=TimeoutError)
 
     with pytest.raises(TimeoutError) as error:
-        await renderer._render_tts_media("hello world")
+        await renderer._render_tts_media("hello world", engine)
     assert "did not respond within" not in str(error.value)
 
 
