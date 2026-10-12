@@ -955,7 +955,11 @@ class MediaResolver:
         unique_providers = self.mass.music.get_unique_providers()
         albums: list[Album] = []
         listed = failed = False
-        for mapping in artist.provider_mappings:
+        # a fixed order makes the first copy of an album, and so its release year, deterministic
+        for mapping in sorted(
+            artist.provider_mappings,
+            key=lambda mapping: (not mapping.available, mapping.provider_instance, mapping.item_id),
+        ):
             if mapping.provider_instance not in unique_providers:
                 continue
             # the albums lookup answers an empty list for these, so they are told apart first
