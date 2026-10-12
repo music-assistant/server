@@ -10,6 +10,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import MASS_LOGO_ONLINE
+from music_assistant.helpers.pkce import generate_pkce_pair
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
 
 from . import CONF_AUTH_TOKEN, CONF_URL, CONF_VERIFY_SSL
@@ -93,14 +94,23 @@ async def _authenticate(session: SetupSession, hass_url: str) -> str:
     # as the client id, so the local callback is used directly - unlike Spotify/Google/
     # Microsoft, no fixed hosted-bounce redirect needs to be pre-registered
     client_id = base_url(callback)
-    auth_url = get_auth_url(hass_url, callback, client_id=client_id, state=session.flow_id)
+    code_verifier, code_challenge = generate_pkce_pair()
+    auth_url = get_auth_url(
+        hass_url,
+        callback,
+        client_id=client_id,
+        state=session.flow_id,
+        code_challenge=code_challenge,
+    )
     params = await session.external(auth_url, step_id="auth")
     if params.get("state") != session.flow_id:
         raise SetupFlowError("Authentication failed: state mismatch")
     if not params.get("code"):
         raise SetupFlowError("Authentication failed: no authorization code returned")
     try:
-        token_details = await get_token(hass_url, params["code"], client_id=client_id)
+        token_details = await get_token(
+            hass_url, params["code"], client_id=client_id, code_verifier=code_verifier
+        )
         return str(
             await get_long_lived_token(
                 hass_url,

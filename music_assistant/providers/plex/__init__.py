@@ -1613,8 +1613,18 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
-        if images := get_thumbnail_images(plex_playlist, self.instance_id):
-            playlist.metadata.images = images
+        # plexapi aliases Playlist.thumb to the generated composite, which hides a custom poster
+        if thumb := plex_playlist._data.attrib.get("thumb") or plex_playlist.composite:
+            playlist.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=thumb,
+                        provider=self.instance_id,
+                        remotely_accessible=False,
+                    )
+                ]
+            )
         playlist.is_editable = not plex_playlist.smart
         return playlist
 

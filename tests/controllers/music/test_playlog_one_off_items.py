@@ -9,7 +9,7 @@ from uuid import uuid4
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import AudioSource, ProviderMapping, SoundEffect, Track
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 
 
@@ -29,7 +29,7 @@ async def _playlog_rows(
 ) -> list[Mapping[str, Any]]:
     """Return every playlog row for the given media type and item id."""
     return await mass.music.database.get_rows(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {"media_type": media_type.value, "item_id": item_id},
     )
 

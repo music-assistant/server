@@ -24,10 +24,10 @@ dependencies = [
   "cryptography==50.0.0",
   "chardet==7.6.0",
   "ifaddr==0.2.0",
-  "getmac==0.9.5",
+  "getmac==0.9.6",
   "mashumaro==3.22",
   "music-assistant-models==1.1.221",
-  "music-assistant-frontend==2.17.337",
+  "music-assistant-frontend==2.17.338",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -132,8 +132,7 @@ max-statements = 50
 platform = "linux"
 python_version = "3.14"
 
-# set this to normal when we have fixed all exclusions
-follow_imports = "silent"
+follow_imports = "normal"
 
 # suppress errors about unsatisfied imports
 ignore_missing_imports = true
@@ -160,7 +159,7 @@ enable_error_code = [
 exclude = [
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
 ]
-extra_checks = false
+extra_checks = true
 local_partial_types = true
 no_implicit_optional = true
 no_implicit_reexport = true
@@ -185,6 +184,11 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 follow_imports = "skip"
 module = ["plexapi", "plexapi.*"]
+
+# Vendored third-party code, kept as-is.
+[[tool.mypy.overrides]]
+follow_imports = "skip"
+module = ["music_assistant.providers.sonic_analysis.vendored_clap.*"]
 
 [tool.ruff.format]
 # Force Linux/macOS line endings
@@ -240,19 +244,13 @@ ignore = [
   "PTH120",
   "PTH123",
   "G004",
-  "S104",
-  "S105",
   "S106",
   "SLF001",
   "SIM102",
   "PERF401",
   "ARG002",
-  "TRY301",
-  "PLR0912",
   "B904",
   "S324",
-  "ERA001",
-  "C901",
   "S304",
   "TRY300",
   "S608",
@@ -265,6 +263,12 @@ select = ["ALL"]
 # Enforce the multi-line docstring summary on the second line (the pep257 convention disables both
 # D212 and D213; we re-enable D213 so our "summary starts on the next line" style is checked).
 extend-select = ["D213"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests use wildcard addresses, made-up tokens and passwords as fixtures
+"tests/**" = ["S104", "S105"]
+# the provider templates show example code in comments
+"music_assistant/providers/_demo_*/**" = ["ERA001"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false
