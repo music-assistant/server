@@ -66,7 +66,7 @@ class TestSortTracks:
     """Tests for the _sort_tracks static method."""
 
     def test_sort_by_name(self) -> None:
-        """Tracks are sorted alphabetically by sort_name."""
+        """Tracks are sorted alphabetically by name."""
         tracks: list[PlaylistPlayableItem] = [
             _make_track("Charlie"),
             _make_track("Alpha"),
@@ -75,15 +75,35 @@ class TestSortTracks:
         result = sort_tracks(tracks, "name")
         assert [t.name for t in result] == ["Alpha", "Bravo", "Charlie"]
 
-    def test_sort_by_name_ignores_articles(self) -> None:
-        """Sort by name moves leading articles to the end (via sort_name)."""
+    def test_sort_by_name_keeps_articles(self) -> None:
+        """Sort by name uses the displayed name, leading articles included."""
         tracks: list[PlaylistPlayableItem] = [
             _make_track("The Zebra"),
-            _make_track("Alpha"),
+            _make_track("Umbrella"),
         ]
-        # sort_name for "The Zebra" becomes "zebra, the" so it sorts after "alpha"
         result = sort_tracks(tracks, "name")
-        assert [t.name for t in result] == ["Alpha", "The Zebra"]
+        assert [t.name for t in result] == ["The Zebra", "Umbrella"]
+
+    def test_sort_by_sort_name_ignores_articles(self) -> None:
+        """Sort by sort_name moves leading articles to the end."""
+        tracks: list[PlaylistPlayableItem] = [
+            _make_track("The Zebra"),
+            _make_track("Umbrella"),
+        ]
+        # sort_name for "The Zebra" becomes "zebra, the" so it sorts after "umbrella"
+        result = sort_tracks(tracks, "sort_name")
+        assert [t.name for t in result] == ["Umbrella", "The Zebra"]
+
+    def test_sort_by_album_keeps_album_track_order(self) -> None:
+        """Sort by album groups by album name, then disc and track number."""
+        tracks: list[PlaylistPlayableItem] = [
+            _make_track("B2", album_name="Beta", disc_number=1, track_number=2),
+            _make_track("A1", album_name="Alpha", disc_number=2, track_number=1),
+            _make_track("B1", album_name="Beta", disc_number=1, track_number=1),
+            _make_track("A0", album_name="Alpha", disc_number=1, track_number=5),
+        ]
+        result = sort_tracks(tracks, "album")
+        assert [t.name for t in result] == ["A0", "A1", "B1", "B2"]
 
     def test_sort_by_artist(self) -> None:
         """Tracks are sorted by the first artist's name."""
