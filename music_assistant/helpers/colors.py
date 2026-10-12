@@ -229,10 +229,10 @@ async def _extract_and_cache(
         img_data = await get_image_thumb(
             mass, path_or_url, _PALETTE_SOURCE_SIZE, provider, image_format="jpeg"
         )
-    except FileNotFoundError, MusicAssistantError:
-        # the image is unavailable (e.g. a stale artwork URL that 404s); the
-        # empty palette is not cached below, so extraction is retried once the
-        # image becomes available again
+    except OSError, MusicAssistantError:
+        # the image is unavailable or unreadable (e.g. a stale artwork URL that 404s,
+        # or a truncated file); the empty palette is not cached below, so extraction
+        # is retried once the image becomes available again
         return MediaItemPalette()
     palette = await asyncio.to_thread(extract_palette, img_data)
     # Only persist a palette that actually yielded colors; an empty result is

@@ -161,7 +161,7 @@ async def test_cancelled_caller_of_a_failing_extraction_logs_no_loop_error(
         extraction.append(current)
         entered.set()
         await release.wait()
-        raise PermissionError(f"Permission denied: {path_or_url}")
+        raise RuntimeError(f"Decoder crashed on {path_or_url}")
 
     monkeypatch.setattr("music_assistant.helpers.colors.get_image_thumb", failing_source)
     with collect_loop_errors() as reported:
@@ -174,7 +174,7 @@ async def test_cancelled_caller_of_a_failing_extraction_logs_no_loop_error(
         release.set()
         await asyncio.wait(extraction)
 
-    assert isinstance(extraction[0].exception(), PermissionError)
+    assert isinstance(extraction[0].exception(), RuntimeError)
     assert reported == []
 
 
@@ -185,8 +185,16 @@ async def test_palette_is_quantized_from_a_thumbnail(
     # mass_minimal constructs the cache controller without initializing it
     cache_config = await mass_minimal.config.get_core_config(mass_minimal.cache.domain)
     await mass_minimal.cache.setup(cache_config)
-    thumb = AsyncMock(return_value=_make_image_bytes([(200, 30, 30), (30, 30, 200)]))
+    thumb_bytes = _make_image_bytes([(200, 30, 30), (30, 30, 200)])
+    thumb = AsyncMock(return_value=thumb_bytes)
     monkeypatch.setattr("music_assistant.helpers.colors.get_image_thumb", thumb)
+    quantized: list[bytes] = []
+
+    def recording_quantizer(image_bytes: bytes, **_: object) -> list[tuple[int, int, int]]:
+        quantized.append(image_bytes)
+        return [(200, 30, 30), (30, 30, 200)]
+
+    monkeypatch.setattr("music_assistant.helpers.colors._mmcq_palette", recording_quantizer)
 
     palette = await get_palette(mass_minimal, "/some/huge/cover.jpg", "builtin")
 
@@ -195,6 +203,7 @@ async def test_palette_is_quantized_from_a_thumbnail(
     thumb.assert_awaited_once_with(
         mass_minimal, "/some/huge/cover.jpg", _PALETTE_SOURCE_SIZE, "builtin", image_format="jpeg"
     )
+    assert quantized == [thumb_bytes]
 
 
 async def test_get_palette_tolerates_unavailable_image(
