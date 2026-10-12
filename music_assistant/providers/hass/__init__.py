@@ -461,15 +461,15 @@ class HomeAssistantProvider(PluginProvider):
         if not wanted_macs:
             return {}
         device_registry = await self.get_device_registry()
-        device_by_mac: dict[str, Device] = {
-            connection[1].lower(): device
+        mac_devices = [
+            (connection[1].lower(), device)
             for device in device_registry.values()
             for connection in device.get("connections", [])
             if len(connection) == 2
             and connection[0] == "mac"
             and connection[1].lower() in wanted_macs
-        }
-        if not device_by_mac:
+        ]
+        if not mac_devices:
             return {}
         platform_device_ids: set[str] = set()
         media_players_by_device: dict[str, list[str]] = {}
@@ -479,12 +479,12 @@ class HomeAssistantProvider(PluginProvider):
             platform_device_ids.add(device_id)
             if entity_id.startswith("media_player."):
                 media_players_by_device.setdefault(device_id, []).append(entity_id)
-        # other integrations (e.g. network trackers) register devices by MAC address too
-        device_by_mac = {
-            mac: device
-            for mac, device in device_by_mac.items()
-            if device["id"] in platform_device_ids
+        # other integrations (e.g. network trackers) register their own devices for the same MAC
+        device_by_mac: dict[str, Device] = {
+            mac: device for mac, device in mac_devices if device["id"] in platform_device_ids
         }
+        if not device_by_mac:
+            return {}
         candidates_by_mac = {
             mac: media_players_by_device.get(device["id"], [])
             for mac, device in device_by_mac.items()

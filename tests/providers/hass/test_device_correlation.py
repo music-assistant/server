@@ -141,6 +141,20 @@ async def test_devices_of_other_integrations_are_absent() -> None:
     assert result == {}
 
 
+async def test_prefers_the_device_of_the_requested_integration() -> None:
+    """When another integration registers its own device for the MAC, the ESPHome one wins."""
+    tracker = {**_device("tracker"), "name": "kitchen-speaker"}
+    provider = _provider(
+        [_device(), tracker],
+        [_entity("media_player.kitchen"), _entity("device_tracker.kitchen", "tracker", "unifi")],
+        [_state("media_player.kitchen", MEDIA_ANNOUNCE)],
+    )
+    result = await provider.get_media_player_device_infos([MAC], platform="esphome")
+    assert result == {
+        MAC: {"name": "Kitchen Speaker", "announce_entity_id": "media_player.kitchen"}
+    }
+
+
 async def test_unknown_devices_are_absent() -> None:
     """Devices unknown to Home Assistant are absent from the result."""
     provider = _provider([_device()], [], [])
