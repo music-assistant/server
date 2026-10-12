@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -25,7 +26,10 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+    DB_TABLE_GENRES,
     DB_TABLE_PLAY_HISTORY,
+    DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -39,6 +43,7 @@ if TYPE_CHECKING:
 
 # Statistics cache TTL: 5 minutes
 STATISTICS_CACHE_TTL = 300
+STATISTICS_CACHE_MAX_ENTRIES = 128
 
 T = TypeVar("T")
 
@@ -49,7 +54,7 @@ def cache_statistics(
     """Cache decorator for statistics methods with TTL."""
 
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
-        cache: dict[str, tuple[float, Any]] = {}
+        cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
 
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
@@ -61,14 +66,21 @@ def cache_statistics(
                 cache_key_parts.append(f"{key}={kwargs[key]}")
             cache_key = hashlib.md5("|".join(str(p) for p in cache_key_parts).encode()).hexdigest()
 
-            now = time.time()
+            now = time.monotonic()
+            for expired_key, (cached_time, _) in tuple(cache.items()):
+                if now - cached_time >= ttl:
+                    del cache[expired_key]
+
             if cache_key in cache:
-                cached_time, cached_value = cache[cache_key]
-                if now - cached_time < ttl:
-                    return cast("T", cached_value)
+                _, cached_value = cache[cache_key]
+                cache.move_to_end(cache_key)
+                return cast("T", cached_value)
 
             result = await func(self, *args, **kwargs)
             cache[cache_key] = (now, result)
+            cache.move_to_end(cache_key)
+            while len(cache) > STATISTICS_CACHE_MAX_ENTRIES:
+                cache.popitem(last=False)
             return result
 
         return wrapper
@@ -195,12 +207,53 @@ class StatisticsController(CoreController):
         """
         Get genre distribution (play counts by genre).
 
+        Counts plays for tracks with known library genre mappings.
+
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of genres to return (default 10).
         """
-        # TODO: Implement genre extraction from playlog
-        # For now, return empty list - requires genre metadata in playlog
-        return []
+        user = get_current_user()
+        if not user:
+            return []
+
+        query = f"""
+            WITH history_tracks AS (
+                SELECT play_history.id, provider_mappings.item_id as track_id
+                FROM {DB_TABLE_PLAY_HISTORY} as play_history
+                INNER JOIN {DB_TABLE_PROVIDER_MAPPINGS} as provider_mappings
+                    ON provider_mappings.media_type = play_history.media_type
+                    AND provider_mappings.provider_instance = play_history.provider
+                    AND provider_mappings.provider_item_id = play_history.item_id
+                WHERE play_history.userid = :user_id
+                    AND play_history.media_type = :media_type
+                    AND play_history.timestamp >= :cutoff_timestamp
+                UNION ALL
+                SELECT play_history.id, CAST(play_history.item_id AS INTEGER) as track_id
+                FROM {DB_TABLE_PLAY_HISTORY} as play_history
+                WHERE play_history.userid = :user_id
+                    AND play_history.media_type = :media_type
+                    AND play_history.provider = 'library'
+                    AND play_history.timestamp >= :cutoff_timestamp
+            )
+            SELECT genres.name, COUNT(*) as play_count
+            FROM history_tracks
+            INNER JOIN {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} as genre_mappings
+                ON genre_mappings.media_id = history_tracks.track_id
+                AND genre_mappings.media_type = :media_type
+            INNER JOIN {DB_TABLE_GENRES} as genres
+                ON genres.item_id = genre_mappings.genre_id
+            GROUP BY genres.item_id
+            ORDER BY play_count DESC, genres.sort_name
+        """
+
+        params = {
+            "user_id": user.user_id,
+            "media_type": MediaType.TRACK.value,
+            "cutoff_timestamp": self._get_period_cutoff(period),
+        }
+        rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+
+        return [DistributionItem(name=row["name"], value=row["play_count"]) for row in rows]
 
     @cache_statistics()
     @api_command("statistics/artist_distribution", required_scope=Scope.LIBRARY_READ)
@@ -425,7 +478,10 @@ class StatisticsController(CoreController):
             return []
 
         query = f"""
-            SELECT json_extract(artist_data.value, '$.name') as name,
+            SELECT
+                json_extract(artist_data.value, '$.item_id') as artist_item_id,
+                json_extract(artist_data.value, '$.provider') as artist_provider,
+                MAX(json_extract(artist_data.value, '$.name')) as name,
                 COUNT(*) * 180 as estimated_seconds
             FROM {DB_TABLE_PLAY_HISTORY} as play_history,
                 json_each(play_history.artists) as artist_data
@@ -433,7 +489,7 @@ class StatisticsController(CoreController):
                 AND play_history.media_type = :media_type
                 AND play_history.timestamp >= :cutoff_timestamp
                 AND play_history.artists IS NOT NULL
-            GROUP BY name
+            GROUP BY artist_item_id, artist_provider
             ORDER BY estimated_seconds DESC
         """
 
@@ -508,6 +564,7 @@ class StatisticsController(CoreController):
         limit: int = 50,
         media_types: list[MediaType] | None = None,
         played_after_timestamp: int | None = None,
+        offset: int = 0,
     ) -> list[ItemMapping]:
         """
         Get paginated play history with optional time range filtering.
@@ -517,6 +574,7 @@ class StatisticsController(CoreController):
         :param limit: Maximum number of items to return (default 50).
         :param media_types: Optional list of media types to filter by.
         :param played_after_timestamp: Optional timestamp to filter items played after.
+        :param offset: Number of matching items to skip.
         """
         user = get_current_user()
         if not user:
@@ -540,9 +598,11 @@ class StatisticsController(CoreController):
             query += " AND timestamp >= :played_after_timestamp"
             params["played_after_timestamp"] = played_after_timestamp
 
-        query += " ORDER BY timestamp DESC"
+        query += " ORDER BY timestamp DESC, id DESC"
 
-        db_rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            query, params, limit=limit, offset=offset
+        )
 
         available_providers = ("library", *get_global_cache_value("available_providers", []))
 
