@@ -24,9 +24,11 @@ class RenderHealth:
         return self.cooldown_until is not None and now < self.cooldown_until
 
     def record_failure(self, now: float) -> bool:
-        """Count a failed render and return whether that (re)starts the cool-down."""
+        """Count a failed render and return whether that starts the cool-down."""
         self.failures += 1
-        if self.failures < RENDER_FAILURES_BEFORE_COOLDOWN:
+        # a render that was already in flight when the pause started fails late: that
+        # neither extends the pause nor announces it again
+        if self.failures < RENDER_FAILURES_BEFORE_COOLDOWN or self.cooling_down(now):
             return False
         self.cooldown_until = now + RENDER_COOLDOWN_SECONDS
         return True

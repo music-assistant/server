@@ -62,7 +62,7 @@ from music_assistant.providers.ai_radio.constants import (
     TTS_PEAK_CEILING_DB,
     TTS_SPEECHNORM_FILTER,
 )
-from music_assistant.providers.ai_radio.models import DJQueueState, SessionState
+from music_assistant.providers.ai_radio.models import DJQueueState, RenderHealth, SessionState
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
 
 from .events import ProviderEventRecorder
@@ -91,12 +91,12 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
         self.measure_calls: list[str] = []
         self.measured_loudness: float | None = None
 
-    def _configured_now(self) -> Any:
-        return __import__("datetime").datetime(2026, 7, 30, 18, 30)
-
     def get_setup_value(self, key: str, default: Any = None) -> Any:
         """Return the engine every setup value names."""
         return "engine-x"
+
+    def _configured_now(self) -> Any:
+        return __import__("datetime").datetime(2026, 7, 30, 18, 30)
 
     def _pause_queue_dj(self, queue_id: str) -> None:
         """Record the queue whose DJ would pause instead of pausing it."""
@@ -797,6 +797,20 @@ async def test_a_failure_after_the_cool_down_restarts_it(caplog: pytest.LogCaptu
     assert renderer.llm_calls == 4
     assert session.render_health.cooling_down(loop.time())
     assert len(_pause_warnings(caplog)) == 2
+
+
+def test_a_late_failure_during_the_cool_down_leaves_it_alone() -> None:
+    """A render that was in flight when the pause started fails without extending the pause."""
+    health = RenderHealth()
+    assert [health.record_failure(100.0) for _ in range(3)] == [False, False, True]
+    paused_until = health.cooldown_until
+
+    assert health.record_failure(105.0) is False
+    assert health.failures == 4
+    assert health.cooldown_until == paused_until
+    # once the pause is over a failure starts a new one
+    assert paused_until is not None
+    assert health.record_failure(paused_until) is True
 
 
 async def test_a_success_after_the_cool_down_lifts_it() -> None:
