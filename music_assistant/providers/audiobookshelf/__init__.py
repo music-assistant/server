@@ -1758,10 +1758,12 @@ for more details.
                 )
             else:
                 await self.mass.music.playlists.add_item_to_library(item=parsed_playlist)
+            # the playlist sync may not have seen this library yet
             if media_type == MediaType.AUDIOBOOK:
-                self.libraries.playlists_audiobooks[abs_playlist.library_id].add(abs_playlist.id_)
-            elif media_type == MediaType.PODCAST_EPISODE:
-                self.libraries.playlists_podcasts[abs_playlist.library_id].add(abs_playlist.id_)
+                playlist_ids = self.libraries.playlists_audiobooks
+            else:
+                playlist_ids = self.libraries.playlists_podcasts
+            playlist_ids.setdefault(abs_playlist.library_id, set()).add(abs_playlist.id_)
         await self._cache_set_helper_libraries()
 
     async def _socket_abs_playlist_removed(self, abs_playlist: AbsPlaylistExpanded) -> None:

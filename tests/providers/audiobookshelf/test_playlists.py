@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -45,3 +46,19 @@ async def test_playlist_items_take_progress_from_the_user(provider: Audiobookshe
         ("book1", None),
         ("book2", 30000),
     ]
+
+
+async def test_playlist_of_a_library_not_synced_yet(provider: Audiobookshelf) -> None:
+    """A socket update for a library the playlist sync hasn't seen yet adds the playlist."""
+    provider.playlist_last = 0
+    provider.playlist_lock = asyncio.Lock()
+    provider.abs_username = "user"
+    provider.mass.music.get_library_item_by_prov_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    provider.mass.music.playlists.add_item_to_library = AsyncMock()  # type: ignore[method-assign, misc]
+    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    abs_playlist = Mock(id_="playlist1", library_id="lib1")
+    abs_playlist.name = "Playlist"
+
+    await provider._socket_abs_playlist_changed(abs_playlist)
+
+    assert provider.libraries.playlists_audiobooks == {"lib1": {"playlist1"}}
