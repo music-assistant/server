@@ -1024,6 +1024,11 @@ class StreamsController(CoreController):
                 session_id=session_id,
             )
 
+            # a player that gives up while its audio is still being prepared closes its
+            # connection, which nothing below would notice before a source got opened for it
+            def _player_connected() -> bool:
+                return request.transport is not None
+
             if crossfade_mode != CrossfadeMode.DISABLED or fade_in_pending:
                 # crossfade is enabled (or a fade into this item waits), use special
                 # crossfaded single item stream where the crossfade of the next track is
@@ -1036,6 +1041,7 @@ class StreamsController(CoreController):
                     crossfade_mode=crossfade_mode,
                     standard_crossfade_duration=standard_crossfade_duration,
                     session_id=session_id,
+                    consumer_connected=_player_connected,
                 )
             else:
                 # no crossfade, just a regular single item stream
@@ -1047,6 +1053,7 @@ class StreamsController(CoreController):
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
                     session_id=session_id,
+                    consumer_connected=_player_connected,
                 )
             if mix_overlay:
                 audio_input = self.audio.get_overlay_mixed_stream(queue, audio_input, pcm_format)
