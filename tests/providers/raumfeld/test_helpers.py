@@ -6,6 +6,7 @@ from music_assistant.providers.raumfeld.helpers import (
     parse_didl_metadata,
     parse_duration,
     parse_line_in,
+    parse_model_name,
     parse_serial_number,
     room_udn_to_player_id,
     serial_to_player_id,
@@ -82,6 +83,7 @@ _DEVICE_DESCRIPTION = (
     '<root xmlns="urn:schemas-upnp-org:device-1-0">'
     "<device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>"
     "<friendlyName>Speaker Bar</friendlyName>"
+    "<modelName>Raumfeld One S</modelName>"
     "<serialNumber> 04:a3:16:f3:b6:c4 </serialNumber>"
     "<deviceList><device><serialNumber>ff:ff:ff:ff:ff:ff</serialNumber></device></deviceList>"
     "</device></root>"
@@ -102,3 +104,11 @@ def test_parse_serial_number_missing_or_malformed() -> None:
     assert parse_serial_number("<root><unclosed>") is None
     assert parse_serial_number("") is None
     assert parse_serial_number(None) is None
+
+
+def test_parse_model_name() -> None:
+    """The root device's model name is read from the description, or None without one."""
+    assert parse_model_name(_DEVICE_DESCRIPTION) == "Raumfeld One S"
+    assert parse_model_name("<root><device><friendlyName>x</friendlyName></device></root>") is None
+    assert parse_model_name("<root><unclosed>") is None
+    assert parse_model_name(None) is None
