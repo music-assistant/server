@@ -38,7 +38,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
@@ -604,7 +604,7 @@ async def test_audiobook_listing_resume_info(seeded_mass: MusicAssistant) -> Non
     # two playlog rows for the same book (e.g. two users/providers)
     for userid, timestamp, seconds_played in (("user-a", 100, 60), ("user-b", 200, 120)):
         await seeded_mass.music.database.insert(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "item_id": db_book.item_id,
                 "provider": "library",

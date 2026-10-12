@@ -231,7 +231,9 @@ DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concu
 
 
 # common db tables
-DB_TABLE_PLAYLOG: Final[str] = "playlog"
+DB_TABLE_MEDIA_PROGRESS: Final[str] = "media_progress"
+DB_TABLE_PLAY_HISTORY: Final[str] = "play_history"
+DB_TABLE_LEGACY_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"
 DB_TABLE_TRACKS: Final[str] = "tracks"
