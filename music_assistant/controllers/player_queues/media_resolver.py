@@ -804,8 +804,8 @@ class MediaResolver:
         """
         Return the tracks of the given albums, one album after the other.
 
-        Each album plays as it does on its own. An album whose tracks can't be fetched from any
-        of its copies is left out.
+        Each album plays as it does on its own. An album is left out when no copy it may play
+        from has tracks to play.
 
         :param albums: The albums to play, in order, each with its copies, the one to play first.
         """
@@ -833,13 +833,27 @@ class MediaResolver:
 
     async def _album_copy_tracks(self, copies: list[Album]) -> list[Track]:
         """
-        Return the tracks of the first copy of an album whose tracks can be fetched.
+        Return the tracks of the first copy of an album with tracks to play.
 
         :param copies: The album's copies, the one to play first.
         """
+        library_tracks = (
+            self.mass.config.get_raw_core_config_value(
+                self.queues.domain,
+                CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+                ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
+            )
+            == "library_tracks"
+        )
         for album in copies[:-1]:
-            try:
+            # with the library tracks album setting, a copy in the library plays only its saved
+            # tracks; another copy outside the library would play the album in full
+            if library_tracks and await self.mass.music.albums.get_library_item_by_prov_id(
+                album.item_id, album.provider
+            ):
                 return await self._album_tracks(album)
+            try:
+                tracks = await self._album_tracks(album)
             except PROVIDER_FETCH_ERRORS as err:
                 self.logger.log(
                     provider_fetch_log_level(err),
@@ -848,6 +862,14 @@ class MediaResolver:
                     album.provider,
                     err,
                 )
+                continue
+            if tracks:
+                return tracks
+            self.logger.debug(
+                "Album %s from %s has no playable tracks, trying another copy",
+                album.name,
+                album.provider,
+            )
         return await self._album_tracks(copies[-1])
 
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:

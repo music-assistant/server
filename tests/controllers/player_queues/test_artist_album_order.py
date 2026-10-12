@@ -535,6 +535,93 @@ async def test_an_album_plays_from_its_other_copy_when_one_fails(mass: MusicAssi
     assert _names(result) == ["Arrival 1", "Arrival 2"]
 
 
+async def test_an_album_plays_from_its_other_copy_when_one_has_nothing_to_play(
+    mass: MusicAssistant,
+) -> None:
+    """When one copy of an album has no playable tracks, the other copy plays."""
+    artist = await _add_artist(mass)
+    first = _streaming_album("Arrival", 1976, "streaming")
+    second = _streaming_album("Arrival", 1976, "other")
+    for album in (first, second):
+        album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
+    lookup = _stub_provider(mass, [first, second])
+    provider_tracks = lookup.side_effect
+    lookup.side_effect = lambda item_id, *args, **kwargs: (
+        [] if item_id == first.item_id else provider_tracks(item_id, *args, **kwargs)
+    )
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
+
+    assert _names(result) == ["Arrival 1", "Arrival 2"]
+
+
+@pytest.mark.parametrize(
+    ("album_setting", "expected"), [("library_tracks", []), ("all_tracks", ["Arrival (other) 1"])]
+)
+async def test_a_library_album_with_nothing_to_play_is_replaced_only_without_library_tracks(
+    mass: MusicAssistant, album_setting: str, expected: list[str]
+) -> None:
+    """A library album with nothing to play plays from another copy, unless only saved tracks may play."""
+    artist = await _add_artist(mass)
+    library_album = await _add_album(mass, artist, "Arrival", 1976)
+    library_album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
+    await mass.music.albums.update_item_in_library(library_album.item_id, library_album)
+    other_copy = _streaming_album("Arrival", 1976)
+    other_copy.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
+    resolver = mass.player_queues._media_resolver
+    resolver._provider_artist_albums = AsyncMock(return_value=[other_copy])  # type: ignore[method-assign]
+
+    async def _tracks(item_id: str, *_: Any, **__: Any) -> list[Track]:
+        return [_track("Arrival (other) 1")] if item_id == other_copy.item_id else []
+
+    mass.music.albums.tracks = _tracks  # type: ignore[method-assign]
+    mass.config.set_raw_core_config_value(
+        "player_queues", CONF_DEFAULT_ENQUEUE_SELECT_ALBUM, album_setting
+    )
+    _set_selection(mass, "all_tracks")
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    result = await resolver.get_artist_tracks(artist)
+
+    assert _names(result) == expected
+
+
+@pytest.mark.parametrize(
+    ("first_in_library", "expected"), [(False, ["Arrival 1", "Arrival 2"]), (True, [])]
+)
+async def test_with_library_tracks_only_a_copy_outside_the_library_is_replaced(
+    mass: MusicAssistant, first_in_library: bool, expected: list[str]
+) -> None:
+    """With the library tracks album setting, a copy in the library plays only its saved tracks."""
+    artist = await _add_artist(mass)
+    first = _streaming_album("Arrival", 1976, "streaming")
+    second = _streaming_album("Arrival", 1976, "other")
+    for album in (first, second):
+        album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
+    lookup = _stub_provider(mass, [first, second])
+    provider_tracks = lookup.side_effect
+    lookup.side_effect = lambda item_id, *args, **kwargs: (
+        [] if item_id == first.item_id else provider_tracks(item_id, *args, **kwargs)
+    )
+    if first_in_library:
+        # the first copy is in the library under another artist, without saved tracks
+        library_item = mass.music.albums.get_library_item_by_prov_id
+
+        async def _library_item(item_id: str, provider: str) -> Album | None:
+            return first if item_id == first.item_id else await library_item(item_id, provider)
+
+        mass.music.albums.get_library_item_by_prov_id = _library_item  # type: ignore[method-assign]
+    mass.config.set_raw_core_config_value(
+        "player_queues", CONF_DEFAULT_ENQUEUE_SELECT_ALBUM, "library_tracks"
+    )
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
+
+    assert _names(result) == expected
+
+
 async def test_provider_singles_and_compilations_are_left_out(mass: MusicAssistant) -> None:
     """The singles and compilations found only on a provider are left out."""
     artist = await _add_artist(mass)
