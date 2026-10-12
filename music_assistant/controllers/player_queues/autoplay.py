@@ -24,6 +24,11 @@ from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_GLOBAL
 from music_assistant.controllers.player_queues.constants import (
     CONF_AUTOPLAY_MODE,
     CONF_AUTOPLAY_PLAYLIST,
+    CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
+    CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
+    ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+    ArtistOrder,
 )
 
 if TYPE_CHECKING:
@@ -31,6 +36,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
+    from music_assistant.mass import MusicAssistant
 
 # number of library tracks to append on each refill
 AUTOPLAY_BATCH_SIZE = 25
@@ -60,6 +66,26 @@ class AutoplayMode(StrEnum):
 
 
 AUTOPLAY_MODE_DEFAULT_VALUE = AutoplayMode.AUTO.value
+
+
+def albums_mode_available(mass: MusicAssistant) -> bool:
+    """
+    Return whether the whole-albums mode can play with the artist settings.
+
+    The artist order must play albums, and top tracks are tracks, not albums.
+
+    :param mass: The MusicAssistant instance.
+    """
+    order = mass.config.get_raw_core_config_value(
+        CONF_PLAYER_QUEUES, CONF_DEFAULT_ENQUEUE_ORDER_ARTIST, ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE
+    )
+    selection = mass.config.get_raw_core_config_value(
+        CONF_PLAYER_QUEUES, CONF_DEFAULT_ENQUEUE_SELECT_ARTIST, ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE
+    )
+    return (
+        order in {item.value for item in ArtistOrder if item.plays_albums}
+        and selection != "top_tracks"
+    )
 
 
 class Autoplay:

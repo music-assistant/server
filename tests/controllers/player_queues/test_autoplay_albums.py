@@ -17,6 +17,7 @@ import pytest
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.media_items import Album, Artist, ProviderMapping
 
+from music_assistant.controllers.player_queues.autoplay import albums_mode_available
 from music_assistant.controllers.player_queues.constants import ArtistOrder
 from tests.controllers.player_queues.test_artist_album_order import (
     _add_album,
@@ -185,3 +186,22 @@ async def test_albums_that_cannot_be_listed_give_none(mass: MusicAssistant) -> N
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
 
     assert await mass.player_queues.artist_album_candidates(_provider_artist(), [], None) is None
+
+
+@pytest.mark.parametrize(
+    ("order", "selection", "available"),
+    [
+        (ArtistOrder.ALBUMS_BY_RELEASE, "all_tracks", True),
+        (ArtistOrder.RANDOM_ALBUMS, "library_tracks", True),
+        (ArtistOrder.SHUFFLED_TRACKS, "all_tracks", False),
+        (ArtistOrder.ALBUMS_BY_RELEASE, "top_tracks", False),
+    ],
+)
+def test_the_albums_mode_needs_an_album_order_and_no_top_tracks(
+    mass: MusicAssistant, order: ArtistOrder, selection: str, available: bool
+) -> None:
+    """Whole albums can play only when the artist order plays albums, and not top tracks."""
+    _set_order(mass, order)
+    _set_selection(mass, selection)
+
+    assert albums_mode_available(mass) is available
