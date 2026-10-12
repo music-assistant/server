@@ -964,7 +964,7 @@ class TestSilenceAwareAnchoring:
         buffer_duration = partial_bytes / PCM.pcm_sample_size
         # beats are on a strict 0.5s grid from t=0 in the analysis fixture;
         # in real buffer coordinates each beat must satisfy
-        # (beat + duration - buffer_duration) % 0.5 == 0
+        # (beat + duration - buffer_duration) % 0.5 == 0  # noqa: ERA001
         offset = duration - buffer_duration
         for beat in fade.fade_out_beats[:8]:
             track_pos = beat + offset

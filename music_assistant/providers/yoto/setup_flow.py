@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
 CONF_CLIENT_ID = "client_id"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 
 CONF_ENTRY_CLIENT_ID = ConfigEntry(
     key=CONF_CLIENT_ID,
@@ -32,7 +32,7 @@ CONF_ENTRY_CLIENT_ID = ConfigEntry(
 HELP_LINK_URL = "https://www.music-assistant.io/music-providers/yoto/"
 DEVELOPER_LOGIN_URL = "https://dashboard.yoto.dev/"
 AUTHORIZE_URL = "https://login.yotoplay.com/authorize"
-TOKEN_URL = "https://login.yotoplay.com/oauth/token"
+TOKEN_URL = "https://login.yotoplay.com/oauth/token"  # noqa: S105 - URL
 AUDIENCE = "https://api.yotoplay.com"
 
 

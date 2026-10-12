@@ -89,7 +89,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
 }
 
-CONF_ARL_TOKEN = "arl_token"
+CONF_ARL_TOKEN = "arl_token"  # noqa: S105 - config key
 CONF_FAMILY_PROFILE = "family_profile"
 
 

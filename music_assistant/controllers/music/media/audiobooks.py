@@ -355,7 +355,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 fallback=search_result_item,
             )
             if compare_audiobook(db_audiobook, prov_audiobook, strict=strict):
-                # 100% match
+                # exact match
                 matches.extend(prov_audiobook.provider_mappings)
         if not matches:
             self.logger.debug(

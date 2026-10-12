@@ -231,7 +231,6 @@ def create_wave_header(
         bitspersample,  # 16 bits for two byte samples, etc.
     )
     # Generate data chunk
-    # duration = 3600*6.7
     data_chunk_spec = b"<4sL"
     if duration is None:
         # use max value possible
@@ -262,7 +261,6 @@ def create_wave_header(
     file.write(format_chunk)
     file.write(data_chunk)
 
-    # return file.getvalue(), all_chunks_size + 8
     return file.getvalue()
 
 

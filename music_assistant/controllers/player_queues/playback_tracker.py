@@ -449,7 +449,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             and protocol_player.current_media.uri.startswith(base_url)
         ):
             path_parts = protocol_player.current_media.uri[len(base_url) :].strip("/").split("/")
-            # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
+            # the path holds mode, session_id, queue_id, queue_item_id and player_id.fmt
             if len(path_parts) >= 5:
                 current_item_id = path_parts[3]
                 if self.get_item(queue_id, current_item_id):
@@ -472,7 +472,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         base_url = self.mass.streams.base_url
         if base_url and uri.startswith(base_url):
             path_parts = uri[len(base_url) :].strip("/").split("/")
-            # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
+            # the path holds mode, session_id, queue_id, queue_item_id and player_id.fmt
             if len(path_parts) >= 5:
                 candidates.append(path_parts[2])
         # only a queue this server has can be evidence; anything else is unknown media
