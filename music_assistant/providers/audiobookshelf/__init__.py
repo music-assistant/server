@@ -581,9 +581,12 @@ for more details.
                     media_type=MediaType.PLAYLIST, library_item_id=ma_playlist.item_id
                 )
             return []
+        # the user has the progress of all items, one call instead of one per item
+        user = await self._client.get_my_user()
+        progresses = {(x.library_item_id, x.episode_id): x for x in user.media_progress}
         for item in playlist.items:
             if isinstance(item, AbsPlaylistItemExpandedBook):
-                progress = await self._client.get_my_media_progress(item_id=item.library_item.id_)
+                progress = progresses.get((item.library_item.id_, None))
                 playlist_items.append(
                     parse_audiobook(
                         abs_audiobook=item.library_item,
@@ -595,9 +598,7 @@ for more details.
                     )
                 )
             elif isinstance(item, AbsPlaylistItemExpandedPodcast):
-                progress = await self._client.get_my_media_progress(
-                    item_id=item.library_item.id_, episode_id=item.episode_id
-                )
+                progress = progresses.get((item.library_item.id_, item.episode_id))
                 playlist_items.append(
                     parse_podcast_episode(
                         episode=item.episode,
