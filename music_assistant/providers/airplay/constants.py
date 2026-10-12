@@ -52,17 +52,17 @@ class ClockReadiness(StrEnum):
     UNREPORTED = "unreported"
 
 
-CONF_PASSWORD: Final[str] = "password"
+CONF_PASSWORD: Final[str] = "password"  # noqa: S105 - config key
 # Storage-only marker (no config entry) set when the device rejected the stored
 # password, so the player keeps asking for setup across restarts until a working
 # password is entered.
-CONF_PASSWORD_INVALID: Final[str] = "password_invalid"
+CONF_PASSWORD_INVALID: Final[str] = "password_invalid"  # noqa: S105 - config key
 # Provider marker that the stored password verdicts were reviewed once. Releases
 # that could not tell a password challenge apart from a flat refusal wrote the
 # key above for both, so what they left behind is no evidence about a password
 # and is dropped a single time; a device that really challenges marks itself
 # again on its next connect.
-CONF_PASSWORD_MARKERS_REVIEWED: Final[str] = "password_markers_reviewed"
+CONF_PASSWORD_MARKERS_REVIEWED: Final[str] = "password_markers_reviewed"  # noqa: S105 - config key
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device streaming mode: pins the protocol/timing lane for
@@ -335,7 +335,7 @@ CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 # every AirPlay pairing PIN (streaming, Companion, MRP) is 4 digits
 PAIRING_PIN_FORMAT: Final[str] = "####"
-CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
+CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"  # noqa: S105 - config key
 CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 CONF_PAIR_NOW: Final[str] = "pair_now"

@@ -441,7 +441,7 @@ class SetupSession:
             try:
                 # encrypted values are only ever created by the server, never submitted
                 if contains_encrypted_value(raw_value):
-                    raise ValueError("Encrypted values can not be submitted")
+                    raise ValueError("Encrypted values can not be submitted")  # noqa: TRY301 - handled by except below
                 # parse_value also runs the entry's optional validate callback and
                 # stores the parsed value on the entry (echoed on a re-render)
                 # an entry behind an unmet dependency renders disabled, so demanding a

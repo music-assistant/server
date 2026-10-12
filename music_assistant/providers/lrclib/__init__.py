@@ -148,7 +148,7 @@ class LrclibProvider(MetadataProvider):
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     @throttle_with_retries
-    async def _get_data(self, **params: Any) -> dict[str, Any] | None:
+    async def _get_data(self, /, **params: Any) -> dict[str, Any] | None:
         """Get data from LRCLib API with throttling and retries."""
         headers = {"User-Agent": USER_AGENT}
         try:

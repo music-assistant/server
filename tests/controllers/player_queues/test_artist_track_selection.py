@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import pytest
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
@@ -132,10 +133,10 @@ def _track_obj(name: str, version: str = "") -> Track:
     return Track(item_id=name, provider="test", name=name, version=version, provider_mappings=set())
 
 
-def _prov_mapping(instance: str, item_id: str) -> ProviderMapping:
+def _prov_mapping(instance: str, item_id: str, in_library: bool = False) -> ProviderMapping:
     """Create a provider mapping for the given (streaming) provider instance."""
     return ProviderMapping(
-        item_id=item_id, provider_domain="test", provider_instance=instance, in_library=False
+        item_id=item_id, provider_domain="test", provider_instance=instance, in_library=in_library
     )
 
 
@@ -148,6 +149,9 @@ def _fake_queues(selection: str) -> MagicMock:
     """Create a mock standing in for the media resolver, with the artist option preselected."""
     fake = MagicMock()
     fake.mass.config.get_raw_core_config_value = MagicMock(return_value=selection)
+    fake._resolve_library_artist = AsyncMock(
+        return_value=_artist_obj({_prov_mapping("p1", "a1", in_library=True)})
+    )
     return fake
 
 
@@ -198,6 +202,35 @@ async def test_prefer_library_falls_back_to_top_tracks() -> None:
     result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
 
     assert {t.name for t in result} == {"Top"}
+
+
+@pytest.mark.parametrize("selection", ["top_tracks", "library_tracks", "prefer_library"])
+@pytest.mark.parametrize("stored_artist", [None, _artist_obj({_prov_mapping("p1", "a1")})])
+async def test_artist_not_in_the_library_plays_all_its_tracks(
+    selection: str, stored_artist: Artist | None
+) -> None:
+    """An artist not in the library, even when stored for a saved track, plays all its tracks."""
+    fake = _fake_queues(selection)
+    fake._resolve_library_artist = AsyncMock(return_value=stored_artist)
+    fake._library_artist_tracks = AsyncMock(return_value=[])
+    fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("All")])
+    fake.mass.music.artists.top_tracks = AsyncMock(return_value=[_track_obj("Top")])
+    artist = Artist(item_id="a1", provider="spotify", name="ABBA", provider_mappings=set())
+
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), artist)
+
+    assert {t.name for t in result} == {"All"}
+
+
+async def test_library_tracks_keeps_a_library_artist_to_its_library_tracks() -> None:
+    """library_tracks never falls back to other tracks for an artist that is in the library."""
+    fake = _fake_queues("library_tracks")
+    fake._library_artist_tracks = AsyncMock(return_value=[])
+    fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("All")])
+
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
+
+    assert result == []
 
 
 async def test_provider_artist_tracks_respects_unique_providers() -> None:

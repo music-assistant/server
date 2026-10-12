@@ -377,6 +377,30 @@ async def test_create_playlist_records_the_creator_as_owner(
     assert created.access == expected
 
 
+@pytest.mark.parametrize("name", ["AC/DC Mix", "Rock... Mix", "Back\\slash"])
+async def test_create_playlist_accepts_path_characters_in_the_name(
+    playlists: PlaylistController, music_mass_module: MusicAssistant, name: str
+) -> None:
+    """A playlist name may contain slashes and dots; the provider receives it unchanged."""
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.name = "Music Assistant"
+    provider.supported_features = {
+        ProviderFeature.PLAYLIST_CREATE_TRACKS,
+        ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    }
+    provider.create_playlist = AsyncMock(return_value=_playlist(name))
+
+    with (
+        _as_user(None),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+    ):
+        await playlists.create_playlist(name, media_types=[MediaType.TRACK])
+
+    provider.create_playlist.assert_awaited_once_with(name, media_types={MediaType.TRACK})
+
+
 async def test_owner_shares_its_playlist(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:

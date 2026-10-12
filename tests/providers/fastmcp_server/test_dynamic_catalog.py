@@ -212,15 +212,15 @@ async def test_search_tools_schema_advertises_pagination() -> None:
     mcp, _adapter = _server()
     async with Client(mcp) as client:
         tool = next(item for item in await client.list_tools() if item.name == "search_tools")
-    assert set(tool.inputSchema["properties"]) == {
+    assert set(tool.input_schema["properties"]) == {
         "query",
         "cursor",
         "limit",
         "include_top_schema",
     }
-    assert tool.outputSchema is not None
+    assert tool.output_schema is not None
     assert {"mode", "items", "total", "next_cursor", "catalog_revision"} <= set(
-        tool.outputSchema["properties"]
+        tool.output_schema["properties"]
     )
 
 
@@ -229,12 +229,12 @@ async def test_call_tool_advertises_the_command_envelope_schema() -> None:
     mcp, _adapter = _server()
     async with Client(mcp) as client:
         tool = next(item for item in await client.list_tools() if item.name == "call_tool")
-    assert tool.outputSchema is not None
+    assert tool.output_schema is not None
     assert {"command", "data", "truncated", "returned_count", "bytes", "applied"} <= set(
-        tool.outputSchema["properties"]
+        tool.output_schema["properties"]
     )
     assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.read_only_hint is False
 
 
 async def test_search_can_include_only_the_top_result_schema() -> None:

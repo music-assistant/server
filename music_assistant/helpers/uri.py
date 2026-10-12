@@ -109,7 +109,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type = MediaType.UNKNOWN
             item_id = uri
         else:
-            raise KeyError
+            raise KeyError  # noqa: TRY301 - converted to InvalidProviderURI below
     except (TypeError, AttributeError, ValueError, KeyError, IndexError) as err:
         # IndexError covers truncated share URLs with no path segments.
         msg = f"Not a valid Music Assistant uri: {uri}"

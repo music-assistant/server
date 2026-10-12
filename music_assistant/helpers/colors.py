@@ -24,7 +24,7 @@ from music_assistant_models.media_items import MediaItemPalette
 from music_assistant.helpers.images import (
     _extract_imageproxy_id,
     create_thumb_hash,
-    get_image_data,
+    get_image_thumb,
 )
 from music_assistant.helpers.util import join_task
 
@@ -34,6 +34,11 @@ if TYPE_CHECKING:
 
 _PALETTE_QUANTIZE_COLORS = 5
 _COLORTHIEF_QUALITY = 10
+# Side of the thumbnail the palette is quantized from. The quantizer holds every source
+# pixel in memory (roughly 190 bytes each, whatever its quality setting), so a 4000 px
+# cover costs about 3 GB; at 512 px the palette still matches the full-size one within
+# a few units per channel.
+_PALETTE_SOURCE_SIZE = 512
 # Minimum contrast ratio between colors (Sendspin color@v1 requires WCAG AA ≥ 4.5:1).
 _MIN_CONTRAST = 4.5
 # Preferred contrast (we try this first for richer, more vivid picks)
@@ -221,11 +226,13 @@ async def _extract_and_cache(
     mass: MusicAssistant, path_or_url: str, provider: str, key: str
 ) -> MediaItemPalette:
     try:
-        img_data = await get_image_data(mass, path_or_url, provider)
-    except FileNotFoundError, MusicAssistantError:
-        # the image is unavailable (e.g. a stale artwork URL that 404s); the
-        # empty palette is not cached below, so extraction is retried once the
-        # image becomes available again
+        img_data = await get_image_thumb(
+            mass, path_or_url, _PALETTE_SOURCE_SIZE, provider, image_format="jpeg"
+        )
+    except OSError, MusicAssistantError:
+        # the image is unavailable or unreadable (e.g. a stale artwork URL that 404s,
+        # or a truncated file); the empty palette is not cached below, so extraction
+        # is retried once the image becomes available again
         return MediaItemPalette()
     palette = await asyncio.to_thread(extract_palette, img_data)
     # Only persist a palette that actually yielded colors; an empty result is
@@ -248,7 +255,7 @@ async def get_palette(
     Get the color palette for an image, backed by the cache controller.
 
     :param mass: The MusicAssistant instance.
-    :param path_or_url: Image path or URL (same format as get_image_data).
+    :param path_or_url: Image path or URL (same format as get_image_thumb).
     :param provider: Provider identifier for the image source.
     """
     if not path_or_url:

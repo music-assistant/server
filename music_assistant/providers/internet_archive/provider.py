@@ -103,7 +103,7 @@ class InternetArchiveProvider(MusicProvider):
         return await self.client._get_json(url, params)
 
     @throttle_with_retries
-    async def _search(self, **kwargs: Any) -> dict[str, Any]:
+    async def _search(self, /, **kwargs: Any) -> dict[str, Any]:
         """Throttled search wrapper."""
         return await self.client.search(**kwargs)
 

@@ -653,14 +653,14 @@ class AudioTags:
                 gain_adjustment = int(tag.split(" ")[0]) / 256
                 return -23 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid r128trackgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid r128trackgain tag value: %r — %s", tag, e)
 
         if tag := self.tags.get("replaygaintrackgain"):
             try:
                 gain_adjustment = float(tag.split(" ")[0])
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid replaygaintrackgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid replaygaintrackgain tag value: %r — %s", tag, e)
 
         return None
 
@@ -672,14 +672,14 @@ class AudioTags:
                 gain_adjustment = int(tag.split(" ")[0]) / 256
                 return -23 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid r128albumgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid r128albumgain tag value: %r — %s", tag, e)
 
         if tag := self.tags.get("replaygainalbumgain"):
             try:
                 gain_adjustment = float(tag.split(" ")[0])
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid replaygainalbumgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid replaygainalbumgain tag value: %r — %s", tag, e)
 
         return None
 
@@ -771,10 +771,10 @@ def parse_tags(
         res = subprocess.check_output(args, stderr=subprocess.PIPE, env=get_subprocess_env())  # noqa: S603
         data = json.loads(res)
         if error := data.get("error"):
-            raise InvalidDataError(error["string"])
+            raise InvalidDataError(error["string"])  # noqa: TRY301 - message rebuilt below
         if not data.get("streams"):
             msg = "Not an audio file"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(msg)  # noqa: TRY301 - message rebuilt below
         tags = AudioTags.parse(data)
         del res
         del data
@@ -986,7 +986,7 @@ def _first_present(
     return None
 
 
-def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
+def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
     """
     Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
 
@@ -1168,7 +1168,7 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
         else:
             result["albumartist"] = albumartist_values[0]
 
-    # Genre (multi-value)
+    # Genre, can hold multiple values
     if genre := _id3_get_tag_text(tags, "TCON"):
         result["genre"] = genre
 
@@ -1325,7 +1325,7 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     # Artist tags (handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec)
     _parse_vorbis_artist_tags(tags, result)
 
-    # Genre (multi-value)
+    # Genre, can hold multiple values
     if genre := _vorbis_get_multi(tags, "GENRE"):
         result["genre"] = genre
 
@@ -1437,7 +1437,7 @@ def _apev2_get_multi(tags: APEv2, key: str) -> list[str] | None:
     return values or None
 
 
-def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
+def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
     r"""
     Parse APEv2 tags into a normalized dictionary.
 
@@ -1589,7 +1589,7 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
         return result
     except Exception as err:
-        LOGGER.debug(f"Error parsing mutagen tags for {input_file}: {err}")
+        LOGGER.debug("Error parsing mutagen tags for %s: %s", input_file, err)
         return result
 
 
@@ -1607,8 +1607,8 @@ def _format_uses_apev2(format_name: str) -> bool:
     :param format_name: The format name from ffprobe (e.g., "wv", "ape", "mpc").
     """
     # Map ffprobe format names to our check
-    # wv = WavPack, ape = Monkey's Audio, mpc/mpc8 = Musepack
-    # tak = TAK, ofr = OptimFROG
+    # wv is WavPack, ape is Monkey's Audio, mpc/mpc8 is Musepack,
+    # tak is TAK and ofr is OptimFROG
     apev2_only_formats = {"wv", "ape", "mpc", "mpc8", "tak", "ofr"}
     return format_name.lower() in apev2_only_formats
 

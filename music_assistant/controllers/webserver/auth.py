@@ -33,7 +33,8 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_PLAYERS,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     HOMEASSISTANT_SYSTEM_USER,
     MASS_LOGGER_NAME,
 )
@@ -99,8 +100,8 @@ TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
 # Max number of (newest first) tokens returned by the auth/tokens command
 TOKEN_LIST_LIMIT = 100
 
-HA_TOKEN_SETTING_KEY = "ha_integration_token"
-HA_TOKEN_NAME = "Home Assistant Integration"
+HA_TOKEN_SETTING_KEY = "ha_integration_token"  # noqa: S105 - config key
+HA_TOKEN_NAME = "Home Assistant Integration"  # noqa: S105 - display name
 
 # English names of the builtin user roles, in the order the roles are listed
 BUILTIN_ROLE_NAMES = {
@@ -1437,6 +1438,8 @@ class AuthenticationManager:
         # key enforcement is off on our connections, so remove those rows here.
         for table in ("auth_tokens", "join_codes", "user_auth_providers"):
             await self.database.delete(table, {"user_id": user_id})
+        await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
+        await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
@@ -2568,7 +2571,7 @@ class AuthenticationManager:
         try:
             # Update all playlog entries with NULL userid to this user
             await self.mass.music.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
+                f"UPDATE {DB_TABLE_MEDIA_PROGRESS} SET userid = :userid WHERE userid IS NULL",
                 {"userid": user_id},
             )
             await self.mass.music.database.commit()
