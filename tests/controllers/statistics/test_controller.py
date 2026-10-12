@@ -1,8 +1,11 @@
 """Tests for statistics backed by completed play history."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import Track
 
 from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
@@ -12,6 +15,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.statistics.controller import (
+    MAX_PLAY_HISTORY_PAGE_SIZE,
     STATISTICS_CACHE_MAX_ENTRIES,
     cache_statistics,
 )
@@ -165,6 +169,55 @@ async def test_play_history_supports_stable_offset_pagination(mass: MusicAssista
         results = await mass.statistics.get_play_history(limit=2, offset=1)
 
     assert [result.item_id for result in results] == ["track-2", "track-1"]
+
+
+async def test_play_history_validates_and_caps_pagination(mass: MusicAssistant) -> None:
+    """Reject invalid pagination and cap the requested page size."""
+    user = await mass.webserver.auth.create_user("statistics-page-limits")
+
+    with (
+        patch(
+            "music_assistant.controllers.statistics.controller.get_current_user",
+            return_value=user,
+        ),
+        patch.object(
+            mass.music.database,
+            "get_rows_from_query",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as get_rows,
+    ):
+        with pytest.raises(InvalidDataError):
+            await mass.statistics.get_play_history(limit=0)
+        with pytest.raises(InvalidDataError):
+            await mass.statistics.get_play_history(offset=-1)
+
+        await mass.statistics.get_play_history(limit=MAX_PLAY_HISTORY_PAGE_SIZE + 1)
+
+    assert get_rows.await_args is not None
+    assert get_rows.await_args.kwargs["limit"] == MAX_PLAY_HISTORY_PAGE_SIZE
+
+
+async def test_played_item_ids_reflects_new_history_immediately(mass: MusicAssistant) -> None:
+    """A completed play is visible immediately to the recency membership query."""
+    user = await mass.webserver.auth.create_user("statistics-live-recency")
+    track = Track(
+        item_id="newly-played-track",
+        provider="test-provider",
+        name="Newly Played Track",
+        uri="test-provider://track/newly-played-track",
+        provider_mappings=set(),
+    )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        assert await mass.statistics.get_played_item_ids(MediaType.TRACK, 0) == set()
+        await mass.music.mark_item_played(track, queue_id="test-queue", userid=user.user_id)
+        result = await mass.statistics.get_played_item_ids(MediaType.TRACK, 0)
+
+    assert result == {("test-provider", "newly-played-track")}
 
 
 async def test_statistics_cache_evicts_old_entries() -> None:

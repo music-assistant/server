@@ -1824,7 +1824,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
                 await self._upsert_playlog(params)
                 play_history_written = recorded_play or play_history_written
-            await self.database.commit()
+            await self._commit_playlog_updates(play_history_written=play_history_written)
             self._signal_playlog_updated(
                 reference,
                 fully_played=fully_played,
@@ -3554,6 +3554,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             progress,
         )
         return True
+
+    async def _commit_playlog_updates(self, *, play_history_written: bool) -> None:
+        await self.database.commit()
+        self.mass.statistics.invalidate_statistics_cache(play_history_written=play_history_written)
 
     def _signal_playlog_updated(
         self,

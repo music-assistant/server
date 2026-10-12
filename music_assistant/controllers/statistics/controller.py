@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.media_items.metadata import MediaItemImage
@@ -44,6 +45,8 @@ if TYPE_CHECKING:
 # Statistics cache TTL: 5 minutes
 STATISTICS_CACHE_TTL = 300
 STATISTICS_CACHE_MAX_ENTRIES = 128
+MAX_PLAY_HISTORY_PAGE_SIZE = 500
+_STATISTICS_CACHE_CLEARERS: list[Callable[[], None]] = []
 
 T = TypeVar("T")
 
@@ -55,6 +58,7 @@ def cache_statistics(
 
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        _STATISTICS_CACHE_CLEARERS.append(cache.clear)
 
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
@@ -101,6 +105,13 @@ class StatisticsController(CoreController):
             "Music Assistant's core controller for playlog statistics and listening analytics."
         )
         self.manifest.icon = "poll"
+
+    def invalidate_statistics_cache(self, *, play_history_written: bool) -> None:
+        """Clear cached statistics after a completed play is recorded."""
+        if not play_history_written:
+            return
+        for clear_cache in _STATISTICS_CACHE_CLEARERS:
+            clear_cache()
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of statistics module."""
@@ -580,6 +591,12 @@ class StatisticsController(CoreController):
         if not user:
             return []
         user_id = user.user_id
+
+        if limit < 1:
+            raise InvalidDataError("Play history limit must be at least 1")
+        if offset < 0:
+            raise InvalidDataError("Play history offset cannot be negative")
+        limit = min(limit, MAX_PLAY_HISTORY_PAGE_SIZE)
 
         if media_types is None:
             media_types = MediaType.ALL
