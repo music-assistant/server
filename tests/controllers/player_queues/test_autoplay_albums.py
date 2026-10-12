@@ -9,20 +9,32 @@ reusing the artist order stubs.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from music_assistant_models.enums import AlbumType
-from music_assistant_models.media_items import Album, Artist, ProviderMapping
+from music_assistant_models.enums import AlbumType, ArtistType, MediaType
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
-from music_assistant.controllers.player_queues.autoplay import albums_mode_available
+from music_assistant.constants import VARIOUS_ARTISTS_NAME
+from music_assistant.controllers.player_queues import autoplay
+from music_assistant.controllers.player_queues.autoplay import Autoplay, albums_mode_available
 from music_assistant.controllers.player_queues.constants import ArtistOrder
 from tests.controllers.player_queues.test_artist_album_order import (
     _add_album,
     _add_artist,
     _library_mapping,
+    _names,
     _providers_available,
     _set_order,
     _set_selection,
@@ -31,6 +43,8 @@ from tests.controllers.player_queues.test_artist_album_order import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
+
     from music_assistant.mass import MusicAssistant
 
 __all__ = ["_providers_available"]
@@ -205,3 +219,147 @@ def test_the_albums_mode_needs_an_album_order_and_no_top_tracks(
     _set_selection(mass, selection)
 
     assert albums_mode_available(mass) is available
+
+
+def _queue(mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, *tracks: Track) -> PlayerQueue:
+    """Build a queue holding the given tracks, wired into the queue controller."""
+    queue_data = SimpleNamespace(items=[SimpleNamespace(media_item=track) for track in tracks])
+    queue_data.userid = None
+    monkeypatch.setattr(mass.player_queues, "queue_data", lambda _queue_id: queue_data)
+    return cast("PlayerQueue", SimpleNamespace(queue_id="q1", display_name="Queue"))
+
+
+def _queued_track(artists: list[Artist | ItemMapping], album: Album | ItemMapping | None) -> Track:
+    """Build a queued track by the given artists, on the given album."""
+    return Track(
+        item_id=uuid4().hex,
+        provider="library",
+        name="Queued",
+        provider_mappings=_library_mapping(),
+        artists=UniqueList(artists),
+        album=album,
+    )
+
+
+async def _library_artist(mass: MusicAssistant, name: str, **kwargs: Any) -> Artist:
+    """Add a library artist with the given name."""
+    return await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name=name,
+            provider_mappings=_library_mapping(),
+            **kwargs,
+        )
+    )
+
+
+async def test_the_next_album_follows_the_album_artist(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A "feat." track plays on with its album artist's next album, and loads only that one."""
+    artist = await _add_artist(mass)
+    waterloo = await _add_album(mass, artist, "Waterloo", 1974)
+    await _add_album(mass, artist, "Voulez-Vous", 1979)
+    guest = await _library_artist(mass, "Guest")
+    queue = _queue(mass, monkeypatch, _queued_track([guest], waterloo))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    lookup = AsyncMock(wraps=mass.music.albums.tracks)
+    monkeypatch.setattr(mass.music.albums, "tracks", lookup)
+
+    result = await Autoplay(mass.player_queues).get_album_tracks(queue)
+
+    assert _names(result) == ["Voulez-Vous 1", "Voulez-Vous 2", "Voulez-Vous 3"]
+    assert lookup.await_count == 1
+
+
+@pytest.mark.parametrize("album_kind", ["various artists", "no album", "missing album"])
+async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, album_kind: str
+) -> None:
+    """A compilation, or an album that can't be loaded, plays on with the track's artist."""
+    artist = await _add_artist(mass)
+    await _add_album(mass, artist, "Waterloo", 1974)
+    await _add_album(mass, artist, "Voulez-Vous", 1979)
+    album: Album | ItemMapping | None = None
+    if album_kind == "various artists":
+        various = await _library_artist(mass, VARIOUS_ARTISTS_NAME)
+        album = await _add_album(mass, various, "Hits", 1976, album_type=AlbumType.COMPILATION)
+    elif album_kind == "missing album":
+        album = ItemMapping(
+            media_type=MediaType.ALBUM, item_id="999", provider="library", name="Gone"
+        )
+    queue = _queue(mass, monkeypatch, _queued_track([artist], album))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    result = await Autoplay(mass.player_queues).get_album_tracks(queue)
+
+    expected = "Voulez-Vous" if album_kind == "various artists" else "Waterloo"
+    assert _names(result) == [f"{expected} {n}" for n in (1, 2, 3)]
+
+
+@pytest.mark.parametrize("seed", ["no artist", "missing artist", "author"])
+async def test_no_album_without_a_music_artist(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, seed: str
+) -> None:
+    """A track without an artist, with one that can't be loaded, or by an author, gets no album."""
+    artists: list[Artist | ItemMapping] = []
+    if seed == "missing artist":
+        artists = [
+            ItemMapping(media_type=MediaType.ARTIST, item_id="999", provider="library", name="Gone")
+        ]
+    if seed == "author":
+        author = await _library_artist(mass, "Author", artist_type=ArtistType.AUTHOR)
+        await _add_album(mass, author, "Book", 2000)
+        artists = [author]
+    queue = _queue(mass, monkeypatch, _queued_track(artists, None))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    assert await Autoplay(mass.player_queues).get_album_tracks(queue) == []
+
+
+@pytest.mark.parametrize(
+    ("order", "selection"),
+    [(ArtistOrder.SHUFFLED_TRACKS, "all_tracks"), (ArtistOrder.ALBUMS_BY_RELEASE, "top_tracks")],
+)
+async def test_no_album_when_the_mode_cannot_play(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, order: ArtistOrder, selection: str
+) -> None:
+    """A saved albums mode adds no album once the artist settings rule it out."""
+    artist = await _add_artist(mass)
+    await _add_album(mass, artist, "Waterloo", 1974)
+    queue = _queue(mass, monkeypatch, _queued_track([artist], None))
+    _set_order(mass, order)
+    _set_selection(mass, selection)
+
+    assert await Autoplay(mass.player_queues).get_album_tracks(queue) == []
+
+
+@pytest.mark.parametrize(("failing", "expected"), [(1, "B"), (2, "C"), (3, None)])
+async def test_an_album_that_fails_is_skipped_up_to_three_times(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, failing: int, expected: str | None
+) -> None:
+    """An album that fails to load, or whose tracks are all disliked, gives way to the next."""
+    albums = [_streaming_album(name, 1970 + n) for n, name in enumerate("ABCD")]
+    lookup = _stub_provider(mass, albums)
+    names = {album.item_id: album.name for album in albums}
+    tracks = lookup.side_effect
+
+    def _tracks(item_id: str, *args: Any, **kwargs: Any) -> list[Track]:
+        if names[item_id] == "A":
+            raise MediaNotFoundError("gone")
+        return cast("list[Track]", tracks(item_id, *args, **kwargs))
+
+    lookup.side_effect = _tracks
+
+    async def _without_disliked(_mass: Any, _userid: Any, items: list[Track]) -> list[Track]:
+        disliked = "BC"[: failing - 1]
+        return [track for track in items if track.name[0] not in disliked]
+
+    monkeypatch.setattr(autoplay, "without_disliked_tracks", _without_disliked)
+    queue = _queue(mass, monkeypatch, _queued_track([_provider_artist()], None))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    result = await Autoplay(mass.player_queues).get_album_tracks(queue)
+
+    assert _names(result) == ([f"{expected} 1", f"{expected} 2"] if expected else [])

@@ -18,9 +18,15 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, SortField
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Album, Artist, ItemMapping, Playlist, Track
 
-from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_GLOBAL
+from music_assistant.constants import (
+    CONF_PLAYER_QUEUES,
+    CONF_VALUE_GLOBAL,
+    VARIOUS_ARTISTS_MBID,
+    VARIOUS_ARTISTS_NAME,
+)
+from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.constants import (
     CONF_AUTOPLAY_MODE,
     CONF_AUTOPLAY_PLAYLIST,
@@ -30,6 +36,7 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
     ArtistOrder,
 )
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
@@ -42,6 +49,8 @@ if TYPE_CHECKING:
 AUTOPLAY_BATCH_SIZE = 25
 # how many of the most recently enqueued items to derive a genre bias from
 GENRE_SEED_ITEM_COUNT = 3
+# albums the whole-albums mode tries before it falls back to the Auto mode
+ALBUM_PICK_ATTEMPTS = 3
 # media types that carry a useful genre signal for the library mix
 GENRE_SEED_MEDIA_TYPES = (MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST)
 # media types that end on their own but have a natural successor of their own: Autoplay
@@ -63,6 +72,7 @@ class AutoplayMode(StrEnum):
     SIMILAR = "similar"
     LIBRARY = "library"
     PLAYLIST = "playlist"
+    ALBUMS = "albums"
 
 
 AUTOPLAY_MODE_DEFAULT_VALUE = AutoplayMode.AUTO.value
@@ -179,6 +189,75 @@ class Autoplay:
         random.shuffle(tracks)
         return self._dedupe(tracks, exclude)
 
+    async def get_album_tracks(self, queue: PlayerQueue) -> list[Track]:
+        """
+        Return the next whole album of the last track's artist, for the whole-albums mode.
+
+        The artist is the album artist, or the track's artist for a compilation or a track
+        without an album. Returns an empty list when there is no album to play, so the caller
+        falls back to the Auto mode.
+
+        :param queue: The queue being refilled.
+        """
+        if not albums_mode_available(self.mass):
+            self.logger.debug("Whole albums need an album artist order, using Auto instead")
+            return []
+        queue_data = self.queues.queue_data(queue.queue_id)
+        tracks = [
+            item.media_item for item in queue_data.items if isinstance(item.media_item, Track)
+        ]
+        if not tracks:
+            return []
+        last = tracks[-1]
+        anchor: Album | None = None
+        if last.album is not None:
+            try:
+                anchor = await self.mass.music.albums.get(
+                    last.album.item_id, last.album.provider, allow_update_metadata=False
+                )
+            except MusicAssistantError as err:
+                self.logger.debug("Unable to load album %s: %s", last.album.name, err)
+        if anchor and anchor.artists and not _is_various_artists(anchor.artists[0]):
+            seed: Artist | ItemMapping = anchor.artists[0]
+        elif last.artists:
+            seed = last.artists[0]
+        else:
+            self.logger.debug("Track %s has no artist, using Auto instead", last.name)
+            return []
+        try:
+            artist = (
+                seed
+                if isinstance(seed, Artist)
+                else await self.mass.music.artists.get(
+                    seed.item_id, seed.provider, allow_update_metadata=False
+                )
+            )
+        except MusicAssistantError as err:
+            self.logger.debug("Unable to load artist %s, using Auto instead: %s", seed.name, err)
+            return []
+        played = list({track.album.uri: track.album for track in tracks if track.album}.values())
+        candidates = await self.queues.artist_album_candidates(artist, played, anchor)
+        if candidates is None:
+            self.logger.info("Unable to list the albums of %s, using Auto instead", artist.name)
+            return []
+        for copies in candidates[:ALBUM_PICK_ATTEMPTS]:
+            try:
+                album_tracks = await self.queues.album_copy_tracks(copies)
+            except PROVIDER_FETCH_ERRORS as err:
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch the tracks of album %s: %s",
+                    copies[0].name,
+                    err,
+                )
+                continue
+            if album_tracks := await without_disliked_tracks(
+                self.mass, queue_data.userid, album_tracks
+            ):
+                return album_tracks
+            self.logger.debug("Album %s has no tracks to play", copies[0].name)
+        return []
+
     def _autoplay_playlist_uri(self, queue_id: str) -> ConfigValueType:
         """
         Return the configured Autoplay playlist, taken from the level the mode resolves from.
@@ -243,3 +322,10 @@ class Autoplay:
             if len(result) >= AUTOPLAY_BATCH_SIZE:
                 break
         return result
+
+
+def _is_various_artists(artist: Artist | ItemMapping) -> bool:
+    """Return whether the artist is the Various Artists placeholder of a compilation."""
+    return artist.name == VARIOUS_ARTISTS_NAME or (
+        isinstance(artist, Artist) and artist.mbid == VARIOUS_ARTISTS_MBID
+    )
