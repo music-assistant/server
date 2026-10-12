@@ -837,19 +837,21 @@ class AlbumsController(MediaControllerBase[Album]):
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_album_tracks(
-        self, item_id: str, provider_instance_id_or_domain: str, strict: bool = False
+        self, item_id: str, provider_instance_id_or_domain: str
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-        if prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain, strict):
+        if prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain):
             prov = cast("MusicProvider", prov)
             return await prov.get_album_tracks(item_id)
         return []
 
     async def _list_provider_album(self, item_id: str, provider_instance_id: str) -> Listing[Track]:
         """Return the tracks of an album that is not in the library, as the provider lists them."""
-        album_tracks = await self._get_provider_album_tracks(
-            item_id, provider_instance_id, strict=True
+        # the pinned account dropping before the fill is raised, not kept as an empty listing
+        prov = cast(
+            "MusicProvider", self.mass.music.resolve_visible_provider(provider_instance_id, True)
         )
+        album_tracks = await prov.get_album_tracks(item_id)
         await self._backfill_album_on_tracks(album_tracks, item_id, provider_instance_id)
         return Listing(album_tracks)
 
