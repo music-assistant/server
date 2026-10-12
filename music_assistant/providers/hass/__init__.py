@@ -483,8 +483,6 @@ class HomeAssistantProvider(PluginProvider):
         device_by_mac: dict[str, Device] = {
             mac: device for mac, device in mac_devices if device["id"] in platform_device_ids
         }
-        if not device_by_mac:
-            return {}
         candidates_by_mac = {
             mac: media_players_by_device.get(device["id"], [])
             for mac, device in device_by_mac.items()
