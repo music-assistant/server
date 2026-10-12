@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
@@ -96,3 +97,29 @@ def test_flow_mode_stays_required_while_any_owner_requires_it() -> None:
     assert still_required
     assert not controller.flow_mode_required("queue-1")
     assert not controller.flow_mode_required("queue-2")
+
+
+@pytest.mark.parametrize(
+    ("flow_mode", "supports_gapless", "expected"),
+    [(False, True, True), (True, False, True), (False, False, False)],
+    ids=["gapless", "flow mode", "neither"],
+)
+def test_item_boundaries_are_mixed_for_a_gapless_or_flow_mode_player(
+    flow_mode: bool, supports_gapless: bool, expected: bool
+) -> None:
+    """Only a player that streams in flow mode or plays gapless gets its boundaries mixed."""
+    controller = _controller()
+    player = controller.mass.players.get_player.return_value
+    player.flow_mode = flow_mode
+    player.supports_gapless = supports_gapless
+
+    assert controller.mixes_item_boundaries("queue-1") is expected
+    controller.mass.players.get_player.assert_called_once_with("queue-1")
+
+
+def test_item_boundaries_are_not_mixed_for_an_unknown_player() -> None:
+    """A queue without its player has nothing to mix for."""
+    controller = _controller()
+    controller.mass.players.get_player.return_value = None
+
+    assert controller.mixes_item_boundaries("queue-1") is False

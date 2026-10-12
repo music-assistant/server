@@ -455,6 +455,18 @@ class StreamsController(CoreController):
         """
         return queue_id in self._flow_mode_owners
 
+    def mixes_item_boundaries(self, queue_id: str) -> bool:
+        """
+        Return whether the server mixes the boundary between two items for the queue's player.
+
+        True when the player streams in flow mode or plays gapless; a declared tail
+        overlap only plays on such a player.
+
+        :param queue_id: Queue to check.
+        """
+        player = self.mass.players.get_player(queue_id)
+        return player is not None and (player.flow_mode or player.supports_gapless)
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
@@ -890,14 +902,14 @@ class StreamsController(CoreController):
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
                     )
 
-            if queue_item.streamdetails.tail_overlap is not None:
-                self.logger.debug(
-                    "Ignoring the tail overlap of %s: it only plays in flow mode", queue_item.name
-                )
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
-            if queue_item.media_type != MediaType.TRACK:
+            if queue_item.streamdetails.tail_overlap is not None:
+                # a declared overlap plays into the item it was planned against,
+                # whatever the queue's crossfade setting
+                crossfade_mode = CrossfadeMode.VOICE_OVER
+            elif queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
                 # a realtime source gets a fade decided from what its boundary
@@ -907,19 +919,29 @@ class StreamsController(CoreController):
                 crossfade_mode != CrossfadeMode.DISABLED
                 and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
             ):
-                self.logger.warning(
-                    "Crossfade disabled: Player %s does not support gapless playback, "
-                    "consider enabling flow mode to enable crossfade on this player.",
-                    player.state.name,
-                )
+                if crossfade_mode == CrossfadeMode.VOICE_OVER:
+                    self.logger.debug(
+                        "Ignoring the tail overlap of %s: player %s does not play gapless",
+                        queue_item.name,
+                        player.state.name,
+                    )
+                else:
+                    self.logger.warning(
+                        "Crossfade disabled: Player %s does not support gapless playback, "
+                        "consider enabling flow mode to enable crossfade on this player.",
+                        player.state.name,
+                    )
                 crossfade_mode = CrossfadeMode.DISABLED
+            # the item before may have mixed (or be mixing) a fade into this one,
+            # which only the smart fade stream plays
+            fade_in_pending = self.audio.fade_into_pending(queue_id, queue_item.queue_item_id)
 
             mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
             # pick output format based on the streamdetails and player capabilities
             pcm_format = await self.audio.select_pcm_format(
                 player=player,
                 streamdetails=queue_item.streamdetails,
-                crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED,
+                crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED or fade_in_pending,
                 overlay_active=mix_overlay,
             )
             output_format = await self.audio.get_output_format(
@@ -985,10 +1007,11 @@ class StreamsController(CoreController):
                 session_id=session_id,
             )
 
-            if crossfade_mode != CrossfadeMode.DISABLED:
-                # crossfade is enabled, use special crossfaded single item stream
-                # where the crossfade of the next track is present in the stream of
-                # a single track. This only works if the player supports gapless playback!
+            if crossfade_mode != CrossfadeMode.DISABLED or fade_in_pending:
+                # crossfade is enabled (or a fade into this item waits), use special
+                # crossfaded single item stream where the crossfade of the next track is
+                # present in the stream of a single track. This only works if the player
+                # supports gapless playback!
                 audio_input = self.audio.get_queue_item_stream_with_smartfade(
                     player=player,
                     queue_item=queue_item,
@@ -1768,7 +1791,9 @@ class StreamsController(CoreController):
             assert queue  # the item was found in that queue's data, so the queue exists
             if queue_item.streamdetails and queue_item.streamdetails.tail_overlap is not None:
                 self.logger.debug(
-                    "Ignoring the tail overlap of %s: it only plays in flow mode", queue_item.name
+                    "Ignoring the tail overlap of %s: a direct PCM stream of a single item "
+                    "never mixes its boundary",
+                    queue_item.name,
                 )
             mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
             self._update_audio_processing_context(
