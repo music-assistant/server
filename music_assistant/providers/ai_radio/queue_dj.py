@@ -15,7 +15,13 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.helpers.json import async_json_loads
 
-from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID, EVENT_QUEUE_DJ_UPDATED
+from .constants import (
+    ATTR_GAP_NEXT_ID,
+    ATTR_QUEUE_DJ,
+    ATTR_SESSION_ID,
+    EVENT_QUEUE_DJ_UPDATED,
+    RENDER_COOLDOWN_SECONDS,
+)
 from .helpers import check_player_access, has_player_access
 from .models import DJQueueState, PlannedSection, SessionState
 
@@ -219,6 +225,14 @@ class AIRadioQueueDJMixin:
                 # attribute, so injecting here would stack talk on top of talk
                 self.logger.debug("Queue %s is running a show, skipping replan", queue_id)
                 return
+            if state.render_health.cooling_down(asyncio.get_running_loop().time()):
+                # the engines keep failing, so no break is planned until the cool-down ends;
+                # _pause_queue_dj booked the pass that runs then
+                self.logger.debug(
+                    "Queue %s DJ is paused after repeated render failures, skipping replan",
+                    queue_id,
+                )
+                return
             queue = self.mass.player_queues.get(queue_id)
             if queue is None:
                 # usually the queue just hasn't registered yet (players appear seconds after
@@ -408,6 +422,43 @@ class AIRadioQueueDJMixin:
             return
         self.mass.player_queues.update_items(queue_id, kept)
         self.logger.debug("Removed %s pending DJ clip(s) from queue %s", removed, queue_id)
+
+    def _pause_queue_dj(self, queue_id: str) -> None:
+        """Take the queue's pending DJ clips out and plan again once the render cool-down ends."""
+        if (state := self._dj_queues.get(queue_id)) is None:
+            return
+        if (queue := self.mass.player_queues.get(queue_id)) is not None:
+            guard_index = self._dj_guard_index(queue)
+            items = self._dj_queue_items(queue_id)
+            # the slot right after the guard holds the clip the queue is loading while this
+            # runs (its failed render is what pauses the DJ), so it stays, marked unplayable:
+            # taking it out would shift the indexes that load walks. everything beyond it goes
+            removed = [
+                item
+                for item in items[guard_index + 2 :]
+                if item.extra_attributes.get(ATTR_QUEUE_DJ)
+            ]
+            if removed:
+                removed_ids = {item.queue_item_id for item in removed}
+                kept = [item for item in items if item.queue_item_id not in removed_ids]
+                self.mass.player_queues.update_items(queue_id, kept)
+                # the breaks never aired: their gaps are open again and their guard history
+                # must not hold the planner back once it resumes
+                for item in removed:
+                    if (gap_next_id := item.extra_attributes.get(ATTR_GAP_NEXT_ID)) is not None:
+                        state.decided_gap_ids.discard(str(gap_next_id))
+                self._drop_unaired_dj_history(state, kept, guard_index)
+                self.logger.debug(
+                    "Removed %s pending DJ clip(s) from paused queue %s", len(removed), queue_id
+                )
+        # a queue that only plays music raises no items event, so the end of the cool-down has
+        # to request the replan itself
+        self.mass.call_later(
+            RENDER_COOLDOWN_SECONDS,
+            self._schedule_replan,
+            queue_id,
+            task_id=f"ai_radio_dj_cooldown_{queue_id}",
+        )
 
     def _dj_guard_index(self, queue: PlayerQueue) -> int:
         """Return the highest queue index the player already owns."""

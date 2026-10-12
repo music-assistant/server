@@ -41,11 +41,14 @@ from .constants import (
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
+    ATTR_QUEUE_DJ,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
     ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
+    CONF_AI_ENGINE,
+    CONF_TTS_ENGINE,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_TTS_LOUDNESS_BOOST,
     DEFERRED_PLACEHOLDERS,
@@ -58,6 +61,7 @@ from .constants import (
     POST_LYRICS_TIMEOUT,
     POST_MIN_HEAD_SECONDS,
     POST_MIN_SECONDS,
+    RENDER_COOLDOWN_SECONDS,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SERVER_ERROR_MARKERS,
@@ -70,13 +74,13 @@ from .post_window import lyric_onset
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.enums import MediaType
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
 
-    from .models import SessionState
+    from .models import DJQueueState, RenderHealth, SessionState
 
 
 @dataclass(slots=True)
@@ -109,6 +113,13 @@ class AIRadioRenderMixin:
         logger: logging.Logger
         _hosts: dict[str, dict[str, Any]]
         _sessions: dict[str, SessionState]
+        _dj_queues: dict[str, DJQueueState]
+
+        def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+            """Return a value collected by this provider's setup flow."""
+
+        def _pause_queue_dj(self, queue_id: str) -> None:
+            """Pause the queue DJ's breaks until the render cool-down is over."""
 
     _render_locks: dict[str, asyncio.Lock]
     _media_cache: dict[str, _CachedClipMedia]
@@ -132,6 +143,9 @@ class AIRadioRenderMixin:
             raise MediaNotFoundError(f"AI Radio clip {item_id} has no prompt to render")
 
         async with self._lock_for(item_id):
+            # under the lock, so a request that waited here behind a failed render of the same
+            # clip does not render it again
+            self._refuse_unrenderable(queue_item, item_id)
             text = str(queue_item.extra_attributes.get(ATTR_RENDERED_TEXT) or "")
             if not text:
                 text = await self._generate_script(queue_item, prompt, item_id)
@@ -202,6 +216,27 @@ class AIRadioRenderMixin:
         if clip_id not in self._render_locks:
             self._render_locks[clip_id] = asyncio.Lock()
         return self._render_locks[clip_id]
+
+    def _refuse_unrenderable(self, queue_item: QueueItem, clip_id: str) -> None:
+        """Raise MediaNotFoundError when the clip must not be rendered (again)."""
+        if not queue_item.available:
+            # a failed render marked the clip, so the player's own request after the queue's
+            # failed preload does not render it, and bill the engines, a second time
+            raise MediaNotFoundError(f"AI Radio clip {clip_id} already failed to render")
+        health = self._render_health(queue_item)
+        if health is None or not health.cooling_down(asyncio.get_running_loop().time()):
+            return
+        self.logger.debug(
+            "AI Radio clip %s (%s) skipped: breaks are paused after repeated render failures",
+            clip_id,
+            queue_item.name,
+        )
+        self._record_skip(
+            queue_item,
+            f"skipped: breaks are paused for {RENDER_COOLDOWN_SECONDS // 60} minutes "
+            "after repeated engine failures",
+        )
+        raise MediaNotFoundError(f"AI Radio clip {clip_id} skipped while the breaks are paused")
 
     async def _cached_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str
@@ -354,7 +389,11 @@ class AIRadioRenderMixin:
             self.logger.warning(
                 "AI Radio clip %s (%s) failed to generate: %s", clip_id, queue_item.name, err
             )
-            self._record_skip(queue_item, f"generation failed: {err}")
+            self._record_render_failure(
+                queue_item,
+                f"generation failed: {err}",
+                f"AI engine '{self.get_setup_value(CONF_AI_ENGINE)}'",
+            )
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed to generate") from err
         if max_chars > 0:
             text = soft_limit_text(text, max_chars=max_chars)
@@ -389,8 +428,14 @@ class AIRadioRenderMixin:
             duration = await self._probe_duration(path)
         except Exception as err:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
-            self._record_skip(queue_item, f"TTS failed: {err}")
+            self._record_render_failure(
+                queue_item,
+                f"TTS failed: {err}",
+                f"TTS engine '{engine_uid or self.get_setup_value(CONF_TTS_ENGINE)}'",
+            )
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
+        if (health := self._render_health(queue_item)) is not None:
+            health.record_success()
         # measuring costs a fetch and a decode on the just-in-time render path, so it only
         # runs where the reading has somewhere to go
         loudness = (
@@ -486,13 +531,51 @@ class AIRadioRenderMixin:
         return int(tags.duration) if tags.duration else None
 
     def _record_skip(self, queue_item: QueueItem, error: str) -> None:
-        """Record a skipped clip on its owning session."""
+        """Mark the clip unplayable and record the skip on its owning session."""
+        # the flag is what keeps the queue, and a later request for the same clip, from
+        # rendering it again
+        queue_item.available = False
+        self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
         session_id = str(queue_item.extra_attributes.get(ATTR_SESSION_ID) or "")
         if (session := self._sessions.get(session_id)) is None:
             return
         session.skipped_sections += 1
         session.last_render_error = error
         self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
+
+    def _render_health(self, queue_item: QueueItem) -> RenderHealth | None:
+        """Return the failure bookkeeping of the session that owns the clip, or None."""
+        session_id = str(queue_item.extra_attributes.get(ATTR_SESSION_ID) or "")
+        if (session := self._sessions.get(session_id)) is not None:
+            return session.render_health
+        # a clip of an older DJ session on the same queue must not count against the live one
+        state = self._dj_queues.get(queue_item.queue_id)
+        if state is not None and state.dj_session_id == session_id:
+            return state.render_health
+        return None
+
+    def _record_render_failure(self, queue_item: QueueItem, error: str, engine: str) -> None:
+        """Record a failed engine call, pausing the session's breaks after too many in a row."""
+        health = self._render_health(queue_item)
+        # counted ahead of the skip: recording the skip updates the queue, which runs the DJ's
+        # replan straight away, and that pass has to find the cool-down already in place
+        starts_cooldown = health is not None and health.record_failure(
+            asyncio.get_running_loop().time()
+        )
+        self._record_skip(queue_item, error)
+        if health is None or not starts_cooldown:
+            return
+        self.logger.warning(
+            "AI Radio pauses the breaks on queue %s for %d minutes: %d renders in a row failed, "
+            "the last one on %s. Check that engine's own log for the reason (for a Home Assistant "
+            "engine that is the Home Assistant core log); a cloud engine may be out of quota.",
+            queue_item.queue_id,
+            RENDER_COOLDOWN_SECONDS // 60,
+            health.failures,
+            engine,
+        )
+        if queue_item.extra_attributes.get(ATTR_QUEUE_DJ):
+            self._pause_queue_dj(queue_item.queue_id)
 
     async def _plan_post(
         self, queue_item: QueueItem, clip_id: str, clip_duration: int | None

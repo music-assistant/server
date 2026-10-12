@@ -1174,12 +1174,18 @@ async def test_stop_run_emits_a_sessions_hint() -> None:
 def test_record_skip_emits_a_sessions_hint() -> None:
     """A skipped clip bumps the session counters and announces a hint."""
     provider = _make_provider()
+    player_queues = MagicMock()
+    provider.mass = cast("Any", SimpleNamespace(player_queues=player_queues))
     session = SessionState(session_id="s1", station_id="station_a")
     provider._sessions[session.session_id] = session
-    queue_item = SimpleNamespace(extra_attributes={ATTR_SESSION_ID: "s1"})
+    queue_item = SimpleNamespace(
+        queue_id="player_a", available=True, extra_attributes={ATTR_SESSION_ID: "s1"}
+    )
 
     provider._record_skip(cast("Any", queue_item), "tts down")
 
+    assert queue_item.available is False
+    player_queues.signal_update.assert_called_once_with("player_a", items_changed=True)
     assert session.skipped_sections == 1
     cast("MagicMock", provider.signal_provider_event).assert_called_once_with(
         {"event": EVENT_SESSIONS_UPDATED}

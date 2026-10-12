@@ -8,6 +8,34 @@ from typing import Any
 
 from music_assistant.helpers.datetime import utc
 
+from .constants import RENDER_COOLDOWN_SECONDS, RENDER_FAILURES_BEFORE_COOLDOWN
+
+
+@dataclass(slots=True)
+class RenderHealth:
+    """Consecutive render failures of one session and the cool-down they trigger."""
+
+    failures: int = 0
+    # loop time the cool-down ends; None while the session renders freely
+    cooldown_until: float | None = None
+
+    def cooling_down(self, now: float) -> bool:
+        """Return whether the session must not render at the given loop time."""
+        return self.cooldown_until is not None and now < self.cooldown_until
+
+    def record_failure(self, now: float) -> bool:
+        """Count a failed render and return whether that (re)starts the cool-down."""
+        self.failures += 1
+        if self.failures < RENDER_FAILURES_BEFORE_COOLDOWN:
+            return False
+        self.cooldown_until = now + RENDER_COOLDOWN_SECONDS
+        return True
+
+    def record_success(self) -> None:
+        """Clear the failure count, the session renders freely again."""
+        self.failures = 0
+        self.cooldown_until = None
+
 
 @dataclass(slots=True)
 class Slot:
@@ -60,6 +88,7 @@ class DJQueueState:
     # a freshly armed state may only plan once the previous host's clips are cleared
     ready: bool = False
     replan_pending: bool = False
+    render_health: RenderHealth = field(default_factory=RenderHealth, repr=False, compare=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
 
@@ -80,6 +109,7 @@ class SessionState:
     error: str | None = None
     skipped_sections: int = 0
     last_render_error: str | None = None
+    render_health: RenderHealth = field(default_factory=RenderHealth, repr=False, compare=False)
     task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
     queue_id: str | None = field(default=None, repr=False, compare=False)
 

@@ -24,6 +24,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_QUEUE_DJ,
     ATTR_SESSION_ID,
     EVENT_QUEUE_DJ_UPDATED,
+    RENDER_COOLDOWN_SECONDS,
 )
 from music_assistant.providers.ai_radio.models import PlannedSection, SessionState
 from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
@@ -113,6 +114,7 @@ class FakeMass:
         self.player_queues = player_queues
         self.tasks: list[asyncio.Task[Any]] = []
         self._tasks_by_id: dict[str, asyncio.Task[Any]] = {}
+        self.timers: list[tuple[float, Callable[..., Any], tuple[Any, ...], str | None]] = []
 
     def create_task(
         self, target: Coroutine[Any, Any, Any], task_id: str | None = None
@@ -126,6 +128,12 @@ class FakeMass:
         if task_id:
             self._tasks_by_id[task_id] = task
         return task
+
+    def call_later(
+        self, delay: float, target: Callable[..., Any], *args: Any, task_id: str | None = None
+    ) -> None:
+        """Record the delayed call instead of scheduling it."""
+        self.timers.append((delay, target, args, task_id))
 
     def subscribe(self, *args: Any, **kwargs: Any) -> Any:
         """Return a no-op unsubscribe callback."""
@@ -1312,6 +1320,53 @@ async def test_a_repaired_clip_reopens_its_gap(tmp_path: Path) -> None:
 
     assert queues.deleted == [stale.queue_item_id]
     assert queues.loads[-1][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
+
+
+async def test_replan_injects_nothing_while_the_dj_is_paused(tmp_path: Path) -> None:
+    """A DJ in its render cool-down plans no breaks, and plans again once it is over."""
+    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
+    state = dummy._dj_queues["queue-1"]
+    loop = asyncio.get_running_loop()
+    state.render_health.cooldown_until = loop.time() + 100
+
+    await dummy._replan_queue("queue-1")
+    assert dummy.player_queues.loads == []
+
+    state.render_health.cooldown_until = loop.time() - 1
+    await dummy._replan_queue("queue-1")
+    assert len(dummy.player_queues.loads) == 2
+
+
+async def test_pausing_the_dj_drops_its_pending_clips_and_books_a_replan(tmp_path: Path) -> None:
+    """A paused DJ takes its unaired breaks out, reopens their gaps and books the next pass."""
+    tracks = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    loading, *pending = [item for item in queues._items if item.extra_attributes.get(ATTR_QUEUE_DJ)]
+    assert len(pending) == 3
+    # the player moves on to the track before the first break: that break sits right after
+    # the guard, in the slot the queue is loading when its render fails
+    queues._queue.current_index = 1
+    queues._queue.index_in_buffer = 1
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+
+    dummy._pause_queue_dj("queue-1")
+
+    assert queues.deleted == [clip.queue_item_id for clip in pending]
+    assert queues._items[2] is loading
+    assert state.decided_gap_ids == {loading.extra_attributes[ATTR_GAP_NEXT_ID]}
+    # none of the breaks aired, so none keeps its guard weight
+    assert state.history["Song_Transition"] == []
+    assert dummy.mass.timers == [
+        (
+            RENDER_COOLDOWN_SECONDS,
+            dummy._schedule_replan,
+            ("queue-1",),
+            "ai_radio_dj_cooldown_queue-1",
+        )
+    ]
 
 
 async def test_replan_yields_the_queue_to_a_running_show(tmp_path: Path) -> None:
