@@ -789,7 +789,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
 
-    async def _handle_migrate_playlist(
+    async def _handle_migrate_playlist(  # noqa: C901, PLR0912
         self,
         source_playlist_id: str,
         source_playlist_item_id: str,
@@ -1555,7 +1555,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
 
-    async def _handle_add_playlist_tracks(
+    async def _handle_add_playlist_tracks(  # noqa: C901, PLR0912
         self, db_playlist_id: str | int, uris: list[str], user_id: str | None
     ) -> None:
         """Handle adding playlist items inside a managed task."""
@@ -1851,9 +1851,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 list(track_id_batch),
             )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PlaylistSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> PlaylistSummary:
         """Parse a raw summary db row into a PlaylistSummary object."""
-        item = cast("PlaylistSummary", super()._parse_summary_row(db_row))
+        item = cast("PlaylistSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.owner = db_row["owner"]
         item.is_editable = bool(db_row["is_editable"])
         item.is_dynamic = bool(db_row["is_dynamic"])

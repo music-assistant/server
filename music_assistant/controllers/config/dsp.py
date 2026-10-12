@@ -8,6 +8,7 @@ import binascii
 import os
 from contextlib import suppress
 from copy import deepcopy
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final
 
 import aiofiles
@@ -79,7 +80,10 @@ class DSPConfigMixin:
         This method will validate the config and apply it to the player.
         """
         config = deepcopy(config)
-        config.preset_id = None
+        # switching DSP on/off keeps the preset selection, any other change clears it
+        preset = self._get_dsp_preset(config.preset_id)
+        if preset is None or not _dsp_settings_equal(preset.config, config):
+            config.preset_id = None
         return await self._save_dsp_config(player_id, config)
 
     @api_command("config/players/dsp/apply_preset", required_scope=Scope.CONFIG_PLAYERS_WRITE)
@@ -95,6 +99,7 @@ class DSPConfigMixin:
             raise KeyError(msg)
         config = deepcopy(preset.config)
         config.preset_id = preset_id
+        config.enabled = True
         return await self._save_dsp_config(player_id, config)
 
     @api_command("config/dsp_presets/get", required_scope=Scope.CONFIG_PLAYERS_READ)
@@ -123,9 +128,7 @@ class DSPConfigMixin:
         # Save the preset to the persistent storage
         self.set(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset.preset_id}", preset.to_dict())
         if previous:
-            previous_config = deepcopy(previous.config)
-            previous_config.preset_id = None
-            if previous_config != preset.config:
+            if not _dsp_settings_equal(previous.config, preset.config):
                 self._clear_dsp_preset_assignments(preset.preset_id)
 
         all_presets = await self.get_dsp_presets()
@@ -412,3 +415,10 @@ def _blank_convolution_ir(config: DSPConfig, ir_id: str) -> bool:
             dsp_filter.ir_id = ""
             cleared = True
     return cleared
+
+
+def _dsp_settings_equal(left: DSPConfig, right: DSPConfig) -> bool:
+    """Return True when two DSP configs hold the same settings, ignoring on/off and preset."""
+    left = replace(left, enabled=True, preset_id=None)
+    right = replace(right, enabled=True, preset_id=None)
+    return left == right

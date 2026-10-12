@@ -21,9 +21,12 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    ListingType,
     MediaType,
     ProviderFeature,
     ProviderType,
+    SortDirection,
+    SortField,
     TaskStatus,
 )
 from music_assistant_models.errors import (
@@ -111,6 +114,7 @@ from music_assistant.controllers.music.recency import RecencyEngine
 from music_assistant.controllers.music.recommendations.controller import (
     RecommendationsController,
 )
+from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress,
@@ -158,6 +162,7 @@ from music_assistant.models.music_provider import LIBRARY_FEATURE_BY_MEDIA_TYPE,
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.api import SortOptionInfo
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, AudioSource
@@ -380,15 +385,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.config = config
         # setup library database
         await self._setup_database()
+
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
         # make sure to finish any removal jobs
         for removed_provider in cast(
             "list[str]",
             self.mass.config.get_raw_core_config_value(self.domain, CONF_DELETED_PROVIDERS, []),
         ):
             await self.cleanup_provider(removed_provider)
-
-    async def post_setup(self) -> None:
-        """Handle logic after all core controllers have been set up."""
         self._register_database_cleanup_task()
         self._register_provider_mapping_correction_task()
         self._restore_track_reconciliation_state()
@@ -515,6 +520,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param providers: Optionally restrict the search to the given providers
             (by instance id or domain), where the special value "library" selects
             the library. Omit to search the library and all available providers.
+            Provider items that are in the library are only left out of the results
+            when the library is included.
         """
         if not search_query.strip():
             # several providers reject an empty query with a hard error
@@ -565,12 +572,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if (url_result := await self._search_shareable_url(search_query)) is not None:
             return url_result
         # handle normal global search by querying the library and all providers
-        # the library is always searched first: it is fast and its results are used
-        # to deduplicate provider results and to skip provider searches for media
+        # the library (if included) is searched first: it is fast and its results are
+        # used to deduplicate provider results and to skip provider searches for media
         # types that already have a (near) exact match in the library
-        library_results = await self.search_library(search_query, media_types, limit=limit)
+        library_results = SearchResults()
         results_per_provider: list[SearchResults] = []
         if include_library:
+            library_results = await self.search_library(search_query, media_types, limit=limit)
             results_per_provider.append(library_results)
         all_results_complete = True
         if search_providers:
@@ -583,6 +591,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     library_results.albums,
                     library_results.tracks,
                     library_results.playlists,
+                    library_results.radio,
                     library_results.audiobooks,
                     library_results.podcasts,
                 )
@@ -921,6 +930,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
         return [*prepend_items, *prov_items]
 
+    @api_command("music/sort_options", required_scope=Scope.LIBRARY_READ)
+    def sort_options(self, listing: ListingType) -> list[SortOptionInfo]:
+        """
+        Return the sort options a listing offers, the listing's default first.
+
+        :param listing: The listing to get the sort options of.
+        :raises InvalidDataError: When the listing does not sort on the server.
+        """
+        if (options := LISTING_SORT_OPTIONS.get(listing)) is None:
+            raise InvalidDataError(f"Listing {listing.value} has no sort options")
+        return list(options)
+
     @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
         self,
@@ -1084,7 +1105,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
         return await self.tracks.library_items(
-            limit=limit, order_by="timestamp_added_desc", summary=False
+            limit=limit,
+            sort_field=SortField.TIMESTAMP_ADDED,
+            sort_direction=SortDirection.DESC,
+            summary=False,
         )
 
     @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
@@ -1197,13 +1221,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
             "WHERE media_type in ('audiobook', 'podcast_episode') "
-            f"AND provider in ('library','{provider_instance_id}')"
+            "AND provider in ('library', :provider_instance_id)"
         )
-
+        params: dict[str, Any] = {"provider_instance_id": provider_instance_id}
         if user:
             # NOTE: if no user was found, we will return playlog items for all users
-            query += f" AND userid = '{user.user_id}'"
-        db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+            query += " AND userid = :userid"
+            params["userid"] = user.user_id
+        db_rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
 
         result: list[tuple[MediaType, str]] = []
         for db_row in db_rows:
@@ -1214,10 +1239,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # so these entries must be audiobooks.
                 subquery = (
                     f"SELECT * FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                    f"WHERE media_type = 'audiobook' AND item_id = {db_row['item_id']} "
-                    f"AND provider_instance = '{provider_instance_id}'"
+                    "WHERE media_type = 'audiobook' AND item_id = :item_id "
+                    "AND provider_instance = :provider_instance_id"
                 )
-                subrow = await self.mass.music.database.get_rows_from_query(subquery)
+                subrow = await self.mass.music.database.get_rows_from_query(
+                    subquery,
+                    {
+                        "item_id": db_row["item_id"],
+                        "provider_instance_id": provider_instance_id,
+                    },
+                )
                 if len(subrow) != 1:
                     continue
                 result.append((MediaType.AUDIOBOOK, subrow[0]["provider_item_id"]))
@@ -1585,7 +1616,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
-    async def refresh_item(  # noqa: PLR0915
+    async def refresh_item(  # noqa: C901, PLR0912, PLR0915
         self,
         media_item: str | MediaItemType,
     ) -> MediaItemType | None:
@@ -1773,6 +1804,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
+        user_ids: list[str] = []
         # update generic playlog table (when not playing)
         if not is_playing:
             if user:
@@ -1938,6 +1970,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Get a track by its name, optionally with artist and album."""
         if track_version is None:
             track_name, version = parse_title_and_version(track_name)
+        else:
+            version = track_version
         search_query = f"{artist_name} - {track_name}" if artist_name else track_name
         search_result = await self.mass.music.search(
             search_query=search_query,
@@ -2236,6 +2270,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 self.domain, CONF_DELETED_PROVIDERS, deleted_providers
             )
             self.mass.config.save(True)
+
+        if not self.mass.streams.audio_analysis.database_ready:
+            self.logger.warning(
+                "Deferring removal of provider %s until the audio analysis database is ready; "
+                "cleanup will retry on restart",
+                provider_instance,
+            )
+            return
 
         # always clear cache when a provider is removed
         await self.mass.cache.clear()

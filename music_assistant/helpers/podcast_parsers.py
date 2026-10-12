@@ -376,6 +376,15 @@ def get_episode_positions(episodes: list[dict[str, Any]]) -> list[int]:
     return rank_episodes_by_date([ep.get("published") or None for ep in episodes])
 
 
+def get_publisher_number(value: Any) -> int | None:
+    """
+    Return a publisher's episode or season number, or None if it is not a positive integer.
+
+    :param value: The raw episode or season number from the source data.
+    """
+    return value if isinstance(value, int) and value > 0 else None
+
+
 def parse_podcast_episode(
     *,
     episode: dict[str, Any],
@@ -424,6 +433,8 @@ def parse_podcast_episode(
         name=episode_title,
         duration=int(episode_duration),
         position=position,
+        episode_number=get_publisher_number(episode.get("number")),
+        season=get_publisher_number(episode.get("season")),
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,

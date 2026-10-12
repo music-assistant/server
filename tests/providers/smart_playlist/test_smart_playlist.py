@@ -1066,7 +1066,7 @@ async def test_tracks_from_seeds_static_gets_headroom_above_target(
     # the radio provider re-samples base tracks per batch, and each mocked similar-track lookup
     # returns fresh mocks, so a base track drawn twice re-adds ids the provider cannot dedupe;
     # pin the provider's draws so the unique-id count does not depend on entropy
-    monkeypatch.setattr("music_assistant.providers.radio_playlist.random", random.Random(1))
+    monkeypatch.setattr("music_assistant.providers.radio_playlist.random", random.Random(1))  # noqa: S311 - test data
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"

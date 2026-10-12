@@ -167,7 +167,10 @@ async def test_add_cifs(mounter: LocalMounter, monkeypatch: pytest.MonkeyPatch) 
     assert args[:4] == ("mount", "-t", "cifs", "-o")
     assert args[4].startswith("ro,username=marcel,vers=3.0,cache=loose,")
     assert args[5:] == ("//nas.local/music", spec.path)
-    assert check_output.await_args.kwargs == {"env": {"PASSWD": "secret"}}
+    assert check_output.await_args.kwargs == {
+        "env": {"PASSWD": "secret"},
+        "timeout": local_mount.MOUNT_TIMEOUT,
+    }
 
 
 async def test_add_nfs(mounter: LocalMounter, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -234,6 +237,23 @@ async def test_mount_tool_missing(mounter: LocalMounter, monkeypatch: pytest.Mon
         await mounter.add(_spec(mounter), None)
 
     assert exc_info.value.translation_key == "mount_failed"
+
+
+async def test_mount_without_answer(mounter: LocalMounter, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mount that does not finish in time is undone and reported."""
+    unmount = AsyncMock(side_effect=SetupFailedError("busy"))
+    monkeypatch.setattr(local_mount, "unmount", unmount)
+    monkeypatch.setattr(local_mount, "check_output", AsyncMock(side_effect=TimeoutError))
+    spec = _spec(mounter, ShareType.NFS)
+
+    with pytest.raises(SetupFailedError) as exc_info:
+        await mounter.add(spec, None)
+
+    assert exc_info.value.translation_key == "share_no_answer"
+    assert exc_info.value.translation_owner == TRANSLATION_OWNER
+    unmount.assert_awaited_once()
+    assert unmount.await_args is not None
+    assert unmount.await_args.args[0] == spec.path
 
 
 async def test_reload_and_remove(mounter: LocalMounter, monkeypatch: pytest.MonkeyPatch) -> None:

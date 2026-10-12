@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
     Artist,
     Genre,
     ProviderMapping,
+    Radio,
     SearchResults,
     Track,
 )
@@ -555,6 +556,80 @@ async def test_search_dedup_filters_provider_items_already_in_library() -> None:
     assert [track.item_id for track in result.tracks] == ["lib1", "track2"]
 
 
+async def test_search_dedup_filters_provider_radio_already_in_library() -> None:
+    """Provider radio stations that map to a library radio station are filtered."""
+    library_radio = Radio(
+        item_id="lib1",
+        provider="library",
+        name="My Station",
+        provider_mappings={
+            ProviderMapping(
+                item_id="radio1",
+                provider_domain="prov_a",
+                provider_instance="prov_a",
+            )
+        },
+    )
+    prov = _make_search_provider("prov_a")
+    prov.search.return_value = SearchResults(
+        radio=[
+            Radio(
+                item_id=item_id,
+                provider="prov_a",
+                name=name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=item_id, provider_domain="prov_a", provider_instance="prov_a"
+                    )
+                },
+            )
+            for item_id, name in (("radio1", "My Station"), ("radio2", "My Station 2"))
+        ]
+    )
+    controller = _make_controller([prov])
+    controller.search_library = AsyncMock(  # type: ignore[method-assign]
+        return_value=SearchResults(radio=[library_radio])
+    )
+
+    result = await controller.search(
+        "My Station", media_types=[MediaType.RADIO], limit=5, providers=["library", "prov_a"]
+    )
+
+    assert [radio.item_id for radio in result.radio] == ["lib1", "radio2"]
+
+
+async def test_search_keeps_provider_items_in_library_when_library_excluded() -> None:
+    """Without the library in the selection, provider items that are in the library are kept."""
+    prov = _make_search_provider("prov_a")
+    prov.search.return_value = SearchResults(tracks=[_make_track("track1", "prov_a", "My Song")])
+    controller = _make_controller([prov])
+    controller.search_library = AsyncMock(  # type: ignore[method-assign]
+        return_value=SearchResults(
+            tracks=[
+                Track(
+                    item_id="lib1",
+                    provider="library",
+                    name="My Song",
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id="track1",
+                            provider_domain="prov_a",
+                            provider_instance="prov_a",
+                        )
+                    },
+                )
+            ]
+        )
+    )
+
+    result = await controller.search(
+        "My Song", media_types=[MediaType.TRACK], limit=5, providers=["prov_a"]
+    )
+
+    assert [track.item_id for track in result.tracks] == ["track1"]
+    controller.search_library.assert_not_awaited()
+
+
 async def test_search_includes_genre_results_from_library() -> None:
     """Genre results from the library search end up in the combined search result."""
     library_genre = Genre(
@@ -645,7 +720,7 @@ async def test_search_exact_match_shortcut_skipped_for_explicit_providers() -> N
     )
 
     await controller.search(
-        "Nirvana", media_types=[MediaType.ARTIST], limit=5, providers=["prov_a"]
+        "Nirvana", media_types=[MediaType.ARTIST], limit=5, providers=["library", "prov_a"]
     )
 
     prov.search.assert_awaited_once()

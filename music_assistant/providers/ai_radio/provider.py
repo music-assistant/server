@@ -1,4 +1,19 @@
-"""AI Radio Plugin Provider for Music Assistant."""
+"""
+AI Radio Plugin Provider for Music Assistant.
+
+State changes are announced to connected clients as PROVIDER_EVENT events with
+``object_id`` set to this provider's instance_id (``ai_radio``; the plugin is single
+instance). Every payload is a refetch hint without state::
+
+    {"event": "hosts_updated"}      -> refetch ai_radio/hosts/list
+    {"event": "stations_updated"}   -> refetch ai_radio/stations/list
+    {"event": "sections_updated"}   -> refetch ai_radio/sections/list
+    {"event": "queue_dj_updated"}   -> refetch ai_radio/queue_dj/status
+    {"event": "sessions_updated"}   -> refetch ai_radio/status
+
+The status endpoints apply the caller's player access, which is why the events themselves
+carry nothing.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +45,7 @@ from .constants import (
     ENGINE_DISCOVERY_TIMEOUT,
     ENGINE_RECHECK_GRACE,
     ENGINE_RETRY_DELAY,
+    EVENT_SESSIONS_UPDATED,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
     TRANSLATION_OWNER,
@@ -87,6 +103,8 @@ class AIRadioProvider(
         self._sections: dict[str, dict[str, Any]] = {}
         self._hosts: dict[str, dict[str, Any]] = {}
         self._dj_queues: dict[str, DJQueueState] = {}
+        # queue id -> the show session that holds that queue in flow mode
+        self._flow_mode_queues: dict[str, str] = {}
         self._dj_lock = asyncio.Lock()
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
@@ -207,6 +225,9 @@ class AIRadioProvider(
         for state in self._dj_queues.values():
             if state.task and not state.task.done():
                 state.task.cancel()
+        for queue_id in self._flow_mode_queues:
+            self.mass.streams.set_flow_mode_required(queue_id, self.instance_id, False)
+        self._flow_mode_queues.clear()
         for handle in self._unregister_handles:
             handle()
         self._unregister_handles.clear()
@@ -442,6 +463,7 @@ class AIRadioProvider(
                 self._run_session(session_id, program),
                 task_id=f"ai_radio_session_{session_id}",
             )
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
         self.logger.debug(
             "AI Radio session started: session=%s station=%s",
             session_id,
@@ -463,6 +485,7 @@ class AIRadioProvider(
             selected.task.cancel()
         selected.status = "stopped"
         selected.ended_at = utc_now_iso()
+        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
         await self._stop_session_queue(selected)
         self.logger.info(
             "AI Radio session stopped: session=%s station=%s",

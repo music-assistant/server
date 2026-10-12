@@ -62,8 +62,8 @@ AUDIO_STREAM_EXTENSIONS = TRACK_EXTENSIONS | AUDIOBOOK_EXTENSIONS | PODCAST_EPIS
 
 # config keys shared by the cloud filesystem providers, all collected by the setup flow
 CONF_CLIENT_ID = "client_id"
-CONF_CLIENT_SECRET = "client_secret"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_CLIENT_SECRET = "client_secret"  # noqa: S105 - config key
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 CONF_FOLDER_ID = "folder_id"
 
 
@@ -275,6 +275,10 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         # an outage (or expired credentials) surfaces as a raised error
         await self._scandir("", use_cache=False)
         return True
+
+    async def _unreachable_folders(self) -> list[str]:
+        """Return no folders: a cloud drive has no storage locations below its root."""
+        return []
 
     async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """

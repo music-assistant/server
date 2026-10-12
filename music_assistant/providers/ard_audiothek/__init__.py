@@ -64,7 +64,7 @@ if TYPE_CHECKING:
 
 # Config for login
 CONF_EMAIL = "email"
-CONF_TOKEN_BEARER = "token"
+CONF_TOKEN_BEARER = "token"  # noqa: S105 - config key
 CONF_EXPIRY_TIME = "token_expiry"
 CONF_USERID = "user_id"
 CONF_DISPLAY_NAME = "display_name"
@@ -78,7 +78,7 @@ CONF_MAX_BITRATE = "max_num_episodes"
 CONF_PODCAST_FINISHED = "podcast_finished_time"
 
 IDENTITY_TOOLKIT_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts"
-IDENTITY_TOOLKIT_TOKEN = "AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90"
+IDENTITY_TOOLKIT_TOKEN = "AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90"  # noqa: S105 - public API key of the ARD web app
 ARD_ACCOUNTS_URL = "https://accounts.ard.de"
 ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
 
@@ -496,6 +496,8 @@ class ARDAudiothek(MusicProvider):
                 show_episode_query.variable_values = {"coreId": item_id}
                 result = (await session.execute(show_episode_query))["itemByCoreId"]
                 seek = True
+            else:
+                raise UnplayableMediaError(f"Unsupported media type: {media_type}")
 
         streams = result["audioList"]
         if len(streams) == 0:
@@ -744,6 +746,7 @@ def _parse_podcast_episode(
             )
         },
         position=position,
+        # no episode_number: ARD's episodeNumber is the part in a "(2/5)" series, not the show's
         fully_played=progress[0],
         resume_position_ms=progress[1],
     )

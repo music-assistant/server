@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING, cast
 from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -205,14 +210,17 @@ class ImageProxyMixin:
                 return None  # can not happen, but guard for type checker
             media_item = retrieved_item
 
-        if media_item and media_item.metadata.images:
-            for img in media_item.metadata.images:
-                if img.type != img_type:
-                    continue
-                if not img.remotely_accessible and not resolve:
-                    # ignore image if its not remotely accessible and we don't allow resolving
-                    continue
-                return self.get_image_url(img, prefer_proxy=not img.remotely_accessible)
+        images: list[MediaItemImage] = list(media_item.metadata.images or [])
+        if isinstance(media_item, Track) and media_item.album and media_item.album.image:
+            # always prefer the album image for tracks
+            images.insert(0, media_item.album.image)
+        for img in images:
+            if img.type != img_type:
+                continue
+            if not img.remotely_accessible and not resolve:
+                # ignore image if its not remotely accessible and we don't allow resolving
+                continue
+            return self.get_image_url(img, prefer_proxy=not img.remotely_accessible)
 
         # retry with track's album
         if isinstance(media_item, Track) and media_item.album:
@@ -403,6 +411,9 @@ class ImageProxyMixin:
             # broadly catch all exceptions here to ensure we dont crash the request handler
             if isinstance(err, (MediaNotFoundError, FileNotFoundError)):
                 self.logger.log(VERBOSE_LOG_LEVEL, "Image not found: %s", path)
+            elif isinstance(err, (RetriesExhausted, ResourceTemporarilyUnavailable)):
+                # an upstream outage is expected now and then, a trace would only add noise
+                self.logger.warning("Error while fetching image %s: %s", path, str(err))
             else:
                 self.logger.warning(
                     "Error while fetching image %s: %s",

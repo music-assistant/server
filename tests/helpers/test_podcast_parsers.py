@@ -259,6 +259,16 @@ def test_episode_position_uses_caller_supplied_position() -> None:
     assert mass_episode.position == 5
 
 
+def test_episode_and_season_numbers_from_feed() -> None:
+    """The itunes:episode and itunes:season numbers are kept, a season of 0 is dropped."""
+    mass_episode = _parse(_episode(number=12, season=2))
+    assert mass_episode is not None
+    assert (mass_episode.episode_number, mass_episode.season) == (12, 2)
+    mass_episode = _parse(_episode(season=0))
+    assert mass_episode is not None
+    assert (mass_episode.episode_number, mass_episode.season) == (None, None)
+
+
 def test_positions_use_episode_numbers_when_all_numbered() -> None:
     """A fully numbered feed keeps its own itunes:episode numbers."""
     episodes = [_episode(number=3), _episode(number=1), _episode(number=2)]

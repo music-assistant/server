@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any, Final
 
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, ImageType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
-from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -172,6 +172,36 @@ def provider_mappings_for_update(
         *update,
         *(mapping for mapping in stored if mapping.provider_instance not in updated_instances),
     }
+
+
+def preferred_thumb(
+    images: Iterable[dict[str, Any]] | None, hidden_sources: AbstractSet[str]
+) -> dict[str, Any] | None:
+    """
+    Return the thumb to show of a library item's stored (raw) images.
+
+    A library item can carry the artwork of several music sources, not all of which the
+    viewer can be shown. The first thumb that can be shown is preferred, falling back to
+    the first thumb.
+
+    :param images: The stored (raw) images of the item.
+    :param hidden_sources: Music sources hidden from the viewer.
+    """
+    thumbs = [image for image in images or () if image["type"] == ImageType.THUMB.value]
+    # same semantics as the MediaItem.available property: an empty cache means unknown
+    available_providers: AbstractSet[str] = get_global_cache_value("available_providers") or set()
+    return next(
+        (
+            image
+            for image in thumbs
+            if image.get("remotely_accessible")
+            or (
+                image["provider"] not in hidden_sources
+                and (not available_providers or image["provider"] in available_providers)
+            )
+        ),
+        thumbs[0] if thumbs else None,
+    )
 
 
 def sibling_instance_mappings(

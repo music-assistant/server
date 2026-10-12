@@ -8,7 +8,9 @@ import hmac
 from unittest import mock
 
 import pytest
-from yandex_music.exceptions import NetworkError
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from yandex_music import ClientAsync
+from yandex_music.exceptions import BadRequestError, NetworkError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.providers.kion_music.api_client import KionMusicClient
@@ -210,6 +212,35 @@ async def test_rotor_feedback_unknown_type_falls_back(
     mock_client.rotor_station_feedback_skip.assert_not_called()
 
 
+@pytest.mark.parametrize("event", ["radioStarted", "trackStarted", "trackFinished", "skip"])
+async def test_rotor_feedback_sends_json_through_real_client(
+    client: KionMusicClient, event: str
+) -> None:
+    """Radio events use the library's JSON transport, including the batch identifier."""
+    real_client = ClientAsync("fake-token", base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(real_client.request, "post", return_value="ok") as request_post:
+        assert await client.send_rotor_station_feedback(
+            "user:onyourwave",
+            event,
+            track_id="42",
+            batch_id="batch-1",
+            total_played_seconds=10,
+        )
+
+    request_post.assert_awaited_once()
+    args, kwargs = request_post.call_args
+    assert args[0] == f"{DEFAULT_BASE_URL}/rotor/station/user:onyourwave/feedback"
+    assert kwargs["params"] == {"batch-id": "batch-1"}
+    assert "data" not in kwargs
+    assert kwargs["json"]["type"] == event
+    assert kwargs["json"]["timestamp"].endswith("Z")
+    if event != "radioStarted":
+        assert kwargs["json"]["trackId"] == "42"
+    if event in ("trackFinished", "skip"):
+        assert kwargs["json"]["totalPlayedSeconds"] == 10.0
+
+
 # ─── get_track_file_info: params + sign construction ─────────────────────────
 
 
@@ -217,22 +248,20 @@ async def test_get_track_file_info_normalizes_codec_whitespace(
     client: KionMusicClient,
 ) -> None:
     """Whitespace around codec tokens is stripped from both params and sign string."""
-    mock_client = mock.AsyncMock()
-    mock_client.base_url = DEFAULT_BASE_URL
-    mock_request = mock.AsyncMock()
-    mock_request.get = mock.AsyncMock(return_value={"downloadInfo": None})
-    mock_client._request = mock_request
-    client._client = mock_client
+    real_client = ClientAsync("fake-token", base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(
+        real_client.request, "get", return_value={"downloadInfo": None}
+    ) as request_get:
+        await client.get_track_file_info(
+            "42",
+            quality="lossless",
+            codecs=" flac-mp4 , flac , aac-mp4 ",
+            transport="raw",
+        )
 
-    await client.get_track_file_info(
-        "42",
-        quality="lossless",
-        codecs=" flac-mp4 , flac , aac-mp4 ",
-        transport="raw",
-    )
-
-    mock_request.get.assert_awaited_once()
-    _, kwargs = mock_request.get.call_args
+    request_get.assert_awaited_once()
+    _, kwargs = request_get.call_args
     params = kwargs["params"]
     assert params["codecs"] == "flac-mp4,flac,aac-mp4"
 
@@ -241,22 +270,20 @@ async def test_get_track_file_info_builds_signed_params(
     client: KionMusicClient,
 ) -> None:
     """Sign string is ts+trackId+quality+codecs_no_commas+transport, b64(HMAC-SHA256)[:-1]."""
-    mock_client = mock.AsyncMock()
-    mock_client.base_url = DEFAULT_BASE_URL
-    mock_request = mock.AsyncMock()
-    mock_request.get = mock.AsyncMock(return_value={"downloadInfo": None})
-    mock_client._request = mock_request
-    client._client = mock_client
+    real_client = ClientAsync("fake-token", base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(
+        real_client.request, "get", return_value={"downloadInfo": None}
+    ) as request_get:
+        await client.get_track_file_info(
+            "42",
+            quality="lossless",
+            codecs="flac-mp4,flac",
+            transport="encraw",
+        )
 
-    await client.get_track_file_info(
-        "42",
-        quality="lossless",
-        codecs="flac-mp4,flac",
-        transport="encraw",
-    )
-
-    mock_request.get.assert_awaited_once()
-    args, kwargs = mock_request.get.call_args
+    request_get.assert_awaited_once()
+    args, kwargs = request_get.call_args
     assert args[0] == f"{DEFAULT_BASE_URL}/get-file-info"
     params = kwargs["params"]
     assert params["trackId"] == "42"
@@ -392,3 +419,46 @@ async def test_get_track_lyrics_missing_track_returns_none(
     client._client = mock_client
 
     assert await client.get_track_lyrics("42") == (None, False)
+
+
+async def test_get_tracks_rejected_request_raises(client: KionMusicClient) -> None:
+    """A rejected batch is a request failure, never a successful empty response."""
+    real_client = ClientAsync()
+    client._client = real_client
+    with (
+        mock.patch.object(real_client.request, "post", side_effect=BadRequestError("rejected")),
+        mock.patch.object(client, "_reconnect", new_callable=mock.AsyncMock) as reconnect,
+        pytest.raises(ResourceTemporarilyUnavailable) as caught,
+    ):
+        await client.get_tracks(["101", "102"])
+    assert isinstance(caught.value.__cause__, BadRequestError)
+    reconnect.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["get_liked_albums", "get_liked_artists", "get_user_playlists", "get_liked_playlists"],
+)
+async def test_empty_library_lists_through_real_client(
+    client: KionMusicClient, method: str
+) -> None:
+    """Empty service lists remain empty after real library deserialization."""
+    real_client = ClientAsync(base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(real_client.request, "get", return_value=[]) as request_get:
+        assert await getattr(client, method)() == []
+
+    request_get.assert_awaited_once()
+
+
+@pytest.mark.parametrize("response", [None, [], "invalid", 42])
+async def test_landing_invalid_response_returns_none(
+    client: KionMusicClient, response: object
+) -> None:
+    """Invalid landing JSON has the public error result, not empty categories."""
+    real_client = ClientAsync(base_url=DEFAULT_BASE_URL)
+    client._client = real_client
+    with mock.patch.object(real_client.request, "get", return_value=response) as request_get:
+        assert await client._get_landing_waves("waves") is None
+
+    request_get.assert_awaited_once_with(f"{DEFAULT_BASE_URL}/landing-blocks/waves")

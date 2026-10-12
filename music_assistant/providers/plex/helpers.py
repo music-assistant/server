@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+import plexapi
 import requests
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
 from music_assistant_models.media_items import MediaItemImage, UniqueList
@@ -20,6 +21,7 @@ from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
+from music_assistant.constants import APPLICATION_NAME
 from music_assistant.providers.plex.constants import AUTH_TOKEN_UNAUTH
 
 if TYPE_CHECKING:
@@ -126,6 +128,22 @@ def _library_tracks_progress(section: PlexLibrarySection) -> bool:
             err,
         )
     return False
+
+
+def configure_plex_identity(client_id: str) -> None:
+    """
+    Configure plexapi to identify as Music Assistant with the given client identifier.
+
+    :param client_id: Stable client identifier to advertise (Music Assistant's server id).
+    """
+    # plexapi defaults the client identifier to the MAC address, which is unstable in
+    # containers. Plex binds OAuth tokens to it, so it must stay stable across restarts.
+    plexapi.X_PLEX_PRODUCT = APPLICATION_NAME
+    plexapi.X_PLEX_DEVICE_NAME = APPLICATION_NAME
+    plexapi.X_PLEX_IDENTIFIER = client_id
+    plexapi.BASE_HEADERS["X-Plex-Product"] = APPLICATION_NAME
+    plexapi.BASE_HEADERS["X-Plex-Device-Name"] = APPLICATION_NAME
+    plexapi.BASE_HEADERS["X-Plex-Client-Identifier"] = client_id
 
 
 def extract_library_name(conf_value: str) -> str:

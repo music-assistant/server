@@ -937,18 +937,19 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     album_info = collect_album_info(full_item, preferred_instance=preferred_instance)
     podcast_info = collect_podcast_info(full_item, preferred_instance=preferred_instance)
 
-    # collect images
-    images: list[ImageInfo] = []
-    if hasattr(full_item, "metadata") and full_item.metadata and full_item.metadata.images:
-        for img in full_item.metadata.images:
-            images.append(
-                ImageInfo(
-                    type=img.type.value,
-                    path=img.path,
-                    provider=img.provider,
-                    remotely_accessible=img.remotely_accessible,
-                )
-            )
+    # collect images, for a track the image of its album first as that is the image it shows
+    item_images = UniqueList(full_item.metadata.images or [])
+    if isinstance(full_item, Track) and full_item.album and full_item.album.image:
+        item_images = UniqueList([full_item.album.image, *item_images])
+    images = [
+        ImageInfo(
+            type=img.type.value,
+            path=img.path,
+            provider=img.provider,
+            remotely_accessible=img.remotely_accessible,
+        )
+        for img in item_images
+    ]
 
     return PlaylistItem(
         path=primary_uri,

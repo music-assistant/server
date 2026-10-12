@@ -26,8 +26,8 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.22",
-  "music-assistant-models==1.1.214",
-  "music-assistant-frontend==2.17.330",
+  "music-assistant-models==1.1.221",
+  "music-assistant-frontend==2.17.337",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -38,7 +38,7 @@ dependencies = [
   "defusedxml==0.7.1",
   "markdownify==1.2.3",
   "shortuuid==1.0.13",
-  "zeroconf==0.149.16",
+  "zeroconf==0.151.5",
   "uv>=0.8.0",
   "librosa==1.0.0",
   "numpy==2.3.5", # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
@@ -153,6 +153,7 @@ disallow_untyped_decorators = true
 disallow_untyped_defs = true
 enable_error_code = [
   "ignore-without-code",
+  "possibly-undefined",
   "redundant-self",
   "truthy-iterable",
 ]
@@ -240,19 +241,14 @@ ignore = [
   "PTH123",
   "G004",
   "S104",
-  "S105",
   "S106",
   "SLF001",
   "SIM102",
   "PERF401",
   "ARG002",
-  "S311",
   "TRY301",
-  "PLR0912",
   "B904",
   "S324",
-  "ERA001",
-  "C901",
   "S304",
   "TRY300",
   "S608",
@@ -265,6 +261,12 @@ select = ["ALL"]
 # Enforce the multi-line docstring summary on the second line (the pep257 convention disables both
 # D212 and D213; we re-enable D213 so our "summary starts on the next line" style is checked).
 extend-select = ["D213"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests use made-up tokens and passwords as fixtures
+"tests/**" = ["S105"]
+# the provider templates show example code in comments
+"music_assistant/providers/_demo_*/**" = ["ERA001"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false

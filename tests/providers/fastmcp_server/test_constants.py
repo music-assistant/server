@@ -1,30 +1,27 @@
-"""Sanity tests for invariants in ``provider.constants``."""
+"""Sanity tests for v2 configuration key routing."""
 
 from __future__ import annotations
 
 from music_assistant.providers.fastmcp_server.constants import (
-    CONF_META_TOOL_DISCOVERY,
-    HOT_SWAPPABLE_KEYS,
-    PERMISSION_KEYS,
+    CONF_DEFAULT_POLICY,
     RESOURCE_KEYS,
+    is_hot_swappable_key,
+    is_policy_key,
 )
 
 
-def test_permission_keys_count() -> None:
-    """26 permission keys: 4 verbs x 4 categories + 5 debug tags + 5 config tags."""
-    assert len(PERMISSION_KEYS) == 26
+def test_v2_policy_and_resource_changes_are_hot_swappable() -> None:
+    """Static and hashed dynamic policy keys hot-swap; endpoint keys restart."""
+    assert is_policy_key(CONF_DEFAULT_POLICY)
+    assert is_policy_key("policy_mode_debug_events")
+    assert is_policy_key("policy_token_deadbeef")
+    assert all(is_hot_swappable_key(key) for key in RESOURCE_KEYS)
+    assert is_hot_swappable_key("policy_token_query_library_deadbeef")
+    assert not is_hot_swappable_key("mount_path")
 
 
-def test_resource_keys_count() -> None:
-    """3 resource toggles."""
-    assert len(RESOURCE_KEYS) == 3
-
-
-def test_hot_swappable_includes_perm_resource_and_meta_keys() -> None:
-    """Hot-swappable set is exactly this union — anything else triggers a runtime restart."""
-    assert PERMISSION_KEYS | RESOURCE_KEYS | {CONF_META_TOOL_DISCOVERY} == HOT_SWAPPABLE_KEYS
-
-
-def test_no_overlap_perm_resource() -> None:
-    """Permission and resource key sets don't overlap (cleanly partitioned)."""
-    assert PERMISSION_KEYS.isdisjoint(RESOURCE_KEYS)
+def test_v1_keys_are_not_recognized_as_policy_or_hot_swappable() -> None:
+    """Stored legacy keys are inert under the breaking v2 contract."""
+    for key in ("query_library", "dynamic_api_read", "require_confirmation"):
+        assert not is_policy_key(key)
+        assert not is_hot_swappable_key(key)

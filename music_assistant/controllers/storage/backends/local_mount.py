@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from logging import Logger
 
 MOUNT_ROOT: Final[str] = "/tmp/music-assistant-mounts"  # noqa: S108
+MOUNT_TIMEOUT: Final[int] = 30
 LOCAL_VERSIONS: Final[dict[ShareType, tuple[str, ...]]] = {
     ShareType.CIFS: ("1.0", "2.0", "2.1", "3.0", "3.1.1"),
     ShareType.NFS: ("3", "4", "4.1", "4.2"),
@@ -167,9 +168,17 @@ class LocalMounter(ShareMounter):
         self.logger.debug("Mounting network share %s on %s", spec.name, spec.path)
         try:
             await asyncio.to_thread(_prepare_mountpoint, MOUNT_ROOT, spec.path)
-            returncode, output = await check_output(*mount_cmd, env=env)
+            returncode, output = await check_output(*mount_cmd, env=env, timeout=MOUNT_TIMEOUT)
         except UnsafeFolderError as err:
             raise _unsafe_folder(spec, err) from err
+        except TimeoutError as err:
+            # the mount may have completed just before the mount tool was stopped
+            with suppress(SetupFailedError):
+                await unmount(spec.path, self.logger, _is_mounted)
+            msg = f"Mounting {spec.name} did not finish within {MOUNT_TIMEOUT} seconds"
+            raise SetupFailedError(
+                msg, translation_key="share_no_answer", translation_owner=TRANSLATION_OWNER
+            ) from err
         except OSError as err:
             msg = f"Unable to mount {spec.name}: {err}"
             raise SetupFailedError(
@@ -245,7 +254,7 @@ class LocalMounter(ShareMounter):
             await asyncio.to_thread(_check_own_mountpoint, MOUNT_ROOT, spec.path)
         except UnsafeFolderError as err:
             raise _unsafe_folder(spec, err) from err
-        await unmount(spec.path, self.logger)
+        await unmount(spec.path, self.logger, _is_mounted)
 
 
 def _probe_local_mount_support() -> tuple[dict[ShareType, list[str]], str | None]:
@@ -255,6 +264,11 @@ def _probe_local_mount_support() -> tuple[dict[ShareType, list[str]], str | None
     euid = os.geteuid() if system in ("Linux", "Darwin") else None
     cap_eff = _read_cap_eff() if system == "Linux" else None
     return get_local_mount_support(system, euid, cap_eff, _has_helper)
+
+
+def _is_mounted(path: str) -> bool:
+    """Return whether a share is mounted on a path, without touching the share (blocking)."""
+    return is_mounted(path, read_mountinfo())
 
 
 def _read_cap_eff() -> int | None:

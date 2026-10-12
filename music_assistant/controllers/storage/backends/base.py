@@ -60,6 +60,14 @@ class ShareMounter(ABC):
         """
         return None
 
+    async def get_mount_paths(self) -> list[str]:
+        """
+        Return the paths of the mounts of network shares the backend has, working or not.
+
+        A backend whose mounts are all managed by Music Assistant need not list them.
+        """
+        return []
+
     async def assign_name(self, spec: NetworkShareSpec, taken: Collection[str]) -> NetworkShareSpec:
         """
         Return a new share with its name and path.

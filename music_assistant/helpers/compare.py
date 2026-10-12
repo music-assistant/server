@@ -82,8 +82,8 @@ _ALBUM_SUFFIX_ALTERNATION: Final = "|".join(re.escape(suffix) for suffix in _ALB
 # the trailing retail suffix as it appears in a raw album title: set off by a dash
 # (any style, and only the space in front of it counts, so "K-EP" keeps its name) or
 # wrapped in brackets, which need no space to be unambiguous. A bare trailing word is
-# deliberately not accepted, as it is just as likely part of the title itself
-# ("The SL2 EP", "Saturday Night Single")
+# deliberately not accepted, as it is just as likely part of the title itself,
+# as in "The SL2 EP" or "Saturday Night Single"
 _ALBUM_SUFFIX_PATTERN = re.compile(
     rf"\s+[-\u2013\u2014]\s*(?P<suffix>{_ALBUM_SUFFIX_ALTERNATION})\s*$"
     rf"|\s*[(\[](?P<bracketed>{_ALBUM_SUFFIX_ALTERNATION})[)\]]\s*$",
@@ -933,10 +933,11 @@ def compare_external_ids(
     external_id_type: ExternalID,
 ) -> bool | None:
     """Compare external ids and return True if a match was found."""
+    validate_isrc = external_id_type == ExternalID.ISRC
     base_ids = {
         normalize_external_id(external_id_type, value)
         for current_type, value in external_ids_base
-        if current_type == external_id_type
+        if current_type == external_id_type and (not validate_isrc or is_valid_isrc(value))
     }
     if not base_ids:
         # return early if the requested external id type is not present in the base set
@@ -944,7 +945,7 @@ def compare_external_ids(
     compare_ids = {
         normalize_external_id(external_id_type, value)
         for current_type, value in external_ids_compare
-        if current_type == external_id_type
+        if current_type == external_id_type and (not validate_isrc or is_valid_isrc(value))
     }
     if not compare_ids:
         # return early if the requested external id type is not present in the compare set
@@ -1371,7 +1372,7 @@ def _is_missing_remaster_version(base_version: str, compare_version_value: str) 
         return False
     version_tokens = base_tokens or compare_tokens
     return "remaster" in version_tokens and all(
-        token == "remaster" or token.isdigit() for token in version_tokens
+        word == "remaster" or word.isdigit() for word in version_tokens
     )
 
 

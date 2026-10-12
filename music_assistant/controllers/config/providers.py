@@ -48,7 +48,9 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
 from music_assistant.controllers.config.helpers import (
+    _mask_encrypted,
     _provider_status,
+    _reject_encrypted_values,
     _with_translation_owner,
 )
 from music_assistant.helpers.api import api_command
@@ -217,14 +219,14 @@ class ProviderConfigMixin:
         self._ensure_source_visible(self.get(f"{CONF_PROVIDERS}/{instance_id}"))
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_provider_config_value(instance_id, key)) is not None:
-            return raw_value
+            return _mask_encrypted(raw_value)
         conf = await self.get_provider_config(instance_id)
         if key not in conf.values:
             if default is not None:
                 return default
             msg = f"Config key {key} not found for provider {instance_id}"
             raise KeyError(msg)
-        return (
+        return _mask_encrypted(
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
@@ -340,6 +342,7 @@ class ProviderConfigMixin:
             msg = "Adding a provider is only possible through the setup flow"
             raise ValueError(msg)
         self._check_provider_manage_permission(instance_id)
+        _reject_encrypted_values(values)
         config = await self._update_provider_config(instance_id, values)
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)

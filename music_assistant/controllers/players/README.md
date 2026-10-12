@@ -99,9 +99,13 @@ Contains standalone helper functions and decorators:
 - `handle_player_command` decorator for command validation
 - `AnnounceData` type definition
 
-## Lock Ordering
+## Locking
 
-Player commands are serialized per player with `get_player_lock`. A group player always locks its members from under its own lock (forming, dissolving and member changes all go through the leader), so **a command that needs both locks must take the group's lock first**.
+Player commands are serialized per player with `get_player_lock`. A command that cannot get the lock within 30 seconds runs without it, so a player stays responsive when the previous holder hangs on a dead provider call. A strict acquisition (`strict=True`) never does that: it keeps waiting, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError`. The queue play actions and the next-track handover take the lock strictly, since two of them running at once on one queue corrupt it. The timeouts live in [constants.py](constants.py).
+
+### Lock Ordering
+
+A group player always locks its members from under its own lock (forming, dissolving and member changes all go through the leader), so **a command that needs both locks must take the group's lock first**.
 
 A command that locks a member and only then reaches the group — a power off detaching the player from its group is the typical one — has to acquire the group's lock up front. Taking them the other way round deadlocks against any concurrent command on that group. Nested acquisitions within the same task are re-entrant, so locking the group up front costs nothing further down the call chain.
 

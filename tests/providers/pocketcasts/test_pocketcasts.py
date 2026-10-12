@@ -264,6 +264,30 @@ async def test_episodes_get_their_publish_date(
     assert episodes[1].metadata.release_date is None
 
 
+async def test_episodes_get_the_publisher_episode_and_season_number(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """The feed's episode and season numbers are kept, and a zero season means none."""
+    client.get_podcast_episodes.return_value = (
+        "Podcast One",
+        [
+            _feed_episode(uuid="episode-1", number=5, season=17),
+            _feed_episode(uuid="episode-2", number=710, season=0),
+            _feed_episode(uuid="episode-3", number=None, season=None),
+        ],
+    )
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+
+    episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
+
+    assert [(ep.episode_number, ep.season) for ep in episodes] == [
+        (5, 17),
+        (710, None),
+        (None, None),
+    ]
+
+
 async def test_single_episode_gets_its_publish_date(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:
@@ -278,6 +302,23 @@ async def test_single_episode_gets_its_publish_date(
     episode = await provider.get_podcast_episode("podcast-1:episode-1")
 
     assert episode.metadata.release_date == datetime(2026, 9, 16, 22, 55, 58, tzinfo=UTC)
+
+
+async def test_single_episode_gets_the_publisher_episode_and_season_number(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Fetching one episode keeps its episode and season numbers."""
+    client.get_episode_details.return_value = {
+        "uuid": "episode-1",
+        "title": "Episode 1",
+        "url": "https://example.com/ep1.mp3",
+        "episodeNumber": 14,
+        "episodeSeason": 2,
+    }
+
+    episode = await provider.get_podcast_episode("podcast-1:episode-1")
+
+    assert (episode.episode_number, episode.season) == (14, 2)
 
 
 async def test_episodes_name_their_podcast(

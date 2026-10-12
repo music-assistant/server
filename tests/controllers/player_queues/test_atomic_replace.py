@@ -9,6 +9,7 @@ new items are ready, and hands the audio over in a single swap.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -26,6 +27,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.models.player import Player
 
 NEW_TRACKS = ["n1", "n2", "n3"]
 PLAYING_TRACKS = ["p1", "p2", "p3"]
@@ -309,3 +311,33 @@ async def test_replacing_an_ended_queue_keeps_the_sources_it_just_stored() -> No
     assert _queue(ctrl).ended is False
     assert [source.item_id for source in ctrl._queue_data["q1"].source_items] == ["pl1"]
     assert _item_ids(ctrl) == NEW_TRACKS
+
+
+async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_position() -> None:
+    """A stale player report preserves the new queue position after replacement."""
+    ctrl = _controller()
+    replaced = _load_playing_queue(ctrl)
+    await ctrl.play_media("q1", _playlist(), QueueOption.REPLACE)
+    # Set the position normally established by the mocked play_index.
+    new_items = ctrl._queue_data["q1"].items
+    queue = _queue(ctrl)
+    queue.state = PlaybackState.PLAYING
+    queue.current_index = 0
+    queue.current_item = new_items[0]
+    queue.next_item = new_items[1]
+    player = SimpleNamespace(
+        player_id="q1",
+        active_output_protocol="native",
+        current_media=SimpleNamespace(
+            source_id="q1", queue_item_id=replaced[0].queue_item_id, uri=None
+        ),
+        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=12.0),
+    )
+
+    updated = ctrl._update_current_index_from_player(queue, cast("Player", player))
+
+    assert queue.current_index == 0
+    assert queue.current_item is new_items[0]
+    assert queue.next_item is new_items[1]
+    assert queue.elapsed_time == 0
+    assert updated is False

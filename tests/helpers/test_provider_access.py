@@ -13,6 +13,7 @@ from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.helpers.provider_access import (
     access_allows,
     derived_provider_filter,
+    hidden_music_sources,
     own_music_sources,
     playback_instance_for,
     playback_sources,
@@ -154,6 +155,21 @@ def test_visible_music_sources_hides_a_malformed_record() -> None:
     set_music_source_access(mass, {"spotify--aaaa": None, "tidal--bbbb": None})
     mass.config.get(CONF_PROVIDERS, {})["spotify--aaaa"]["access"] = "not-a-record"
     assert visible_music_sources(mass, _user(MEMBER)) == ["tidal--bbbb"]
+
+
+def test_hidden_music_sources_lists_the_sources_a_user_may_not_see() -> None:
+    """The hidden sources are the music sources left out of the user's visible ones."""
+    mass = _mass()
+    set_music_source_access(
+        mass,
+        {
+            "builtin": None,
+            "spotify--aaaa": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "tidal--bbbb": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    assert hidden_music_sources(mass, _user(MEMBER)) == {"spotify--aaaa"}
+    assert hidden_music_sources(mass, _user(OWNER)) == {"tidal--bbbb"}
 
 
 def test_visible_playback_sources_for_anonymous_playback() -> None:

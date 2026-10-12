@@ -3,12 +3,15 @@
 from typing import Any
 from unittest.mock import Mock, patch
 
+import plexapi
 import pytest
 import requests
 from plexapi.exceptions import BadRequest
 
+from music_assistant.constants import APPLICATION_NAME
 from music_assistant.providers.plex.helpers import (
     PlexServerAccessError,
+    configure_plex_identity,
     get_explicit,
     get_musicbrainz_id,
     is_library_scan_finished,
@@ -289,3 +292,21 @@ def test_resolve_server_auth_token_server_unreachable() -> None:
     session.get.side_effect = requests.exceptions.ConnectionError("unreachable")
     with pytest.raises(requests.exceptions.ConnectionError):
         resolve_server_auth_token(ACCOUNT_TOKEN, PLEX_URL, session, myplex_account=_plex_account())
+
+
+def test_configure_plex_identity_sets_stable_headers() -> None:
+    """Plex client headers advertise Music Assistant and the supplied stable client id."""
+    with (
+        patch.object(plexapi, "X_PLEX_PRODUCT", "plexapi"),
+        patch.object(plexapi, "X_PLEX_DEVICE_NAME", "container-hostname"),
+        patch.object(plexapi, "X_PLEX_IDENTIFIER", "02:42:ac:11:00:02"),
+        patch.dict(plexapi.BASE_HEADERS, clear=False),
+    ):
+        configure_plex_identity("stable-server-id")
+
+        assert plexapi.X_PLEX_PRODUCT == APPLICATION_NAME
+        assert plexapi.X_PLEX_DEVICE_NAME == APPLICATION_NAME
+        assert plexapi.X_PLEX_IDENTIFIER == "stable-server-id"
+        assert plexapi.BASE_HEADERS["X-Plex-Product"] == APPLICATION_NAME
+        assert plexapi.BASE_HEADERS["X-Plex-Device-Name"] == APPLICATION_NAME
+        assert plexapi.BASE_HEADERS["X-Plex-Client-Identifier"] == "stable-server-id"

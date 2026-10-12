@@ -76,7 +76,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     """
     Decorator to check and log commands to players.
 
-    Validates that the player exists and is available before executing the command.
+    Validates that the player exists and is available before executing the command,
+    raising PlayerUnavailableError otherwise.
     Also checks user permissions and optionally acquires a per-player lock.
 
     :param func: The function to wrap (when used without parentheses).
@@ -93,20 +94,14 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
             """Log and handle_player_command commands to players."""
             player_id = kwargs.get("player_id") or args[0]
             assert isinstance(player_id, str)  # for type checking
-            if (player := self._players.get(player_id)) is None or not player.available:
-                self.logger.warning(
-                    "Ignoring command %s for unavailable player %s",
-                    fn.__name__,
-                    player_id,
-                )
-                return
 
             # this should not happen, but in case a player_id of a protocol player is used,
             # auto-resolve it to the parent player
-            if player.protocol_parent_id and (
-                protocol_parent := self._players.get(player.protocol_parent_id)
+            if (
+                (player := self._players.get(player_id))
+                and player.protocol_parent_id
+                and (protocol_parent := self._players.get(player.protocol_parent_id))
             ):
-                player = protocol_parent
                 if "player_id" in kwargs:
                     kwargs["player_id"] = protocol_parent.player_id
                 else:
@@ -117,6 +112,10 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                     protocol_parent.player_id,
                     fn.__name__,
                 )
+                player_id = protocol_parent.player_id
+
+            player = self.get_player(player_id, raise_unavailable=True)
+            assert player is not None  # for type checking
 
             current_user = get_current_user()
             if current_user and not has_player_access(current_user, player.player_id, player):

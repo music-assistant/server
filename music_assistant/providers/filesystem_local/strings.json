@@ -3,8 +3,15 @@
     "path": {
       "label": "Folder"
     },
-    "folder": {
-      "label": "Folder: {0}"
+    "overlap_warning": {
+      "label": "Files in this folder are already read by: {0}. Using it would import them twice."
+    },
+    "overlap_choice": {
+      "label": "Use this folder anyway?",
+      "options": {
+        "use_folder": "Use this folder",
+        "choose_another": "Choose another folder"
+      }
     },
     "setup_content_type": {
       "label": "What do you want to add?",
@@ -49,11 +56,15 @@
   "setup_flow": {
     "user": {
       "title": "Choose a folder"
+    },
+    "overlap": {
+      "title": "Already read by another source"
     }
   },
   "errors": {
     "music_directory_not_found": "The folder {0} does not exist.",
     "folder_not_allowed": "The folder {0} is not in a storage location you can use.",
-    "storage_location_unavailable": "The storage location at {0} is not available right now."
+    "storage_location_unavailable": "The storage location at {0} is not available right now.",
+    "path_outside_folder": "{0} lies outside the folder of this source and can not be read."
   }
 }

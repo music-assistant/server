@@ -41,13 +41,13 @@ API_DEFAULT_RESOURCE_VERSION = (
 
 # Provider configuration keys
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
+CONF_PASSWORD = "password"  # noqa: S105 - config key
 CONF_LANGUAGES = "languages"
 CONF_KIDS_MODE = "kids_mode"
 
 
 # LANGUAGES - Available languages for discovery features (recommendations, search)
-# Format: {name: isoValue}
+# mapping each name to its iso value
 DEFAULT_LANGUAGES = {
     "English": "en",
 }
@@ -72,3 +72,9 @@ CACHE_CATEGORY_AUDIOBOOK = 1
 CACHE_CATEGORY_PODCAST = 2
 CACHE_CATEGORY_PODCAST_EPISODES = 3
 CACHE_CATEGORY_PODCAST_EPISODE = 4
+
+# CACHE EXPIRATION (seconds)
+CACHE_EXPIRATION_AUDIOBOOK = 12 * 3600
+CACHE_EXPIRATION_PODCAST = 3600
+CACHE_EXPIRATION_PODCAST_EPISODE = 12 * 3600
+CACHE_EXPIRATION_PODCAST_EPISODES = 3600

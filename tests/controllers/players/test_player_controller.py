@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
@@ -41,6 +42,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
+    ResourceBusyError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
@@ -654,6 +656,73 @@ class TestPlayerCommandPermission:
         """Announcing a shared speaker's id as the client id does not grant command access."""
         with pytest.raises(InsufficientPermissions):
             await self._stop(mock_mass, "living_room", private=False, own_player_id="living_room")
+
+
+class TestPlayerCommandAvailability:
+    """The command decorator refuses commands for players that cannot take them."""
+
+    async def test_command_for_unknown_player_raises(self, mock_mass: MagicMock) -> None:
+        """A command addressed at an unknown player id raises PlayerUnavailableError."""
+        controller = self._setup(mock_mass)
+
+        with pytest.raises(PlayerUnavailableError):
+            await controller.cmd_stop("missing")
+
+    async def test_command_for_unavailable_player_raises(
+        self, mock_mass: MagicMock, provider: MockProvider
+    ) -> None:
+        """A command addressed at an unavailable player raises PlayerUnavailableError."""
+        player = MockPlayer(provider, "p1", "Player 1")
+        player._attr_available = False
+        controller = self._setup(mock_mass, player)
+        controller._handle_cmd_volume_set = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerUnavailableError):
+            await controller.cmd_volume_set("p1", 50)
+
+        controller._handle_cmd_volume_set.assert_not_awaited()
+
+    async def test_protocol_player_command_runs_on_available_parent(
+        self, mock_mass: MagicMock, provider: MockProvider
+    ) -> None:
+        """A protocol player id resolves to its available parent even when itself unavailable."""
+        parent = MockPlayer(provider, "parent", "Parent")
+        protocol = MockPlayer(provider, "proto", "Proto", player_type=PlayerType.PROTOCOL)
+        protocol.set_protocol_parent_id("parent")
+        protocol._attr_available = False
+        controller = self._setup(mock_mass, parent, protocol)
+
+        await controller.cmd_stop("proto")
+
+        cast("AsyncMock", controller._handle_cmd_stop).assert_awaited_once_with("parent")
+
+    async def test_protocol_player_command_for_unavailable_parent_raises(
+        self, mock_mass: MagicMock, provider: MockProvider
+    ) -> None:
+        """A protocol player id whose parent is unavailable raises PlayerUnavailableError."""
+        parent = MockPlayer(provider, "parent", "Parent")
+        parent._attr_available = False
+        protocol = MockPlayer(provider, "proto", "Proto", player_type=PlayerType.PROTOCOL)
+        protocol.set_protocol_parent_id("parent")
+        controller = self._setup(mock_mass, parent, protocol)
+        controller._handle_cmd_volume_set = AsyncMock()  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerUnavailableError):
+            await controller.cmd_volume_set("proto", 50)
+
+        controller._handle_cmd_volume_set.assert_not_awaited()
+
+    def _setup(self, mock_mass: MagicMock, *players: MockPlayer) -> PlayerController:
+        """Register the given players on a fresh controller with stubbed stop handling."""
+        controller = PlayerController(mock_mass)
+        for player in players:
+            player.initialized.set()
+            player.update_state(signal_event=False)
+        controller._players = {player.player_id: player for player in players}
+        mock_mass.players = controller
+        controller.get_active_queue = MagicMock(return_value=None)  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+        return controller
 
 
 class TestStateForwarding:
@@ -1938,6 +2007,34 @@ class TestCmdUngroupNewBranches:
 
         assert stop_called == ["g1"]
         assert power_called == []  # powerless group → never goes through cmd_power
+
+    async def test_ungroup_many_skips_unavailable_players(self, mock_mass: MagicMock) -> None:
+        """Unknown or unavailable ids are skipped so the remaining players still ungroup."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        group = MockPlayer(provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = None
+        group._attr_group_members = ["member"]
+        gone = MockPlayer(provider, "gone", "Gone")
+        gone._attr_available = False
+        # available follower whose sync leader is unavailable
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "follower"]
+        follower = MockPlayer(provider, "follower", "Follower")
+
+        controller._players = {"g1": group, "gone": gone, "leader": leader, "follower": follower}
+        mock_mass.players = controller
+        for player in (group, gone, leader, follower):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        leader._attr_available = False
+        leader.update_state(signal_event=False)
+        assert follower.state.synced_to == "leader"
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller.cmd_ungroup_many(["missing", "gone", "follower", "g1"])
+
+        controller._handle_cmd_stop.assert_awaited_once_with("g1")
 
 
 class TestPowerOffEndsTheQueue:
@@ -7327,6 +7424,109 @@ class TestAddCurrentlyPlayingToFavorites:
             current_user.reset(token)
 
         assert acting_users == [expected]
+
+
+@contextlib.asynccontextmanager
+async def _lock_held_elsewhere(controller: PlayerController, player_id: str) -> AsyncIterator[None]:
+    """Hold the player's playback lock from another task for the duration of the block."""
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _hold() -> None:
+        async with controller.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            held.set()
+            await release.wait()
+
+    holder = asyncio.create_task(_hold())
+    await held.wait()
+    try:
+        yield
+    finally:
+        release.set()
+        await holder
+
+
+class TestPlayerLockTimeouts:
+    """A command gives up on a lock it cannot get in time, unless it asked for it strictly."""
+
+    @pytest.fixture(autouse=True)
+    def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.3)
+
+    async def test_a_command_runs_without_the_lock_once_the_timeout_is_over(
+        self, controller: PlayerController, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stuck holder must not keep the player from responding to the next command."""
+        ran = False
+        async with _lock_held_elsewhere(controller, "p1"):
+            with caplog.at_level(logging.WARNING):
+                async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK):
+                    ran = True
+
+        assert ran
+        assert "proceeding without lock" in caplog.text
+
+    async def test_a_strict_command_fails_instead_of_running_without_the_lock(
+        self, controller: PlayerController, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A strict command that would overlap with the holder is refused as busy."""
+        ran = False
+        async with _lock_held_elsewhere(controller, "p1"):
+            with caplog.at_level(logging.INFO), pytest.raises(ResourceBusyError):
+                async with controller.get_player_lock(
+                    "p1", PlayerLockPurpose.PLAYBACK, strict=True
+                ):
+                    ran = True
+
+        assert not ran
+        assert "still busy" in caplog.text
+        # the lock itself is left intact for the next command
+        async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
+            ran = True
+        assert ran
+
+    async def test_a_strict_command_keeps_waiting_past_the_timeout(
+        self, controller: PlayerController
+    ) -> None:
+        """A strict command runs once the holder is done, however long that takes."""
+        ran = asyncio.Event()
+
+        async def _strict_command() -> None:
+            async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
+                ran.set()
+
+        async with _lock_held_elsewhere(controller, "p1"):
+            command = asyncio.create_task(_strict_command())
+            # well past the point where a non-strict command would have given up
+            await asyncio.sleep(0.1)
+            assert not ran.is_set()
+
+        await command
+        assert ran.is_set()
+
+    async def test_a_strict_group_and_player_lock_takes_both_strictly(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The group's lock, taken before the member's, is waited for just as strictly."""
+        controller, _group, _member = _group_with_member(mock_mass)
+        acquisitions: list[tuple[str, bool]] = []
+        acquire_lock = controller.get_player_lock
+
+        def _record(
+            player_id: str,
+            purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+            strict: bool = False,
+        ) -> contextlib.AbstractAsyncContextManager[None]:
+            acquisitions.append((player_id, strict))
+            return acquire_lock(player_id, purpose, strict=strict)
+
+        controller.get_player_lock = _record  # type: ignore[assignment]
+        async with controller.get_group_and_player_lock("member", strict=True):
+            pass
+
+        assert acquisitions == [("group", True), ("member", True)]
 
 
 if __name__ == "__main__":

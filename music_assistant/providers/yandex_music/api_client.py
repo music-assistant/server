@@ -550,8 +550,6 @@ class YandexMusicClient:
             LOGGER.warning("Error fetching liked albums: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked albums") from err
 
-        if result is None:
-            return []
         album_ids = [
             str(like.album.id) for like in result if like.album is not None and like.album.id
         ]
@@ -577,7 +575,7 @@ class YandexMusicClient:
             # Spread bursts: small jittered pause before next batch.
             if i + batch_size < len(album_ids):
                 await asyncio.sleep(
-                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S
+                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S  # noqa: S311 - request jitter
                 )
         return full_albums
 
@@ -589,8 +587,6 @@ class YandexMusicClient:
         """
         try:
             result = await self._call_with_retry(lambda c: c.users_likes_artists())
-            if result is None:
-                return []
             return [like.artist for like in result if like.artist is not None]
         except BadRequestError as err:
             LOGGER.error("Error fetching liked artists: %s", err)
@@ -607,8 +603,6 @@ class YandexMusicClient:
         """
         try:
             result = await self._call_with_retry(lambda c: c.users_playlists_list())
-            if result is None:
-                return []
             return list(result)
         except BadRequestError as err:
             LOGGER.error("Error fetching playlists: %s", err)
@@ -625,8 +619,6 @@ class YandexMusicClient:
         """
         try:
             result = await self._call_with_retry(lambda c: c.users_likes_playlists())
-            if result is None:
-                return []
             playlists = []
             for like in result:
                 if like.playlist is not None:
@@ -1084,7 +1076,8 @@ class YandexMusicClient:
 
         async def _do_request(c: ClientAsync) -> dict[str, Any] | None:
             url, params = _build_signed_params(c)
-            return await c._request.get(url, params=params)  # type: ignore[no-any-return]
+            result = await c._request.get(url, params=params)
+            return result if isinstance(result, dict) else None
 
         try:
             result = await self._call_with_retry(_do_request, kind="file_info")
@@ -1202,7 +1195,7 @@ class YandexMusicClient:
         :return: List of album objects.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.albums(album_ids))
+            result = await self._call_with_retry(lambda c: c.albums(list(album_ids)))
             return result or []
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching albums: %s", err)
@@ -1216,7 +1209,7 @@ class YandexMusicClient:
         :return: List of playlist objects.
         """
         try:
-            result = await self._call_with_retry(lambda c: c.playlists_list(playlist_ids))
+            result = await self._call_with_retry(lambda c: c.playlists_list(list(playlist_ids)))
             return result or []
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.debug("Error fetching playlists: %s", err)
@@ -1727,7 +1720,7 @@ class YandexMusicClient:
             return
         if time.monotonic() - connected_at >= INITIAL_SYNC_WINDOW_S:
             return
-        delay = random.uniform(0.0, INITIAL_SYNC_JITTER_S)
+        delay = random.uniform(0.0, INITIAL_SYNC_JITTER_S)  # noqa: S311 - request jitter
         if delay > 0:
             await asyncio.sleep(delay)
 
@@ -2017,13 +2010,14 @@ class YandexMusicClient:
         :return: List of wave category dicts, or None on error.
         """
 
-        async def _get(c: ClientAsync) -> dict[str, Any]:
+        async def _get(c: ClientAsync) -> dict[str, Any] | None:
             # ``base_url`` is not part of the public ``ClientAsync`` contract;
             # mirror ``_rotor_session_request`` and fall back defensively so a
             # library rename does not crash this endpoint with AttributeError.
             base = getattr(c, "base_url", "https://api.music.yandex.net")
             url = f"{base}/landing-blocks/{block}"
-            return await c._request.get(url)  # type: ignore[no-any-return]
+            result = await c._request.get(url)
+            return result if isinstance(result, dict) else None
 
         try:
             result = await self._call_with_retry(_get)

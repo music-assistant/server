@@ -15,7 +15,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.helpers.json import async_json_loads
 
-from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID
+from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID, EVENT_QUEUE_DJ_UPDATED
 from .helpers import check_player_access, has_player_access
 from .models import DJQueueState, PlannedSection, SessionState
 
@@ -88,6 +88,7 @@ class AIRadioQueueDJMixin:
                 async with self._dj_lock:
                     if self._dj_queues.get(queue_id) is armed:
                         del self._dj_queues[queue_id]
+                        self.signal_provider_event({"event": EVENT_QUEUE_DJ_UPDATED})
             raise
         if armed is not None:
             if self._dj_queues.get(queue_id) is armed:
@@ -141,6 +142,7 @@ class AIRadioQueueDJMixin:
             },
         }
         await self._write_json_file(self._dj_file, payload)
+        self.signal_provider_event({"event": EVENT_QUEUE_DJ_UPDATED})
 
     def _arm_dj_state(self, queue_id: str, host_id: str) -> DJQueueState:
         """Create fresh in-memory DJ state for a queue."""

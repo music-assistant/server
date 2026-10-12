@@ -219,7 +219,8 @@ class AudioStreamMixin(Provider):
 
         Music Assistant calls this from the streaming path as well as from queue preload, so
         it should stay free of side effects: a plugin claims an exclusive AudioSource in
-        ``on_source_selected``, a music provider reports playback in ``on_streamed``.
+        ``on_source_selected``, a music provider reports playback in ``on_stream_started``
+        and ``on_streamed``.
 
         :param item_id: The provider-scoped id of the item requested for playback, for a
             plugin also an ``AudioSource.item_id``.

@@ -48,6 +48,30 @@ async def get_artist(
     return await _run_ytmusic(_get_artist)
 
 
+async def get_artist_albums(
+    channel_id: str,
+    params: str,
+    headers: dict[str, str],
+    language: str = "en",
+    user: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Async wrapper around the ytmusicapi get_artist_albums function.
+
+    :param channel_id: The browseId of an artist section (albums/singles/shows).
+    :param params: The params value from that same section, paired with channel_id.
+    :param headers: Auth headers for the YTMusic client.
+    :param language: Response language.
+    :param user: Optional YTMusic brand-account user id.
+    """
+
+    def _get_artist_albums() -> list[dict[str, Any]]:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        return ytm.get_artist_albums(channelId=channel_id, params=params, limit=None)
+
+    return await _run_ytmusic(_get_artist_albums)
+
+
 async def get_album(
     headers: dict[str, str], prov_album_id: str, language: str = "en", user: str | None = None
 ) -> dict[str, Any]:

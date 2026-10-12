@@ -315,6 +315,119 @@ async def test_playback_user_steers_compatible_instance_within_mapping() -> None
     primary.get_stream_details.assert_not_awaited()
 
 
+async def test_a_sibling_account_with_a_mapping_of_its_own_is_ranked_on_that_mapping() -> None:
+    """
+    An account that maps the item itself is ranked on its own mapping, not on its sibling's.
+
+    Every account of a streaming catalog resolves the same item id, so such an account turns
+    up both as the mapped instance of its own mapping and as a stand-in for the sibling's;
+    the own mapping backs the candidate, so the account's own quality decides its place.
+    """
+    hifi_instance = "tidal--hifi"
+    lofi_instance = "tidal--lofi"
+    other_instance = "spotify--other"
+    hifi = _music_provider(hifi_instance)
+    hifi.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    lofi = _music_provider(lofi_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({hifi_instance: hifi, lofi_instance: lofi, other_instance: other})
+    cast("MagicMock", audio.mass).providers = [hifi, lofi, other]
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(hifi_instance, content_type=ContentType.FLAC),
+            _mapping(lofi_instance),
+            _mapping(other_instance, content_type=ContentType.OGG),
+        )
+    )
+
+    # the lossy account is ranked on its own mapping, behind the other service's better copy
+    assert streamdetails.provider == other_instance
+    lofi.get_stream_details.assert_not_awaited()
+
+
+async def test_an_account_without_a_mapping_stands_in_on_the_siblings_best_mapping() -> None:
+    """An account that lacks a mapping of its own is credited with its siblings' best copy."""
+    lofi_instance = "tidal--a"
+    hifi_instance = "tidal--b"
+    standin_instance = "tidal--c"
+    other_instance = "spotify--other"
+    lofi = _music_provider(lofi_instance)
+    hifi = _music_provider(hifi_instance)
+    standin = _music_provider(standin_instance)
+    other = _music_provider(other_instance)
+    audio = _audio(
+        {
+            lofi_instance: lofi,
+            hifi_instance: hifi,
+            standin_instance: standin,
+            other_instance: other,
+        }
+    )
+    cast("MagicMock", audio.mass).providers = [lofi, hifi, standin, other]
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(lofi_instance),
+            _mapping(hifi_instance, content_type=ContentType.FLAC),
+            _mapping(other_instance, content_type=ContentType.OGG),
+        ),
+        excluded_provider_instances={lofi_instance, hifi_instance},
+    )
+
+    # backed by the lossless sibling mapping, the stand-in ranks ahead of the other
+    # service's lossy copy
+    assert streamdetails.provider == standin_instance
+    other.get_stream_details.assert_not_awaited()
+
+
+async def test_an_account_that_no_longer_finds_the_item_is_no_stand_in_for_it() -> None:
+    """An account whose own mapping of the item is unavailable is not retried as a stand-in."""
+    hifi_instance = "tidal--hifi"
+    gone_instance = "tidal--gone"
+    other_instance = "spotify--other"
+    hifi = _music_provider(hifi_instance)
+    gone = _music_provider(gone_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({hifi_instance: hifi, gone_instance: gone, other_instance: other})
+    cast("MagicMock", audio.mass).providers = [hifi, gone, other]
+    gone_mapping = _mapping(gone_instance, content_type=ContentType.FLAC)
+    gone_mapping.available = False
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(hifi_instance, content_type=ContentType.FLAC),
+            gone_mapping,
+            _mapping(other_instance),
+        ),
+        excluded_provider_instances={hifi_instance},
+    )
+
+    assert streamdetails.provider == other_instance
+    gone.get_stream_details.assert_not_awaited()
+
+
+async def test_a_sibling_account_with_a_mapping_of_its_own_is_marked_on_that_mapping() -> None:
+    """An account that maps the item itself marks its own mapping when it no longer finds it."""
+    hifi_instance = "tidal--hifi"
+    lofi_instance = "tidal--lofi"
+    hifi = _music_provider(hifi_instance)
+    lofi = _music_provider(lofi_instance)
+    lofi.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    audio = _audio({hifi_instance: hifi, lofi_instance: lofi})
+    cast("MagicMock", audio.mass).providers = [hifi, lofi]
+    lofi_mapping = _mapping(lofi_instance)
+    queue_item = _queue_item(_mapping(hifi_instance, content_type=ContentType.FLAC), lofi_mapping)
+
+    with pytest.raises(MediaNotFoundError):
+        await audio.get_stream_details(
+            queue_item=queue_item, excluded_provider_instances={hifi_instance}
+        )
+
+    mark = cast("MagicMock", audio.mass).music.mark_provider_mapping_unavailable
+    mark.assert_called_once_with(queue_item.media_item, lofi_mapping)
+
+
 async def test_playback_user_steering_precedes_cross_domain_quality() -> None:
     """A lower-quality steered mapping is tried before widening to a higher-quality one."""
     high_quality_instance = "tidal--high"

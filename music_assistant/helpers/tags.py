@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.process import AsyncProcess, get_subprocess_env
+from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.util import infer_album_type, try_parse_int
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
@@ -652,14 +653,14 @@ class AudioTags:
                 gain_adjustment = int(tag.split(" ")[0]) / 256
                 return -23 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid r128trackgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid r128trackgain tag value: %r — %s", tag, e)
 
         if tag := self.tags.get("replaygaintrackgain"):
             try:
                 gain_adjustment = float(tag.split(" ")[0])
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid replaygaintrackgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid replaygaintrackgain tag value: %r — %s", tag, e)
 
         return None
 
@@ -671,14 +672,14 @@ class AudioTags:
                 gain_adjustment = int(tag.split(" ")[0]) / 256
                 return -23 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid r128albumgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid r128albumgain tag value: %r — %s", tag, e)
 
         if tag := self.tags.get("replaygainalbumgain"):
             try:
                 gain_adjustment = float(tag.split(" ")[0])
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
-                LOGGER.warning(f"Invalid replaygainalbumgain tag value: {tag!r} — {e}")
+                LOGGER.warning("Invalid replaygainalbumgain tag value: %r — %s", tag, e)
 
         return None
 
@@ -767,7 +768,7 @@ def parse_tags(
         input_file,
     )
     try:
-        res = subprocess.check_output(args, stderr=subprocess.PIPE)  # noqa: S603
+        res = subprocess.check_output(args, stderr=subprocess.PIPE, env=get_subprocess_env())  # noqa: S603
         data = json.loads(res)
         if error := data.get("error"):
             raise InvalidDataError(error["string"])
@@ -829,7 +830,9 @@ def get_file_duration(input_file: str) -> float:
         "-",
     )
     try:
-        res = subprocess.check_output(args, stderr=subprocess.STDOUT).decode()  # noqa: S603
+        res = subprocess.check_output(  # noqa: S603
+            args, stderr=subprocess.STDOUT, env=get_subprocess_env()
+        ).decode()
         # extract duration from ffmpeg output
         duration_str = res.split("time=")[-1].split(" ")[0].strip()
         duration_parts = duration_str.split(":")
@@ -983,7 +986,7 @@ def _first_present(
     return None
 
 
-def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
+def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
     """
     Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
 
@@ -1165,7 +1168,7 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
         else:
             result["albumartist"] = albumartist_values[0]
 
-    # Genre (multi-value)
+    # Genre, can hold multiple values
     if genre := _id3_get_tag_text(tags, "TCON"):
         result["genre"] = genre
 
@@ -1322,7 +1325,7 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     # Artist tags (handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec)
     _parse_vorbis_artist_tags(tags, result)
 
-    # Genre (multi-value)
+    # Genre, can hold multiple values
     if genre := _vorbis_get_multi(tags, "GENRE"):
         result["genre"] = genre
 
@@ -1434,7 +1437,7 @@ def _apev2_get_multi(tags: APEv2, key: str) -> list[str] | None:
     return values or None
 
 
-def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
+def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
     r"""
     Parse APEv2 tags into a normalized dictionary.
 
@@ -1586,7 +1589,7 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
         return result
     except Exception as err:
-        LOGGER.debug(f"Error parsing mutagen tags for {input_file}: {err}")
+        LOGGER.debug("Error parsing mutagen tags for %s: %s", input_file, err)
         return result
 
 
@@ -1604,8 +1607,8 @@ def _format_uses_apev2(format_name: str) -> bool:
     :param format_name: The format name from ffprobe (e.g., "wv", "ape", "mpc").
     """
     # Map ffprobe format names to our check
-    # wv = WavPack, ape = Monkey's Audio, mpc/mpc8 = Musepack
-    # tak = TAK, ofr = OptimFROG
+    # wv is WavPack, ape is Monkey's Audio, mpc/mpc8 is Musepack,
+    # tak is TAK and ofr is OptimFROG
     apev2_only_formats = {"wv", "ape", "mpc", "mpc8", "tak", "ofr"}
     return format_name.lower() in apev2_only_formats
 
@@ -1654,12 +1657,18 @@ async def get_embedded_image(input_file: str) -> bytes | None:
     """
     Return embedded image data.
 
-    Input_file may be a (local) filename or URL accessible by ffmpeg.
+    Input_file may be an existing local file or an http(s) URL; any other input
+    (such as an ffmpeg protocol locator) yields None.
     """
+    if has_control_chars(input_file):
+        return None
+    is_url = input_file.startswith(("http://", "https://"))
+    if not is_url and not await asyncio.to_thread(os.path.isfile, input_file):
+        return None
     # For APEv2-only formats, use mutagen since FFmpeg cannot extract APEv2 cover art
     # Only check files with extensions that exclusively use APEv2 tags to avoid
     # unnecessary blocking I/O for MP3/FLAC/OGG/etc files
-    if not input_file.startswith(("http://", "https://")) and Path(input_file).is_file():
+    if not is_url:
         # Check file extension to determine if it's an APEv2-only format
         ext = input_file.lower().rsplit(".", 1)[-1] if "." in input_file else ""
         if _format_uses_apev2(ext):
@@ -1672,6 +1681,10 @@ async def get_embedded_image(input_file: str) -> bytes | None:
         "-hide_banner",
         "-loglevel",
         "error",
+        # applies to the input it precedes: a local file may not reach the network and a
+        # URL may not open local files, whatever either of them references
+        "-protocol_whitelist",
+        "http,https,tcp,tls" if is_url else "file",
         "-i",
         input_file,
         "-an",

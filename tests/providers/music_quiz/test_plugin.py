@@ -11,12 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProviderType,
     QueueOption,
 )
 from music_assistant_models.errors import (
@@ -27,6 +29,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
+from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
@@ -349,6 +352,19 @@ def _create_plugin(
     plugin._stop_playback = AsyncMock()  # type: ignore[method-assign]
     plugin._get_join_url = AsyncMock(return_value="http://ma/join")  # type: ignore[method-assign]
     return plugin
+
+
+def _create_stored_config_controller(*, provider_enabled: bool) -> ConfigController:
+    """Store the Music Quiz config the way a real save does and return a controller holding it."""
+    config = ProviderConfig.parse(
+        (),
+        {"type": ProviderType.PLUGIN, "domain": "music_quiz", "instance_id": INSTANCE_ID},
+    )
+    config.update({"enabled": provider_enabled})
+    controller = ConfigController.__new__(ConfigController)
+    controller._data = {"providers": {INSTANCE_ID: config.to_raw()}}
+    controller.initialized = True
+    return controller
 
 
 def _mock_playback_session(player_id: str, queue_id: str) -> SharedPlaybackSession:
@@ -5609,6 +5625,36 @@ async def test_unload_cleans_up() -> None:
     assert plugin._game is None
     cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._presence_timer_id)
     cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
+    revoke.assert_awaited_once_with(plugin.mass, MUSIC_QUIZ_GUEST_USER)
+
+
+@pytest.mark.asyncio
+async def test_unload_keeps_guest_access_on_reload_while_enabled() -> None:
+    """A plain reload of the enabled plugin leaves the guest tokens and join codes intact."""
+    plugin = _create_plugin()
+    plugin.mass.config = _create_stored_config_controller(provider_enabled=True)
+
+    with patch(
+        "music_assistant.helpers.guest_access.revoke_guest_access",
+        new=AsyncMock(return_value=(0, 0)),
+    ) as revoke:
+        await plugin.unload()
+
+    revoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unload_revokes_guest_access_when_provider_is_disabled() -> None:
+    """Disabling the plugin revokes the guest tokens and join codes."""
+    plugin = _create_plugin()
+    plugin.mass.config = _create_stored_config_controller(provider_enabled=False)
+
+    with patch(
+        "music_assistant.helpers.guest_access.revoke_guest_access",
+        new=AsyncMock(return_value=(0, 0)),
+    ) as revoke:
+        await plugin.unload()
+
     revoke.assert_awaited_once_with(plugin.mass, MUSIC_QUIZ_GUEST_USER)
 
 

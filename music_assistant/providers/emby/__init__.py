@@ -215,7 +215,7 @@ class EmbyProvider(MusicProvider):
         return [parse_artist(self.instance_id, self, item) for item in items]
 
     async def _search_playlist(self, search_query: str, limit: int) -> list[Playlist]:
-        items = await self._search_items(search_query, "Playlist", [], limit)
+        items = await self._search_items(search_query, "Playlist", ["ImageTags"], limit)
         return [parse_playlist(self.instance_id, self, item) for item in items]
 
     @use_cache(60 * 15)
@@ -382,6 +382,7 @@ class EmbyProvider(MusicProvider):
                 "ParentId": lib[ITEM_KEY_ID],
                 "IncludeItemTypes": "Playlist",
                 "EnableUserData": "true",
+                "Fields": "ImageTags",
                 "Recursive": "true",
             }
             page = 0
@@ -479,7 +480,7 @@ class EmbyProvider(MusicProvider):
         """Get playlist by provider playlist id."""
         playlist = await self._get(
             f"Users/{self._user_id}/Items/{prov_playlist_id}",
-            params={"EnableUserData": "true"},
+            params={"EnableUserData": "true", "Fields": "ImageTags"},
         )
 
         return parse_playlist(self.instance_id, self, playlist)
