@@ -2453,6 +2453,10 @@ class StreamsController(CoreController):
             or (request.match_info["player_id"], queue_item.queue_item_id) not in started[1]
         ):
             return None
+        # until the player switched to an earlier re-request, its handoff keeps the baseline
+        pending = self.mass.player_queues.queue_data(queue.queue_id).pending_stream_resume
+        if pending is not None and pending.queue_item_id == queue_item.queue_item_id:
+            return None
         # repeat one enqueues this same url, and its prefetch arrives while this stream is open
         next_item = self.mass.player_queues.get_next_item(queue.queue_id, queue_item.queue_item_id)
         if next_item and next_item.queue_item_id == queue_item.queue_item_id:

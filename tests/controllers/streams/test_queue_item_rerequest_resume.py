@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -150,6 +151,19 @@ async def test_request_in_a_new_session_starts_from_its_start_offset() -> None:
     cast("MagicMock", ctrl.mass).player_queues.queue_data.return_value.session_id = SESSION_ID
 
     assert await _serve(ctrl, _make_request()) == START_SEEK
+
+
+async def test_rerequest_during_a_pending_handoff_keeps_its_baseline() -> None:
+    """A retry before the player switched streams must not start a second handoff."""
+    ctrl = _make_controller()
+    await _play_first_response(ctrl)
+    player_queues = cast("MagicMock", ctrl.mass).player_queues
+    player_queues.queue_data.return_value.pending_stream_resume = SimpleNamespace(
+        queue_item_id=ITEM_ID
+    )
+
+    assert await _serve(ctrl, _make_request()) == START_SEEK
+    player_queues.begin_stream_resume.assert_not_called()
 
 
 async def test_rerequest_right_after_the_start_keeps_the_start_offset() -> None:
