@@ -113,9 +113,7 @@ class TestApplyNativeVolumePin:
 
         volume_set.assert_not_awaited()
 
-    async def test_skips_when_volume_control_is_follow_protocol(
-        self, mock_mass: MagicMock
-    ) -> None:
+    async def test_skips_when_volume_control_is_follow_protocol(self, mock_mass: MagicMock) -> None:
         """No pin when volume follows a protocol player."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_config_side_effect(
@@ -144,7 +142,7 @@ class TestApplyNativeVolumePin:
         volume_set.assert_not_awaited()
 
     async def test_clamps_out_of_range_levels(self, mock_mass: MagicMock) -> None:
-        """Out-of-range pin values are clamped to 0–100 before apply."""
+        """Out-of-range pin values are clamped to 0-100 before apply."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_config_side_effect(
                 {CONF_VOLUME_CONTROL: "media_player.denon", CONF_NATIVE_VOLUME: 150}
@@ -228,7 +226,7 @@ class TestNativeVolumeConfigEntry:
     """Static checks on the shared ConfigEntry definition."""
 
     def test_entry_defaults(self) -> None:
-        """Entry is integer 0–100, default 100, under player_controls."""
+        """Entry is integer 0-100, default 100, under player_controls."""
         entry = CONF_ENTRY_NATIVE_VOLUME
         assert entry.key == CONF_NATIVE_VOLUME
         assert entry.type == ConfigEntryType.INTEGER
