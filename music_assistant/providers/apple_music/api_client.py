@@ -137,7 +137,7 @@ class AppleMusicAPIClient:
                 raise ResourceTemporarilyUnavailable("Apple Music API Timeout")
             if response.status == 429:
                 self.provider.logger.debug(
-                    "Apple Music Rate Limiter. Headers: %s", response.headers
+                    "Apple Music Rate Limiter on %s. Headers: %s", endpoint, response.headers
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             if response.status == 500:
@@ -167,7 +167,7 @@ class AppleMusicAPIClient:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
                 self.provider.logger.debug(
-                    "Apple Music Rate Limiter. Headers: %s", response.headers
+                    "Apple Music Rate Limiter on %s. Headers: %s", endpoint, response.headers
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
@@ -191,7 +191,7 @@ class AppleMusicAPIClient:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
                 self.provider.logger.debug(
-                    "Apple Music Rate Limiter. Headers: %s", response.headers
+                    "Apple Music Rate Limiter on %s. Headers: %s", endpoint, response.headers
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
@@ -218,7 +218,7 @@ class AppleMusicAPIClient:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
                 self.provider.logger.debug(
-                    "Apple Music Rate Limiter. Headers: %s", response.headers
+                    "Apple Music Rate Limiter on %s. Headers: %s", endpoint, response.headers
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
