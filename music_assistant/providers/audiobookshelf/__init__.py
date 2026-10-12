@@ -502,7 +502,6 @@ for more details.
                     abs_author=abs_author,
                     instance_id=self.instance_id,
                     domain=self.domain,
-                    token=self._client.token,
                     base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
             for abs_narrator in await self._client.get_library_narrators(library_id=book_lib_id):
@@ -527,7 +526,6 @@ for more details.
             abs_author=await self._client.get_author(author_id=prov_artist_id),
             instance_id=self.instance_id,
             domain=self.domain,
-            token=self._client.token,
             base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
         )
 
@@ -592,7 +590,6 @@ for more details.
                         instance_id=self.instance_id,
                         audiobook_narrators=await self._get_audiobook_narrators(item.library_item),
                         domain=self.domain,
-                        token=self._client.token,
                         media_progress=progress,
                         base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
@@ -609,7 +606,6 @@ for more details.
                         fallback_episode_cnt=None,
                         instance_id=self.instance_id,
                         domain=self.domain,
-                        token=self._client.token,
                         base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                         media_progress=progress,
                         cover_path=item.library_item.media.cover_path,
@@ -741,7 +737,6 @@ for more details.
                         abs_podcast=podcast_minified,
                         instance_id=self.instance_id,
                         domain=self.domain,
-                        token=self._client.token,
                         base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
                     if (
@@ -791,7 +786,6 @@ for more details.
             abs_podcast=abs_podcast,
             instance_id=self.instance_id,
             domain=self.domain,
-            token=self._client.token,
             base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
         )
 
@@ -821,7 +815,6 @@ for more details.
                 fallback_episode_cnt=episode_cnt,
                 instance_id=self.instance_id,
                 domain=self.domain,
-                token=self._client.token,
                 base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
                 cover_path=abs_podcast.media.cover_path,
@@ -852,7 +845,6 @@ for more details.
                     fallback_episode_cnt=episode_cnt,
                     instance_id=self.instance_id,
                     domain=self.domain,
-                    token=self._client.token,
                     base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
                     cover_path=abs_podcast.media.cover_path,
@@ -886,7 +878,6 @@ for more details.
                         audiobook_narrators=await self._get_audiobook_narrators(book_expanded),
                         instance_id=self.instance_id,
                         domain=self.domain,
-                        token=self._client.token,
                         base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
                     yield mass_audiobook
@@ -916,7 +907,6 @@ for more details.
             audiobook_narrators=await self._get_audiobook_narrators(abs_audiobook),
             instance_id=self.instance_id,
             domain=self.domain,
-            token=self._client.token,
             base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
             media_progress=progress,
         )
@@ -1158,7 +1148,6 @@ for more details.
                                 prov_podcast_name=_podcast_title,
                                 instance_id=self.instance_id,
                                 domain=self.domain,
-                                token=self._client.token,
                                 base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                                 cover_path=_cover_path,
                                 cover_version=_cover_version,
@@ -1601,7 +1590,6 @@ for more details.
                     audiobook_narrators=await self._get_audiobook_narrators(abs_item),
                     instance_id=self.instance_id,
                     domain=self.domain,
-                    token=self._client.token,
                     base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
                 mass_audiobook = self._socket_ensure_provider_mapping_in_library(mass_audiobook)
@@ -1631,7 +1619,6 @@ for more details.
                     abs_podcast=abs_item,
                     instance_id=self.instance_id,
                     domain=self.domain,
-                    token=self._client.token,
                     base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
                 if (
