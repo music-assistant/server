@@ -103,6 +103,9 @@ CLOUD_LANGUAGES = ("de-DE", "en-GB", "en-US", "nl-BE", "nl-NL", "pt-BR", "pt-PT"
         # a region the engine lacks falls back to the bare code, then the preferred regions
         ("nl-BE", ("nl", "nl-NL"), None, "nl"),
         ("en-AU", CLOUD_LANGUAGES, "NL", "en-US"),
+        ("es", ("es-MX", "es-US"), None, "es-MX"),
+        # codes naming the same language match each other
+        ("nb-NO", ("en", "no"), "NO", "no"),
         # a language the engine lacks has no match at all
         ("xx", CLOUD_LANGUAGES, "NL", None),
         ("nl", (), "NL", None),

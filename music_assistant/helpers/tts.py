@@ -29,6 +29,9 @@ TTS_QUERY_TIMEOUT_SECONDS = 180
 
 REMOTE_STREAM_SCHEMES = ("http://", "https://", "rtsp://", "rtmp://")
 
+# codes that name the same language as another: written Norwegian and the old Hebrew code
+LANGUAGE_ALIASES = {"nb": "no", "iw": "he"}
+
 
 class TTSLanguageNotSupportedError(MusicAssistantError):
     """The TTS engine rejected (or likely rejected) the requested language."""
@@ -114,15 +117,17 @@ def match_tts_language(
     """
     wanted_language, _, wanted_region = language.replace("_", "-").partition("-")
     wanted_language = wanted_language.casefold()
+    wanted_language = LANGUAGE_ALIASES.get(wanted_language, wanted_language)
     candidates: list[tuple[str, str]] = []
     for supported in supported_languages:
         base, _, region = supported.replace("_", "-").partition("-")
-        if base.casefold() == wanted_language:
+        base = base.casefold()
+        if LANGUAGE_ALIASES.get(base, base) == wanted_language:
             candidates.append((supported, region.upper()))
     if not candidates:
         return None
-    # the order mirrors Home Assistant's own language matching: the requested region, the
-    # bare code, the caller's country, U.S. English and the region spelled like the language
+    # regions in order of preference: the requested one, the bare code, the caller's country,
+    # U.S. English (as Home Assistant prefers it) and the region spelled like the language
     regions = [wanted_region.upper(), ""]
     if country:
         regions.append(country.upper())

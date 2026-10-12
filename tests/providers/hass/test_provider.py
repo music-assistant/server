@@ -168,8 +168,9 @@ class _HomeAssistantClient:
         self.disabled_entities: set[str] = set()
         # devices as returned in full by the device registry listing
         self.devices: list[dict[str, Any]] = []
-        # supported languages per tts entity; tts/engine/get fails for any other entity
-        self.tts_languages = tts_languages or {}
+        # supported languages per tts entity as listed by tts/engine/list, which fails
+        # (as on a Home Assistant without the command) when None
+        self.tts_languages = tts_languages
         # events delivered ahead of a subscription's initial state message
         self.leading_events: list[dict[str, Any]] = []
         self.deliver_initial_states = True
@@ -271,12 +272,15 @@ class _HomeAssistantClient:
         self.calls.append(command)
         if command == REGISTRY_ENTRIES_COMMAND:
             return self._registry_entries(cast("list[str]", kwargs["entity_ids"]))
-        if command == "tts/engine/get":
-            entity_id = cast("str", kwargs["engine_id"])
-            if entity_id not in self.tts_languages:
-                raise FailedCommand(f"tts engine {entity_id} not found")
-            languages = self.tts_languages[entity_id]
-            return {"provider": {"engine_id": entity_id, "supported_languages": languages}}
+        if command == "tts/engine/list":
+            if self.tts_languages is None:
+                raise FailedCommand("Unknown command.")
+            return {
+                "providers": [
+                    {"engine_id": entity_id, "supported_languages": languages}
+                    for entity_id, languages in self.tts_languages.items()
+                ]
+            }
         return {"response": {"data": "answer"}}
 
     async def _registry_for_display(self) -> dict[str, Any]:
@@ -332,7 +336,7 @@ async def _start_provider(
     Start the provider with a connected mocked Home Assistant client.
 
     :param states: The entity states Home Assistant reports.
-    :param tts_languages: The supported languages per tts entity, for tts/engine/get.
+    :param tts_languages: The supported languages per tts entity, for tts/engine/list.
     :param config_values: Provider config values overriding the test defaults.
     """
     hass = _HomeAssistantClient(states, tts_languages=tts_languages)
@@ -737,9 +741,10 @@ async def test_tts_uses_the_requested_engine() -> None:
 
 async def test_tts_not_advertised_without_entity() -> None:
     """Do not advertise TTS when Home Assistant has no TTS entity."""
-    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, hass):
         assert ProviderFeature.TTS not in provider.supported_features
 
+        assert "tts/engine/list" not in hass.calls
         with pytest.raises(UnsupportedFeaturedException):
             await provider.get_tts_message("Hello")
 
@@ -770,19 +775,19 @@ async def test_tts_omits_options_from_the_payload_when_empty() -> None:
         assert post.call_args.kwargs["json"] == {"engine_id": "tts.first", "message": "Hello"}
 
 
-async def test_tts_engine_languages_are_read_once_per_engine() -> None:
-    """Read each engine's languages when the engines are listed, never per request."""
+async def test_tts_engine_languages_are_read_once_per_refresh() -> None:
+    """Read the engines' languages when the engines are listed, never per request."""
     states = [_state("tts.cloud", "Cloud"), _state("tts.piper", "Piper")]
     languages = {"tts.cloud": ["nl-NL"], "tts.piper": ["nl_NL"]}
 
     async with _start_provider(states, languages) as (provider, hass):
-        assert hass.calls.count("tts/engine/get") == 2
+        assert hass.calls.count("tts/engine/list") == 1
         _mock_tts_response(provider)
 
         await provider.get_tts_message("Hallo", language="nl", engine_id="tts.cloud")
         await provider.get_tts_message("Hallo", language="nl", engine_id="tts.piper")
 
-        assert hass.calls.count("tts/engine/get") == 2
+        assert hass.calls.count("tts/engine/list") == 1
 
 
 async def test_tts_bare_language_is_sent_as_the_engines_regional_code() -> None:
@@ -795,6 +800,19 @@ async def test_tts_bare_language_is_sent_as_the_engines_regional_code() -> None:
         await provider.get_tts_message("Hallo", language="nl")
 
         assert post.call_args.kwargs["json"]["language"] == "nl-NL"
+
+
+async def test_tts_bare_language_prefers_the_server_locales_region() -> None:
+    """A bare language code picks the regional variant of the server locale when listed."""
+    languages = {"tts.cloud": ["en-GB", "en-US"]}
+
+    async with _start_provider([_state("tts.cloud", "Cloud")], languages) as (provider, _):
+        cast("MagicMock", provider.mass.metadata).locale = "en_GB"
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hello", language="en")
+
+        assert post.call_args.kwargs["json"]["language"] == "en-GB"
 
 
 async def test_tts_regional_language_is_sent_in_the_engines_spelling() -> None:
@@ -821,10 +839,10 @@ async def test_tts_unknown_language_is_left_out_of_the_payload() -> None:
         assert post.call_args.kwargs["json"] == {"engine_id": "tts.cloud", "message": "Hello"}
 
 
-async def test_tts_language_passes_through_when_the_engine_lists_none() -> None:
+async def test_tts_language_passes_through_when_the_languages_cannot_be_read() -> None:
     """An engine whose languages could not be read gets the requested language unchanged."""
     async with _start_provider([_state("tts.first", "First")]) as (provider, hass):
-        assert "tts/engine/get" in hass.calls
+        assert "tts/engine/list" in hass.calls
         post = _mock_tts_response(provider)
 
         await provider.get_tts_message("Hallo", language="nl")
