@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
+import pytest
 from music_assistant_models.enums import CrossfadeMode, ProviderFeature
 
 from music_assistant.constants import (
@@ -196,3 +197,29 @@ def test_queue_config_similar_autoplay_disabled_without_provider() -> None:
     autoplay = next(entry for entry in entries if entry.key == CONF_AUTOPLAY_MODE)
     similar = next(opt for opt in autoplay.options if opt.value == "similar")
     assert similar.disabled is True
+
+
+@pytest.mark.parametrize("per_queue", [False, True])
+@pytest.mark.parametrize(
+    ("order", "selection", "disabled"),
+    [
+        ("albums_by_release", "all_tracks", False),
+        ("random_albums", "library_tracks", False),
+        ("shuffled_tracks", "all_tracks", True),
+        ("albums_by_release", "top_tracks", True),
+    ],
+)
+def test_albums_autoplay_needs_an_album_order(
+    per_queue: bool, order: str, selection: str, disabled: bool
+) -> None:
+    """'Whole albums' is offered globally and per queue, greyed out unless albums can play."""
+    mass = _mass(similar_tracks=True, smart_fades=True)
+    settings = {
+        CONF_DEFAULT_ENQUEUE_ORDER_ARTIST: order,
+        CONF_DEFAULT_ENQUEUE_SELECT_ARTIST: selection,
+    }
+    mass.config.get_raw_core_config_value = Mock(side_effect=lambda _domain, key, *_: settings[key])
+    entries = (queue_config_entries if per_queue else core_config_entries)(mass)
+    autoplay = _by_key(entries)[CONF_AUTOPLAY_MODE]
+    albums = next(opt for opt in autoplay.options if opt.value == "albums")
+    assert albums.disabled is disabled
