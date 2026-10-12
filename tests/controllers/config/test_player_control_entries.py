@@ -15,8 +15,10 @@ from music_assistant_models.enums import PlayerFeature, PlayerType
 
 from music_assistant.constants import (
     CONF_MUTE_CONTROL,
+    CONF_NATIVE_VOLUME,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
+    PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.mass import MusicAssistant
 
@@ -48,6 +50,7 @@ def _entries_by_key(
     features: set[PlayerFeature],
     protocol_player: MagicMock | None = None,
     player_type: PlayerType = PlayerType.PLAYER,
+    stored_volume_control: str | None = None,
 ) -> dict[str, ConfigEntry]:
     """Build the player-control config entries for a player with the given features."""
     player = _make_player(features, player_type)
@@ -58,6 +61,12 @@ def _entries_by_key(
     mass.players = MagicMock()
     mass.players.player_controls.return_value = []
     mass.players.get_player.return_value = protocol_player
+    if stored_volume_control is not None:
+        mass.config.get_raw_player_config_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda _pid, key, default=None: (
+                stored_volume_control if key == CONF_VOLUME_CONTROL else default
+            )
+        )
     entries = mass.config._create_player_control_config_entries(player)
     return {entry.key: entry for entry in entries}
 
@@ -130,3 +139,66 @@ async def test_group_player_only_gets_a_power_control(mass_minimal: MusicAssista
     """A group's volume and mute go to its members, so it is only offered the power control."""
     entries = _entries_by_key(mass_minimal, _ALL_FEATURES, player_type=PlayerType.GROUP)
     assert set(entries) == {CONF_POWER_CONTROL}
+
+
+async def test_native_volume_hidden_when_volume_control_is_native(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Native volume pin is hidden when UI volume already uses the native player."""
+    entry = _entries_by_key(
+        mass_minimal,
+        {PlayerFeature.VOLUME_SET},
+        stored_volume_control=PLAYER_CONTROL_NATIVE,
+    )[CONF_NATIVE_VOLUME]
+    assert entry.hidden is True
+    assert entry.default_value == 100
+    assert entry.range == (0, 100)
+    assert entry.category == "player_controls"
+
+
+async def test_native_volume_hidden_when_volume_control_is_follow_protocol(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Native volume pin is hidden when volume follows a protocol player."""
+    entry = _entries_by_key(
+        mass_minimal,
+        {PlayerFeature.VOLUME_SET},
+        stored_volume_control=PLAYER_CONTROL_PROTOCOL,
+    )[CONF_NATIVE_VOLUME]
+    assert entry.hidden is True
+
+
+async def test_native_volume_visible_for_external_volume_control(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Native volume pin is visible when volume is mapped to an external control."""
+    entry = _entries_by_key(
+        mass_minimal,
+        {PlayerFeature.VOLUME_SET},
+        stored_volume_control="media_player.denon_avr",
+    )[CONF_NATIVE_VOLUME]
+    assert entry.hidden is False
+
+
+async def test_native_volume_visible_when_volume_control_is_none(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Native volume pin stays available when volume_control is none."""
+    entry = _entries_by_key(
+        mass_minimal,
+        {PlayerFeature.VOLUME_SET},
+        stored_volume_control=PLAYER_CONTROL_NONE,
+    )[CONF_NATIVE_VOLUME]
+    assert entry.hidden is False
+
+
+async def test_native_volume_hidden_without_volume_set_feature(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Native volume pin is hidden when the player has no native volume_set."""
+    entry = _entries_by_key(
+        mass_minimal,
+        set(),
+        stored_volume_control="media_player.denon_avr",
+    )[CONF_NATIVE_VOLUME]
+    assert entry.hidden is True

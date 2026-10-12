@@ -208,6 +208,10 @@
       "label": "Minimum volume",
       "description": "Minimum device volume. The volume slider (0-100) will be scaled to this as the lower bound."
     },
+    "native_volume": {
+      "label": "Native player volume",
+      "description": "Fixed softvol/protocol volume applied on the player itself when volume control is mapped to an external device (for example an AVR). The UI volume slider still controls the mapped device. Applied on connect/reconnect and when this value changes."
+    },
     "output_channels": {
       "label": "Output Channel Mode",
       "description": "You can configure this player to play only the left or right channel, for example to create a stereo pair with 2 players.",

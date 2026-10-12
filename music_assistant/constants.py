@@ -171,6 +171,7 @@ CONF_VOLUME_STEP: Final[str] = "volume_step"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
+CONF_NATIVE_VOLUME: Final[str] = "native_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
@@ -458,6 +459,19 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
     advanced=True,
     depends_on=CONF_VOLUME_CONTROL,
     depends_on_value_not=PLAYER_CONTROL_NONE,
+)
+
+# Softvol/protocol pin when UI volume is mapped to an external control.
+# Visibility (hidden when volume_control is native/follow_protocol) is set
+# dynamically in _create_player_control_config_entries — depends_on_value_not
+# only supports a single exclusion value.
+CONF_ENTRY_NATIVE_VOLUME = ConfigEntry(
+    key=CONF_NATIVE_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=100,
+    category="player_controls",
+    depends_on=CONF_VOLUME_CONTROL,
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
