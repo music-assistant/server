@@ -221,7 +221,8 @@ async def test_a_rate_switch_the_player_cannot_play_gapless_is_a_plain_cut(
     """
     A track at another rate than the clip gets no voice over on such a player.
 
-    The clip plays whole and the track's own request plays it from its start.
+    The clip plays whole, and a request for the track made while the clip still streams
+    is let go at the clip's end to play the track from its start.
     """
     clip = _clip()
     track = _declared_track()
@@ -232,14 +233,20 @@ async def test_a_rate_switch_the_player_cannot_play_gapless_is_a_plain_cut(
     mass.config.get_raw_player_config_value.return_value = False
     opened = _install_item_streams(monkeypatch, audio)
 
-    clip_output = await _drain(_request(audio, clip, CrossfadeMode.VOICE_OVER))
-    track_output = await _drain(_request(audio, track, CrossfadeMode.DISABLED))
+    clip_stream = _request(audio, clip, CrossfadeMode.VOICE_OVER)
+    first_chunk = await anext(clip_stream)
+    assert audio.fade_into_pending("queue-1", "item-2")
+    track_request = asyncio.create_task(_drain(_request(audio, track, CrossfadeMode.DISABLED)))
+    await asyncio.sleep(0)
+    clip_output = first_chunk + await _drain(clip_stream)
+    track_output = await track_request
 
     cast("Any", audio.smart_fades_mixer.build).assert_not_awaited()
     assert clip_output == bytes([CLIP_MARKER]) * CLIP_SECONDS * SAMPLE_SIZE
     assert track_output == bytes([TRACK_MARKER]) * TRACK_SECONDS * SAMPLE_SIZE
     assert opened == [("item-1", 0), ("item-2", 0)]
     assert "queue-1" not in audio._crossfade_handover
+    assert "queue-1" not in audio._crossfade_pending
 
 
 @pytest.mark.parametrize(
