@@ -402,13 +402,18 @@ class NugsProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
-        year = album_obj.get("performanceDateYear", False)
+        year = album_obj.get("performanceDateYear")
         if not year:
-            date = album_obj.get("performanceDate", False) or album_obj.get(
-                "albumreleaseDate", False
+            # studio albums carry no performance date; releases spell their date
+            # albumReleaseDate (2000-01-01T00:00:00), shows/{id} releaseDateFormatted (2000/01/01)
+            date = (
+                album_obj.get("performanceDate")
+                or album_obj.get("albumReleaseDate")
+                or album_obj.get("albumreleaseDate")
+                or album_obj.get("releaseDateFormatted")
             )
-            if date:
-                year = date.split("-")[0]
+            if date and (year_match := re.match(r"\d{4}", date)):
+                year = year_match[0]
         if year:
             album.year = int(year)
 
@@ -903,7 +908,7 @@ class NugsProvider(MusicProvider):
         return token["access_token"]
 
     @throttle_with_retries
-    async def _get_data(self, nugs_api: str, endpoint: str, **kwargs: Any) -> Any:
+    async def _get_data(self, /, nugs_api: str, endpoint: str, **kwargs: Any) -> Any:
         """Return the requested data from one of various nugs.net API."""
         headers = {}
         url: str | None = None

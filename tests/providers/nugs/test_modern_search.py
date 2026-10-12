@@ -420,3 +420,25 @@ async def test_artist_filter_applies_only_to_matched_artist(
     provider._get_search_releases = AsyncMock(return_value=[])  # type: ignore[method-assign]
     result = await provider.search(query, [MediaType.ARTIST])
     assert [item.item_id for item in result.artists] == expected
+
+
+@pytest.mark.parametrize(
+    ("dates", "year"),
+    [
+        # The Pizza Tapes as returned by /releases and by shows/{id}
+        ({"albumReleaseDate": "2000-01-01T00:00:00", "performanceDate": None}, 2000),
+        ({"releaseDateFormatted": "2000/01/01", "performanceDateYear": ""}, 2000),
+        ({"albumreleaseDate": "1959-01-01"}, 1959),
+        ({"performanceDate": "2023-05-11T00:00:00", "albumReleaseDate": "2000-01-01"}, 2023),
+        ({"performanceDateYear": 1977, "albumReleaseDate": "2000-01-01"}, 1977),
+        ({"releaseDateFormatted": ""}, None),
+    ],
+)
+def test_album_year_from_release_dates(
+    provider: NugsProvider, dates: dict[str, Any], year: int | None
+) -> None:
+    """Studio albums take their year from whichever release date field the endpoint sends."""
+    album = provider._parse_album(
+        {"id": "223", "title": "The Pizza Tapes", "artistID": None, "artistName": None, **dates}
+    )
+    assert album.year == year
