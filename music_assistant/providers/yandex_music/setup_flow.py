@@ -159,7 +159,7 @@ async def _qr_login(session: SetupSession) -> Credentials:
                     qr = await client.start_qr_login()
                     remaining = deadline - loop.time()
                     if remaining <= 0:
-                        raise TimeoutError
+                        raise TimeoutError  # noqa: TRY301 - converted to StepExpiredError below
                     code_timeout = min(float(ttl), remaining)
                     try:
                         return await session.progress_until(
@@ -191,7 +191,7 @@ async def _device_login(session: SetupSession) -> Credentials:
                     device = await client.start_device_login(device_name=_DEVICE_NAME)
                     remaining = deadline - loop.time()
                     if remaining <= 0:
-                        raise TimeoutError
+                        raise TimeoutError  # noqa: TRY301 - converted to StepExpiredError below
                     code_timeout = min(float(device.expires_in), remaining)
                     poll_timeout = min(float(device.expires_in) + 60, remaining)
                     try:
