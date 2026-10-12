@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.plugin import TTSEngine
 
     from .models import DJQueueState, RenderHealth
 
@@ -407,25 +408,27 @@ class AIRadioRenderMixin:
         engine_uid = str(host.get("tts_engine") or "") or None
         language = self._tts_language(str(host.get("language") or ""))
         options = host.get("options") or {}
+        engine: TTSEngine | None = None
         try:
+            engine = await self._get_tts_engine(engine_uid)
             path, stream_type, audio_format = await self._render_tts_media(
-                text, engine_uid, language, options
+                text, engine, language, options
             )
             # the probe is the first fetch, so a failed render surfaces here and not in playback
             duration = await self._probe_duration(path)
         except Exception as err:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
-            self._record_render_failure(
-                queue_item,
-                f"TTS engine '{engine_uid or self.get_setup_value(CONF_TTS_ENGINE)}'",
-            )
+            # the default stands in for an unavailable host engine, so the pause names the engine
+            # that resolved, or the configured one when none did
+            named = engine.uid if engine else (engine_uid or self.get_setup_value(CONF_TTS_ENGINE))
+            self._record_render_failure(queue_item, f"TTS engine '{named}'")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
         if (health := self._render_health(queue_item)) is not None:
             health.record_success(asyncio.get_running_loop().time())
         # measuring costs a fetch and a decode on the just-in-time render path, so it only
         # runs where the reading has somewhere to go
         loudness = (
-            await self._reference_loudness(engine_uid, language, options, path, duration)
+            await self._reference_loudness(engine.uid, language, options, path, duration)
             if self._wanted_loudness(queue_item.queue_id) is not None
             else None
         )
@@ -483,12 +486,11 @@ class AIRadioRenderMixin:
     async def _render_tts_media(
         self,
         text: str,
-        engine_uid: str | None = None,
+        engine: TTSEngine,
         language: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
-        engine = await self._get_tts_engine(engine_uid)
         stream_details = await query_tts_engine_with_language_fallback(
             engine, text, language, logger=self.logger, options=options
         )

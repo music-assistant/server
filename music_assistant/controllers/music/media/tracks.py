@@ -485,8 +485,8 @@ class TracksController(MediaControllerBase[Track]):
         """
         Return the albums a track appears on, searched, sorted and paged.
 
-        The albums are found through a search on the library and all providers, assembled
-        once and served from the cache for a while.
+        The albums are found through a search on the library and all providers, whose
+        results the search keeps for a while.
 
         :param item_id: The track id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
@@ -502,19 +502,46 @@ class TracksController(MediaControllerBase[Track]):
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.TRACK_ALBUMS, sort_field, sort_direction
         )
-        albums = await self._cached_item_listing(
-            ListingType.TRACK_ALBUMS,
-            item_id,
-            provider_instance_id_or_domain,
-            lambda instance_id: self._assemble_track_albums(item_id, instance_id),
-            item_type=Album,
-            # the search only covers the music sources the calling user may see
-            narrowed_to=self._ensure_provider_filter(None),
+        full_track = await self.get(item_id, provider_instance_id_or_domain)
+        db_items = (
+            await self.get_library_track_albums(full_track.item_id)
+            if full_track.provider == "library"
+            else []
         )
-        if in_library_only:
-            albums = [album for album in albums if album.provider == "library"]
+        # return all (unique) items from all providers
+        result: UniqueList[Album] = UniqueList(db_items)
+        # use search to get all items on the provider
+        search_query = f"{full_track.artist_str} - {full_track.name}"
+        # TODO: we could use musicbrainz info here to get a list of all releases known
+        unique_ids: set[str] = set()
+        # explicitly search all providers as we want all album versions
+        # of this track, including those already mapped in the library
+        search_providers = ["library", *self.mass.music.get_unique_providers()]
+        search_results = await self.mass.music.search(
+            search_query, [MediaType.TRACK], providers=search_providers
+        )
+        for prov_item in search_results.tracks:
+            if not isinstance(prov_item, Track):  # for type checking
+                continue
+            if not loose_compare_strings(full_track.name, prov_item.name):
+                continue
+            if not prov_item.album:
+                continue
+            if not compare_artists(full_track.artists, prov_item.artists, any_match=True):
+                continue
+            unique_id = f"{prov_item.album.name}.{prov_item.album.version}"
+            if unique_id in unique_ids:
+                continue
+            unique_ids.add(unique_id)
+            # prefer db item
+            if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
+                prov_item.album.item_id, prov_item.album.provider
+            ):
+                result.append(db_item)
+            elif not in_library_only and isinstance(prov_item.album, Album):
+                result.append(prov_item.album)
         return apply_listing(
-            albums,
+            result,
             ListingType.TRACK_ALBUMS,
             search=search,
             sort_field=sort_field,
@@ -538,9 +565,9 @@ class TracksController(MediaControllerBase[Track]):
         """
         Return the tracks similar to a track, searched, sorted and paged.
 
-        The listing holds the most similar tracks the first provider to answer returns. Asked
-        without a lookup or preferred providers, it is assembled once and served from the
-        cache for a while.
+        The listing holds at most the 25 most similar tracks of the first provider to answer.
+        Asked without a lookup or preferred providers, it is assembled once and served from
+        the cache for a while.
 
         :param item_id: The item ID of the track.
         :param provider_instance_id_or_domain: The provider instance ID or domain.
@@ -1792,55 +1819,6 @@ class TracksController(MediaControllerBase[Track]):
                 # make sure that the 'base' version is NOT included
                 and not track.provider_mappings.intersection(prov_item.provider_mappings)
             )
-        return result
-
-    async def _assemble_track_albums(
-        self, item_id: str, provider_instance_id_or_domain: str
-    ) -> list[Album]:
-        """
-        Return all albums a track appears on: its library albums and those a search finds.
-
-        :param item_id: The track id on the provider, or its library id.
-        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
-        """
-        full_track = await self.get(item_id, provider_instance_id_or_domain)
-        db_items = (
-            await self.get_library_track_albums(full_track.item_id)
-            if full_track.provider == "library"
-            else []
-        )
-        # return all (unique) items from all providers
-        result: UniqueList[Album] = UniqueList(db_items)
-        # use search to get all items on the provider
-        search_query = f"{full_track.artist_str} - {full_track.name}"
-        # TODO: we could use musicbrainz info here to get a list of all releases known
-        unique_ids: set[str] = set()
-        # explicitly search all providers as we want all album versions
-        # of this track, including those already mapped in the library
-        search_providers = ["library", *self.mass.music.get_unique_providers()]
-        search_results = await self.mass.music.search(
-            search_query, [MediaType.TRACK], providers=search_providers
-        )
-        for prov_item in search_results.tracks:
-            if not isinstance(prov_item, Track):  # for type checking
-                continue
-            if not loose_compare_strings(full_track.name, prov_item.name):
-                continue
-            if not prov_item.album:
-                continue
-            if not compare_artists(full_track.artists, prov_item.artists, any_match=True):
-                continue
-            unique_id = f"{prov_item.album.name}.{prov_item.album.version}"
-            if unique_id in unique_ids:
-                continue
-            unique_ids.add(unique_id)
-            # prefer db item
-            if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
-                prov_item.album.item_id, prov_item.album.provider
-            ):
-                result.append(db_item)
-            elif isinstance(prov_item.album, Album):
-                result.append(prov_item.album)
         return result
 
     async def _assemble_similar_tracks(

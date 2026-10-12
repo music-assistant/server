@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -212,6 +213,72 @@ async def test_an_overlap_below_the_floor_is_a_plain_cut(monkeypatch: pytest.Mon
     cast("Any", audio.smart_fades_mixer.build).assert_not_awaited()
     assert output == bytes([CLIP_MARKER]) * CLIP_SECONDS * SAMPLE_SIZE
     assert "queue-1" not in audio._crossfade_handover
+
+
+async def test_a_rate_switch_the_player_cannot_play_gapless_is_a_plain_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A track at another rate than the clip gets no voice over on such a player.
+
+    The clip plays whole, and a request for the track made while the clip still streams
+    is let go at the clip's end to play the track from its start.
+    """
+    clip = _clip()
+    track = _declared_track()
+    audio, mass = _item_audio(monkeypatch, next_item=track, load_next=[track, QueueEmpty])
+    audio.select_pcm_format = AsyncMock(  # type: ignore[method-assign]
+        return_value=replace(TEST_PCM_FORMAT, sample_rate=48000)
+    )
+    mass.config.get_raw_player_config_value.return_value = False
+    opened = _install_item_streams(monkeypatch, audio)
+
+    clip_stream = _request(audio, clip, CrossfadeMode.VOICE_OVER)
+    first_chunk = await anext(clip_stream)
+    assert audio.fade_into_pending("queue-1", "item-2")
+    track_request = asyncio.create_task(_drain(_request(audio, track, CrossfadeMode.DISABLED)))
+    await asyncio.sleep(0)
+    clip_output = first_chunk + await _drain(clip_stream)
+    track_output = await track_request
+
+    cast("Any", audio.smart_fades_mixer.build).assert_not_awaited()
+    assert clip_output == bytes([CLIP_MARKER]) * CLIP_SECONDS * SAMPLE_SIZE
+    assert track_output == bytes([TRACK_MARKER]) * TRACK_SECONDS * SAMPLE_SIZE
+    assert opened == [("item-1", 0), ("item-2", 0)]
+    assert "queue-1" not in audio._crossfade_handover
+    assert "queue-1" not in audio._crossfade_pending
+
+
+@pytest.mark.parametrize(
+    ("flow_mode", "player_plays_gapless_across_rates", "expected"),
+    [
+        pytest.param(False, False, False, id="per item, player cannot"),
+        pytest.param(True, False, True, id="flow stream, player cannot"),
+        pytest.param(False, True, True, id="per item, player can"),
+    ],
+)
+def test_a_declared_overlap_follows_the_sample_rate_rule_of_the_player(
+    monkeypatch: pytest.MonkeyPatch,
+    flow_mode: bool,
+    player_plays_gapless_across_rates: bool,
+    expected: bool,
+) -> None:
+    """A rate switch only matters between item streams; a flow stream plays one rate."""
+    track = _declared_track()
+    audio, mass = _item_audio(monkeypatch, next_item=track, load_next=[track])
+    mass.config.get_raw_player_config_value.return_value = player_plays_gapless_across_rates
+
+    allowed = audio.crossfade_allowed(
+        cast("Any", _clip()),
+        crossfade_mode=CrossfadeMode.VOICE_OVER,
+        player_id="player-1",
+        flow_mode=flow_mode,
+        next_queue_item=cast("Any", track),
+        sample_rate=44100,
+        next_sample_rate=48000,
+    )
+
+    assert allowed is expected
 
 
 @pytest.mark.parametrize(
