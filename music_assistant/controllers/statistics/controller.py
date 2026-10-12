@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 STATISTICS_CACHE_TTL = 300
 STATISTICS_CACHE_MAX_ENTRIES = 128
 MAX_STATISTICS_RESULT_LIMIT = 500
-_STATISTICS_CACHE_CLEARERS: list[Callable[[], None]] = []
+_STATISTICS_CACHE_INVALIDATORS: list[Callable[[], None]] = []
 _PLAY_HISTORY_EVENT_TYPES = (
     MediaType.TRACK.value,
     MediaType.RADIO.value,
@@ -93,7 +93,14 @@ def cache_statistics(
 
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
-        _STATISTICS_CACHE_CLEARERS.append(cache.clear)
+        cache_generation = 0
+
+        def invalidate_cache() -> None:
+            nonlocal cache_generation
+            cache_generation += 1
+            cache.clear()
+
+        _STATISTICS_CACHE_INVALIDATORS.append(invalidate_cache)
 
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
@@ -115,7 +122,10 @@ def cache_statistics(
                 cache.move_to_end(cache_key)
                 return cast("T", cached_value)
 
+            request_generation = cache_generation
             result = await func(self, *args, **kwargs)
+            if request_generation != cache_generation:
+                return result
             cache[cache_key] = (now, result)
             cache.move_to_end(cache_key)
             while len(cache) > STATISTICS_CACHE_MAX_ENTRIES:
@@ -145,8 +155,8 @@ class StatisticsController(CoreController):
         """Clear cached statistics after a completed play is recorded."""
         if not play_history_written:
             return
-        for clear_cache in _STATISTICS_CACHE_CLEARERS:
-            clear_cache()
+        for invalidate_cache in _STATISTICS_CACHE_INVALIDATORS:
+            invalidate_cache()
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of statistics module."""
@@ -406,12 +416,15 @@ class StatisticsController(CoreController):
         cutoff_timestamp = self._get_period_cutoff(period)
 
         # SQLite date formatting based on granularity
-        date_format = {
+        date_formats = {
             "hour": "%Y-%m-%d %H:00:00",
             "day": "%Y-%m-%d",
             "week": "%Y-W%W",
             "month": "%Y-%m",
-        }.get(granularity, "%Y-%m-%d")
+        }
+        if granularity not in date_formats:
+            raise InvalidDataError("granularity must be hour, day, week, or month")
+        date_format = date_formats[granularity]
 
         query = f"""
             SELECT
@@ -430,7 +443,7 @@ class StatisticsController(CoreController):
             "cutoff_timestamp": cutoff_timestamp,
         }
 
-        rows = await self.mass.music.database.get_rows_from_query(query, params)
+        rows = await self.mass.music.database.get_rows_from_query(query, params, limit=0)
 
         return [
             TimeSeriesPoint(timestamp=row["time_bucket"], value=row["play_count"]) for row in rows
@@ -755,8 +768,10 @@ class StatisticsController(CoreController):
             "since_timestamp": since_timestamp,
         }
 
-        rows = await self.mass.music.database.get_rows_from_query(query, params)
-        return {(row["provider"], row["item_id"]) for row in rows}
+        played_item_ids: set[tuple[str, str]] = set()
+        async for row in self.mass.music.database.iter_rows_from_query(query, params):
+            played_item_ids.add((row["provider"], row["item_id"]))
+        return played_item_ids
 
     def _get_period_cutoff(self, period: str) -> float:
         """

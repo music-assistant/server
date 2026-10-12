@@ -1,5 +1,6 @@
 """Tests for statistics backed by completed play history."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -434,3 +435,101 @@ async def test_statistics_cache_evicts_old_entries() -> None:
         await get_value(None, 0)
 
     assert len(calls) == STATISTICS_CACHE_MAX_ENTRIES + 2
+
+
+async def test_statistics_cache_does_not_store_inflight_result_after_invalidation(
+    mass: MusicAssistant,
+) -> None:
+    """A cache miss that overlaps a history write cannot restore stale data."""
+    user = await mass.webserver.auth.create_user("statistics-cache-race")
+    query_started = asyncio.Event()
+    finish_query = asyncio.Event()
+    calls = 0
+
+    @cache_statistics()
+    async def query(_self: object) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            query_started.set()
+            await finish_query.wait()
+        return calls
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        in_flight_query: asyncio.Future[int] = asyncio.ensure_future(query(None))
+        await query_started.wait()
+        mass.statistics.invalidate_statistics_cache(play_history_written=True)
+        finish_query.set()
+
+        assert await in_flight_query == 1
+        assert await query(None) == 2
+        assert await query(None) == 2
+
+
+async def test_plays_over_time_does_not_inherit_default_query_limit(
+    mass: MusicAssistant,
+) -> None:
+    """A valid hourly series requests all buckets instead of the DB helper's 500-row default."""
+    user = await mass.webserver.auth.create_user("statistics-series-limit")
+
+    with (
+        patch(
+            "music_assistant.controllers.statistics.controller.get_current_user",
+            return_value=user,
+        ),
+        patch.object(
+            mass.music.database,
+            "get_rows_from_query",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as get_rows,
+    ):
+        await mass.statistics.get_plays_over_time(period="month", granularity="hour")
+
+    assert get_rows.await_args is not None
+    assert get_rows.await_args.kwargs["limit"] == 0
+
+
+async def test_plays_over_time_rejects_unsupported_granularity(mass: MusicAssistant) -> None:
+    """Unsupported chart granularities do not silently return daily data."""
+    user = await mass.webserver.auth.create_user("statistics-invalid-granularity")
+
+    with (
+        patch(
+            "music_assistant.controllers.statistics.controller.get_current_user",
+            return_value=user,
+        ),
+        pytest.raises(InvalidDataError),
+    ):
+        await mass.statistics.get_plays_over_time(granularity="fortnight")
+
+
+async def test_played_item_ids_returns_more_than_database_default_limit(
+    mass: MusicAssistant,
+) -> None:
+    """The recency membership result is not silently truncated to 500 IDs."""
+    user = await mass.webserver.auth.create_user("statistics-item-id-limit")
+    expected_ids = {f"track-{index}" for index in range(MAX_STATISTICS_RESULT_LIMIT + 1)}
+    for item_id in expected_ids:
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": item_id,
+                "provider": "test-provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": item_id,
+                "timestamp": 1_000,
+            },
+        )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        result = await mass.statistics.get_played_item_ids(MediaType.TRACK, 0)
+
+    assert {item_id for _, item_id in result} == expected_ids
