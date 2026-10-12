@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
+import socketio.exceptions
 from aioaudiobookshelf.client.session_configuration import (
     SessionConfiguration as AbsSessionConfiguration,
 )
@@ -256,10 +257,11 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                 self._client, self._client_socket = await aioabs.get_user_and_socket_client(
                     session_config=session_config, username=username, password=password
                 )
-            await self._client_socket.init_client()
             libraries = await self._client.get_all_libraries()
             # cache username
             self.abs_username = (await self._client.get_my_user()).username
+            # connect the socket last: a failed init is never unloaded, so it would leak
+            await self._client_socket.init_client()
         except AbsLoginError as exc:
             raise LoginFailed(
                 f"Login to abs instance at {base_url} failed.",
@@ -267,7 +269,7 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                 translation_owner=self.translation_owner,
                 translation_args=[base_url],
             ) from exc
-        except AbsServiceUnavailableError as exc:
+        except (AbsServiceUnavailableError, socketio.exceptions.ConnectionError) as exc:
             # lets mass retry the load once the server is reachable again
             raise ProviderUnavailableError(
                 f"Audiobookshelf instance at {base_url} is unreachable."

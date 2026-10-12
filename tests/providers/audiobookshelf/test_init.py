@@ -3,8 +3,12 @@
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import socketio
+import socketio.exceptions
+from aioaudiobookshelf.client import SocketClient
+from aioaudiobookshelf.client.session_configuration import SessionConfiguration
 from aioaudiobookshelf.exceptions import ServiceUnavailableError as AbsServiceUnavailableError
-from aiohttp import ClientConnectionError
+from aiohttp import ClientConnectionError, web
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
 
@@ -87,15 +91,23 @@ async def test_async_init_unreachable_server(
         await provider.handle_async_init()
 
 
-@pytest.mark.parametrize("failing_call", ["get_all_libraries", "get_my_user"])
+@pytest.mark.parametrize(
+    ("failing_call", "error"),
+    [
+        ("get_all_libraries", AbsServiceUnavailableError),
+        ("get_my_user", AbsServiceUnavailableError),
+        ("init_client", socketio.exceptions.ConnectionError),
+    ],
+)
 @pytest.mark.asyncio
 async def test_async_init_server_lost_after_login(
-    provider: Audiobookshelf, failing_call: str
+    provider: Audiobookshelf, failing_call: str, error: type[Exception]
 ) -> None:
     """A server lost right after login raises an error mass retries the load on."""
     client = Mock(get_all_libraries=AsyncMock(return_value=[]), get_my_user=AsyncMock())
-    setattr(client, failing_call, AsyncMock(side_effect=AbsServiceUnavailableError))
     socket_client = Mock(init_client=AsyncMock())
+    failing_client = socket_client if failing_call == "init_client" else client
+    setattr(failing_client, failing_call, AsyncMock(side_effect=error))
     with (
         patch.object(provider, "get_setup_value", return_value=None),
         patch(
@@ -105,3 +117,31 @@ async def test_async_init_server_lost_after_login(
         pytest.raises(ProviderUnavailableError),
     ):
         await provider.handle_async_init()
+    # a failed init is never unloaded, so the socket must not be connected yet
+    if failing_call != "init_client":
+        socket_client.init_client.assert_not_awaited()
+
+
+@pytest.mark.parametrize("server_running", [True, False])
+@pytest.mark.asyncio
+async def test_failed_socket_connect_leaves_nothing_to_shut_down(server_running: bool) -> None:
+    """A failed socket connect is neither connected nor reconnecting afterwards."""
+    server = socketio.AsyncServer(async_mode="aiohttp")
+    server.on("connect", handler=lambda *_: False)
+    app = web.Application()
+    server.attach(app)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    url = f"http://127.0.0.1:{runner.addresses[0][1]}"
+    if not server_running:
+        await runner.cleanup()
+    socket_client = SocketClient(SessionConfiguration(session=Mock(), url=url))
+    try:
+        with pytest.raises(socketio.exceptions.ConnectionError):
+            await socket_client.init_client()
+    finally:
+        await runner.cleanup()
+    # the two states SocketClient.shutdown() would stop
+    assert not socket_client.client.connected
+    assert socket_client.client._reconnect_task is None
