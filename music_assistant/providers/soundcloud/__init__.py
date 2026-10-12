@@ -387,7 +387,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         for index, item in enumerate(playlist_obj["tracks"], 1):
             try:
                 # Skip some ugly "tracks" entries, example:
-                # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}
+                # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}  # noqa: ERA001
                 if "title" in item:
                     if track := await self._parse_track(item, index):
                         result.append(track)

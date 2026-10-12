@@ -184,6 +184,19 @@ def _controller(**queue_kwargs: Any) -> Any:
         side_effect=lambda _queue, items, **_kw: list(items)[::-1]
     )
     ctrl._media_resolver = Mock()
+    # a library artist, so the stubbed selection applies
+    ctrl._media_resolver._resolve_library_artist = AsyncMock(
+        return_value=Artist(
+            item_id="1",
+            provider="library",
+            name="Artist ar1",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="ar1", provider_domain="test", provider_instance="test", in_library=True
+                )
+            },
+        )
+    )
     # the real artist resolution, reading the stubbed order, selection and albums
     ctrl._media_resolver.resolve_artist_tracks = partial(
         MediaResolver.resolve_artist_tracks, ctrl._media_resolver

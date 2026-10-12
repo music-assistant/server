@@ -32,8 +32,8 @@ PLAYLISTS = "playlists"
 PAGES_MIX = "pages/mix"
 
 # Config keys
-CONF_AUTH_TOKEN = "auth_token"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_AUTH_TOKEN = "auth_token"  # noqa: S105 - config key
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 CONF_USER_ID = "user_id"
 CONF_EXPIRY_TIME = "expiry_time"
 CONF_QUALITY = "quality"

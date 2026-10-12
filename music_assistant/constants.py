@@ -118,7 +118,7 @@ CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
 CONF_USERNAME: Final[str] = "username"
-CONF_PASSWORD: Final[str] = "password"
+CONF_PASSWORD: Final[str] = "password"  # noqa: S105 - config key
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
@@ -138,7 +138,7 @@ CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
 CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
-WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")
+WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - the wildcard addresses themselves
 # Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
 SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
@@ -226,12 +226,14 @@ def _default_background_scan_concurrency() -> int:
 
 
 # config default values
-DEFAULT_HOST: Final[str] = "0.0.0.0"
+DEFAULT_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - listen on all interfaces by default
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
 # common db tables
-DB_TABLE_PLAYLOG: Final[str] = "playlog"
+DB_TABLE_MEDIA_PROGRESS: Final[str] = "media_progress"
+DB_TABLE_PLAY_HISTORY: Final[str] = "play_history"
+DB_TABLE_LEGACY_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"
 DB_TABLE_TRACKS: Final[str] = "tracks"
@@ -1081,7 +1083,7 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "radio",
     "airplay",
     "chromecast",
-    # bluetooth (bluesound, musiccast)
+    # bluetooth, used by bluesound and musiccast
     "bluetooth",
     "bluetooth audio",
     "bluetooth_audio",
@@ -1092,13 +1094,13 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "line_in",
     "aux",
     "tuner",
-    # tv / hdmi (sonos, bluesound)
+    # tv / hdmi, used by sonos and bluesound
     "tv",
     "tv input",
     "hdmi arc",
     # local/usb playback on device (musiccast)
     "usb",
-    # external (hass_players)
+    # external, used by hass_players
     "external",
 }
 

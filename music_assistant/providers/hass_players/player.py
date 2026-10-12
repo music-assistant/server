@@ -426,7 +426,7 @@ class HomeAssistantPlayer(Player):
                 group_members: list[str] = (
                     [
                         # ignore integrations that incorrectly set the group members attribute
-                        # (e.g. linkplay)
+                        # such as linkplay
                         x
                         for x in value
                         if x.startswith("media_player.")

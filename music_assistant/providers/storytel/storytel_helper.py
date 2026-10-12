@@ -820,7 +820,7 @@ class StorytelHelper:
                 stream_url = (response.get("result") or {}).get("signedUrl") or ""
                 if stream_url == "":
                     self.logger.error("No signed URL returned for %s", item_id)
-                    raise MediaNotFoundError("No signed URL returned")
+                    raise MediaNotFoundError("No signed URL returned")  # noqa: TRY301 - re-raised by except below
                 headers.pop("authorization", None)
                 headers["range"] = "bytes=0-1"
                 current_stream_url = URL(stream_url, encoded=True)
@@ -852,7 +852,9 @@ class StorytelHelper:
                         resolved_stream_url = str(current_stream_url)
                         break
                 else:
-                    raise UnplayableMediaError("Too many redirects while resolving Storytel stream")
+                    raise UnplayableMediaError(  # noqa: TRY301 - re-raised by except below
+                        "Too many redirects while resolving Storytel stream"
+                    )
         except (
             ClientError,
             ConnectionError,

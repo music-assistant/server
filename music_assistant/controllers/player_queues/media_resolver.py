@@ -135,7 +135,7 @@ class MediaResolver:
 
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:
         """
-        Return the tracks to play for the given artist, based on user preference.
+        Return the tracks to play for the given artist.
 
         :param artist: The artist to play.
         """
@@ -145,19 +145,26 @@ class MediaResolver:
         """
         Return the tracks to play for the given artist, and whether they are its albums.
 
-        With an album order, these are the artist's albums one after the other, each as it
-        plays on its own. An artist with no albums gets the selected tracks shuffled. One whose
-        albums can't be listed or loaded plays nothing.
+        An artist in the library follows the user preference, any other artist plays all of
+        its tracks across the providers. With an album order, these are the artist's albums one
+        after the other, each as it plays on its own. An artist with no albums gets the selected
+        tracks shuffled. One whose albums can't be listed or loaded plays nothing.
 
         :param artist: The artist to play.
         """
-        artist_items_conf = str(
-            self.mass.config.get_raw_core_config_value(
-                self.queues.domain,
-                CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
-                ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+        library_artist = await self._resolve_library_artist(artist)
+        if library_artist is None or not any(
+            mapping.in_library for mapping in library_artist.provider_mappings
+        ):
+            artist_items_conf = "all_tracks"
+        else:
+            artist_items_conf = str(
+                self.mass.config.get_raw_core_config_value(
+                    self.queues.domain,
+                    CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+                    ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+                )
             )
-        )
         order = self.get_artist_order()
         self.logger.info(
             "Fetching tracks to play for artist %s (selection: %s, order: %s)",

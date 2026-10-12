@@ -13,11 +13,11 @@ CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
 
 # Pairing method the setup flow lets the user pick between.
 CONF_PAIRING_METHOD = "pairing_method"
-CONF_PAIRING_TOKEN = "pairing_token"
+CONF_PAIRING_TOKEN = "pairing_token"  # noqa: S105 - config key
 PAIR_METHOD_PIN = "pin"
 PAIR_METHOD_DYNAMIC_PIN = "dynamic_pin"
 PAIR_METHOD_STATIC_PIN = "static_pin"
-PAIR_METHOD_TOKEN = "token"
+PAIR_METHOD_TOKEN = "token"  # noqa: S105 - auth method name
 # The consent step's choice between connecting straight away and pairing first.
 CONF_CONNECT_METHOD = "connect_method"
 CONNECT_METHOD_UNPAIRED = "unpaired"

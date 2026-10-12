@@ -2357,6 +2357,81 @@ class Player(ABC):
             return PLAYER_CONTROL_NONE
         return control
 
+    # The id of the (last) active mass source.
+    # This is to keep track of the last active MA source for the player,
+    # so we can restore it when needed (e.g. after switching to a plugin source).
+    __active_mass_source: str | None = None
+
+    @final
+    def set_active_mass_source(self, value: str | None) -> None:
+        """
+        Set the id of the (last) active mass source.
+
+        This is to keep track of the last active MA source for the player,
+        so we can restore it when needed (e.g. after switching to a plugin source).
+        """
+        self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
+        self.__active_mass_source = value
+        self.update_state()
+
+    __sleep_timer_expires_at: float | None = None
+
+    @final
+    def set_sleep_timer_expires_at(self, value: float | None) -> None:
+        """
+        Set the unix (utc) timestamp at which the active sleep timer stops playback.
+
+        :param value: The expiry timestamp, or None to clear the sleep timer.
+        """
+        self.__sleep_timer_expires_at = value
+
+    @property
+    @final
+    def sleep_timer_expires_at(self) -> float | None:
+        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
+        return self.__sleep_timer_expires_at
+
+    __stop_called: bool = False
+
+    @final
+    def mark_stop_called(self) -> None:
+        """Mark that the STOP command was called on the player."""
+        self.__stop_called = True
+
+    @property
+    @final
+    def stop_called(self) -> bool:
+        """
+        Return True if the STOP command was called on the player.
+
+        This is used to differentiate between a user-initiated stop
+        and a natural end of playback (e.g. end of track/queue).
+        mainly for debugging/logging purposes by the streams controller.
+        """
+        return self.__stop_called
+
+    def __hash__(self) -> int:
+        """Return a hash of the Player."""
+        return hash(self.player_id)
+
+    def __str__(self) -> str:
+        """Return a string representation of the Player."""
+        return f"Player {self.name} ({self.player_id})"
+
+    def __repr__(self) -> str:
+        """Return a string representation of the Player."""
+        return f"<Player name={self.name} id={self.player_id} available={self.available}>"
+
+    def __eq__(self, other: object) -> bool:
+        """Check equality of two Player objects."""
+        if not isinstance(other, Player):
+            return False
+        return self.player_id == other.player_id
+
+    def __ne__(self, other: object) -> bool:
+        """Check inequality of two Player objects."""
+        return not self.__eq__(other)
+
     def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
         """
         Update a single setup_data value for this player (e.g. a rotated pairing credential).
@@ -3054,8 +3129,10 @@ class Player(ABC):
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
                     title=f"{media_item.name} ({version})" if version else media_item.name,
-                    artist=getattr(media_item, "artist_str", None),
-                    album=album.name if album else podcast.name if podcast else description,
+                    # a podcast episode has no artists, the podcast name takes the artist line
+                    artist=getattr(media_item, "artist_str", None)
+                    or (podcast.name if podcast else None),
+                    album=album.name if album else None if podcast else description,
                     album_artist=getattr(album, "artist_str", None),
                     image_url=image_url,
                     palette=self._resolved_palette(image_url),
@@ -3572,81 +3649,6 @@ class Player(ABC):
                     if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                         result.add(player)
         return result
-
-    # The id of the (last) active mass source.
-    # This is to keep track of the last active MA source for the player,
-    # so we can restore it when needed (e.g. after switching to a plugin source).
-    __active_mass_source: str | None = None
-
-    @final
-    def set_active_mass_source(self, value: str | None) -> None:
-        """
-        Set the id of the (last) active mass source.
-
-        This is to keep track of the last active MA source for the player,
-        so we can restore it when needed (e.g. after switching to a plugin source).
-        """
-        self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
-        self.__active_mass_source = value
-        self.update_state()
-
-    __sleep_timer_expires_at: float | None = None
-
-    @final
-    def set_sleep_timer_expires_at(self, value: float | None) -> None:
-        """
-        Set the unix (utc) timestamp at which the active sleep timer stops playback.
-
-        :param value: The expiry timestamp, or None to clear the sleep timer.
-        """
-        self.__sleep_timer_expires_at = value
-
-    @property
-    @final
-    def sleep_timer_expires_at(self) -> float | None:
-        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
-        return self.__sleep_timer_expires_at
-
-    __stop_called: bool = False
-
-    @final
-    def mark_stop_called(self) -> None:
-        """Mark that the STOP command was called on the player."""
-        self.__stop_called = True
-
-    @property
-    @final
-    def stop_called(self) -> bool:
-        """
-        Return True if the STOP command was called on the player.
-
-        This is used to differentiate between a user-initiated stop
-        and a natural end of playback (e.g. end of track/queue).
-        mainly for debugging/logging purposes by the streams controller.
-        """
-        return self.__stop_called
-
-    def __hash__(self) -> int:
-        """Return a hash of the Player."""
-        return hash(self.player_id)
-
-    def __str__(self) -> str:
-        """Return a string representation of the Player."""
-        return f"Player {self.name} ({self.player_id})"
-
-    def __repr__(self) -> str:
-        """Return a string representation of the Player."""
-        return f"<Player name={self.name} id={self.player_id} available={self.available}>"
-
-    def __eq__(self, other: object) -> bool:
-        """Check equality of two Player objects."""
-        if not isinstance(other, Player):
-            return False
-        return self.player_id == other.player_id
-
-    def __ne__(self, other: object) -> bool:
-        """Check inequality of two Player objects."""
-        return not self.__eq__(other)
 
     @final
     def __reports_source_takeover(self) -> bool:

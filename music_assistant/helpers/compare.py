@@ -82,8 +82,8 @@ _ALBUM_SUFFIX_ALTERNATION: Final = "|".join(re.escape(suffix) for suffix in _ALB
 # the trailing retail suffix as it appears in a raw album title: set off by a dash
 # (any style, and only the space in front of it counts, so "K-EP" keeps its name) or
 # wrapped in brackets, which need no space to be unambiguous. A bare trailing word is
-# deliberately not accepted, as it is just as likely part of the title itself
-# ("The SL2 EP", "Saturday Night Single")
+# deliberately not accepted, as it is just as likely part of the title itself,
+# as in "The SL2 EP" or "Saturday Night Single"
 _ALBUM_SUFFIX_PATTERN = re.compile(
     rf"\s+[-\u2013\u2014]\s*(?P<suffix>{_ALBUM_SUFFIX_ALTERNATION})\s*$"
     rf"|\s*[(\[](?P<bracketed>{_ALBUM_SUFFIX_ALTERNATION})[)\]]\s*$",
@@ -1372,7 +1372,7 @@ def _is_missing_remaster_version(base_version: str, compare_version_value: str) 
         return False
     version_tokens = base_tokens or compare_tokens
     return "remaster" in version_tokens and all(
-        token == "remaster" or token.isdigit() for token in version_tokens
+        word == "remaster" or word.isdigit() for word in version_tokens
     )
 
 

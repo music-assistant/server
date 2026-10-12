@@ -100,7 +100,6 @@ async def test_parse_now_playing() -> None:
 
     assert now_playing.content_item is not None
     assert now_playing.content_item.source == "SPOTIFY"
-    # assert now_playing.content_item.source_account == "user1"
     assert now_playing.track == "Song Title"
     assert now_playing.artist == "The Artist"
     assert now_playing.album == "The Album"

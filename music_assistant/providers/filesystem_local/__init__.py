@@ -85,7 +85,7 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.playlists import parse_m3u, parse_pls
+from music_assistant.helpers.playlists import parse_m3u, parse_pls, sanitize_playlist_filename
 from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
@@ -542,7 +542,7 @@ class LocalFileSystemProvider(MusicProvider):
                     items[index] = library_track
         return items
 
-    async def sync_library(self, media_type: MediaType) -> None:
+    async def sync_library(self, media_type: MediaType) -> None:  # noqa: C901, PLR0912
         """Run library sync for this provider."""
         if media_type in (MediaType.ARTIST, MediaType.ALBUM):
             # artists and albums are synced as part of track sync
@@ -1190,7 +1190,7 @@ class LocalFileSystemProvider(MusicProvider):
             playlist_items = parse_pls(playlist_data)
         # remove items by index
         for i in sorted(positions_to_remove, reverse=True):
-            # position = index + 1
+            # positions start at 1, indexes at 0
             del playlist_items[i - 1]
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
@@ -1203,12 +1203,20 @@ class LocalFileSystemProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        # filename = await self.resolve(f"{name}.m3u")
-        filename = f"{name}.m3u"
-        playlist_filename = self.get_absolute_path(filename)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write("#EXTM3U\n")
-        return await self.get_playlist(filename)
+        base_name = sanitize_playlist_filename(name)
+        filename = f"{base_name}.m3u"
+        counter = 1
+        while True:
+            try:
+                async with aiofiles.open(
+                    self.get_absolute_path(filename), "x", encoding="utf-8"
+                ) as _file:
+                    await _file.write("#EXTM3U\n")
+            except FileExistsError:
+                filename = f"{base_name} ({counter}).m3u"
+                counter += 1
+                continue
+            return await self.get_playlist(filename)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
