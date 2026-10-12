@@ -1171,11 +1171,13 @@ class StreamsAudio:
 
         :param streamdetails: The stream the paths belong to.
         :param paths: The path of the stream, or of each of its parts.
-        :raises AudioError: If the provider can not or may not open a file.
+        :raises AudioError: If the provider is not loaded, or can not or may not open a file.
         """
         if streamdetails.stream_type != StreamType.LOCAL_FILE:
             return paths, ()
         provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        if provider is None:
+            raise AudioError(f"Unable to open {streamdetails.uri}: its provider is not loaded")
         if not isinstance(provider, AudioStreamMixin):
             return paths, ()
         inputs: list[str] = []

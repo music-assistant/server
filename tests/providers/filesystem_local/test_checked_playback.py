@@ -52,7 +52,7 @@ def _make_provider(base_path: Path) -> LocalFileSystemProvider:
     return provider
 
 
-def _make_audio(provider: LocalFileSystemProvider) -> StreamsAudio:
+def _make_audio(provider: LocalFileSystemProvider | None) -> StreamsAudio:
     mass = MagicMock()
     mass.get_provider.return_value = provider
     mass.loop.time = MagicMock(return_value=0.0)
@@ -148,6 +148,14 @@ async def test_playback_of_a_removed_file_fails_the_stream(tree: Path) -> None:
     """A file removed after it was queued fails the stream like a file ffmpeg can not read."""
     (tree / "inside-track.flac").unlink()
     audio = _make_audio(_make_provider(tree))
+
+    with pytest.raises(AudioError):
+        await _play(audio, _local_stream(str(tree / "track.flac")))
+
+
+async def test_playback_of_a_file_whose_provider_is_gone_fails_the_stream(tree: Path) -> None:
+    """A file queued before its provider was unloaded is not opened unchecked."""
+    audio = _make_audio(None)
 
     with pytest.raises(AudioError):
         await _play(audio, _local_stream(str(tree / "track.flac")))
