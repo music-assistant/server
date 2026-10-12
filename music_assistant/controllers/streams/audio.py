@@ -4474,12 +4474,13 @@ class StreamsAudio:
         :param queue: The queue this request belongs to.
         :param queue_item: The item whose stream is starting.
         :param session_id: Queue session the request belongs to.
-        :return: The fade data, or None when there is none for this item.
+        :return: The fade data, or None when there is none for this item or it was
+            mixed in another session.
         """
         handover = self._crossfade_handover.get(queue.queue_id)
         if handover is None or handover.queue_item_id != queue_item.queue_item_id:
-            # a leftover boundary for another item (a skip landed in between);
-            # left in place for its own request, replaced by the next publish
+            # nothing published, or a leftover boundary for another item (a skip landed
+            # in between) that stays for its own request until the next publish
             return None
         del self._crossfade_handover[queue.queue_id]
         if handover.session_id != session_id:

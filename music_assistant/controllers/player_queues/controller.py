@@ -1045,6 +1045,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
             queue_data.next_item_id_enqueued = None
+            # a boundary the outgoing session mixed ahead of playback leads into an item
+            # this start leaves behind
+            self.mass.streams.audio.clear_crossfade_handover(queue_id)
             # always update session id when we start a new playback session
             queue_data.session_id = shortuuid.random(length=8)
             self.mass.streams.audio_processing.start_session(
