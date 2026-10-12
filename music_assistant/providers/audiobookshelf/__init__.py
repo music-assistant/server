@@ -926,14 +926,14 @@ for more details.
         if media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK):
             session = await self._get_playback_session(mass_item_id=item_id)
             return await self._get_stream_details_session(
-                session, session_helper=self.sessions[item_id], media_type=media_type
+                session, item_id=item_id, media_type=media_type
             )
         raise MediaNotFoundError("Stream unknown")
 
     async def _get_stream_details_session(
         self,
         abs_session: AbsPlaybackSessionExpanded,
-        session_helper: SessionHelper,
+        item_id: str,
         media_type: MediaType,
     ) -> StreamDetails:
         """
@@ -972,7 +972,7 @@ for more details.
 
         return StreamDetails(
             provider=self.instance_id,
-            item_id=abs_session.id_,
+            item_id=item_id,
             audio_format=AudioFormat(content_type=content_type),
             media_type=media_type,
             stream_type=StreamType.HTTP,
