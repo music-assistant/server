@@ -6,7 +6,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from music_assistant.providers.nugs import SUPPORTED_FEATURES, NugsProvider
+from music_assistant.providers.nugs import (
+    CONF_QUALITY,
+    QUALITY_LOSSLESS,
+    SUPPORTED_FEATURES,
+    NugsProvider,
+)
 
 
 @pytest.fixture
@@ -21,5 +26,6 @@ def provider() -> NugsProvider:
     config.enabled = True
     config.get_value.side_effect = lambda key, default=None: {
         "log_level": "GLOBAL",
+        CONF_QUALITY: QUALITY_LOSSLESS,
     }.get(key, default)
     return NugsProvider(mass, manifest, config, SUPPORTED_FEATURES)

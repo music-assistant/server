@@ -76,6 +76,7 @@ class DummyRuntime(ProviderEventRecorder, AIRadioRuntimeMixin):
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
         self._sections: dict[str, dict[str, Any]] = {}
+        self._flow_mode_queues: dict[str, str] = {}
         self.config = cast("Any", StubConfig())
         self.instance_id = "ai_radio_test"
         self.domain = "ai_radio"
@@ -1130,6 +1131,43 @@ def test_merged_weather_and_news_clip_is_not_weather_required() -> None:
 
     assert len(planned) == 1
     assert planned[0].weather_required is False
+
+
+@pytest.mark.parametrize(
+    ("weather_allows", "news_allows", "expected"),
+    [
+        pytest.param(True, True, True, id="every section allows it"),
+        pytest.param(True, False, False, id="one section does not"),
+        pytest.param(False, False, False, id="none does"),
+    ],
+)
+def test_merged_clip_carries_over_only_when_every_section_allows_it(
+    weather_allows: bool, news_allows: bool, expected: bool
+) -> None:
+    """One merged recording may put any of its sections over the record, so all must opt in."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = _merge_weather_news_station()
+    station["sections"][0]["allow_post"] = weather_allows
+    station["sections"][1]["allow_post"] = news_allows
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].allow_post is expected
 
 
 def test_mixed_purpose_section_without_a_weather_guard_is_not_weather_required() -> None:
@@ -2340,3 +2378,107 @@ def test_set_session_progress_emits_a_sessions_hint() -> None:
 
     assert session.progress["phase"] == "planning_sections"
     assert runtime.provider_events == [{"event": EVENT_SESSIONS_UPDATED}]
+
+
+class PostShowRuntime(ShowRuntime):
+    """ShowRuntime harness whose show stays on air until the test lets it end."""
+
+    def __init__(self) -> None:
+        """Initialize the harness with a gate that ends the show."""
+        super().__init__()
+        self.show_end = asyncio.Event()
+
+    async def _await_show_end(
+        self, session: SessionState, queue_id: str, last_index: int, *, has_clips: bool
+    ) -> str:
+        """Block until the test ends the show."""
+        await self.show_end.wait()
+        return "source_exhausted"
+
+
+def _posting_show_mass(runtime: ShowRuntime, call_order: list[str]) -> None:
+    """Wire a show mass stub that records play starts and flow-mode requirements."""
+
+    async def _play_index(_queue_id: str, index: int) -> None:
+        call_order.append(f"play_index:{index}")
+
+    def _set_flow_mode_required(queue_id: str, owner: str, required: bool) -> None:
+        call_order.append(f"flow:{queue_id}:{owner}:{required}")
+
+    mass = _show_mass_stub(play_index=_play_index)
+    mass.streams = SimpleNamespace(set_flow_mode_required=_set_flow_mode_required)
+    _set_runtime_mass(runtime, mass)
+
+
+def _posting_station() -> dict[str, Any]:
+    """Return the show station with one section that lets its break carry over."""
+    station = _show_station()
+    station["sections"][1]["allow_post"] = True
+    return station
+
+
+async def test_a_posting_show_holds_its_queue_in_flow_mode_until_it_ends() -> None:
+    """Flow mode is required before playback starts and released once the show ends."""
+    runtime = PostShowRuntime()
+    call_order: list[str] = []
+    _posting_show_mass(runtime, call_order)
+    session = SessionState(session_id="sess", station_id="st")
+
+    task = asyncio.create_task(runtime._run_show(session, _posting_station()))
+    await asyncio.sleep(0)
+    assert call_order == ["flow:living_room:ai_radio_test:True", "play_index:0"]
+    assert runtime._flow_mode_queues == {"living_room": "sess"}
+
+    runtime.show_end.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert call_order[-1] == "flow:living_room:ai_radio_test:False"
+    assert runtime._flow_mode_queues == {}
+
+
+async def test_a_cancelled_posting_show_releases_flow_mode() -> None:
+    """A show stopped while on air releases the flow-mode requirement too."""
+    runtime = PostShowRuntime()
+    call_order: list[str] = []
+    _posting_show_mass(runtime, call_order)
+
+    task = asyncio.create_task(
+        runtime._run_show(SessionState(session_id="sess", station_id="st"), _posting_station())
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert call_order[-1] == "flow:living_room:ai_radio_test:False"
+    assert runtime._flow_mode_queues == {}
+
+
+async def test_a_show_taken_over_by_another_leaves_its_flow_mode_alone() -> None:
+    """Only the session that holds the requirement releases it."""
+    runtime = PostShowRuntime()
+    call_order: list[str] = []
+    _posting_show_mass(runtime, call_order)
+
+    task = asyncio.create_task(
+        runtime._run_show(SessionState(session_id="sess", station_id="st"), _posting_station())
+    )
+    await asyncio.sleep(0)
+    runtime._flow_mode_queues["living_room"] = "other"
+    runtime.show_end.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert "flow:living_room:ai_radio_test:False" not in call_order
+    assert runtime._flow_mode_queues == {"living_room": "other"}
+
+
+async def test_a_show_without_posting_sections_leaves_flow_mode_alone() -> None:
+    """A show whose breaks never carry over does not touch the queue's flow mode."""
+    runtime = PostShowRuntime()
+    call_order: list[str] = []
+    _posting_show_mass(runtime, call_order)
+    runtime.show_end.set()
+
+    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
+
+    assert call_order == ["play_index:0"]

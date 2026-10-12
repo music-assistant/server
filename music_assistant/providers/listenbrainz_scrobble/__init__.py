@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
-CONF_USER_TOKEN = "_user_token"
+CONF_USER_TOKEN = "_user_token"  # noqa: S105 - config key
 CONF_API_BASE_URL = "api_base_url"
 LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
 SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.SCROBBLE}

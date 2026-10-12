@@ -210,14 +210,17 @@ class ImageProxyMixin:
                 return None  # can not happen, but guard for type checker
             media_item = retrieved_item
 
-        if media_item and media_item.metadata.images:
-            for img in media_item.metadata.images:
-                if img.type != img_type:
-                    continue
-                if not img.remotely_accessible and not resolve:
-                    # ignore image if its not remotely accessible and we don't allow resolving
-                    continue
-                return self.get_image_url(img, prefer_proxy=not img.remotely_accessible)
+        images: list[MediaItemImage] = list(media_item.metadata.images or [])
+        if isinstance(media_item, Track) and media_item.album and media_item.album.image:
+            # always prefer the album image for tracks
+            images.insert(0, media_item.album.image)
+        for img in images:
+            if img.type != img_type:
+                continue
+            if not img.remotely_accessible and not resolve:
+                # ignore image if its not remotely accessible and we don't allow resolving
+                continue
+            return self.get_image_url(img, prefer_proxy=not img.remotely_accessible)
 
         # retry with track's album
         if isinstance(media_item, Track) and media_item.album:

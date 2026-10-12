@@ -158,7 +158,7 @@ def _retry_transport_errors[ProviderT, **P, R](
     # first, because aiohttp's ServerTimeoutError is also a ClientConnectionError.
 
     @functools.wraps(func)
-    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: ProviderT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return await func(self, *args, **kwargs)
         except TimeoutError:

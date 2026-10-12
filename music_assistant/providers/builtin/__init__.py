@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaylistMatchPolicy,
     ProviderFeature,
+    SortField,
     StreamType,
 )
 from music_assistant_models.errors import (
@@ -417,11 +418,12 @@ class BuiltinProvider(MusicProvider):
         else:
             return False
         self._ensure_stream_url(item.item_id)
-        if item.image:
-            self._ensure_remote_image_url(item.image.path)
+        image = _own_thumb(item)
+        if image:
+            self._ensure_remote_image_url(image.path)
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
-        if item.image:
-            stored_item["image_url"] = item.image.path
+        if image:
+            stored_item["image_url"] = image.path
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
         # filter out existing
         stored_items = [x for x in stored_items if x["item_id"] != item.item_id]
@@ -484,12 +486,13 @@ class BuiltinProvider(MusicProvider):
             return
 
         # TODO: also allow updating description and other image types
+        image = _own_thumb(item)
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
         for stored_item in stored_items:
             if stored_item["item_id"] == builtin_mapping.item_id:
                 stored_item["name"] = item.name
-                if item.image:
-                    stored_item["image_url"] = item.image.path
+                if image:
+                    stored_item["image_url"] = image.path
                 elif "image_url" in stored_item:
                     del stored_item["image_url"]
                 break
@@ -1569,7 +1572,7 @@ class BuiltinProvider(MusicProvider):
         """
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
-            favorite=True, limit=250000, order_by="random_play_count", summary=False
+            favorite=True, limit=250000, sort_field=SortField.RANDOM_PLAY_COUNT, summary=False
         )
         for idx, item in enumerate(res, 1):
             item.position = idx
@@ -1580,7 +1583,7 @@ class BuiltinProvider(MusicProvider):
     async def _get_builtin_playlist_random_tracks(self) -> list[Track]:
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
-            limit=500, order_by="random_play_count", summary=False
+            limit=500, sort_field=SortField.RANDOM_PLAY_COUNT, summary=False
         )
         for idx, item in enumerate(res, 1):
             item.position = idx
@@ -1591,7 +1594,7 @@ class BuiltinProvider(MusicProvider):
     async def _get_builtin_playlist_random_album(self) -> list[Track]:
         for random_album in await self.mass.music.albums.get_library_items_by_query(
             limit=1,
-            order_by="random",
+            sort_field=SortField.RANDOM,
             extra_query_parts=["album_type != :excluded_album_type"],
             extra_query_params={"excluded_album_type": "single"},
         ):
@@ -1608,7 +1611,7 @@ class BuiltinProvider(MusicProvider):
         for source in ("library", "top"):
             for min_tracks_required in (25, 10, 5, 1):
                 for random_artist in await self.mass.music.artists.library_items(
-                    limit=25, order_by="random", summary=False
+                    limit=25, sort_field=SortField.RANDOM, summary=False
                 ):
                     if source == "library":
                         tracks = await self.mass.music.artists.tracks(
@@ -1695,7 +1698,7 @@ class BuiltinProvider(MusicProvider):
         limit = 25 * 3 if get_track_filter() is not None else 25
         candidates = list(
             await self.mass.music.tracks.library_items(
-                favorite=favorite, limit=limit, order_by="random", summary=False
+                favorite=favorite, limit=limit, sort_field=SortField.RANDOM, summary=False
             )
         )
         tracks = filter_tracks(candidates)[:25]
@@ -2103,6 +2106,11 @@ def _has_music_tags(media_info: AudioTags) -> bool:
     return any(
         media_info.get(tag) for tag in ("artist", "artists", "albumartist", "albumartists", "album")
     )
+
+
+def _own_thumb(item: MediaItemType) -> MediaItemImage | None:
+    """Return the thumb an item holds itself (the image of a track prefers its album's)."""
+    return next((img for img in item.metadata.images or () if img.type == ImageType.THUMB), None)
 
 
 def _split_artist_from_title(item: PlaylistItem) -> PlaylistItem:

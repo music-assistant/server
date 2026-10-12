@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Final
 
+from music_assistant_models.enums import SortDirection, SortField
+
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
@@ -63,6 +65,62 @@ CONF_TRACK_RECONCILIATION_RESCAN_DUE: Final[str] = "track_reconciliation_rescan_
 # max difference in seconds between two track durations to still consider them the same
 # recording; matches the widest duration window compare_track is willing to accept
 TRACK_RECONCILIATION_MAX_DURATION_DELTA: Final[int] = 8
+
+# ORDER BY expression per sort field, with `{prefix}` standing for the "<table>." qualifier
+# of the columns (empty when the listing is a derived query). ARTIST_NAME joins another table,
+# so the media controllers that offer it render it themselves.
+BASE_SORT_FIELD_SQL: Final[dict[SortField, str]] = {
+    SortField.NAME: "{prefix}search_name",
+    SortField.SORT_NAME: "{prefix}search_sort_name",
+    SortField.TIMESTAMP_ADDED: "{prefix}timestamp_added",
+    SortField.TIMESTAMP_MODIFIED: "{prefix}timestamp_modified",
+    SortField.LAST_PLAYED: "{prefix}last_played",
+    SortField.PLAY_COUNT: "{prefix}play_count",
+    SortField.DURATION: "{prefix}duration",
+    SortField.YEAR: "{prefix}year",
+    SortField.POSITION: "{prefix}position",
+    SortField.RANDOM: "RANDOM()",
+    # least played first, shuffled within equal play counts
+    SortField.RANDOM_PLAY_COUNT: "COALESCE({prefix}play_count, 0), RANDOM()",
+}
+
+# sort fields served from a random sample of the matching rows
+RANDOM_SORT_FIELDS: Final[frozenset[SortField]] = frozenset(
+    {SortField.RANDOM, SortField.RANDOM_PLAY_COUNT}
+)
+
+# the deprecated order_by keys of library listings and the typed sort each one stands for
+LEGACY_SORT_KEYS: Final[dict[str, tuple[SortField, SortDirection | None]]] = {
+    "name": (SortField.NAME, SortDirection.ASC),
+    "name_desc": (SortField.NAME, SortDirection.DESC),
+    "duration": (SortField.DURATION, SortDirection.ASC),
+    "duration_desc": (SortField.DURATION, SortDirection.DESC),
+    "sort_name": (SortField.SORT_NAME, SortDirection.ASC),
+    "sort_name_desc": (SortField.SORT_NAME, SortDirection.DESC),
+    "timestamp_added": (SortField.TIMESTAMP_ADDED, SortDirection.ASC),
+    "timestamp_added_desc": (SortField.TIMESTAMP_ADDED, SortDirection.DESC),
+    "timestamp_modified": (SortField.TIMESTAMP_MODIFIED, SortDirection.ASC),
+    "timestamp_modified_desc": (SortField.TIMESTAMP_MODIFIED, SortDirection.DESC),
+    "last_played": (SortField.LAST_PLAYED, SortDirection.ASC),
+    "last_played_desc": (SortField.LAST_PLAYED, SortDirection.DESC),
+    "play_count": (SortField.PLAY_COUNT, SortDirection.ASC),
+    "play_count_desc": (SortField.PLAY_COUNT, SortDirection.DESC),
+    "year": (SortField.YEAR, SortDirection.ASC),
+    "year_desc": (SortField.YEAR, SortDirection.DESC),
+    "position": (SortField.POSITION, SortDirection.ASC),
+    "position_desc": (SortField.POSITION, SortDirection.DESC),
+    "artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "album_artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "album_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "track_artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "track_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "favorite_timestamp": (SortField.FAVORITE_TIMESTAMP, SortDirection.ASC),
+    "favorite_timestamp_desc": (SortField.FAVORITE_TIMESTAMP, SortDirection.DESC),
+    "random": (SortField.RANDOM, None),
+    "random_play_count": (SortField.RANDOM_PLAY_COUNT, None),
+}
+
 # max number of library rows that may share one normalized title before the duplicate track
 # walk skips that title. Pairing the rows of a title is quadratic in their count, and a title
 # held by hundreds of rows is a generic one rather than a duplicate

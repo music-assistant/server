@@ -36,6 +36,8 @@ from music_assistant.helpers.security import contains_encrypted_value
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
+    from music_assistant_models.auth import User
+
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
@@ -132,6 +134,9 @@ class SetupFlowContext:
     # manages_all_sources: whether the caller manages every music source (the server itself
     # or such a user); false for a user who adds a music source of its own
     manages_all_sources: bool = True
+    # user: the user who started a provider flow; None when the server started it, and in a
+    # player flow
+    user: User | None = None
 
 
 class SetupSession:
@@ -436,7 +441,7 @@ class SetupSession:
             try:
                 # encrypted values are only ever created by the server, never submitted
                 if contains_encrypted_value(raw_value):
-                    raise ValueError("Encrypted values can not be submitted")
+                    raise ValueError("Encrypted values can not be submitted")  # noqa: TRY301 - handled by except below
                 # parse_value also runs the entry's optional validate callback and
                 # stores the parsed value on the entry (echoed on a re-render)
                 # an entry behind an unmet dependency renders disabled, so demanding a

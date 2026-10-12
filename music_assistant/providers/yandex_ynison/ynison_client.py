@@ -784,7 +784,7 @@ class YnisonClient:
         while not self._stop_event.is_set():
             delay = RECONNECT_DELAYS[min(attempt, len(RECONNECT_DELAYS) - 1)]
             # Add ±20% jitter to prevent thundering-herd reconnects
-            jitter = delay * 0.2 * (2 * random.random() - 1)
+            jitter = delay * 0.2 * (2 * random.random() - 1)  # noqa: S311 - reconnect jitter
             delay = max(0.5, delay + jitter)
             self._logger.info("Ynison reconnect attempt %d in %.1fs", attempt + 1, delay)
             await asyncio.sleep(delay)
@@ -804,7 +804,7 @@ class YnisonClient:
                     if self._external_session is not None:
                         if self._external_session.closed:
                             msg = "External HTTP session is closed"
-                            raise RuntimeError(msg)
+                            raise RuntimeError(msg)  # noqa: TRY301 - handled by except below
                         self._session = self._external_session
                     else:
                         self._session = aiohttp.ClientSession()

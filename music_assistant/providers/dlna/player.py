@@ -39,7 +39,7 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
     """Catch UpnpError errors."""
 
     @functools.wraps(func)
-    async def wrapper(self: DLNAPlayerT, *args: P.args, **kwargs: P.kwargs) -> R | None:
+    async def wrapper(self: DLNAPlayerT, /, *args: P.args, **kwargs: P.kwargs) -> R | None:
         """Catch UpnpError errors and check availability before and after request."""
         self.last_command = time.time()
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -101,8 +101,6 @@ class DLNAPlayer(Player):
         self._observed_playback_state: PlaybackState | None = None
         self._playing_since: float | None = None
 
-        # ssdp_connect_failed: bool = False
-        #
         # Track BOOTID in SSDP advertisements for device changes
         self.bootid: int | None = None
         self.last_seen = time.time()

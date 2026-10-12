@@ -587,7 +587,7 @@ class YandexMusicClient:
             # Spread bursts: small jittered pause before next batch.
             if i + batch_size < len(album_ids):
                 await asyncio.sleep(
-                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S
+                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S  # noqa: S311 - request jitter
                 )
         return full_albums
 
@@ -1720,7 +1720,7 @@ class YandexMusicClient:
             return
         if time.monotonic() - connected_at >= INITIAL_SYNC_WINDOW_S:
             return
-        delay = random.uniform(0.0, INITIAL_SYNC_JITTER_S)
+        delay = random.uniform(0.0, INITIAL_SYNC_JITTER_S)  # noqa: S311 - request jitter
         if delay > 0:
             await asyncio.sleep(delay)
 

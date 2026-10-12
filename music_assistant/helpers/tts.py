@@ -52,8 +52,9 @@ async def query_tts_engine(
     """
     if timeout is None:
         timeout = TTS_QUERY_TIMEOUT_SECONDS
+    query_timeout = asyncio.timeout(timeout)
     try:
-        async with asyncio.timeout(timeout) as query_timeout:
+        async with query_timeout:
             return await engine.provider.get_tts_message(
                 message, language=language, engine_id=engine.id, options=options
             )

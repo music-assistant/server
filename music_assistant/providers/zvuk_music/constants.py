@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 # Configuration Keys
-CONF_TOKEN: Final[str] = "token"
+CONF_TOKEN: Final[str] = "token"  # noqa: S105 - config key
 CONF_QUALITY: Final[str] = "quality"
 
 # API defaults

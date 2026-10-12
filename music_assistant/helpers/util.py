@@ -38,7 +38,7 @@ from itertools import islice
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import ifaddr
 from markdownify import markdownify
@@ -1189,7 +1189,7 @@ async def is_port_in_use(port: int, host: str | None = None) -> bool:
         else:
             # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
             # A port is considered free if it can be bound on at least one address family.
-            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))
+            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))  # noqa: S104 - probe whether the port is free
         for family, addr in candidates:
             try:
                 with socket.socket(family, socket.SOCK_STREAM) as _sock:
@@ -1308,6 +1308,36 @@ def format_ip_for_url(ip_address: str) -> str:
     return ip_address
 
 
+# mDNS, special-use (RFC 6761, RFC 8375, ICANN .internal) and common home router suffixes
+_LOCAL_NETWORK_SUFFIXES = (".local", ".localhost", ".home.arpa", ".internal", ".lan", ".home")
+
+
+def is_public_url(url: str) -> bool:
+    """
+    Return whether a URL is an http(s) URL on a host that is reachable from the internet.
+
+    A URL with a query or fragment is refused, so paths can be appended to it.
+
+    :param url: The URL to check.
+    """
+    try:
+        parts = urlsplit(url)
+        # reading the port raises on a malformed one (e.g. :notaport)
+        _ = parts.port
+        host = (parts.hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not host or parts.query or parts.fragment:
+        return False
+    try:
+        return ip_address(host).is_global
+    except ValueError:
+        pass
+    # single-label names (e.g. localhost), mDNS names, special-use names and common home
+    # network suffixes only resolve on the local network
+    return "." in host and not host.lower().endswith(_LOCAL_NETWORK_SUFFIXES)
+
+
 async def get_folder_size(folderpath: str, exclude: Iterable[str] = ()) -> float:
     """
     Return folder size in gb, without following symlinks.
@@ -1338,7 +1368,6 @@ def get_changed_keys(
     """Compare 2 dicts and return set of changed keys."""
     # TODO: Check with Marcel whether we should calculate new dicts based on ignore_keys
     return set(get_changed_dict_values(dict1, dict2, recursive).keys())
-    # return set(get_changed_dict_values(dict1, dict2, ignore_keys, recursive).keys())
 
 
 def get_changed_dict_values(
@@ -2210,7 +2239,7 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
     signature = inspect.signature(func)
 
     @functools.wraps(func)
-    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: SelfT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
         # create a task_id dynamically based on the bound method and args/kwargs.
         # the instance is part of the key because a decorated method may be inherited by

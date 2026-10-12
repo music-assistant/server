@@ -17,6 +17,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 
+from music_assistant.constants import APP_MA_HOST
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_client_id,
     get_current_user,
@@ -32,7 +33,6 @@ if TYPE_CHECKING:
 DASHBOARD_VIEWER_USERNAME = "dashboard_viewer"
 DASHBOARD_VIEWER_DISPLAY_NAME = "Dashboard Viewer"
 DASHBOARD_CODE_EXPIRY_HOURS = 1
-APP_MA_HOST = "https://app.music-assistant.io"
 # every real dashboard type, i.e. what a registration supports when not given explicitly
 ALL_DASHBOARD_TYPES = frozenset(t for t in DashboardType if t != DashboardType.UNKNOWN)
 

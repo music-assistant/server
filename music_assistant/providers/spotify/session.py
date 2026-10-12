@@ -71,7 +71,7 @@ class SpotifySession:
 
     @throttle_with_retries
     async def get(
-        self, endpoint: str, *, auth_info: dict[str, Any] | None = None, **params: Any
+        self, /, endpoint: str, *, auth_info: dict[str, Any] | None = None, **params: Any
     ) -> dict[str, Any]:
         """
         Get data from the api.
@@ -121,6 +121,7 @@ class SpotifySession:
     @throttle_with_retries
     async def delete(
         self,
+        /,
         endpoint: str,
         data: Any = None,
         *,
@@ -143,6 +144,7 @@ class SpotifySession:
     @throttle_with_retries
     async def put(
         self,
+        /,
         endpoint: str,
         data: Any = None,
         *,
@@ -165,6 +167,7 @@ class SpotifySession:
     @throttle_with_retries
     async def post(
         self,
+        /,
         endpoint: str,
         data: Any = None,
         want_result: bool = True,

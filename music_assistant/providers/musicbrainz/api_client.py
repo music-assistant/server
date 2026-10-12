@@ -34,7 +34,7 @@ class MusicBrainzAPIClient:
 
     @use_cache(86400 * 30)  # Cache for 30 days
     @throttle_with_retries
-    async def get_data(self, endpoint: str, **kwargs: str) -> Any:
+    async def get_data(self, /, endpoint: str, **kwargs: str) -> Any:
         """
         Fetch data from the MusicBrainz API.
 
@@ -47,7 +47,7 @@ class MusicBrainzAPIClient:
 
     @use_cache(86400 * 7)  # Cache for 7 days
     @throttle_with_retries
-    async def get_browse_data(self, endpoint: str, **kwargs: str) -> Any:
+    async def get_browse_data(self, /, endpoint: str, **kwargs: str) -> Any:
         """
         Fetch a listing from the MusicBrainz API that grows as the catalog does.
 

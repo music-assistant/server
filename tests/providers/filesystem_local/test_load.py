@@ -124,3 +124,45 @@ async def test_an_existing_folder_loads(
     await provider.handle_async_init()
 
     assert provider.write_access is True
+
+
+@pytest.mark.parametrize("target_is_location", [False, True], ids=["outside", "other_location"])
+async def test_a_folder_that_leads_out_of_its_location_does_not_load(
+    mass_minimal: MusicAssistant,
+    storage: StorageController,
+    tmp_path: Path,
+    target_is_location: bool,
+) -> None:
+    """
+    A folder that is a symlink into another location, or outside every one, does not load.
+
+    :param target_is_location: Whether the symlink leads into another media location.
+    """
+    (tmp_path / "media").mkdir()
+    (tmp_path / "other").mkdir()
+    folder = tmp_path / "media" / "Music"
+    folder.symlink_to(tmp_path / "other", target_is_directory=True)
+    locations = [make_location(tmp_path / "media", kind=StorageKind.MANUAL)]
+    if target_is_location:
+        locations.append(make_location(tmp_path / "other", kind=StorageKind.MANUAL))
+    set_locations(storage, *locations)
+
+    error = await _load_error(mass_minimal, folder)
+
+    assert error.translation_key == "folder_not_allowed"
+    assert error.translation_args == [str(folder)]
+
+
+async def test_a_folder_that_is_a_symlink_within_its_location_loads(
+    mass_minimal: MusicAssistant, storage: StorageController, tmp_path: Path
+) -> None:
+    """A folder that is a symlink to another folder in the same location loads."""
+    (tmp_path / "media" / "Albums").mkdir(parents=True)
+    folder = tmp_path / "media" / "Music"
+    folder.symlink_to(tmp_path / "media" / "Albums", target_is_directory=True)
+    set_locations(storage, make_location(tmp_path / "media", kind=StorageKind.MANUAL))
+    provider = make_provider(mass_minimal, folder)
+
+    await provider.handle_async_init()
+
+    assert provider.write_access is True

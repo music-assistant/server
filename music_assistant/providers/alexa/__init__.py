@@ -40,9 +40,9 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CONF_URL = "url"
-CONF_AUTH_SECRET = "secret"
+CONF_AUTH_SECRET = "secret"  # noqa: S105 - config key
 CONF_API_BASIC_AUTH_USERNAME = "api_username"
-CONF_API_BASIC_AUTH_PASSWORD = "api_password"
+CONF_API_BASIC_AUTH_PASSWORD = "api_password"  # noqa: S105 - config key
 CONF_API_URL = "api_url"
 CONF_ALEXA_LANGUAGE = "alexa_language"
 
