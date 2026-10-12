@@ -88,7 +88,7 @@
       "description": "Maximum number of genres to assign to a playlist."
     },
     "ai_preview_playlist": {
-      "label": "Preview with playlist",
+      "label": "Preview playlist",
       "description": "The playlist to make a preview cover for."
     },
     "ai_preview_style": {
