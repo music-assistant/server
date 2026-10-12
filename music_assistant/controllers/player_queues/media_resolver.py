@@ -162,19 +162,7 @@ class MediaResolver:
 
         :param artist: The artist to play.
         """
-        library_artist = await self._resolve_library_artist(artist)
-        if library_artist is None or not any(
-            mapping.in_library for mapping in library_artist.provider_mappings
-        ):
-            artist_items_conf = "all_tracks"
-        else:
-            artist_items_conf = str(
-                self.mass.config.get_raw_core_config_value(
-                    self.queues.domain,
-                    CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
-                    ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
-                )
-            )
+        artist_items_conf = await self._artist_selection(artist)
         order = self.get_artist_order()
         self.logger.info(
             "Fetching tracks to play for artist %s (selection: %s, order: %s)",
@@ -700,6 +688,28 @@ class MediaResolver:
             candidate.resume_position_ms = resume_position_ms
             return candidate
         return None
+
+    async def _artist_selection(self, artist: Artist) -> str:
+        """
+        Return the artist selection setting that applies to the artist.
+
+        An artist in the library follows the user preference, any other artist plays all of its
+        tracks across the providers.
+
+        :param artist: The artist to play.
+        """
+        library_artist = await self._resolve_library_artist(artist)
+        if library_artist is None or not any(
+            mapping.in_library for mapping in library_artist.provider_mappings
+        ):
+            return "all_tracks"
+        return str(
+            self.mass.config.get_raw_core_config_value(
+                self.queues.domain,
+                CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+                ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+            )
+        )
 
     def _album_order_applies(self, artist: Artist, selection: str) -> bool:
         """
