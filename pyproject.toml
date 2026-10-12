@@ -240,7 +240,6 @@ ignore = [
   "PTH120",
   "PTH123",
   "G004",
-  "S104",
   "S106",
   "SLF001",
   "SIM102",
@@ -263,8 +262,8 @@ select = ["ALL"]
 extend-select = ["D213"]
 
 [tool.ruff.lint.per-file-ignores]
-# tests use made-up tokens and passwords as fixtures
-"tests/**" = ["S105"]
+# tests use wildcard addresses, made-up tokens and passwords as fixtures
+"tests/**" = ["S104", "S105"]
 # the provider templates show example code in comments
 "music_assistant/providers/_demo_*/**" = ["ERA001"]
 

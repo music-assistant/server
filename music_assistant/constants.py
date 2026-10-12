@@ -138,7 +138,7 @@ CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
 CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
-WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")
+WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - the wildcard addresses themselves
 # Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
 SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
@@ -226,7 +226,7 @@ def _default_background_scan_concurrency() -> int:
 
 
 # config default values
-DEFAULT_HOST: Final[str] = "0.0.0.0"
+DEFAULT_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - listen on all interfaces by default
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 

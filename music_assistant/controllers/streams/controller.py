@@ -261,7 +261,7 @@ class StreamsController(CoreController):
         self.manifest.icon = "cast-audio"
         self.announcement_renderer = AnnouncementRenderer()
         self.live_announcements = LiveAnnouncementManager(mass, self.logger)
-        self._bind_ip: str = "0.0.0.0"
+        self._bind_ip: str = "0.0.0.0"  # noqa: S104 - listen on all interfaces by default
         self._base_url: str = ""
         self._configured_publish_ip: str | None = None
         # every address players may reach this host on, best candidate first; publish_ip is

@@ -66,7 +66,7 @@ class VBANReceiverProvider(PluginProvider):
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         # Setup values fall back to legacy option values for existing instances.
         self._bind_port: int = cast("int", self.get_setup_value(CONF_BIND_PORT) or DEFAULT_UDP_PORT)
-        self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")
+        self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")  # noqa: S104 - user-configurable bind address
         self._sender_host: str = cast("str", self.get_setup_value(CONF_SENDER_HOST) or "127.0.0.1")
         self._vban_stream_name: str = cast(
             "str", self.get_setup_value(CONF_VBAN_STREAM_NAME) or "Network AUX"
