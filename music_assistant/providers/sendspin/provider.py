@@ -1870,6 +1870,9 @@ class SendspinProvider(PlayerProvider):
         :param sendspin_client: That client, for its connection and hello.
         :return: The player id that was taken over, or None.
         """
+        # anyone may already claim the MAC id unencrypted while that is allowed
+        if not self.server_api.allow_unencrypted:
+            return None
         connection = sendspin_client.connection
         info = sendspin_client.info_or_none
         if connection is None or not connection.is_encrypted or info is None:
