@@ -303,7 +303,8 @@ def get_pypi_metadata(package_name: str) -> dict[str, Any] | None:
         with urllib.request.urlopen(
             f"https://pypi.org/pypi/{package_name}/json", timeout=10
         ) as response:
-            return json.loads(response.read())
+            metadata: dict[str, Any] = json.loads(response.read())
+            return metadata
     except urllib.error.HTTPError as err:
         if err.code == 404:
             print(f"❌ Package '{package_name}' not found on PyPI")

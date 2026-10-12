@@ -304,7 +304,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
     """Call async function using the throttler with retries."""
 
     @functools.wraps(func)
-    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: ProviderT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call async function using the throttler with retries."""
         throttler = self.throttler
         exp_backoff = throttler.initial_backoff

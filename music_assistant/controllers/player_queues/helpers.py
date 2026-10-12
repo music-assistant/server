@@ -84,7 +84,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     """  # noqa: D401
 
     @functools.wraps(func)
-    async def wrapper(self: PlayActionHostT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: PlayActionHostT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
