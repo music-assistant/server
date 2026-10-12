@@ -1,5 +1,10 @@
 """Tests for handing a player's stored config over to the player that replaces it."""
 
+import logging
+from unittest.mock import MagicMock
+
+from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderType
+
 from music_assistant.constants import (
     CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYER_DSP,
@@ -7,9 +12,51 @@ from music_assistant.constants import (
     CONF_PROTOCOL_PARENT_ID,
 )
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import DeviceInfo, Player
 
 OLD_ID = "20:F8:3B:09:42:05"
 NEW_ID = "new-client-id"
+
+
+class _TestProvider:
+    """Minimal player provider stand-in backed by the real MusicAssistant."""
+
+    def __init__(self, mass: MusicAssistant, domain: str) -> None:
+        """Initialize the test provider."""
+        self.mass = mass
+        self.domain = domain
+        self.instance_id = domain
+        self.translation_owner = f"provider.{domain}"
+        self.name = domain
+        self.available = True
+        self.unloading = False
+        self.logger = logging.getLogger(f"test.{domain}")
+        self.manifest = MagicMock()
+        self.manifest.domain = domain
+        self.manifest.type = ProviderType.PLAYER
+        self.type = ProviderType.PLAYER
+        self.players: list[Player] = []
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload the provider (nothing to clean up)."""
+
+
+class _TestPlayer(Player):
+    """Minimal concrete player that registers on the real player controller."""
+
+    def __init__(self, provider: _TestProvider, player_id: str, player_type: PlayerType) -> None:
+        """Initialize the test player."""
+        super().__init__(provider, player_id)  # type: ignore[arg-type]
+        self._attr_name = player_id
+        self._attr_type = player_type
+        self._attr_available = True
+        self._attr_powered = True
+        self._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.PLAY_MEDIA}
+        self._attr_device_info = DeviceInfo(model="Test Model", manufacturer="Test Manufacturer")
+        self._cache.clear()
+
+    async def stop(self) -> None:
+        """Stop playback, required abstract method."""
 
 
 def _store_old_player(mass: MusicAssistant) -> None:
@@ -120,3 +167,29 @@ async def test_previous_parent_no_longer_lists_the_replacement(mass: MusicAssist
     mass.players.carry_over_player_config(OLD_ID, NEW_ID)
 
     assert mass.config.get(f"{CONF_PLAYERS}/up_duplicate/values/{CONF_LINKED_PROTOCOL_IDS}") == []
+
+
+async def test_replacement_takes_the_place_of_a_still_registered_player(
+    mass: MusicAssistant,
+) -> None:
+    """The replacement links to the parent right away, also when the old player was registered."""
+    parent_provider = _TestProvider(mass, "sonos")
+    sendspin_provider = _TestProvider(mass, "sendspin")
+    for provider in (parent_provider, sendspin_provider):
+        mass._providers[provider.instance_id] = provider  # type: ignore[assignment]
+        mass._provider_manifests[provider.domain] = provider.manifest
+    parent = _TestPlayer(parent_provider, "native_parent", PlayerType.PLAYER)
+    await mass.players.register(parent)
+    old_player = _TestPlayer(sendspin_provider, OLD_ID, PlayerType.PROTOCOL)
+    mass.config.set(f"{CONF_PLAYERS}/{OLD_ID}/values/{CONF_PROTOCOL_PARENT_ID}", "native_parent")
+    await mass.players.register(old_player)
+    assert old_player.protocol_parent_id == "native_parent"
+
+    await mass.players.unregister(OLD_ID)
+    mass.players.carry_over_player_config(OLD_ID, NEW_ID)
+    new_player = _TestPlayer(sendspin_provider, NEW_ID, PlayerType.PROTOCOL)
+    await mass.players.register(new_player)
+    mass.players.delete_player_config(OLD_ID, replacement_player_id=NEW_ID)
+
+    assert new_player.protocol_parent_id == "native_parent"
+    assert [link.output_protocol_id for link in parent.linked_output_protocols] == [NEW_ID]
