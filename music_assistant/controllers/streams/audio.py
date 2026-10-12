@@ -1935,13 +1935,13 @@ class StreamsAudio:
         bytes_written = 0
         # calculate crossfade buffer size (the ceiling; a slow source's boundary
         # carries whatever its buffer held at EOF, which can be less)
+        tail_overlap = (
+            streamdetails.tail_overlap if crossfade_mode == CrossfadeMode.VOICE_OVER else None
+        )
         crossfade_buffer_duration: float
         if crossfade_mode == CrossfadeMode.DISABLED:
             crossfade_buffer_duration = 0
-        elif (
-            crossfade_mode == CrossfadeMode.VOICE_OVER
-            and (tail_overlap := streamdetails.tail_overlap) is not None
-        ):
+        elif tail_overlap is not None:
             # a declared overlap is held back exactly
             crossfade_buffer_duration = tail_overlap.duration
             if crossfade_buffer_duration < MIN_VOICE_OVER_DURATION:
@@ -1970,6 +1970,16 @@ class StreamsAudio:
         crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
         fade_out_data: bytes | None = None
         uncredited_tail_bytes = 0
+        # a declared overlap names the item it plays into, so its handoff is claimed
+        # before the body streams: a player that fetches that item's url early then
+        # waits for the mix (the clip bursts, so it lands within seconds) instead of
+        # playing the intro itself
+        handoff: asyncio.Event | None = None
+        claimed_for: str | None = None
+        if tail_overlap is not None and crossfade_buffer_size:
+            handoff = asyncio.Event()
+            claimed_for = tail_overlap.next_queue_item_id
+            self._crossfade_pending[queue.queue_id] = (claimed_for, handoff)
 
         # pin the body to DYNAMIC when the intro was baked DYNAMIC,
         # else a late measurement flips it and causes a volume jump
@@ -2009,32 +2019,37 @@ class StreamsAudio:
 
         total_chunks_received = 0
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
-        async for chunk in self.get_queue_item_stream(
-            queue_item,
-            pcm_format,
-            seek_position=discard_position,
-            playback_speed=playback_speed,
-            normalization_override=norm_override,
-            session_id=session_id,
-            exact_seek=exact_buffer_seek,
-        ):
-            total_chunks_received += 1
-            tail_window.extend(chunk)
-            del chunk
-            hold_target = tail_hold_target(queue_item, crossfade_buffer_size, frame_size)
-            if len(tail_window) <= hold_target:
-                await asyncio.sleep(0)
-                continue
-            # yield everything above the window; the slice can run short of a
-            # whole second when the window is small, so credit what is actually
-            # yielded - a nominal full-second credit inflates the play log and
-            # the reported duration
-            while len(tail_window) > hold_target:
-                pcm_slice = bytes(tail_window[: pcm_format.pcm_sample_size])
-                yield pcm_slice
-                bytes_written += len(pcm_slice)
-                del tail_window[: len(pcm_slice)]
-                await asyncio.sleep(0)
+        try:
+            async for chunk in self.get_queue_item_stream(
+                queue_item,
+                pcm_format,
+                seek_position=discard_position,
+                playback_speed=playback_speed,
+                normalization_override=norm_override,
+                session_id=session_id,
+                exact_seek=exact_buffer_seek,
+            ):
+                total_chunks_received += 1
+                tail_window.extend(chunk)
+                del chunk
+                hold_target = tail_hold_target(queue_item, crossfade_buffer_size, frame_size)
+                if len(tail_window) <= hold_target:
+                    await asyncio.sleep(0)
+                    continue
+                # yield everything above the window; the slice can run short of a
+                # whole second when the window is small, so credit what is actually
+                # yielded - a nominal full-second credit inflates the play log and
+                # the reported duration
+                while len(tail_window) > hold_target:
+                    pcm_slice = bytes(tail_window[: pcm_format.pcm_sample_size])
+                    yield pcm_slice
+                    bytes_written += len(pcm_slice)
+                    del tail_window[: len(pcm_slice)]
+                    await asyncio.sleep(0)
+        except BaseException:
+            # the stream ends before its boundary: nothing will be mixed for a waiter
+            self._release_handoff(queue.queue_id, handoff)
+            raise
 
         #### HANDLE END OF TRACK
 
@@ -2087,8 +2102,11 @@ class StreamsAudio:
         # Claim the handoff the moment the next item is known, before the awaits that
         # size the fade: the speaker can ask for that item's url during them, and a
         # marker registered afterwards would arrive too late to be waited for.
-        handoff: asyncio.Event | None = None
-        if next_queue_item is not None:
+        if next_queue_item is None or next_queue_item.queue_item_id != claimed_for:
+            # no next item after all, or not the one a declared overlap named up front
+            self._release_handoff(queue.queue_id, handoff)
+            handoff = None
+        if next_queue_item is not None and handoff is None:
             handoff = asyncio.Event()
             self._crossfade_pending[queue.queue_id] = (
                 next_queue_item.queue_item_id,
@@ -2327,10 +2345,7 @@ class StreamsAudio:
         finally:
             # a waiter must be released whichever way this went: the fade landed, it
             # was never allowed, the mixer fell back, or the stream was torn down
-            if handoff is not None:
-                handoff.set()
-                if self._crossfade_pending.get(queue.queue_id, (None, None))[1] is handoff:
-                    del self._crossfade_pending[queue.queue_id]
+            self._release_handoff(queue.queue_id, handoff)
         # make sure the buffer gets cleaned up
         del tail_window
         # a capacity reselection inside the stream replaces the queue item's details,
@@ -4464,6 +4479,19 @@ class StreamsAudio:
             ),
             alters_audio=queue_item.streamdetails.fade_in,
         )
+
+    def _release_handoff(self, queue_id: str, handoff: asyncio.Event | None) -> None:
+        """
+        Release whoever waits on a claimed boundary and drop the claim while it is still this one.
+
+        :param queue_id: The queue the boundary belongs to.
+        :param handoff: The claim's event, or None when nothing was claimed.
+        """
+        if handoff is None:
+            return
+        handoff.set()
+        if self._crossfade_pending.get(queue_id, (None, None))[1] is handoff:
+            del self._crossfade_pending[queue_id]
 
     async def _claim_crossfade_handover(
         self, queue: PlayerQueue, queue_item: QueueItem, session_id: str | None

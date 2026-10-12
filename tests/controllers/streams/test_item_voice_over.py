@@ -391,3 +391,54 @@ async def test_a_track_with_crossfade_off_takes_the_fade_into_it(
     else:
         smartfade.assert_not_called()
         controller.audio.get_queue_item_stream.assert_called_once()
+
+
+async def test_an_early_request_for_the_track_waits_for_the_clips_mix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A player that fetches the track's url while the clip still streams gets the mix.
+
+    The clip claims the boundary for the item its overlap names before its body goes
+    out, so the track's request waits for the mix instead of playing the intro itself.
+    """
+    clip = _clip()
+    track = _declared_track()
+    audio, _mass = _item_audio(monkeypatch, next_item=track, load_next=[track, QueueEmpty])
+    opened = _install_item_streams(monkeypatch, audio)
+
+    clip_stream = _request(audio, clip, CrossfadeMode.VOICE_OVER)
+    first_chunk = await anext(clip_stream)
+    assert audio.fade_into_pending("queue-1", "item-2")
+
+    # the track's request arrives while the clip's body is still streaming
+    track_request = asyncio.create_task(_drain(_request(audio, track, CrossfadeMode.DISABLED)))
+    await asyncio.sleep(0)
+    clip_output = first_chunk + await _drain(clip_stream)
+    track_output = await track_request
+
+    assert len(clip_output) == CLIP_SECONDS * SAMPLE_SIZE
+    assert len(track_output) == (TRACK_SECONDS - OVERLAP) * SAMPLE_SIZE
+    assert opened[-1][0] == "item-2"
+    assert opened[-1][1] == pytest.approx(OVERLAP + VOICE_OVER_RAMP)
+    assert track.streamdetails.seek_position == OVERLAP
+    assert "queue-1" not in audio._crossfade_pending
+
+
+async def test_a_clip_torn_down_before_its_boundary_releases_the_early_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clip whose stream ends early leaves nothing for the track's request to wait on."""
+    clip = _clip()
+    track = _declared_track()
+    audio, _mass = _item_audio(monkeypatch, next_item=track, load_next=[track, QueueEmpty])
+    _install_item_streams(monkeypatch, audio)
+
+    clip_stream = _request(audio, clip, CrossfadeMode.VOICE_OVER)
+    await anext(clip_stream)
+    assert audio.fade_into_pending("queue-1", "item-2")
+
+    await clip_stream.aclose()
+
+    assert not audio.fade_into_pending("queue-1", "item-2")
+    assert "queue-1" not in audio._crossfade_pending
