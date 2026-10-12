@@ -29,6 +29,8 @@ from music_assistant_models.media_items import (
     Audiobook,
     MediaItemCollection,
     MediaItemType,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Radio,
     SearchResults,
@@ -509,6 +511,16 @@ async def test_library_album_tracks_of_a_hidden_album_are_not_found(
         pytest.param(
             lambda music, db_id: music.artists.discography(db_id, "library"), id="discography"
         ),
+        pytest.param(
+            lambda music, db_id: music.artists.top_tracks(db_id, "library"), id="top_tracks"
+        ),
+        pytest.param(
+            lambda music, db_id: music.artists.top_albums(db_id, "library"), id="top_albums"
+        ),
+        pytest.param(
+            lambda music, db_id: music.artists.similar_artists(db_id, "library"),
+            id="similar_artists",
+        ),
     ],
 )
 async def test_library_listings_of_a_hidden_artist_are_not_found(
@@ -521,6 +533,55 @@ async def test_library_listings_of_a_hidden_artist_are_not_found(
         assert await listing(music, library_artist.item_id) == []
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await listing(music, library_artist.item_id)
+
+
+async def test_library_album_tracks_are_not_kept_while_the_users_account_is_down(
+    music: MusicController,
+) -> None:
+    """A hidden account standing in for the user's own one does not complete the listing."""
+    my_spotify = _add_my_spotify(music)
+    library_album = await music.albums.add_item_to_library(create_album(MY_SPOTIFY, "a1"))
+    my_spotify.available = False
+
+    with _as_user(MEMBER):
+        assert await music.albums.tracks(library_album.item_id, "library") == []
+
+    _mock(music, THEIRS).get_album_tracks.assert_not_called()
+    music.mass.cache.set.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_episodes_of_a_hidden_library_podcast_are_not_found(
+    music: MusicController,
+) -> None:
+    """Listing the episodes of a library podcast held only by a hidden source is a plain miss."""
+    library_podcast = await music.podcasts.add_item_to_library(
+        Podcast(
+            item_id="p1",
+            provider=THEIRS,
+            name="Hidden Feed",
+            provider_mappings={_mapping(THEIRS, "p1")},
+        )
+    )
+
+    async def _episodes(_: str) -> AsyncGenerator[PodcastEpisode]:
+        yield PodcastEpisode(
+            item_id="e1",
+            provider=THEIRS,
+            name="Episode",
+            provider_mappings={_mapping(THEIRS, "e1")},
+            podcast=library_podcast,
+            position=1,
+        )
+
+    _mock(music, THEIRS).get_podcast_episodes = _episodes
+
+    with _as_user(OWNER):
+        episodes = await _drain(music.podcasts.episodes(library_podcast.item_id, "library"))
+    assert [cast("PodcastEpisode", episode).item_id for episode in episodes] == ["e1"]
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError) as excinfo:
+        await _drain(music.podcasts.episodes(library_podcast.item_id, "library"))
+    # the miss names neither the podcast nor its sources
+    assert "Hidden Feed" not in str(excinfo.value)
 
 
 @pytest.mark.parametrize(

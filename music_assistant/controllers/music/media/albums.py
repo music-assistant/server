@@ -881,9 +881,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 and provider_mapping.provider_instance not in allowed_providers
             ):
                 continue
-            # an unavailable mapped instance hands the lookup to another account of the
-            # service, which would list the album a second time over
-            own_instance = self.mass.get_provider(provider_mapping.provider_instance)
+            # an unavailable mapped instance hands the lookup to another (visible) account
+            # of the service, which would list the album a second time over
+            own_instance = self.mass.music.get_visible_provider(provider_mapping.provider_instance)
             # a source that is not loaded (yet) answers nothing, so the listing is not kept
             unanswered = unanswered or own_instance is None
             own_lookup = (

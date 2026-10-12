@@ -183,7 +183,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         # always check if we have a library item for this podcast
         strict = provider_instance_id_or_domain == "library"
         if strict:
-            library_podcast = await self.get_library_item(item_id)
+            library_podcast = await self.get_visible_library_item_by_prov_id(item_id, "library")
             if not library_podcast:
                 raise MediaNotFoundError(f"Podcast {item_id} not found in library")
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_podcast)
