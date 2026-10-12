@@ -54,6 +54,7 @@ class AIRadioQueueDJMixin:
         _stations: dict[str, dict[str, Any]]
         _dj_queues: dict[str, DJQueueState]
         _armed_show_queues: dict[str, str]
+        _sections: dict[str, dict[str, Any]]
         _dj_file: Path
         _dj_lock: asyncio.Lock
         _unloading: bool
@@ -77,6 +78,7 @@ class AIRadioQueueDJMixin:
             async with self._dj_lock:
                 if host_id is None:
                     self._dj_queues.pop(queue_id, None)
+                    self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
                 else:
                     host_id = str(host_id).strip()
                     if host_id not in self._hosts:
@@ -86,6 +88,10 @@ class AIRadioQueueDJMixin:
                     if previous is not None:
                         # a mid-show host switch keeps the show binding
                         armed.station_id = previous.station_id
+                        if armed.station_id:
+                            self.mass.streams.set_boundary_mix_required(
+                                queue_id, self.instance_id, self._host_posts(host_id)
+                            )
                 await self._write_queue_dj()
             # stale clips carry the old host's persona, so they must go before a replan
             # can reuse the gaps they occupy
@@ -198,7 +204,16 @@ class AIRadioQueueDJMixin:
                 "Not arming the DJ for show %s: host %s no longer exists", station_id, host_id
             )
             return
-        await self.set_queue_dj(queue_id, host_id)
+        if self._host_posts(host_id):
+            # the show's breaks carry over the next track: the server mixes them between
+            # the item streams of a player that plays gapless and streams any other player
+            # in flow mode, decided at the play start this arm precedes
+            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, True)
+        try:
+            await self.set_queue_dj(queue_id, host_id)
+        except Exception:
+            self.mass.streams.set_boundary_mix_required(queue_id, self.instance_id, False)
+            raise
         if (state := self._dj_queues.get(queue_id)) is None:
             return
         state.station_id = station_id
@@ -674,6 +689,14 @@ class AIRadioQueueDJMixin:
             "duration": item.duration,
             "media_item": None,
         }
+
+    def _host_posts(self, host_id: str) -> bool:
+        """Return whether any section of the host lets its break carry over the next track."""
+        host = self._hosts.get(host_id) or {}
+        return any(
+            bool(self._sections.get(str(section_id), {}).get("allow_post", False))
+            for section_id in host.get("section_ids", [])
+        )
 
     def _queue_show_station(self, queue_id: str) -> str | None:
         """Return the station id of the show in the queue's sources, if any."""
