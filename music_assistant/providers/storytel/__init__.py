@@ -261,7 +261,15 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         except ProviderUnavailableError as err:
             raise SetupFailedError(f"Storytel login failed: {err}") from err
 
-        available_languages = self._api.available_languages or ALL_LANGUAGES
+        account_languages = self._api.available_languages
+        available_languages = account_languages or ALL_LANGUAGES
+        if account_languages:
+            fallback_languages = dict(self._api.default_languages)
+            if not fallback_languages:
+                first_name, first_iso = next(iter(account_languages.items()))
+                fallback_languages = {first_name: first_iso}
+        else:
+            fallback_languages = DEFAULT_LANGUAGES.copy()
         # Read the raw persisted value (bypassing the config entry's own default_value fallback used for display) so an unset selection is distinguishable from one that merely happens to match that display default.
         languages_list = self.mass.config.get_raw_provider_config_value(
             self.instance_id, CONF_LANGUAGES
@@ -273,10 +281,10 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 if isinstance(name, str) and name in available_languages
             }
             if not self._languages:
-                self._languages = DEFAULT_LANGUAGES.copy()
+                self._languages = fallback_languages
         else:
             # Initial setup: mirror account's own defaults
-            self._languages = dict(self._api.default_languages) or DEFAULT_LANGUAGES.copy()
+            self._languages = fallback_languages
             self._update_config_value(CONF_LANGUAGES, sorted(self._languages), immediate=True)
         self._api.languages = self._languages
 

@@ -6,7 +6,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant.providers.storytel import Storytel
-from music_assistant.providers.storytel.constants import CONF_LANGUAGES
+from music_assistant.providers.storytel.constants import CONF_LANGUAGES, DEFAULT_LANGUAGES
 from music_assistant.providers.storytel.storytel_helper import StorytelAuth, StorytelHelper
 
 
@@ -23,6 +23,27 @@ def _make_helper(*args: Any, **kwargs: Any) -> StorytelHelper:
     helper.login = _login  # type: ignore[method-assign,assignment]
     helper.fetch_resource_version = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return helper
+
+
+def _make_helper_with_account(
+    available_languages: dict[str, str], default_languages: dict[str, str]
+) -> Any:
+    """Return a StorytelHelper factory whose login reports the given account languages."""
+
+    def _factory(*args: Any, **kwargs: Any) -> StorytelHelper:
+        helper = StorytelHelper(*args, **kwargs)
+
+        async def _login(_username: str, _password: str) -> StorytelAuth:
+            helper._auth = StorytelAuth(jwt="jwt-token", single_sign_token="sso-token")
+            helper._available_languages = available_languages
+            helper._default_languages = default_languages
+            return helper._auth
+
+        helper.login = _login  # type: ignore[method-assign,assignment]
+        helper.fetch_resource_version = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        return helper
+
+    return _factory
 
 
 async def test_initial_setup_adopts_and_persists_account_default_languages(
@@ -63,3 +84,69 @@ async def test_existing_language_selection_is_not_overwritten_by_account_default
 
     assert provider._languages == {"Swedish": "sv"}
     cast("MagicMock", provider.mass.config.set_raw_provider_config_value).assert_not_called()
+
+
+async def test_stale_language_selection_falls_back_to_account_default_languages(
+    provider: Storytel,
+) -> None:
+    """
+    A persisted selection no longer available to the account falls back to its own default.
+
+    The fallback should be the account's own checked-by-default languages, not the static
+    (possibly unavailable) default.
+    """
+    cast("MagicMock", provider.mass.config.get).return_value = {
+        "username": "user",
+        "password": "pass",
+    }
+    cast("MagicMock", provider.mass.config.decrypt_string).side_effect = lambda value: value
+    # "Danish" was persisted previously but this account no longer has access to it.
+    cast("MagicMock", provider.mass.config.get_raw_provider_config_value).return_value = ["Danish"]
+
+    helper_factory = _make_helper_with_account(
+        available_languages={"Norwegian": "nn", "English": "en"},
+        default_languages={"Norwegian": "nn"},
+    )
+    with patch("music_assistant.providers.storytel.StorytelHelper", side_effect=helper_factory):
+        await provider.handle_async_init()
+
+    # The account's own default is "Norwegian", not the static default ("English").
+    assert provider._languages == {"Norwegian": "nn"}
+
+
+async def test_stale_language_selection_falls_back_to_any_available_language(
+    provider: Storytel,
+) -> None:
+    """With no account default-checked languages either, any available language is used."""
+    cast("MagicMock", provider.mass.config.get).return_value = {
+        "username": "user",
+        "password": "pass",
+    }
+    cast("MagicMock", provider.mass.config.decrypt_string).side_effect = lambda value: value
+    cast("MagicMock", provider.mass.config.get_raw_provider_config_value).return_value = ["Danish"]
+
+    helper_factory = _make_helper_with_account(
+        available_languages={"Swedish": "sv"}, default_languages={}
+    )
+    with patch("music_assistant.providers.storytel.StorytelHelper", side_effect=helper_factory):
+        await provider.handle_async_init()
+
+    assert provider._languages == {"Swedish": "sv"}
+
+
+async def test_missing_account_language_data_falls_back_to_static_default(
+    provider: Storytel,
+) -> None:
+    """Only when the account returns no language list at all is the static default used."""
+    cast("MagicMock", provider.mass.config.get).return_value = {
+        "username": "user",
+        "password": "pass",
+    }
+    cast("MagicMock", provider.mass.config.decrypt_string).side_effect = lambda value: value
+    cast("MagicMock", provider.mass.config.get_raw_provider_config_value).return_value = None
+
+    helper_factory = _make_helper_with_account(available_languages={}, default_languages={})
+    with patch("music_assistant.providers.storytel.StorytelHelper", side_effect=helper_factory):
+        await provider.handle_async_init()
+
+    assert provider._languages == DEFAULT_LANGUAGES
