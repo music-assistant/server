@@ -2512,9 +2512,10 @@ class YandexMusicProvider(MusicProvider):
 
         base_station, preset_settings = _split_wave_mode(station_id)
         merged = {**preset_settings, **wave.settings}
-        session_id, tracks, batch_id = await self.client.rotor_session_new(
+        session_id, tracks, batch_id, ended = await self.client.rotor_session_new(
             base_station, settings=merged or None
         )
+        wave.ended = ended
         if session_id:
             wave.session_id = session_id
         if batch_id:
@@ -3321,7 +3322,7 @@ class YandexMusicProvider(MusicProvider):
         Pure function of ``track_id`` / ``limit``, hence safe to memoise
         via ``@use_cache``.
         """
-        _, yandex_tracks, _ = await self.client.rotor_session_new(f"track:{track_id}")
+        _, yandex_tracks, _, _ = await self.client.rotor_session_new(f"track:{track_id}")
         similar_tracks: list[Track] = []
         for yt in yandex_tracks[:limit]:
             try:

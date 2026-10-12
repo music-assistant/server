@@ -142,6 +142,35 @@ async def test_empty_terminal_batch_stops_later_station_requests() -> None:
 
 
 @pytest.mark.parametrize("with_tracks", [False, True])
+async def test_terminal_initial_batch_stops_later_station_requests(with_tracks: bool) -> None:
+    """A station completed at creation delivers its final tracks without pagination."""
+    provider, raw, wave = make_station_provider()
+    wave.reset_session()
+    sequence = [{"type": "track", "track": {"id": 43}, "liked": False}] if with_tracks else []
+    responses: list[Any] = [
+        {
+            "radioSessionId": "completed",
+            "batchId": "final-batch",
+            "terminated": True,
+            "sequence": sequence,
+        }
+    ]
+    if with_tracks:
+        responses.append([{"id": 43}])
+    post = AsyncMock(side_effect=responses)
+    with patch.object(raw.request, "post", post):
+        tracks, batch = await provider.get_rotor_station_tracks("user:onyourwave#discover")
+        assert [track.id for track in tracks] == ([43] if with_tracks else [])
+        assert batch == "final-batch"
+        assert wave.ended
+        assert await provider.get_rotor_station_tracks("user:onyourwave#discover", queue="43") == (
+            [],
+            None,
+        )
+    assert post.await_count == (2 if with_tracks else 1)
+
+
+@pytest.mark.parametrize("with_tracks", [False, True])
 async def test_terminal_prefetch_keeps_final_tracks_and_stops_requests(with_tracks: bool) -> None:
     """A background terminal batch stops pagination without dropping its buffered tracks."""
     provider, raw, wave = make_station_provider()

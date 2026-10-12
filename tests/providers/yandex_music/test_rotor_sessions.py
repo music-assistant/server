@@ -41,7 +41,12 @@ async def test_rotor_uses_public_library_methods(
     name = f"rotor_session_{method}"
     with patch.object(underlying, name, wraps=getattr(underlying, name)) as call:
         if method == "new":
-            assert await client.rotor_session_new("user:onyourwave") == ("session", [], "batch")
+            assert await client.rotor_session_new("user:onyourwave") == (
+                "session",
+                [],
+                "batch",
+                False,
+            )
         elif method == "tracks":
             assert await client.rotor_session_tracks("session", current_track_id="100") == (
                 [],
@@ -67,13 +72,14 @@ async def test_rotor_creation_preserves_flags_settings_and_track_order(
             {"type": "track", "track": {"id": 101}, "liked": True},
         ],
     }
-    session, tracks, batch = await client.rotor_session_new(
+    session, tracks, batch, ended = await client.rotor_session_new(
         "user:onyourwave",
         settings={"diversity": "discover", "moodEnergy": "calm", "language": "russian"},
         queue=["99"],
     )
     assert (session, batch) == ("session", "batch")
     assert [track.id for track in tracks] == [100, 101]
+    assert not ended
     cast("AsyncMock", underlying.tracks).assert_awaited_once_with(["100", "101"])
     post.assert_awaited_once_with(
         "https://api.music.yandex.net/rotor/session/new",
@@ -106,7 +112,7 @@ async def test_rotor_hydration_skips_tracks_without_ids(
             {"type": "track", "track": {"id": 101}, "liked": False},
         ],
     }
-    _, tracks, _ = await client.rotor_session_new("user:onyourwave")
+    _, tracks, _, _ = await client.rotor_session_new("user:onyourwave")
     cast("AsyncMock", underlying.tracks).assert_awaited_once_with(["100", "101"])
     assert [track.id for track in tracks] == [100, 101]
 
@@ -204,7 +210,12 @@ async def test_rotor_fetch_retries_connection_drop_with_another_throttle_slot(
 
     with patch.object(client, "_reconnect", side_effect=reconnect) as reconnect_call:
         if method == "new":
-            assert await client.rotor_session_new("user:onyourwave") == ("session", [], "batch")
+            assert await client.rotor_session_new("user:onyourwave") == (
+                "session",
+                [],
+                "batch",
+                False,
+            )
         else:
             assert await client.rotor_session_tracks("session", current_track_id="100") == (
                 [],

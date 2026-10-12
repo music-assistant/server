@@ -183,6 +183,50 @@ async def test_fresh_browse_restarts_ended_station(
 
 
 @pytest.mark.parametrize(
+    "suffix",
+    ["my_wave", "my_wave_modes/discover", "my_wave_presets/0", "waves/genre/rock"],
+)
+async def test_terminal_initial_browse_stops_pagination_and_allows_fresh_start(
+    radio_provider: tuple[YandexMusicProvider, ClientAsync], suffix: str
+) -> None:
+    """A station finished at creation can be opened again without reviving pagination."""
+    provider, raw = radio_provider
+    path = f"{provider.instance_id}://{suffix}"
+    sessions = iter(["first", "second"])
+
+    async def respond(url: str, *_args: object, **_kwargs: object) -> object:
+        if "/rotor/session/new" in url:
+            return {
+                "radioSessionId": next(sessions),
+                "batchId": "final-batch",
+                "terminated": True,
+                "sequence": [{"type": "track", "track": {"id": 43}, "liked": False}],
+            }
+        if "feedback" in url:
+            return {}
+        if url.endswith("/tracks"):
+            return [{"id": 43}]
+        raise AssertionError(f"Unexpected request: {url}")
+
+    post = AsyncMock(side_effect=respond)
+    with (
+        patch.object(raw.request, "post", post),
+        patch.object(raw.request, "get", AsyncMock(return_value=[])),
+    ):
+        for _ in range(2):
+            items = await provider.browse(path)
+            assert any(item.item_id.startswith("43@") for item in items)
+            assert not any(
+                isinstance(item, BrowseFolder) and "/next" in item.path for item in items
+            )
+            calls_before_pagination = post.await_count
+            assert not await provider.browse(f"{path}/next")
+            assert post.await_count == calls_before_pagination
+    creations = [call for call in post.await_args_list if "/rotor/session/new" in call.args[0]]
+    assert len(creations) == 2
+
+
+@pytest.mark.parametrize(
     ("suffix", "station"),
     [
         ("my_wave/next", "user:onyourwave"),

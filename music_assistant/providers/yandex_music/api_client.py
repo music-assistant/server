@@ -370,7 +370,7 @@ class YandexMusicClient:
         *,
         settings: dict[str, str] | None = None,
         queue: list[str] | None = None,
-    ) -> tuple[str | None, list[YandexTrack], str | None]:
+    ) -> tuple[str | None, list[YandexTrack], str | None, bool]:
         """
         Create a new rotor session.
 
@@ -381,8 +381,8 @@ class YandexMusicClient:
         :param settings: Optional {diversity, moodEnergy, language} — each
             becomes an additional seed like "settingDiversity:discover".
         :param queue: Optional initial track IDs in the queue; usually empty.
-        :return: Tuple of (radio_session_id, list of tracks, batch_id).
-            Any element may be None/[] on failure.
+        :return: Tuple of (radio_session_id, list of tracks, batch_id, session ended).
+            Returns (None, [], None, False) on failure.
         """
         seeds: list[str] = [station_id]
         if settings:
@@ -404,9 +404,9 @@ class YandexMusicClient:
             )
         )
         if result is None:
-            return (None, [], None)
+            return (None, [], None, False)
         tracks = await self._hydrate_session_tracks(result.sequence or [])
-        return (result.radio_session_id, tracks, result.batch_id)
+        return (result.radio_session_id, tracks, result.batch_id, bool(result.terminated))
 
     async def rotor_session_tracks(
         self, session_id: str, *, current_track_id: str

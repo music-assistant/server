@@ -273,7 +273,7 @@ async def test_rotor_session_new_posts_expected_body_and_returns_session() -> No
     req_mock = _patch_rotor_transport(client, response)
     _patch_get_tracks(client, [type("T", (), {"id": 100})()])
 
-    session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
+    session_id, tracks, batch_id, ended = await client.rotor_session_new("user:onyourwave")
 
     req_mock.assert_awaited_once()
     args, kwargs = _call_args(req_mock)
@@ -288,6 +288,7 @@ async def test_rotor_session_new_posts_expected_body_and_returns_session() -> No
     assert batch_id == "batch_1"
     assert len(tracks) == 1
     assert tracks[0].id == 100
+    assert not ended
 
 
 async def test_rotor_session_new_appends_settings_as_seeds() -> None:
@@ -315,16 +316,17 @@ async def test_rotor_session_new_appends_settings_as_seeds() -> None:
 
 
 async def test_rotor_session_new_returns_empty_on_missing_session_id() -> None:
-    """If the response lacks radioSessionId the call returns (None, [], None) without raising."""
+    """A missing response returns an empty, nonterminal result without raising."""
     client, underlying = _make_client()
     del underlying
     _patch_rotor_transport(client, None)
 
-    session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
+    session_id, tracks, batch_id, ended = await client.rotor_session_new("user:onyourwave")
 
     assert session_id is None
     assert tracks == []
     assert batch_id is None
+    assert not ended
 
 
 async def test_rotor_session_tracks_posts_current_track_queue() -> None:
