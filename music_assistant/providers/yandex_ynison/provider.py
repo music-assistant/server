@@ -2367,8 +2367,12 @@ class YandexYnisonProvider(PluginProvider):
     async def _on_next(self) -> None:
         """Handle next track command — signal track end so Yandex advances."""
         self._require_connected_ynison()
-        if await self._signal_track_completion(natural=False) == "stop":
+        outcome = await self._signal_track_completion(natural=False)
+        if outcome == "stop":
             raise PlayerCommandFailed("Ynison queue advance failed")
+        if outcome == "restart":
+            self._seek_position_ms = 0
+            self._track_changed_event.set()
 
     async def _on_previous(self) -> None:
         """Handle previous track command — update queue index in Ynison."""

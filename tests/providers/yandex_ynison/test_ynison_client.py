@@ -839,6 +839,21 @@ class TestReconnectSessionOwnership:
 class TestConnectTransientError:
     """Tests for connect() scheduling reconnect on transient errors."""
 
+    async def test_auth_without_refresh_callback_remains_terminal(
+        self, client: YnisonClient
+    ) -> None:
+        """Authentication without a refresh source fails without an endless reconnect."""
+        session = AsyncMock(closed=False)
+        client._external_session = session
+        with (
+            patch.object(client, "_get_redirect_ticket", side_effect=LoginFailed("expired")),
+            pytest.raises(LoginFailed, match="expired"),
+        ):
+            await client.connect()
+        assert client._reconnect_task is None
+        assert client._stop_event.is_set()
+        session.close.assert_not_awaited()
+
     async def test_invalid_redirect_payload_propagates_without_retry(
         self, client: YnisonClient
     ) -> None:
@@ -2149,6 +2164,40 @@ class TestConnectSessionCreation:
 
 class TestTokenRefreshOnReconnect:
     """Tests for on_auth_failure callback in _reconnect."""
+
+    @pytest.mark.parametrize("failure_stage", ["redirect", "state"])
+    async def test_initial_auth_failure_recovers_with_one_refresh(self, failure_stage: str) -> None:
+        """An expired token at startup recovers through the bounded reconnect budget."""
+        refresh = AsyncMock(return_value=SecretStr("new-token"))
+        session = MagicMock(closed=False, close=AsyncMock())
+        client = YnisonClient(
+            token=SecretStr("old-token"),
+            device_info=YnisonDeviceInfo(device_id="d1", title="T"),
+            on_state_update=AsyncMock(),
+            logger=MagicMock(),
+            http_session=session,
+            on_auth_failure=refresh,
+        )
+        redirect = AsyncMock(return_value=("host", "ticket", 1))
+        state = AsyncMock()
+        failing_call = redirect if failure_stage == "redirect" else state
+        success = ("host", "ticket", 1) if failure_stage == "redirect" else None
+        failing_call.side_effect = [LoginFailed("expired"), LoginFailed("expired"), success]
+        try:
+            with (
+                patch(SLEEP_PATH, new_callable=AsyncMock),
+                patch.object(client, "_get_redirect_ticket", redirect),
+                patch.object(client, "_connect_state", state),
+            ):
+                await client.connect()
+                assert client._reconnect_task is not None
+                await asyncio.wait_for(client._reconnect_task, timeout=1)
+            refresh.assert_awaited_once()
+            assert client._token == SecretStr("new-token")
+            assert failing_call.await_count == 3
+            session.close.assert_not_awaited()
+        finally:
+            await client.disconnect()
 
     async def test_auth_failure_triggers_token_refresh(self) -> None:
         """LoginFailed during reconnect invokes on_auth_failure callback."""

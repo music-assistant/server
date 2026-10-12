@@ -34,6 +34,8 @@ async def test_real_websocket_recovery_registers_fresh_state(
     received_tracks: list[str | None] = []
     recovered = asyncio.Event()
     finish = asyncio.Event()
+    fault_logged = asyncio.Event()
+    logger = logging.getLogger(__name__)
 
     async def on_state(state: YnisonState) -> None:
         received_tracks.append(state.current_track_id)
@@ -58,7 +60,7 @@ async def test_real_websocket_recovery_registers_fresh_state(
             SecretStr("local-test-token"),
             YnisonDeviceInfo("local-device", "Test player"),
             on_state,
-            logging.getLogger(__name__),
+            logger,
             http_session=session,
         )
         with (
@@ -71,6 +73,9 @@ async def test_real_websocket_recovery_registers_fresh_state(
             ),
             patch("music_assistant.providers.yandex_ynison.ynison_client.RECONNECT_DELAYS", [0.5]),
             patch.object(session, "ws_connect", side_effect=local_ws),
+            patch.object(
+                logger, "error", side_effect=lambda *_args, **_kwargs: fault_logged.set()
+            ) as log_error,
         ):
             try:
                 await client.connect()
@@ -87,6 +92,8 @@ async def test_real_websocket_recovery_registers_fresh_state(
                     assert full_state["player_state"]["player_queue"]["playable_list"] == []
                     assert "update_session_params" in registration[1]
                 if callback_fault:
+                    await asyncio.wait_for(fault_logged.wait(), timeout=1)
+                    assert isinstance(log_error.call_args.kwargs["exc_info"][1], ValueError)
                     assert first_message_task is not None
                     with pytest.raises(ValueError, match="deliberate local callback fault"):
                         await first_message_task
@@ -97,17 +104,84 @@ async def test_real_websocket_recovery_registers_fresh_state(
             assert not client.connected
 
 
+@pytest.mark.integration
+async def test_initial_empty_redirect_recovers_with_refreshed_token(
+    aiohttp_server: Callable[[web.Application], Awaitable[TestServer]],
+) -> None:
+    """The redirector's invalid-token response cannot strand a cold-start client."""
+    connections: list[list[dict[str, Any]]] = []
+    finish = asyncio.Event()
+    connected = asyncio.Event()
+    refresh_count = 0
+
+    async def refresh() -> SecretStr:
+        nonlocal refresh_count
+        refresh_count += 1
+        return SecretStr("fresh-test-token")
+
+    async def on_state(_state: YnisonState) -> None:
+        connected.set()
+
+    app = _make_ynison_app(connections, finish, True, rejected_token="expired-test-token")
+    server = await aiohttp_server(app)
+    async with aiohttp.ClientSession() as session:
+        connect_ws = session.ws_connect
+
+        async def local_ws(url: str, **kwargs: Any) -> aiohttp.ClientWebSocketResponse:
+            return cast(
+                "aiohttp.ClientWebSocketResponse",
+                await connect_ws(url.replace("wss://", "ws://", 1), **kwargs),
+            )
+
+        client = YnisonClient(
+            SecretStr("expired-test-token"),
+            YnisonDeviceInfo("local-device", "Test player"),
+            on_state,
+            logging.getLogger(__name__),
+            http_session=session,
+            on_auth_failure=refresh,
+        )
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.ynison_client.YNISON_REDIRECT_URL",
+                str(server.make_url("/redirect")),
+            ),
+            patch(
+                "music_assistant.providers.yandex_ynison.ynison_client.YNISON_STATE_PATH", "/state"
+            ),
+            patch("music_assistant.providers.yandex_ynison.ynison_client.RECONNECT_DELAYS", [0.5]),
+            patch.object(session, "ws_connect", side_effect=local_ws),
+        ):
+            try:
+                await client.connect()
+                await asyncio.wait_for(connected.wait(), timeout=5)
+                assert client.connected
+                assert refresh_count == 1
+                assert len(connections) == 1
+            finally:
+                finish.set()
+                await client.disconnect()
+            assert not session.closed
+
+
 def _make_ynison_app(
-    connections: list[list[dict[str, Any]]], finish: asyncio.Event, callback_fault: bool
+    connections: list[list[dict[str, Any]]],
+    finish: asyncio.Event,
+    callback_fault: bool,
+    *,
+    rejected_token: str | None = None,
 ) -> web.Application:
     """Serve redirector and state-service contracts on one loopback endpoint."""
 
     async def redirect(request: web.Request) -> web.WebSocketResponse:
         socket = web.WebSocketResponse()
         await socket.prepare(request)
-        await socket.send_json(
-            {"host": request.host, "redirect_ticket": "local-ticket", "session_id": 1}
-        )
+        if rejected_token and request.headers.get("Authorization") == f"OAuth {rejected_token}":
+            await socket.send_json({})
+        else:
+            await socket.send_json(
+                {"host": request.host, "redirect_ticket": "local-ticket", "session_id": 1}
+            )
         await socket.close()
         return socket
 

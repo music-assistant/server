@@ -270,7 +270,8 @@ class YnisonClient:
         """
         Connect to Ynison (redirector → state service).
 
-        Raises on auth failure; auto-reconnects on transient errors.
+        Recover authentication through the refresh callback when available.
+        Raise authentication failures without a callback; retry transient errors.
         """
         self._stop_event.clear()
         if self._external_session and self._external_session.closed:
@@ -283,14 +284,13 @@ class YnisonClient:
 
             # Step 2: Connect to state service
             await self._connect_state(host, ticket, session_id)
-        except LoginFailed:
-            await self.disconnect()
-            raise
         except asyncio.CancelledError:
             await self.disconnect()
             raise
-        except aiohttp.ClientError, OSError, TimeoutError:
-            # Transient error — schedule reconnect instead of dying
+        except (LoginFailed, aiohttp.ClientError, OSError, TimeoutError) as exc:
+            if isinstance(exc, LoginFailed) and self._on_auth_failure is None:
+                await self.disconnect()
+                raise
             self._logger.warning("Initial connection failed, scheduling reconnect", exc_info=True)
             self._connected = False
             if self._ws and not self._ws.closed:
@@ -720,6 +720,17 @@ class YnisonClient:
 
         # Start message loop
         self._message_task = asyncio.create_task(self._message_loop())
+        self._message_task.add_done_callback(self._on_message_task_done)
+
+    def _on_message_task_done(self, task: asyncio.Task[None]) -> None:
+        """Report background message failures with their original traceback."""
+        if task.cancelled():
+            return
+        if (error := task.exception()) is not None:
+            self._logger.error(
+                "Unexpected error in Ynison message task",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     async def _message_loop(self) -> None:  # noqa: PLR0915
         """Read messages from state service and dispatch callbacks."""

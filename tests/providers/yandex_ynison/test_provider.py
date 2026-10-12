@@ -367,9 +367,9 @@ class TestProviderInit:
                 provider._ynison,
                 "_get_redirect_ticket",
                 new_callable=AsyncMock,
-                side_effect=LoginFailed("controlled stop"),
+                side_effect=RuntimeError("controlled stop"),
             ),
-            pytest.raises(LoginFailed, match="controlled stop"),
+            pytest.raises(RuntimeError, match="controlled stop"),
         ):
             await provider._ynison.connect()
 
@@ -1153,6 +1153,69 @@ class TestYnisonStateHandling:
 
         sent = mock_ynison.update_player_state.call_args.kwargs["player_state"]
         assert sent["player_queue"]["current_playable_index"] == 0
+
+    async def test_explicit_next_restarts_single_item_repeat_all(self) -> None:
+        """Next restarts the local decoder even when track and index are unchanged."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}],
+            progress_ms=5000,
+        )
+        state.player_state["player_queue"]["options"] = {"repeat_mode": "ALL"}
+        client = _mock_ynison(state)
+        provider._ynison = client
+        provider._yandex_provider = MagicMock()
+        provider._seek_position_ms = 5000
+        decoded_offsets: list[int] = []
+
+        async def decode(
+            _track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del session_params
+            decoded_offsets.append(seek_ms)
+            yield b"\x00" * 4
+            yield b"\x00" * 4
+
+        _stub_attr(provider, "_stream_track", decode)
+        stream = provider.get_audio_stream(MagicMock())
+        try:
+            await anext(stream)
+            await provider._on_next()
+            assert provider._track_changed_event.is_set()
+            await anext(stream)
+            assert decoded_offsets == [5000, 0]
+        finally:
+            await stream.aclose()
+
+        sent = client.update_player_state.call_args.kwargs["player_state"]
+        assert sent["status"]["progress_ms"] == "0"
+        assert sent["player_queue"]["current_playable_index"] == 0
+
+    async def test_failed_single_item_next_does_not_restart_local_stream(self) -> None:
+        """A rejected repeat-all queue publication cannot move the local decoder."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}],
+        )
+        state.player_state["player_queue"]["options"] = {"repeat_mode": "ALL"}
+        client = _mock_ynison(state)
+        client.update_player_state.side_effect = YnisonSendError("disconnected")
+        provider._ynison = client
+        provider._seek_position_ms = 5000
+
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            pytest.raises(PlayerCommandFailed, match="queue advance failed"),
+        ):
+            await provider._on_next()
+
+        assert provider._seek_position_ms == 5000
+        assert not provider._track_changed_event.is_set()
 
     async def test_repeat_none_publishes_terminal_pause(self) -> None:
         """Finite repeat-off completion leaves Ynison visibly paused at the end."""
