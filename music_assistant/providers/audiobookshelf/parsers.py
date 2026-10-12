@@ -72,13 +72,11 @@ def parse_playlist(
     abs_playlist: AbsPlaylistExpanded,
     instance_id: str,
     domain: str,
-    token: str,
-    base_url: str,
     owner: str,
     media_type: MediaType,
 ) -> MassPlaylist:
     """Translate AbsPlaylist to MassPlaylist."""
-    mass_playlist = MassPlaylist(
+    return MassPlaylist(
         item_id=abs_playlist.id_,
         provider=instance_id,
         name=abs_playlist.name,
@@ -92,20 +90,6 @@ def parse_playlist(
         is_editable=True,
         owner=owner,
     )
-    # cover
-    if abs_playlist.cover_path is not None:
-        cover_url = _build_cover_url(
-            base_url=base_url,
-            item_id=abs_playlist.id_,
-            token=token,
-            version=abs_playlist.last_update,
-        )
-        mass_playlist.metadata.images = UniqueList(
-            [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
-        )
-    else:
-        mass_playlist.metadata.images = UniqueList([])
-    return mass_playlist
 
 
 def parse_podcast(

@@ -551,8 +551,6 @@ for more details.
                             abs_playlist=abs_playlist,
                             instance_id=self.instance_id,
                             domain=self.domain,
-                            token=self._client.token,
-                            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                             owner=self.abs_username,
                             media_type=media_type,
                         )
@@ -651,8 +649,6 @@ for more details.
                 abs_playlist=abs_playlist,
                 instance_id=self.instance_id,
                 domain=self.domain,
-                token=self._client.token,
-                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 owner=self.abs_username,
                 media_type=media_type,
             )
@@ -1753,8 +1749,6 @@ for more details.
                 abs_playlist=abs_playlist,
                 instance_id=self.instance_id,
                 domain=self.domain,
-                token=self._client.token,
-                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 owner=self.abs_username,
                 media_type=media_type,
             )
