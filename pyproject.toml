@@ -132,8 +132,7 @@ max-statements = 50
 platform = "linux"
 python_version = "3.14"
 
-# set this to normal when we have fixed all exclusions
-follow_imports = "silent"
+follow_imports = "normal"
 
 # suppress errors about unsatisfied imports
 ignore_missing_imports = true
@@ -160,7 +159,7 @@ enable_error_code = [
 exclude = [
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
 ]
-extra_checks = false
+extra_checks = true
 local_partial_types = true
 no_implicit_optional = true
 no_implicit_reexport = true
@@ -185,6 +184,11 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 follow_imports = "skip"
 module = ["plexapi", "plexapi.*"]
+
+# Vendored third-party code, kept as-is.
+[[tool.mypy.overrides]]
+follow_imports = "skip"
+module = ["music_assistant.providers.sonic_analysis.vendored_clap.*"]
 
 [tool.ruff.format]
 # Force Linux/macOS line endings

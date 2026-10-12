@@ -1794,7 +1794,7 @@ class SpotifyProvider(MusicProvider):
         return result
 
     @use_cache(120, allow_bypass=False)  # short cache: repeated traversals reuse metadata
-    async def _get_cached_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    async def _get_cached_paginated_meta(self, /, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """Get cached pagination metadata for a paginated API endpoint."""
         return await self._get_paginated_meta(endpoint, **kwargs)
 

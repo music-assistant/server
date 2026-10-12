@@ -39,7 +39,7 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
     """Catch UpnpError errors."""
 
     @functools.wraps(func)
-    async def wrapper(self: DLNAPlayerT, *args: P.args, **kwargs: P.kwargs) -> R | None:
+    async def wrapper(self: DLNAPlayerT, /, *args: P.args, **kwargs: P.kwargs) -> R | None:
         """Catch UpnpError errors and check availability before and after request."""
         self.last_command = time.time()
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):

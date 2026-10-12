@@ -2239,7 +2239,7 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
     signature = inspect.signature(func)
 
     @functools.wraps(func)
-    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: SelfT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
         # create a task_id dynamically based on the bound method and args/kwargs.
         # the instance is part of the key because a decorated method may be inherited by
