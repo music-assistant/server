@@ -566,7 +566,7 @@ class SyncGroupPlayer(Player):
         """
         await self._require_sync_leader().set_repeat(repeat_mode)
 
-    async def set_members(  # noqa: PLR0915
+    async def set_members(  # noqa: PLR0912, PLR0915
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,

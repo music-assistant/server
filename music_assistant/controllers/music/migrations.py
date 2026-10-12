@@ -102,7 +102,7 @@ async def ensure_legacy_audio_analysis_table(database: DatabaseConnection) -> No
     )
 
 
-async def migrate_database(  # noqa: PLR0915
+async def migrate_database(  # noqa: C901, PLR0912, PLR0915
     mass: MusicAssistant,
     database: DatabaseConnection,
     logger: logging.Logger,
