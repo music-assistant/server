@@ -1168,7 +1168,7 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
         else:
             result["albumartist"] = albumartist_values[0]
 
-    # Genre (multi-value)
+    # Genre, can hold multiple values
     if genre := _id3_get_tag_text(tags, "TCON"):
         result["genre"] = genre
 
@@ -1325,7 +1325,7 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     # Artist tags (handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec)
     _parse_vorbis_artist_tags(tags, result)
 
-    # Genre (multi-value)
+    # Genre, can hold multiple values
     if genre := _vorbis_get_multi(tags, "GENRE"):
         result["genre"] = genre
 
@@ -1607,8 +1607,8 @@ def _format_uses_apev2(format_name: str) -> bool:
     :param format_name: The format name from ffprobe (e.g., "wv", "ape", "mpc").
     """
     # Map ffprobe format names to our check
-    # wv = WavPack, ape = Monkey's Audio, mpc/mpc8 = Musepack
-    # tak = TAK, ofr = OptimFROG
+    # wv is WavPack, ape is Monkey's Audio, mpc/mpc8 is Musepack,
+    # tak is TAK and ofr is OptimFROG
     apev2_only_formats = {"wv", "ape", "mpc", "mpc8", "tak", "ofr"}
     return format_name.lower() in apev2_only_formats
 

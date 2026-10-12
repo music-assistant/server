@@ -109,7 +109,7 @@ _FILTER_OUT_BARS: tuple[int, ...] = (4, 2)
 _FILTER_OUT_START_HZ: float = 20.0
 _FILTER_OUT_END_HZ: float = 600.0
 # an outgoing kick counts until the cutoff passes the top of the low band its kick bars are
-# read in (BAND_RMS_BANDS["low"])
+# read in, the "low" entry of BAND_RMS_BANDS
 _KICK_TOP_HZ: float = 120.0
 # echo taps at or above this level repeat a word audibly over the next track; the softer
 # ones sit under it

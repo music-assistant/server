@@ -1190,7 +1190,7 @@ class LocalFileSystemProvider(MusicProvider):
             playlist_items = parse_pls(playlist_data)
         # remove items by index
         for i in sorted(positions_to_remove, reverse=True):
-            # position = index + 1
+            # positions start at 1, indexes at 0
             del playlist_items[i - 1]
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
@@ -1203,7 +1203,6 @@ class LocalFileSystemProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
-        # filename = await self.resolve(f"{name}.m3u")
         filename = f"{name}.m3u"
         playlist_filename = self.get_absolute_path(filename)
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:

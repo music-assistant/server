@@ -1081,7 +1081,7 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "radio",
     "airplay",
     "chromecast",
-    # bluetooth (bluesound, musiccast)
+    # bluetooth, used by bluesound and musiccast
     "bluetooth",
     "bluetooth audio",
     "bluetooth_audio",
@@ -1092,13 +1092,13 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "line_in",
     "aux",
     "tuner",
-    # tv / hdmi (sonos, bluesound)
+    # tv / hdmi, used by sonos and bluesound
     "tv",
     "tv input",
     "hdmi arc",
     # local/usb playback on device (musiccast)
     "usb",
-    # external (hass_players)
+    # external, used by hass_players
     "external",
 }
 

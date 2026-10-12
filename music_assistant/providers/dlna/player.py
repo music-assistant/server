@@ -101,8 +101,6 @@ class DLNAPlayer(Player):
         self._observed_playback_state: PlaybackState | None = None
         self._playing_since: float | None = None
 
-        # ssdp_connect_failed: bool = False
-        #
         # Track BOOTID in SSDP advertisements for device changes
         self.bootid: int | None = None
         self.last_seen = time.time()

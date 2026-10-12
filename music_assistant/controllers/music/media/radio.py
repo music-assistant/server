@@ -228,7 +228,7 @@ class RadioController(MediaControllerBase[Radio]):
                 fallback=search_result_item,
             )
             if compare_radio(db_radio, prov_radio, strict=strict):
-                # 100% match
+                # exact match
                 matches.extend(prov_radio.provider_mappings)
         if not matches:
             self.logger.debug(

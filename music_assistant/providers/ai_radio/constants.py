@@ -129,7 +129,7 @@ ATTR_ALLOW_POST = "ai_radio_allow_post"
 # record ducked under the voice. With a break of B seconds and W seconds of intro before the
 # vocal:
 #
-#   overlap = min(W - VOICE_OVER_RAMP, B - POST_MIN_HEAD_SECONDS)
+#   overlap = min(W - VOICE_OVER_RAMP, B - POST_MIN_HEAD_SECONDS)  # noqa: ERA001
 #
 # so the music is back at full level (the stream controller's ramp) when the vocal enters.
 POST_MIN_SECONDS = 1.5  # shortest overlap worth doing; below it the break plays whole

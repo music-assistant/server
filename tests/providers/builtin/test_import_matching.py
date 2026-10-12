@@ -2016,7 +2016,7 @@ async def test_provider_error_is_reported_as_unmatched_with_issue() -> None:
 async def test_extinf_title_without_structured_artist_is_split_for_matching() -> None:
     """A foreign M3U8 entry with only a combined EXTINF title still gets matched."""
     prov = _make_provider()
-    # no #EXTARTIST tag: only a combined "Artist - Title" EXTINF string is available
+    # without an #EXTARTIST tag only a combined "Artist - Title" EXTINF string is available
     item = _make_playlist_item(
         path="/music/song.mp3", title="Radiohead - Everything In Its Right Place"
     )
