@@ -39,7 +39,6 @@ from music_assistant_models.media_items import (
     Track,
     media_from_dict,
 )
-from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.music.favorites import without_disliked_tracks
@@ -1066,11 +1065,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
     async def _played_copy(
         self, requested: str | MediaItemType | ItemMapping | BrowseFolder
-    ) -> QueueItemOrigin | None:
+    ) -> tuple[str, str] | None:
         """
-        Return the origin pinning an item played on its own to the copy the play request named.
+        Return the (provider instance, item id) of the copy a play request names.
 
-        A library item names no copy, so it has no such origin.
+        A library item names no copy.
 
         :param requested: The uri or the item the play request named.
         """
@@ -1083,7 +1082,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # a uri can name the service rather than one of its accounts
         if (instance := self.mass.get_provider(provider)) is None:
             return None
-        return QueueItemOrigin(provider_instance=instance.instance_id, item_id=item_id)
+        return (instance.instance_id, item_id)
 
     async def _enter_dynamic_mode(self, queue_id: str, option: QueueOption | None) -> None:
         """

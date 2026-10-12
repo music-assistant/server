@@ -2,8 +2,8 @@
 Tests for the copy an audiobook played on its own is pinned to.
 
 Playing an audiobook by the uri of one provider copy swaps in the library item, which carries
-every copy. The queue item keeps the copy the play request named, so the audiobook plays from
-the account it was started from.
+every copy. The queue item keeps the copy the play request named, so the audiobook plays and
+resumes from the account it was started from.
 """
 
 from __future__ import annotations
@@ -122,17 +122,28 @@ async def test_an_audiobook_keeps_the_account_it_was_started_from(
     request_: str | ItemMapping, pinned_instance: str
 ) -> None:
     """The library audiobook a provider copy resolves to is pinned to that copy."""
-    queue_item = await _enqueued(_controller(LIBRARY_BOOK), request_)
+    ctrl = _controller(LIBRARY_BOOK)
+
+    queue_item = await _enqueued(ctrl, request_)
 
     assert queue_item.media_item is LIBRARY_BOOK
     assert queue_item.origin == QueueItemOrigin(provider_instance=pinned_instance, item_id=ITEM_ID)
+    # the progress of that same account is where the book resumes from
+    cast("AsyncMock", ctrl.mass.music.get_resume_position).assert_awaited_once_with(
+        LIBRARY_BOOK, userid=None, pinned=(pinned_instance, ITEM_ID)
+    )
 
 
 async def test_a_library_audiobook_is_not_pinned() -> None:
     """An audiobook played from the library names no copy, so the user's own account leads."""
-    queue_item = await _enqueued(_controller(LIBRARY_BOOK), "library://audiobook/7")
+    ctrl = _controller(LIBRARY_BOOK)
+
+    queue_item = await _enqueued(ctrl, "library://audiobook/7")
 
     assert queue_item.origin is None
+    cast("AsyncMock", ctrl.mass.music.get_resume_position).assert_awaited_once_with(
+        LIBRARY_BOOK, userid=None, pinned=None
+    )
 
 
 async def test_a_single_track_is_not_pinned() -> None:

@@ -388,9 +388,21 @@ class MediaResolver:
         return result
 
     async def get_audiobook_resume_point(
-        self, audio_book: Audiobook, chapter: str | int | None = None, userid: str | None = None
+        self,
+        audio_book: Audiobook,
+        chapter: str | int | None = None,
+        userid: str | None = None,
+        pinned: tuple[str, str] | None = None,
     ) -> int:
-        """Return resume point (in milliseconds) for given audio book."""
+        """
+        Return resume point (in milliseconds) for given audio book.
+
+        :param audio_book: The audiobook to resume.
+        :param chapter: The chapter the user picked to start at, if any.
+        :param userid: The user whose progress to resume from.
+        :param pinned: The (provider instance, item id) of the copy the book plays from, whose
+            progress is read first.
+        """
         self.logger.debug(
             "Fetching resume point to play for audio book %s",
             audio_book.name,
@@ -405,7 +417,7 @@ class MediaResolver:
                 f"Unable to resolve chapter to play for Audiobook {audio_book.name}"
             )
         full_played, resume_position_ms = await self.mass.music.get_resume_position(
-            audio_book, userid=userid
+            audio_book, userid=userid, pinned=pinned
         )
         return 0 if full_played else resume_position_ms
 
@@ -754,7 +766,7 @@ class MediaResolver:
         sort_by: str | None = None,
         start_from_beginning: bool = False,
         keep_preceding_items: bool = False,
-        played_copy: QueueItemOrigin | None = None,
+        played_copy: tuple[str, str] | None = None,
     ) -> list[ResolvedItem]:
         """
         Resolve/unwrap media items to enqueue, each with the origin it was played from.
@@ -774,8 +786,9 @@ class MediaResolver:
         :param keep_preceding_items: For a playlist/album, move the tracks before start_item
             behind the rest instead of dropping them, so the full item is returned with
             start_item first.
-        :param played_copy: For an audiobook played on its own, the origin naming the copy the
-            play request named, which the library item it resolved to no longer names.
+        :param played_copy: For an audiobook played on its own, the (provider instance, item id)
+            of the copy the play request named, which the library item it resolved to no longer
+            names.
         """
         # resolve Itemmapping to full media item
         if isinstance(media_item, ItemMapping):
@@ -822,9 +835,9 @@ class MediaResolver:
             media_item = cast("Audiobook", media_item)
             # ensure we grab the correct/latest resume point info
             media_item.resume_position_ms = await self.get_audiobook_resume_point(
-                media_item, start_item, userid=userid
+                media_item, start_item, userid=userid, pinned=played_copy
             )
-            return [ResolvedItem(media_item, played_copy)]
+            return [ResolvedItem(media_item, self._pinned_origin(played_copy))]
         if media_item.media_type == MediaType.COLLECTION:
             collection_item_media_type = get_collection_item_media_type_from_item_id(
                 media_item.item_id
@@ -862,7 +875,7 @@ class MediaResolver:
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
             return [
-                ResolvedItem(episode, self._own_copy(episode))
+                ResolvedItem(episode, self._pinned_origin(self._own_copy(episode)))
                 for episode in await self.get_next_podcast_episodes(
                     None, media_item, userid=userid, start_from_beginning=start_from_beginning
                 )
@@ -1048,14 +1061,25 @@ class MediaResolver:
         )
 
     @staticmethod
-    def _own_copy(item: MediaItemType) -> QueueItemOrigin | None:
+    def _own_copy(item: MediaItemType) -> tuple[str, str] | None:
         """
-        Return the origin pinning an item played on its own to its own provider copy.
+        Return the (provider instance, item id) of an item's own provider copy.
 
-        A library item names no copy, so it has no such origin.
+        A library item names no copy.
 
-        :param item: The item that is played on its own.
+        :param item: The item to return the copy of.
         """
         if item.provider == "library":
             return None
-        return QueueItemOrigin(provider_instance=item.provider, item_id=item.item_id)
+        return (item.provider, item.item_id)
+
+    @staticmethod
+    def _pinned_origin(copy: tuple[str, str] | None) -> QueueItemOrigin | None:
+        """
+        Return the origin pinning an item played on its own to the given copy.
+
+        :param copy: The (provider instance, item id) to pin to, or None for no pin.
+        """
+        if copy is None:
+            return None
+        return QueueItemOrigin(provider_instance=copy[0], item_id=copy[1])
