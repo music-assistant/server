@@ -60,6 +60,7 @@ from music_assistant_models.errors import (
     RetriesExhausted,
 )
 from music_assistant_models.media_items import Album, AudioFormat, Track
+from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
 from music_assistant.constants import (
@@ -90,7 +91,6 @@ from music_assistant.constants import (
     STREAM_START_TIMEOUT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.player_queues.state import FlowPlayLogEntry
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_PROVIDER_PRIORITY,
 )
@@ -181,7 +181,7 @@ from music_assistant.models.music_provider import MusicProvider, ProviderStreamL
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType, ProviderMapping
-    from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -2762,7 +2762,7 @@ class StreamsAudio:
                     overlay_enabled=overlay_active(queue),
                 )
                 # append to play log so the queue controller can work out which track is playing
-                play_log_entry = FlowPlayLogEntry(
+                play_log_entry = PlayLogEntry(
                     queue_track.queue_item_id,
                     seek_position=queue_track.streamdetails.seek_position,
                 )

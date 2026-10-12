@@ -16,7 +16,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import CompareState
-from music_assistant.controllers.player_queues.state import FlowPlayLogEntry, PlayerQueueData
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 QUEUE_ID = "queue-1"
 
@@ -189,7 +189,7 @@ async def test_flow_repeat_preserves_previous_playback_offset(repeat_mode: Repea
     queue_data.queue.current_item = item
     queue_data.queue.current_index = 0
     queue_data.queue.flow_mode = True
-    previous_entry = FlowPlayLogEntry(item.queue_item_id, seconds_streamed=61, seek_position=59)
+    previous_entry = PlayLogEntry(item.queue_item_id, seconds_streamed=61, seek_position=59)
     queue_data.flow_mode_stream_log = [previous_entry]
     player = MagicMock()
     player.state = SimpleNamespace(corrected_elapsed_time=10, playback_state=PlaybackState.PLAYING)
