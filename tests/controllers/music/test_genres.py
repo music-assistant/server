@@ -36,7 +36,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
@@ -1927,7 +1927,7 @@ class TestCleanupStaleMappings:
             "(item_id, provider, media_type, name, fully_played, seconds_played, timestamp, userid)"
         )
         await mass.music.database.execute(
-            f"INSERT OR IGNORE INTO {DB_TABLE_PLAYLOG} {cols} "
+            f"INSERT OR IGNORE INTO {DB_TABLE_MEDIA_PROGRESS} {cols} "
             "VALUES (:item_id, 'library', :media_type, 'CsPlaylog1XYZ99', 0, 0, 0, 'testuser')",
             {"item_id": str(genre_id), "media_type": "genre"},
         )
@@ -1939,7 +1939,7 @@ class TestCleanupStaleMappings:
         genre_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
         assert genre_row is None
         playlog_rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type = 'genre' AND item_id = :id",
+            f"SELECT * FROM {DB_TABLE_MEDIA_PROGRESS} WHERE media_type = 'genre' AND item_id = :id",
             {"id": str(genre_id)},
             limit=0,
         )
@@ -2107,7 +2107,7 @@ class TestGenreExclusion:
             "(item_id, provider, media_type, name, fully_played, seconds_played, timestamp, userid)"
         )
         await mass.music.database.execute(
-            f"INSERT OR IGNORE INTO {DB_TABLE_PLAYLOG} {cols} "
+            f"INSERT OR IGNORE INTO {DB_TABLE_MEDIA_PROGRESS} {cols} "
             "VALUES (:item_id, 'library', 'genre', :name, 0, 0, 0, 'testuser')",
             {"item_id": str(genre_id), "name": "CleanupPreservedGenre"},
         )
@@ -2119,7 +2119,7 @@ class TestGenreExclusion:
         assert genre_row is not None, "genre with an exclusion must not be deleted by cleanup"
 
         playlog_rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type = 'genre' AND item_id = :id",
+            f"SELECT * FROM {DB_TABLE_MEDIA_PROGRESS} WHERE media_type = 'genre' AND item_id = :id",
             {"id": str(genre_id)},
             limit=0,
         )
