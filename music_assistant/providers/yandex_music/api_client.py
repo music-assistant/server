@@ -9,6 +9,7 @@ import re
 import time
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast
 
@@ -70,6 +71,15 @@ GET_FILE_INFO_CODECS = "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4"
 LOGGER = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+
+@dataclass(slots=True)
+class _FileInfoFlight:
+    """Callers resolving one stream variant, and the URL they fetched together."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+    refreshed: dict[str, Any] | None = None
 
 
 class RotorSessionExpiredError(Exception):
@@ -148,7 +158,7 @@ class YandexMusicClient:
         self._file_info_cache: OrderedDict[
             tuple[str, str, str, str], tuple[float, dict[str, Any]]
         ] = OrderedDict()
-        self._file_info_locks: dict[tuple[str, str, str, str], tuple[asyncio.Lock, int]] = {}
+        self._file_info_locks: dict[tuple[str, str, str, str], _FileInfoFlight] = {}
         # Per-endpoint concurrency locks. Yandex's edge layer reacts to
         # concurrent requests to the same URL family (per-endpoint scraper
         # signature), not steady-state RPS. Defense-in-depth on top of the
@@ -1003,25 +1013,15 @@ class YandexMusicClient:
         codecs = ",".join(c.strip() for c in codecs.split(",") if c.strip())
 
         cache_key = (track_id, quality, codecs, transport)
-        lock, users = self._file_info_locks.get(cache_key, (asyncio.Lock(), 0))
-        self._file_info_locks[cache_key] = (lock, users + 1)
-        cached_before_wait = self._file_info_cache.get(cache_key)
+        flight = self._file_info_locks.setdefault(cache_key, _FileInfoFlight())
+        flight.users += 1
         try:
-            async with lock:
-                # Joined playback refreshes may reuse only a URL replaced while waiting.
-                # Cancellation or failure leaves the old cache untouched, so fetch again.
-                reuse_refreshed = (
-                    users > 0 and self._file_info_cache.get(cache_key) is not cached_before_wait
-                )
-                return await self._get_track_file_info(
-                    track_id, quality, codecs, transport, reuse_refreshed=reuse_refreshed
-                )
+            async with flight.lock:
+                return await self._get_track_file_info(track_id, quality, codecs, transport, flight)
         finally:
-            _, users = self._file_info_locks[cache_key]
-            if users == 1:
+            flight.users -= 1
+            if not flight.users:
                 del self._file_info_locks[cache_key]
-            else:
-                self._file_info_locks[cache_key] = (lock, users - 1)
 
     # Discovery / recommendations
 
@@ -1371,8 +1371,7 @@ class YandexMusicClient:
         quality: str,
         codecs: str,
         transport: str,
-        *,
-        reuse_refreshed: bool = False,
+        flight: _FileInfoFlight,
     ) -> dict[str, Any] | None:
         """Resolve one stream variant after acquiring its shared request lock."""
         # Short-TTL cache to absorb repeat calls from MA's streaming retry loop.
@@ -1399,7 +1398,12 @@ class YandexMusicClient:
                     err,
                 )
                 return None
-        if not is_playback or reuse_refreshed:
+        # Playback callers sharing a flight reuse the URL it fetched, even when
+        # they joined after it was published. A failed or cancelled fetch leaves
+        # nothing to reuse, so they never fall back to the stale cached URL.
+        if is_playback and flight.refreshed is not None:
+            return flight.refreshed
+        if not is_playback:
             cached = self._file_info_cache_get(cache_key)
             if cached is not None:
                 LOGGER.debug(
@@ -1442,6 +1446,7 @@ class YandexMusicClient:
                 # stale, so replacing it avoids serving the old URL to the next
                 # non-bypass caller until its TTL expires.
                 self._file_info_cache_put(cache_key, parsed)
+                flight.refreshed = parsed
                 return parsed
         except BadRequestError as err:
             # 4xx is terminal for this URL/quality. Drop any cached entry so we

@@ -256,6 +256,64 @@ async def test_concurrent_playback_refreshes_share_new_url_but_later_refresh_aga
     assert request.await_count == 3
 
 
+async def test_playback_refresh_joining_after_publication_reuses_flight_url() -> None:
+    """A playback caller joining after the URL is published still shares that refresh."""
+    raw = ClientAsync()
+    client = YandexMusicClient(SecretStr("fake_token"))
+    client._client = raw
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+    late: list[asyncio.Task[dict[str, Any] | None]] = []
+
+    async def respond(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            started.set()
+            await release.wait()
+        return {
+            "downloadInfo": {
+                "trackId": "42",
+                "quality": "lossless",
+                "codec": "flac",
+                "bitrate": 0,
+                "transport": "raw",
+                "url": f"https://cdn.example/url-{calls}",
+                "urls": [],
+            }
+        }
+
+    publish = client._file_info_cache_put
+
+    def publish_then_join(key: tuple[str, str, str, str], value: dict[str, Any]) -> None:
+        publish(key, value)
+        if calls == 2 and not late:
+            with request_priority(RequestPriority.HIGH):
+                late.append(asyncio.create_task(client.get_track_file_info("42")))
+
+    request = AsyncMock(side_effect=respond)
+    with (
+        patch.object(raw.request, "get", request),
+        patch.object(client, "_file_info_cache_put", publish_then_join),
+    ):
+        old = await client.get_track_file_info("42")
+        assert old is not None
+        assert old["url"] == "https://cdn.example/url-1"
+        with request_priority(RequestPriority.HIGH):
+            active = asyncio.create_task(client.get_track_file_info("42"))
+            await started.wait()
+            waiter = asyncio.create_task(client.get_track_file_info("42"))
+            await asyncio.sleep(0)
+            release.set()
+            results = [*await asyncio.gather(active, waiter)]
+            assert late
+            results.append(await late[0])
+        assert all(r and r["url"] == "https://cdn.example/url-2" for r in results)
+    assert request.await_count == 2
+    assert not client._file_info_locks
+
+
 @pytest.mark.parametrize("block_during_refresh", [False, True])
 async def test_joined_playback_refresh_bypasses_captcha_cooldown(
     block_during_refresh: bool,
