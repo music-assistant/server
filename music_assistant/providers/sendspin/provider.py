@@ -1164,28 +1164,30 @@ class SendspinProvider(PlayerProvider):
         Applies the HA display name and resolves the HA media_player entity that
         announcements are relayed to: ESPHome devices support announcements
         natively, but that capability is only reachable through the HA API.
-        Players are correlated by MAC address (the Sendspin client id).
+        Players are correlated by the MAC address they report.
         """
-        esphome_players = [
-            player for player in players if player.device_info.manufacturer == "ESPHome"
+        mac_players = [
+            (player, mac_address)
+            for player in players
+            if (mac_address := _reported_mac_address(player))
         ]
-        if not esphome_players:
+        if not mac_players:
             return
         hass = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
         if hass is None or not hass.available:
-            for player in esphome_players:
+            for player, _ in mac_players:
                 if isinstance(player, SendspinPlayer):
                     player.set_hass_announce_entity(None)
             return
         try:
             device_infos = await hass.get_media_player_device_infos(
-                [player.player_id for player in esphome_players], platform="esphome"
+                [mac_address for _, mac_address in mac_players], platform="esphome"
             )
         except Exception as err:
             self.logger.warning("Failed to apply Home Assistant enrichment: %s", err)
             return
-        for player in esphome_players:
-            device_info = device_infos.get(player.player_id.lower())
+        for player, mac_address in mac_players:
+            device_info = device_infos.get(mac_address)
             if device_info is not None and device_info["name"]:
                 player._attr_name = device_info["name"]
             if isinstance(player, SendspinPlayer):
@@ -1194,12 +1196,11 @@ class SendspinProvider(PlayerProvider):
                 )
 
     async def _refresh_hass_esphome_enrichment(self) -> None:
-        """Re-apply the HA enrichment to all registered ESPHome players (in place)."""
+        """Re-apply the HA enrichment to all registered players that report a MAC address (in place)."""
         players = [
             player
             for player in self.players
-            if isinstance(player, SendspinBasePlayer)
-            and player.device_info.manufacturer == "ESPHome"
+            if isinstance(player, SendspinBasePlayer) and _reported_mac_address(player)
         ]
         if not players:
             return
@@ -1893,6 +1894,17 @@ class SendspinProvider(PlayerProvider):
         await self.mass.players.unregister(mac_player_id)
         self.mass.players.carry_over_player_config(mac_player_id, client_id)
         return mac_player_id
+
+
+def _reported_mac_address(player: SendspinBasePlayer) -> str | None:
+    """Return the lowercased MAC address a client uses as id or reports in its hello."""
+    if is_valid_mac_address(player.player_id):
+        return player.player_id.lower()
+    info = player.api.info_or_none
+    mac_address = info.device_info.mac_address if info and info.device_info else None
+    if not mac_address or not is_valid_mac_address(mac_address):
+        return None
+    return mac_address.lower()
 
 
 def _virtual_player_noop(*_args: object) -> None:
