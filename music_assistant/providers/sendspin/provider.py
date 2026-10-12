@@ -1616,7 +1616,8 @@ class SendspinProvider(PlayerProvider):
                 )
                 player._unsubscribe_client_callbacks()
             else:
-                if mac_player_id:
+                # register skips a disabled player and any player during shutdown
+                if mac_player_id and self.mass.players.get_player(client_id) is player:
                     self.mass.players.delete_player_config(
                         mac_player_id, replacement_player_id=client_id
                     )
