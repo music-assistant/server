@@ -56,7 +56,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
-from music_assistant.helpers.compare import compare_album
+from music_assistant.helpers.compare import compare_album, compare_item_ids
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
     MusicProvider,
@@ -690,10 +690,16 @@ class MediaResolver:
                 len(ordered),
             )
             ordered = ordered[split:] + ordered[:split]
+        # a mapping has no metadata to compare, so it matches by ID only
         return [
             copies[album.uri]
             for album in ordered
-            if not any(compare_album(copy, item) for copy in copies[album.uri] for item in played)
+            if not any(
+                compare_item_ids(copy, item)
+                or (isinstance(item, Album) and compare_album(copy, item))
+                for copy in copies[album.uri]
+                for item in played
+            )
         ]
 
     async def album_copy_tracks(self, copies: list[Album]) -> list[Track]:

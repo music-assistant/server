@@ -123,6 +123,27 @@ async def test_a_queued_album_matches_its_other_copy(mass: MusicAssistant) -> No
     assert _album_names(result) == ["Album 1998"]
 
 
+async def test_queued_album_mappings_match_by_id_only(mass: MusicAssistant) -> None:
+    """A queued album mapping counts as played by its ID, not by a same-named album."""
+    artist, albums = await _artist_with_years(mass, 1995, 1998, 2005)
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    played = [
+        ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id=albums[1995].item_id,
+            provider=albums[1995].provider,
+            name="Album 1995",
+        ),
+        ItemMapping(
+            media_type=MediaType.ALBUM, item_id="other", provider="streaming", name="Album 1998"
+        ),
+    ]
+
+    result = await mass.player_queues.artist_album_candidates(artist, played, None)
+
+    assert _album_names(result) == ["Album 1998", "Album 2005"]
+
+
 @pytest.mark.parametrize("anchor_kind", ["single", "other artist"])
 async def test_an_anchor_outside_the_list_is_placed_by_its_year(
     mass: MusicAssistant, anchor_kind: str
