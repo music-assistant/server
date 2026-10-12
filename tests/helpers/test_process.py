@@ -8,6 +8,7 @@ import sys
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from signal import SIGKILL
 from unittest.mock import MagicMock
 
 import pytest
@@ -36,6 +37,16 @@ _WEDGED_CHILD = (
 # undelivered when the process is killed.
 _NOISY_CHILD = (
     "import sys, time; sys.stdout.write('x' * 300000); sys.stdout.flush(); time.sleep(30)"
+)
+
+# Exits on SIGINT, but only after a pause and a last line, so a reader is still
+# blocked on stdout once close() stops waiting for it (the tests shorten that wait
+# to well below the pause).
+_SLOW_EXIT_CHILD = (
+    "import signal, sys, time; "
+    "signal.signal(signal.SIGINT, lambda *_: ("
+    "time.sleep(1), sys.stdout.write('bye\\n'), sys.stdout.flush(), sys.exit(0))); "
+    "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)"
 )
 
 
@@ -83,6 +94,15 @@ async def _consume(read_fd: int, total: int) -> None:
     remaining = total
     while remaining > 0:
         remaining -= len(await asyncio.to_thread(os.read, read_fd, 65536))
+
+
+async def _collect_lines(
+    lines: AsyncGenerator[str], into: list[str], first_seen: asyncio.Event
+) -> None:
+    """Collect every line of an output stream, flagging once the first one arrived."""
+    async for line in lines:
+        into.append(line)
+        first_seen.set()
 
 
 @pytest.mark.asyncio
@@ -366,6 +386,90 @@ async def test_close_reaps_a_child_when_cancelled_while_waiting_for_exit(
             await proc.close()
 
     assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_close_leaves_a_live_reader_in_charge_of_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A reader kept on stdout across close() keeps draining it while the child is reaped.
+
+    asyncio refuses a second concurrent read on a stream, so close() must leave
+    that pipe to the reader and only wait for the exit: a child that exits on
+    SIGINT by itself is then reaped as such rather than SIGKILLed, and the
+    reader sees everything it wrote on the way out.
+    """
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _SLOW_EXIT_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    lines: list[str] = []
+    ready = asyncio.Event()
+    reader = asyncio.create_task(_collect_lines(proc.iter_stdout(), lines, ready))
+    await asyncio.wait_for(ready.wait(), 5)
+
+    async with asyncio.timeout(5):
+        await proc.close()
+
+    assert proc.returncode == 0
+    await asyncio.wait_for(reader, 5)
+    assert lines == ["ready", "bye"]
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_while_a_reader_is_still_on_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A child ignoring SIGINT is still SIGKILLed while a reader is blocked on its stdout.
+
+    Giving up on the pipe because of the concurrent read must not skip the
+    escalation: the child would stay alive and unreaped, with nothing coming
+    back for it.
+    """
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    ready = asyncio.Event()
+    reader = asyncio.create_task(_collect_lines(proc.iter_stdout(), [], ready))
+    await asyncio.wait_for(ready.wait(), 5)
+
+    async with asyncio.timeout(10):
+        await proc.close()
+
+    assert proc.returncode == -SIGKILL
+    # the kill closed the pipe, which is what ends the reader
+    await asyncio.wait_for(reader, 5)
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_while_its_attached_stderr_reader_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An attached stderr reader that never sees EOF does not keep close() from reaping.
+
+    The reader is let go once the release budget is spent, and the child is
+    escalated to SIGKILL like any other that holds its pipes open.
+    """
+    monkeypatch.setattr(process_module, "PIPE_DRAIN_TIMEOUT", 0.2)
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    proc = AsyncProcess([sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=True)
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+    reader = asyncio.create_task(_collect_lines(proc.iter_stderr(), [], asyncio.Event()))
+    proc.attach_stderr_reader(reader)
+    await asyncio.sleep(0)  # let the reader block on the (silent) stderr
+
+    async with asyncio.timeout(10):
+        await proc.close()
+
+    assert proc.returncode == -SIGKILL
+    assert reader.cancelled()
 
 
 def test_parse_child_process_name() -> None:
