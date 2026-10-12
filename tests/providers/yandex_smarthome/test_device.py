@@ -121,7 +121,7 @@ class MockMass:
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_device_description
+# Tests for get_device_description
 # ---------------------------------------------------------------------------
 
 
@@ -198,7 +198,7 @@ class TestGetDeviceDescription:
 
 
 # ---------------------------------------------------------------------------
-# Tests: normalize_device_name
+# Tests for normalize_device_name
 # ---------------------------------------------------------------------------
 
 
@@ -317,7 +317,7 @@ class TestGetDeviceState:
 
 
 # ---------------------------------------------------------------------------
-# Tests: execute_capability_action
+# Tests for execute_capability_action
 # ---------------------------------------------------------------------------
 
 
@@ -616,7 +616,7 @@ class TestExecuteCapabilityAction:
 
 
 # ---------------------------------------------------------------------------
-# Tests: is_player_exposable
+# Tests for is_player_exposable
 # ---------------------------------------------------------------------------
 
 
@@ -641,7 +641,7 @@ class TestIsPlayerExposable:
 
 
 # ---------------------------------------------------------------------------
-# Tests: error helpers
+# Tests for error helpers
 # ---------------------------------------------------------------------------
 
 
@@ -674,7 +674,7 @@ class TestErrorHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Tests: channel capability (next/previous track)
+# Tests for channel capability (next/previous track)
 # ---------------------------------------------------------------------------
 
 
@@ -750,7 +750,7 @@ class TestChannelCapability:
 
 
 # ---------------------------------------------------------------------------
-# Tests: input_source capability (mode/input_source)
+# Tests for input_source capability (mode/input_source)
 # ---------------------------------------------------------------------------
 
 
@@ -856,7 +856,7 @@ class TestInputSourceCapability:
 
 
 # ---------------------------------------------------------------------------
-# Tests: input_source playlist sources (mode/input_source backed by playlists)
+# Tests for input_source playlist sources (mode/input_source backed by playlists)
 # ---------------------------------------------------------------------------
 
 
@@ -1024,7 +1024,7 @@ class TestPlaylistInputSources:
 
 
 # ---------------------------------------------------------------------------
-# Tests: player filter (exposed_ids)
+# Tests for player filter (exposed_ids)
 # ---------------------------------------------------------------------------
 
 

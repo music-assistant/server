@@ -38,6 +38,11 @@ def is_safe_name(name: str) -> bool:
     return not ("/" in name or "\\" in name or ".." in name)
 
 
+def has_control_chars(value: str) -> bool:
+    """Check if value contains a CR, LF, NUL or any other C0 control character."""
+    return any(ord(char) < 0x20 for char in value)
+
+
 def contains_encrypted_value(value: Any) -> bool:
     """Check if value is, or holds in a nested list or dict, an encrypted config string."""
     if isinstance(value, str):

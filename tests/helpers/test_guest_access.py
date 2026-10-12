@@ -21,6 +21,7 @@ def _create_mock_mass() -> MagicMock:
     auth.generate_join_code = AsyncMock()
     auth.revoke_join_codes = AsyncMock(return_value=0)
     auth.revoke_tokens_for_user = AsyncMock(return_value=0)
+    mass.webserver.external_url = None
     return mass
 
 
@@ -130,6 +131,19 @@ def test_build_join_url_local() -> None:
     url = guest_access.build_join_url(mass, "ABC123")
 
     assert url == "http://192.168.1.2:8095/?join=ABC123"
+
+
+def test_build_join_url_external_url_wins() -> None:
+    """The external URL is preferred over both remote access and the local base URL."""
+    mass = _create_mock_mass()
+    mass.webserver.external_url = "https://ma.example.com/music"
+    mass.webserver.remote_access.is_enabled = True
+    mass.webserver.remote_access.remote_id = "remote123"
+    mass.webserver.base_url = "http://192.168.1.2:8095"
+
+    url = guest_access.build_join_url(mass, "ABC123")
+
+    assert url == "https://ma.example.com/music/?join=ABC123"
 
 
 async def test_revoke_guest_access() -> None:

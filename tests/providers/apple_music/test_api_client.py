@@ -15,6 +15,7 @@ from music_assistant_models.errors import (
 )
 from yarl import URL
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.apple_music.api_client import (
     _LIBRARY_PAGE_SIZE,
     _PAGE_TRUNCATION_RETRIES,
@@ -340,3 +341,54 @@ async def test_get_data_sustained_429_is_ridden_out_for_minutes() -> None:
         await client.get_data("me/library/songs", limit=50, offset=0)
     sleeps = [call.args[0] for call in sleep_mock.await_args_list]
     assert sum(sleeps) > 100
+
+
+# ---------------------------------------------------------------------------
+# P6: catalog and library data is requested in the user's language
+# ---------------------------------------------------------------------------
+
+
+def _storefront_response(supported_tags: list[str]) -> MagicMock:
+    return _make_response(
+        json_data={
+            "data": [
+                {
+                    "id": "jp",
+                    "attributes": {
+                        "defaultLanguageTag": "ja",
+                        "supportedLanguageTags": supported_tags,
+                    },
+                }
+            ]
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("locale", "supported_tags", "expected_language"),
+    [
+        ("en_US", ["ja", "en-US"], "en-US"),
+        ("en_GB", ["ja", "en-US"], "en-US"),
+        ("nl_NL", ["ja", "en-US"], None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_data_requests_supported_user_language(
+    locale: str, supported_tags: list[str], expected_language: str | None
+) -> None:
+    """GET requests ask for the user's language when the storefront supports it."""
+    client, provider = _make_client()
+    # the class-level throttler may still be cooling down from an earlier 429 test
+    client.throttler = ThrottlerManager(rate_limit=1, period=0.25)
+    provider.mass.metadata.locale = locale
+    provider.mass.http_session.get = MagicMock(
+        side_effect=[
+            _FakeRequestCtx(_storefront_response(supported_tags)),
+            _FakeRequestCtx(_make_response(json_data={"data": []})),
+        ]
+    )
+    with patch(_SLEEP_TARGET, new=AsyncMock()):
+        assert await client.get_user_storefront() == "jp"
+        await client.get_data("catalog/jp/artists/159260351")
+    params = provider.mass.http_session.get.call_args.kwargs["params"]
+    assert params.get("l") == expected_language

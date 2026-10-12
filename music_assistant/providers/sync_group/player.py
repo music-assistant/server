@@ -516,8 +516,19 @@ class SyncGroupPlayer(Player):
                 # this may happen in race conditions where we just switched sync leaders
                 # and the new leader doesn't support enqueueing next media.
                 return
-            # Use internal handler to bypass group redirect logic and avoid infinite loop
-            await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
+            # the leader is commanded from under the group's lock, like play_media does,
+            # so leader-scoped work such as a member re-join cannot interleave with it.
+            # Strict, like the handover's own lock: a busy leader drops the handover
+            # rather than letting it run alongside whatever holds the leader
+            async with self.mass.players.get_player_lock(
+                sync_leader.player_id, PlayerLockPurpose.PLAYBACK, strict=True
+            ):
+                if self.sync_leader is not sync_leader:
+                    # the group was re-led while we waited: the new leader gets its own
+                    # handover from the queue, this one is for a leader that is gone
+                    return
+                # Use internal handler to bypass group redirect logic and avoid infinite loop
+                await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
@@ -555,7 +566,7 @@ class SyncGroupPlayer(Player):
         """
         await self._require_sync_leader().set_repeat(repeat_mode)
 
-    async def set_members(  # noqa: PLR0915
+    async def set_members(  # noqa: PLR0912, PLR0915
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
@@ -1062,12 +1073,12 @@ class SyncGroupPlayer(Player):
     #     (_active_session_player) so leader/handoff bookkeeping is done on
     #     the right object
     #   - choose new leaders that keep protocol continuity
-    #     (_member_supports_protocol_domain / _select_sync_leader)
+    #     (_member_supports_protocol_domain / _select_sync_leader)  # noqa: ERA001
     #   - downshift to the native protocol once every remaining member can play
     #     on it (_all_members_can_play_on_domain)
     #   - stay aligned with the protocol's own view of the group, both in member
     #     order (_align_members_with_session) and in who leads it
-    #     (_protocol_group_leader)
+    #     (_protocol_group_leader)  # noqa: ERA001
     # The helpers below cover those needs. Composition decisions (which protocol
     # to use given the current member mix) intentionally live in the group:
     # individual protocol providers don't have visibility into the rest of the

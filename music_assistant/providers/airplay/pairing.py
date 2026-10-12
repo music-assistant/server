@@ -347,11 +347,11 @@ class AirPlayPairing:
         inner_hash = hashlib.sha1(f"{user_id}:{password}".encode()).digest()
         x = int.from_bytes(hashlib.sha1(salt + inner_hash).digest(), "big")
 
-        # k = H(N | PAD(g))
+        # k = H(N | PAD(g))  # noqa: ERA001
         g_padded = bytes.fromhex(RAOP_SRP_GENERATOR).rjust(n_len, b"\x00")
         k = int.from_bytes(hashlib.sha1(n_bytes + g_padded).digest(), "big")
 
-        # u = H(PAD(A) | PAD(B))
+        # u = H(PAD(A) | PAD(B))  # noqa: ERA001
         a_padded = client_public.rjust(n_len, b"\x00")
         b_padded = server_public.rjust(n_len, b"\x00")
         u = int.from_bytes(hashlib.sha1(a_padded + b_padded).digest(), "big")

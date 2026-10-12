@@ -49,6 +49,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
+from music_assistant.helpers.podcast_parsers import get_publisher_number
 
 from .constants import (
     API_DEFAULT_RESOURCE_VERSION,
@@ -1132,6 +1133,7 @@ class StorytelHelper:
             name=title,
             duration=duration_seconds,
             position=0,
+            episode_number=get_publisher_number(episode_number),
             provider_mappings={
                 ProviderMapping(
                     item_id=consumable_id,

@@ -845,21 +845,6 @@ async def test_get_album_tracks_uses_library_endpoint_for_library_id() -> None:
                     }
                 ]
             },
-            # Second call: get_album (called internally)
-            {
-                "data": [
-                    {
-                        "id": "l.PnamISl",
-                        "type": "library-albums",
-                        "attributes": {
-                            "name": "Uploaded Album",
-                            "artistName": "Uploaded Artist",
-                            "playParams": {"id": "l.PnamISl", "isLibrary": True},
-                        },
-                        "relationships": {},
-                    }
-                ]
-            },
         ]
     )
     provider.api_client.get_ratings = AsyncMock(return_value={})
@@ -867,10 +852,13 @@ async def test_get_album_tracks_uses_library_endpoint_for_library_id() -> None:
     manager = AppleMusicMediaManager(provider)
     tracks = await manager.get_album_tracks("l.PnamISl")
 
+    provider.api_client.get_data.assert_awaited_once()
     first_call_args = provider.api_client.get_data.call_args_list[0]
     assert first_call_args[0][0] == "me/library/albums/l.PnamISl/tracks"
     assert len(tracks) == 1
     assert tracks[0].name == "Track 1"
+    # no album name standing in as its id: the caller attaches the album it asked for
+    assert tracks[0].album is None
 
 
 @pytest.mark.asyncio

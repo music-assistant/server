@@ -304,7 +304,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
     """Call async function using the throttler with retries."""
 
     @functools.wraps(func)
-    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: ProviderT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call async function using the throttler with retries."""
         throttler = self.throttler
         exp_backoff = throttler.initial_backoff
@@ -323,7 +323,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                         return await func(self, *args, **kwargs)
                     except ResourceTemporarilyUnavailable as e:
                         self.logger.info(
-                            f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
+                            "Attempt %s/%s failed: %s", attempt + 1, throttler.retry_attempts, e
                         )
                         server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
                         if server_wait > MAX_WAIT_TIME:
@@ -340,22 +340,21 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                                 # Retry-After is a floor, not a target: escalate above it,
                                 # jittering up only so we never retry sooner than asked
                                 base = max(server_wait, min(exp_backoff, MAX_BACKOFF))
-                                sleep_time = base * random.uniform(1.0, 1.1)
+                                sleep_time = base * random.uniform(1.0, 1.1)  # noqa: S311 - retry jitter
                                 exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
                             elif server_wait:
                                 # Server named a recovery time — respect it, with citizen jitter
-                                sleep_time = server_wait * random.uniform(1.0, 1.1)
+                                sleep_time = server_wait * random.uniform(1.0, 1.1)  # noqa: S311 - retry jitter
                             else:
                                 # No server guidance — exponential backoff with jitter
-                                sleep_time = min(
-                                    exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF
-                                )
+                                jitter = random.uniform(0.75, 1.25)  # noqa: S311 - retry jitter
+                                sleep_time = min(exp_backoff * jitter, MAX_BACKOFF)
                                 exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
                             if isinstance(e, RateLimited):
                                 # a rate limit applies to the whole account, so hold back every
                                 # other caller for as long as we back off ourselves
                                 throttler.set_cooldown(sleep_time)
-                            self.logger.info(f"Retrying in {sleep_time:.1f} seconds...")
+                            self.logger.info("Retrying in %.1f seconds...", sleep_time)
                             honored_until = time.monotonic() + sleep_time
                             await asyncio.sleep(sleep_time)
                         elif isinstance(e, RateLimited):

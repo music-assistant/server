@@ -217,3 +217,18 @@ def test_restarting_at_another_item_drops_the_previous_look_ahead() -> None:
     ctrl._queue_data["q1"].last_served_item_id = None  # what play_index does on a new load
 
     assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+
+
+def test_a_track_the_player_gave_up_on_before_it_streamed_does_not_pin_the_window() -> None:
+    """
+    A player that failed a track asks for the one after it.
+
+    The failed track never delivered a byte, so the last served item still points at the
+    track before it, while the playhead the player reports has moved on to the failed one.
+    The item after the playhead is what the player needs next; the ones beyond it are not.
+    """
+    ctrl = _controller(current_index=1, index_in_buffer=0)
+    ctrl._queue_data["q1"].last_served_item_id = _item_id_at(ctrl, 0)
+
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 2))
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))

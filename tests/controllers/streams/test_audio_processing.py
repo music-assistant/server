@@ -10,6 +10,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 from music_assistant_models.audio_processing import (
     ActiveSourceAudioDetails,
     AudioDSPDetails,
@@ -1272,6 +1273,21 @@ async def test_flow_stream_handler_continues_a_repeat_request_at_the_current_ite
     controller.mass.player_queues.get_item.assert_called_once_with("queue-1", expected_item_id)
 
 
+@pytest.mark.asyncio
+async def test_flow_stream_handler_refuses_a_session_that_streamed_to_its_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flow request for a session whose stream already ended gets a 404 instead of audio."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.flow_stream_finished.return_value = True
+
+    with pytest.raises(web.HTTPNotFound):
+        await controller.serve_queue_flow_stream(request)
+
+    controller.mass.player_queues.flow_stream_finished.assert_called_once_with("queue-1")
+    controller.audio.select_flow_pcm_format.assert_not_awaited()
+
+
 def test_flow_get_stream_continues_a_repeat_call_at_the_current_item(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1441,6 +1457,7 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
             streamdetails=SimpleNamespace(
                 fade_in=False,
                 stream_error=False,
+                tail_overlap=None,
                 uri=f"test://{item_id}",
                 seek_position=0,
                 duration=300,
@@ -1621,6 +1638,7 @@ async def test_flow_source_error_skips_item_without_completing_it() -> None:
     streamdetails = SimpleNamespace(
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="audiobookshelf://book",
         seek_position=0,
         duration=3600,
@@ -1688,6 +1706,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         audio_format=pcm_format,
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://first",
         seek_position=0,
         seconds_streamed=0,
@@ -1718,6 +1737,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         ),
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://skipped",
         seek_position=raw_seek_position,
         seconds_streamed=0,
@@ -1817,6 +1837,7 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
         buffer=SimpleNamespace(cancelled=source_cancelled),
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://track",
         seek_position=0,
         seconds_streamed=0,
@@ -2058,6 +2079,7 @@ def _native_stream_handler_context(
     queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
     mass.player_queues.get.return_value = queue
     mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.flow_stream_finished.return_value = False
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
     mass.config.get_raw_player_config_value.return_value = "disabled"
@@ -2086,6 +2108,7 @@ def _native_stream_handler_context(
     controller._log_request = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._active_output_streams = 0
+    controller._flow_mode_owners = {}
 
     response = MagicMock()
     response.prepare = AsyncMock()
@@ -2117,6 +2140,7 @@ def _flow_queue_item(item_id: str) -> Any:
         streamdetails=SimpleNamespace(
             fade_in=False,
             stream_error=False,
+            tail_overlap=None,
             uri=f"test://{item_id}",
             seek_position=0,
             duration=300,

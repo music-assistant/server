@@ -20,7 +20,7 @@ from aiohttp import ClientConnectorError, WSMsgType, web
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
-    is_request_from_ingress,
+    is_request_from_ingress_proxy,
 )
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class SendspinProxyHandler:
         self.logger.debug("Sendspin proxy connection from %s", request.remote)
 
         # Check for ingress authentication (HA handles auth via headers)
-        if is_request_from_ingress(request):
+        if is_request_from_ingress_proxy(request):
             user = await get_authenticated_user(request)
             if not user:
                 self.logger.warning(

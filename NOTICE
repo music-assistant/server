@@ -1,3 +1,21 @@
+Bundled service credentials
+music_assistant/helpers/app_secrets.json
+
+The official release builds of Music Assistant (the wheel and the container
+image, which the Home Assistant app also runs) include this file. It holds the
+API keys and other credentials for the services Music Assistant integrates
+with. The source code, including the source distribution, does not include it.
+
+This file is NOT covered by the Apache License 2.0. It is licensed solely for
+use by the official Music Assistant builds. You may not redistribute it
+separately from those builds, include it in any other build or package of Music
+Assistant, or use its credentials for any other purpose.
+
+Builds from source and third-party packages must use their own credentials, see
+music_assistant/helpers/app_vars.py.
+
+===============================================================================
+
 This product includes software developed by third parties.
 
 ===============================================================================

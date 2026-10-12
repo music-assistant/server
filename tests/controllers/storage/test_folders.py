@@ -361,3 +361,20 @@ async def test_nested_location_is_left_out_of_a_members_listing(
         with pytest.raises(InvalidDataError) as exc_info:
             await storage.list_folders(str(music / folder), manages_all_sources=False)
         assert exc_info.value.translation_key == "path_not_allowed"
+
+
+async def test_unavailable_locations_below_a_folder(
+    storage: StorageController, media_root: Path
+) -> None:
+    """Only the media locations strictly below the folder that can not be used are returned."""
+    gone = media_root / "zebra"
+    set_locations(
+        storage,
+        make_location(media_root, available=False),
+        make_location(media_root / "Albums"),
+        make_location(gone, available=False),
+        make_location(media_root / "Podcasts", usage=StorageUsage.CACHE, available=False),
+        make_location(media_root.parent / "outside", available=False),
+    )
+
+    assert await storage.get_unavailable_locations(str(media_root)) == [str(gone)]

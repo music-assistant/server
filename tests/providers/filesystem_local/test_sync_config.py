@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.media_items import Podcast
+from music_assistant_models.media_items import Podcast, ProviderMapping
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -14,7 +14,6 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
-    PODCAST_EPISODE_EXTENSIONS,
     TRACK_EXTENSIONS,
 )
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
@@ -205,27 +204,36 @@ class TestProcessItemRespectsConfig:
 
     @pytest.mark.asyncio
     async def test_podcasts_imported_when_sync_enabled(self) -> None:
-        """Podcast files are imported when podcast sync is enabled."""
+        """A podcast folder is imported, with its signature, when podcast sync is enabled."""
         provider = _create_provider(content_type="podcasts", sync_podcasts=True)
-        item = MagicMock()
-        item.ext = next(iter(PODCAST_EPISODE_EXTENSIONS))
-        item.absolute_path = "/media/Podcast/episode01.mp3"
-        item.relative_path = "Podcast/episode01.mp3"
-        item.file_size = 3000
-
-        mock_episode = MagicMock()
-        mock_episode.podcast = MagicMock(spec=Podcast)
-        provider._parse_podcast_episode = AsyncMock(return_value=mock_episode)  # type: ignore[method-assign]
+        item = FileSystemItem(
+            filename="Podcast",
+            relative_path="Podcast",
+            absolute_path="/media/Podcast",
+            is_dir=True,
+            checksum="folder-signature",
+        )
+        podcast = Podcast(
+            item_id="Podcast",
+            provider="filesystem_local--test",
+            name="Podcast",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="Podcast",
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--test",
+                )
+            },
+        )
+        provider.get_podcast = AsyncMock(return_value=podcast)  # type: ignore[method-assign]
         provider.mass.music.podcasts.add_item_to_library = AsyncMock()  # type: ignore[method-assign,misc]
 
-        with patch(
-            "music_assistant.providers.filesystem_local.async_parse_tags",
-            new_callable=AsyncMock,
-        ):
-            result = await provider._process_item_async(item, None)
+        result = await provider._process_item_async(item, None)
 
         assert result is True
-        provider.mass.music.podcasts.add_item_to_library.assert_called_once()
+        provider.get_podcast.assert_awaited_once_with("Podcast")
+        provider.mass.music.podcasts.add_item_to_library.assert_awaited_once_with(podcast)
+        assert {x.details for x in podcast.provider_mappings} == {"folder-signature"}
 
 
 def _classify(

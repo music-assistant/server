@@ -51,7 +51,7 @@ async def test_proxy_dials_the_webserver_url(
         patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
         patch.object(handler.mass, "http_session", create=True) as mock_session,
         patch(
-            "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress",
+            "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress_proxy",
             return_value=False,
         ),
     ):
@@ -88,7 +88,7 @@ class TestSendspinProxyRetry:
                 new_callable=AsyncMock,
             ) as mock_sleep,
             patch(
-                "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress",
+                "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress_proxy",
                 return_value=False,
             ),
         ):
@@ -119,7 +119,7 @@ class TestSendspinProxyRetry:
                 new_callable=AsyncMock,
             ),
             patch(
-                "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress",
+                "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress_proxy",
                 return_value=False,
             ),
         ):
@@ -143,7 +143,7 @@ class TestSendspinProxyRetry:
             patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
             patch.object(handler.mass, "http_session", create=True) as mock_session,
             patch(
-                "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress",
+                "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress_proxy",
                 return_value=False,
             ),
         ):

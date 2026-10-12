@@ -2205,7 +2205,9 @@ def _recording_lock(events: list[str]) -> MagicMock:
     """Build a get_player_lock mock that records every lock enter/exit in ``events``."""
 
     def _make(
-        player_id: str, _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        player_id: str,
+        _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+        strict: bool = False,  # noqa: ARG001
     ) -> AsyncMock:
         ctx = AsyncMock()
 
@@ -2229,7 +2231,9 @@ def _group_lock(group_id: str) -> tuple[MagicMock, asyncio.Lock]:
 
     @asynccontextmanager
     async def _ctx(
-        player_id: str, _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        player_id: str,
+        _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+        strict: bool = False,  # noqa: ARG001
     ) -> AsyncIterator[None]:
         if player_id != group_id:
             yield
@@ -3717,3 +3721,52 @@ class TestStaticMemberRejoin:
         await sgp._rejoin_members()
 
         assert sgp._attr_group_members == ["leader"]
+
+
+class TestNextTrackHandoverLocksTheLeader:
+    """The group's next-track handover commands the leader from under the leader's lock."""
+
+    def _setup_group(self, mass: MagicMock) -> tuple[SyncGroupPlayer, MagicMock]:
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        leader.state.supported_features = {PlayerFeature.ENQUEUE}
+        mass.players.get_player = _player_lookup({"leader": leader})
+        mass.players._handle_enqueue_next_media = AsyncMock()
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        return sgp, leader
+
+    @pytest.mark.asyncio
+    async def test_the_leader_is_enqueued_under_its_lock(self) -> None:
+        """The enqueue runs between taking and releasing the leader's playback lock."""
+        mass = _make_mock_mass()
+        sgp, _ = self._setup_group(mass)
+        events: list[str] = []
+        mass.players.get_player_lock = _recording_lock(events)
+        mass.players._handle_enqueue_next_media = AsyncMock(
+            side_effect=lambda *_args: events.append("enqueue")
+        )
+        media = MagicMock()
+
+        await sgp.enqueue_next_media(media)
+
+        mass.players._handle_enqueue_next_media.assert_awaited_once_with("leader", media)
+        assert events == ["lock:leader", "enqueue", "unlock:leader"]
+        # strict, so a busy leader fails the handover instead of running without the lock
+        mass.players.get_player_lock.assert_called_once_with(
+            "leader", PlayerLockPurpose.PLAYBACK, strict=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_leader_swapped_while_waiting_is_not_enqueued(self) -> None:
+        """A handover meant for a leader that was replaced while waiting is dropped."""
+        mass = _make_mock_mass()
+        sgp, _ = self._setup_group(mass)
+        new_leader = _make_mock_player("m2", provider_domain="wiim")
+        mass.players.get_player_lock = _lock_with_side_effect(
+            lambda: setattr(sgp, "sync_leader", new_leader)
+        )
+
+        await sgp.enqueue_next_media(MagicMock())
+
+        mass.players._handle_enqueue_next_media.assert_not_awaited()

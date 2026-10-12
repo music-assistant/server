@@ -32,21 +32,20 @@ async def test_auth_callback_serializes_script_values_safely(
         app=web.Application(),
     )
 
+    handle_oauth_callback = AsyncMock(
+        return_value=AuthResult(
+            success=True,
+            user=User(user_id="test", username="test", role=UserRole.USER),
+            return_url=return_url,
+        )
+    )
     with (
-        patch.object(
-            webserver.auth,
-            "handle_oauth_callback",
-            new=AsyncMock(
-                return_value=AuthResult(
-                    success=True,
-                    user=User(user_id="test", username="test", role=UserRole.USER),
-                    return_url=return_url,
-                )
-            ),
-        ),
+        patch.object(webserver.auth, "handle_oauth_callback", new=handle_oauth_callback),
         patch.object(webserver.auth, "create_token", new=AsyncMock(return_value=token)),
     ):
         response = await webserver._handle_auth_callback(request)
+
+    handle_oauth_callback.assert_awaited_once_with("homeassistant", "fakecode", "fakestate")
 
     redirect_url = build_code_redirect_url(return_url, token)
     safe_redirect_url = (

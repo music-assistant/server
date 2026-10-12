@@ -1921,6 +1921,27 @@ async def test_get_track_audio_metadata_none_without_relevant_analysis() -> None
 
 
 @pytest.mark.asyncio
+async def test_get_track_audio_metadata_asks_the_copy_playback_would_pick_first() -> None:
+    """The mappings are tried in playback order, so the best copy's analysis is returned."""
+    c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=128.0)])
+    track = _track_with_mapping(item_id="lofi")
+    track.provider_mappings.add(
+        ProviderMapping(
+            item_id="hifi",
+            provider_domain="test-provider",
+            provider_instance="test-provider",
+            audio_format=AudioFormat(content_type=ContentType.FLAC),
+        )
+    )
+
+    result = await c.get_track_audio_metadata(track)
+
+    assert result is not None
+    query = cast("AsyncMock", c.database.get_rows_from_query)
+    assert query.await_args_list[0].args[1]["item_id"] == "hifi"
+
+
+@pytest.mark.asyncio
 async def test_get_wave_form_returns_rms_bins() -> None:
     """wave_form returns the stored RMS energy bins as a plain list of floats."""
     rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32).tolist()

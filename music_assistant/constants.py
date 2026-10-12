@@ -48,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 85
+API_SCHEMA_VERSION: Final[int] = 87
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -65,6 +65,10 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
 # Port used by the internal ingress webserver for the HA integration
 INGRESS_SERVER_PORT: Final[int] = 8094
+# Fixed address of the HA Supervisor on the hassio network, the only legitimate ingress peer
+HASSIO_SUPERVISOR_IP: Final[str] = "172.30.32.2"
+# Origin of the hosted Music Assistant web app, used for Remote Access
+APP_MA_HOST: Final[str] = "https://app.music-assistant.io"
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
@@ -114,7 +118,7 @@ CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
 CONF_USERNAME: Final[str] = "username"
-CONF_PASSWORD: Final[str] = "password"
+CONF_PASSWORD: Final[str] = "password"  # noqa: S105 - config key
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
@@ -134,7 +138,7 @@ CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
 CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
-WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")
+WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - the wildcard addresses themselves
 # Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
 SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
@@ -222,7 +226,7 @@ def _default_background_scan_concurrency() -> int:
 
 
 # config default values
-DEFAULT_HOST: Final[str] = "0.0.0.0"
+DEFAULT_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - listen on all interfaces by default
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
@@ -765,7 +769,7 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
     ],
     default_value="default",
     advanced=True,
-    requires_reload=True,
+    requires_reload=False,
 )
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",
@@ -1077,7 +1081,7 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "radio",
     "airplay",
     "chromecast",
-    # bluetooth (bluesound, musiccast)
+    # bluetooth, used by bluesound and musiccast
     "bluetooth",
     "bluetooth audio",
     "bluetooth_audio",
@@ -1088,13 +1092,13 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "line_in",
     "aux",
     "tuner",
-    # tv / hdmi (sonos, bluesound)
+    # tv / hdmi, used by sonos and bluesound
     "tv",
     "tv input",
     "hdmi arc",
     # local/usb playback on device (musiccast)
     "usb",
-    # external (hass_players)
+    # external, used by hass_players
     "external",
 }
 

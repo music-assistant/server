@@ -110,6 +110,8 @@ def _report_played(
 
     queue = controller._queue_data[QUEUE_ID].queue
     queue.state = PlaybackState.PLAYING
+    # the stream server records an item once its first chunk went out to the player
+    controller.mark_item_served(QUEUE_ID, played.queue_item_id)
     controller._handle_playback_progress_report(queue, state(played, seconds_played), state(now, 0))
 
 

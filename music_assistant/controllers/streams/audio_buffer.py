@@ -15,11 +15,15 @@ import logging
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
-from contextlib import aclosing, suppress
+from contextlib import aclosing, nullcontext, suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.enums import (
+    ContentType,
     MediaType,
+    PlaybackState,
+    StreamType,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import AudioError
@@ -30,6 +34,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE,
     CONF_BUFFER_SIZE_DEFAULT,
     DSD_BUFFER_MAX_BYTES,
+    PLAYED_AUDIO_RETENTION,
     RADIO_BUFFER_SIZE,
     REALTIME_COLD_START_BANK,
     REALTIME_COLD_START_MAX_REMAINING,
@@ -38,8 +43,17 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
-from music_assistant.helpers.audio import decoded_pcm_format, is_dsd_stream
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.audio import (
+    arriving_audio_format,
+    decoded_pcm_format,
+    is_dsd_stream,
+)
+from music_assistant.helpers.ffmpeg import (
+    AUDIO_PROBE_TIMEOUT,
+    apply_stream_info,
+    get_ffmpeg_stream,
+    probe_audio_stream,
+)
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     request_priority,
@@ -71,7 +85,7 @@ class AudioBufferDiscarded(Exception):
     """
     Raised when a passive (analysis) reader requests a chunk evicted from the retained window.
 
-    Means the reader is a full window behind playback, so its session is dropped.
+    Means the reader fell behind the played audio the buffer keeps, so its session is dropped.
     """
 
 
@@ -111,6 +125,8 @@ class AudioBuffer:
         self._ready_at_chunk = ready_threshold  # updated by get_buffer to account for seek
         self._chunks: deque[bytes] = deque()
         self._discarded_chunks = 0
+        # furthest chunk a playback reader has requested
+        self._read_position = 0
         self._lock = asyncio.Lock()
         self._data_available = asyncio.Condition(self._lock)
         self._space_available = asyncio.Condition(self._lock)
@@ -126,6 +142,9 @@ class AudioBuffer:
         self.ready = asyncio.Event()
         self._cancel_callbacks: list[CancelCallback] = []
         self._ready_wait_lock = asyncio.Lock()
+        # media second currently heard from this buffer (None if unknown),
+        # so played audio is retained relative to what the listener hears
+        self.playback_position: Callable[[AudioBuffer], float | None] | None = None
 
     # -- Properties --
 
@@ -264,7 +283,7 @@ class AudioBuffer:
         :param chunk_number: Absolute chunk index to read.
         :raises AudioBufferEOF: the stream ended before this chunk.
         :raises AudioBufferDiscarded: the chunk has been evicted from the retained window (the
-            reader is a full window behind playback) or the buffer was torn down.
+            reader fell behind the played audio the buffer keeps) or the buffer was torn down.
         """
         async with self._data_available:
             while True:
@@ -413,6 +432,7 @@ class AudioBuffer:
         async with self._lock:
             self._chunks = deque()
             self._discarded_chunks = 0
+            self._read_position = 0
             self._eof_received = False
             self._cancelled = True
             self._producer_error = None
@@ -449,6 +469,8 @@ class AudioBuffer:
             all of its audio. Not called when an existing buffer is reused.
         :raises AudioError: If the buffer does not become ready, wrapping the typed
             producer error (e.g. ProviderStreamLimitError) when there is one.
+        :raises ProviderStreamLimitError: If a source in an unknown format can not get a
+            source-stream slot to detect that format within the timeout.
         """
         log_prefix = f"get_buffer[{reason}]" if reason else "get_buffer"
         # the producer may spend its source wait before the first byte arrives,
@@ -496,6 +518,8 @@ class AudioBuffer:
                     )
                 return existing_buffer
 
+        if _needs_format_probe(streamdetails):
+            await _probe_source_format(mass, streamdetails, source_wait_timeout)
         audio_buffer, buffer_seek_seconds = _new_buffer(
             mass, streamdetails, seek_position_ms, log_prefix, session_start=reason == "prepare"
         )
@@ -591,7 +615,7 @@ class AudioBuffer:
                 )
                 return
 
-            # wait for the consumer to free space when buffer is full
+            # wait for room when the buffer is full
             await self._wait_for_space()
 
             chunk_position = self._discarded_chunks + len(self._chunks)
@@ -643,7 +667,7 @@ class AudioBuffer:
         """
         Get one second of audio at the given chunk position.
 
-        Waits until the chunk is available. Discards old chunks when full.
+        Waits until the chunk is available.
 
         :raises AudioBufferEOF: If EOF is reached or the buffer was cleared.
         :raises AudioError: If the chunk has been discarded or the producer failed.
@@ -694,6 +718,11 @@ class AudioBuffer:
             )
             raise AudioError(msg)
 
+        if chunk_number > self._read_position:
+            # lets a producer blocked on a full window evict audio played long enough ago
+            self._read_position = chunk_number
+            self._space_available.notify_all()
+
         buffer_index = chunk_number - self._discarded_chunks
         while buffer_index >= len(self._chunks):
             # Producer errors also set EOF after buffered data; preserve the real failure.
@@ -701,39 +730,51 @@ class AudioBuffer:
                 raise self._producer_error
             if self.cancelled or self._eof_received:
                 raise AudioBufferEOF
-            # if the buffer is full and we need a chunk that hasn't arrived yet,
-            # the producer is blocked waiting for space — evict to unblock it
-            if len(self._chunks) >= self.max_size_seconds:
-                self._chunks.popleft()
-                self._discarded_chunks += 1
-                buffer_index = chunk_number - self._discarded_chunks
-                self._space_available.notify_all()
-                continue
             await self._data_available.wait()
             buffer_index = chunk_number - self._discarded_chunks
 
-        result = self._chunks[buffer_index]
+        # another reader of this buffer can move playback on far enough to evict the chunk
+        # this one was waiting for
+        if buffer_index < 0:
+            msg = (
+                f"Chunk {chunk_number} has been discarded "
+                f"(buffer starts at {self._discarded_chunks})"
+            )
+            raise AudioError(msg)
+        return self._chunks[buffer_index]
 
-        # free space for the producer when buffer is at capacity,
-        # but only if the producer is still running and needs space
-        if (
-            len(self._chunks) >= self.max_size_seconds
-            and not self._eof_received
-            and self._producer_task
-            and not self._producer_task.done()
-        ):
-            self._chunks.popleft()
-            self._discarded_chunks += 1
-            self._space_available.notify_all()
-
-        return result
+    @property
+    def _retain_seconds(self) -> int:
+        """Return how many seconds of played audio a full window keeps for a skip back."""
+        # a fraction of the window, so most of it stays available for audio ahead
+        return min(PLAYED_AUDIO_RETENTION, self.max_size_seconds // 5)
 
     async def _wait_for_space(self) -> None:
-        """Wait until buffer has space. Must be called while holding _lock."""
+        """
+        Wait until buffer has space. Must be called while holding _lock.
+
+        A seekable buffer makes room by evicting audio played more than the retained
+        seconds ago, and otherwise waits for playback to move on.
+        """
         while len(self._chunks) >= self.max_size_seconds:
             if self._cancelled:
                 return
+            if self.mode == BufferMode.SEEKABLE and self._discarded_chunks < self._evict_floor():
+                self._chunks.popleft()
+                self._discarded_chunks += 1
+                continue
             await self._space_available.wait()
+
+    def _evict_floor(self) -> int:
+        """Return the oldest chunk a full seekable window must keep."""
+        read = self._read_position
+        keep_from = read
+        if self.playback_position and (position := self.playback_position(self)) is not None:
+            keep_from = min(read, int(position))
+        min_ahead = max(self._retain_seconds, self.max_size_seconds - 2 * self._retain_seconds, 1)
+        # the second term keeps room ahead of the reader however far it runs ahead of
+        # playback, so a reader waiting on the producer is never deadlocked
+        return max(keep_from - self._retain_seconds, read - self.max_size_seconds + min_ahead)
 
     def _attach_producer_task(self, task: asyncio.Task[Any]) -> None:
         """Attach a background task that fills the buffer."""
@@ -855,8 +896,9 @@ def _new_buffer(
         ):
             # the first boundary comes before the player could build up a lead of its
             # own, so hand it one. A preload at a boundary never banks: with the
-            # source's slot only freed by the item that just ended, it would just
-            # widen the gap the player has to bridge there.
+            # source's slot only freed by the item that just ended, it would just take
+            # more of the tail from the fade, or widen the gap the player has to bridge
+            # where there is no fade.
             ready_threshold = max(ready_threshold, REALTIME_COLD_START_BANK)
     elif crossfade_enabled:
         ready_threshold = 8
@@ -903,6 +945,10 @@ def _new_buffer(
     seek_chunk = seek_position_ms // 1000
     audio_buffer._ready_at_chunk = seek_chunk + ready_threshold
     streamdetails.buffer = audio_buffer
+    if streamdetails.queue_id:
+        audio_buffer.playback_position = partial(
+            _queue_playback_position, mass, streamdetails.queue_id
+        )
 
     # attach analyze jobs for ahead-of-time processing
     # skip AudioSource and SoundEffect — they should not feed the long-running analyzer flow
@@ -942,3 +988,85 @@ def _has_single_source_slot(mass: MusicAssistant, streamdetails: StreamDetails) 
     # the exact instance: a lookup by domain may land on a sibling instance's budget
     provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
     return isinstance(provider, MusicProvider) and provider.max_concurrent_streams == 1
+
+
+def _needs_format_probe(streamdetails: StreamDetails) -> bool:
+    """Return whether the source must be probed before a buffer format can be chosen for it."""
+    arriving_format = arriving_audio_format(streamdetails)
+    return (
+        arriving_format.content_type == ContentType.UNKNOWN
+        and arriving_format.codec_type == ContentType.UNKNOWN
+        and streamdetails.stream_type in (StreamType.HTTP, StreamType.HLS, StreamType.LOCAL_FILE)
+        # the parts of a multi-part stream are opened by a concat demuxer of their own
+        and isinstance(streamdetails.path, str)
+        # a live source is left alone: probing it opens a second session on it
+        and not streamdetails.is_realtime
+        and streamdetails.media_type
+        in (MediaType.TRACK, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+        and not is_dsd_stream(streamdetails)
+    )
+
+
+async def _probe_source_format(
+    mass: MusicAssistant, streamdetails: StreamDetails, source_wait_timeout: float | None
+) -> None:
+    """
+    Detect the arriving format of a source that does not declare it.
+
+    Updates the arriving format of the streamdetails in place, and leaves it untouched
+    when the source can not be probed.
+
+    :param mass: The MusicAssistant instance.
+    :param streamdetails: The stream details of the source.
+    :param source_wait_timeout: Maximum seconds to wait for a free source-stream slot,
+        or None to wait without a timeout.
+    :raises ProviderStreamLimitError: If the provider has no free slot within the timeout.
+    """
+    input_path = streamdetails.path
+    assert isinstance(input_path, str)  # for type checking
+    # the probe opens the source just like the producer does, so it needs a slot as well
+    provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
+    stream_slot = (
+        provider.acquire_stream_slot(source_wait_timeout)
+        if isinstance(provider, MusicProvider)
+        else nullcontext()
+    )
+    async with stream_slot:
+        if streamdetails.stream_type == StreamType.HLS:
+            try:
+                async with asyncio.timeout(AUDIO_PROBE_TIMEOUT):
+                    input_path = (await mass.streams.audio.get_hls_substream(input_path)).path
+            except Exception as err:
+                LOGGER.debug("Unable to resolve HLS substream of %s: %s", streamdetails.uri, err)
+                return
+        stream_info = await probe_audio_stream(input_path, streamdetails.extra_input_args)
+    if stream_info is None:
+        LOGGER.debug("Unable to detect the audio format of %s", streamdetails.uri)
+        return
+    audio_format = arriving_audio_format(streamdetails)
+    apply_stream_info(audio_format, stream_info)
+    LOGGER.debug("Detected audio format of %s: %s", streamdetails.uri, audio_format)
+
+
+def _queue_playback_position(
+    mass: MusicAssistant, queue_id: str, buffer: AudioBuffer
+) -> float | None:
+    """
+    Return the media second the queue is playing from the given buffer.
+
+    :param mass: The MusicAssistant instance.
+    :param queue_id: The queue the buffer was created for.
+    :param buffer: The buffer to report the position for.
+    :return: The position, or None when the queue is not currently playing this buffer.
+    """
+    queue = mass.player_queues.get(queue_id)
+    if (
+        queue is None
+        or not queue.active
+        or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+        or queue.current_item is None
+        or queue.current_item.streamdetails is None
+        or queue.current_item.streamdetails.buffer is not buffer
+    ):
+        return None
+    return queue.corrected_elapsed_time

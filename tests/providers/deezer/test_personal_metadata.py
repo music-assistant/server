@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock, call, patch
 
@@ -24,12 +23,9 @@ from music_assistant.controllers.metadata.enrichment import MetadataEnrichmentMi
 from music_assistant.providers.deezer.media import DeezerMediaManager
 from music_assistant.providers.deezer.parsers import parse_gw_track
 from music_assistant.providers.deezer.provider import SUPPORTED_FEATURES, DeezerProvider
-from tests.conftest import _music_mass_context
 from tests.providers.deezer.test_personal_tracks import COVER_MD5, _upload
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from music_assistant.mass import MusicAssistant
 
 
@@ -62,11 +58,10 @@ def _build_provider(mass: MusicAssistant, instance_id: str = "deezer--sync") -> 
 
 
 @pytest.fixture
-async def sync_provider(tmp_path: Path) -> AsyncGenerator[DeezerProvider]:
+async def sync_provider(music_mass: MusicAssistant) -> DeezerProvider:
     """Create an isolated provider with a real library, config and cache."""
-    async with _music_mass_context(tmp_path) as mass:
-        await mass.cache._setup_database()
-        yield _build_provider(mass)
+    await music_mass.cache._setup_database()
+    return _build_provider(music_mass)
 
 
 async def _seed_legacy_track(provider: DeezerProvider, song: dict[str, Any]) -> Track:

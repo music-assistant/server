@@ -88,7 +88,7 @@ class PacingProfile(StrEnum):
     # Connect, which is an AUDIO_SOURCE and takes LOW_LATENCY. Such a source delivers
     # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
     # A pace close to playback speed leaves most of that on the server. The burst is
-    # the least a player holds when a fade waits for the next track's source to start.
+    # the least a player holds at a session start, before a slow source earned it a lead.
     NEAR_REALTIME = "near_realtime"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay
@@ -167,6 +167,13 @@ CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 
+# Shortest declared tail overlap (voice over) worth mixing; below this the boundary
+# is a plain cut.
+MIN_VOICE_OVER_DURATION: Final[float] = 1.0
+# Seconds over which the music under a voice over ramps back to full level once the
+# voice has ended.
+VOICE_OVER_RAMP: Final[float] = 0.4
+
 # Maximum wait for a provider source-stream slot before a speculative attempt gives up.
 STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
 
@@ -180,6 +187,10 @@ STREAM_SLOT_MATCH_TIMEOUT: Final[float] = 5.0
 # Maximum seconds we wait for the buffer to catch up on a forward seek.
 # Beyond this, the stream is re-fetched at the seek position.
 SEEK_WAIT_THRESHOLD: Final[int] = 20
+
+# Seconds of already-played audio a seekable buffer keeps within its window, so a skip
+# back is served without refetching.
+PLAYED_AUDIO_RETENTION: Final[int] = 60
 
 # Streams webserver default port
 DEFAULT_PORT: Final[int] = 8097

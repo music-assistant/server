@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
@@ -963,21 +962,15 @@ async def test_token_form_hints_where_the_token_lives() -> None:
     await task
 
 
-async def test_token_offered_next_to_pin() -> None:
-    """A device offering pairing_psk alongside a PIN lets the operator pick the token."""
-    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE), _desc(PairMethod.PAIRING_PSK)])
+async def test_qr_only_dynamic_pin_falls_back_to_token() -> None:
+    """A dynamic PIN offered only as a QR code falls back to the token form, which retries."""
+    qr_only = DynamicPairMethodDescriptor(out_channels=["display"], formats=["qr_code"])
+    api = _FakeApi([(PairMethod.DYNAMIC_PAIRING_CODE, qr_only), _desc(PairMethod.PAIRING_PSK)])
     provider = _FakeProvider(api, token_errors=[SecurityActionError("pairing_error_token_invalid")])
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="select_method")
-    assert [option.value for option in step.entries[0].options] == [
-        PAIR_METHOD_PIN,
-        PAIR_METHOD_TOKEN,
-    ]
-    session.handle_submit({CONF_PAIRING_METHOD: PAIR_METHOD_TOKEN})
-
     await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
     session.handle_submit({CONF_PAIRING_TOKEN: "SP:0BAD"})
     step = await _wait_step(
@@ -1019,7 +1012,7 @@ async def test_unencrypted_connection_aborts() -> None:
 
 
 def test_pairing_method_options_derivation() -> None:
-    """Derive PIN choices, followed by the token option whenever pairing_psk is offered."""
+    """Derive PIN choices, offering the token option only when no PIN method is usable."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
     provider = _FakeProvider(api, pairing_config=_BOTH_PIN_METHODS)
     player = _make_player(api, provider)
@@ -1030,27 +1023,14 @@ def test_pairing_method_options_derivation() -> None:
         PAIR_METHOD_STATIC_PIN,
     ]
 
-    api_all = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE), _desc(PairMethod.PAIRING_PSK)])
-    provider_all = _FakeProvider(
-        api_all,
-        pairing_config=replace(_BOTH_PIN_METHODS, pairing_psk=PairingMethodConfig(enabled=True)),
-    )
-    player_all = _make_player(api_all, provider_all)
-    assert player_all._pairing_method_options(cast("SendspinProvider", provider_all)) == [
-        PAIR_METHOD_DYNAMIC_PIN,
-        PAIR_METHOD_STATIC_PIN,
-        PAIR_METHOD_TOKEN,
-    ]
-
-    # The token follows the PIN option whenever the device also advertises pairing_psk.
+    # The token stays hidden while a PIN is usable, even though the device advertises pairing_psk.
     api_single = _FakeApi(
         [_desc(PairMethod.STATIC_PAIRING_CODE), _desc(PairMethod.PAIRING_PSK)], unpaired_access=True
     )
     provider_single = _FakeProvider(api_single)
     player_single = _make_player(api_single, provider_single)
     assert player_single._pairing_method_options(cast("SendspinProvider", provider_single)) == [
-        PAIR_METHOD_PIN,
-        PAIR_METHOD_TOKEN,
+        PAIR_METHOD_PIN
     ]
 
     # A token-only device goes directly to the token entry form.
