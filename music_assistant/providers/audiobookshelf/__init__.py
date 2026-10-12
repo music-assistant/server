@@ -73,7 +73,7 @@ from aioaudiobookshelf.schema.shelf import (
 )
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
-from aiohttp import web
+from aiohttp import hdrs, web
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ProviderConfig,
@@ -137,6 +137,9 @@ from .constants import (
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    PART_STREAM_CHUNK_SIZE,
+    PART_STREAM_HEADERS,
+    PART_STREAM_TIMEOUT,
     STREAMDETAILS_EXPIRATION_S,
     USER_UPDATED_DEBOUNCE_SECONDS,
     AbsBrowseItemsBookTranslationKey,
@@ -244,8 +247,6 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
             pagination_items_per_page=30,  # audible provider goes with 50 for pagination
             timeout=AIOHTTP_TIMEOUT,
         )
-        # If we are configured with a non-expiring API key or not.
-        self.is_token_user = False
         try:
             if token_api is not None or token_old is not None:
                 _token = token_api if token_api is not None else token_old
@@ -254,7 +255,6 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                     self._client,
                     self._client_socket,
                 ) = await aioabs.get_user_and_socket_client_by_token(session_config=session_config)
-                self.is_token_user = True
             else:
                 self._client, self._client_socket = await aioabs.get_user_and_socket_client(
                     session_config=session_config, username=username, password=password
@@ -942,7 +942,6 @@ for more details.
         We always use a custom stream type, also for single file, such
         that we can handle an ffmpeg error and refresh our tokens.
         """
-        abs_base_url = str(self.get_setup_value(CONF_URL))
         tracks = abs_session.audio_tracks
 
         if len(tracks) == 0:
@@ -953,21 +952,13 @@ for more details.
             content_type = ContentType.try_parse(abs_session.audio_tracks[0].metadata.ext)
 
         file_parts: list[MultiPartPath] = []
-        if self.is_token_user:
-            self.logger.debug("Token User - Streams are direct.")
         for idx, track in enumerate(tracks):
-            if self.is_token_user:
-                # an api key is long-lived
-                stream_url = f"{abs_base_url}{track.content_url}?token={self._client.token}"
-            else:
-                # to ensure token is always valid, we create a dynamic url
-                # this ensures that we always get a fresh token on each part
-                # without having to deal with a custom stream etc.
-                # we also use this for a single track, otherwise we can't seek
-                stream_url = (
-                    f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
-                    f"session_id={abs_session.id_}&part_id={idx}"
-                )
+            # each part goes through our proxy, which fetches it with a fresh token,
+            # so no token ends up in a url; also used for a single track to allow seeking
+            stream_url = (
+                f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
+                f"session_id={abs_session.id_}&part_id={idx}"
+            )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
         return StreamDetails(
@@ -1036,13 +1027,12 @@ for more details.
             return session
 
     @handle_refresh_token
-    async def _handle_session_part_request(self, request: web.Request) -> web.Response:
+    async def _handle_session_part_request(self, request: web.Request) -> web.StreamResponse:
         """
         Handle dynamic audiobook part stream request.
 
-        We redirect to the actual stream url with token.
-        This is done because the token might expire, so we need to
-        generate a fresh url on each part.
+        The part is proxied rather than redirected to, because abs needs the token, which
+        must not leave the server. Fetching it per request also keeps the token fresh.
         """
         if not (session_id := request.query.get("session_id")):
             return web.Response(status=400, text="Missing session_id")
@@ -1061,9 +1051,28 @@ for more details.
             return web.Response(status=404, text="Part not found")
 
         base_url = str(self.get_setup_value(CONF_URL))
-        stream_url = f"{base_url}{part_track.content_url}?token={self._client.token}"
-        # redirect to the actual stream url
-        raise web.HTTPFound(location=stream_url)
+        headers = self._client.session_config.headers
+        if range_header := request.headers.get(hdrs.RANGE):
+            headers[hdrs.RANGE] = range_header
+        async with self.mass.http_session.get(
+            f"{base_url}{part_track.content_url}",
+            headers=headers,
+            ssl=self._client.session_config.verify_ssl,
+            timeout=PART_STREAM_TIMEOUT,
+        ) as abs_response:
+            response = web.StreamResponse(
+                status=abs_response.status,
+                headers={
+                    name: abs_response.headers[name]
+                    for name in PART_STREAM_HEADERS
+                    if name in abs_response.headers
+                },
+            )
+            await response.prepare(request)
+            async for chunk in abs_response.content.iter_chunked(PART_STREAM_CHUNK_SIZE):
+                await response.write(chunk)
+            await response.write_eof()
+            return response
 
     @handle_refresh_token
     async def get_resume_position(
