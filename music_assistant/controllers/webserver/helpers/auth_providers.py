@@ -21,9 +21,8 @@ from music_assistant_models.errors import AuthenticationFailed
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.pkce import pkce_challenge
 from music_assistant.helpers.util import is_public_url, join_task
-
-from .login_flow import pkce_challenge
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant

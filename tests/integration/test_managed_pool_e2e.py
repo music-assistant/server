@@ -17,7 +17,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Playlist
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.controllers.player_queues import managed_pool
 from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_MAX,
@@ -40,7 +40,7 @@ TEST_USER = "e2e-user"
 async def _insert_play(mass: MusicAssistant, item_id: str, timestamp: int, userid: str) -> None:
     """Insert a fully-played track row into the playlog for the given user."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": "test",
@@ -215,7 +215,7 @@ async def test_recency_denied_track_rotates_to_back_not_dropped(e2e_mass: MusicA
 
     # once the recency block lifts, the held tracks get their second chance and the source exhausts
     await e2e_mass.music.database.delete(
-        DB_TABLE_PLAYLOG, {"provider": "test", "userid": TEST_USER}
+        DB_TABLE_MEDIA_PROGRESS, {"provider": "test", "userid": TEST_USER}
     )
     pool2 = await e2e_mass.player_queues._managed_pool.fill(queue_id, is_initial=False)
     ids2 = sorted(track.item_id for track in pool2)

@@ -35,6 +35,7 @@ from music_assistant.helpers.playlists import (
     PlaylistItem,
     ProviderMappingInfo,
     generate_m3u,
+    sanitize_playlist_filename,
 )
 from music_assistant.providers.builtin import BuiltinProvider
 
@@ -2383,7 +2384,7 @@ async def test_create_playlist_generation_survives_inode_reuse(tmp_path: Path) -
     prov_any.get_playlist = AsyncMock(return_value=_make_playlist("Test"))
 
     await prov.create_playlist("Test", {MediaType.TRACK})
-    playlist_id = prov._sanitize_playlist_id("Test")
+    playlist_id = sanitize_playlist_filename("Test")
     playlist_file = tmp_path / f"{playlist_id}.m3u"
     first_generation = await prov._get_playlist_generation(playlist_id)
     assert first_generation == 1

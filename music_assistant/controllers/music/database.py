@@ -32,8 +32,10 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
+    DB_TABLE_LEGACY_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PLAYLISTS,
-    DB_TABLE_PLAYLOG,
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
@@ -116,7 +118,7 @@ class MusicDatabaseSetupMixin:
         update_current_task_progress_text("Cleaning old playlog entries")
         # Remove playlog entries older than 90 days
         await self.database.delete_where_query(
-            DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
+            DB_TABLE_MEDIA_PROGRESS, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
         )
         # db tables cleanup
         for ctrl in (
@@ -152,7 +154,7 @@ class MusicDatabaseSetupMixin:
                 f"media_type = '{ctrl.media_type}' AND provider = 'library' "
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
-            await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
+            await self.mass.music.database.delete_where_query(DB_TABLE_MEDIA_PROGRESS, where_clause)
             # Cleanup removed db items from the favorites
             query = (
                 f"media_type = '{ctrl.media_type}' "
@@ -275,8 +277,11 @@ class MusicDatabaseSetupMixin:
                     [type] TEXT
                 );"""
         )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLOG}(
+        if not await self.database.get_row(
+            "sqlite_master", {"type": "table", "name": DB_TABLE_LEGACY_PLAYLOG}
+        ):
+            await self.database.execute(
+                f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_MEDIA_PROGRESS}(
                 [id] INTEGER PRIMARY KEY AUTOINCREMENT,
                 [item_id] TEXT NOT NULL,
                 [provider] TEXT NOT NULL,
@@ -292,6 +297,21 @@ class MusicDatabaseSetupMixin:
                 [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
                 [playback_speed] REAL NOT NULL DEFAULT 1.0,
                 UNIQUE(item_id, provider, media_type, userid));"""
+            )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}(
+                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [item_id] TEXT NOT NULL,
+                [provider] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [userid] TEXT NOT NULL,
+                [queue_id] TEXT,
+                [timestamp] INTEGER NOT NULL,
+                [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                [name] TEXT NOT NULL,
+                [image] json,
+                [artists] json
+            );"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_FAVORITES}(
@@ -689,20 +709,28 @@ class MusicDatabaseSetupMixin:
         )
         # unique index on playlog table
         await self.database.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_unique_idx "
-            f"on {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid);"
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_MEDIA_PROGRESS}_unique_idx "
+            f"on {DB_TABLE_MEDIA_PROGRESS}(item_id,provider,media_type,userid);"
         )
         # speed up recency lookups (smart shuffle / dedup) by user and time window
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_userid_timestamp_idx "
-            f"on {DB_TABLE_PLAYLOG}(userid,timestamp);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_MEDIA_PROGRESS}_userid_timestamp_idx "
+            f"on {DB_TABLE_MEDIA_PROGRESS}(userid,timestamp);"
         )
         # serves the podcast episode resume lookup, which no existing index can: they all
         # lead with item_id or userid, neither of which that query filters on. Column order
         # matches its filter, so with a userid it needs no sort for the ORDER BY either
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_provider_media_type_idx "
-            f"on {DB_TABLE_PLAYLOG}(provider,media_type,userid,timestamp);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_MEDIA_PROGRESS}_provider_media_type_idx "
+            f"on {DB_TABLE_MEDIA_PROGRESS}(provider,media_type,userid,timestamp);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_idx "
+            f"on {DB_TABLE_PLAY_HISTORY}(userid,timestamp);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_media_timestamp_idx "
+            f"on {DB_TABLE_PLAY_HISTORY}(userid,media_type,timestamp);"
         )
         await self.database.commit()
 

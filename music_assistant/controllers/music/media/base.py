@@ -58,7 +58,7 @@ from music_assistant.constants import (
     DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     MASS_LOGGER_NAME,
@@ -450,7 +450,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         # cleanup playlog table
         await self.mass.music.database.delete(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "media_type": self.media_type.value,
                 "item_id": db_id,
@@ -461,7 +461,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         await self.mass.music.favorites.remove_item(self.media_type, db_id)
         for prov_mapping in library_item.provider_mappings:
             await self.mass.music.database.delete(
-                DB_TABLE_PLAYLOG,
+                DB_TABLE_MEDIA_PROGRESS,
                 {
                     "media_type": self.media_type.value,
                     "item_id": prov_mapping.item_id,
@@ -1530,7 +1530,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         # cleanup playlog table
         await self.mass.music.database.delete(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "media_type": self.media_type.value,
                 "item_id": provider_item_id,
@@ -3355,14 +3355,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         }
         await self.mass.music.database.execute_write(
             f"""
-            INSERT INTO {DB_TABLE_PLAYLOG}(
+            INSERT INTO {DB_TABLE_MEDIA_PROGRESS}(
                 item_id, provider, media_type, name, image, artists, timestamp,
                 fully_played, seconds_played, userid, queue_id, user_initiated, playback_speed
             )
             SELECT
                 :target_id, provider, media_type, name, image, artists, timestamp,
                 fully_played, seconds_played, userid, queue_id, user_initiated, playback_speed
-            FROM {DB_TABLE_PLAYLOG}
+            FROM {DB_TABLE_MEDIA_PROGRESS}
             WHERE item_id = :source_id AND provider = 'library' AND media_type = :media_type
             ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET
                 name = CASE WHEN excluded.timestamp > timestamp THEN excluded.name ELSE name END,
@@ -3388,7 +3388,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             values,
         )
         await self.mass.music.database.delete(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "item_id": source_id,
                 "provider": "library",

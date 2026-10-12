@@ -48,6 +48,7 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     AuthTransport,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
+from music_assistant.helpers.pkce import pkce_challenge
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1001,7 +1002,7 @@ async def test_ha_login_exchange_refuses_a_user_that_may_not_sign_in(
         AuthTransport.REMOTE,
         "https://app.music-assistant.io/auth/callback/",
         redirect_target="app",
-        client_code_challenge=login_flow.pkce_challenge(verifier),
+        client_code_challenge=pkce_challenge(verifier),
         idp_code_verifier="ha_verifier",
     )
     hass_provider = _ready_hass_provider(
