@@ -120,11 +120,13 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
         return {"<weather_hourly>": f"fresh weather {self.weather_calls}"}
 
     async def _get_tts_engine(self, engine_uid: str | None = None) -> TTSEngine:
-        """Return a stand-in for the host's engine, or for the default when it is unavailable."""
-        available = engine_uid and engine_uid not in self.unavailable_tts_engines
-        engine = MagicMock(spec=TTSEngine)
-        engine.uid = engine_uid if available else self.get_setup_value(CONF_TTS_ENGINE)
-        return engine
+        """Return a stand-in for the first available engine: the host's, then the default."""
+        for uid in (engine_uid, self.get_setup_value(CONF_TTS_ENGINE)):
+            if uid and uid not in self.unavailable_tts_engines:
+                engine = MagicMock(spec=TTSEngine)
+                engine.uid = uid
+                return engine
+        raise MusicAssistantError("No text-to-speech engine available")
 
     async def _render_tts_media(
         self,
@@ -733,13 +735,22 @@ async def test_three_failed_renders_in_a_row_pause_the_breaks(
     )
 
 
-async def test_the_pause_names_the_engine_that_rendered_after_a_fallback(
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize(
+    ("unavailable", "named_engine"),
+    [
+        # the default stands in for the host's engine and is the one named
+        ({"tts.rick_voice"}, "TTS engine 'engine-x'"),
+        # nothing resolves, so the engine the host asked for is named
+        ({"tts.rick_voice", "engine-x"}, "TTS engine 'tts.rick_voice'"),
+    ],
+)
+async def test_the_pause_names_the_engine_that_resolved(
+    unavailable: set[str], named_engine: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A host whose engine is unavailable renders on the default, and the pause names that one."""
+    """The pause names the engine that stood in for the host's, or the host's own when none did."""
     renderer, state = _failing_dj_renderer(3, **{ATTR_HOST_ID: "rick"})
     renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
-    renderer.unavailable_tts_engines = {"tts.rick_voice"}
+    renderer.unavailable_tts_engines = unavailable
 
     with caplog.at_level(logging.WARNING, logger="tests.ai_radio.rendering"):
         await _fail_renders(renderer, "djlive_001", "djlive_002", "djlive_003")
@@ -747,8 +758,7 @@ async def test_the_pause_names_the_engine_that_rendered_after_a_fallback(
     assert state.render_health.cooling_down(asyncio.get_running_loop().time())
     warnings = _pause_warnings(caplog)
     assert len(warnings) == 1
-    assert "TTS engine 'engine-x'" in warnings[0]
-    assert "tts.rick_voice" not in warnings[0]
+    assert named_engine in warnings[0]
 
 
 async def test_a_successful_render_resets_the_failure_count() -> None:
@@ -1267,6 +1277,23 @@ async def test_the_engine_reference_is_measured_once_and_reused() -> None:
 
     assert len(renderer.measure_calls) == 1
     assert first.data.gain_db == second.data.gain_db
+
+
+async def test_a_host_whose_engine_fell_back_shares_the_default_reference() -> None:
+    """A host whose engine fell back to the default levels against the default's measurement."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
+    renderer.unavailable_tts_engines = {"tts.rick_voice"}
+    _attach_queue(
+        renderer, [_clip_item("sess_001"), _clip_item("sess_002", **{ATTR_HOST_ID: "rick"})]
+    )
+    _attach_normalization(renderer)
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    await renderer.get_stream_details("sess_002", MediaType.SOUND_EFFECT)
+
+    assert len(renderer.measure_calls) == 1
 
 
 async def test_a_short_clip_levels_itself_but_never_becomes_the_reference() -> None:

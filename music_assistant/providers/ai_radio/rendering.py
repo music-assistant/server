@@ -418,9 +418,9 @@ class AIRadioRenderMixin:
             duration = await self._probe_duration(path)
         except Exception as err:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
-            # the host's engine may have been unavailable and the default spoke in its place, so
-            # the pause names the engine that resolved, or the configured one when none did
-            named = engine.uid if engine else engine_uid or self.get_setup_value(CONF_TTS_ENGINE)
+            # the default stands in for an unavailable host engine, so the pause names the engine
+            # that resolved, or the configured one when none did
+            named = engine.uid if engine else (engine_uid or self.get_setup_value(CONF_TTS_ENGINE))
             self._record_render_failure(queue_item, f"TTS engine '{named}'")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
         if (health := self._render_health(queue_item)) is not None:
