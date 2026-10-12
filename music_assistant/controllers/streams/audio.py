@@ -3217,6 +3217,17 @@ class StreamsAudio:
                     queue_item.name,
                 )
                 return False
+            if not self._may_mix_across_sample_rates(
+                player_id, flow_mode, sample_rate, next_sample_rate
+            ):
+                self.logger.debug(
+                    "Skipping the tail overlap of %s: the player does not play gapless across "
+                    "different sample rates (%s vs %s)",
+                    queue_item.name,
+                    sample_rate,
+                    next_sample_rate,
+                )
+                return False
             return True
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
@@ -3259,16 +3270,8 @@ class StreamsAudio:
             return False
 
         # check if we're allowed to crossfade on different sample rates
-        if (
-            not flow_mode
-            and sample_rate
-            and next_sample_rate
-            and sample_rate != next_sample_rate
-            and not self.mass.config.get_raw_player_config_value(
-                player_id,
-                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
-                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
-            )
+        if not self._may_mix_across_sample_rates(
+            player_id, flow_mode, sample_rate, next_sample_rate
         ):
             self.logger.debug(
                 "Skipping crossfade: player(protocol) does not support gapless playback "
@@ -4665,6 +4668,33 @@ class StreamsAudio:
                 played / pcm_format.pcm_sample_size,
                 queue_item.name,
             )
+
+    def _may_mix_across_sample_rates(
+        self,
+        player_id: str,
+        flow_mode: bool,
+        sample_rate: int | None,
+        next_sample_rate: int | None,
+    ) -> bool:
+        """
+        Return whether a boundary mix may span two items that stream at different rates.
+
+        :param player_id: The player the items play on.
+        :param flow_mode: Whether the items play on one flow stream.
+        :param sample_rate: PCM sample rate of the outgoing item, when known.
+        :param next_sample_rate: PCM sample rate of the incoming item, when known.
+        """
+        # a flow stream plays every item at one rate; between item streams the rate
+        # switch lands inside the mix, so the player has to play gapless across rates
+        if flow_mode or not sample_rate or not next_sample_rate or sample_rate == next_sample_rate:
+            return True
+        return bool(
+            self.mass.config.get_raw_player_config_value(
+                player_id,
+                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
+                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
+            )
+        )
 
     def _select_buffered_crossfade(
         self,
