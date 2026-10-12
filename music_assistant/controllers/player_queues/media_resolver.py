@@ -46,6 +46,7 @@ from music_assistant.controllers.player_queues.constants import (
     ArtistOrder,
 )
 from music_assistant.controllers.player_queues.helpers import (
+    album_release_order,
     is_finite_radio,
     order_albums,
     sort_tracks,
@@ -647,6 +648,100 @@ class MediaResolver:
 
         return list(audiobooks) + books_with_collection_sorted
 
+    async def artist_album_candidates(
+        self,
+        artist: Artist,
+        played: Sequence[Album | ItemMapping],
+        anchor: Album | None,
+    ) -> list[list[Album]] | None:
+        """
+        Return the artist's albums that have not played yet, in the artist order.
+
+        Each album is a list of its copies, in the order to try them. By release, the albums after
+        the anchor come first, then the older ones. Returns an empty list when the album order
+        doesn't apply to the artist, and None when its albums can't be listed.
+
+        :param artist: The artist to play.
+        :param played: The albums with a track in the queue.
+        :param anchor: The album that played last, if known.
+        """
+        selection = await self._artist_selection(artist)
+        if not self._album_order_applies(artist, selection):
+            return []
+        if (albums := await self._artist_albums(artist, selection)) is None:
+            return None
+        copies = {album_copies[0].uri: album_copies for album_copies in albums}
+        order = self.get_artist_order()
+        ordered = order_albums([album_copies[0] for album_copies in albums], order)
+        if order is ArtistOrder.ALBUMS_BY_RELEASE and anchor is not None and anchor.year:
+            # an anchor that is not in the list (a single, another artist's album) is placed by
+            # its year only, so the albums of that year count as after it
+            listed = next(
+                (
+                    album
+                    for album in ordered
+                    if any(compare_album(copy, anchor) for copy in copies[album.uri])
+                ),
+                None,
+            )
+            start = album_release_order(listed) if listed else (False, anchor.year, "", "")
+            split = next(
+                (idx for idx, album in enumerate(ordered) if album_release_order(album) > start),
+                len(ordered),
+            )
+            ordered = ordered[split:] + ordered[:split]
+        return [
+            copies[album.uri]
+            for album in ordered
+            if not any(compare_album(copy, item) for copy in copies[album.uri] for item in played)
+        ]
+
+    async def album_copy_tracks(self, copies: list[Album]) -> list[Track]:
+        """
+        Return the tracks of the first copy of an album with tracks to play.
+
+        The last copy's result is returned as it is, even when empty or failing.
+
+        :param copies: The album's copies, in the order to try them.
+        """
+        library_tracks = (
+            self.mass.config.get_raw_core_config_value(
+                self.queues.domain,
+                CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+                ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
+            )
+            == "library_tracks"
+        )
+        for album in copies[:-1]:
+            # with the library tracks album setting, a copy in the library plays only its saved
+            # tracks; another copy outside the library would play the album in full
+            if library_tracks and (
+                album.provider == "library"
+                or await self.mass.music.albums.get_library_item_by_prov_id(
+                    album.item_id, album.provider
+                )
+            ):
+                return await self._album_tracks(album)
+            try:
+                tracks = await self._album_tracks(album)
+            except PROVIDER_FETCH_ERRORS as err:
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch the tracks of album %s from %s, trying another copy: %s",
+                    album.name,
+                    album.provider,
+                    err,
+                )
+                continue
+            if tracks:
+                return tracks
+            self.logger.debug(
+                "Album %s from %s has no playable tracks, trying another copy",
+                album.name,
+                album.provider,
+            )
+        return await self._album_tracks(copies[-1])
+
     async def _set_episode_resume_point(
         self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
     ) -> None:
@@ -852,7 +947,7 @@ class MediaResolver:
         for start in range(0, len(albums), ALBUM_LOOKUP_BATCH):
             batch = albums[start : start + ALBUM_LOOKUP_BATCH]
             results = await asyncio.gather(
-                *(self._album_copy_tracks(copies) for copies in batch),
+                *(self.album_copy_tracks(copies) for copies in batch),
                 return_exceptions=True,
             )
             for (album, *_), result in zip(batch, results, strict=True):
@@ -869,52 +964,6 @@ class MediaResolver:
                 self.logger.debug("Playing %s tracks of album %s", len(result), album.name)
                 tracks.extend(result)
         return tracks
-
-    async def _album_copy_tracks(self, copies: list[Album]) -> list[Track]:
-        """
-        Return the tracks of the first copy of an album with tracks to play.
-
-        The last copy's result is returned as it is, even when empty or failing.
-
-        :param copies: The album's copies, in the order to try them.
-        """
-        library_tracks = (
-            self.mass.config.get_raw_core_config_value(
-                self.queues.domain,
-                CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
-                ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
-            )
-            == "library_tracks"
-        )
-        for album in copies[:-1]:
-            # with the library tracks album setting, a copy in the library plays only its saved
-            # tracks; another copy outside the library would play the album in full
-            if library_tracks and (
-                album.provider == "library"
-                or await self.mass.music.albums.get_library_item_by_prov_id(
-                    album.item_id, album.provider
-                )
-            ):
-                return await self._album_tracks(album)
-            try:
-                tracks = await self._album_tracks(album)
-            except PROVIDER_FETCH_ERRORS as err:
-                self.logger.log(
-                    provider_fetch_log_level(err),
-                    "Unable to fetch the tracks of album %s from %s, trying another copy: %s",
-                    album.name,
-                    album.provider,
-                    err,
-                )
-                continue
-            if tracks:
-                return tracks
-            self.logger.debug(
-                "Album %s from %s has no playable tracks, trying another copy",
-                album.name,
-                album.provider,
-            )
-        return await self._album_tracks(copies[-1])
 
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """

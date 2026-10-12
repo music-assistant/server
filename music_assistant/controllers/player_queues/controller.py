@@ -40,6 +40,8 @@ from music_assistant_models.errors import (
     QueueEmpty,
 )
 from music_assistant_models.media_items import (
+    Album,
+    Artist,
     Audiobook,
     ItemMapping,
     MediaItemType,
@@ -97,7 +99,7 @@ from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from music_assistant_models import BackgroundTask
     from music_assistant_models.config_entries import (
@@ -1777,6 +1779,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param item: The dynamic playlist or radio station to fetch the next batch for.
         """
         return await self._media_resolver.get_dynamic_source_tracks(item)
+
+    async def artist_album_candidates(
+        self,
+        artist: Artist,
+        played: Sequence[Album | ItemMapping],
+        anchor: Album | None,
+    ) -> list[list[Album]] | None:
+        """
+        Return the artist's albums that have not played yet, in the artist order.
+
+        :param artist: The artist to play.
+        :param played: The albums with a track in the queue.
+        :param anchor: The album that played last, if known.
+        """
+        return await self._media_resolver.artist_album_candidates(artist, played, anchor)
+
+    async def album_copy_tracks(self, copies: list[Album]) -> list[Track]:
+        """
+        Return the tracks of the first copy of an album with tracks to play.
+
+        :param copies: The album's copies, in the order to try them.
+        """
+        return await self._media_resolver.album_copy_tracks(copies)
 
     def recency_windows(self) -> RecencyWindows:
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""
