@@ -134,6 +134,13 @@ async def test_ignores_disabled_and_foreign_entities() -> None:
     assert result == {MAC: {"name": "Kitchen Speaker", "announce_entity_id": None}}
 
 
+async def test_devices_of_other_integrations_are_absent() -> None:
+    """A device that only shares the MAC address, e.g. through a network tracker, is no match."""
+    provider = _provider([_device()], [_entity("device_tracker.laptop", platform="unifi")], [])
+    result = await provider.get_media_player_device_infos([MAC], platform="esphome")
+    assert result == {}
+
+
 async def test_unknown_devices_are_absent() -> None:
     """Devices unknown to Home Assistant are absent from the result."""
     provider = _provider([_device()], [], [])
