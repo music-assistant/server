@@ -88,7 +88,7 @@ OAUTH_CODE_EXPIRY = 300  # pending authorization codes expire after 5 minutes
 MAX_PENDING_CODES = 20  # hard cap on concurrent pending authorization codes (DoS protection)
 
 # ---------------------------------------------------------------------------
-# Timing (seconds)
+# Timing, in seconds
 # ---------------------------------------------------------------------------
 STATE_REPORT_DELAY = 1.0  # debounce window for batched state reports
 STATE_HEARTBEAT_INTERVAL = 3600  # report all states hourly

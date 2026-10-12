@@ -1578,7 +1578,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 )
                 return prov_id, (err.reason, err.retry_at)
             except Exception as err:
-                # process_pcm_chunk is provider-implemented (torch/numpy/ffmpeg); evict
+                # process_pcm_chunk is implemented by the provider (torch/numpy/ffmpeg), so evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
                 return prov_id, (

@@ -271,7 +271,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 fallback=search_result_item,
             )
             if compare_podcast(db_podcast, prov_podcast, strict=strict):
-                # 100% match
+                # exact match
                 matches.extend(prov_podcast.provider_mappings)
         if not matches:
             self.logger.debug(

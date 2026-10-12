@@ -47,7 +47,7 @@ CONF_KIDS_MODE = "kids_mode"
 
 
 # LANGUAGES - Available languages for discovery features (recommendations, search)
-# Format: {name: isoValue}
+# mapping each name to its iso value
 DEFAULT_LANGUAGES = {
     "English": "en",
 }

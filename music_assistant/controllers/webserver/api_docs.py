@@ -475,7 +475,7 @@ def _parse_docstring(  # noqa: PLR0915
             continue
 
         # Detect bullet-style params even without explicit section header
-        # Format: "- param_name: description"
+        # in the format "- param_name: description"
         if stripped.startswith("- ") and ":" in stripped:
             # This is likely a bullet-style parameter
             current_section = "params"
@@ -973,7 +973,6 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
 
     # Check for List/list/UniqueList/tuple with type parameter BEFORE checking for union types
     # This is important because list[A | B] contains " | " but should be handled as a list first
-    # codespell:ignore
     if type_str.startswith(("list[", "List[", "UniqueList[", "tuple[", "Tuple[")):
         inner_type = _extract_generic_inner_type(type_str)
         if inner_type:
@@ -993,7 +992,6 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
     # Check for dict/Dict with type parameters BEFORE checking for union types
     # This is important because dict[str, A | B] contains " | "
     # but should be handled as a dict first
-    # codespell:ignore
     if type_str.startswith(("dict[", "Dict[")):
         inner_type = _extract_generic_inner_type(type_str)
         if inner_type:
