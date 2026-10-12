@@ -152,6 +152,7 @@ async def test_unload_shuts_down_socket_on_failing_logout(provider: Audiobookshe
     """A failing logout does not leave the socket reconnecting."""
     provider._close_sessions_task = asyncio.create_task(asyncio.sleep(3600))
     provider._on_unload_callbacks = []
+    provider._user_update_task = None
     provider.sessions = {}
     provider._client.logout = AsyncMock(side_effect=AbsServiceUnavailableError)  # type: ignore[method-assign]
     socket_logout = AsyncMock()
