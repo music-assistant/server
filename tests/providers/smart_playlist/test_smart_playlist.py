@@ -1695,6 +1695,41 @@ async def test_get_playlist_tracks_dynamic_cache_key_differs_by_music_sources(
 
 
 @pytest.mark.asyncio
+async def test_rules_hide_folders_on_hidden_music_sources(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Folders on sources hidden from the user are left out of responses but kept on save."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    mass = cast("Any", plugin.mass)
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    shared, private = "filesystem_local--shared://80s", "filesystem_local--private://Diary"
+    plugin._rules_store["abc"] = SmartPlaylistRules(folder_paths=[shared, private])
+    set_music_source_access(
+        mass,
+        {
+            "filesystem_local--shared": None,
+            "filesystem_local--private": ProviderAccess(
+                owner="user-a", sharing=ProviderSharing.PRIVATE
+            ),
+        },
+    )
+    guest = User(user_id="user-b", username="user-b", role=UserRole.GUEST)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: guest)
+
+    rules = await plugin.get_smart_playlist_rules("abc")
+    assert rules is not None
+    assert rules["folder_paths"] == [shared]
+    [listed] = await plugin.list_smart_playlists()
+    assert listed["rules"]["folder_paths"] == [shared]
+    assert "Diary" not in listed["summary"]
+
+    await plugin.update_smart_playlist_rules("abc", {"folder_paths": []})
+    assert plugin._rules_store["abc"].folder_paths == [private]
+
+
+@pytest.mark.asyncio
 async def test_count_tracks_returns_count_and_duration(tmp_path: Any) -> None:
     """count_tracks returns a dict with count and duration_seconds."""
     mass = MagicMock()

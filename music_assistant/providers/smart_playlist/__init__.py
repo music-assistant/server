@@ -583,7 +583,7 @@ class SmartPlaylistProvider(PluginProvider):
         rules = self._rules_store.get(prov_id)
         if rules is None:
             return None
-        return rules.to_dict()
+        return self._for_current_user(rules).to_dict()
 
     async def update_smart_playlist_rules(
         self,
@@ -604,6 +604,13 @@ class SmartPlaylistProvider(PluginProvider):
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         if existing is not None:
             parsed_rules.is_dynamic = existing.is_dynamic
+            # the user never got the folders on sources hidden from them, so keep those
+            visible = self._visible_folders(existing.folder_paths)
+            parsed_rules.folder_paths += [
+                path
+                for path in existing.folder_paths
+                if path not in visible and path not in parsed_rules.folder_paths
+            ]
         self._validate_rules(parsed_rules)
 
         rules_changed = existing is None or existing.to_dict() != parsed_rules.to_dict()
@@ -632,15 +639,18 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def list_smart_playlists(self) -> list[dict[str, Any]]:
         """Return list of all smart playlist IDs and their rule summaries."""
-        return [
-            {
-                "playlist_id": playlist_id,
-                "name": self._names_store.get(playlist_id, playlist_id),
-                "rules": rules.to_dict(),
-                "summary": self._summary(rules),
-            }
-            for playlist_id, rules in self._rules_store.items()
-        ]
+        result = []
+        for playlist_id, rules in self._rules_store.items():
+            visible_rules = self._for_current_user(rules)
+            result.append(
+                {
+                    "playlist_id": playlist_id,
+                    "name": self._names_store.get(playlist_id, playlist_id),
+                    "rules": visible_rules.to_dict(),
+                    "summary": self._summary(visible_rules),
+                }
+            )
+        return result
 
     async def count_tracks(self, rules: dict[str, Any]) -> dict[str, Any]:
         """
@@ -1430,6 +1440,17 @@ class SmartPlaylistProvider(PluginProvider):
             )
         except Exception as exc:
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
+
+    def _visible_folders(self, folder_paths: list[str]) -> list[str]:
+        """Return the folders on music sources the current user may see."""
+        user = get_current_user()
+        if user is None or (visible := visible_music_sources(self.mass, user)) is None:
+            return folder_paths
+        return [path for path in folder_paths if path.partition("://")[0] in visible]
+
+    def _for_current_user(self, rules: SmartPlaylistRules) -> SmartPlaylistRules:
+        """Return the rules without the folders on music sources hidden from the current user."""
+        return dc_replace(rules, folder_paths=self._visible_folders(rules.folder_paths))
 
     def _summary(self, rules: SmartPlaylistRules) -> str:
         """Return the rules summary, naming folders by their music source."""
