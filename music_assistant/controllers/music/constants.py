@@ -10,6 +10,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
+CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
 
 DB_SCHEMA_VERSION: Final[int] = 67
 

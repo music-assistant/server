@@ -168,6 +168,7 @@ class TracksController(MediaControllerBase[Track]):
                 'item_id', albums.item_id,
                 'provider', 'library',
                     'name', albums.name,
+                    'version', COALESCE(albums.version, ''),
                     'sort_name', albums.sort_name,
                     'media_type', 'album',
                     'year', albums.year,

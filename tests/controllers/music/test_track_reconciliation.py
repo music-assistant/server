@@ -29,6 +29,7 @@ from music_assistant.controllers.music.controller import MusicController
 from music_assistant.mass import MusicAssistant
 
 _DUPLICATE_NAME = "Shared Track Title"
+_RECORDING_MBID = "0c1d2e3f-4a5b-4c6d-9e8f-7a6b5c4d3e22"
 _REPORT_FAILURE = "music_assistant.controllers.music.controller.report_current_task_failure"
 # every way a provider may set off a retail suffix, next to the plain dashed spelling
 # another provider uses for the same format
@@ -230,6 +231,35 @@ async def test_keeps_different_versions_apart(mass: MusicAssistant) -> None:
 
     assert await mass.music.tracks.get_library_item(track_1.item_id)
     assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+async def test_keeps_a_remaster_apart_when_remasters_are_kept_apart(mass: MusicAssistant) -> None:
+    """A remaster stays apart from the original whose recording id it shares."""
+    track_1, track_2 = await _build_duplicate_pair(
+        mass,
+        _TrackSpec(mbid=_RECORDING_MBID),
+        _TrackSpec("qobuz_instance", version="Remastered 2011", mbid=_RECORDING_MBID),
+    )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+async def test_merges_duplicates_when_remasters_are_kept_apart(mass: MusicAssistant) -> None:
+    """Keeping remasters apart leaves a plain duplicate of a recording to be merged."""
+    track_1, track_2 = await _build_duplicate_pair(
+        mass, _TrackSpec(mbid=_RECORDING_MBID), _TrackSpec("qobuz_instance", mbid=_RECORDING_MBID)
+    )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
 
 
 async def test_merges_despite_disagreement_on_the_explicit_flag(mass: MusicAssistant) -> None:
