@@ -134,6 +134,27 @@ async def test_ignores_disabled_and_foreign_entities() -> None:
     assert result == {MAC: {"name": "Kitchen Speaker", "announce_entity_id": None}}
 
 
+async def test_devices_of_other_integrations_are_absent() -> None:
+    """A device that only shares the MAC address, e.g. through a network tracker, is no match."""
+    provider = _provider([_device()], [_entity("device_tracker.laptop", platform="unifi")], [])
+    result = await provider.get_media_player_device_infos([MAC], platform="esphome")
+    assert result == {}
+
+
+async def test_prefers_the_device_of_the_requested_integration() -> None:
+    """When another integration registers its own device for the MAC, the ESPHome one wins."""
+    tracker = {**_device("tracker"), "name": "kitchen-speaker"}
+    provider = _provider(
+        [_device(), tracker],
+        [_entity("media_player.kitchen"), _entity("device_tracker.kitchen", "tracker", "unifi")],
+        [_state("media_player.kitchen", MEDIA_ANNOUNCE)],
+    )
+    result = await provider.get_media_player_device_infos([MAC], platform="esphome")
+    assert result == {
+        MAC: {"name": "Kitchen Speaker", "announce_entity_id": "media_player.kitchen"}
+    }
+
+
 async def test_unknown_devices_are_absent() -> None:
     """Devices unknown to Home Assistant are absent from the result."""
     provider = _provider([_device()], [], [])

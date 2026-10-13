@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from aiohttp import ClientSession
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -88,7 +88,7 @@ async def setup(
 
 
 async def fetch_backend_voices(
-    http_session: ClientSession, base_url: str, api_key: str = ""
+    http_session: ClientSession, base_url: str, api_key: str = "", model: str = ""
 ) -> list[str]:
     """
     Return the voices the backend advertises, empty when it does not advertise any.
@@ -99,17 +99,20 @@ async def fetch_backend_voices(
     :param http_session: The HTTP session to request with.
     :param base_url: The API endpoint, without trailing slash.
     :param api_key: The API key to authenticate with, empty for backends without auth.
+    :param model: The speech model to list the voices of, empty to not specify one.
     """
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    # some servers (mlx-audio) only list voices per model and reject a request without one
+    params = {"model": model} if model else {}
     try:
         async with http_session.get(
-            f"{base_url}/audio/voices", headers=headers, timeout=VOICES_TIMEOUT
+            f"{base_url}/audio/voices", headers=headers, params=params, timeout=VOICES_TIMEOUT
         ) as response:
             response.raise_for_status()
             data = await response.json()
     except Exception:
         return []
-    items = data.get("voices") if isinstance(data, dict) else data
+    items = data.get("voices", data.get("data")) if isinstance(data, dict) else data
     if not isinstance(items, list):
         return []
     # per item, so one unexpected entry does not discard the voices around it
@@ -125,6 +128,46 @@ async def fetch_backend_voices(
         if isinstance(name, str) and name:
             voices.append(name)
     return voices
+
+
+def normalize_base_url(url: str) -> str:
+    """
+    Return the API endpoint for the given url as entered by the user.
+
+    Accepts a bare server address (the /v1 path is added) or the url of one of the
+    audio endpoints themselves, and returns the base url without trailing slash.
+
+    :param url: The API endpoint as entered by the user.
+    """
+    url = url.strip().rstrip("/")
+    if "://" not in url:
+        url = f"http://{url}"
+    for suffix in ("/audio/speech", "/audio/voices", "/audio"):
+        if url.endswith(suffix):
+            url = url.removesuffix(suffix)
+            break
+    if "/" not in url.split("://", 1)[1]:
+        url = f"{url}/v1"
+    return url
+
+
+def parse_voices(value: ConfigValueType) -> list[str]:
+    """
+    Return the voice names held by a (multi value) config value, without duplicates.
+
+    :param value: The config value holding the voices, a list or a single string.
+    """
+    values = value if isinstance(value, list) else [value]
+    # a single value can hold a comma separated list of its own, e.g. when the whole
+    # list was pasted into one field
+    names = [
+        name
+        for item in values
+        if isinstance(item, str)
+        for part in item.split(",")
+        if (name := part.strip())
+    ]
+    return list(dict.fromkeys(names))
 
 
 class OpenAITTSProvider(PluginProvider):
@@ -351,28 +394,25 @@ class OpenAITTSProvider(PluginProvider):
             return {}
 
     async def _resolve_voices(self) -> list[str]:
-        """Return the voices to expose, from the config override, the backend or the defaults."""
-        if voices := self._voice_override():
+        """
+        Return the voices to expose.
+
+        Taken from the config override, the voices entered during setup, the backend or
+        the defaults, in that order.
+        """
+        if voices := parse_voices(self.get_config_value(CONF_VOICES)):
             self.logger.debug("Using %s voice(s) from the config override", len(voices))
             return voices
+        # without setup voices this falls back to the (empty) config override read above
+        if voices := parse_voices(self.get_setup_value(CONF_VOICES)):
+            self.logger.debug("Using %s voice(s) entered during setup", len(voices))
+            return voices
         api_key = str(self.get_setup_value(CONF_API_KEY) or "")
-        if voices := await fetch_backend_voices(self.mass.http_session, self._base_url, api_key):
+        model = str(self.get_setup_value(CONF_MODEL, DEFAULT_MODEL))
+        if voices := await fetch_backend_voices(
+            self.mass.http_session, self._base_url, api_key, model
+        ):
             self.logger.debug("Discovered %s voice(s) on the backend", len(voices))
             return voices
         self.logger.debug("Falling back to the default voices")
         return list(DEFAULT_VOICES)
-
-    def _voice_override(self) -> list[str]:
-        """Return the configured voices, empty when the override is unset."""
-        configured = self.get_config_value(CONF_VOICES)
-        values = configured if isinstance(configured, list) else [configured]
-        # a single value can hold a comma separated list of its own, e.g. when the whole
-        # list was pasted into one field
-        names = [
-            name
-            for value in values
-            if isinstance(value, str)
-            for part in value.split(",")
-            if (name := part.strip())
-        ]
-        return list(dict.fromkeys(names))

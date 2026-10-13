@@ -21,7 +21,10 @@ from .constants import (
     EVENT_SECTIONS_UPDATED,
     EVENT_STATIONS_UPDATED,
     MERGE_SECTION_PROMPT,
+    NEWS_BULLETIN_PROMPT,
+    SONG_TRANSITION_PROMPT,
     VALID_WEB_SEARCH_MODES,
+    WEATHER_UPDATE_PROMPT,
 )
 from .helpers import slugify
 
@@ -325,10 +328,9 @@ class AIRadioStorageMixin:
                 "type": "ai_text",
                 "web_search": "disabled",
                 "prompt": (
-                    "The next track is <next_songinfo>. Open the program like a "
-                    "polished radio host: brief welcome, confident energy, one "
-                    "concrete hook about the song or artist, and a clean handoff "
-                    "into the music."
+                    "The next track is <next_songinfo>. Open the program: a brief welcome, one "
+                    "concrete hook about the song or artist, then hand off by naming the artist "
+                    "and title once."
                 ),
                 "constraints": {"max_chars": 650},
             },
@@ -337,12 +339,7 @@ class AIRadioStorageMixin:
                 "name": "Song Transition",
                 "type": "ai_text",
                 "web_search": "allow",
-                "prompt": (
-                    "The previous track was <prev_songinfo> and the next track is "
-                    "<next_songinfo>. Create a natural radio transition that "
-                    "connects both songs, sounds informed but concise, and avoids "
-                    "filler or repetition."
-                ),
+                "prompt": SONG_TRANSITION_PROMPT,
                 "constraints": {"max_chars": 650},
             },
             {
@@ -350,12 +347,7 @@ class AIRadioStorageMixin:
                 "name": "Global News",
                 "type": "ai_text",
                 "web_search": "force",
-                "prompt": (
-                    "Create a short global news bulletin anchored to <timestamp>. "
-                    "Use web search. Include two or three current items that are "
-                    "broadly relevant, clearly separated, fact-focused, and "
-                    "written for spoken delivery."
-                ),
+                "prompt": NEWS_BULLETIN_PROMPT,
                 "constraints": {"max_chars": 700},
             },
             {
@@ -363,11 +355,7 @@ class AIRadioStorageMixin:
                 "name": "Weather Short",
                 "type": "ai_text",
                 "web_search": "disabled",
-                "prompt": (
-                    "Using <weather_hourly> and <timestamp>, deliver a short "
-                    "spoken weather update with the current outlook, a useful "
-                    "next-hours summary, and smooth radio phrasing."
-                ),
+                "prompt": WEATHER_UPDATE_PROMPT,
                 "constraints": {"max_chars": 500},
             },
             {
@@ -376,9 +364,9 @@ class AIRadioStorageMixin:
                 "type": "ai_text",
                 "web_search": "disabled",
                 "prompt": (
-                    "The last track played was <prev_songinfo>. Close the program "
-                    "with a memorable sign-off: brief reflection, warm farewell, "
-                    "and language that sounds like the end of a real radio segment."
+                    "The last track played was <prev_songinfo>. Close the program: one short "
+                    "reflection on the set or that last track, a warm farewell, and a line that "
+                    "sounds like the real end of a radio segment. Do not announce another track."
                 ),
                 "constraints": {"max_chars": 650},
             },

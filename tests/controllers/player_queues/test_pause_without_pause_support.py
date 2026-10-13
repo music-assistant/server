@@ -14,6 +14,7 @@ from collections.abc import Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player_queue import PlayerQueue
 
@@ -24,6 +25,13 @@ from music_assistant.models.player import Player
 from tests.common import MockPlayer, MockProvider
 
 QUEUE_ID = "player_1"
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the wall clock, so a slow runner can't move the playing queue's elapsed time."""
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
 
 
 def _setup() -> tuple[PlayerQueuesController, MockPlayer, PlayerQueueData]:

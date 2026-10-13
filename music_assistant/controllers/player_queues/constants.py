@@ -2,13 +2,37 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import MediaType
+from enum import StrEnum
+
+from music_assistant_models.enums import AlbumType, MediaType
 
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
 ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
+
+CONF_DEFAULT_ENQUEUE_ORDER_ARTIST = "default_enqueue_order_artist"
+
+
+class ArtistOrder(StrEnum):
+    """Enum with the orders an artist's tracks can play in."""
+
+    SHUFFLED_TRACKS = "shuffled_tracks"
+    RANDOM_ALBUMS = "random_albums"
+    ALBUMS_BY_RELEASE = "albums_by_release"
+
+    @property
+    def plays_albums(self) -> bool:
+        """Return True when the order plays the artist's albums one after the other."""
+        return self is not ArtistOrder.SHUFFLED_TRACKS
+
+
+ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE = ArtistOrder.SHUFFLED_TRACKS.value
+# the album types an album order leaves out, as their songs are mostly on the artist's albums.
+# A local collection may hold only an artist's compilation, so a library one still plays
+LIBRARY_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE})
+PROVIDER_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE, AlbumType.COMPILATION})
 
 CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
 CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
@@ -100,7 +124,9 @@ MANAGED_POOL_SOURCE_CAP = 250
 # podcast or audiobook only makes sense front to back, and a radio station is a single endless
 # stream. Starting one of these plays it as it comes, switching the queue's shuffle off with it,
 # unless the caller asks for shuffle explicitly. Every other type (playlist, artist, genre, ...)
-# keeps whatever the queue is set to.
+# keeps whatever the queue is set to. An artist counts as sequenced too when it plays its albums
+# under an album order. Top tracks, an artist without albums, and authors or narrators keep the
+# queue's shuffle.
 ORDERED_MEDIA_TYPES = (
     MediaType.ALBUM,
     MediaType.AUDIOBOOK,
