@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.enums import AlbumType, ArtistType, MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -408,14 +408,16 @@ async def test_after_an_auto_track_the_albums_of_its_artist_play(
 async def test_auto_picks_the_first_album_not_played_yet(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Auto's tracks give the next album: no album and played albums are skipped."""
+    """Auto's tracks give the next album: no album, singles and played albums are skipped."""
     played, picked, later = (_streaming_album(name, 1970) for name in "ABC")
-    lookup = _stub_provider(mass, [played, picked, later])
+    single = replace(_streaming_album("S", 1970), album_type=AlbumType.SINGLE)
+    lookup = _stub_provider(mass, [played, picked, later, single])
     artist = _provider_artist()
     queue = _queue(mass, monkeypatch, _queued_track([artist], played))
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
     auto = [
         _queued_track([artist], None),
+        _queued_track([artist], single),
         _queued_track([artist], ItemMapping.from_item(played)),
         _queued_track([artist], ItemMapping.from_item(picked)),
         _queued_track([artist], ItemMapping.from_item(later)),
@@ -427,32 +429,67 @@ async def test_auto_picks_the_first_album_not_played_yet(
     assert lookup.await_count == 1
 
 
-@pytest.mark.parametrize(("failing", "expected"), [("A", "B"), ("AB", None)])
+@pytest.mark.parametrize("error", [MediaNotFoundError, LoginFailed])
+@pytest.mark.parametrize(
+    ("offered", "failing", "expected", "tries"),
+    [("AB", "A", "B", 2), ("AB", "AB", None, 2), ("ABCD", "ABCD", None, 3)],
+)
 async def test_auto_tries_each_album_once(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, failing: str, expected: str | None
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[Exception],
+    offered: str,
+    failing: str,
+    expected: str | None,
+    tries: int,
 ) -> None:
-    """An album that fails is tried once; with none left, Auto's loose tracks stay."""
-    albums = [_streaming_album(name, 1970) for name in "AB"]
+    """An album that fails is tried once, up to 3 albums; then Auto's loose tracks stay."""
+    albums = [_streaming_album(name, 1970) for name in "ABCD"]
     lookup = _stub_provider(mass, albums)
     names = {album.item_id: album.name for album in albums}
     tracks = lookup.side_effect
 
     def _tracks(item_id: str, *args: Any, **kwargs: Any) -> list[Track]:
         if names[item_id] in failing:
-            raise MediaNotFoundError("gone")
+            raise error("gone")
         return cast("list[Track]", tracks(item_id, *args, **kwargs))
 
     lookup.side_effect = _tracks
     artist = _provider_artist()
     queue = _queue(mass, monkeypatch, _queued_track([artist], None))
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-    first, second = (ItemMapping.from_item(album) for album in albums)
-    auto = [_queued_track([artist], album) for album in (first, first, second)]
+    first, *others = (ItemMapping.from_item(album) for album in albums if album.name in offered)
+    auto = [_queued_track([artist], album) for album in (first, first, *others)]
 
     result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
 
     assert _names(result) == ([f"{expected} 1", f"{expected} 2"] if expected else [])
-    assert lookup.await_count == 2
+    assert lookup.await_count == tries
+
+
+async def test_auto_skips_the_provider_copy_of_a_played_library_album(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto's provider track of an album that played from the library counts as played."""
+    heard, picked = (_streaming_album(name, 1970) for name in "AB")
+    _stub_provider(mass, [heard, picked])
+    artist = await _add_artist(mass)
+    library_copy = await mass.music.albums.add_item_to_library(
+        replace(
+            heard,
+            item_id="0",
+            provider="library",
+            artists=UniqueList([artist]),
+            provider_mappings={*heard.provider_mappings, *_library_mapping()},
+        )
+    )
+    queue = _queue(mass, monkeypatch, _queued_track([artist], ItemMapping.from_item(library_copy)))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    auto = [_queued_track([artist], ItemMapping.from_item(album)) for album in (heard, picked)]
+
+    result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
+
+    assert _names(result) == ["B 1", "B 2"]
 
 
 async def test_auto_keeps_loose_tracks_when_the_mode_cant_play(

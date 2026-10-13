@@ -14,9 +14,9 @@ from __future__ import annotations
 import random
 from contextlib import suppress
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
-from music_assistant_models.enums import MediaType, SortField
+from music_assistant_models.enums import AlbumType, MediaType, SortField
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Playlist, Track
 
@@ -54,6 +54,11 @@ AUTOPLAY_BATCH_SIZE = 25
 GENRE_SEED_ITEM_COUNT = 3
 # albums the whole-albums mode tries before it falls back to the Auto mode
 ALBUM_PICK_ATTEMPTS = 3
+# any provider error only skips the album, so the refill goes on
+ALBUM_LOAD_ERRORS: Final[tuple[type[Exception], ...]] = (
+    MusicAssistantError,
+    *PROVIDER_FETCH_ERRORS,
+)
 # media types that carry a useful genre signal for the library mix
 GENRE_SEED_MEDIA_TYPES = (MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST)
 # media types that end on their own but have a natural successor of their own: Autoplay
@@ -270,14 +275,24 @@ class Autoplay:
         for track in tracks:
             if attempts == ALBUM_PICK_ATTEMPTS:
                 break
-            if track.album is None or album_is_played([track.album], skipped):
+            if (album := track.album) is None:
+                continue
+            # Auto's tracks come from providers, while the queue may hold the library copy
+            album = (
+                await self.mass.music.albums.get_library_item_by_prov_id(
+                    album.item_id, album.provider
+                )
+                or album
+            )
+            single = isinstance(album, Album) and album.album_type == AlbumType.SINGLE
+            if single or album_is_played([album], skipped):
                 continue
             # an album is tried once, also when several of Auto's tracks come from it
-            skipped.append(track.album)
+            skipped.append(album)
             attempts += 1
-            if album_tracks := await self._album_tracks_to_play(queue_data.userid, [track.album]):
+            if album_tracks := await self._album_tracks_to_play(queue_data.userid, [album]):
                 return album_tracks
-        self.logger.debug("Auto found no album to play, adding its tracks")
+        self.logger.debug("Auto found no album to play, keeping its tracks")
         return []
 
     async def _album_tracks_to_play(
@@ -291,7 +306,7 @@ class Autoplay:
         """
         try:
             album_tracks = await self.queues.album_copy_tracks(copies)
-        except PROVIDER_FETCH_ERRORS as err:
+        except ALBUM_LOAD_ERRORS as err:
             self.logger.log(
                 provider_fetch_log_level(err),
                 "Unable to fetch the tracks of album %s: %s",
