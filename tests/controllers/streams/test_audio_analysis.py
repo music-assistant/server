@@ -1944,8 +1944,8 @@ async def test_get_track_audio_metadata_asks_the_copy_playback_would_pick_first(
 
 
 @pytest.mark.asyncio
-async def test_get_tracks_audio_metadata_deletes_unparsable_rows() -> None:
-    """The batched lookup drops corrupt rows like the single-track lookup does."""
+async def test_get_tracks_audio_metadata_skips_unparsable_rows() -> None:
+    """The batched lookup skips corrupt rows and keeps the good one."""
     corrupt = _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 7)
     corrupt["header"] = json_dumps({"spectral_centroid": [100.0, None]})
     c = _analysis_controller_with_rows([corrupt, _aa_row(SONIC_ANALYSIS_DOMAIN, 8, bpm=101.0)])
@@ -1955,7 +1955,7 @@ async def test_get_tracks_audio_metadata_deletes_unparsable_rows() -> None:
     assert result[0] is not None
     assert result[0].bpm == 101.0
     delete_mock = cast("AsyncMock", c.database.delete)
-    delete_mock.assert_awaited_once_with(AA_TABLE_ANALYSIS, {"id": 7})
+    delete_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -1559,11 +1559,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         tracks = [item for item in items if isinstance(item, Track) and item.audio_metadata is None]
         if not tracks:
             return
-        try:
-            metadata = await self.mass.streams.audio_analysis.get_tracks_audio_metadata(tracks)
-        except Exception as err:
-            self.logger.debug("Unable to add audio analysis to playlist tracks: %s", err)
-            return
+        metadata = await self.mass.streams.audio_analysis.get_tracks_audio_metadata(tracks)
         for track, track_metadata in zip(tracks, metadata, strict=True):
             track.audio_metadata = track_metadata
 

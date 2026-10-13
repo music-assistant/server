@@ -1722,23 +1722,6 @@ async def test_tracks_add_audio_metadata_per_page() -> None:
     assert [call.args[0] for call in lookup.await_args_list] == [[page0[0]], [page1[0]]]
 
 
-@pytest.mark.asyncio
-async def test_tracks_survive_audio_metadata_failure() -> None:
-    """A failing analysis lookup leaves the tracks without audio metadata."""
-    controller = _make_controller()
-    controller.logger = MagicMock()
-    page0 = [_playlist_track("a")]
-    cast("Any", controller)._get_provider_playlist_tracks = AsyncMock(side_effect=[page0, []])
-    cast("Any", controller.mass).streams.audio_analysis.get_tracks_audio_metadata = AsyncMock(
-        side_effect=RuntimeError("boom")
-    )
-
-    result = [t async for t in controller.tracks("abc", "some_provider")]
-
-    assert result == page0
-    assert page0[0].audio_metadata is None
-
-
 # --------------------------------------------------------------------------- #
 #  fetch_playlist                                                              #
 # --------------------------------------------------------------------------- #

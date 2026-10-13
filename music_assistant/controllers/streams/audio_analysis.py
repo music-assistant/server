@@ -644,8 +644,11 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         available_aa_domains = self._available_aa_domains()
         unparsable_ids: list[Any] = []
         merged = _merged_from_rows(rows, available_aa_domains, priority, unparsable_ids)
+        # corrupt rows would otherwise block re-analysis forever (their stored
+        # analysis_version still gates new sessions), so drop them right away
+        for row_id in unparsable_ids:
+            await self.database.delete(AA_TABLE_ANALYSIS, {"id": row_id})
         if unparsable_ids:
-            await self._delete_unparsable_rows(unparsable_ids)
             self.logger.info(
                 "Deleted %d corrupt audio_analysis row(s) for %s/%s; "
                 "the item is eligible for re-analysis",
@@ -734,27 +737,17 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 for row in rows:
                     rows_by_key[(prov_key, row["item_id"])].append(row)
 
-        unparsable_ids: list[Any] = []
         metadata_by_key: dict[tuple[str, str], AudioMetadata | None] = {}
         for index, track_keys in enumerate(ranked_keys):
             for key in track_keys:
                 if key not in metadata_by_key:
                     merged = _merged_from_rows(
-                        rows_by_key.get(key, ()),
-                        available_aa_domains,
-                        TRACK_EXPORT_AA_PRIORITY,
-                        unparsable_ids,
+                        rows_by_key.get(key, ()), available_aa_domains, TRACK_EXPORT_AA_PRIORITY
                     )
                     metadata_by_key[key] = _audio_metadata_from_analysis(merged)
                 if (metadata := metadata_by_key[key]) is not None:
                     results[index] = metadata
                     break
-        if unparsable_ids:
-            await self._delete_unparsable_rows(unparsable_ids)
-            self.logger.info(
-                "Deleted %d corrupt audio_analysis row(s); the items are eligible for re-analysis",
-                len(unparsable_ids),
-            )
         return results
 
     async def get_vocal_onset(
@@ -1788,26 +1781,11 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         return max(1, min(value, 16))
 
     def _analysis_provider_key(self, provider_instance_id_or_domain: str) -> str | None:
-        """
-        Return the provider key analysis rows are stored under, or None when not loaded.
-
-        :param provider_instance_id_or_domain: Music provider instance ID or domain.
-        """
+        """Return the provider key analysis rows are stored under, or None when not loaded."""
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             return None
         return provider.domain if provider.is_streaming_provider else provider.instance_id
-
-    async def _delete_unparsable_rows(self, row_ids: list[Any]) -> None:
-        """
-        Delete audio_analysis rows whose packed record failed to parse.
-
-        :param row_ids: Ids of the rows to delete.
-        """
-        # corrupt rows would otherwise block re-analysis forever (their stored
-        # analysis_version still gates new sessions), so drop them right away
-        for row_id in row_ids:
-            await self.database.delete(AA_TABLE_ANALYSIS, {"id": row_id})
 
     def _available_aa_domains(self) -> set[str]:
         """Return available AA provider domains plus the virtual provider-loudness domain."""
