@@ -380,6 +380,28 @@ async def test_setup_reports_a_broken_stream_as_a_render_failure() -> None:
         await task
 
 
+async def test_setup_reports_the_server_error_of_a_failed_render() -> None:
+    """A rejected render shows the server's own (trimmed) error text."""
+    rejected = MagicMock(status=400, text=AsyncMock(return_value=f"  {'x' * 300}  "))
+    session, _ = create_setup_session({"voices": ["af_bella"]}, [rejected], {})
+    task = asyncio.create_task(run_setup(session))
+    step = await wait_for_form(session)
+    session.handle_submit(
+        {
+            CONF_BASE_URL: "http://localhost:8880/v1",
+            CONF_MODEL: "kokoro",
+            CONF_RESPONSE_FORMAT: "mp3",
+        }
+    )
+    step = await wait_for_form(session, step)
+    assert step.error_translations["base"].key == "render_failed"
+    assert step.error_translations["base"].args == ["x" * 200]
+    assert CONF_VOICES not in step.error_translations
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
 async def test_reconfigure_keeps_asking_for_stored_voices_and_clears_them() -> None:
     """Stored setup voices are shown on a reconfigure, and an emptied field clears them."""
     finish_values: dict[str, Any] = {}
