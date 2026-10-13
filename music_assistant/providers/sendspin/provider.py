@@ -81,7 +81,7 @@ from music_assistant.helpers.guest_access import (
     credential_owners_for_user_id,
     is_session_scoped_owner,
 )
-from music_assistant.helpers.util import format_ip_for_url
+from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
@@ -1164,28 +1164,31 @@ class SendspinProvider(PlayerProvider):
         Applies the HA display name and resolves the HA media_player entity that
         announcements are relayed to: ESPHome devices support announcements
         natively, but that capability is only reachable through the HA API.
-        Players are correlated by MAC address (the Sendspin client id).
+        Players are correlated by the MAC address they report.
         """
-        esphome_players = [
-            player for player in players if player.device_info.manufacturer == "ESPHome"
-        ]
-        if not esphome_players:
+        mac_players: list[tuple[SendspinBasePlayer, str]] = []
+        for player in players:
+            if mac_address := _reported_mac_address(player):
+                mac_players.append((player, mac_address))
+            elif isinstance(player, SendspinPlayer):
+                player.set_hass_announce_entity(None)
+        if not mac_players:
             return
         hass = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
         if hass is None or not hass.available:
-            for player in esphome_players:
+            for player, _ in mac_players:
                 if isinstance(player, SendspinPlayer):
                     player.set_hass_announce_entity(None)
             return
         try:
             device_infos = await hass.get_media_player_device_infos(
-                [player.player_id for player in esphome_players], platform="esphome"
+                [mac_address for _, mac_address in mac_players], platform="esphome"
             )
         except Exception as err:
             self.logger.warning("Failed to apply Home Assistant enrichment: %s", err)
             return
-        for player in esphome_players:
-            device_info = device_infos.get(player.player_id.lower())
+        for player, mac_address in mac_players:
+            device_info = device_infos.get(mac_address)
             if device_info is not None and device_info["name"]:
                 player._attr_name = device_info["name"]
             if isinstance(player, SendspinPlayer):
@@ -1194,12 +1197,11 @@ class SendspinProvider(PlayerProvider):
                 )
 
     async def _refresh_hass_esphome_enrichment(self) -> None:
-        """Re-apply the HA enrichment to all registered ESPHome players (in place)."""
+        """Re-apply the HA enrichment to all registered players that report a MAC address (in place)."""
         players = [
             player
             for player in self.players
-            if isinstance(player, SendspinBasePlayer)
-            and player.device_info.manufacturer == "ESPHome"
+            if isinstance(player, SendspinBasePlayer) and _reported_mac_address(player)
         ]
         if not players:
             return
@@ -1542,7 +1544,7 @@ class SendspinProvider(PlayerProvider):
             raise InvalidCommand(f"Client {client_id} did not register")
         return player
 
-    async def _handle_client_added(self, client_id: str, event_version: int) -> None:
+    async def _handle_client_added(self, client_id: str, event_version: int) -> None:  # noqa: PLR0915
         """Handle a new client connection asynchronously."""
         try:
             if self._unloading:
@@ -1595,6 +1597,7 @@ class SendspinProvider(PlayerProvider):
                     self.logger.debug("Client %s disconnected after unregister", client_id)
                     return
 
+            mac_player_id = await self._take_over_mac_player(client_id, sendspin_client)
             player = self._create_player(
                 client_id, sendspin_client, existing_player, bridge_hello_snapshot
             )
@@ -1613,6 +1616,12 @@ class SendspinProvider(PlayerProvider):
                     "Client %s already registered while handling add event", client_id
                 )
                 player._unsubscribe_client_callbacks()
+            else:
+                # register skips a disabled player and any player during shutdown
+                if mac_player_id and self.mass.players.get_player(client_id) is player:
+                    self.mass.players.delete_player_config(
+                        mac_player_id, replacement_player_id=client_id
+                    )
         finally:
             self._finish_client_event(client_id)
 
@@ -1853,6 +1862,51 @@ class SendspinProvider(PlayerProvider):
                 continue
             self.logger.debug("Removing orphan virtual player config %s", player_id)
             self.mass.players.delete_player_config(player_id)
+
+    async def _take_over_mac_player(
+        self, client_id: str, sendspin_client: SendspinClient
+    ) -> str | None:
+        """
+        Move a device's player from its MAC address id over to its encrypted client id.
+
+        :param client_id: The connected client.
+        :param sendspin_client: That client, for its connection and hello.
+        :return: The player id that was taken over, or None.
+        """
+        # anyone may already claim the MAC id unencrypted while that is allowed
+        if not self.server_api.allow_unencrypted:
+            return None
+        connection = sendspin_client.connection
+        info = sendspin_client.info_or_none
+        if connection is None or not connection.is_encrypted or info is None:
+            return None
+        mac_address = info.device_info.mac_address if info.device_info else None
+        if not mac_address or not is_valid_mac_address(mac_address):
+            return None
+        mac_player_id = mac_address.upper()
+        config = self.mass.config
+        if config.get_raw_player_config_value(mac_player_id, "provider") != self.instance_id:
+            return None
+        if not config.get_raw_player_config_value(mac_player_id, CONF_ENABLED, True):
+            return None
+        if (mac_client := self.server_api.get_client(mac_player_id)) and mac_client.is_connected:
+            return None
+        self.logger.info("Moving player %s over to client id %s", mac_player_id, client_id)
+        # frees the protocol slot on the parent player for the new client id
+        await self.mass.players.unregister(mac_player_id)
+        self.mass.players.carry_over_player_config(mac_player_id, client_id)
+        return mac_player_id
+
+
+def _reported_mac_address(player: SendspinBasePlayer) -> str | None:
+    """Return the lowercased MAC address a client uses as id or reports in its hello."""
+    if is_valid_mac_address(player.player_id):
+        return player.player_id.lower()
+    info = player.api.info_or_none
+    mac_address = info.device_info.mac_address if info and info.device_info else None
+    if not mac_address or not is_valid_mac_address(mac_address):
+        return None
+    return mac_address.lower()
 
 
 def _virtual_player_noop(*_args: object) -> None:
