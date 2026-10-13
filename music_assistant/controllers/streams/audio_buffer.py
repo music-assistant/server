@@ -73,7 +73,8 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 # Callback signature for cancel observers: invoked when the buffer is cancelled/cleared.
 CancelCallback = Callable[[], None]
 
-# Seconds allowed on top of the remaining ready threshold once the first audio arrives.
+# Slack on each readiness phase: past the producer's own first-chunk timeout,
+# then past the remaining ready threshold once the first audio arrives.
 BUFFER_READY_MARGIN: Final[int] = 5
 
 
@@ -475,9 +476,11 @@ class AudioBuffer:
             source-stream slot to detect that format within the timeout.
         """
         log_prefix = f"get_buffer[{reason}]" if reason else "get_buffer"
-        # the producer may spend its source wait before the first byte arrives,
-        # so the budget for the first audio covers that wait on top of the stream start
-        first_audio_timeout = STREAM_START_TIMEOUT + (source_wait_timeout or 0)
+        # the producer's own first-chunk timeout only starts after its source wait and
+        # setup, so the margin lets that typed failure surface before this one
+        first_audio_timeout = (
+            STREAM_START_TIMEOUT + BUFFER_READY_MARGIN + (source_wait_timeout or 0)
+        )
 
         # reuse existing valid buffer
         existing_buffer: AudioBuffer | None = streamdetails.buffer

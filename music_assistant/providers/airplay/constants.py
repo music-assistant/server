@@ -198,11 +198,11 @@ AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
 # play_media that carries the replacement (an item that fails to load, a
 # provider error), and that is the signal no replacement is coming. This only
 # covers a transition that neither completes nor clears. It sits past the load
-# that carries a replacement - the queue's buffer prepare (STREAM_START_TIMEOUT,
-# 30s, plus the ready threshold once audio flows) plus the provider source slot
-# its producer may wait out first - so a slow but real seek is never cut short
-# into a cold restart.
-AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 50.0
+# that carries a replacement - the queue's buffer prepare (up to ~50s for the
+# first audio and the ready threshold) plus the provider source slot its producer
+# may wait out first (15s) - so a slow but real seek is never cut short into a
+# cold restart.
+AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 70.0
 # How often the queue is asked whether it is still loading that replacement.
 # It only bounds how quickly a cleared transition is noticed, so it trades no
 # accuracy for a poll this cheap (one dict lookup).
