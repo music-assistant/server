@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import os.path
 import posixpath
+import secrets
+import stat
 import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from functools import cached_property
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import aiofiles
@@ -85,13 +88,25 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.playlists import parse_m3u, parse_pls, sanitize_playlist_filename
+from music_assistant.helpers.playlists import (
+    parse_m3u,
+    parse_pls,
+    sanitize_m3u_value,
+    sanitize_playlist_filename,
+)
 from music_assistant.helpers.podcast_parsers import get_publisher_number
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
+from music_assistant.helpers.process import open_in_thread
+from music_assistant.helpers.tags import (
+    AudioTags,
+    async_parse_tags,
+    clean_mbid,
+    get_embedded_image,
+)
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
+    is_disc_dir,
     parse_title_and_version,
     try_parse_int,
 )
@@ -152,9 +167,9 @@ from .helpers import (
     get_folder_signature,
     get_relative_path,
     get_valid_isrcs,
-    is_disc_dir,
     is_image_file,
     is_metadata_file,
+    open_real_path,
     parse_nfo_root,
     recursive_iter,
     sorted_scandir,
@@ -890,7 +905,7 @@ class LocalFileSystemProvider(MusicProvider):
                                 return cue_track.album
                         continue
                     file_item = await self.resolve(prov_mapping.item_id)
-                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+                    tags = await self._parse_tags(file_item)
                     full_track = await self._parse_track(file_item, tags)
                     assert isinstance(full_track.album, Album)
                     return full_track.album
@@ -913,7 +928,7 @@ class LocalFileSystemProvider(MusicProvider):
             raise MediaNotFoundError(msg)
 
         file_item = await self.resolve(prov_track_id)
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        tags = await self._parse_tags(file_item)
         return await self._parse_track(file_item, tags=tags, full_album_metadata=True)
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
@@ -922,7 +937,7 @@ class LocalFileSystemProvider(MusicProvider):
             msg = f"Episode path does not exist: {prov_episode_id}"
             raise MediaNotFoundError(msg)
         file_item = await self.resolve(prov_episode_id)
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        tags = await self._parse_tags(file_item)
         return await self._parse_podcast_episode(file_item, tags=tags)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -930,6 +945,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
 
         file_item = await self.resolve(prov_playlist_id)
         playlist = Playlist(
@@ -967,7 +983,7 @@ class LocalFileSystemProvider(MusicProvider):
             raise MediaNotFoundError(msg)
 
         file_item = await self.resolve(prov_audiobook_id)
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        tags = await self._parse_tags(file_item)
         return await self._parse_audiobook(file_item, tags=tags)
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -990,13 +1006,20 @@ class LocalFileSystemProvider(MusicProvider):
         """Get all sound effect items this provider offers."""
 
         def _walk() -> list[FileSystemItem]:
-            check_real_path(self._real_base_path, self.base_path)
-            return sorted(
-                recursive_iter(
-                    self.base_path, self.base_path, SOUND_EFFECT_EXTENSIONS, self.logger
-                ),
-                key=lambda x: x.relative_path,
-            )
+            root_fd = self._open_file(self.base_path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                return sorted(
+                    recursive_iter(
+                        self.base_path,
+                        self.base_path,
+                        SOUND_EFFECT_EXTENSIONS,
+                        self.logger,
+                        dir_fd=root_fd,
+                    ),
+                    key=lambda x: x.relative_path,
+                )
+            finally:
+                os.close(root_fd)
 
         for file_item in await asyncio.to_thread(_walk):
             yield await self._get_or_parse_sound_effect(file_item)
@@ -1022,6 +1045,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
 
         file_item = await self.resolve(prov_playlist_id)
         # We are using the checksum of the playlist file here to invalidate the cache
@@ -1123,7 +1147,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         async def _process_podcast_episode(index: int, item: FileSystemItem) -> None:
             try:
-                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                tags = await self._parse_tags(item)
                 parsed[index] = await self._parse_podcast_episode(item, tags)
             except MusicAssistantError as err:
                 self.logger.warning(
@@ -1160,16 +1184,21 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
         playlist_filename = self.get_absolute_path(prov_playlist_id)
-        async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
+        async with aiofiles.open(
+            playlist_filename, encoding="utf-8", opener=self._open_file
+        ) as _file:
             playlist_data = await _file.read()
         for file_path in prov_track_ids:
             track = await self.get_track(file_path)
-            playlist_data += f"\n#EXTINF:{track.duration or 0},{track.name}\n{file_path}\n"
+            title = sanitize_m3u_value(track.name)
+            playlist_data += (
+                f"\n#EXTINF:{track.duration or 0},{title}\n{sanitize_m3u_value(file_path)}\n"
+            )
 
         # write playlist file (always in utf-8)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(playlist_data)
+        await self._write_playlist_file(prov_playlist_id, playlist_data)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -1178,10 +1207,13 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
         ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
-        async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
+        async with aiofiles.open(
+            playlist_filename, encoding="utf-8", opener=self._open_file
+        ) as _file:
             playlist_data = await _file.read()
         # get current contents first
         if ext in ("m3u", "m3u8"):
@@ -1195,9 +1227,11 @@ class LocalFileSystemProvider(MusicProvider):
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
         for item in playlist_items:
-            new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(new_playlist_data)
+            title = sanitize_m3u_value(item.title or "")
+            new_playlist_data += (
+                f"\n#EXTINF:{item.length or 0},{title}\n{sanitize_m3u_value(item.path)}\n"
+            )
+        await self._write_playlist_file(prov_playlist_id, new_playlist_data)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
@@ -1244,25 +1278,37 @@ class LocalFileSystemProvider(MusicProvider):
         async for chunk in self._cue.get_audio_stream(streamdetails, seek_position):
             yield chunk
 
-    async def resolve_image(self, path: str) -> str | bytes:
+    async def open_local_file(self, path: str) -> int | None:
+        """
+        Open a file of this source for playback, if it lies inside the folder of this source.
+
+        :param path: The absolute path of the file.
+        :raises MediaNotFoundError: If the file can not be read or lies outside the folder.
+        """
+        try:
+            return await open_in_thread(self._open_file, path, os.O_RDONLY)
+        except OSError as err:
+            raise MediaNotFoundError(f"Unable to read media file {path}: {err}") from err
+
+    async def resolve_image(self, path: str) -> str | bytes | None:
         """
         Resolve an image from an image path.
 
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
+        Returns the raw bytes of an image file or of the image embedded in an audio file,
+        or None when the audio file has no embedded image.
         """
         # drop the cache-busting suffix appended by _versioned_image_path
         try:
             file_item = await self.resolve(path.split("?cs=", 1)[0])
+            if file_item.is_dir:
+                raise MediaNotFoundError(f"Image path is a directory: {path}")
+            if file_item.ext in IMAGE_EXTENSIONS:
+                return await self._read_file(file_item.relative_path)
+            return await get_embedded_image(file_item.absolute_path, opener=self._open_file) or None
         except FileNotFoundError as err:
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
-        if file_item.is_dir:
-            # handing the path back would have the image layer run an ffmpeg
-            # embedded-artwork extraction on the directory before giving up
-            raise MediaNotFoundError(f"Image path is a directory: {path}")
-        return file_item.absolute_path
 
     async def check_write_access(self) -> None:
         """Perform check if we have write access."""
@@ -1362,33 +1408,37 @@ class LocalFileSystemProvider(MusicProvider):
 
         def _walk() -> None:
             try:
-                check_real_path(self._real_base_path, self.base_path)
-            except MediaNotFoundError as err:
+                root_fd = self._open_file(self.base_path, os.O_RDONLY | os.O_DIRECTORY)
+            except (MediaNotFoundError, OSError) as err:
                 scan_errors.record_dir_error(err, is_root=True)
                 return
-            for scanned, item in enumerate(
-                recursive_iter(
-                    self.base_path,
-                    self.base_path,
-                    WALK_EXTENSIONS,
-                    self.logger,
-                    scan_errors=scan_errors,
-                ),
-                start=1,
-            ):
-                if scanned % 500 == 0:
-                    update_current_task_progress_text(f"Scanning files: {scanned} found")
-                self._classify_scan_item(
-                    item,
-                    file_checksums=file_checksums,
-                    cue_file_checksums=cue_file_checksums,
-                    cur_filenames=cur_filenames,
-                    items_to_process=items_to_process,
-                    unchanged_cue_items=unchanged_cue_items,
-                    cue_stems=cue_stems,
-                    ignore_album_playlists=ignore_album_playlists,
-                    metadata_files=metadata_files,
-                )
+            try:
+                for scanned, item in enumerate(
+                    recursive_iter(
+                        self.base_path,
+                        self.base_path,
+                        WALK_EXTENSIONS,
+                        self.logger,
+                        scan_errors=scan_errors,
+                        dir_fd=root_fd,
+                    ),
+                    start=1,
+                ):
+                    if scanned % 500 == 0:
+                        update_current_task_progress_text(f"Scanning files: {scanned} found")
+                    self._classify_scan_item(
+                        item,
+                        file_checksums=file_checksums,
+                        cue_file_checksums=cue_file_checksums,
+                        cur_filenames=cur_filenames,
+                        items_to_process=items_to_process,
+                        unchanged_cue_items=unchanged_cue_items,
+                        cue_stems=cue_stems,
+                        ignore_album_playlists=ignore_album_playlists,
+                        metadata_files=metadata_files,
+                    )
+            finally:
+                os.close(root_fd)
 
         await asyncio.to_thread(_walk)
 
@@ -2311,7 +2361,7 @@ class LocalFileSystemProvider(MusicProvider):
                 if item.absolute_path.rsplit(".", 1)[0] in cue_stems:
                     continue  # absorbed into its CUE sheet's own segmented tracks
                 try:
-                    tags = await async_parse_tags(item.absolute_path, item.file_size)
+                    tags = await self._parse_tags(item)
                 except InvalidDataError as err:
                     self.logger.warning("Skipping unreadable track %s: %s", item.relative_path, err)
                     continue
@@ -2440,7 +2490,7 @@ class LocalFileSystemProvider(MusicProvider):
                 # skip audio files that have a companion CUE sheet
                 if cue_stems is not None and item.absolute_path.rsplit(".", 1)[0] in cue_stems:
                     return False
-                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                tags = await self._parse_tags(item)
                 track = await self._parse_track(item, tags)
                 # TODO: implement favorite status based on rating ?
                 await self.mass.music.tracks.add_item_to_library(
@@ -2449,7 +2499,7 @@ class LocalFileSystemProvider(MusicProvider):
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
-                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                tags = await self._parse_tags(item)
                 folder_signature = (
                     folder_signatures.get(item.relative_parent_path) if folder_signatures else None
                 )
@@ -2751,7 +2801,7 @@ class LocalFileSystemProvider(MusicProvider):
             )
             return library_track
         # not (yet) in the library: parse the file tags
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        tags = await self._parse_tags(file_item)
         return await self._parse_track(file_item, tags)
 
     @staticmethod
@@ -3496,7 +3546,7 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if cached_data is not None:
             return cached_data
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        tags = await self._parse_tags(file_item)
         sound_effect = await self._parse_sound_effect(file_item, tags)
         await self.cache.set(
             cache_key,
@@ -3839,7 +3889,7 @@ class LocalFileSystemProvider(MusicProvider):
         if library_item is None:
             # this could be a file that has just been added, try parsing it
             file_item = await self.resolve(item_id)
-            tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+            tags = await self._parse_tags(file_item)
             if not (library_item := await self._parse_track(file_item, tags)):
                 msg = f"Item not found: {item_id}"
                 raise MediaNotFoundError(msg)
@@ -3865,7 +3915,7 @@ class LocalFileSystemProvider(MusicProvider):
         """Return the streamdetails for a podcast episode."""
         # podcasts episodes are never stored in the library so we need to parse the file
         file_item = await self.resolve(item_id)
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        tags = await self._parse_tags(file_item)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -3916,7 +3966,7 @@ class LocalFileSystemProvider(MusicProvider):
         if library_item is None:
             # this could be a file that has just been added, try parsing it
             file_item = await self.resolve(item_id)
-            tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+            tags = await self._parse_tags(file_item)
             if not (library_item := await self._parse_audiobook(file_item, tags)):
                 msg = f"Item not found: {item_id}"
                 raise MediaNotFoundError(msg)
@@ -3931,7 +3981,7 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if file_based_chapters is None:
             # no cache available for this audiobook, we need to parse the chapters
-            tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+            tags = await self._parse_tags(file_item)
             await self._parse_audiobook(file_item, tags)
             file_based_chapters = await self.cache.get(
                 key=file_item.relative_path,
@@ -4005,7 +4055,7 @@ class LocalFileSystemProvider(MusicProvider):
                 continue
             if item.ext not in AUDIOBOOK_EXTENSIONS:
                 continue
-            item_tags = await async_parse_tags(item.absolute_path, item.file_size)
+            item_tags = await self._parse_tags(item)
             if not (tags.album == item_tags.album or (item_tags.tags.get("title") is None)):
                 continue
             if item_tags.tags.get("track") is None:
@@ -4127,8 +4177,19 @@ class LocalFileSystemProvider(MusicProvider):
         abs_path = self.get_absolute_path(path)
 
         def _list() -> list[FileSystemItem]:
-            check_real_path(self._real_base_path, abs_path)
-            return sorted_scandir(self.base_path, abs_path, sort=True)
+            try:
+                dir_fd = self._open_file(abs_path, os.O_RDONLY | os.O_DIRECTORY)
+            except OSError as err:
+                if err.errno != errno.EINVAL:
+                    raise
+                self.logger.warning(
+                    "Skipping directory '%s' - unsupported characters in path", abs_path
+                )
+                return []
+            try:
+                return sorted_scandir(self.base_path, abs_path, sort=True, dir_fd=dir_fd)
+            finally:
+                os.close(dir_fd)
 
         return await asyncio.to_thread(_list)
 
@@ -4137,10 +4198,30 @@ class LocalFileSystemProvider(MusicProvider):
         abs_path = self.get_absolute_path(path)
 
         def _read() -> bytes:
-            check_real_path(self._real_base_path, abs_path)
-            return Path(abs_path).read_bytes()
+            with open(abs_path, "rb", opener=self._open_file) as file:
+                return file.read()
 
         return await asyncio.to_thread(_read)
+
+    def _open_file(self, path: str, flags: int) -> int:
+        """
+        Open a file or folder of this source for reading, like os.open. NOT async friendly.
+
+        Usable as the opener of open(). Reading through the returned descriptor reads the file
+        that was checked to lie inside the folder of this source, also when its path changes
+        afterwards.
+
+        :param path: The absolute path to open.
+        :param flags: The flags for os.open.
+        :raises MediaNotFoundError: If the path lies outside the folder of this source.
+        """
+        return open_real_path(self._real_base_path, path, flags)
+
+    async def _parse_tags(self, file_item: FileSystemItem) -> AudioTags:
+        """Parse the tags of a file of this source. Override for network storage."""
+        return await async_parse_tags(
+            file_item.absolute_path, file_item.file_size, opener=self._open_file
+        )
 
     @cached_property
     def _real_base_path(self) -> str:
@@ -4172,3 +4253,84 @@ class LocalFileSystemProvider(MusicProvider):
                 if isinstance(path, str):
                     paths.append(path)
         return paths
+
+    def _check_playlist_path(self, prov_playlist_id: str) -> None:
+        """Raise MediaNotFoundError when a path does not name a playlist file."""
+        if PurePosixPath(prov_playlist_id).suffix[1:].lower() not in PLAYLIST_EXTENSIONS:
+            msg = f"Not a playlist file: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
+
+    async def _write_playlist_file(self, file_path: str, data: str) -> None:
+        """Write playlist data to a regular (non-symlink) playlist file inside the library root."""
+        self._check_playlist_path(file_path)
+        relative_path = os.path.relpath(self.get_absolute_path(file_path), self.base_path)
+        parts = [part for part in Path(relative_path).parts if part != "."]
+        msg = f"Playlist is not a regular file inside the library: {file_path}"
+        if not parts or ".." in parts:
+            raise InvalidDataError(msg)
+
+        def _write() -> None:
+            # the root is checked against its resolved location like every read, and every
+            # further component is opened relative to the previous directory without following
+            # symlinks, so what was checked is what gets written, even if the tree changes
+            dir_fd = self._open_file(self.base_path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                for part in parts[:-1]:
+                    next_fd = os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+                    )
+                    os.close(dir_fd)
+                    dir_fd = next_fd
+                name = parts[-1]
+                try:
+                    existing = os.lstat(name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    existing = None
+                old_fd = -1
+                try:
+                    if existing is not None:
+                        if not stat.S_ISREG(existing.st_mode):
+                            raise InvalidDataError(msg)
+                        # replacing the entry must not get around the file's own write permission
+                        probe_flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                        old_fd = os.open(name, probe_flags, dir_fd=dir_fd)
+                    # written to a new file and renamed into place, so no existing inode is
+                    # opened for writing or truncated, whatever else links to it
+                    temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                    temp_fd = os.open(temp_name, flags, 0o666, dir_fd=dir_fd)
+                    try:
+                        with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
+                            if old_fd >= 0:
+                                _copy_file_security(old_fd, _file.fileno())
+                            _file.write(data)
+                        os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    except BaseException:
+                        with contextlib.suppress(OSError):
+                            os.unlink(temp_name, dir_fd=dir_fd)
+                        raise
+                finally:
+                    if old_fd >= 0:
+                        os.close(old_fd)
+            except OSError as err:
+                raise InvalidDataError(msg) from err
+            finally:
+                os.close(dir_fd)
+
+        await asyncio.to_thread(_write)
+
+
+def _copy_file_security(src_fd: int, dst_fd: int) -> None:
+    """Give dst the owner, mode and security attributes (ACLs) of src, as far as allowed."""
+    src_stat = os.fstat(src_fd)
+    # a non-root server cannot change the owner, which is no worse than before
+    with contextlib.suppress(PermissionError):
+        os.fchown(dst_fd, src_stat.st_uid, src_stat.st_gid)
+    os.fchmod(dst_fd, stat.S_IMODE(src_stat.st_mode))
+    # POSIX ACLs and other security metadata live in extended attributes on Linux; not
+    # every filesystem supports them, which must not stop the write
+    if hasattr(os, "listxattr"):
+        with contextlib.suppress(OSError):
+            for attr in os.listxattr(src_fd):
+                with contextlib.suppress(OSError):
+                    os.setxattr(dst_fd, attr, os.getxattr(src_fd, attr))

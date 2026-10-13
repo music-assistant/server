@@ -233,6 +233,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             if not tracks:
                 break
+            await self._add_audio_metadata(tracks)
             for track in tracks:
                 yield track
             page += 1
@@ -1548,6 +1549,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return []
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
+
+    async def _add_audio_metadata(self, items: Sequence[PlaylistPlayableItem]) -> None:
+        """
+        Fill in bpm and musical key from stored audio analysis on tracks that lack them.
+
+        :param items: One page of playlist items, updated in place.
+        """
+        tracks = [item for item in items if isinstance(item, Track) and item.audio_metadata is None]
+        if not tracks:
+            return
+        metadata = await self.mass.streams.audio_analysis.get_tracks_audio_metadata(tracks)
+        for track, track_metadata in zip(tracks, metadata, strict=True):
+            track.audio_metadata = track_metadata
 
     async def _handle_add_playlist_tracks(  # noqa: C901, PLR0912
         self, db_playlist_id: str | int, uris: list[str], user_id: str | None
