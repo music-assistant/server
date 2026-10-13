@@ -59,6 +59,8 @@ SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 # Such a track does still advertise plain mp3 transcodings, but requesting one of those returns
 # a 404, so the presence of an encrypted protocol is what tells us the track is unplayable.
 DRM_PROTOCOL_MARKER = "encrypted"
+# 30 second previews (policy SNIP) are served from their own CDN, even for a progressive mp3
+PREVIEW_CDN_HOST = "cf-preview-media.sndcdn.com"
 
 
 class DrmProtectedTrackError(MediaNotFoundError):
@@ -519,6 +521,8 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not track_auth:
             return None
         transcodings = track_info.get("media", {}).get("transcodings", [])
+        # a 30 second preview is only used when the track has no full stream at all
+        preview_url: str | None = None
         # Two passes: prefer progressive mp3, fall back to any mp3 or aac (which may be HLS)
         for preferred_protocol in ("progressive", None):
             for transcoding in transcodings:
@@ -528,14 +532,21 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     continue
                 if preferred_protocol is not None and protocol != preferred_protocol:
                     continue
+                if preview_url and transcoding.get("snipped"):
+                    continue
                 stream_url = (
                     f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
                     f"&track_authorization={track_auth}"
                 )
                 req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
-                if isinstance(req, dict) and "url" in req:
-                    return str(req["url"])
-        return None
+                if not isinstance(req, dict) or "url" not in req:
+                    continue
+                url = str(req["url"])
+                if transcoding.get("snipped") or urlparse(url).hostname == PREVIEW_CDN_HOST:
+                    preview_url = preview_url or url
+                    continue
+                return url
+        return preview_url
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

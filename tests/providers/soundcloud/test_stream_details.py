@@ -21,13 +21,14 @@ HLS_CDN = "https://cf-hls-media.sndcdn.com/playlist/gBClm0KpoWnf.128.mp3/playlis
 AAC_CDN = (
     "https://playback.media-streaming.soundcloud.cloud/gBClm0KpoWnf/aac_160k/abc/playlist.m3u8"
 )
+PREVIEW_CDN = "https://cf-preview-media.sndcdn.com/preview/0/30/gBClm0KpoWnf.128.mp3"
 
 NOW = 1700000000
 
 
-def _transcoding(preset: str, protocol: str, url: str) -> dict[str, Any]:
+def _transcoding(preset: str, protocol: str, url: str, *, snipped: bool = False) -> dict[str, Any]:
     """Build a single transcoding entry."""
-    return {"preset": preset, "url": url, "format": {"protocol": protocol}}
+    return {"preset": preset, "url": url, "snipped": snipped, "format": {"protocol": protocol}}
 
 
 def _track_info(
@@ -126,6 +127,64 @@ async def test_stream_url_prefers_progressive_mp3_over_aac(
     )
 
     assert result == PROGRESSIVE_CDN
+
+
+async def test_stream_url_prefers_full_aac_over_snipped_mp3(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """A full AAC stream is picked over a progressive mp3 flagged as a 30 second preview."""
+    provider._soundcloud.get = _resolver(
+        {PROGRESSIVE_API: {"url": PREVIEW_CDN}, AAC_API: {"url": AAC_CDN}}
+    )
+
+    result = await provider._get_stream_url(
+        _track_info(
+            [
+                _transcoding("mp3_0_1", "progressive", PROGRESSIVE_API, snipped=True),
+                _transcoding("aac_160k", "hls", AAC_API),
+            ]
+        )
+    )
+
+    assert result == AAC_CDN
+
+
+async def test_stream_url_prefers_full_aac_over_preview_cdn(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """A progressive mp3 resolving to the preview CDN is skipped, even when not flagged."""
+    provider._soundcloud.get = _resolver(
+        {PROGRESSIVE_API: {"url": PREVIEW_CDN}, AAC_API: {"url": AAC_CDN}}
+    )
+
+    result = await provider._get_stream_url(
+        _track_info(
+            [
+                _transcoding("mp3_0_1", "progressive", PROGRESSIVE_API),
+                _transcoding("aac_160k", "hls", AAC_API),
+            ]
+        )
+    )
+
+    assert result == AAC_CDN
+
+
+async def test_stream_url_falls_back_to_preview(provider: SoundcloudMusicProvider) -> None:
+    """A track that only offers a preview still plays that preview."""
+    provider._soundcloud.get = _resolver({PROGRESSIVE_API: {"url": PREVIEW_CDN}})
+
+    result = await provider._get_stream_url(
+        _track_info(
+            [
+                _transcoding("mp3_0_1", "hls", HLS_API, snipped=True),
+                _transcoding("mp3_0_1", "progressive", PROGRESSIVE_API, snipped=True),
+            ]
+        )
+    )
+
+    assert result == PREVIEW_CDN
+    # once a preview is found, the other preview transcodings are not requested
+    provider._soundcloud.get.assert_awaited_once()
 
 
 async def test_stream_url_ignores_unsupported_presets(provider: SoundcloudMusicProvider) -> None:
