@@ -389,7 +389,7 @@ class SendspinPlaybackSession:
         Used during dynamic leader switching to keep the push stream alive
         while the old leader is removed from the sendspin group. The PushStream
         and all internal state (pipelines, history, join-catchup) stay intact;
-        only the owning player reference is updated.
+        only the owning player reference is updated and the new leader leaves the member set.
 
         Cleans up the old leader's pipeline/channel state so its FFmpeg
         processor is released.
@@ -405,6 +405,8 @@ class SendspinPlaybackSession:
             pipeline = self._member_pipelines.pop(old_leader_id, None)
             self._pipeline_config_cache.pop(old_leader_id, None)
             self._preassigned_channels.pop(old_leader_id, None)
+            # Members exclude the leader, so the new leader's next sync_members won't remove it.
+            self._members.discard(new_player.player_id)
             self._mapping_dirty = True
         if pipeline is not None and pipeline.processor is not None:
             await self._close_member_ffmpeg(pipeline.processor)

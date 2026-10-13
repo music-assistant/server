@@ -47,6 +47,7 @@ SENDSPIN_FORMAT = SendspinAudioFormat(
 )
 LEADER_ID = "leader"
 DSP_ID = "dsp-member"
+PLAIN_ID = "plain-member"
 
 
 def _ramp_slice(index: int) -> bytes:
@@ -336,5 +337,30 @@ async def test_promotion_flushes_join_backlog_before_live_pushes(
         assert DSP_ID not in harness.session._join_catchup
         channel_id = harness.session._member_pipelines[DSP_ID].channel_id
         _assert_aligned(harness.offsets_us(channel_id))
+    finally:
+        await harness.close()
+
+
+async def test_leader_switch_to_dsp_member_keeps_alignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the leader leaves, the DSP member taking over keeps playing in sync."""
+    harness = _SessionHarness(monkeypatch, dsp_ids={DSP_ID})
+    try:
+        await harness.add_member(DSP_ID)
+        await harness.add_member(PLAIN_ID)
+        await harness.start()
+        await harness.commit(20)
+        _assert_aligned(harness.offsets_us(harness.session._member_pipelines[DSP_ID].channel_id))
+
+        # SendspinPlayer.set_members on the old leader, then the new leader's membership sync.
+        await harness.session.transfer_to(MagicMock(player_id=DSP_ID))
+        await harness.session.sync_members({PLAIN_ID})
+        # PlayerV1Role.get_audio_requirements re-resolves its channel on every call.
+        leader_channel = harness.session._resolve_channel_for_player(DSP_ID)
+        harness.push_stream.enable_pcm_cache_for_channel(leader_channel)
+        await harness.commit(30)
+
+        _assert_aligned(harness.offsets_us(leader_channel))
     finally:
         await harness.close()
