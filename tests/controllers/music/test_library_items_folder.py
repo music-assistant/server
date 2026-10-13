@@ -99,9 +99,9 @@ async def test_folder_filter_root_includes_all_tracks_of_provider(mass: MusicAss
     assert len(result) == 7
 
 
-@pytest.mark.parametrize("folder", ["Rock", "://Rock", "spotify--x://"])
+@pytest.mark.parametrize("folder", ["Rock", "://Rock", "spotify--x://", "", []])
 async def test_folder_filter_rejects_non_filesystem_folder(
-    mass: MusicAssistant, folder: str
+    mass: MusicAssistant, folder: str | list[str]
 ) -> None:
     """A folder must live on a filesystem provider instance."""
     with pytest.raises(InvalidDataError):

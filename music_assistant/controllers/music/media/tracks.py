@@ -350,7 +350,7 @@ class TracksController(MediaControllerBase[Track]):
                     "OR json_extract(tracks.metadata, '$.explicit') = 0)"
                 )
 
-        if folder:
+        if folder is not None:
             extra_query_parts.append(
                 self._folder_filter_clause(
                     [folder] if isinstance(folder, str) else folder, extra_query_params
@@ -1019,6 +1019,9 @@ class TracksController(MediaControllerBase[Track]):
         :param folders: Browse paths of filesystem folders (`<provider_instance>://<path>`).
         :param query_params: Query params dict; the clause's bound params are added to it.
         """
+        if not folders:
+            msg = "Invalid folder filter, expected at least one folder"
+            raise InvalidDataError(msg)
         providers = []
         for folder in folders:
             prov_instance, sep, _ = folder.partition("://")
