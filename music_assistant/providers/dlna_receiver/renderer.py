@@ -39,6 +39,7 @@ SCPD_DIR = Path(__file__).parent / "scpd"
 
 SoapCallback = Callable[..., Awaitable[None]]
 PlayCallback = Callable[[str], Awaitable[bool]]
+PauseCallback = Callable[[], Awaitable[bool]]
 PositionCallback = Callable[[], tuple[int, int]]
 
 # Extra entity mapping for XML attribute values (default escape() handles only &, <, >).
@@ -112,7 +113,7 @@ class UPnPRenderer:
         # Callbacks (set by provider)
         self.on_set_av_transport_uri: SoapCallback | None = None
         self.on_play: PlayCallback | None = None
-        self.on_pause: SoapCallback | None = None
+        self.on_pause: PauseCallback | None = None
         self.on_stop: SoapCallback | None = None
         self.on_get_position: PositionCallback | None = None
         self.on_set_volume: SoapCallback | None = None
@@ -350,8 +351,8 @@ class UPnPRenderer:
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 
         if action_name == "Pause":
-            if self.on_pause:
-                await self.on_pause()
+            if self.on_pause and not await self.on_pause():
+                return self._soap_error(701, "Transition not available")
             await self.set_transport_state(TRANSPORT_STATE_PAUSED)
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 

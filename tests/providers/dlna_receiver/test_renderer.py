@@ -192,6 +192,26 @@ async def test_play_pause_stop(
     assert renderer.transport_state == "STOPPED"
 
 
+async def test_pause_failure_keeps_transport_playing(
+    client: TestClient[Request, Application], renderer: UPnPRenderer
+) -> None:
+    """A target without Pause must return SOAP 701 and keep state."""
+
+    async def _cannot_pause() -> bool:
+        return False
+
+    renderer.on_pause = _cannot_pause
+    await renderer.set_transport_state("PLAYING")
+    resp = await client.post(
+        "/AVTransport/control",
+        headers={"SOAPACTION": '"urn:schemas-upnp-org:service:AVTransport:1#Pause"'},
+        data="<dummy/>",
+    )
+    assert resp.status == 500
+    assert "701" in await resp.text()
+    assert renderer.transport_state == "PLAYING"
+
+
 async def test_set_av_transport_uri_preserves_escaped_didl_metadata(
     client: TestClient[Request, Application], renderer: UPnPRenderer
 ) -> None:

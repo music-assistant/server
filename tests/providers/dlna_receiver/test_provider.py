@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import types
 import uuid
 from collections.abc import AsyncGenerator, Callable
@@ -20,6 +21,7 @@ from music_assistant_models.enums import (
     ContentType,
     IdentifierType,
     MediaType,
+    PlayerFeature,
     QueueOption,
     StreamType,
 )
@@ -32,6 +34,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.constants import CONF_BIND_IP
+from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
 from music_assistant.providers.dlna_receiver import __file__ as provider_package_file
 from music_assistant.providers.dlna_receiver.constants import (
     CONF_TARGET_PLAYERS,
@@ -555,6 +558,90 @@ def test_on_source_unselected_ignores_stale_session(provider_cls) -> None:  # ty
     assert prov._claims["player_kitchen"] == ("queue1", "sess-b")
 
 
+async def test_source_handoff_uses_owner_player_and_ignores_old_teardown() -> None:
+    """A protocol consumer hands off ownership without stopping the new owner."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    stopped: list[str] = []
+
+    async def _stop(player_id: str) -> None:
+        stopped.append(player_id)
+
+    prov.mass = cast("Any", _mass_stub(players=types.SimpleNamespace(cmd_stop=_stop)))
+    try:
+        await prov.on_source_selected(
+            source_id="player_kitchen",
+            player_id="protocol_old",
+            owner_player_id="owner_old",
+            stream_session_id="session_old",
+        )
+        await prov.on_source_selected(
+            source_id="player_kitchen",
+            player_id="protocol_new",
+            owner_player_id="owner_new",
+            stream_session_id="session_new",
+        )
+        await prov.on_source_unselected(
+            source_id="player_kitchen",
+            owner_player_id="owner_old",
+            stream_session_id="session_old",
+        )
+        assert stopped == ["owner_old"]
+        assert prov._claims["player_kitchen"] == ("owner_new", "session_new")
+    finally:
+        await prov.unload()
+
+
+class _SourcePlayers(AudioSourceMixin):
+    """Use MA's real source sessions while recording player update signals."""
+
+    def __init__(self, session: AudioSourceSession) -> None:
+        self._source_sessions = {session.player_id: session}
+        self.logger = logging.getLogger(__name__)
+        self.updated_players: list[str] = []
+
+    def get_player(self, _player_id: str) -> object:
+        """Keep the renderer's target available during the metadata update."""
+        return self
+
+    def trigger_player_update(self, player_id: str) -> None:
+        """Record the visible update emitted by MA's source metadata API."""
+        self.updated_players.append(player_id)
+
+
+async def test_metadata_reaches_real_ma_source_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live metadata reaches the owning player through MA's current public API."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    inst.stream_metadata = StreamMetadata(title="Track", artist="Artist", duration=120)
+    inst.elapsed_offset = 37
+    inst.metadata_dirty = True
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    source = (await prov.get_audio_sources())[0]
+    session = AudioSourceSession("owner_player", source, prov.instance_id)
+    players = _SourcePlayers(session)
+    prov.mass = cast("Any", _mass_stub(players=players))
+    prov._claims["player_kitchen"] = ("owner_player", "session_current")
+    sleeps = 0
+
+    async def _one_tick(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", _one_tick)
+    with pytest.raises(asyncio.CancelledError):
+        await prov._metadata_update_loop()
+
+    assert session.stream_metadata is not None
+    assert session.stream_metadata.title == "Track"
+    assert session.stream_metadata.artist == "Artist"
+    assert session.stream_metadata.elapsed_time == 37
+    assert session.stream_metadata_reported is True
+    assert players.updated_players == ["owner_player"]
+    assert inst.metadata_dirty is False
+
+
 def test_on_play_routes_through_play_media(provider_cls) -> None:  # type: ignore[no-untyped-def]
     """DLNA Play triggers the standard play_media flow with the source uri."""
     inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
@@ -600,8 +687,8 @@ def test_on_play_resumes_paused_player_without_restarting_stream(provider_cls) -
     play_commands: list[str] = []
     play_media_calls: list[tuple[object, ...]] = []
 
-    async def _record_cmd_play(player_id: str) -> None:
-        play_commands.append(player_id)
+    async def _record_output_play() -> None:
+        play_commands.append("output_player")
 
     async def _record_play_media(*args: object, **_kwargs: object) -> None:
         play_media_calls.append(args)
@@ -609,20 +696,82 @@ def test_on_play_resumes_paused_player_without_restarting_stream(provider_cls) -
     prov.mass = cast(
         "Any",
         _mass_stub(
-            players=types.SimpleNamespace(cmd_play=_record_cmd_play),
+            players=types.SimpleNamespace(
+                get_player=lambda _player_id: types.SimpleNamespace(
+                    resolve_output_player=lambda: types.SimpleNamespace(
+                        supported_features={PlayerFeature.PAUSE}, play=_record_output_play
+                    )
+                )
+            ),
             player_queues=types.SimpleNamespace(play_media=_record_play_media),
         ),
     )
 
     asyncio.run(prov._on_play(inst, TRANSPORT_STATE_PAUSED))
 
-    assert play_commands == ["player_kitchen"]
+    assert play_commands == ["output_player"]
     assert play_media_calls == []
     assert inst.current_stream_url == "http://cp.local/track.flac"
     assert inst.stream_metadata is metadata
     assert inst.elapsed_offset == 37
     assert inst.play_start_time is not None
     assert inst.metadata_dirty is True
+
+
+@pytest.mark.asyncio
+async def test_sender_pause_controls_supported_output_player() -> None:
+    """Sender Pause controls the output without restarting the source queue."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    inst.play_start_time = 100.0
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    commands: list[str] = []
+
+    async def _pause() -> None:
+        commands.append("pause")
+
+    async def _play() -> None:
+        commands.append("play")
+
+    output = types.SimpleNamespace(
+        supported_features={PlayerFeature.PAUSE}, pause=_pause, play=_play
+    )
+    prov.mass = cast(
+        "Any",
+        _mass_stub(
+            players=types.SimpleNamespace(
+                get_player=lambda _player_id: types.SimpleNamespace(
+                    resolve_output_player=lambda: output
+                )
+            )
+        ),
+    )
+
+    assert await prov._on_pause(inst) is True
+    assert await prov._on_play(inst, TRANSPORT_STATE_PAUSED) is True
+    assert commands == ["pause", "play"]
+    assert inst.current_stream_url == "http://cp.local/track.flac"
+
+
+@pytest.mark.asyncio
+async def test_sender_pause_rejects_output_without_pause() -> None:
+    """Unsupported Pause leaves transport progress unchanged."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    inst.play_start_time = 100.0
+    prov = _make_contract_provider(DLNAReceiverProvider, {"player_kitchen": inst})
+    output = types.SimpleNamespace(supported_features=set())
+    prov.mass = cast(
+        "Any",
+        _mass_stub(
+            players=types.SimpleNamespace(
+                get_player=lambda _player_id: types.SimpleNamespace(
+                    resolve_output_player=lambda: output
+                )
+            )
+        ),
+    )
+
+    assert await prov._on_pause(inst) is False
+    assert inst.play_start_time == 100.0
 
 
 def test_on_play_is_idempotent_while_already_playing(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -1074,12 +1223,12 @@ async def test_metadata_loop_does_not_hide_unexpected_errors(
     provider_cls: type[DLNAReceiverProvider],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unexpected queue metadata errors terminate the tracked task visibly."""
+    """Unexpected source metadata errors terminate the tracked task visibly."""
     inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
     inst.stream_metadata = StreamMetadata(title="Track")
     inst.metadata_dirty = True
     prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
-    prov._claims["player_kitchen"] = ("queue1", "session1")
+    prov._claims["player_kitchen"] = ("player_kitchen", "session1")
 
     async def _no_delay(_seconds: float) -> None:
         return None
@@ -1091,8 +1240,10 @@ async def test_metadata_loop_does_not_hide_unexpected_errors(
     prov.mass = cast(
         "Any",
         _mass_stub(
-            players=types.SimpleNamespace(get_player=lambda _player_id: object()),
-            streams=types.SimpleNamespace(update_stream_metadata=_raise_unexpected),
+            players=types.SimpleNamespace(
+                get_player=lambda _player_id: object(),
+                update_source_metadata=_raise_unexpected,
+            ),
         ),
     )
 

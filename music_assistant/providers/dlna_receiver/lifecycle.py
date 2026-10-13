@@ -27,6 +27,7 @@ LOGGER = logging.getLogger(__name__)
 
 SetTransportUriCallback = Callable[[RendererInstance, str, str | None], Awaitable[None]]
 PlayCallback = Callable[[RendererInstance, str], Awaitable[bool]]
+PauseCallback = Callable[[RendererInstance], Awaitable[bool]]
 InstanceCallback = Callable[[RendererInstance], Awaitable[None]]
 PositionCallback = Callable[[RendererInstance], tuple[int, int]]
 VolumeCallback = Callable[[RendererInstance, int], Awaitable[None]]
@@ -40,7 +41,7 @@ class RendererCallbacks:
 
     on_set_av_transport_uri: SetTransportUriCallback
     on_play: PlayCallback
-    on_pause: InstanceCallback
+    on_pause: PauseCallback
     on_stop: InstanceCallback
     on_get_position: PositionCallback
     on_set_volume: VolumeCallback

@@ -166,7 +166,7 @@ def _callbacks() -> RendererCallbacks:
     return RendererCallbacks(
         on_set_av_transport_uri=cast("Any", _noop),
         on_play=cast("Any", _play),
-        on_pause=cast("Any", _noop),
+        on_pause=cast("Any", _play),
         on_stop=cast("Any", _noop),
         on_get_position=lambda _instance: (0, 0),
         on_set_volume=cast("Any", _noop),

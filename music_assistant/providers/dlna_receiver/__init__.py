@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .provider import DLNAReceiverProvider
+
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
@@ -42,7 +44,4 @@ async def setup(
     config: ProviderConfig,
 ) -> ProviderInstanceType:
     """Set up the DLNA Receiver provider."""
-    # Deferred to avoid loading music_assistant internals at module import time.
-    from .provider import DLNAReceiverProvider  # noqa: PLC0415, RUF100
-
     return DLNAReceiverProvider(mass, manifest, config)
