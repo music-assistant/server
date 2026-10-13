@@ -2990,8 +2990,9 @@ class StreamsAudio:
                             blended = max(
                                 0, mix_start_collected + overlap_pulled - len(overlap_overshoot)
                             )
+                            assert play_log_entry.seek_position is not None
                             queue_track.streamdetails.seek_position = min(
-                                queue_track.streamdetails.seek_position,
+                                play_log_entry.seek_position,
                                 raw_seek_position
                                 + blended / pcm_sample_size * track_playback_speed,
                             )
@@ -3107,8 +3108,9 @@ class StreamsAudio:
                     tail_seconds = len(last_fadeout_part) / pcm_sample_size
                     # streamdetails.duration is in media-time; seconds_streamed is stream-time
                     # (post-atempo), so we scale by the track's playback_speed to recover media-time.
+                    assert play_log_entry.seek_position is not None
                     queue_track.streamdetails.duration = int(
-                        queue_track.streamdetails.seek_position
+                        play_log_entry.seek_position
                         + (seconds_streamed + tail_seconds) * track_playback_speed
                     )
                     # propagate accurate duration to queue_item so UI displays it

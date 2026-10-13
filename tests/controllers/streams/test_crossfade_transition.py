@@ -6,20 +6,27 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType
+import pytest
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlaybackState,
+    RepeatMode,
+)
 from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.player_queue import PlayerQueue
 
+from music_assistant.controllers.player_queues.controller import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams import audio as audio_module
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
-
-if TYPE_CHECKING:
-    import pytest
 
 TEST_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
@@ -66,6 +73,8 @@ def _queue_item(item_id: str, name: str, duration: int = 300) -> SimpleNamespace
     return SimpleNamespace(
         queue_id="queue-1",
         queue_item_id=item_id,
+        available=True,
+        sort_index=0,
         name=name,
         media_type=MediaType.TRACK,
         media_item=None,
@@ -219,6 +228,92 @@ def _install_counting_mix(monkeypatch: pytest.MonkeyPatch, audio: StreamsAudio) 
 
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _counting_mix)
     return calls
+
+
+@pytest.mark.parametrize("repeat_mode", [RepeatMode.ONE, RepeatMode.ALL])
+async def test_flow_repeat_preload_preserves_progress_and_duration(
+    monkeypatch: pytest.MonkeyPatch, repeat_mode: RepeatMode
+) -> None:
+    """Preloading a playing item cannot change its flow offset or full duration."""
+    item = _queue_item("item-1", "Book", duration=120)
+    item.streamdetails.seek_position = 59
+    audio, _queue, mass = _flow_audio(
+        monkeypatch, next_item=None, load_next=[], crossfade_mode=CrossfadeMode.DISABLED
+    )
+    queue = PlayerQueue(
+        queue_id="queue-1",
+        display_name="Queue",
+        active=True,
+        available=True,
+        items=1,
+        repeat_mode=repeat_mode,
+        current_index=0,
+    )
+    queue.current_item = cast("Any", item)
+    data = PlayerQueueData(queue=queue, items=[cast("Any", item)], session_id="session-1")
+    controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.mass = mass
+    controller.logger = MagicMock()
+    controller._queue_data = {queue.queue_id: data}
+    mass.player_queues.queue_data.return_value = data
+    mass.player_queues.get.return_value = queue
+    tasks: list[asyncio.Task[None]] = []
+    mass.create_task.side_effect = lambda coro, **_kwargs: tasks.append(asyncio.create_task(coro))
+    controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+
+    async def _load_item(queue_item: Any, *, seek_position: int) -> None:
+        queue_item.streamdetails.seek_position = seek_position
+
+    monkeypatch.setattr(controller, "_load_item", _load_item)
+    loads = 0
+
+    async def _next_item(*args: Any, **kwargs: Any) -> Any:
+        nonlocal loads
+        loads += 1
+        if loads > 1:
+            raise QueueEmpty
+        return await controller.load_next_queue_item(*args, **kwargs)
+
+    mass.player_queues.load_next_queue_item.side_effect = _next_item
+    opened: list[int] = []
+
+    async def _stream(queue_item: Any, **kwargs: Any) -> AsyncGenerator[bytes]:
+        seek = kwargs["seek_position"]
+        opened.append(seek)
+        for second in range(120 - seek):
+            yield b"\x10\x20" * (TEST_PCM_FORMAT.pcm_sample_size // 2)
+            if len(opened) == 1 and second == 0:
+                controller._preload_next_item(queue.queue_id, item.queue_item_id)
+                await asyncio.gather(*tasks)
+                assert queue_item.streamdetails.seek_position == 0
+                assert data.flow_mode_stream_log[0].seek_position == 59
+                player = SimpleNamespace(
+                    state=SimpleNamespace(
+                        corrected_elapsed_time=10, playback_state=PlaybackState.PLAYING
+                    )
+                )
+                assert controller._get_flow_queue_stream_index(queue, cast("Any", player)) == (
+                    0,
+                    69,
+                )
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _stream)
+    total = await _drain(
+        audio.get_queue_flow_stream(
+            queue, cast("Any", item), TEST_PCM_FORMAT, session_id="session-1"
+        )
+    )
+    assert opened == [59, 0]
+    assert total == 181 * TEST_PCM_FORMAT.pcm_sample_size
+    assert [entry.seek_position for entry in data.flow_mode_stream_log] == [59, 0]
+    assert [entry.seconds_streamed for entry in data.flow_mode_stream_log] == [61, 120]
+    assert [entry.duration for entry in data.flow_mode_stream_log] == [120, 120]
+    assert item.duration == item.streamdetails.duration == 120
+    controller._enqueue_next_item.assert_called_once_with(queue.queue_id, item)
+    player = SimpleNamespace(
+        state=SimpleNamespace(corrected_elapsed_time=66, playback_state=PlaybackState.PLAYING)
+    )
+    assert controller._get_flow_queue_stream_index(queue, cast("Any", player)) == (0, 5)
 
 
 async def test_flow_mixer_failure_restores_seek_snapshot(
