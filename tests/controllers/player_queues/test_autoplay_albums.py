@@ -261,6 +261,28 @@ def _queued_track(artists: list[Artist | ItemMapping], album: Album | ItemMappin
     )
 
 
+def _stub_album_lookup(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    albums: list[Album],
+    error: type[Exception] | None = None,
+) -> AsyncMock:
+    """Let MA load the given provider albums by ID, or fail with the error. Returns the lookup."""
+    by_id = {album.item_id: album for album in albums}
+    get = mass.music.albums.get
+
+    async def _get(item_id: str, *args: Any, **kwargs: Any) -> Album:
+        if item_id not in by_id:
+            return await get(item_id, *args, **kwargs)
+        if error is not None:
+            raise error("gone")
+        return by_id[item_id]
+
+    lookup = AsyncMock(side_effect=_get)
+    monkeypatch.setattr(mass.music.albums, "get", lookup)
+    return lookup
+
+
 async def _library_artist(mass: MusicAssistant, name: str, **kwargs: Any) -> Artist:
     """Add a library artist with the given name."""
     return await mass.music.artists.add_item_to_library(
@@ -294,7 +316,8 @@ async def test_the_next_album_follows_the_album_artist(
 
 
 @pytest.mark.parametrize(
-    "album_kind", ["various artists", "various artists spelled", "no album", "missing album"]
+    "album_kind",
+    ["various artists", "various artists spelled", "no album", "missing album", "album times out"],
 )
 async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, album_kind: str
@@ -318,6 +341,11 @@ async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
         album = ItemMapping(
             media_type=MediaType.ALBUM, item_id="999", provider="library", name="Gone"
         )
+    elif album_kind == "album times out":
+        album = ItemMapping(
+            media_type=MediaType.ALBUM, item_id="999", provider="streaming", name="Slow"
+        )
+        monkeypatch.setattr(mass.music.albums, "get", AsyncMock(side_effect=TimeoutError))
     queue = _queue(mass, monkeypatch, _queued_track([artist], album))
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
 
@@ -327,16 +355,18 @@ async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
     assert _names(result) == [f"{expected} {n}" for n in (1, 2, 3)]
 
 
-@pytest.mark.parametrize("seed", ["no artist", "missing artist", "author"])
+@pytest.mark.parametrize("seed", ["no artist", "missing artist", "artist times out", "author"])
 async def test_no_album_without_a_music_artist(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, seed: str
 ) -> None:
     """A track without an artist, with one that can't be loaded, or by an author, gets no album."""
     artists: list[Artist | ItemMapping] = []
-    if seed == "missing artist":
+    if seed in ("missing artist", "artist times out"):
         artists = [
             ItemMapping(media_type=MediaType.ARTIST, item_id="999", provider="library", name="Gone")
         ]
+    if seed == "artist times out":
+        monkeypatch.setattr(mass.music.artists, "get", AsyncMock(side_effect=TimeoutError))
     if seed == "author":
         author = await _library_artist(mass, "Author", artist_type=ArtistType.AUTHOR)
         await _add_album(mass, author, "Book", 2000)
@@ -498,14 +528,20 @@ async def test_auto_picks_the_first_album_not_played_yet(
 ) -> None:
     """Auto's tracks give the next album: no album, singles and played albums are skipped."""
     played, picked, later = (_streaming_album(name, 1970) for name in "ABC")
-    single = replace(_streaming_album("S", 1970), album_type=AlbumType.SINGLE)
-    lookup = _stub_provider(mass, [played, picked, later, single])
+    single, mapped_single = (
+        replace(_streaming_album(name, 1970), album_type=AlbumType.SINGLE) for name in "ST"
+    )
+    lookup = _stub_provider(mass, [played, picked, later, single, mapped_single])
+    _stub_album_lookup(mass, monkeypatch, [played, picked, later, single, mapped_single])
     artist = _provider_artist()
     queue = _queue(mass, monkeypatch, _queued_track([artist], played))
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
     auto = [
         _queued_track([artist], None),
         _queued_track([artist], single),
+        # a provider often gives only a mapping, which tells no album type
+        _queued_track([artist], ItemMapping.from_item(mapped_single)),
+        _queued_track([artist], ItemMapping.from_item(mapped_single)),
         _queued_track([artist], ItemMapping.from_item(played)),
         _queued_track([artist], ItemMapping.from_item(picked)),
         _queued_track([artist], ItemMapping.from_item(later)),
@@ -534,6 +570,9 @@ async def test_auto_tries_each_album_once(
     """An album that fails is tried once, up to 3 albums; then Auto's loose tracks stay."""
     albums = [_streaming_album(name, 1970) for name in "ABCD"]
     lookup = _stub_provider(mass, albums)
+    _stub_album_lookup(mass, monkeypatch, albums)
+    library_lookup = AsyncMock(wraps=mass.music.albums.get_library_item_by_prov_id)
+    monkeypatch.setattr(mass.music.albums, "get_library_item_by_prov_id", library_lookup)
     names = {album.item_id: album.name for album in albums}
     tracks = lookup.side_effect
 
@@ -553,6 +592,26 @@ async def test_auto_tries_each_album_once(
 
     assert _names(result) == ([f"{expected} 1", f"{expected} 2"] if expected else [])
     assert lookup.await_count == tries
+    assert library_lookup.await_count == tries
+
+
+async def test_an_album_auto_cannot_load_counts_as_a_failure(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An album of Auto's that fails to load is one of the 3 failures, then loose tracks stay."""
+    albums = [_streaming_album(name, 1970) for name in "ABCD"]
+    lookup = _stub_provider(mass, albums)
+    album_lookup = _stub_album_lookup(mass, monkeypatch, albums, TimeoutError)
+    artist = _provider_artist()
+    queue = _queue(mass, monkeypatch, _queued_track([artist], None))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    auto = [_queued_track([artist], ItemMapping.from_item(album)) for album in albums]
+
+    result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
+
+    assert result == []
+    assert album_lookup.await_count == 3
+    lookup.assert_not_awaited()
 
 
 async def test_auto_skips_the_provider_copy_of_a_played_library_album(
@@ -561,6 +620,7 @@ async def test_auto_skips_the_provider_copy_of_a_played_library_album(
     """Auto's provider track of an album that played from the library counts as played."""
     heard, picked = (_streaming_album(name, 1970) for name in "AB")
     _stub_provider(mass, [heard, picked])
+    _stub_album_lookup(mass, monkeypatch, [heard, picked])
     artist = await _add_artist(mass)
     library_copy = await mass.music.albums.add_item_to_library(
         replace(

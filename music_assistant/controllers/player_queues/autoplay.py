@@ -225,7 +225,7 @@ class Autoplay:
                 anchor = await self.mass.music.albums.get(
                     last.album.item_id, last.album.provider, allow_update_metadata=False
                 )
-            except MusicAssistantError as err:
+            except ALBUM_LOAD_ERRORS as err:
                 self.logger.debug("Unable to load album %s: %s", last.album.name, err)
         if anchor and anchor.artists and not _is_various_artists(anchor.artists[0]):
             seed: Artist | ItemMapping = anchor.artists[0]
@@ -242,7 +242,7 @@ class Autoplay:
                     seed.item_id, seed.provider, allow_update_metadata=False
                 )
             )
-        except MusicAssistantError as err:
+        except ALBUM_LOAD_ERRORS as err:
             self.logger.debug("Unable to load artist %s, using Auto instead: %s", seed.name, err)
             return []
         played = _played_albums(tracks)
@@ -276,25 +276,41 @@ class Autoplay:
         for track in tracks:
             if attempts == ALBUM_PICK_ATTEMPTS:
                 break
-            if (album := track.album) is None:
+            if (mapping := track.album) is None or album_is_played([mapping], skipped):
                 continue
-            # Auto's tracks come from providers, while the queue may hold the library copy
-            album = (
-                await self.mass.music.albums.get_library_item_by_prov_id(
-                    album.item_id, album.provider
+            try:
+                album = await self._auto_album(mapping)
+            except ALBUM_LOAD_ERRORS as err:
+                self.logger.log(
+                    provider_fetch_log_level(err), "Unable to load album %s: %s", mapping.name, err
                 )
-                or album
-            )
-            single = isinstance(album, Album) and album.album_type == AlbumType.SINGLE
-            if single or album_is_played([album], skipped):
+                skipped.append(mapping)
+                attempts += 1
                 continue
-            # an album is tried once, also when several of Auto's tracks come from it
+            played = album_is_played([album], skipped)
+            # an album is looked at once, also when several of Auto's tracks come from it
             skipped.append(album)
+            if played or album.album_type == AlbumType.SINGLE:
+                continue
             attempts += 1
             if album_tracks := await self._album_tracks_to_play(queue_data.userid, [album]):
                 return album_tracks
         self.logger.debug("Auto found no album to play, keeping its tracks")
         return []
+
+    async def _auto_album(self, album: Album | ItemMapping) -> Album:
+        """Return the library copy of an album of Auto's, or else the album itself, loaded."""
+        # Auto's tracks come from providers, while the queue may hold the library copy
+        if library_album := await self.mass.music.albums.get_library_item_by_prov_id(
+            album.item_id, album.provider
+        ):
+            return library_album
+        if isinstance(album, Album):
+            return album
+        # a mapping tells no album type, so load the album to know a single
+        return await self.mass.music.albums.get(
+            album.item_id, album.provider, allow_update_metadata=False
+        )
 
     async def _next_album_tracks(
         self,
