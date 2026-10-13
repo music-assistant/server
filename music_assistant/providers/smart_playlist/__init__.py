@@ -604,13 +604,13 @@ class SmartPlaylistProvider(PluginProvider):
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         if existing is not None:
             parsed_rules.is_dynamic = existing.is_dynamic
-            # the user never got the folders on sources hidden from them, so keep those
+            # the user never got the folders on sources hidden from them, so keep those, and
+            # keep the stored order so an unchanged save does not count as a rule change
             visible = self._visible_folders(existing.folder_paths)
-            parsed_rules.folder_paths += [
-                path
-                for path in existing.folder_paths
-                if path not in visible and path not in parsed_rules.folder_paths
-            ]
+            submitted = parsed_rules.folder_paths
+            parsed_rules.folder_paths = [
+                path for path in existing.folder_paths if path not in visible or path in submitted
+            ] + [path for path in submitted if path not in existing.folder_paths]
         self._validate_rules(parsed_rules)
 
         rules_changed = existing is None or existing.to_dict() != parsed_rules.to_dict()
@@ -647,7 +647,7 @@ class SmartPlaylistProvider(PluginProvider):
                     "playlist_id": playlist_id,
                     "name": self._names_store.get(playlist_id, playlist_id),
                     "rules": visible_rules.to_dict(),
-                    "summary": self._summary(visible_rules),
+                    "summary": visible_rules.human_readable(),
                 }
             )
         return result
@@ -1452,17 +1452,13 @@ class SmartPlaylistProvider(PluginProvider):
         """Return the rules without the folders on music sources hidden from the current user."""
         return dc_replace(rules, folder_paths=self._visible_folders(rules.folder_paths))
 
-    def _summary(self, rules: SmartPlaylistRules) -> str:
-        """Return the rules summary, naming folders by their music source."""
-        return rules.human_readable({prov.instance_id: prov.name for prov in self.mass.providers})
-
     def _description_for(self, playlist_id: str, rules: SmartPlaylistRules) -> str:
         """Return the stored AI description when enabled, else the rules summary."""
         if self.config.get_value(CONF_AI_DESCRIPTIONS) and (
             stored := self._descriptions_store.get(playlist_id)
         ):
             return stored
-        return f"{DESCRIPTION_PREFIX}{self._summary(rules)}"
+        return f"{DESCRIPTION_PREFIX}{rules.human_readable()}"
 
     def _schedule_ai_description_refresh(self, playlist_id: str) -> None:
         """Schedule a background AI description refresh, deduped per playlist."""
@@ -1545,7 +1541,7 @@ class SmartPlaylistProvider(PluginProvider):
             f"Write it in the language matching the locale '{locale}'. "
             "Reply with only the description, no quotes or preamble.\n"
             f"Playlist name: {name}\n"
-            f"It contains tracks matching these rules: {self._summary(rules)}"
+            f"It contains tracks matching these rules: {rules.human_readable()}"
         )
 
     async def _load_rules_from_disk(self) -> None:

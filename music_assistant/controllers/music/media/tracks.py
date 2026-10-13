@@ -353,7 +353,7 @@ class TracksController(MediaControllerBase[Track]):
         if folder is not None:
             extra_query_parts.append(
                 self._folder_filter_clause(
-                    [folder] if isinstance(folder, str) else folder, extra_query_params
+                    [folder] if isinstance(folder, str) else folder, extra_query_params, provider
                 )
             )
 
@@ -1012,17 +1012,22 @@ class TracksController(MediaControllerBase[Track]):
                 await self.add_provider_mappings(db_track.item_id, match)
                 cur_provider_domains.add(provider.domain)
 
-    def _folder_filter_clause(self, folders: list[str], query_params: dict[str, Any]) -> str:
+    def _folder_filter_clause(
+        self,
+        folders: list[str],
+        query_params: dict[str, Any],
+        provider: str | list[str] | None = None,
+    ) -> str:
         """
         Return the SQL clause that restricts tracks to files within the given folder(s).
 
         :param folders: Browse paths of filesystem folders (`<provider_instance>://<path>`).
         :param query_params: Query params dict; the clause's bound params are added to it.
+        :param provider: The provider filter of the query; folders outside it are dropped.
         """
         if not folders:
             msg = "Invalid folder filter, expected at least one folder"
             raise InvalidDataError(msg)
-        providers = []
         for folder in folders:
             prov_instance, sep, _ = folder.partition("://")
             if not sep or not prov_instance.startswith("filesystem_"):
@@ -1030,11 +1035,12 @@ class TracksController(MediaControllerBase[Track]):
                     f"Invalid folder {folder!r}, expected '<filesystem provider instance>://<path>'"
                 )
                 raise InvalidDataError(msg)
-            providers.append(prov_instance)
         # a track can also be mapped to a source the user may see, so drop the folders on
-        # sources hidden from the user here (raises when none of them is visible)
-        if (allowed := self._ensure_provider_filter(providers)) is not None:
-            folders = [f for f, prov in zip(folders, providers, strict=True) if prov in allowed]
+        # sources hidden from the user or outside the requested providers here
+        if (allowed := self._ensure_provider_filter(provider)) is not None:
+            folders = [f for f in folders if f.partition("://")[0] in allowed]
+        if not folders:
+            return "0"
         folder_conditions = []
         for idx, folder in enumerate(folders):
             prov_instance, _, rel_path = folder.partition("://")

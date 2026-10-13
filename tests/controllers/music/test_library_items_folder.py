@@ -8,7 +8,7 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing, SortField
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.mass import MusicAssistant
@@ -139,11 +139,14 @@ async def test_folder_filter_ignores_folders_on_hidden_sources(mass: MusicAssist
         "music_assistant.controllers.music.media.base.get_current_user",
         return_value=User(user_id="user-a", username="user-a", role=UserRole.USER),
     ):
-        with pytest.raises(InsufficientPermissions):
-            await mass.music.tracks.library_items(folder=f"{FS_OTHER}://Private")
+        result = await mass.music.tracks.library_items(folder=f"{FS_OTHER}://Private")
+        assert result == []
         result = await mass.music.tracks.library_items(
             folder=[f"{FS}://Missing", f"{FS_OTHER}://Private"]
         )
         assert result == []
         result = await mass.music.tracks.library_items(folder=f"{FS}://Public")
         assert [t.name for t in result] == ["shared"]
+    # a background refresh carries the user's sources as provider filter instead of a user
+    result = await mass.music.tracks.library_items(folder=f"{FS_OTHER}://Private", provider=[FS])
+    assert result == []

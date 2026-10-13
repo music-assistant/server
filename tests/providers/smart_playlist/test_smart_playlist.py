@@ -113,14 +113,11 @@ class TestSmartPlaylistRules:
         assert rules.logic == LOGIC_AND
 
     def test_human_readable_folders(self) -> None:
-        """human_readable names each folder by its music source and full path."""
+        """human_readable only counts the folders, which may be on hidden sources."""
         rules = SmartPlaylistRules(
             folder_paths=["filesystem_local--abc://Rock/Classic", "filesystem_local--abc://"]
         )
-        assert (
-            rules.human_readable({"filesystem_local--abc": "My Music"})
-            == "Folders: My Music/Rock/Classic, My Music"
-        )
+        assert rules.human_readable() == "Folders: 2"
 
     @pytest.mark.parametrize("folder", ["Rock/Classic", "://Rock", "spotify--x://"])
     def test_validate_rejects_folder_without_provider(self, folder: str) -> None:
@@ -1705,7 +1702,7 @@ async def test_rules_hide_folders_on_hidden_music_sources(
     mass = cast("Any", plugin.mass)
     mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
     shared, private = "filesystem_local--shared://80s", "filesystem_local--private://Diary"
-    plugin._rules_store["abc"] = SmartPlaylistRules(folder_paths=[shared, private])
+    plugin._rules_store["abc"] = SmartPlaylistRules(folder_paths=[private, shared])
     set_music_source_access(
         mass,
         {
@@ -1725,6 +1722,9 @@ async def test_rules_hide_folders_on_hidden_music_sources(
     assert listed["rules"]["folder_paths"] == [shared]
     assert "Diary" not in listed["summary"]
 
+    # an unchanged save keeps the stored order, so it is no rule change
+    await plugin.update_smart_playlist_rules("abc", {"folder_paths": [shared]})
+    assert plugin._rules_store["abc"].folder_paths == [private, shared]
     await plugin.update_smart_playlist_rules("abc", {"folder_paths": []})
     assert plugin._rules_store["abc"].folder_paths == [private]
 
