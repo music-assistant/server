@@ -93,11 +93,11 @@ class Music247eAPIClient:
         variables_after_key: str = "after",
     ) -> AsyncGenerator[JsonLike]:
         """Paginate GraphQL results."""
-        after = None
-        has_more = True
-        i = 0
-        while has_more and (i < MAX_PAGES_PAGINATED):
-            self.logger.log(VERBOSE_LOG_LEVEL, "Paginating GraphQL query, page %s", i + 1)
+        after: str | None = None
+        seen_cursors: set[str] = set()
+        page = 1
+        while True:
+            self.logger.log(VERBOSE_LOG_LEVEL, "Paginating GraphQL query, page %s", page)
             vars_with_pagination = variables | {
                 variables_first_key: PAGE_SIZE,
                 variables_after_key: after,
@@ -113,6 +113,21 @@ class Music247eAPIClient:
                 yield item
 
             page_info = page_data.get("pageInfo", {})
-            has_more = page_info.get("hasNextPage", False)
-            after = page_info.get("endCursor", None)
-            i += 1
+            if not page_info.get("hasNextPage", False):
+                return
+
+            next_cursor = page_info.get("endCursor")
+            if not next_cursor or next_cursor in seen_cursors:
+                self.logger.warning(
+                    "Stopped paginating GraphQL query: server returned a missing or repeated cursor"
+                )
+                return
+
+            if page >= MAX_PAGES_PAGINATED:
+                self.logger.warning(
+                    "Stopped paginating GraphQL query: reached the maximum number of pages"
+                )
+                return
+            seen_cursors.add(next_cursor)
+            after = next_cursor
+            page += 1

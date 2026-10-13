@@ -80,10 +80,24 @@ class Music247eLibraryManager:
                             id
                             title
                             cover(size: $imageSize)
+                            genre
+                            label
+                            releaseDate
+                            available
+                            upc
+                            type
+                            share
                             artist {
                                 id
                                 title
                                 cover(size: $imageSize)
+                            }
+                            featuredArtists {
+                                items {
+                                    id
+                                    title
+                                    cover(size: $imageSize)
+                                }
                             }
                         }
                     }
@@ -97,7 +111,7 @@ class Music247eLibraryManager:
             query, variables, ["data", "me", "favorites", "albums"]
         ):
             self.logger.log(VERBOSE_LOG_LEVEL, "Parsing album item: %s", item)
-            yield await parse_album(self.provider, item)
+            yield parse_album(self.provider, item)
 
     async def get_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
@@ -118,6 +132,26 @@ class Music247eLibraryManager:
                             album {
                                 id
                                 title
+                                cover(size: $imageSize)
+                                genre
+                                label
+                                releaseDate
+                                available
+                                upc
+                                type
+                                share
+                                artist {
+                                    id
+                                    title
+                                    cover(size: $imageSize)
+                                }
+                                featuredArtists {
+                                    items {
+                                        id
+                                        title
+                                        cover(size: $imageSize)
+                                    }
+                                }
                             }
                             artist {
                                 id
@@ -229,6 +263,23 @@ class Music247eLibraryManager:
                 f"Cannot remove media type {media_type} from library for provider "
                 f"{self.provider.name}"
             )
+
+        if media_type == MediaType.PLAYLIST:
+            playlist = await self.provider.get_playlist(prov_item_id)
+            if playlist.is_editable:
+                query = """
+                    mutation deletePlaylist($id: ID!) {
+                        playlists {
+                            delete(id: $id) {
+                                ok
+                            }
+                        }
+                    }
+                """
+                result = await self.api.post_graphql(query, {"id": prov_item_id})
+                return bool(
+                    result.get("data", {}).get("playlists", {}).get("delete", {}).get("ok", False)
+                )
 
         media_type_str = media_type.capitalize()
 

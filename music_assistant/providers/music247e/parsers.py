@@ -19,6 +19,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.helpers.lyrics import convert_to_lrc_lyrics
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version, try_parse_int
 from music_assistant.providers.music247e.constants import (
     VARIOUS_ARTISTS_ID,
@@ -63,7 +64,7 @@ async def parse_track(provider: Music247eProvider, track_obj: JsonLike) -> Track
         track.artists.append(feat_artist)
 
     if "album" in track_obj:
-        album = await parse_album(provider, track_obj["album"])
+        album = parse_album(provider, track_obj["album"])
         track.album = album
 
     if track_genre := track_obj.get("genre"):
@@ -118,11 +119,8 @@ def parse_artist(provider: Music247eProvider, artist_obj: JsonLike) -> Artist:
     return artist
 
 
-async def parse_album(provider: Music247eProvider, album_obj: JsonLike) -> Album:
+def parse_album(provider: Music247eProvider, album_obj: JsonLike) -> Album:
     """Parse album data from the 24-7 (247e) API response."""
-    if "artist" not in album_obj:
-        return await provider.get_album(str(album_obj["id"]))
-
     name, version = parse_title_and_version(album_obj["title"])
     album = Album(
         item_id=album_obj["id"],
@@ -231,16 +229,15 @@ async def parse_lyrics(lyrics: list[JsonLike]) -> tuple[str | None, str | None]:
         return None, None
 
     plain = ""
-    lrc = ""
+    timed = [
+        (item.get("line", ""), item["startInMs"])
+        for item in lyrics
+        if item.get("startInMs") is not None
+    ]
+    lrc = convert_to_lrc_lyrics(timed)
 
     for item in lyrics:
         line = item.get("line", "")
-        if (start_ms := item.get("startInMs")) is not None:
-            minutes = start_ms // 60000
-            seconds = (start_ms % 60000) // 1000
-            milliseconds = start_ms % 1000
-            lrc += f"[{minutes:02}:{seconds:02}.{milliseconds:02}] {line}\n"
-
         plain += line + "\n"
 
     plain = plain.strip()

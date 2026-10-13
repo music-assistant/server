@@ -59,6 +59,26 @@ class Music247eMediaManager:
                             album {
                                 id
                                 title
+                                cover(size: $imageSize)
+                                genre
+                                label
+                                releaseDate
+                                available
+                                upc
+                                type
+                                share
+                                artist {
+                                    id
+                                    title
+                                    cover(size: $imageSize)
+                                }
+                                featuredArtists {
+                                    items {
+                                        id
+                                        title
+                                        cover(size: $imageSize)
+                                    }
+                                }
                             }
                             artist {
                                 id
@@ -86,10 +106,24 @@ class Music247eMediaManager:
                         id
                         title
                         cover(size: $imageSize)
+                        genre
+                        label
+                        releaseDate
+                        available
+                        upc
+                        type
+                        share
                         artist {
                             id
                             title
                             cover(size: $imageSize)
+                        }
+                        featuredArtists {
+                            items {
+                                id
+                                title
+                                cover(size: $imageSize)
+                            }
                         }
                     }
                 }
@@ -160,7 +194,7 @@ class Music247eMediaManager:
             ]
         if "albums" in result:
             search_result.albums = [
-                await parse_album(self.provider, item) for item in result["albums"].get("items", [])
+                parse_album(self.provider, item) for item in result["albums"].get("items", [])
             ]
         if "tracks" in result:
             search_result.tracks = [
@@ -212,6 +246,25 @@ class Music247eMediaManager:
                                 id
                                 title
                                 cover(size: $imageSize)
+                                genre
+                                label
+                                releaseDate
+                                available
+                                upc
+                                type
+                                share
+                                artist {
+                                    id
+                                    title
+                                    cover(size: $imageSize)
+                                }
+                                featuredArtists {
+                                    items {
+                                        id
+                                        title
+                                        cover(size: $imageSize)
+                                    }
+                                }
                             }
                         }
                     }
@@ -230,7 +283,7 @@ class Music247eMediaManager:
             variables,
             ["data", "catalog", "artist", "albums"],
         ):
-            albums.append(await parse_album(self.provider, item))
+            albums.append(parse_album(self.provider, item))
 
         return albums
 
@@ -362,7 +415,7 @@ class Music247eMediaManager:
         result = await self.api.post_graphql(query, variables)
         if not result or not result.get("data", {}).get("catalog", {}).get("album"):
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
-        return await parse_album(self.provider, result["data"]["catalog"]["album"])
+        return parse_album(self.provider, result["data"]["catalog"]["album"])
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -386,6 +439,26 @@ class Music247eMediaManager:
                     album {
                         id
                         title
+                        cover(size: $imageSize)
+                        genre
+                        label
+                        releaseDate
+                        available
+                        upc
+                        type
+                        share
+                        artist {
+                            id
+                            title
+                            cover(size: $imageSize)
+                        }
+                        featuredArtists {
+                            items {
+                                id
+                                title
+                                cover(size: $imageSize)
+                            }
+                        }
                     }
                     artist {
                         id

@@ -185,7 +185,7 @@ class Music247eRecommendationsManager:
                     media_type=MediaType.ALBUM,
                     items=UniqueList(
                         [
-                            await parse_album(self.provider, item)
+                            parse_album(self.provider, item)
                             for item in rec_data.get("albums", {}).get("items", [])
                         ]
                     ),
