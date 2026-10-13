@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, cast
+import time
+from typing import cast
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import InvalidDataError
 
 import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def test_stream_token_is_deterministic_and_sized(provider: WebKioskProvider) -> None:
@@ -216,3 +216,151 @@ async def test_track_end_runs_once_per_play(
     await provider._advance_after_track("wk_test")
 
     mass_mock.player_queues.play_index.assert_awaited_once()
+
+
+async def test_concurrent_tabs_share_one_registered_player(
+    provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """Two simultaneous connections reuse one player even while registration awaits."""
+    registry = {}
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def register(player: object) -> None:
+        entered.set()
+        await release.wait()
+        if player.player_id in registry:  # type: ignore[attr-defined]
+            raise RuntimeError("Duplicate registration")
+        registry[player.player_id] = player  # type: ignore[attr-defined]
+
+    mass_mock.players.get_player.side_effect = lambda player_id, **_: registry.get(player_id)
+    mass_mock.players.register.side_effect = register
+    first = asyncio.create_task(provider.get_or_register_player("wk_shared"))
+    await entered.wait()
+    second = asyncio.create_task(provider.get_or_register_player("wk_shared"))
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert results[0] is results[1]
+    mass_mock.players.register.assert_awaited_once()
+
+
+async def test_unload_unregisters_disabled_players(
+    provider: WebKioskProvider, mass_mock: Mock, player: object
+) -> None:
+    """Disabled kiosks do not remain attached to an unloaded provider."""
+
+    def iter_players(**kwargs: object) -> list[object]:
+        return [player] if kwargs.get("return_disabled") else []
+
+    mass_mock.players.iter_players.side_effect = iter_players
+    await provider.unload()
+
+    mass_mock.players.unregister.assert_awaited_once_with("wk_test")
+
+
+async def test_idle_timeout_keeps_a_connected_browser(
+    provider: WebKioskProvider, mass_mock: Mock, player: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An open kiosk never disappears from MA just because playback is idle."""
+    _run_tasks(mass_mock)
+    mass_mock.players.iter_players.return_value = [player]
+    provider.http_server = Mock()
+    provider.http_server.client_count.return_value = 1
+    provider.http_server.stop = AsyncMock()
+    provider._player_last_activity["wk_test"] = 1
+    monkeypatch.setattr(time, "monotonic", lambda: 10000)
+    tick = asyncio.Event()
+    original_sleep = asyncio.sleep
+
+    async def sleep(_: float) -> None:
+        if tick.is_set():
+            mass_mock.closing = True
+        tick.set()
+        await original_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    await provider.loaded_in_mass()
+    assert provider._timeout_task is not None
+    await provider._timeout_task
+    await original_sleep(0)
+
+    mass_mock.players.unregister.assert_not_awaited()
+    await provider.unload()
+
+
+async def test_unload_waits_for_an_inflight_disconnect_removal(
+    provider: WebKioskProvider, mass_mock: Mock, player: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old disconnect removal cannot continue after provider unload returns."""
+    monkeypatch.setattr(provider_module, "PLAYER_DISCONNECT_GRACE_SECONDS", 0)
+    _run_tasks(mass_mock)
+    mass_mock.players.get_player.return_value = player
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def unregister(_: str) -> None:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    mass_mock.players.unregister.side_effect = unregister
+    provider.schedule_player_close("wk_test")
+    removal = provider._disconnect_tasks["wk_test"]
+    await entered.wait()
+    await provider.unload()
+    completed = cancelled.is_set()
+    # Cleanup even on the pre-fix failure so no dangling task survives the test.
+    removal.cancel()
+    await asyncio.gather(removal, return_exceptions=True)
+    assert completed
+
+
+async def test_stream_resolution_does_not_hide_programming_errors(
+    provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """Expected media failures are recoverable; implementation defects still surface."""
+    mass_mock.streams.resolve_stream_url.side_effect = InvalidDataError("Invalid media")
+    assert await provider.get_ma_stream_url("wk_test", Mock()) is None
+    mass_mock.streams.resolve_stream_url.side_effect = RuntimeError("Broken implementation")
+    with pytest.raises(RuntimeError, match="Broken implementation"):
+        await provider.get_ma_stream_url("wk_test", Mock())
+
+
+@pytest.mark.parametrize("operation", ["wave", "lyrics", "ended"])
+async def test_background_media_work_reports_unexpected_errors(
+    provider: WebKioskProvider, mass_mock: Mock, player: object, operation: str
+) -> None:
+    """A programming defect is reported by the task rather than hidden as missing media."""
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: object) -> asyncio.Task[None]:
+        task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
+    mapping = Mock(item_id="track", provider_instance="library")
+    media = Mock(provider_mappings=[mapping])
+    mass_mock.player_queues.get_active_queue.return_value = Mock(
+        current_item=Mock(media_item=media)
+    )
+    provider.http_server = Mock()
+    error = RuntimeError("Broken implementation")
+    if operation == "wave":
+        mass_mock.streams.audio_analysis.get_wave_form = AsyncMock(side_effect=error)
+        provider.spawn_wave("wk_test", 1)
+    elif operation == "lyrics":
+        mass_mock.metadata.get_track_lyrics = AsyncMock(side_effect=error)
+        provider.spawn_lyrics("wk_test", 1)
+    else:
+        _playing_at_end(player)
+        mass_mock.players.get_player.return_value = player
+        mass_mock.player_queues.get_active_queue.side_effect = error
+        provider.track_ended("wk_test")
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert results == [error]

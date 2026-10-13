@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, PlaybackState
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -49,7 +50,6 @@ class WebKioskProvider(PlayerProvider):
     sendspin_bridge_enabled: bool = False
     bridge_manager: WebKioskSendspinBridgeManager | None = None
     _player_last_activity: dict[str, float]
-    _pending_unregisters: dict[str, asyncio.Event]
     _disconnect_tasks: dict[str, asyncio.Task[None]]
     _stream_token_secret: bytes
     _timeout_task: asyncio.Task[None] | None = None
@@ -58,8 +58,9 @@ class WebKioskProvider(PlayerProvider):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
+        self._unloading = False
+        self._player_lock = asyncio.Lock()
         self._player_last_activity = {}
-        self._pending_unregisters = {}
         self._disconnect_tasks = {}
         self._wave_seq = {}
         # one secret per provider instance; the per-player tokens derive from it
@@ -138,12 +139,19 @@ class WebKioskProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload — stop timeout task, HTTP server, then unregister players."""
+        self._unloading = True
+        disconnect_tasks = list(self._disconnect_tasks.values())
         self.cancel_all_player_closes()
+        if disconnect_tasks:
+            await asyncio.gather(*disconnect_tasks, return_exceptions=True)
         if self._timeout_task and not self._timeout_task.done():
             self._timeout_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._timeout_task
             self._timeout_task = None
+
+        async with self._player_lock:
+            pass
 
         if self.bridge_manager:
             await self.bridge_manager.close()
@@ -151,12 +159,19 @@ class WebKioskProvider(PlayerProvider):
 
         if self.http_server:
             await self.http_server.stop()
-        for player in list(self.players):
-            try:
-                self.logger.debug("Unloading player %s", player.display_name)
-                await self.mass.players.unregister(player.player_id)
-            except Exception:
-                self.logger.exception("Error unregistering player %s", player.player_id)
+        async with self._player_lock:
+            for player in list(
+                self.mass.players.iter_players(
+                    provider_filter=self.instance_id,
+                    return_disabled=True,
+                    return_protocol_players=True,
+                )
+            ):
+                try:
+                    self.logger.debug("Unloading player %s", player.display_name)
+                    await self.mass.players.unregister(player.player_id)
+                except Exception:
+                    self.logger.exception("Error unregistering player %s", player.player_id)
         self._player_last_activity.clear()
         self.logger.info("Web Kiosk provider unloaded")
 
@@ -174,28 +189,28 @@ class WebKioskProvider(PlayerProvider):
 
         Returns the player, or None if registration failed.
         """
-        if pending_event := self._pending_unregisters.get(player_id):
-            self.logger.debug("Waiting for pending unregister of %s before registering", player_id)
-            await pending_event.wait()
-        existing = self.mass.players.get_player(player_id, raise_unavailable=False)
-        if existing and isinstance(existing, WebKioskPlayer):
-            if ip_address and not existing.device_info.ip_address:
-                existing.device_info.ip_address = ip_address
-            self.on_player_activity(player_id)
-            return existing
-        name = display_name or self.player_display_name(player_id)
-        player = WebKioskPlayer(
-            provider=self,
-            player_id=player_id,
-            name=name,
-            ip_address=ip_address,
-        )
-        await self.mass.players.register(player)
-        self._player_last_activity[player_id] = time.monotonic()
-        self.logger.info("Registered kiosk player: %s (%s)", name, player_id)
-        if self.bridge_manager:
-            await self.bridge_manager.evaluate_bridge(player)
-        return player
+        async with self._player_lock:
+            if self._unloading:
+                return None
+            existing = self.mass.players.get_player(player_id, raise_unavailable=False)
+            if existing and isinstance(existing, WebKioskPlayer):
+                if ip_address and not existing.device_info.ip_address:
+                    existing.device_info.ip_address = ip_address
+                self.on_player_activity(player_id)
+                return existing
+            name = display_name or self.player_display_name(player_id)
+            player = WebKioskPlayer(
+                provider=self,
+                player_id=player_id,
+                name=name,
+                ip_address=ip_address,
+            )
+            await self.mass.players.register(player)
+            self._player_last_activity[player_id] = time.monotonic()
+            self.logger.info("Registered kiosk player: %s (%s)", name, player_id)
+            if self.bridge_manager:
+                await self.bridge_manager.evaluate_bridge(player)
+            return player
 
     async def note_sendspin_client_id(self, player: WebKioskPlayer, client_id: str) -> None:
         """
@@ -225,6 +240,8 @@ class WebKioskProvider(PlayerProvider):
         The last socket closing is not enough to tell a closed tab from a reload.
         A reload opens a new socket and cancels this. A closed page does not.
         """
+        if self._unloading:
+            return
         self.cancel_player_close(player_id)
         self._disconnect_tasks[player_id] = self.mass.create_task(
             self._unregister_if_browser_gone(player_id)
@@ -232,8 +249,11 @@ class WebKioskProvider(PlayerProvider):
 
     def cancel_player_close(self, player_id: str) -> None:
         """Keep the player. A browser socket for it is open again."""
-        task = self._disconnect_tasks.pop(player_id, None)
-        if task is not None and task is not asyncio.current_task() and not task.done():
+        task = self._disconnect_tasks.get(player_id)
+        if task is asyncio.current_task():
+            return
+        self._disconnect_tasks.pop(player_id, None)
+        if task is not None and not task.done():
             task.cancel()
 
     def cancel_all_player_closes(self) -> None:
@@ -375,7 +395,7 @@ class WebKioskProvider(PlayerProvider):
             return None
         try:
             return await self.mass.streams.resolve_stream_url(player_id, media)
-        except Exception as err:
+        except MusicAssistantError as err:
             logger.warning("Failed to resolve MA stream URL: %s", err, exc_info=True)
             return None
 
@@ -405,20 +425,22 @@ class WebKioskProvider(PlayerProvider):
         """Unregister after the grace window if no browser socket came back."""
         try:
             await asyncio.sleep(PLAYER_DISCONNECT_GRACE_SECONDS)
-        except asyncio.CancelledError:
-            return
-        current = self._disconnect_tasks.get(player_id)
-        if current is not None and current is not asyncio.current_task():
-            return
-        self._disconnect_tasks.pop(player_id, None)
-        server = self.http_server
-        if server is not None and server.client_count(player_id) > 0:
-            return
-        player = self.mass.players.get_player(player_id, raise_unavailable=False)
-        if not isinstance(player, WebKioskPlayer):
-            return
-        self.logger.info("Unregistering kiosk player %s because its page closed", player_id)
-        await self._handle_player_unregister(player_id)
+            if (
+                self._unloading
+                or self._disconnect_tasks.get(player_id) is not asyncio.current_task()
+            ):
+                return
+            server = self.http_server
+            if server is not None and server.client_count(player_id) > 0:
+                return
+            player = self.mass.players.get_player(player_id, raise_unavailable=False)
+            if not isinstance(player, WebKioskPlayer):
+                return
+            self.logger.info("Unregistering kiosk player %s because its page closed", player_id)
+            await self._handle_player_unregister(player_id, only_if_disconnected=True)
+        finally:
+            if self._disconnect_tasks.get(player_id) is asyncio.current_task():
+                self._disconnect_tasks.pop(player_id, None)
 
     def _spawn(self, coro: Any) -> None:
         """Schedule coro. A test double that hands the coroutine back is closed."""
@@ -432,7 +454,7 @@ class WebKioskProvider(PlayerProvider):
             return
         try:
             bins = await self._current_wave(player_id)
-        except Exception:
+        except MusicAssistantError:
             logger.debug("Energy curve lookup failed for %s", player_id, exc_info=True)
             bins = None
         if self.http_server is not None:
@@ -463,7 +485,7 @@ class WebKioskProvider(PlayerProvider):
             return
         try:
             lines = await self._current_lyrics(player_id)
-        except Exception:
+        except MusicAssistantError:
             logger.debug("Lyrics lookup failed for %s", player_id, exc_info=True)
             lines = []
         if self.http_server is not None:
@@ -503,9 +525,9 @@ class WebKioskProvider(PlayerProvider):
                 await self.mass.players.cmd_stop(player_id)
                 return
             await queues.play_index(queue.queue_id, next_index)
-        except Exception:
+        except MusicAssistantError:
             logger.exception("Advancing after track end failed for %s", player_id)
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(MusicAssistantError):
                 await self.mass.players.cmd_stop(player_id)
 
     def _compose_kiosk_url(self) -> str:
@@ -525,20 +547,27 @@ class WebKioskProvider(PlayerProvider):
             return f"http://{host}:{port}/kiosk"
         return f"http://<ma-host>:{port}/kiosk"
 
-    async def _handle_player_unregister(self, player_id: str) -> None:
-        """Unregister a player with race-condition handling."""
-        self.cancel_player_close(player_id)
-        self.logger.debug("Unregistering kiosk player %s", player_id)
-        unregister_event = asyncio.Event()
-        self._pending_unregisters[player_id] = unregister_event
-        try:
-            if self.bridge_manager:
-                await self.bridge_manager.remove_bridge(player_id, permanent=True)
-            await self.mass.players.unregister(player_id)
-        finally:
-            self._pending_unregisters.pop(player_id, None)
-            self._player_last_activity.pop(player_id, None)
-            unregister_event.set()
+    async def _handle_player_unregister(
+        self, player_id: str, *, only_if_disconnected: bool = False
+    ) -> None:
+        """Unregister a player while excluding concurrent registration."""
+        async with self._player_lock:
+            if self._unloading:
+                return
+            if (
+                only_if_disconnected
+                and self.http_server
+                and self.http_server.client_count(player_id)
+            ):
+                return
+            self.cancel_player_close(player_id)
+            self.logger.debug("Unregistering kiosk player %s", player_id)
+            try:
+                if self.bridge_manager:
+                    await self.bridge_manager.remove_bridge(player_id, permanent=True)
+                await self.mass.players.unregister(player_id)
+            finally:
+                self._player_last_activity.pop(player_id, None)
 
     async def _run_idle_timeout_loop(self) -> None:
         """Background task: unregister players idle longer than configured timeout."""
@@ -567,6 +596,8 @@ class WebKioskProvider(PlayerProvider):
             for player in list(self.players):
                 if not isinstance(player, WebKioskPlayer):
                     continue
+                if self.http_server and self.http_server.client_count(player.player_id) > 0:
+                    continue
                 last = self._player_last_activity.get(player.player_id, 0)
                 if last > 0 and last < cutoff:
                     self.logger.info(
@@ -574,7 +605,9 @@ class WebKioskProvider(PlayerProvider):
                         player.player_id,
                         timeout_minutes,
                     )
-                    self.mass.create_task(self._handle_player_unregister(player.player_id))
+                    await self._handle_player_unregister(
+                        player.player_id, only_if_disconnected=True
+                    )
 
     def _make_bridge_manager(self) -> WebKioskSendspinBridgeManager:
         """Import and construct the Sendspin bridge manager (raises ImportError if absent)."""

@@ -8,10 +8,12 @@
         ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id'].forEach(function (name) {
             if (document.getElementById(name).checked) target.searchParams.set(name, '1');
         });
-        ['ma_url', 'token', 'device_id'].forEach(function (name) {
+        ['ma_url', 'device_id'].forEach(function (name) {
             var value = document.getElementById(name).value.trim();
             if (value) target.searchParams.set(name, value);
         });
+        var token = document.getElementById('token').value.trim();
+        if (token) target.hash = 'token=' + encodeURIComponent(token);
         output.value = target.toString();
     }
     document.addEventListener('input', refresh);

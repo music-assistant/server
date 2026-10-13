@@ -32,7 +32,15 @@
     // True only while the Sendspin server is actually streaming audio here.
     var sendspinStreaming = false;
     var MA_URL = (params.get('ma_url') || LS.get('wk_ma_url') || '').replace(/\/$/, '');
-    var TOKEN = params.get('token') || LS.get('wk_token') || '';
+    var fragment = new URLSearchParams(location.hash.slice(1));
+    var TOKEN = fragment.get('token') || params.get('token') || LS.get('wk_token') || '';
+    if (fragment.has('token') || params.has('token')) {
+        fragment.delete('token');
+        params.delete('token');
+        var query = params.toString();
+        var hash = fragment.toString();
+        history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + (hash ? '#' + hash : ''));
+    }
     if (MA_URL) LS.set('wk_ma_url', MA_URL);
     if (TOKEN) LS.set('wk_token', TOKEN);
 
@@ -95,7 +103,15 @@
         return m + ':' + (s < 10 ? '0' : '') + s;
     }
     function songTime() {
-        if (displayHold != null) return displayHold;
+        if (displayHold != null) {
+            if (!sendspinStreaming || performance.now() < vizSeekUntil) return displayHold;
+            displayHold = null;
+        }
+        if (sendspinStreaming) {
+            var progress = window.__sendspinPlayer && window.__sendspinPlayer.trackProgress;
+            if (progress && typeof progress.positionMs === 'number') return progress.positionMs / 1000;
+            if (waveAnchorAt) return waveAnchor + (playing ? (performance.now() - waveAnchorAt) / 1000 : 0);
+        }
         return (current.start || 0) + (audio.currentTime || 0);
     }
     function imageUrl(item) {
@@ -252,7 +268,7 @@
             case 'sendspin':
                 if (msg.url) {
                     var target = new URL(msg.url, location.protocol + '//' + location.host);
-                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'ma_url', 'token', 'device_id', 'sendspin_url'].forEach(function (name) {
+                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'ma_url', 'device_id', 'sendspin_url'].forEach(function (name) {
                         if (params.has(name) && !target.searchParams.has(name)) target.searchParams.set(name, params.get(name));
                     });
                     location.href = target.toString();
@@ -468,7 +484,7 @@
         paintClock();
     }
     function paintClock() {
-        var dur = current.duration || 0;
+        var dur = vizDuration();
         document.getElementById('kiosk-dur').textContent = dur ? fmt(dur) : '0:00';
         if (seekPointer) return;
         var t = songTime();
@@ -492,6 +508,7 @@
             waveAnchor += (performance.now() - waveAnchorAt) / 1000;
             waveAnchorAt = performance.now();
         }
+        if (sendspinStreaming && !vizWasPlaying && playing && waveAnchorAt) waveAnchorAt = performance.now();
         vizWasPlaying = playing;
         paintClock();
         syncViz();
@@ -552,19 +569,16 @@
     }
 
     function vizDuration() {
+        var progress = sendspinStreaming && window.__sendspinPlayer && window.__sendspinPlayer.trackProgress;
+        if (progress && progress.durationMs > 0) return progress.durationMs / 1000;
         if (current.duration) return current.duration;
         if (playing || displayHold != null) return waveDuration || 0;
         return 0;
     }
     function vizTime() {
-        // HTML audio is the clock, including after a seek. Sendspin removes
-        // that element, so follow the queue position plus the time since.
-        if (sendspinStreaming && waveAnchorAt) {
-            var extra = playing ? (performance.now() - waveAnchorAt) / 1000 : 0;
-            return waveAnchor + extra;
-        }
         return songTime();
     }
+
     function noteQueueForViz(q) {
         var item = null;
         if (queueIndex >= 0 && queueIndex < queue.length) item = queue[queueIndex];
@@ -777,9 +791,11 @@
         if (!SHOW.queue || !playerId || !TOKEN) return;
         rpc('player_queues/get_active_queue', { player_id: playerId }).then(function (q) {
             if (!q || !q.queue_id) return;
-            return rpc('player_queues/items', { queue_id: q.queue_id, limit: 200 }).then(function (items) {
+            var index = q.current_index != null ? q.current_index : -1;
+            var offset = Math.max(0, index - 20);
+            return rpc('player_queues/items', { queue_id: q.queue_id, offset: offset, limit: 200 }).then(function (items) {
                 queue = Array.isArray(items) ? items : [];
-                queueIndex = q.current_index != null ? q.current_index : -1;
+                queueIndex = index < 0 ? -1 : index - offset;
                 renderQueue();
                 noteQueueForViz(q);
             });
@@ -789,18 +805,36 @@
         var el = document.getElementById('kiosk-queue');
         if (!queue.length) { el.classList.add('hidden'); return; }
         el.classList.remove('hidden');
-        el.innerHTML = queue.map(function (qi, i) {
+        el.replaceChildren();
+        queue.forEach(function (qi, i) {
             var mi = qi.media_item || {};
+            var row = document.createElement('div');
+            row.classList.add('qrow');
+            if (i === queueIndex) row.classList.add('active');
             var img = imageUrl(mi);
-            return '<div class="qrow' + (i === queueIndex ? ' active' : '') + '">' +
-                (img ? '<img src="' + img + '" alt="">' : '') +
-                '<div class="qmeta"><div class="qt">' + esc(mi.name || qi.name || '') + '</div>' +
-                '<div class="qa">' + esc(artistStr(mi) || '') + '</div></div></div>';
-        }).join('');
+            if (img) {
+                var artwork = document.createElement('img');
+                artwork.src = img;
+                artwork.alt = '';
+                row.appendChild(artwork);
+            }
+            var meta = document.createElement('div');
+            meta.classList.add('qmeta');
+            var title = document.createElement('div');
+            title.classList.add('qt');
+            title.textContent = mi.name || qi.name || '';
+            var artist = document.createElement('div');
+            artist.classList.add('qa');
+            artist.textContent = artistStr(mi) || '';
+            meta.appendChild(title);
+            meta.appendChild(artist);
+            row.appendChild(meta);
+            el.appendChild(row);
+        });
     }
 
     function seekToSong(seconds) {
-        var dur = current.duration || 0;
+        var dur = vizDuration();
         var t = Math.max(0, dur ? Math.min(dur, seconds) : seconds);
         displayHold = t;
         // Keep the energy window on the seek target while Sendspin has no
@@ -885,13 +919,13 @@
         kseek.addEventListener('pointerup', function () { seekPointer = false; });
         kseek.addEventListener('pointercancel', function () { seekPointer = false; });
         kseek.oninput = function (e) {
-            var t = (Number(e.target.value) / 1000) * (current.duration || 0);
+            var t = (Number(e.target.value) / 1000) * vizDuration();
             document.getElementById('kiosk-time').textContent = fmt(t);
             e.target.style.setProperty('--progress', (Number(e.target.value) / 10) + '%');
         };
         kseek.onchange = function (e) {
             seekPointer = false;
-            seekToSong((Number(e.target.value) / 1000) * (current.duration || 0));
+            seekToSong((Number(e.target.value) / 1000) * vizDuration());
         };
         audio.ontimeupdate = function () {
             paintClock();
@@ -976,7 +1010,10 @@
                 clientName: 'Web Kiosk',
                 productName: 'Web Kiosk',
                 correctionMode: 'sync',
-                onStateChange: function () { setSync('synced'); },
+                onStateChange: function (state) {
+                    setSync('synced');
+                    if (sendspinStreaming) { playing = state.isPlaying; sync(); }
+                },
                 onPairingPin: function (pin) { showPairPin(pin); }
             };
             // The SDK bundle omits software Opus; browsers without WebCodecs use FLAC/PCM.
@@ -1011,6 +1048,8 @@
             };
         }
         chain('onStreamStart', function () {
+            waveAnchor = songTime();
+            waveAnchorAt = performance.now();
             sendspinStreaming = true;
             audio.pause();
             audio.removeAttribute('src');
@@ -1042,6 +1081,7 @@
         prepareAudioUnlock();
         await prepareSendspinIdentity();
         connectWS();
+        setInterval(function () { if (sendspinStreaming) paintClock(); }, 500);
         if (SHOW.party) {
             fetchParty();
             setInterval(fetchParty, 10000);

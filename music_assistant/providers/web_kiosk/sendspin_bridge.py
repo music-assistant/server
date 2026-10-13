@@ -20,6 +20,7 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -161,7 +162,7 @@ class WebKioskSendspinBridge:
             await self.provider.mass.player_queues.transfer_queue(
                 self.client_id, self.kiosk_player.player_id, auto_play=True
             )
-        except Exception:
+        except MusicAssistantError, TimeoutError:
             self.logger.warning("Fallback transfer to the HTTP player failed", exc_info=True)
 
     def _cancel_watchdog(self) -> None:

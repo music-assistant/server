@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+from music_assistant_models.errors import PlayerUnavailableError
+
+import music_assistant.providers.web_kiosk.sendspin_bridge as bridge_module
 from music_assistant.providers.web_kiosk.constants import normalize_sendspin_client_id
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
@@ -127,3 +132,36 @@ async def test_note_sendspin_client_id_replaces_previous_bridge(
 
     assert player.sendspin_client_id == replacement
     manager.remove_bridge.assert_awaited_once_with(player.player_id, permanent=True)
+
+
+@pytest.mark.parametrize(
+    "error", [PlayerUnavailableError("Missing player"), RuntimeError("Broken transfer")]
+)
+async def test_fallback_reports_unexpected_transfer_failures(
+    player: WebKioskPlayer, mass_mock: Mock, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """Expected unavailable players are logged, while a broken transfer task fails visibly."""
+    monkeypatch.setattr(bridge_module, "SENDSPIN_CONNECT_TIMEOUT", 0)
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: object) -> asyncio.Task[None]:
+        task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
+    mass_mock.player_queues.transfer_queue = AsyncMock(side_effect=error)
+    server = Mock()
+    server.remove_client = AsyncMock()
+    server.register_external_player.return_value = Mock(is_connected=False)
+    server.register_external_player.return_value.roles_by_family.return_value = []
+    player.provider.http_server = Mock()  # type: ignore[attr-defined]
+    bridge = WebKioskSendspinBridge(
+        cast("WebKioskProvider", player.provider), player, server, BROWSER_CLIENT_ID
+    )
+    await bridge.start()
+    server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    await bridge.stop()
+
+    assert results == ([error] if isinstance(error, RuntimeError) else [None])
