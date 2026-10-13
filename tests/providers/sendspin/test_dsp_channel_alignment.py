@@ -70,6 +70,7 @@ class _FifoFFMpeg:
         self._reader = asyncio.StreamReader(limit=2**30)
         self._on_start = on_start
         self._yielding_writes = yielding_writes
+        self.on_write: Callable[[], None] | None = None
         self._eof = False
         self._closed = False
 
@@ -78,6 +79,8 @@ class _FifoFFMpeg:
             await self._on_start()
 
     async def write(self, data: bytes) -> None:
+        if self.on_write is not None:
+            self.on_write()
         if self._yielding_writes:
             # Yield like the stdin drain of a real ffmpeg, so concurrent writers interleave.
             await asyncio.sleep(0)
@@ -128,7 +131,12 @@ class _SessionHarness:
         self.released = 0
         self.entered = 0
         self.returned = 0
+        self._source_limit: int | None = None
+        self.source_ended = False
+        self._source_wakeup = asyncio.Event()
         self.start_hooks: deque[Callable[[], Awaitable[None]] | None] = deque()
+        self.ffmpegs: list[_FifoFFMpeg] = []
+        self._yielding_writes = yielding_writes
 
         player = MagicMock(player_id=LEADER_ID)
         player.mass.streams.get_stream = MagicMock(side_effect=lambda *_a, **_k: self._source())
@@ -157,22 +165,16 @@ class _SessionHarness:
                 filter_params=("volume=1.0",) if player_id in dsp_ids else (),
             ),
         )
-        monkeypatch.setattr(
-            session,
-            "_create_member_ffmpeg",
-            lambda _params: _FifoFFMpeg(
-                self.start_hooks.popleft() if self.start_hooks else None,
-                yielding_writes=yielding_writes,
-            ),
-        )
+        monkeypatch.setattr(session, "_create_member_ffmpeg", self._create_ffmpeg)
 
     async def settle(self) -> None:
         """Let every other task run until it blocks, as a real 100 ms sleep would."""
         for _ in range(200):
             await asyncio.sleep(0)
 
-    async def start(self) -> None:
+    async def start(self, source_limit: int | None = None) -> None:
         """Start playback and wait until the first commit is done."""
+        self.allow_source(source_limit)
         await self.session.start(MagicMock())
         await self._until(self._parked)
         await self.settle()
@@ -192,6 +194,27 @@ class _SessionHarness:
         self.push_stream.enable_pcm_cache_for_channel(channel_id)
         self.session._preassigned_channels[player_id] = channel_id
         await self.session.add_member(player_id)
+
+    async def finish(self) -> None:
+        """Let the consumer commit until playback ends."""
+        task = self.session.playback_task
+        assert task is not None
+        for _ in range(1000):
+            if task.done():
+                return
+            self.commit_permits.release()
+            await self.settle()
+        raise AssertionError("playback did not end")
+
+    def allow_source(self, limit: int | None) -> None:
+        """Let the source produce slices up to `limit`, or without limit for None."""
+        self._source_limit = limit
+        self._source_wakeup.set()
+
+    def end_source(self) -> None:
+        """End the source once it has produced every allowed slice."""
+        self.source_ended = True
+        self._source_wakeup.set()
 
     def release_commit_soon(self) -> None:
         """Schedule the consumer's sleep to end in the next event loop iteration."""
@@ -226,9 +249,22 @@ class _SessionHarness:
             offsets[(frame - expected) * 1_000_000 // SAMPLE_RATE] += 1
         return offsets
 
+    def _create_ffmpeg(self, _params: object) -> _FifoFFMpeg:
+        ffmpeg = _FifoFFMpeg(
+            self.start_hooks.popleft() if self.start_hooks else None,
+            yielding_writes=self._yielding_writes,
+        )
+        self.ffmpegs.append(ffmpeg)
+        return ffmpeg
+
     async def _source(self) -> AsyncIterator[bytes]:
         index = 0
         while True:
+            while self._source_limit is not None and index >= self._source_limit:
+                if self.source_ended:
+                    return
+                self._source_wakeup.clear()
+                await self._source_wakeup.wait()
             yield _ramp_slice(index)
             index += 1
 
