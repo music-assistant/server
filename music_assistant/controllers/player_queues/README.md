@@ -117,7 +117,8 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   user left it across everything they play, except when the media carries an order of its own:
   starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
   with *play* or *replace* switches shuffle off, because those are sequenced content rather than a
-  pool of tracks. An explicit `shuffle` argument on `play_media` always wins, and the first item of
+  pool of tracks. An artist counts as sequenced too when it plays its albums under an album
+  order. Top tracks, an artist without albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
   a batch decides for the whole batch — it is the only media type known before the items are
   resolved. Switching shuffle off goes through `set_shuffle`, so the items that stay in the queue
   are restored to their original order rather than left shuffled behind a queue that now reads
@@ -365,7 +366,11 @@ mechanism) that configure default enqueue behaviour, in three groups:
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
 - **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
-  prefer library, all tracks).
+  prefer library, all tracks), and the order an artist plays in: shuffled tracks, or its albums
+  in random or release order. The artist selection picks the artist's own albums, and each album
+  plays as it does on its own, following the album selection. The album orders leave out singles,
+  and the compilations found only on a provider. They fall back to shuffled tracks for the top
+  tracks selection or an artist without albums.
 - **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
   clicked (*browse* or *play*), and what the play button on a track row inside an album
   or playlist starts (*play from here* or *play track*).

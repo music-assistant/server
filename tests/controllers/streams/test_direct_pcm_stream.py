@@ -14,7 +14,7 @@ from music_assistant_models.media_items import AudioFormat, ItemMapping, Radio
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, TailOverlap
 
 from music_assistant.controllers.streams.controller import StreamsController
 
@@ -97,6 +97,19 @@ def test_single_item_stream_forwards_the_seek_position(seek_position: int) -> No
     )
 
     assert call_kwargs["seek_position"] == seek_position
+
+
+def test_single_item_stream_never_mixes_a_declared_tail_overlap() -> None:
+    """A direct PCM stream of a single item plays a declared overlap as part of the item."""
+    queue_item = _queue_item(0)
+    assert queue_item.streamdetails is not None
+    queue_item.streamdetails.tail_overlap = TailOverlap(duration=3.0, next_queue_item_id="item-2")
+    controller, call_kwargs = _controller(queue_item)
+
+    controller.get_stream(_media(), PCM_FORMAT)
+
+    assert call_kwargs["queue_item"] is queue_item
+    cast("Any", controller.audio).get_queue_item_stream_with_smartfade.assert_not_called()
 
 
 async def _pcm_chunks(chunks: tuple[bytes, ...]) -> AsyncGenerator[bytes]:

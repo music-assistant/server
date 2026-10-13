@@ -6,6 +6,40 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
+from .constants import RENDER_COOLDOWN_SECONDS, RENDER_FAILURES_BEFORE_COOLDOWN
+
+
+@dataclass(slots=True)
+class RenderHealth:
+    """Consecutive render failures of one queue DJ and the cool-down they trigger."""
+
+    failures: int = 0
+    # loop time the cool-down ends; None while the DJ renders freely
+    cooldown_until: float | None = None
+
+    def cooling_down(self, now: float) -> bool:
+        """Return whether the DJ must not render at the given loop time."""
+        return self.cooldown_until is not None and now < self.cooldown_until
+
+    def record_failure(self, now: float) -> bool:
+        """Count a failed render and return whether that starts the cool-down."""
+        self.failures += 1
+        # a render that was already in flight when the pause started fails late: that
+        # neither extends the pause nor announces it again
+        if self.failures < RENDER_FAILURES_BEFORE_COOLDOWN or self.cooling_down(now):
+            return False
+        self.cooldown_until = now + RENDER_COOLDOWN_SECONDS
+        return True
+
+    def record_success(self, now: float) -> None:
+        """Clear the failure count after a render that succeeded outside the cool-down."""
+        # a render that was already in flight when the pause started proves nothing about
+        # the engine now, so the pause runs its course and the first render after it decides
+        if self.cooling_down(now):
+            return
+        self.failures = 0
+        self.cooldown_until = None
+
 
 @dataclass(slots=True)
 class Slot:
@@ -61,5 +95,6 @@ class DJQueueState:
     # a freshly armed state may only plan once the previous host's clips are cleared
     ready: bool = False
     replan_pending: bool = False
+    render_health: RenderHealth = field(default_factory=RenderHealth, repr=False, compare=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)

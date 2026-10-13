@@ -25,7 +25,7 @@ from music_assistant_models.enums import (
     MediaType,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -41,7 +41,8 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.helpers.cue_sheet import CueSheet, CueTrack, parse_cue_sheet
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
+from music_assistant.helpers.process import descriptor_path
+from music_assistant.helpers.tags import AudioTags, clean_mbid
 from music_assistant.helpers.util import detect_charset
 
 from .constants import CACHE_CATEGORY_CUE_SHEETS, TRACK_EXTENSIONS
@@ -301,13 +302,22 @@ class CueSheetHandler:
 
         # re-resolve to get a current absolute path (e.g. fresh auth for WebDAV)
         audio_item = await self.provider.resolve(audio_relative_path)
-        async for chunk in get_ffmpeg_stream(
-            audio_input=audio_item.absolute_path,
-            input_format=original_format,
-            output_format=streamdetails.audio_format,
-            extra_input_args=["-ss", str(actual_seek), "-t", str(remaining_duration)],
-        ):
-            yield chunk
+        try:
+            fd = await self.provider.open_local_file(audio_item.absolute_path)
+        except MediaNotFoundError as err:
+            raise AudioError(f"Unable to open {audio_relative_path}: {err}") from err
+        try:
+            async for chunk in get_ffmpeg_stream(
+                audio_input=audio_item.absolute_path if fd is None else descriptor_path(fd),
+                input_format=original_format,
+                output_format=streamdetails.audio_format,
+                extra_input_args=["-ss", str(actual_seek), "-t", str(remaining_duration)],
+                pass_fds=() if fd is None else (fd,),
+            ):
+                yield chunk
+        finally:
+            if fd is not None:
+                os.close(fd)
 
     async def _parse_tracks_impl(self, cue_item: FileSystemItem) -> list[Track]:
         """Parse a CUE sheet's tracks (implementation, see :meth:`parse_tracks`)."""
@@ -325,7 +335,7 @@ class CueSheetHandler:
             raise MediaNotFoundError(msg)
 
         audio_item = await provider.resolve(audio_relative_path)
-        tags = await async_parse_tags(audio_item.absolute_path, audio_item.file_size)
+        tags = await provider._parse_tags(audio_item)
         total_duration = tags.duration or 0.0
         if total_duration <= 0:
             msg = f"Could not determine duration for audio file of CUE sheet: {cue_item.relative_path}"
