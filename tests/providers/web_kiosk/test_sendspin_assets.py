@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-VENDOR_ROOT = Path(__file__).resolve().parents[1] / "provider" / "static" / "web" / "sendspin-js"
+from music_assistant.providers.web_kiosk.http_server import STATIC_DIR
+
+VENDOR_ROOT = STATIC_DIR / "web" / "sendspin-js"
 # A real import statement. Comments that mention a package name do not count.
 STATEMENT_FROM = re.compile(r"""^(?:import|export)\b.*?\bfrom\s+['"]([^'"]+)['"]""", re.MULTILINE)
 DYNAMIC_IMPORT = re.compile(r"""import\s*\(\s*['"]([^'"]+)['"]""")

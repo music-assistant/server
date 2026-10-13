@@ -397,16 +397,16 @@ class _RistrettoPoint extends PrimeEdwardsPoint {
 // Do NOT change syntax: the following gymnastics is done,
 // because typescript strips comments, which makes bundlers disable tree-shaking.
 // prettier-ignore
-_RistrettoPoint.BASE = 
+_RistrettoPoint.BASE =
 /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.BASE))();
 // prettier-ignore
-_RistrettoPoint.ZERO = 
+_RistrettoPoint.ZERO =
 /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.ZERO))();
 // prettier-ignore
-_RistrettoPoint.Fp = 
+_RistrettoPoint.Fp =
 /* @__PURE__ */ (() => Fp)();
 // prettier-ignore
-_RistrettoPoint.Fn = 
+_RistrettoPoint.Fn =
 /* @__PURE__ */ (() => Fn)();
 export const ristretto255 = { Point: _RistrettoPoint };
 /** Hashing to ristretto255 points / field. RFC 9380 methods. */

@@ -81,7 +81,7 @@ class WebKioskHTTPServer:
         # 0.0.0.0 is required: kiosk devices on LAN must reach this server by host IP.
         site = web.TCPSite(
             self._runner,
-            "0.0.0.0",
+            "0.0.0.0",  # noqa: S104
             self.port,
             reuse_address=True,
             reuse_port=True,
@@ -227,6 +227,10 @@ class WebKioskHTTPServer:
         for ws in list(clients):
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def client_count(self, player_id: str) -> int:
+        """Return how many browser sockets are open for this player."""
+        return len(self._ws_clients.get(player_id, ()))
 
     def _setup_routes(self) -> None:
         """Register all HTTP routes."""
@@ -443,10 +447,6 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             logger.debug("WebSocket client disconnected for player %s", player_id)
 
         return ws
-
-    def client_count(self, player_id: str) -> int:
-        """Return how many browser sockets are open for this player."""
-        return len(self._ws_clients.get(player_id, ()))
 
     async def _send_snapshot(
         self, ws: web.WebSocketResponse, player: WebKioskPlayer | None

@@ -233,25 +233,6 @@ class WebKioskProvider(PlayerProvider):
         for player_id in list(self._disconnect_tasks):
             self.cancel_player_close(player_id)
 
-    async def _unregister_if_browser_gone(self, player_id: str) -> None:
-        """Unregister after the grace window if no browser socket came back."""
-        try:
-            await asyncio.sleep(PLAYER_DISCONNECT_GRACE_SECONDS)
-        except asyncio.CancelledError:
-            return
-        current = self._disconnect_tasks.get(player_id)
-        if current is not None and current is not asyncio.current_task():
-            return
-        self._disconnect_tasks.pop(player_id, None)
-        server = self.http_server
-        if server is not None and server.client_count(player_id) > 0:
-            return
-        player = self.mass.players.get_player(player_id, raise_unavailable=False)
-        if not isinstance(player, WebKioskPlayer):
-            return
-        self.logger.info("Unregistering kiosk player %s because its page closed", player_id)
-        await self._handle_player_unregister(player_id)
-
     def on_player_activity(self, player_id: str) -> None:
         """Record activity for a player (extends idle timeout)."""
         # Monotonic: a wall-clock NTP step must not age players past the cutoff
@@ -273,7 +254,6 @@ class WebKioskProvider(PlayerProvider):
 
     def on_player_enabled(self, player_id: str) -> None:
         """Handle player enabled: no-op, player already registered."""
-        # Player was never unregistered (see on_player_disabled), so nothing to do.
 
     async def remove_player(self, player_id: str) -> None:
         """
@@ -328,98 +308,9 @@ class WebKioskProvider(PlayerProvider):
         """Look up the current track's lyrics and send them to the page."""
         self._spawn(self._publish_lyrics(player_id, seq))
 
-    def _spawn(self, coro: Any) -> None:
-        """Schedule coro. A test double that hands the coroutine back is closed."""
-        task = self.mass.create_task(coro)
-        if asyncio.iscoroutine(task):
-            task.close()
-
-    async def _publish_wave(self, player_id: str, seq: int) -> None:
-        """Send the stored RMS curve for the player's current queue item."""
-        if self.http_server is None:
-            return
-        try:
-            bins = await self._current_wave(player_id)
-        except Exception:
-            logger.debug("Energy curve lookup failed for %s", player_id, exc_info=True)
-            bins = None
-        if self.http_server is not None:
-            self.http_server.broadcast_wave(player_id, seq, bins)
-
-    async def _current_wave(self, player_id: str) -> list[float] | None:
-        """Return the stored energy bins for the playing item, if analysis exists."""
-        queue = self.mass.player_queues.get_active_queue(player_id)
-        item = getattr(queue, "current_item", None)
-        media = getattr(item, "media_item", None)
-        mappings = getattr(media, "provider_mappings", None) or []
-        analysis = self.mass.streams.audio_analysis
-        for mapping in mappings:
-            item_id = getattr(mapping, "item_id", None)
-            provider = getattr(mapping, "provider_instance", None) or getattr(
-                mapping, "provider_domain", None
-            )
-            if not item_id or not provider:
-                continue
-            bins = await analysis.get_wave_form(str(item_id), str(provider))
-            if bins:
-                return [float(value) for value in bins]
-        return None
-
-    async def _publish_lyrics(self, player_id: str, seq: int) -> None:
-        """Send the current track's lyric lines to the kiosk page."""
-        if self.http_server is None:
-            return
-        try:
-            lines = await self._current_lyrics(player_id)
-        except Exception:
-            logger.debug("Lyrics lookup failed for %s", player_id, exc_info=True)
-            lines = []
-        if self.http_server is not None:
-            self.http_server.broadcast_lyrics(player_id, seq, lines)
-
-    async def _current_lyrics(self, player_id: str) -> list[dict[str, Any]]:
-        """Return parsed lyric lines for the playing item."""
-        queue = self.mass.player_queues.get_active_queue(player_id)
-        item = getattr(queue, "current_item", None)
-        media = getattr(item, "media_item", None)
-        if media is None:
-            return []
-        plain, lrc = await self.mass.metadata.get_track_lyrics(media)
-        return parse_track_lyrics(plain, lrc)
-
     def track_ended(self, player_id: str) -> None:
         """Advance the queue after the browser finishes its audio file."""
         self._spawn(self._advance_after_track(player_id))
-
-    async def _advance_after_track(self, player_id: str) -> None:
-        """Play the next queue item, or stop when this track was the last one."""
-        player = self.mass.players.get_player(player_id)
-        if not isinstance(player, WebKioskPlayer) or player.playback_state != PlaybackState.PLAYING:
-            return
-        if player._track_end_handled or not player.playback_reached_end():
-            return
-        # One end event per play. play_media clears this when the next item starts.
-        player._track_end_handled = True
-        try:
-            queues = self.mass.player_queues
-            queue = queues.get_active_queue(player_id)
-            index = getattr(queue, "current_index", None)
-            nxt = (
-                queues.get_next_item(queue.queue_id, index)
-                if queue is not None and index is not None
-                else None
-            )
-            next_index = (
-                queues.index_by_id(queue.queue_id, nxt.queue_item_id) if nxt is not None else None
-            )
-            if next_index is None:
-                await self.mass.players.cmd_stop(player_id)
-                return
-            await queues.play_index(queue.queue_id, next_index)
-        except Exception:
-            logger.exception("Advancing after track end failed for %s", player_id)
-            with contextlib.suppress(Exception):
-                await self.mass.players.cmd_stop(player_id)
 
     def notify_play_paused(self, player_id: str) -> None:
         """Notify the kiosk WebSocket client that playback is paused."""
@@ -501,6 +392,113 @@ class WebKioskProvider(PlayerProvider):
         if remote_ip:
             return f"{prefix_label} ({suffix}) [{remote_ip}]"
         return f"{prefix_label} ({suffix})"
+
+    async def _unregister_if_browser_gone(self, player_id: str) -> None:
+        """Unregister after the grace window if no browser socket came back."""
+        try:
+            await asyncio.sleep(PLAYER_DISCONNECT_GRACE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        current = self._disconnect_tasks.get(player_id)
+        if current is not None and current is not asyncio.current_task():
+            return
+        self._disconnect_tasks.pop(player_id, None)
+        server = self.http_server
+        if server is not None and server.client_count(player_id) > 0:
+            return
+        player = self.mass.players.get_player(player_id, raise_unavailable=False)
+        if not isinstance(player, WebKioskPlayer):
+            return
+        self.logger.info("Unregistering kiosk player %s because its page closed", player_id)
+        await self._handle_player_unregister(player_id)
+
+    def _spawn(self, coro: Any) -> None:
+        """Schedule coro. A test double that hands the coroutine back is closed."""
+        task = self.mass.create_task(coro)
+        if asyncio.iscoroutine(task):
+            task.close()
+
+    async def _publish_wave(self, player_id: str, seq: int) -> None:
+        """Send the stored RMS curve for the player's current queue item."""
+        if self.http_server is None:
+            return
+        try:
+            bins = await self._current_wave(player_id)
+        except Exception:
+            logger.debug("Energy curve lookup failed for %s", player_id, exc_info=True)
+            bins = None
+        if self.http_server is not None:
+            self.http_server.broadcast_wave(player_id, seq, bins)
+
+    async def _current_wave(self, player_id: str) -> list[float] | None:
+        """Return the stored energy bins for the playing item, if analysis exists."""
+        queue = self.mass.player_queues.get_active_queue(player_id)
+        item = getattr(queue, "current_item", None)
+        media = getattr(item, "media_item", None)
+        mappings = getattr(media, "provider_mappings", None) or []
+        analysis = self.mass.streams.audio_analysis
+        for mapping in mappings:
+            item_id = getattr(mapping, "item_id", None)
+            provider = getattr(mapping, "provider_instance", None) or getattr(
+                mapping, "provider_domain", None
+            )
+            if not item_id or not provider:
+                continue
+            bins = await analysis.get_wave_form(str(item_id), str(provider))
+            if bins:
+                return [float(value) for value in bins]
+        return None
+
+    async def _publish_lyrics(self, player_id: str, seq: int) -> None:
+        """Send the current track's lyric lines to the kiosk page."""
+        if self.http_server is None:
+            return
+        try:
+            lines = await self._current_lyrics(player_id)
+        except Exception:
+            logger.debug("Lyrics lookup failed for %s", player_id, exc_info=True)
+            lines = []
+        if self.http_server is not None:
+            self.http_server.broadcast_lyrics(player_id, seq, lines)
+
+    async def _current_lyrics(self, player_id: str) -> list[dict[str, Any]]:
+        """Return parsed lyric lines for the playing item."""
+        queue = self.mass.player_queues.get_active_queue(player_id)
+        item = getattr(queue, "current_item", None)
+        media = getattr(item, "media_item", None)
+        if media is None:
+            return []
+        plain, lrc = await self.mass.metadata.get_track_lyrics(media)
+        return parse_track_lyrics(plain, lrc)
+
+    async def _advance_after_track(self, player_id: str) -> None:
+        """Play the next queue item, or stop when this track was the last one."""
+        player = self.mass.players.get_player(player_id)
+        if not isinstance(player, WebKioskPlayer) or player.playback_state != PlaybackState.PLAYING:
+            return
+        if player._track_end_handled or not player.playback_reached_end():
+            return
+        # One end event per play. play_media clears this when the next item starts.
+        player._track_end_handled = True
+        try:
+            queues = self.mass.player_queues
+            queue = queues.get_active_queue(player_id)
+            if queue is None:
+                await self.mass.players.cmd_stop(player_id)
+                return
+            index = queue.current_index
+            nxt = queues.get_next_item(queue.queue_id, index) if index is not None else None
+            next_index = (
+                queues.index_by_id(queue.queue_id, nxt.queue_item_id) if nxt is not None else None
+            )
+            if next_index is None:
+                await self.mass.players.cmd_stop(player_id)
+                return
+            await queues.play_index(queue.queue_id, next_index)
+        except Exception:
+            logger.exception("Advancing after track end failed for %s", player_id)
+            with contextlib.suppress(Exception):
+                await self.mass.players.cmd_stop(player_id)
 
     def _compose_kiosk_url(self) -> str:
         """Compose the base kiosk URL from the MA webserver base URL and our port."""

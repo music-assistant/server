@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant.providers.web_kiosk.constants import normalize_sendspin_client_id
@@ -53,7 +54,9 @@ def test_stream_start_opens_kiosk_in_sendspin_mode(player: WebKioskPlayer) -> No
     """A synchronized stream tells this browser to open Sendspin mode under its own id."""
     http = Mock()
     player.provider.http_server = http  # type: ignore[attr-defined]
-    bridge = WebKioskSendspinBridge(player.provider, player, Mock(), BROWSER_CLIENT_ID)
+    bridge = WebKioskSendspinBridge(
+        cast("WebKioskProvider", player.provider), player, Mock(), BROWSER_CLIENT_ID
+    )
 
     bridge._on_stream_start(Mock())
 
@@ -69,7 +72,9 @@ async def test_connect_timeout_transfers_playback_back(
 ) -> None:
     """A browser that never connects loses the stream back to the HTTP player."""
     mass_mock.player_queues.transfer_queue = AsyncMock()
-    bridge = WebKioskSendspinBridge(player.provider, player, Mock(), BROWSER_CLIENT_ID)
+    bridge = WebKioskSendspinBridge(
+        cast("WebKioskProvider", player.provider), player, Mock(), BROWSER_CLIENT_ID
+    )
     bridge._client = Mock(is_connected=False)
 
     with patch(
@@ -88,7 +93,9 @@ async def test_connect_timeout_keeps_playback_when_client_connects(
 ) -> None:
     """A browser that connected in time keeps the synchronized stream."""
     mass_mock.player_queues.transfer_queue = AsyncMock()
-    bridge = WebKioskSendspinBridge(player.provider, player, Mock(), BROWSER_CLIENT_ID)
+    bridge = WebKioskSendspinBridge(
+        cast("WebKioskProvider", player.provider), player, Mock(), BROWSER_CLIENT_ID
+    )
     bridge._client = Mock(is_connected=True)
 
     with patch(

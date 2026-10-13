@@ -100,7 +100,7 @@ export const swap32IfBE = isLE
     ? (u) => u
     : byteSwap32;
 // Built-in hex conversion https://caniuse.com/mdn-javascript_builtins_uint8array_fromhex
-const hasHexBuiltin = /* @__PURE__ */ (() => 
+const hasHexBuiltin = /* @__PURE__ */ (() =>
 // @ts-ignore
 typeof Uint8Array.from([]).toHex === 'function' && typeof Uint8Array.fromHex === 'function')();
 // Array where index 0xf0 (240) is mapped to string 'f0'

@@ -7,6 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import AsyncMock, Mock
 
+from aiohttp import ClientError
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
@@ -305,8 +306,6 @@ async def test_api_proxy_502_when_upstream_fails(
     http_client: TestClient[Any, Any], mass_mock: Mock
 ) -> None:
     """A connection error to Music Assistant becomes a 502."""
-    from aiohttp import ClientError
-
     mass_mock.webserver = Mock(internal_base_url="http://127.0.0.1:8095")
     mass_mock.http_session.request = Mock(side_effect=ClientError())
 
