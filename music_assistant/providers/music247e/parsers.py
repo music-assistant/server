@@ -223,8 +223,7 @@ def parse_lyrics(lyrics: list[JsonLike]) -> tuple[str | None, str | None]:
     """
     Parse the 24-7 (247e) lyrics payload and extract the lyric text in two formats if possible.
 
-    Returns:
-        Tuple[str | None, str | None]: lyrics (plain) and lyrics_lrc, if present.
+    :return: Plain lyrics and LRC lyrics, each None if unavailable.
     """
     if not lyrics:
         return None, None
