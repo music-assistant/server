@@ -9,12 +9,14 @@ import logging
 import os
 import os.path
 import posixpath
+import secrets
+import stat
 import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from functools import cached_property
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import aiofiles
@@ -86,7 +88,12 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.playlists import parse_m3u, parse_pls, sanitize_playlist_filename
+from music_assistant.helpers.playlists import (
+    parse_m3u,
+    parse_pls,
+    sanitize_m3u_value,
+    sanitize_playlist_filename,
+)
 from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.process import open_in_thread
 from music_assistant.helpers.tags import (
@@ -99,6 +106,7 @@ from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
+    is_disc_dir,
     parse_title_and_version,
     try_parse_int,
 )
@@ -159,7 +167,6 @@ from .helpers import (
     get_folder_signature,
     get_relative_path,
     get_valid_isrcs,
-    is_disc_dir,
     is_image_file,
     is_metadata_file,
     open_real_path,
@@ -938,6 +945,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
 
         file_item = await self.resolve(prov_playlist_id)
         playlist = Playlist(
@@ -1037,6 +1045,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
 
         file_item = await self.resolve(prov_playlist_id)
         # We are using the checksum of the playlist file here to invalidate the cache
@@ -1175,6 +1184,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
         playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(
             playlist_filename, encoding="utf-8", opener=self._open_file
@@ -1182,11 +1192,13 @@ class LocalFileSystemProvider(MusicProvider):
             playlist_data = await _file.read()
         for file_path in prov_track_ids:
             track = await self.get_track(file_path)
-            playlist_data += f"\n#EXTINF:{track.duration or 0},{track.name}\n{file_path}\n"
+            title = sanitize_m3u_value(track.name)
+            playlist_data += (
+                f"\n#EXTINF:{track.duration or 0},{title}\n{sanitize_m3u_value(file_path)}\n"
+            )
 
         # write playlist file (always in utf-8)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(playlist_data)
+        await self._write_playlist_file(prov_playlist_id, playlist_data)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -1195,6 +1207,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
         ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
@@ -1214,9 +1227,11 @@ class LocalFileSystemProvider(MusicProvider):
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
         for item in playlist_items:
-            new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(new_playlist_data)
+            title = sanitize_m3u_value(item.title or "")
+            new_playlist_data += (
+                f"\n#EXTINF:{item.length or 0},{title}\n{sanitize_m3u_value(item.path)}\n"
+            )
+        await self._write_playlist_file(prov_playlist_id, new_playlist_data)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
@@ -4238,3 +4253,84 @@ class LocalFileSystemProvider(MusicProvider):
                 if isinstance(path, str):
                     paths.append(path)
         return paths
+
+    def _check_playlist_path(self, prov_playlist_id: str) -> None:
+        """Raise MediaNotFoundError when a path does not name a playlist file."""
+        if PurePosixPath(prov_playlist_id).suffix[1:].lower() not in PLAYLIST_EXTENSIONS:
+            msg = f"Not a playlist file: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
+
+    async def _write_playlist_file(self, file_path: str, data: str) -> None:
+        """Write playlist data to a regular (non-symlink) playlist file inside the library root."""
+        self._check_playlist_path(file_path)
+        relative_path = os.path.relpath(self.get_absolute_path(file_path), self.base_path)
+        parts = [part for part in Path(relative_path).parts if part != "."]
+        msg = f"Playlist is not a regular file inside the library: {file_path}"
+        if not parts or ".." in parts:
+            raise InvalidDataError(msg)
+
+        def _write() -> None:
+            # the root is checked against its resolved location like every read, and every
+            # further component is opened relative to the previous directory without following
+            # symlinks, so what was checked is what gets written, even if the tree changes
+            dir_fd = self._open_file(self.base_path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                for part in parts[:-1]:
+                    next_fd = os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+                    )
+                    os.close(dir_fd)
+                    dir_fd = next_fd
+                name = parts[-1]
+                try:
+                    existing = os.lstat(name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    existing = None
+                old_fd = -1
+                try:
+                    if existing is not None:
+                        if not stat.S_ISREG(existing.st_mode):
+                            raise InvalidDataError(msg)
+                        # replacing the entry must not get around the file's own write permission
+                        probe_flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                        old_fd = os.open(name, probe_flags, dir_fd=dir_fd)
+                    # written to a new file and renamed into place, so no existing inode is
+                    # opened for writing or truncated, whatever else links to it
+                    temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                    temp_fd = os.open(temp_name, flags, 0o666, dir_fd=dir_fd)
+                    try:
+                        with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
+                            if old_fd >= 0:
+                                _copy_file_security(old_fd, _file.fileno())
+                            _file.write(data)
+                        os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    except BaseException:
+                        with contextlib.suppress(OSError):
+                            os.unlink(temp_name, dir_fd=dir_fd)
+                        raise
+                finally:
+                    if old_fd >= 0:
+                        os.close(old_fd)
+            except OSError as err:
+                raise InvalidDataError(msg) from err
+            finally:
+                os.close(dir_fd)
+
+        await asyncio.to_thread(_write)
+
+
+def _copy_file_security(src_fd: int, dst_fd: int) -> None:
+    """Give dst the owner, mode and security attributes (ACLs) of src, as far as allowed."""
+    src_stat = os.fstat(src_fd)
+    # a non-root server cannot change the owner, which is no worse than before
+    with contextlib.suppress(PermissionError):
+        os.fchown(dst_fd, src_stat.st_uid, src_stat.st_gid)
+    os.fchmod(dst_fd, stat.S_IMODE(src_stat.st_mode))
+    # POSIX ACLs and other security metadata live in extended attributes on Linux; not
+    # every filesystem supports them, which must not stop the write
+    if hasattr(os, "listxattr"):
+        with contextlib.suppress(OSError):
+            for attr in os.listxattr(src_fd):
+                with contextlib.suppress(OSError):
+                    os.setxattr(dst_fd, attr, os.getxattr(src_fd, attr))

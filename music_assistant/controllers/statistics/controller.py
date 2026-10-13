@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import functools
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType, MediaType
@@ -155,6 +157,7 @@ class StatisticsController(CoreController):
         media_type: MediaType,
         period: str = "week",
         limit: int = 50,
+        timezone: str = "UTC",
     ) -> list[TopItemResult]:
         """
         Get most played items in a time period.
@@ -165,6 +168,7 @@ class StatisticsController(CoreController):
         :param media_type: The type of media to get top items for.
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of items to return (default 50).
+        :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
         user = get_current_user()
         user_id = user.user_id if user else None
@@ -173,7 +177,7 @@ class StatisticsController(CoreController):
             return []
         limit = _validate_statistics_limit(limit)
 
-        cutoff_timestamp = self._get_period_cutoff(period)
+        cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
         query = f"""
             SELECT
@@ -237,6 +241,7 @@ class StatisticsController(CoreController):
         self,
         period: str = "week",
         limit: int = 10,
+        timezone: str = "UTC",
     ) -> list[DistributionItem]:
         """
         Get genre distribution (play counts by genre).
@@ -245,6 +250,7 @@ class StatisticsController(CoreController):
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of genres to return (default 10).
+        :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
         user = get_current_user()
         if not user:
@@ -267,7 +273,7 @@ class StatisticsController(CoreController):
         params = {
             "user_id": user.user_id,
             "media_type": MediaType.TRACK.value,
-            "cutoff_timestamp": self._get_period_cutoff(period),
+            "cutoff_timestamp": self._get_period_cutoff(period, timezone),
         }
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
 
@@ -279,12 +285,14 @@ class StatisticsController(CoreController):
         self,
         period: str = "week",
         limit: int = 10,
+        timezone: str = "UTC",
     ) -> list[TopItemResult]:
         """
         Get artist distribution based on track plays (play counts by artist).
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of artists to return (default 10).
+        :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
         user = get_current_user()
         user_id = user.user_id if user else None
@@ -293,7 +301,7 @@ class StatisticsController(CoreController):
             return []
         limit = _validate_statistics_limit(limit)
 
-        cutoff_timestamp = self._get_period_cutoff(period)
+        cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
         # Extract artists from track plays and join with artists table for images
         # Each track can have multiple artists, so we use json_each to expand the array
@@ -380,12 +388,14 @@ class StatisticsController(CoreController):
         self,
         period: str = "week",
         granularity: str = "day",
+        timezone: str = "UTC",
     ) -> list[TimeSeriesPoint]:
         """
         Get play counts over time (time series data).
 
         :param period: Time period - 'today', 'week', 'month', 'year'.
         :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
+        :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
         """
         user = get_current_user()
         user_id = user.user_id if user else None
@@ -393,22 +403,45 @@ class StatisticsController(CoreController):
         if not user_id:
             return []
 
-        cutoff_timestamp = self._get_period_cutoff(period)
+        cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
         # SQLite date formatting based on granularity
         date_formats = {
             "hour": "%Y-%m-%d %H:00:00",
             "day": "%Y-%m-%d",
-            "week": "%Y-W%W",
+            "week": "%Y-%m-%d",
             "month": "%Y-%m",
         }
         if granularity not in date_formats:
             raise InvalidDataError("granularity must be hour, day, week, or month")
         date_format = date_formats[granularity]
+        if timezone != "UTC":
+            buckets: dict[str, int] = {}
+            async for local_time, count in self._iter_local_play_counts(
+                user_id, cutoff_timestamp, timezone
+            ):
+                bucket_time = (
+                    local_time - timedelta(days=local_time.weekday())
+                    if granularity == "week"
+                    else local_time
+                )
+                bucket = bucket_time.strftime(date_format)
+                buckets[bucket] = buckets.get(bucket, 0) + count
+            return [
+                TimeSeriesPoint(timestamp=bucket, value=count)
+                for bucket, count in sorted(buckets.items())
+            ]
+        bucket_expression = f"strftime('{date_format}', datetime(timestamp, 'unixepoch'))"
+        if granularity == "week":
+            bucket_expression = (
+                "date(timestamp, 'unixepoch', "
+                "'-' || ((CAST(strftime('%w', timestamp, 'unixepoch') AS INTEGER) + 6) % 7)"
+                " || ' days')"
+            )
 
         query = f"""
             SELECT
-                strftime('{date_format}', datetime(timestamp, 'unixepoch')) as time_bucket,
+                {bucket_expression} as time_bucket,
                 COUNT(*) as play_count
             FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
@@ -434,11 +467,13 @@ class StatisticsController(CoreController):
     async def get_listening_activity(
         self,
         period: str = "week",
+        timezone: str = "UTC",
     ) -> list[HeatmapPoint]:
         """
         Get listening activity heatmap (plays by hour of day and weekday).
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
+        :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
         """
         user = get_current_user()
         user_id = user.user_id if user else None
@@ -446,7 +481,19 @@ class StatisticsController(CoreController):
         if not user_id:
             return []
 
-        cutoff_timestamp = self._get_period_cutoff(period)
+        cutoff_timestamp = self._get_period_cutoff(period, timezone)
+
+        if timezone != "UTC":
+            buckets: dict[tuple[int, int], int] = {}
+            async for local_time, count in self._iter_local_play_counts(
+                user_id, cutoff_timestamp, timezone
+            ):
+                bucket = (local_time.weekday(), local_time.hour)
+                buckets[bucket] = buckets.get(bucket, 0) + count
+            return [
+                HeatmapPoint(hour=hour, weekday=weekday, value=count)
+                for (weekday, hour), count in sorted(buckets.items())
+            ]
 
         query = f"""
             SELECT
@@ -480,6 +527,7 @@ class StatisticsController(CoreController):
         period: str = "week",
         group_by: str = "artist",
         limit: int = 10,
+        timezone: str = "UTC",
     ) -> list[ListeningTimeItem]:
         """
         Get total listening time grouped by artist or genre.
@@ -487,6 +535,7 @@ class StatisticsController(CoreController):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param group_by: Group by 'artist' or 'genre' (default 'artist').
         :param limit: Maximum number of items to return (default 10).
+        :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
         user = get_current_user()
         user_id = user.user_id if user else None
@@ -497,7 +546,7 @@ class StatisticsController(CoreController):
         if group_by not in ("artist", "genre"):
             raise InvalidDataError("group_by must be 'artist' or 'genre'")
 
-        cutoff_timestamp = self._get_period_cutoff(period)
+        cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
         if group_by == "artist":
             query = f"""
@@ -555,6 +604,7 @@ class StatisticsController(CoreController):
         self,
         period: str = "all_time",
         limit: int = 10,
+        timezone: str = "UTC",
     ) -> list[DistributionItem]:
         """
         Get play counts grouped by decade.
@@ -563,6 +613,7 @@ class StatisticsController(CoreController):
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of decades to return.
+        :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
         user = get_current_user()
         user_id = user.user_id if user else None
@@ -571,7 +622,7 @@ class StatisticsController(CoreController):
             return []
         limit = _validate_statistics_limit(limit)
 
-        cutoff_timestamp = self._get_period_cutoff(period)
+        cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
         query = f"""
             WITH {_TRACK_HISTORY_CTE}, track_decades AS (
@@ -753,20 +804,49 @@ class StatisticsController(CoreController):
             played_item_ids.add((row["provider"], row["item_id"]))
         return played_item_ids
 
-    def _get_period_cutoff(self, period: str) -> float:
+    async def _iter_local_play_counts(
+        self, user_id: str, cutoff_timestamp: float, timezone: str
+    ) -> AsyncGenerator[tuple[datetime, int]]:
+        """Yield completed play counts with their local event time."""
+        query = f"""
+            SELECT timestamp, COUNT(*) AS play_count
+            FROM {DB_TABLE_PLAY_HISTORY}
+            WHERE userid = :user_id
+                AND timestamp >= :cutoff_timestamp
+                AND media_type IN ({_PLAY_HISTORY_EVENT_TYPE_SQL})
+            GROUP BY timestamp
+        """
+        zone = self._get_timezone(timezone)
+        async for row in self.mass.music.database.iter_rows_from_query(
+            query, {"user_id": user_id, "cutoff_timestamp": cutoff_timestamp}
+        ):
+            yield datetime.fromtimestamp(row["timestamp"], UTC).astimezone(zone), row["play_count"]
+
+    def _get_timezone(self, timezone: str) -> ZoneInfo:
+        """Resolve an IANA timezone or reject invalid input."""
+        try:
+            return ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError) as err:
+            raise InvalidDataError(f"Invalid timezone: {timezone}") from err
+
+    def _get_period_cutoff(self, period: str, timezone: str = "UTC") -> float:
         """
         Get the cutoff timestamp for a time period.
 
         :param period: Time period string ('today', 'week', 'month', 'year', 'all_time').
+        :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         :return: Unix timestamp for the start of the period.
         """
-        # TODO: Use user timezone instead of UTC for accurate "today"/calendar boundaries
+        zone = self._get_timezone(timezone)
         now = time.time()
 
         if period == "today":
-            # Start of today (midnight UTC) - calculate seconds since midnight
-            seconds_since_midnight = now % 86400
-            return now - seconds_since_midnight
+            return (
+                datetime.fromtimestamp(now, UTC)
+                .astimezone(zone)
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .timestamp()
+            )
         if period == "week":
             # 7 days ago
             return now - (7 * 86400)

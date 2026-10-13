@@ -2036,7 +2036,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return None
 
     async def get_resume_position(
-        self, media_item: Audiobook | PodcastEpisode, userid: str | None = None
+        self,
+        media_item: Audiobook | PodcastEpisode,
+        userid: str | None = None,
+        pinned: tuple[str, str] | None = None,
     ) -> tuple[bool, int]:
         """
         Get progress (resume point) details for the given audiobook or episode.
@@ -2048,6 +2051,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         Returns a boolean with the fully_played status
         and an integer with the resume position in ms.
+
+        :param media_item: The audiobook or episode to get the resume point of.
+        :param userid: The user to get the resume point for, by default the session user.
+        :param pinned: The (provider instance, item id) of the copy the item plays from, whose
+            resume point is asked for first.
         """
         provider_fully_played = False
         provider_position_ms = 0
@@ -2073,11 +2081,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             preferred_provider_instances = provider_instances
 
-        preferred_providers = [
-            x
-            for x in media_item.provider_mappings
-            if x.provider_instance in preferred_provider_instances
-        ]
+        preferred_providers = sorted(
+            (
+                x
+                for x in media_item.provider_mappings
+                if x.provider_instance in preferred_provider_instances
+            ),
+            # the copy the item plays from first, then the others in a fixed order
+            key=lambda x: (
+                (x.provider_instance, x.item_id) != pinned,
+                x.provider_instance,
+                x.item_id,
+            ),
+        )
 
         # Try to get position from providers
         for prov_mapping in preferred_providers:
@@ -2501,6 +2517,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Add provider mapping to the given library item."""
         ctrl = self.get_controller(media_type)
+        # only a mapping the provider itself returns as this media type is accepted
+        await ctrl.get_provider_item(
+            mapping.item_id,
+            mapping.provider_instance,
+            allow_fallback=False,
+            strict_provider_instance=True,
+        )
+        provider = self.mass.get_provider(mapping.provider_instance)
+        if provider is None or provider.domain != mapping.provider_domain:
+            msg = f"Provider domain {mapping.provider_domain} does not match {mapping.provider_instance}"
+            raise InvalidDataError(msg)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
     @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)

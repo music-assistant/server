@@ -1,6 +1,7 @@
 """Tests for statistics backed by completed play history."""
 
 import asyncio
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -312,6 +313,180 @@ async def test_play_trends_exclude_container_history_rows(mass: MusicAssistant) 
 
     assert sum(point.value for point in trend) == 4
     assert sum(point.value for point in activity) == 4
+
+
+async def test_weekly_plays_use_monday_dates_across_year_boundaries(
+    mass: MusicAssistant,
+) -> None:
+    """Weekly events share their Monday bucket even across a calendar year boundary."""
+    user = await mass.webserver.auth.create_user("statistics-week-boundaries")
+    for index, date in enumerate(("2026-12-28", "2027-01-01", "2027-01-03", "2027-01-04")):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": f"track-{index}",
+                "provider": "test-provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": f"Track {index}",
+                "timestamp": datetime.fromisoformat(date).replace(tzinfo=UTC).timestamp(),
+            },
+        )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        results = await mass.statistics.get_plays_over_time(period="all_time", granularity="week")
+
+    assert [(point.timestamp, point.value) for point in results] == [
+        ("2026-12-28", 3),
+        ("2027-01-04", 1),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("timezone", "granularity", "timestamps", "expected"),
+    [
+        ("Europe/Berlin", "day", ("2026-12-31T23:30:00",), [("2027-01-01", 1)]),
+        ("Europe/Berlin", "month", ("2026-12-31T23:30:00",), [("2027-01", 1)]),
+        (
+            "Europe/Berlin",
+            "week",
+            ("2026-12-27T23:30:00", "2027-01-03T23:30:00"),
+            [("2026-12-28", 1), ("2027-01-04", 1)],
+        ),
+        (
+            "Europe/Berlin",
+            "hour",
+            ("2027-03-28T00:30:00", "2027-03-28T01:30:00"),
+            [("2027-03-28 01:00:00", 1), ("2027-03-28 03:00:00", 1)],
+        ),
+        (
+            "Europe/Berlin",
+            "hour",
+            ("2027-10-31T00:30:00", "2027-10-31T01:30:00"),
+            [("2027-10-31 02:00:00", 2)],
+        ),
+        ("Asia/Kolkata", "hour", ("2027-01-01T18:45:00",), [("2027-01-02 00:00:00", 1)]),
+    ],
+)
+async def test_play_buckets_follow_iana_timezone(
+    mass: MusicAssistant,
+    timezone: str,
+    granularity: str,
+    timestamps: tuple[str, ...],
+    expected: list[tuple[str, int]],
+) -> None:
+    """Local buckets respect date boundaries and historical daylight-saving offsets."""
+    user = await mass.webserver.auth.create_user("statistics-local-buckets")
+    for index, timestamp in enumerate(timestamps):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": f"track-{index}",
+                "provider": "test-provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": f"Track {index}",
+                "timestamp": datetime.fromisoformat(timestamp).replace(tzinfo=UTC).timestamp(),
+            },
+        )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        results = await mass.statistics.get_plays_over_time(
+            period="all_time", granularity=granularity, timezone=timezone
+        )
+        activity = await mass.statistics.get_listening_activity(
+            period="all_time", timezone=timezone
+        )
+
+    assert [(point.timestamp, point.value) for point in results] == expected
+    assert sum(point.value for point in activity) == len(timestamps)
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        ("2027-01-01T00:30:00", "2026-12-31T23:00:00"),
+        ("2027-03-28T12:00:00", "2027-03-27T23:00:00"),
+        ("2027-10-31T12:00:00", "2027-10-30T22:00:00"),
+    ],
+)
+async def test_today_cutoff_uses_local_midnight(
+    mass: MusicAssistant, now: str, expected: str
+) -> None:
+    """Local midnight uses its own UTC offset, even on a daylight-saving transition day."""
+    with patch(
+        "music_assistant.controllers.statistics.controller.time.time",
+        return_value=datetime.fromisoformat(now).replace(tzinfo=UTC).timestamp(),
+    ):
+        cutoff = mass.statistics._get_period_cutoff("today", "Europe/Berlin")
+
+    assert cutoff == datetime.fromisoformat(expected).replace(tzinfo=UTC).timestamp()
+
+
+async def test_statistics_cache_and_heatmap_are_timezone_scoped(mass: MusicAssistant) -> None:
+    """UTC and local requests cannot share cached calendar buckets or heatmap coordinates."""
+    user = await mass.webserver.auth.create_user("statistics-zone-cache")
+    await mass.music.database.insert(
+        DB_TABLE_PLAY_HISTORY,
+        {
+            "item_id": "track-1",
+            "provider": "test-provider",
+            "media_type": MediaType.TRACK.value,
+            "userid": user.user_id,
+            "name": "Track",
+            "timestamp": datetime(2027, 1, 3, 23, 30, tzinfo=UTC).timestamp(),
+        },
+    )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        utc_series = await mass.statistics.get_plays_over_time(period="all_time")
+        local_series = await mass.statistics.get_plays_over_time(
+            period="all_time", timezone="Europe/Berlin"
+        )
+        utc_activity = await mass.statistics.get_listening_activity(period="all_time")
+        local_activity = await mass.statistics.get_listening_activity(
+            period="all_time", timezone="Europe/Berlin"
+        )
+        cached_series = await mass.statistics.get_plays_over_time(
+            period="all_time", timezone="Europe/Berlin"
+        )
+
+    assert [(point.timestamp, point.value) for point in utc_series] == [("2027-01-03", 1)]
+    assert [(point.timestamp, point.value) for point in local_series] == [("2027-01-04", 1)]
+    assert [(point.weekday, point.hour, point.value) for point in utc_activity] == [(6, 23, 1)]
+    assert [(point.weekday, point.hour, point.value) for point in local_activity] == [(0, 0, 1)]
+    assert cached_series == local_series
+
+
+@pytest.mark.parametrize("timezone", ["Not/AZone", "", "/etc/localtime"])
+async def test_statistics_reject_invalid_timezones(mass: MusicAssistant, timezone: str) -> None:
+    """Every period-based endpoint rejects invalid IANA zones rather than falling back."""
+    user = await mass.webserver.auth.create_user("statistics-invalid-zone")
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        calls = (
+            lambda: mass.statistics.get_top_items(MediaType.TRACK, timezone=timezone),
+            lambda: mass.statistics.get_genre_distribution(timezone=timezone),
+            lambda: mass.statistics.get_artist_distribution(timezone=timezone),
+            lambda: mass.statistics.get_plays_over_time(timezone=timezone),
+            lambda: mass.statistics.get_listening_activity(timezone=timezone),
+            lambda: mass.statistics.get_listening_time(timezone=timezone),
+            lambda: mass.statistics.get_decade_distribution(timezone=timezone),
+        )
+        for call in calls:
+            with pytest.raises(InvalidDataError, match="Invalid timezone"):
+                await call()
 
 
 async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums(

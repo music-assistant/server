@@ -27,9 +27,10 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
@@ -171,7 +172,7 @@ async def test_resolve_finite_radio_expands_to_its_tracks_and_marks_played() -> 
 
     result = await resolver._resolve_media_items(radio, userid="u1", queue_id="q1")
 
-    assert result == [track]
+    assert [x.item for x in result] == [track]
     resolver.mass.music.radio.tracks.assert_awaited_once_with(radio)
     assert mark.call_args.kwargs["user_initiated"] is True
     assert mark.call_args.args[0].media_type == MediaType.RADIO
@@ -207,7 +208,7 @@ async def test_enqueued_item_mapping_counts_as_user_initiated() -> None:
     ctrl.store_sources = Mock()  # type: ignore[method-assign]
     ctrl._enqueue_with_option = AsyncMock()  # type: ignore[method-assign]
     ctrl._media_resolver = Mock()
-    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[track])
+    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[ResolvedItem(track)])
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
@@ -281,11 +282,39 @@ def _play_media_controller(
     ctrl._apply_shuffle = AsyncMock()  # type: ignore[method-assign]
     ctrl._enqueue_with_option = AsyncMock()  # type: ignore[method-assign]
     ctrl._media_resolver = Mock()
-    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[media_item])
+    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[ResolvedItem(media_item)])
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
     return ctrl
+
+
+async def test_the_origin_of_a_resolved_item_lands_on_its_queue_item() -> None:
+    """Where the resolver says an item was played from is what its queue item records."""
+    playlist = Playlist(item_id="pl1", provider="spotify--abc", name="Mix", provider_mappings=set())
+    track = Track(
+        item_id="t1",
+        provider="spotify--abc",
+        name="T1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="t1", provider_domain="spotify", provider_instance="spotify--abc"
+            )
+        },
+    )
+    origin = QueueItemOrigin(
+        container=ItemMapping.from_item(playlist), provider_instance="spotify--abc", item_id="t1"
+    )
+    ctrl = _play_media_controller(playlist, QueueOption.REPLACE.value)
+    ctrl._media_resolver._resolve_media_items = AsyncMock(  # type: ignore[method-assign]
+        return_value=[ResolvedItem(track, origin)]
+    )
+
+    await ctrl._handle_play_media("q1", playlist)
+
+    enqueue = cast("AsyncMock", ctrl._enqueue_with_option).await_args
+    assert enqueue is not None
+    assert [item.origin for item in enqueue.args[1]] == [origin]
 
 
 async def test_configured_add_default_keeps_the_previously_enqueued_items() -> None:
