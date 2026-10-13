@@ -14,8 +14,10 @@ import logging
 import os
 import sys
 import time
-from collections.abc import AsyncGenerator, Iterable, Mapping
+from collections import defaultdict
+from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from itertools import batched
 from math import isfinite
 from typing import TYPE_CHECKING, Any
 
@@ -24,7 +26,6 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import AudioMetadata
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
@@ -47,7 +48,6 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.camelot import camelot_key
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -100,13 +100,15 @@ MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
 # candidate query runs; filled in batches of this size.
 _CANDIDATE_TRACKS_TABLE = "candidate_tracks"
 _CANDIDATE_KEYS_BATCH_SIZE = 5000
+# Item ids per audio-metadata lookup query, well below SQLite's bound-variable limit.
+_AUDIO_METADATA_BATCH_SIZE = 500
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.media_items import AudioFormat, Track
+    from music_assistant_models.media_items import AudioFormat, AudioMetadata, Track
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -607,10 +609,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         """
         if not self._database_ready:
             return None
-        provider = self.mass.get_provider(provider_instance_id_or_domain)
-        if not isinstance(provider, MusicProvider):
+        if (prov_key := self._analysis_provider_key(provider_instance_id_or_domain)) is None:
             return None
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         rows = await self.database.get_rows_from_query(
             f"SELECT id, aa_provider_domain, CAST(header AS BLOB) AS header, payload "
             f"FROM {AA_TABLE_ANALYSIS} "
@@ -656,17 +656,90 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             analysis = await self.get_audio_analysis(
                 mapping.item_id, mapping.provider_instance, priority=priority
             )
-            if analysis is None or (analysis.bpm is None and analysis.key is None):
-                continue
-            musical_key: str | None = None
-            if analysis.key is not None:
-                musical_key = f"{analysis.key} {analysis.mode}" if analysis.mode else analysis.key
-            return AudioMetadata(
-                bpm=analysis.bpm,
-                musical_key=musical_key,
-                camelot_key=camelot_key(analysis.key, analysis.mode),
-            )
+            if analysis is not None and (metadata := analysis.as_audio_metadata()) is not None:
+                return metadata
         return None
+
+    async def get_tracks_audio_metadata(
+        self, tracks: Sequence[Track]
+    ) -> list[AudioMetadata | None]:
+        """
+        Return AudioMetadata (bpm, musical key) for many tracks at once.
+
+        Each entry matches what get_track_audio_metadata returns for that track. Only the
+        scalars are read from the stored headers, in a few queries instead of one per track.
+
+        :param tracks: The tracks to look up stored analysis data for.
+        :returns: One entry per given track, in the same order; None where no analysis exists.
+        """
+        results: list[AudioMetadata | None] = [None] * len(tracks)
+        if not self._database_ready or not tracks:
+            return results
+        available_aa_domains = self._available_aa_domains()
+        wanted_domains = [d for d in TRACK_EXPORT_AA_PRIORITY if d in available_aa_domains]
+        if not wanted_domains:
+            return results
+
+        prov_keys: dict[str, str | None] = {}
+        ranked_keys: list[list[tuple[str, str]]] = []
+        item_ids_by_prov_key: dict[str, set[str]] = defaultdict(set)
+        for track in tracks:
+            track_keys: list[tuple[str, str]] = []
+            for mapping in rank_provider_mappings(track.provider_mappings):
+                instance = mapping.provider_instance
+                if instance not in prov_keys:
+                    prov_keys[instance] = self._analysis_provider_key(instance)
+                if (prov_key := prov_keys[instance]) is None:
+                    continue
+                track_keys.append((prov_key, mapping.item_id))
+                item_ids_by_prov_key[prov_key].add(mapping.item_id)
+            ranked_keys.append(track_keys)
+
+        domain_params = {f"domain{i}": domain for i, domain in enumerate(wanted_domains)}
+        domain_placeholders = ",".join(f":{name}" for name in domain_params)
+        # rows arrive lowest priority first, so folding them in order lets the
+        # first-listed domain win each field, as in _merged_from_rows
+        priority_order = " ".join(f"WHEN :{name} THEN {i}" for i, name in enumerate(domain_params))
+        analysis_by_key: dict[tuple[str, str], AudioAnalysisData] = defaultdict(AudioAnalysisData)
+        for prov_key, item_ids in item_ids_by_prov_key.items():
+            for chunk in batched(item_ids, _AUDIO_METADATA_BATCH_SIZE, strict=False):
+                params: dict[str, Any] = {f"id{i}": item_id for i, item_id in enumerate(chunk)}
+                id_placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
+                rows = await self.database.get_rows_from_query(
+                    "SELECT item_id, json_extract(header, '$.bpm') AS bpm, "
+                    "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode "
+                    f"FROM {AA_TABLE_ANALYSIS} "
+                    "WHERE provider = :provider AND media_type = :media_type "
+                    f"AND aa_provider_domain IN ({domain_placeholders}) "
+                    f"AND item_id IN ({id_placeholders}) AND json_valid(header) "
+                    f"ORDER BY CASE aa_provider_domain {priority_order} END DESC",
+                    {
+                        **params,
+                        **domain_params,
+                        "provider": prov_key,
+                        "media_type": MediaType.TRACK.value,
+                    },
+                    limit=0,
+                )
+                for row in rows:
+                    analysis_by_key[(prov_key, row["item_id"])].update(
+                        AudioAnalysisData(
+                            bpm=None if row["bpm"] is None else float(row["bpm"]),
+                            key=row["key"],
+                            mode=row["mode"],
+                        )
+                    )
+
+        metadata_by_key: dict[tuple[str, str], AudioMetadata | None] = {}
+        for index, track_keys in enumerate(ranked_keys):
+            for key in track_keys:
+                if key not in metadata_by_key:
+                    analysis = analysis_by_key.get(key)
+                    metadata_by_key[key] = analysis.as_audio_metadata() if analysis else None
+                if (metadata := metadata_by_key[key]) is not None:
+                    results[index] = metadata
+                    break
+        return results
 
     async def get_vocal_onset(
         self,
@@ -1697,6 +1770,13 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         except ValueError, TypeError:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))
+
+    def _analysis_provider_key(self, provider_instance_id_or_domain: str) -> str | None:
+        """Return the provider key analysis rows are stored under, or None when not loaded."""
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
+            return None
+        return provider.domain if provider.is_streaming_provider else provider.instance_id
 
     def _available_aa_domains(self) -> set[str]:
         """Return available AA provider domains plus the virtual provider-loudness domain."""

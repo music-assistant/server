@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import AudioFormat, ProviderMapping, Track
 
+import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
@@ -22,6 +23,8 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio_analysis import (
     PROVIDER_LOUDNESS_DOMAIN,
+    SMART_FADES_ANALYSIS_DOMAIN,
+    SONIC_ANALYSIS_DOMAIN,
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.constants import (
@@ -482,3 +485,163 @@ async def test_setup_database_on_file_without_settings_table(
     assert version is not None
     assert int(version["value"]) == AA_DB_SCHEMA_VERSION
     assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
+
+
+def _music_provider(instance_id: str, domain: str, streaming: bool) -> MagicMock:
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = instance_id
+    provider.domain = domain
+    provider.is_streaming_provider = streaming
+    return provider
+
+
+def _aa_provider(domain: str) -> MagicMock:
+    provider = MagicMock(spec=AudioAnalysisProvider)
+    provider.domain = domain
+    provider.available = True
+    return provider
+
+
+def _track(*mappings: tuple[str, str, ContentType]) -> Track:
+    """Build a track with one mapping per (item_id, provider instance, content type)."""
+    return Track(
+        item_id=mappings[0][0],
+        provider=mappings[0][1],
+        name="Test",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=instance.split("--")[0],
+                provider_instance=instance,
+                audio_format=AudioFormat(content_type=content_type),
+            )
+            for item_id, instance, content_type in mappings
+        },
+    )
+
+
+async def _setup_metadata_fixture(ctrl: AudioAnalysisController) -> list[Track]:
+    """Store analysis for a mix of tracks and return tracks covering each lookup outcome."""
+    await ctrl.setup_database()
+    providers = {
+        "fs--a": _music_provider("fs--a", "filesystem_local", streaming=False),
+        "spotify--x": _music_provider("spotify--x", "spotify", streaming=True),
+        "spotify--y": _music_provider("spotify--y", "spotify", streaming=True),
+    }
+    ctrl.mass.get_provider = MagicMock(side_effect=providers.get)  # type: ignore[method-assign]
+    ctrl.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            _aa_provider(SMART_FADES_ANALYSIS_DOMAIN),
+            _aa_provider(SONIC_ANALYSIS_DOMAIN),
+        ]
+    )
+    stored = [
+        ("t1", "fs--a", SONIC_ANALYSIS_DOMAIN, AudioAnalysisData(bpm=100.0, key="D")),
+        ("t1", "fs--a", SMART_FADES_ANALYSIS_DOMAIN, AudioAnalysisData(bpm=128.0)),
+        ("t2", "fs--a", SONIC_ANALYSIS_DOMAIN, AudioAnalysisData(key="F#", mode="minor")),
+        ("t3", "fs--a", SONIC_ANALYSIS_DOMAIN, AudioAnalysisData(loudness_integrated=-8.0)),
+        ("t4", "fs--a", PROVIDER_LOUDNESS_DOMAIN, AudioAnalysisData(bpm=90.0)),
+        ("lofi", "fs--a", SMART_FADES_ANALYSIS_DOMAIN, AudioAnalysisData(bpm=70.0)),
+        ("hifi", "fs--a", SMART_FADES_ANALYSIS_DOMAIN, AudioAnalysisData(bpm=140.0)),
+        # stored under the streaming domain, so any instance of it finds the row
+        ("s1", "spotify--x", SMART_FADES_ANALYSIS_DOMAIN, AudioAnalysisData(bpm=110.0, key="A")),
+    ]
+    for item_id, instance, aa_domain, analysis in stored:
+        await ctrl.set_audio_analysis(item_id, instance, aa_domain, analysis)
+    mp3, flac = ContentType.MP3, ContentType.FLAC
+    return [
+        _track(("t1", "fs--a", mp3)),
+        _track(("t2", "fs--a", mp3)),
+        _track(("t3", "fs--a", mp3)),
+        _track(("t4", "fs--a", mp3)),
+        _track(("missing", "fs--a", mp3)),
+        _track(("t1", "unloaded--z", mp3)),
+        _track(("lofi", "fs--a", mp3), ("hifi", "fs--a", flac)),
+        _track(("lofi", "fs--a", mp3), ("missing", "fs--a", flac)),
+        _track(("s1", "spotify--y", mp3)),
+        _track(("t1", "fs--a", mp3)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_metadata_matches_single_track_lookup(
+    ctrl: AudioAnalysisController,
+) -> None:
+    """The batched lookup returns, per track, what the single-track lookup returns."""
+    tracks = await _setup_metadata_fixture(ctrl)
+
+    batched_result = await ctrl.get_tracks_audio_metadata(tracks)
+    single_result = [await ctrl.get_track_audio_metadata(track) for track in tracks]
+
+    assert batched_result == single_result
+    summary = [(m.bpm, m.musical_key) if m else None for m in batched_result]
+    assert summary == [
+        (128.0, "D"),
+        (None, "F# minor"),
+        None,
+        None,
+        None,
+        None,
+        (140.0, None),
+        (70.0, None),
+        (110.0, "A"),
+        (128.0, "D"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_metadata_ignores_unavailable_aa_providers(
+    ctrl: AudioAnalysisController,
+) -> None:
+    """Rows of an AA provider that is not available are left out, as for a single track."""
+    tracks = await _setup_metadata_fixture(ctrl)
+    ctrl.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[_aa_provider(SONIC_ANALYSIS_DOMAIN)]
+    )
+
+    batched_result = await ctrl.get_tracks_audio_metadata(tracks)
+
+    assert batched_result == [await ctrl.get_track_audio_metadata(track) for track in tracks]
+    assert batched_result[0] is not None
+    assert batched_result[0].bpm == 100.0
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_metadata_chunks_item_ids(
+    ctrl: AudioAnalysisController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Item ids are queried in bounded chunks, one query per chunk and provider key."""
+    tracks = await _setup_metadata_fixture(ctrl)
+    expected = await ctrl.get_tracks_audio_metadata(tracks)
+    monkeypatch.setattr(audio_analysis_mod, "_AUDIO_METADATA_BATCH_SIZE", 2)
+    query_spy = AsyncMock(wraps=ctrl.database.get_rows_from_query)
+    monkeypatch.setattr(ctrl.database, "get_rows_from_query", query_spy)
+
+    assert await ctrl.get_tracks_audio_metadata(tracks) == expected
+    # fs--a holds 7 distinct item ids (4 chunks of 2), the spotify domain 1
+    assert query_spy.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_metadata_skips_corrupt_header(ctrl: AudioAnalysisController) -> None:
+    """A malformed stored header is skipped in SQL and does not hide the other provider's row."""
+    tracks = await _setup_metadata_fixture(ctrl)
+    await ctrl.database.execute(
+        f"UPDATE {AA_TABLE_ANALYSIS} SET header = :header "
+        "WHERE item_id = :item_id AND aa_provider_domain = :domain",
+        {"header": "{not json", "item_id": "t1", "domain": SMART_FADES_ANALYSIS_DOMAIN},
+    )
+    await ctrl.database.commit()
+
+    result = await ctrl.get_tracks_audio_metadata(tracks)
+
+    assert result[0] is not None
+    assert result[0].bpm == 100.0
+    assert result[0].musical_key == "D"
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_metadata_without_database(ctrl: AudioAnalysisController) -> None:
+    """Every track gets None while the analysis database is not ready."""
+    track = Track(item_id="t0", provider="fs--a", name="Test", provider_mappings=set())
+    assert await ctrl.get_tracks_audio_metadata([track, track]) == [None, None]

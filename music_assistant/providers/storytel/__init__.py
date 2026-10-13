@@ -117,11 +117,12 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         Credentials are collected in the setup flow and persisted in setup_data.
         The options page only exposes persisted discovery settings.
         """
-        setup_languages = self.get_setup_value(CONF_LANGUAGES)
-        if isinstance(setup_languages, list) and setup_languages:
-            default_languages = [name for name in setup_languages if isinstance(name, str)]
-        else:
-            default_languages = list(DEFAULT_LANGUAGES)
+        # Once authenticated, only offer the languages this account actually has access to
+        # (which depends on its region/subscription), falling back to the static list otherwise.
+        language_options = ALL_LANGUAGES
+        if self._api is not None and self._api.available_languages:
+            language_options = self._api.available_languages
+        default_languages = list(self._account_fallback_languages())
         return (
             ConfigEntry(
                 key=CONF_LANGUAGES,
@@ -129,7 +130,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 multi_value=True,
                 required=False,
                 default_value=default_languages,
-                options=[ConfigValueOption(name, name) for name in sorted(ALL_LANGUAGES.keys())],
+                options=[ConfigValueOption(name, name) for name in sorted(language_options.keys())],
             ),
             ConfigEntry(
                 key=CONF_KIDS_MODE,
@@ -156,10 +157,12 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 return await method(*args, **kwargs)
             except LoginFailed:
                 await self.api.revalidate_account()
+                self._sync_reconciled_languages()
                 return await method(*args, **kwargs)
             except ExceptionGroup as err:
                 if err.subgroup(LoginFailed):
                     await self.api.revalidate_account()
+                    self._sync_reconciled_languages()
                     return await method(*args, **kwargs)
                 raise _unwrap_single_exception(err) from err
 
@@ -183,11 +186,13 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                     yield item
             except LoginFailed:
                 await self.api.revalidate_account()
+                self._sync_reconciled_languages()
                 async for item in method(*args, **kwargs):
                     yield item
             except ExceptionGroup as err:
                 if err.subgroup(LoginFailed):
                     await self.api.revalidate_account()
+                    self._sync_reconciled_languages()
                     async for item in method(*args, **kwargs):
                         yield item
                     return
@@ -239,16 +244,6 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         if not username or not password:
             raise LoginFailed("Username/password required")
 
-        languages_list = self.get_setup_value(CONF_LANGUAGES)
-        if isinstance(languages_list, list) and languages_list:
-            self._languages = {
-                name: ALL_LANGUAGES[name]
-                for name in languages_list
-                if isinstance(name, str) and name in ALL_LANGUAGES
-            }
-        if not self._languages:
-            self._languages = DEFAULT_LANGUAGES.copy()
-
         self._kids_mode = bool(self.get_setup_value(CONF_KIDS_MODE))
 
         self._api = StorytelHelper(
@@ -265,6 +260,31 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             raise SetupFailedError("Invalid Storytel username or password")
         except ProviderUnavailableError as err:
             raise SetupFailedError(f"Storytel login failed: {err}") from err
+
+        account_languages = self._api.available_languages
+        available_languages = account_languages or ALL_LANGUAGES
+        fallback_languages = self._account_fallback_languages()
+        # Read the raw value: unlike get_setup_value(), it's None if never persisted.
+        languages_list = self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_LANGUAGES
+        )
+        if isinstance(languages_list, list) and languages_list:
+            persisted_names = {name for name in languages_list if isinstance(name, str)}
+            self._languages = {
+                name: available_languages[name]
+                for name in persisted_names
+                if name in available_languages
+            }
+            if not self._languages:
+                self._languages = fallback_languages
+            if set(self._languages) != persisted_names:
+                self._update_config_value(CONF_LANGUAGES, sorted(self._languages), immediate=True)
+        else:
+            # Initial setup: mirror account's own defaults
+            self._languages = fallback_languages
+            self._update_config_value(CONF_LANGUAGES, sorted(self._languages), immediate=True)
+        self._api.languages = self._languages
+
         try:
             await self._api.fetch_resource_version()
         except ProviderUnavailableError as err:
@@ -679,3 +699,24 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         """Fetch the full Storytel recommendation payload with items."""
         recommendations = await self.api.get_recommendations()
         return recommendations or []
+
+    def _account_fallback_languages(self) -> dict[str, str]:
+        """Return the languages to use when no selection has been made, mapping name to ISO value."""
+        if self._api is None:
+            return DEFAULT_LANGUAGES.copy()
+        account_languages = self._api.available_languages
+        if not account_languages:
+            return DEFAULT_LANGUAGES.copy()
+        if self._api.default_languages:
+            return dict(self._api.default_languages)
+        first_name, first_iso = next(iter(account_languages.items()))
+        return {first_name: first_iso}
+
+    def _sync_reconciled_languages(self) -> None:
+        """Apply the helper's reconciled language selection to the provider and persisted config."""
+        if self._api is None:
+            return
+        reconciled_languages = self._api.languages
+        if reconciled_languages != self._languages:
+            self._languages = reconciled_languages
+            self._update_config_value(CONF_LANGUAGES, sorted(self._languages), immediate=True)
