@@ -684,8 +684,9 @@ class RaumfeldPlayer(Player):
                 return [self.room]
             if attempt < ZONE_CREATE_ATTEMPTS - 1:
                 await asyncio.sleep(ZONE_CREATE_RETRY_DELAY)
-        # let the caller surface a clear failure rather than silently doing nothing
-        return [self.room]
+        raise PlayerCommandFailed(
+            f"The Raumfeld host has no zone for {self.room}; check that the room is online"
+        )
 
     async def _add_rooms_to_zone(self, rooms: list[str]) -> None:
         """Add the given rooms to this leader's zone, waiting until they have joined."""

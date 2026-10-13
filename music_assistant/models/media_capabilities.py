@@ -261,3 +261,18 @@ class AudioStreamMixin(Provider):
         # so an unimplemented provider fails deterministically without emitting
         # a stray empty chunk to the downstream consumer first.
         yield b""  # type: ignore[unreachable]
+
+    async def open_local_file(self, path: str) -> int | None:
+        """
+        Open a local file of this provider's StreamDetails, right before Music Assistant reads it.
+
+        Music Assistant reads the file through the returned descriptor and then closes it, which
+        lets a provider check the very file that is read. It is called on every start, seek or
+        retry of a stream and for each part of a multi-part stream. Return None (the default)
+        to have the path opened as is.
+
+        :param path: The path of a StreamDetails with stream type LOCAL_FILE, or of one of
+            its parts.
+        :raises MediaNotFoundError: If the file can not or may not be read.
+        """
+        return None
