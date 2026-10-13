@@ -13,11 +13,13 @@ from urllib.parse import quote, urlsplit, urlunsplit
 from aiohttp import ClientError, WSMsgType, web
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import SENDSPIN_SERVER_PORT
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, SENDSPIN_SERVER_PORT
 
 from .constants import (
     CONF_SHOW_STOP_NOTIFICATION,
+    CONF_URL_BUILDER_REQUIRE_AUTH,
     DEFAULT_SHOW_STOP_NOTIFICATION,
+    DEFAULT_URL_BUILDER_REQUIRE_AUTH,
     PLAYER_ID_SANITIZE_RE,
     WEB_KIOSK_PLAYER_ID_PREFIX,
     normalize_sendspin_client_id,
@@ -235,7 +237,9 @@ class WebKioskHTTPServer:
     def _setup_routes(self) -> None:
         """Register all HTTP routes."""
         self.app.router.add_get("/", self._handle_root)
+        self.app.router.add_get("/kiosk", self._handle_web_app)
         self.app.router.add_get("/web", self._handle_web_app)
+        self.app.router.add_post("/builder-auth", self._handle_builder_auth)
         self.app.router.add_static("/web/", STATIC_DIR / "web")
         self.app.router.add_get("/health", self._handle_health)
         self.app.router.add_get("/ws", self._handle_ws)
@@ -271,12 +275,31 @@ class WebKioskHTTPServer:
         response: web.StreamResponse = await handler(request)
         if not _is_audio_path(request.path):
             response.headers["Access-Control-Allow-Origin"] = "*"
-        if request.path == "/web" or request.path.startswith("/web/"):
-            response.headers["Cache-Control"] = "no-cache"
+        if request.path in ("/", "/kiosk", "/web", "/builder-auth") or request.path.startswith(
+            "/web/"
+        ):
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     async def _handle_root(self, request: web.Request) -> web.Response:
         """Serve the status dashboard with a kiosk URL builder."""
+        if self.provider.config.get_value(
+            CONF_URL_BUILDER_REQUIRE_AUTH, DEFAULT_URL_BUILDER_REQUIRE_AUTH
+        ):
+            token = request.cookies.get("wk_builder_auth", "")
+            authorization = request.headers.get("Authorization", "")
+            if authorization.lower().startswith("bearer "):
+                token = authorization[7:]
+            user = (
+                await self.provider.mass.webserver.auth.authenticate_with_token(token)
+                if token
+                else None
+            )
+            if not user or user.username == HOMEASSISTANT_SYSTEM_USER:
+                return cast(
+                    "web.Response",
+                    web.FileResponse(STATIC_DIR / "web" / "builder-login.html", status=401),
+                )
         prefix = self._get_prefix(request)
         players = (
             "".join(
@@ -295,9 +318,9 @@ class WebKioskHTTPServer:
 body {{ font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 20px; }}
 .info {{ background: #1a1a20; color: #e8e8ee; padding: 16px; border-radius: 10px; margin: 12px 0; }}
 code, input[readonly] {{ font-family: ui-monospace, monospace; word-break: break-all; }}
-.row {{ display: flex; align-items: center; gap: 12px; margin: 8px 0; }}
+.row {{ display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0; }}
 label {{ cursor: pointer; margin-right: 14px; }}
-input[readonly] {{ flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #444; background: #101014; color: #e8e8ee; }}
+input[readonly] {{ flex: 1; min-width: 0; padding: 8px; border-radius: 6px; border: 1px solid #444; background: #101014; color: #e8e8ee; }}
 input[type=text], input[type=password] {{ padding: 8px; border-radius: 6px; border: 1px solid #444; background: #101014; color: #e8e8ee; width: 100%; }}
 .btn {{ padding: 8px 14px; border-radius: 6px; border: 1px solid #4f8cff; background: #4f8cff; color: white; cursor: pointer; }}
 a {{ color: #4f8cff; }}
@@ -310,12 +333,14 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <div class="info">
 <h3>Kiosk URL Builder</h3>
 <div class="row">
-<label><input type="radio" name="mode" value="html5" checked> HTML5</label>
-<label><input type="radio" name="mode" value="sendspin"> Sendspin</label>
-<label><input type="checkbox" id="controls" checked> Controls</label>
-<label><input type="checkbox" id="party" checked> Party QR</label>
-<label><input type="checkbox" id="viz" checked> Visualizer</label>
-<label><input type="checkbox" id="lyrics" checked> Lyrics</label>
+<label><input type="radio" name="mode" value="html5"> HTML5</label>
+<label><input type="radio" name="mode" value="sendspin" checked> Sendspin</label>
+<label><input type="checkbox" id="controls"> Controls</label>
+<label><input type="checkbox" id="party"> Party QR</label>
+<label><input type="checkbox" id="viz"> Visualizer</label>
+<label><input type="checkbox" id="lyrics"> Lyrics</label>
+<label><input type="checkbox" id="queue"> Queue</label>
+<label><input type="checkbox" id="show_player_id"> Player ID</label>
 </div>
 <div class="row">
 <input type="text" id="ma_url" placeholder="MA server URL (e.g. http://{host_addr}:8095)">
@@ -327,7 +352,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <input type="text" id="device_id" placeholder="Device id (optional, stored in the browser)">
 </div>
 <div class="row">
-<input readonly id="url">
+<input readonly id="url" data-base="{html_escape(prefix)}">
 <button class="btn" id="copy">Copy</button>
 <button class="btn" id="open" style="background:#2f6f3f;border-color:#2f6f3f">Open</button>
 </div>
@@ -339,44 +364,52 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <ul>{players}</ul>
 </div>
 
-<script>
-(function () {{
-    var url = document.getElementById('url');
-    var copy = document.getElementById('copy');
-    var open = document.getElementById('open');
-    var base = {json.dumps(prefix)};
-
-    function build() {{
-        var mode = document.querySelector('input[name="mode"]:checked').value;
-        var params = ['kiosk=1'];
-        if (mode === 'sendspin') params.push('sendspin=1');
-        var toggles = {{controls: 'controls', party: 'party', viz: 'viz', lyrics: 'lyrics'}};
-        for (var key in toggles) {{
-            if (!document.getElementById(key).checked) params.push(toggles[key] + '=0');
-        }}
-        var maUrl = document.getElementById('ma_url').value.trim();
-        if (maUrl) params.push('ma_url=' + encodeURIComponent(maUrl));
-        var token = document.getElementById('token').value.trim();
-        if (token) params.push('token=' + encodeURIComponent(token));
-        var device = document.getElementById('device_id').value.trim();
-        if (device) params.push('device_id=' + encodeURIComponent(device));
-        return base + '/web?' + params.join('&');
-    }}
-
-    function refresh() {{ url.value = build(); }}
-    document.addEventListener('input', refresh);
-    document.addEventListener('change', refresh);
-    copy.onclick = function () {{
-        url.select();
-        navigator.clipboard.writeText(url.value);
-    }};
-    open.onclick = function () {{ window.open(url.value, '_blank'); }};
-    refresh();
-}})();
-</script>
+<script src="/web/url-builder.js"></script>
 </body>
 </html>"""
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(
+            text=html, content_type="text/html", headers={"Cache-Control": "no-store"}
+        )
+
+    async def _handle_builder_auth(self, request: web.Request) -> web.Response:
+        """Validate MA sign-in and store its token in a private browser cookie."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
+        origin = request.headers.get("Origin")
+        if origin and origin != f"{request.scheme}://{request.host}":
+            return web.json_response({"error": "Cross-site request rejected"}, status=403)
+        try:
+            credentials = await request.json()
+        except ValueError, TypeError:
+            return web.json_response({"error": "Invalid sign-in request"}, status=400)
+        if not isinstance(credentials, dict):
+            return web.json_response({"error": "Invalid sign-in request"}, status=400)
+        token = credentials.get("token")
+        if not token:
+            username = credentials.get("username")
+            password = credentials.get("password")
+            if not isinstance(username, str) or not isinstance(password, str):
+                return web.json_response({"error": "MA sign-in required"}, status=401)
+            result = await self.provider.mass.webserver.auth.login(
+                username=username, password=password, device_name="Web Kiosk URL Builder"
+            )
+            token = result.get("access_token") if result.get("success") else None
+        if not isinstance(token, str) or not token:
+            return web.json_response({"error": "MA sign-in failed"}, status=401)
+        user = await self.provider.mass.webserver.auth.authenticate_with_token(token)
+        if not user or user.username == HOMEASSISTANT_SYSTEM_USER:
+            return web.json_response({"error": "MA sign-in failed"}, status=401)
+        response = web.json_response({"success": True}, headers={"Cache-Control": "no-store"})
+        response.set_cookie(
+            "wk_builder_auth",
+            token,
+            httponly=True,
+            samesite="Strict",
+            secure=request.secure,
+            max_age=86400,
+            path="/",
+        )
+        return response
 
     async def _handle_web_app(self, _request: web.Request) -> web.Response:
         """Serve the web kiosk SPA."""
@@ -426,7 +459,16 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             player.on_ws_connected()
         # Tell the kiosk its server-derived player_id so it can target MA
         # JSON-RPC playback commands before the first "play" push arrives.
-        await self._ws_send(ws, json.dumps({"type": "welcome", "player_id": player_id}))
+        await self._ws_send(
+            ws,
+            json.dumps(
+                {
+                    "type": "welcome",
+                    "player_id": player_id,
+                    "server_version": self.provider.mass.version,
+                }
+            ),
+        )
         # A reconnecting/reloaded kiosk needs the current play state, otherwise it
         # stays silent until the next playback command.
         await self._send_snapshot(ws, player)

@@ -36,6 +36,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     mass.closing = False
+    mass.version = "2.17.0.dev0"
     mass.create_task = Mock(side_effect=lambda coro: coro)
 
     # Player.__init__ deps

@@ -3,11 +3,12 @@
     'use strict';
 
     var params = new URLSearchParams(location.search);
-    // /web is the player. kiosk=1 remains so older links still open this screen.
-    var SENDSPIN = params.get('sendspin') === '1';
+    // /kiosk is the player; /web and kiosk=1 remain compatible aliases.
+    var SENDSPIN = params.get('sendspin') !== '0';
     if (SENDSPIN) document.documentElement.classList.add('sendspin');
-    var FLAG = function (name) { return params.get(name) !== '0'; };
-    var SHOW = { controls: FLAG('controls'), party: FLAG('party'), viz: FLAG('viz'), lyrics: FLAG('lyrics') };
+    var FLAG = function (name) { return params.get(name) === '1'; };
+    var SHOW = { controls: FLAG('controls'), party: FLAG('party'), viz: FLAG('viz'), lyrics: FLAG('lyrics'), queue: FLAG('queue'), playerId: FLAG('show_player_id') };
+    document.documentElement.classList.toggle('controls', SHOW.controls);
 
     var LS = {
         get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -36,6 +37,9 @@
     if (TOKEN) LS.set('wk_token', TOKEN);
 
     var playerId = '';
+    var serverVersion = '';
+    var hasTrack = false;
+    var partyExpanded = false;
     var ws = null;
     var msgSeq = 0;
     var playing = false;
@@ -163,9 +167,11 @@
         switch (msg.type) {
             case 'welcome':
                 playerId = msg.player_id;
+                serverVersion = typeof msg.server_version === 'string' ? msg.server_version : '';
+                renderNow();
                 var playerLabel = document.getElementById('kiosk-player-id');
                 playerLabel.textContent = 'Player ID: ' + playerId;
-                playerLabel.classList.remove('hidden');
+                playerLabel.classList.toggle('hidden', !SHOW.playerId);
                 setStatus('');
                 sync();
                 if (TOKEN) { fetchQueue(); fetchParty(); }
@@ -182,6 +188,7 @@
                 if (sendspinStreaming) break;
                 if (msg.path) {
                     pendingSeek = null;
+                    hasTrack = true;
                     current = {
                         title: msg.title || '',
                         artist: msg.artist || '',
@@ -202,6 +209,7 @@
                 audio.pause(); audio.removeAttribute('src');
                 pendingSeek = null;
                 displayHold = null;
+                hasTrack = false;
                 current = { title: '—', artist: '—', image: '', duration: 0, start: 0 };
                 lyricsLines = [];
                 lyricsIdx = -1;
@@ -242,7 +250,13 @@
                 applyLyrics(msg.lines);
                 break;
             case 'sendspin':
-                if (msg.url) location.href = msg.url;
+                if (msg.url) {
+                    var target = new URL(msg.url, location.protocol + '//' + location.host);
+                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'ma_url', 'token', 'device_id', 'sendspin_url'].forEach(function (name) {
+                        if (params.has(name) && !target.searchParams.has(name)) target.searchParams.set(name, params.get(name));
+                    });
+                    location.href = target.toString();
+                }
                 break;
         }
     }
@@ -394,32 +408,38 @@
     }
     function renderNow() {
         var src = current.image ? imageUrl({ image: current.image }) : '';
+        var logo = SENDSPIN ? '/web/sendspin.svg' : '/web/html5.svg';
+        var title = hasTrack ? current.title || '—' : playerId || 'Connecting…';
+        var artist = hasTrack ? current.artist || '—' : 'Music Assistant' + (serverVersion ? ' ' + serverVersion : '');
         var box = document.getElementById('kiosk-artbox');
         var art = document.getElementById('kiosk-art');
         var bg = document.getElementById('kiosk-bg-img');
         function showEmblem() {
             box.classList.remove('has-art');
             clearImage(art);
+            art.src = logo;
+            art.alt = SENDSPIN ? 'Sendspin' : 'HTML5';
+            box.classList.add('has-art', 'project-art');
             clearImage(bg);
-            bg.style.opacity = '0';
+            bg.src = logo;
+            bg.style.opacity = '1';
         }
-        art.alt = current.title && current.title !== '—' ? current.title : '';
-        document.getElementById('kiosk-title').textContent = current.title || '—';
-        document.getElementById('kiosk-artist').textContent = current.artist || '—';
-        document.getElementById('kiosk-bar-title').textContent = current.title && current.title !== '—' ? current.title : 'Nothing playing';
-        document.getElementById('kiosk-bar-artist').textContent = current.artist && current.artist !== '—' ? current.artist : 'Web Kiosk';
+        art.alt = title;
+        document.getElementById('kiosk-title').textContent = title;
+        document.getElementById('kiosk-artist').textContent = artist;
+        document.getElementById('kiosk-bar-title').textContent = title;
+        document.getElementById('kiosk-bar-artist').textContent = artist;
         var barArt = document.getElementById('kiosk-bar-art');
         var barBox = document.getElementById('kiosk-bar-artbox');
         barArt.onload = function () { barBox.classList.add('has-art'); barArt.classList.remove('hidden'); };
         barArt.onerror = function () { barBox.classList.remove('has-art'); barArt.classList.add('hidden'); };
-        if (src) barArt.src = src;
-        else { clearImage(barArt); barBox.classList.remove('has-art'); barArt.classList.add('hidden'); }
+        barBox.classList.toggle('project-art', !src);
+        barArt.src = src || logo;
         if (!src) {
             showEmblem();
             paintClock();
             return;
         }
-        // Keep the emblem up until the file decodes. An empty src paints a broken icon.
         art.onload = function () {
             if (art.getAttribute('src') !== src) return;
             box.classList.add('has-art');
@@ -434,7 +454,7 @@
             clearImage(bg);
             bg.style.opacity = '0';
         };
-        box.classList.remove('has-art');
+        box.classList.remove('has-art', 'project-art');
         art.src = src;
         bg.src = src;
         if (art.complete) {
@@ -712,16 +732,34 @@
     }
     window.addEventListener('resize', function () { if (!vizFrame) paintViz(); });
 
+    function setPartyExpanded(open) {
+        var party = document.getElementById('kiosk-party');
+        partyExpanded = open && !party.classList.contains('hidden') && !!party.dataset.version;
+        var expanded = document.getElementById('kiosk-party-expanded');
+        expanded.classList.toggle('hidden', !partyExpanded);
+        party.setAttribute('aria-expanded', String(partyExpanded));
+        party.setAttribute('aria-label', partyExpanded ? 'Close Party QR' : 'Enlarge Party QR');
+        if (partyExpanded) {
+            document.getElementById('kiosk-party-art').src = '/api/party/qr.svg?v=' + encodeURIComponent(party.dataset.version);
+        }
+    }
+
+    function hideParty() {
+        var party = document.getElementById('kiosk-party');
+        party.classList.add('hidden');
+        party.dataset.version = '';
+        setPartyExpanded(false);
+    }
+
     async function fetchParty() {
         var el = document.getElementById('kiosk-party');
-        if (!SHOW.party) { el.classList.add('hidden'); return; }
+        if (!SHOW.party) { hideParty(); return; }
         try {
             var res = await fetch('/api/party');
-            if (!res.ok) { el.classList.add('hidden'); return; }
+            if (!res.ok) { hideParty(); return; }
             var info = await res.json();
             if (!info || !info.active) {
-                el.classList.add('hidden');
-                el.dataset.version = '';
+                hideParty();
                 return;
             }
             var version = info.version || '1';
@@ -731,11 +769,12 @@
             el.innerHTML = '<img src="/api/party/qr.svg?v=' + encodeURIComponent(version) + '" alt="Join">' +
                 (info.name ? '<div class="name">' + esc(info.name) + '</div>' : '') +
                 (info.qr_text ? '<div class="qr">' + esc(info.qr_text) + '</div>' : '');
-        } catch (e) { el.classList.add('hidden'); }
+            setPartyExpanded(partyExpanded);
+        } catch (e) { hideParty(); }
     }
 
     function fetchQueue() {
-        if (!playerId || !TOKEN) return;
+        if (!SHOW.queue || !playerId || !TOKEN) return;
         rpc('player_queues/get_active_queue', { player_id: playerId }).then(function (q) {
             if (!q || !q.queue_id) return;
             return rpc('player_queues/items', { queue_id: q.queue_id, limit: 200 }).then(function (items) {
@@ -823,6 +862,11 @@
     }
 
     function bindControls() {
+        document.getElementById('kiosk-party').onclick = function () { setPartyExpanded(!partyExpanded); };
+        document.getElementById('kiosk-party-expanded').onclick = function () {
+            setPartyExpanded(false);
+            document.getElementById('kiosk-party').focus();
+        };
         document.getElementById('k-volume-button').onclick = function () { setVolumePanel(!volumePanelOpen); };
         document.getElementById('k-volume-close').onclick = function () { setVolumePanel(false); };
         document.addEventListener('pointerdown', function (e) {
@@ -876,6 +920,11 @@
     }
 
     document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && partyExpanded) {
+            setPartyExpanded(false);
+            document.getElementById('kiosk-party').focus();
+            return;
+        }
         if (e.key === 'Escape' && volumePanelOpen) {
             setVolumePanel(false);
             document.getElementById('k-volume-button').focus();
@@ -997,7 +1046,7 @@
             fetchParty();
             setInterval(fetchParty, 10000);
         }
-        if (TOKEN) setInterval(fetchQueue, 15000);
+        if (SHOW.queue && TOKEN) setInterval(fetchQueue, 15000);
         if (SHOW.controls) {
             document.addEventListener('mousemove', showKioskControls);
             document.addEventListener('touchstart', showKioskControls, { passive: true });

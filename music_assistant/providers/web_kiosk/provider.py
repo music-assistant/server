@@ -23,10 +23,12 @@ from .constants import (
     CONF_KIOSK_URL,
     CONF_PLAYER_IDLE_TIMEOUT,
     CONF_SHOW_STOP_NOTIFICATION,
+    CONF_URL_BUILDER_REQUIRE_AUTH,
     DEFAULT_ENABLE_SENDSPIN_BRIDGE,
     DEFAULT_HTTP_PORT,
     DEFAULT_PLAYER_IDLE_TIMEOUT,
     DEFAULT_SHOW_STOP_NOTIFICATION,
+    DEFAULT_URL_BUILDER_REQUIRE_AUTH,
     PLAYER_DISCONNECT_GRACE_SECONDS,
     WEB_KIOSK_PLAYER_ID_PREFIX,
 )
@@ -89,6 +91,12 @@ class WebKioskProvider(PlayerProvider):
                 type=ConfigEntryType.BOOLEAN,
                 required=False,
                 default_value=DEFAULT_ENABLE_SENDSPIN_BRIDGE,
+            ),
+            ConfigEntry(
+                key=CONF_URL_BUILDER_REQUIRE_AUTH,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=DEFAULT_URL_BUILDER_REQUIRE_AUTH,
             ),
             ConfigEntry(
                 key=CONF_KIOSK_URL,
@@ -514,8 +522,8 @@ class WebKioskProvider(PlayerProvider):
             parts = urlsplit(base)
             hostname = parts.hostname or "ma-host"
             host = f"[{hostname}]" if ":" in hostname else hostname
-            return f"{parts.scheme}://{host}:{port}/web?kiosk=1&ma_url={base}"
-        return f"http://<ma-host>:{port}/web?kiosk=1"
+            return f"http://{host}:{port}/kiosk"
+        return f"http://<ma-host>:{port}/kiosk"
 
     async def _handle_player_unregister(self, player_id: str) -> None:
         """Unregister a player with race-condition handling."""

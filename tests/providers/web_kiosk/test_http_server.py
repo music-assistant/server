@@ -84,6 +84,17 @@ async def test_ws_welcome_carries_player_id(http_client: TestClient[Any, Any]) -
     await ws.close()
 
 
+async def test_ws_welcome_carries_server_version(
+    http_client: TestClient[Any, Any], mass_mock: Mock
+) -> None:
+    """The kiosk can identify the running MA version without an API token."""
+    mass_mock.version = "2.17.0.dev42"
+    ws = await http_client.ws_connect("/ws?device_id=version-test")
+    payload = json.loads((await ws.receive()).data)
+    assert payload["server_version"] == "2.17.0.dev42"
+    await ws.close()
+
+
 async def test_ws_ended_asks_the_provider_to_advance(
     http_client: TestClient[Any, Any], provider: WebKioskProvider
 ) -> None:
@@ -313,3 +324,67 @@ async def test_api_proxy_502_when_upstream_fails(
 
     assert resp.status == 502
     assert "unreachable" in await resp.text()
+
+
+async def test_canonical_kiosk_route_serves_player(http_client: TestClient[Any, Any]) -> None:
+    """The canonical kiosk route serves the player with no query parameters."""
+    response = await http_client.get("/kiosk")
+    assert response.status == 200
+    assert 'id="kiosk-art"' in await response.text()
+
+
+async def test_protected_builder_requires_valid_ma_auth(
+    http_client: TestClient[Any, Any], config_mock: Mock, mass_mock: Mock
+) -> None:
+    """The protected URL builder never discloses its content without MA sign-in."""
+    original_get_value = config_mock.get_value.side_effect
+    config_mock.get_value.side_effect = lambda key, default=None: (
+        True if key == "url_builder_require_auth" else original_get_value(key, default)
+    )
+    mass_mock.webserver.auth.authenticate_with_token = AsyncMock(return_value=None)
+    response = await http_client.get("/")
+    assert response.status == 401
+    assert "Kiosk URL Builder" not in await response.text()
+    response = await http_client.post("/builder-auth", json={"token": "invalid-test-token"})
+    assert response.status == 401
+    mass_mock.webserver.auth.authenticate_with_token.return_value = Mock(username="test-user")
+    response = await http_client.post("/builder-auth", json={"token": "valid-test-token"})
+    assert response.status == 200
+    assert response.cookies["wk_builder_auth"]["httponly"]
+    response = await http_client.get("/")
+    assert response.status == 200
+    assert "Kiosk URL Builder" in await response.text()
+    mass_mock.webserver.auth.authenticate_with_token.return_value = None
+    response = await http_client.get("/")
+    assert response.status == 401
+    assert (await http_client.get("/kiosk")).status == 200
+
+
+async def test_builder_signin_uses_ma_credentials_and_rejects_cross_site(
+    http_client: TestClient[Any, Any], mass_mock: Mock
+) -> None:
+    """Builder sign-in delegates credentials to MA and rejects cross-site sign-in."""
+    mass_mock.webserver.auth.login = AsyncMock(
+        return_value={"success": True, "access_token": "test-access-token"}
+    )
+    mass_mock.webserver.auth.authenticate_with_token = AsyncMock(
+        return_value=Mock(username="test-user")
+    )
+    response = await http_client.post(
+        "/builder-auth", json={"username": "test-user", "password": "test-password"}
+    )
+    assert response.status == 200
+    mass_mock.webserver.auth.login.assert_awaited_once_with(
+        username="test-user", password="test-password", device_name="Web Kiosk URL Builder"
+    )
+    response = await http_client.post(
+        "/builder-auth",
+        json={"token": "test-access-token"},
+        headers={"Origin": "https://other.example"},
+    )
+    assert response.status == 403
+    mass_mock.webserver.auth.login.return_value = {"success": False}
+    response = await http_client.post(
+        "/builder-auth", json={"username": "test-user", "password": "wrong-test-password"}
+    )
+    assert response.status == 401

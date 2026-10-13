@@ -7,8 +7,8 @@
 <script>
 try {
   var q = new URLSearchParams(location.search);
-  if (q.get('sendspin') === '1') document.documentElement.classList.add('sendspin');
-  if (q.get('controls') !== '0') document.documentElement.classList.add('controls');
+  if (q.get('sendspin') !== '0') document.documentElement.classList.add('sendspin');
+  if (q.get('controls') === '1') document.documentElement.classList.add('controls');
 } catch (e) {}
 </script>
 <style>
@@ -25,13 +25,6 @@ html.controls #kiosk-center { bottom:calc(var(--kiosk-bar-height) + 16px); }
 #kiosk-artbox { position:relative; width:min(46vh,46vw); height:auto; aspect-ratio:1; max-height:min(46vh,46vw); flex:0 1 auto; min-height:0; border-radius:14px; background:#16161c; box-shadow:0 20px 60px rgba(0,0,0,.6); overflow:hidden; }
 #kiosk-art { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:none; }
 #kiosk-artbox.has-art #kiosk-art { display:block; }
-/* 57 columns by 33 rows. 1.15vmin is 2.5% of the art square, so the mark fills it. */
-.kiosk-mark { position:absolute; inset:0; margin:0; display:flex; align-items:center; justify-content:center; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace; line-height:1; letter-spacing:0; white-space:pre; font-size:min(1.15vh,1.15vw); user-select:none; }
-#kiosk-mark-ma { color:#18BCF2; }
-#kiosk-mark-sp { color:#E25C4C; display:none; }
-html.sendspin #kiosk-mark-ma { display:none; }
-html.sendspin #kiosk-mark-sp { display:flex; }
-#kiosk-artbox.has-art .kiosk-mark { display:none; }
 #kiosk-title { font-size:clamp(20px,4vw,44px); font-weight:700; text-align:center; text-shadow:0 2px 20px rgba(0,0,0,.8); max-width:92vw; }
 #kiosk-artist { font-size:clamp(15px,2.6vw,26px); color:#cfcfe0; text-align:center; max-width:92vw; }
 #kiosk-viz { position:absolute; inset:0; z-index:1; width:100%; height:100%; }
@@ -123,68 +116,10 @@ SOFTWARE.</desc>
   <div id="kiosk-bg"><img id="kiosk-bg-img" alt=""></div>
   <div id="kiosk-center">
     <div id="kiosk-artbox">
-      <img id="kiosk-art" alt="">
-      <pre id="kiosk-mark-ma" class="kiosk-mark" aria-hidden="true">                         .+###+.
-                        :#######:
-                      :###########:
-                    .+#############+.
-                   +#################+
-                 :#####################:
-               .+#######################+.
-              +###########################+
-            :###############################:
-          .###################################.
-         +#####################################+
-       :#########################################:
-     .#############################################.
-    +###############################################+
-  :###################################################:
- +#####################################################+
-:#######################################################:
-#######. .####+  :####: .+#########+  +##+  +############
-######+   +###.   ####   :#########   .##:   ############
-######+   +###.   ####   :########:   ####   .###########
-######+   +###.   ####   :#######+   :####:   +##########
-######+   +###.   ####   :#######.   ######   .##########
-######+   +###.   ####   :######+   :######:   +#########
-######+   +###.   ####   :######    ########    #########
-######+   +###.   ####   :#####:   +########+   :########
-######+   +###.   ####   :#####   .##########.   ########
-######+   +###.   ####   :####:   +##########+   :#######
-######+   +###.   ####   :####   .############:   #######
-######+   +###.   ####   :###.   ##############   .######
-#########################################################
-#########################################################
-#########################################################
-.#######################################################.</pre>
-      <pre id="kiosk-mark-sp" class="kiosk-mark" aria-hidden="true">                          .:++#####++:.
-                       :+###############+:         ::
-                     :#######++:::++#######:      ###+
-                   .#####+:           :+###+      +####
-                  :####+      .:::.      :.   .    +###+
-                 :####.    :#########:      .###.   ####:
-                .####.   :############+     :####   .###+
-                +###:   +####+.   .++:       +###:   ####
-               .####   :####.                +###:   ####
-               :###+   +###.                 ####.   ####
-               :###+   +###.                +####   :###+
-               .###+   +###+      .##+       +##    ####.
-    ..          ####.   ####.     #####            +###+
-   +##+         :###+   .##.       +###+          ####+
-  +####          +###+       .##    +###:         +##+
- +###+            #####     .####   .####          ..
-.####    ##+       +##.      +###:   +###.
-+###:   ####+                .###+   +###:
-####   .####                 .###+   +###:
-####   :###+                .####:   ####.
-####   :###+       :++.   .+####+   :###+
-+###.   ####:     +############:   .####.
-:####   .###.      :#########:    :####:
- +###+    .   .:      .:::.      +####:
-  ####+      +###+:           :+#####.
-   +###      :#######++:::++#######:
-    ::         :+###############+.
-                  .:++#####++:.                          </pre>
+      <img id="kiosk-art" alt="HTML5" src="/web/html5.svg">
+      <button type="button" id="kiosk-party-expanded" class="hidden" aria-label="Close Party QR" title="Close Party QR">
+        <img id="kiosk-party-art" alt="Join Party">
+      </button>
     </div>
     <div id="kiosk-title">—</div>
     <div id="kiosk-artist">—</div>
@@ -235,7 +170,7 @@ SOFTWARE.</desc>
           </div>
         </div>
       </div>
-      <div id="kiosk-party" class="hidden"></div>
+      <button type="button" id="kiosk-party" class="hidden" aria-label="Enlarge Party QR" aria-expanded="false" aria-controls="kiosk-party-expanded"></button>
     </div>
   </div>
 </div>

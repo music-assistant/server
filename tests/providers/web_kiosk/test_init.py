@@ -13,6 +13,7 @@ from music_assistant.providers.web_kiosk.constants import (
     CONF_KIOSK_URL,
     CONF_PLAYER_IDLE_TIMEOUT,
     CONF_SHOW_STOP_NOTIFICATION,
+    CONF_URL_BUILDER_REQUIRE_AUTH,
 )
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
@@ -38,4 +39,15 @@ async def test_get_config_entries_exposes_expected_keys(provider: WebKioskProvid
         CONF_SHOW_STOP_NOTIFICATION,
         CONF_ENABLE_SENDSPIN_BRIDGE,
         CONF_KIOSK_URL,
+        CONF_URL_BUILDER_REQUIRE_AUTH,
     }
+
+
+async def test_config_url_is_canonical_kiosk_address(
+    provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """The copyable URL opens the minimal player on the MA host."""
+    mass_mock.webserver.base_url = "http://192.168.10.10:8095"
+    entries = {entry.key: entry for entry in await provider.get_config_entries()}
+    assert entries[CONF_KIOSK_URL].default_value == "http://192.168.10.10:8098/kiosk"
+    assert entries[CONF_URL_BUILDER_REQUIRE_AUTH].default_value is False

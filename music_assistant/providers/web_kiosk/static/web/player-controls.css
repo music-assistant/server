@@ -79,9 +79,9 @@
 .volume-range-row > .kiosk-icon { color:var(--ma-muted); width:20px; height:20px; }
 #kiosk-volume { --progress:100%; flex:1; height:40px; }
 #k-volume-panel-level { width:38px; text-align:right; font-size:12px; color:var(--ma-muted); font-variant-numeric:tabular-nums; }
-html:not(.controls) #kiosk-controls { display:block; background:transparent; box-shadow:none; height:auto; opacity:1; pointer-events:auto; padding:16px; }
+html:not(.controls) #kiosk-controls { display:block; background:transparent; box-shadow:none; height:auto; opacity:1; pointer-events:none; padding:16px; }
 html:not(.controls) #kiosk-bar-track, html:not(.controls) #kiosk-transport, html:not(.controls) #kiosk-volume-control { display:none; }
-html:not(.controls) #kiosk-progress { width:min(70vw,640px); margin:auto; }
+html:not(.controls) #kiosk-progress { display:none; }
 html.controls:has(#kiosk-party:not(.hidden)) { --kiosk-bar-height:calc(128px + env(safe-area-inset-bottom,0px)); }
 @media (max-width:768px) {
   :root { --kiosk-bar-height:calc(132px + env(safe-area-inset-bottom,0px)); }
@@ -155,4 +155,11 @@ html.controls #kiosk-controls:has(#kiosk-party:not(.hidden)) { opacity:1; pointe
 #kiosk-party .name { font-size:10px; color:#cfcfe0; }
 #kiosk-party .qr { font-size:9px; color:var(--ma-muted); }
 html:not(.controls) #kiosk-bar-actions { display:contents; }
-html:not(.controls) #kiosk-party { position:fixed; right:max(16px,env(safe-area-inset-right,0px)); bottom:max(16px,env(safe-area-inset-bottom,0px)); }
+html:not(.controls) #kiosk-party { position:fixed; right:max(16px,env(safe-area-inset-right,0px)); bottom:max(16px,env(safe-area-inset-bottom,0px)); pointer-events:auto; }
+
+#kiosk-artbox.project-art #kiosk-art { object-fit:contain; padding:12%; }
+#kiosk-bar-artbox.project-art #kiosk-bar-art { object-fit:contain; padding:10%; }
+#kiosk-party { border:0; padding:0; background:transparent; font-family:inherit; cursor:pointer; }
+#kiosk-party:focus-visible, #kiosk-party-expanded:focus-visible { outline:2px solid var(--ma-primary); outline-offset:3px; }
+#kiosk-party-expanded { position:absolute; inset:0; z-index:1; display:grid; place-items:center; width:100%; height:100%; border:0; padding:6%; background:#fff; cursor:pointer; }
+#kiosk-party-art { display:block; width:100%; height:100%; object-fit:contain; }

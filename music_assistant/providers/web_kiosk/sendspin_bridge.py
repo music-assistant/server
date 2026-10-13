@@ -140,7 +140,7 @@ class WebKioskSendspinBridge:
             self.kiosk_player.display_name,
             getattr(request, "connection_reason", None),
         )
-        kiosk_url = f"/web?kiosk=1&sendspin=1&sendspin_client_id={quote(self.client_id, safe='')}"
+        kiosk_url = f"/kiosk?sendspin=1&sendspin_client_id={quote(self.client_id, safe='')}"
         http_server.broadcast_sendspin(self.kiosk_player.player_id, kiosk_url)
         self._cancel_watchdog()
         self._connect_watchdog = self.provider.mass.create_task(self._watch_connect())

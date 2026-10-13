@@ -18,7 +18,11 @@
     },
     "kiosk_url": {
       "label": "Kiosk URL",
-      "description": "Open this URL in the kiosk browser. Append &token=<auth token> to enable MA API access."
+      "description": "Open this URL for a minimal Sendspin player. Use the URL builder at the server root to enable additions or select HTML5."
+    },
+    "url_builder_require_auth": {
+      "label": "Require MA sign-in for URL builder",
+      "description": "Require a valid Music Assistant account or access token before the URL builder and player list can be opened. Player URLs remain available without sign-in."
     }
   },
   "manifest": {
