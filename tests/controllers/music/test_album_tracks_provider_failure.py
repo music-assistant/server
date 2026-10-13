@@ -270,6 +270,25 @@ async def test_album_tracks_report_a_failure_by_the_instance_that_served_it(
     assert lookup_errors == {served_by: error}
 
 
+async def test_album_tracks_report_failures_when_nothing_is_left_to_play(
+    mass: MusicAssistant,
+) -> None:
+    """An album left with nothing to play still names the provider that failed."""
+    db_album = await _seed_album(mass, with_library_tracks=False)
+    await set_global_cache_values({"available_providers": {"local_inst", "streaming_inst"}})
+    error = ProviderPermissionDenied("Not in your region")
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        side_effect=_failing_provider_fetch(error),
+    ):
+        tracks, lookup_errors = await mass.music.albums.tracks_with_lookup_errors(
+            db_album.item_id, "library"
+        )
+    assert tracks == []
+    assert lookup_errors == {"streaming_inst": error}
+
+
 async def test_album_tracks_skip_an_unavailable_mapping(mass: MusicAssistant) -> None:
     """A mapping already marked unavailable is not fetched again."""
     db_album = await _seed_album(mass, with_library_tracks=True)

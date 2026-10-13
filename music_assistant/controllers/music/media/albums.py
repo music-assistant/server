@@ -477,9 +477,16 @@ class AlbumsController(MediaControllerBase[Album]):
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         """
         lookup_errors: dict[str, Exception] = {}
-        tracks = await self._album_tracks(
-            item_id, provider_instance_id_or_domain, lookup_errors=lookup_errors
-        )
+        try:
+            tracks = await self._album_tracks(
+                item_id, provider_instance_id_or_domain, lookup_errors=lookup_errors
+            )
+        except PROVIDER_FETCH_ERRORS:
+            if not lookup_errors:
+                raise
+            # a library album left with nothing to play raises the last failure, which may
+            # be another provider's; the failures per provider tell the caller whose it was
+            return [], lookup_errors
         sort_field, sort_direction = resolve_listing_sort(ListingType.ALBUM_TRACKS)
         return (
             apply_listing(
