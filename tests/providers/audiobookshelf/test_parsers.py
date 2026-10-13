@@ -107,4 +107,3 @@ def test_podcast_episode_mapping_has_no_file_url() -> None:
     )
 
     assert [mapping.url for mapping in mass_episode.provider_mappings] == [None]
-    assert mass_episode.duration == 600

@@ -23,10 +23,11 @@ from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
 from aioaudiobookshelf.schema.podcast import (
     PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
 )
-from music_assistant_models.enums import ArtistType, ImageType, MediaType
+from music_assistant_models.enums import ArtistType, ContentType, ImageType, MediaType
 from music_assistant_models.media_items import Artist as MassArtist
 from music_assistant_models.media_items import Audiobook as MassAudiobook
 from music_assistant_models.media_items import (
+    AudioFormat,
     ItemMapping,
     MediaItemChapter,
     MediaItemCollection,
@@ -181,11 +182,28 @@ def parse_podcast_episode(
     """
     episode_id = f"{prov_podcast_id} {episode.id_}"
 
-    # PodcastEpisode has no duration, 0 is the mass default
-    duration = int(episode.duration) if isinstance(episode, AbsPodcastEpisodeExpanded) else 0
-    provider_mappings = {
-        ProviderMapping(item_id=episode_id, provider_domain=domain, provider_instance=instance_id)
-    }
+    if isinstance(episode, AbsPodcastEpisodeExpanded):
+        duration = int(episode.duration)
+        provider_mappings = {
+            ProviderMapping(
+                item_id=episode_id,
+                provider_domain=domain,
+                provider_instance=instance_id,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                ),
+            )
+        }
+    else:
+        # PodcastEpisode
+        duration = 0  # mass default
+        provider_mappings = {
+            ProviderMapping(
+                item_id=episode_id,
+                provider_domain=domain,
+                provider_instance=instance_id,
+            )
+        }
 
     release_date: datetime | None = None
     if episode.published_at is not None:

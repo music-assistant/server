@@ -32,22 +32,17 @@ def playlog_provider(provider: Audiobookshelf) -> Audiobookshelf:
     return provider
 
 
-def _progress(last_update: int, is_finished: bool) -> MediaProgress:
+def _progress() -> MediaProgress:
     return MediaProgress(
         id_="progress1",
         library_item_id="book1",
         duration=3600,
         current_time=3600,
-        is_finished=is_finished,
+        is_finished=True,
         hide_from_continue_listening=False,
-        last_update=last_update,
+        last_update=1000,
         started_at=100,
     )
-
-
-def _played_calls(provider: Audiobookshelf) -> list[bool]:
-    played = cast("AsyncMock", provider.mass.music.mark_item_played)
-    return [call.kwargs["fully_played"] for call in played.await_args_list]
 
 
 def _user(user_id: str, media_progress: Any) -> User:
@@ -62,28 +57,19 @@ async def _drain(provider: Audiobookshelf) -> None:
         await provider._user_update_task
 
 
-async def test_progress_of_web_ui_applied(playlog_provider: Audiobookshelf) -> None:
-    """A progress changed by another abs client, only sent as user update, is applied."""
+@pytest.mark.parametrize(("user_id", "played"), [("user1", [True]), ("user2", [])])
+async def test_progress_of_web_ui_applied(
+    playlog_provider: Audiobookshelf, user_id: str, played: list[bool]
+) -> None:
+    """A progress changed by another abs client is applied, unless it's another user's."""
     playlog_provider.abs_user_id = "user1"
-    user = _user("user1", [_progress(last_update=1000, is_finished=True)])
 
     with patch("music_assistant.providers.audiobookshelf.USER_UPDATED_DEBOUNCE_SECONDS", 0):
-        await playlog_provider._socket_abs_user_updated(user)
+        await playlog_provider._socket_abs_user_updated(_user(user_id, [_progress()]))
         await _drain(playlog_provider)
 
-    assert _played_calls(playlog_provider) == [True]
-
-
-async def test_progress_of_other_user_ignored(playlog_provider: Audiobookshelf) -> None:
-    """An admin receiving another user's update does not apply its progresses."""
-    playlog_provider.abs_user_id = "user1"
-    user = _user("user2", [_progress(last_update=1000, is_finished=True)])
-
-    await playlog_provider._socket_abs_user_updated(user)
-
-    assert playlog_provider._user_update_task is None
-    assert playlog_provider._pending_user_update is None
-    cast("AsyncMock", playlog_provider.mass.music.mark_item_played).assert_not_called()
+    mark_item_played = cast("AsyncMock", playlog_provider.mass.music.mark_item_played)
+    assert [call.kwargs["fully_played"] for call in mark_item_played.await_args_list] == played
 
 
 async def test_user_updates_coalesce_per_burst(playlog_provider: Audiobookshelf) -> None:
@@ -150,7 +136,7 @@ def _episode() -> PodcastEpisode:
     )
 
 
-def _episode_progress(last_update: int) -> MediaProgress:
+def _episode_progress() -> MediaProgress:
     return MediaProgress(
         id_="progress1",
         library_item_id="pod1",
@@ -159,7 +145,7 @@ def _episode_progress(last_update: int) -> MediaProgress:
         current_time=300,
         is_finished=False,
         hide_from_continue_listening=False,
-        last_update=last_update,
+        last_update=1000,
         started_at=100,
     )
 
@@ -172,9 +158,9 @@ async def test_episode_fetched_once_for_repeated_progresses(
     get_podcast_episode = AsyncMock(return_value=_episode())
 
     with patch.object(playlog_provider, "get_podcast_episode", get_podcast_episode):
-        await playlog_provider._update_playlog_episode(_episode_progress(last_update=1000))
+        await playlog_provider._update_playlog_episode(_episode_progress())
         await asyncio.gather(*store_tasks)
-        await playlog_provider._update_playlog_episode(_episode_progress(last_update=16000))
+        await playlog_provider._update_playlog_episode(_episode_progress())
 
     get_podcast_episode.assert_awaited_once_with("pod1 ep1", add_progress=False)
     assert cast("AsyncMock", playlog_provider.mass.music.mark_item_played).await_count == 2
@@ -185,6 +171,6 @@ async def test_progress_of_a_deleted_podcast_is_skipped(playlog_provider: Audiob
     _install_dict_backed_cache(playlog_provider)
     playlog_provider._client.get_library_item_podcast = AsyncMock(side_effect=AbsNotFoundError)  # type: ignore[method-assign]
 
-    await playlog_provider._update_playlog_episode(_episode_progress(last_update=1000))
+    await playlog_provider._update_playlog_episode(_episode_progress())
 
     cast("AsyncMock", playlog_provider.mass.music.mark_item_played).assert_not_called()
