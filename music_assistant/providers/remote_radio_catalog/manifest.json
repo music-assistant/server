@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "remote_radio_catalog",
+  "stage": "experimental",
+  "name": "Remote Radio Catalog",
+  "description": "Subscribe to an externally hosted M3U, M3U8 or JSON radio catalog.",
+  "codeowners": ["@Laav"],
+  "documentation": "https://music-assistant.io/music-providers/remote-radio-catalog/",
+  "multi_instance": true
+}

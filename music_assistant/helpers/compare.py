@@ -720,6 +720,15 @@ def compare_radio(
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
+    # Instance-local station catalogs may reuse both names and item IDs. Their
+    # unique mappings must not be joined by the name-only fallback below.
+    if isinstance(base_item, Radio) and isinstance(compare_item, Radio):
+        for base_mapping in base_item.provider_mappings:
+            for other_mapping in compare_item.provider_mappings:
+                if base_mapping.provider_domain == other_mapping.provider_domain and (
+                    base_mapping.is_unique or other_mapping.is_unique
+                ):
+                    return False
     # a tracklisted station (dynamic or finite) is its provider's own, so a same-named
     # station is a different one
     if _is_tracklisted_radio(base_item) or _is_tracklisted_radio(compare_item):
