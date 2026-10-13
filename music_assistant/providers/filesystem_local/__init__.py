@@ -99,6 +99,7 @@ from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
+    is_disc_dir,
     parse_title_and_version,
     try_parse_int,
 )
@@ -159,7 +160,6 @@ from .helpers import (
     get_folder_signature,
     get_relative_path,
     get_valid_isrcs,
-    is_disc_dir,
     is_image_file,
     is_metadata_file,
     open_real_path,
