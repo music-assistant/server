@@ -314,13 +314,7 @@ class Autoplay:
 
     async def _similar_artists(self, artist: Artist) -> list[Artist]:
         """Return MA's similar artists of the artist, asked with its library copy if any."""
-        library_artist = (
-            artist
-            if artist.provider == "library"
-            else await self.mass.music.artists.get_library_item_by_prov_id(
-                artist.item_id, artist.provider
-            )
-        )
+        library_artist = await self.queues.resolve_library_artist(artist)
         if library_artist is None:
             provider = self.mass.get_provider(artist.provider)
             # MA logs a warning for every lookup a provider can't answer

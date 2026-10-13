@@ -1795,6 +1795,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         return await self._media_resolver.artist_album_candidates(artist, played, anchor)
 
+    async def resolve_library_artist(self, artist: Artist) -> Artist | None:
+        """
+        Resolve the in-library artist for the given (possibly provider) artist item.
+
+        :param artist: The artist item, which may be a library or a provider item.
+        """
+        return await self._media_resolver._resolve_library_artist(artist)
+
     async def album_copy_tracks(self, copies: Sequence[Album | ItemMapping]) -> list[Track]:
         """
         Return the tracks of the first copy of an album with tracks to play.
