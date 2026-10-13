@@ -694,9 +694,15 @@ async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
     assert [x.media_item.item_id for x in loaded] == ["allowed"]
 
 
-async def test_an_album_batch_is_added_whole_without_the_recency_gate() -> None:
-    """The albums mode adds the album as it is: no recency gate, no second dislike filter."""
+@pytest.mark.parametrize("shuffle", [False, True])
+async def test_an_album_batch_is_added_whole_without_the_recency_gate(shuffle: bool) -> None:
+    """
+    The albums mode adds the album as it is: no recency gate, no second dislike filter.
+
+    Under queue shuffle the album is shuffled in, as any added album.
+    """
     loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader.get.return_value.shuffle_enabled = shuffle
     loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
     loader._autoplay.get_album_tracks = AsyncMock(return_value=[_track("a1"), _track("a2")])
     loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
@@ -715,14 +721,20 @@ async def test_an_album_batch_is_added_whole_without_the_recency_gate() -> None:
     gate.assert_not_called()
     loaded = loader.load.await_args.args[1]
     assert [item.media_item.item_id for item in loaded] == ["a1", "a2"]
+    assert loader.load.await_args.kwargs["shuffle"] is shuffle
 
 
 @pytest.mark.parametrize(("auto_album", "expected"), [(["a1", "a2"], ["a1", "a2"]), ([], ["s1"])])
 async def test_without_an_album_auto_picks_the_next_album(
     auto_album: list[str], expected: list[str]
 ) -> None:
-    """Without an album of the artist, Auto's gated pick gives the album, or loose tracks."""
+    """
+    Without an album of the artist, Auto's gated pick gives the album, or loose tracks.
+
+    Under queue shuffle only an album is shuffled in; loose tracks keep Auto's order.
+    """
     loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader.get.return_value.shuffle_enabled = True
     loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
     loader._autoplay.get_album_tracks = AsyncMock(return_value=[])
     loader._autoplay.get_album_of_tracks = AsyncMock(
@@ -748,3 +760,4 @@ async def test_without_an_album_auto_picks_the_next_album(
     assert [track.item_id for track in picked_from] == ["s1"]
     loaded = loader.load.await_args.args[1]
     assert [item.media_item.item_id for item in loaded] == expected
+    assert loader.load.await_args.kwargs["shuffle"] is bool(auto_album)

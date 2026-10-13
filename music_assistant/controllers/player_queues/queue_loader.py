@@ -736,7 +736,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             tracks = await without_disliked_tracks(self.mass, queue_data.userid, tracks)
             if mode == AutoplayMode.ALBUMS:
                 # stay in albums: Auto's pick gives the next album, loose tracks only when none fits
-                tracks = await self._autoplay.get_album_of_tracks(queue, tracks) or tracks
+                album_tracks = await self._autoplay.get_album_of_tracks(queue, tracks)
+                tracks = album_tracks or tracks
         queue_items = [build_queue_item(queue_id, x) for x in tracks if x.available]
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
@@ -750,6 +751,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_id,
             queue_items,
             insert_at_index=len(queue_data.items) + 1,
+            # under queue shuffle an album is shuffled in, as any added album
+            shuffle=bool(album_tracks) and queue.shuffle_enabled,
         )
 
     @handle_play_action
