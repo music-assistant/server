@@ -330,8 +330,15 @@ class Autoplay:
         return []
 
     async def _similar_artists(self, artist: Artist) -> list[Artist]:
-        """Return MA's similar artists of the artist, asked with its library copy if any."""
+        """Return MA's similar artists of the artist, via its library copy when in the library."""
         library_artist = await self.queues.resolve_library_artist(artist)
+        # a provider artist stored only for a saved track is not in the library, as when played
+        if (
+            library_artist is not None
+            and artist.provider != "library"
+            and not any(mapping.in_library for mapping in library_artist.provider_mappings)
+        ):
+            library_artist = None
         if library_artist is None:
             provider = self.mass.get_provider(artist.provider)
             # MA logs a warning for every lookup a provider can't answer

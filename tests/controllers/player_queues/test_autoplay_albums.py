@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from music_assistant_models.enums import AlbumType, ArtistType, MediaType
+from music_assistant_models.enums import AlbumType, ArtistType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -656,3 +656,35 @@ async def test_auto_keeps_loose_tracks_when_the_mode_cant_play(
 
     assert result == []
     lookup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("in_library", [False, True])
+async def test_a_stored_artist_asks_its_library_copy_only_when_in_the_library(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, in_library: bool
+) -> None:
+    """An artist stored only for a saved track is not in the library: its provider is asked."""
+    _stub_provider(mass, [])
+    artist = _provider_artist()
+    stored = Artist(
+        item_id="7",
+        provider="library",
+        name=artist.name,
+        provider_mappings={replace(next(iter(artist.provider_mappings)), in_library=in_library)},
+    )
+    monkeypatch.setattr(
+        mass.player_queues, "resolve_library_artist", AsyncMock(return_value=stored)
+    )
+    monkeypatch.setattr(
+        mass,
+        "get_provider",
+        lambda *_: SimpleNamespace(supported_features={ProviderFeature.SIMILAR_ARTISTS}),
+    )
+    lookup = AsyncMock(return_value=[])
+    monkeypatch.setattr(mass.music.artists, "similar_artists", lookup)
+    queue = _queue(mass, monkeypatch, _queued_track([artist], None))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    await Autoplay(mass.player_queues).get_album_tracks(queue)
+
+    asked = (stored.item_id, "library") if in_library else (artist.item_id, artist.provider)
+    lookup.assert_awaited_once_with(*asked, limit=10)
