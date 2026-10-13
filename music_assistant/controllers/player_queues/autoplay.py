@@ -37,6 +37,7 @@ from music_assistant.controllers.player_queues.constants import (
     ArtistOrder,
 )
 from music_assistant.controllers.player_queues.media_resolver import album_is_played
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
 
 if TYPE_CHECKING:
@@ -429,7 +430,7 @@ class Autoplay:
 
 def _is_various_artists(artist: Artist | ItemMapping) -> bool:
     """Return whether the artist is the Various Artists placeholder of a compilation."""
-    return artist.name == VARIOUS_ARTISTS_NAME or (
+    return compare_strings(artist.name, VARIOUS_ARTISTS_NAME) or (
         isinstance(artist, Artist) and artist.mbid == VARIOUS_ARTISTS_MBID
     )
 

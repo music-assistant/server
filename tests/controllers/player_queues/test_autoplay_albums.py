@@ -293,7 +293,9 @@ async def test_the_next_album_follows_the_album_artist(
     assert lookup.await_count == 1
 
 
-@pytest.mark.parametrize("album_kind", ["various artists", "no album", "missing album"])
+@pytest.mark.parametrize(
+    "album_kind", ["various artists", "various artists spelled", "no album", "missing album"]
+)
 async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, album_kind: str
 ) -> None:
@@ -302,9 +304,16 @@ async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
     await _add_album(mass, artist, "Waterloo", 1974)
     await _add_album(mass, artist, "Voulez-Vous", 1979)
     album: Album | ItemMapping | None = None
-    if album_kind == "various artists":
+    if album_kind.startswith("various artists"):
         various = await _library_artist(mass, VARIOUS_ARTISTS_NAME)
         album = await _add_album(mass, various, "Hits", 1976, album_type=AlbumType.COMPILATION)
+    if album_kind == "various artists spelled":
+        # a provider copy keeps the provider's spelling, which the library would normalise
+        assert isinstance(album, Album)
+        album.artists[0] = ItemMapping(
+            media_type=MediaType.ARTIST, item_id="va", provider="streaming", name="various artists"
+        )
+        monkeypatch.setattr(mass.music.albums, "get", AsyncMock(return_value=album))
     elif album_kind == "missing album":
         album = ItemMapping(
             media_type=MediaType.ALBUM, item_id="999", provider="library", name="Gone"
@@ -314,7 +323,7 @@ async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
 
     result = await Autoplay(mass.player_queues).get_album_tracks(queue)
 
-    expected = "Voulez-Vous" if album_kind == "various artists" else "Waterloo"
+    expected = "Voulez-Vous" if album_kind.startswith("various artists") else "Waterloo"
     assert _names(result) == [f"{expected} {n}" for n in (1, 2, 3)]
 
 
