@@ -47,6 +47,7 @@ from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
     find_dynamic_source,
     get_current_playback_speed,
+    origin_for,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
@@ -555,7 +556,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         return
                     if dynamic_tracks:
                         queue_items = [
-                            build_queue_item(queue.queue_id, x)
+                            build_queue_item(
+                                queue.queue_id, x, origin=origin_for(dynamic_source, x)
+                            )
                             for x in dynamic_tracks
                             if x.available
                         ]

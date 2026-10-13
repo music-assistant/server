@@ -412,3 +412,34 @@ async def test_source_end_during_promotion_keeps_join_backlog(
         assert harness.chunks(channel_id)[-1] == harness.chunks(MAIN_CHANNEL)[-1]
     finally:
         await harness.close()
+
+
+async def test_promoted_dsp_joiner_has_audio_at_every_main_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A promoted DSP joiner carries audio, not silence, at the history/live seam."""
+    harness = _SessionHarness(monkeypatch, dsp_ids={DSP_ID})
+    try:
+        await harness.start()
+        await harness.commit(20)
+        await harness.add_member(DSP_ID)
+        await harness.commit(30)
+
+        assert DSP_ID not in harness.session._join_catchup
+        channel_id = harness.session._member_pipelines[DSP_ID].channel_id
+        # The ramp source has no zero samples, so any zero sample is inserted silence.
+        dsp_has_audio = {
+            chunk.timestamp_us: bool(np.frombuffer(chunk.pcm_data, dtype=np.float32).all())
+            for chunk in harness.push_stream.get_cached_pcm_chunks(channel_id)
+        }
+        first_audio_us = min(ts for ts, has_audio in dsp_has_audio.items() if has_audio)
+        without_audio = [
+            ts
+            for ts, _ in harness.chunks(MAIN_CHANNEL)
+            if ts >= first_audio_us and not dsp_has_audio.get(ts, False)
+        ]
+        assert not without_audio, (
+            f"DSP channel silent or missing at MAIN timestamps: {without_audio}"
+        )
+    finally:
+        await harness.close()
