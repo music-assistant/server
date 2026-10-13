@@ -755,5 +755,8 @@
   "core.storage.errors.share_unavailable": "Мрежовият споделен ресурс не е достъпен в момента.",
   "core.storage.errors.share_username_invalid": "Потребителското име не може да съдържа запетая.",
   "core.storage.errors.share_version_not_supported": "Версия {0} на протокола не може да се използва тук за този тип мрежов споделен ресурс.",
-  "core.storage.errors.folder_missing": "Тази папка не съществува."
+  "core.storage.errors.folder_missing": "Тази папка не съществува.",
+  "provider.audiobookshelf.media.recommendations.libraries.name": "Библиотеки",
+  "provider.audiobookshelf.media.recommendations.library.name": "Библиотека",
+  "provider.deezer.setup_flow.profile.title": "Изберете профил"
 }

@@ -342,7 +342,7 @@ class TestParseCueTracks:
         provider._parse_album = AsyncMock(return_value=None)  # type: ignore[method-assign]
         with (
             patch(
-                "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+                "music_assistant.providers.filesystem_local.async_parse_tags",
                 AsyncMock(return_value=_make_audio_tags(duration=0.0)),
             ),
             pytest.raises(InvalidDataError),
@@ -372,7 +372,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider, album)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -429,7 +429,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider, album)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             await provider._cue.parse_tracks(cue_item)
@@ -452,7 +452,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -475,7 +475,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -503,7 +503,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -534,7 +534,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -562,7 +562,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -590,7 +590,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -621,7 +621,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -671,7 +671,7 @@ class TestParseCueTracks:
         provider._parse_artist = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
@@ -713,7 +713,7 @@ class TestParseCueTracks:
         self._wire_provider_for_parse(provider)
 
         with patch(
-            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            "music_assistant.providers.filesystem_local.async_parse_tags",
             AsyncMock(return_value=tags),
         ):
             tracks = await provider._cue.parse_tracks(cue_item)
