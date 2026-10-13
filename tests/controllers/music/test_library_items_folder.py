@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
-from music_assistant_models.enums import SortField
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing, SortField
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
 
 FS = "filesystem_local--music"
 FS_OTHER = "filesystem_local--other"
@@ -101,3 +106,44 @@ async def test_folder_filter_rejects_non_filesystem_folder(
     """A folder must live on a filesystem provider instance."""
     with pytest.raises(InvalidDataError):
         await mass.music.tracks.library_items(folder=folder)
+
+
+async def test_folder_filter_ignores_folders_on_hidden_sources(mass: MusicAssistant) -> None:
+    """A folder on a source hidden from the user must not match via another mapping."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Artist",
+            provider_mappings={_mapping(FS, "artist")},
+        )
+    )
+    # one track, merged from a file on each source
+    await mass.music.tracks.add_item_to_library(
+        Track(
+            item_id="0",
+            provider="library",
+            name="shared",
+            provider_mappings={_mapping(FS, "Public/x.mp3"), _mapping(FS_OTHER, "Private/x.mp3")},
+            artists=UniqueList([artist]),
+        )
+    )
+    set_music_source_access(
+        mass,
+        {
+            FS: ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            FS_OTHER: ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=User(user_id="user-a", username="user-a", role=UserRole.USER),
+    ):
+        with pytest.raises(InsufficientPermissions):
+            await mass.music.tracks.library_items(folder=f"{FS_OTHER}://Private")
+        result = await mass.music.tracks.library_items(
+            folder=[f"{FS}://Missing", f"{FS_OTHER}://Private"]
+        )
+        assert result == []
+        result = await mass.music.tracks.library_items(folder=f"{FS}://Public")
+        assert [t.name for t in result] == ["shared"]

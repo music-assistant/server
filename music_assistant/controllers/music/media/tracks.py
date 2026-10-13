@@ -1019,14 +1019,22 @@ class TracksController(MediaControllerBase[Track]):
         :param folders: Browse paths of filesystem folders (`<provider_instance>://<path>`).
         :param query_params: Query params dict; the clause's bound params are added to it.
         """
-        folder_conditions = []
-        for idx, folder in enumerate(folders):
-            prov_instance, sep, rel_path = folder.partition("://")
+        providers = []
+        for folder in folders:
+            prov_instance, sep, _ = folder.partition("://")
             if not sep or not prov_instance.startswith("filesystem_"):
                 msg = (
                     f"Invalid folder {folder!r}, expected '<filesystem provider instance>://<path>'"
                 )
                 raise InvalidDataError(msg)
+            providers.append(prov_instance)
+        # a track can also be mapped to a source the user may see, so drop the folders on
+        # sources hidden from the user here (raises when none of them is visible)
+        if (allowed := self._ensure_provider_filter(providers)) is not None:
+            folders = [f for f, prov in zip(folders, providers, strict=True) if prov in allowed]
+        folder_conditions = []
+        for idx, folder in enumerate(folders):
+            prov_instance, _, rel_path = folder.partition("://")
             query_params[f"folder_prov_{idx}"] = prov_instance
             condition = f"folder_pm.provider_instance = :folder_prov_{idx}"
             if rel_path := rel_path.strip("/"):
