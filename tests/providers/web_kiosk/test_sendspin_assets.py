@@ -20,9 +20,13 @@ def test_sendspin_bundle_integrity() -> None:
     assert metadata["packages"]["@sendspin/sendspin-js"] == "5.0.0"
     assert (BUNDLE_ROOT / "VERSION.txt").read_text().strip() == "@sendspin/sendspin-js@5.0.0"
     assert hashlib.sha256((BUNDLE_ROOT / "index.js").read_bytes()).hexdigest() == metadata["sha256"]
-    for package in metadata["packages"]:
-        filename = package.replace("@", "").replace("/", "-") + ".txt"
-        assert (BUNDLE_ROOT / "licenses" / filename).read_text(encoding="utf-8").strip()
+    assert metadata["licensePlacement"] == "bundle-header"
+    header = (BUNDLE_ROOT / "index.js").read_text(encoding="utf-8").split("*/", 1)[0]
+    for package, version in metadata["packages"].items():
+        assert f"{package}@{version}" in header
+    assert "Apache License" in header
+    assert "The MIT License (MIT)" in header
+    assert "Copyright (c) 2022 Paul Miller" in header
 
 
 async def test_sendspin_bundle_is_served(http_client: TestClient[Any, Any]) -> None:
