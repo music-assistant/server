@@ -704,7 +704,14 @@ class RaumfeldPlayer(Player):
             # rooms in MANUAL_STANDBY do not auto-power-on for playback (unlike
             # AUTOMATIC_STANDBY); leaving standby is a no-op for an already-awake room
             try:
-                if "STANDBY" in (host.get_room_power_state(room) or ""):
+                state = host.get_room_power_state(room)
+                if state is None and strict:
+                    # the host does not know the room (renamed, or gone), so there is
+                    # nothing to confirm it against
+                    raise PlayerCommandFailed(
+                        f"Failed to wake {room}: the host reports no power state for it"
+                    )
+                if "STANDBY" in (state or ""):
                     await host.async_leave_standby(room)
                     woke = True
             except HOST_ERRORS as err:
@@ -718,7 +725,9 @@ class RaumfeldPlayer(Player):
         deadline = time.time() + WAKE_TIMEOUT
         while time.time() < deadline:
             try:
-                if all("STANDBY" not in (host.get_room_power_state(r) or "") for r in zone):
+                states = [host.get_room_power_state(room) for room in zone]
+                # a room the host stops reporting counts as awake only when lenient
+                if all("STANDBY" not in state if state else not strict for state in states):
                     return
             except HOST_ERRORS as err:
                 self.logger.debug("Failed to read power state while waking: %r", err)

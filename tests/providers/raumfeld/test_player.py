@@ -454,6 +454,34 @@ async def test_power_on_fails_when_the_wake_command_fails() -> None:
     assert player._attr_powered is False
 
 
+async def test_power_on_fails_for_a_room_the_host_does_not_know() -> None:
+    """A room without a power state is not reported as on, and gets no wake command."""
+    player, host = _powered_player(None)
+    player._attr_powered = False
+    with pytest.raises(PlayerCommandFailed, match="no power state"):
+        await player.power(True)
+    host.async_leave_standby.assert_not_awaited()
+    assert player._attr_powered is False
+
+
+async def test_power_on_fails_when_the_room_vanishes_while_waking() -> None:
+    """A room the host stops reporting during the wake is not taken for awake."""
+    player, host = _powered_player("MANUAL_STANDBY")
+    player._attr_powered = False
+
+    async def leave_standby(_room: str) -> None:
+        host.get_room_power_state.return_value = None
+
+    host.async_leave_standby.side_effect = leave_standby
+    with (
+        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
+        patch("music_assistant.providers.raumfeld.player.WAKE_TIMEOUT", 0.05),
+        pytest.raises(PlayerCommandFailed, match="did not leave standby"),
+    ):
+        await player.power(True)
+    assert player._attr_powered is False
+
+
 async def test_power_off_failure_is_reported() -> None:
     """A host error while powering off surfaces and leaves the power state untouched."""
     player, host = _powered_player("ACTIVE")
