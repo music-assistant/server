@@ -21,6 +21,7 @@ from music_assistant_models.media_items import Album, ProviderMapping, Track
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.controllers.music.media.tracks import TracksController
+from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzMedia,
     MusicBrainzRecording,
@@ -182,6 +183,7 @@ def _harness(
     loaded: dict[str, list[str]],
     owners: dict[tuple[str, str], str] | None = None,
     provider_errors: dict[str, Exception] | None = None,
+    provider_items: dict[str, Track] | None = None,
 ) -> Iterator[_Harness]:
     """
     Yield the item's controller with every IO boundary mocked.
@@ -190,6 +192,7 @@ def _harness(
     :param loaded: Provider instance ids per loaded provider domain.
     :param owners: Library item id per (provider instance, provider item id) already held.
     :param provider_errors: Error the provider raises per provider item id.
+    :param provider_items: Track the provider returns per provider item id.
     """
     ctrl: MediaControllerBase[Any]
     if isinstance(db_item, Album):
@@ -210,10 +213,10 @@ def _harness(
             return _library_album(owner_id)
         return None
 
-    async def _provider_item(item_id: str, _instance: str, **_kwargs: object) -> Album:
+    async def _provider_item(item_id: str, _instance: str, **_kwargs: object) -> Album | Track:
         if error := (provider_errors or {}).get(item_id):
             raise error
-        return _library_album(item_id)
+        return (provider_items or {}).get(item_id) or _library_album(item_id)
 
     set_provider_mappings = AsyncMock()
     merge = AsyncMock()
@@ -322,6 +325,33 @@ async def test_linker_trusts_apple_music_track_links() -> None:
 
     assert [m.provider_domain for m in added] == ["apple_music", "spotify"]
     harness.get_provider_item.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("keep_apart", "linked_title", "expected_domains"),
+    [
+        (False, "Song - Remastered 2009", ["spotify"]),
+        (True, "Song - Remastered 2009", []),
+        (True, "Song", ["spotify"]),
+    ],
+    ids=["setting_off", "remaster_kept_apart", "same_version"],
+)
+async def test_linker_checks_the_version_of_a_track_link_while_remasters_are_kept_apart(
+    keep_apart: bool, linked_title: str, expected_domains: list[str]
+) -> None:
+    """A recording also covers its remasters, so a linked copy has to carry the same version."""
+    set_keep_remasters_apart(keep_apart)
+    spotify_id = SPOTIFY_TRACK_URL.rsplit("/", maxsplit=1)[-1]
+    track = _library_track("1", 1, name="Song", isrcs=["GBUM71029604"], mbid=RECORDING_ID)
+    linked_track = _provider_track(spotify_id, 1, name=linked_title, isrcs=["GBUM71029604"])
+    with _harness(
+        track, loaded={"spotify": ["spotify_1"]}, provider_items={spotify_id: linked_track}
+    ) as harness:
+        added = await harness.ctrl.link_musicbrainz_mappings(track, [SPOTIFY_TRACK_URL])
+
+    assert [m.provider_domain for m in added] == expected_domains
+    # with the setting off a link is taken as is, without asking the provider
+    assert harness.get_provider_item.await_count == int(keep_apart)
 
 
 async def test_unclaimed_mappings_never_merge_library_items() -> None:
