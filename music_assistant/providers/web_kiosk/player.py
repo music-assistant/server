@@ -280,6 +280,24 @@ class WebKioskPlayer(Player):
         finally:
             self._skip_ws_depth = max(0, self._skip_ws_depth - 1)
 
+    def playback_reached_end(self) -> bool:
+        """
+        Return whether playback has reached the end of the current song.
+
+        Position reports are seconds into the file Music Assistant is serving.
+        After a seek that file is only the remainder, so the song position is
+        the seek origin plus that file position. Reports arrive every few
+        seconds, so the end counts from a few seconds short of the duration.
+        """
+        media = self._attr_current_media
+        if media is None:
+            return False
+        song, start = media_timeline(media)
+        if song is None:
+            return True
+        file_pos = float(self._attr_elapsed_time or 0)
+        return start + file_pos >= song - 8
+
     @property
     def _skip_ws_notify(self) -> bool:
         """True while at least one suppress_ws_notify() context is active."""
@@ -298,24 +316,6 @@ class WebKioskPlayer(Player):
         if not isinstance(duration, (int, float)) or duration <= 0:
             return None
         return float(duration)
-
-    def playback_reached_end(self) -> bool:
-        """
-        Return whether playback has reached the end of the current song.
-
-        Position reports are seconds into the file Music Assistant is serving.
-        After a seek that file is only the remainder, so the song position is
-        the seek origin plus that file position. Reports arrive every few
-        seconds, so the end counts from a few seconds short of the duration.
-        """
-        media = self._attr_current_media
-        if media is None:
-            return False
-        song, start = media_timeline(media)
-        if song is None:
-            return True
-        file_pos = float(self._attr_elapsed_time or 0)
-        return start + file_pos >= song - 8
 
     async def _resume_from_pause(self) -> None:
         """Resume playback after pause — tell the kiosk to unpause its audio element."""
