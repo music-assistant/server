@@ -162,7 +162,8 @@ def test_a_source_keeps_the_entry_with_the_lowest_id_of_a_track() -> None:
 
 def test_a_source_lists_a_track_under_the_id_the_track_is_mapped_under() -> None:
     """An account listing a track as two of its albums lists it as the copy the track has."""
-    row = _row("1", 1, _mapping(TIDAL, "250"), isrc=_isrc(1))
+    # another service happens to know the track under the other id
+    row = _row("1", 1, _mapping(TIDAL, "250"), _mapping(QOBUZ, "100"), isrc=_isrc(1))
     duplicate = [_entry(TIDAL, "100", 1, _isrc(1))]
     album = [_entry(TIDAL, "250", 1, _isrc(1))]
 

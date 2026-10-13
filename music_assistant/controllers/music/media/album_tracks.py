@@ -55,7 +55,7 @@ def album_listing(
     title names, otherwise for the listed entry it was merged with, which then keeps it as
     that instance's own entry of the track; a library row a listing hands back counts under
     its own copies on that listing's instance. An instance that lists a track more than once
-    lists it under an id the track is mapped under, else under the lowest.
+    lists it under an id the track is mapped under on that instance, else under the lowest.
 
     :param library: The album's library rows.
     :param listings: The album's tracklists, each with the provider instance that served it.
@@ -463,7 +463,8 @@ def _list(listed_ids: dict[str, dict[str, str]], instance: str, track: Track, it
     """
     Record that an instance lists a track under an item id.
 
-    Of several ids, one the track is mapped under counts before the others, then the lowest.
+    Of several ids, one the track is mapped under on that instance counts before the others,
+    then the lowest.
 
     :param listed_ids: The item id each instance lists, by the track's uri.
     :param instance: The provider instance that lists the track.
@@ -472,7 +473,11 @@ def _list(listed_ids: dict[str, dict[str, str]], instance: str, track: Track, it
     """
     listed = listed_ids.setdefault(instance, {})
     uri = cast("str", track.uri)
-    mapped = {mapping.item_id for mapping in track.provider_mappings}
+    mapped = {
+        mapping.item_id
+        for mapping in track.provider_mappings
+        if mapping.provider_instance == instance
+    }
     listed[uri] = min(item_id, listed.get(uri, item_id), key=lambda x: (x not in mapped, x))
 
 
