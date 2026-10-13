@@ -394,7 +394,13 @@ class WebKioskProvider(PlayerProvider):
             logger.debug("No media provided")
             return None
         try:
-            return await self.mass.streams.resolve_stream_url(player_id, media)
+            stream_url = await self.mass.streams.resolve_stream_url(player_id, media)
+            flow_prefix = f"{self.mass.streams.base_url}/flow/"
+            if stream_url.startswith(flow_prefix):
+                # MA may force flow for crossfade/overlays despite requires_flow_mode=False.
+                # Its per-item route shares the session, item and codec URL suffix.
+                return f"{self.mass.streams.base_url}/single/{stream_url.removeprefix(flow_prefix)}"
+            return stream_url
         except MusicAssistantError as err:
             logger.warning("Failed to resolve MA stream URL: %s", err, exc_info=True)
             return None

@@ -7,7 +7,8 @@ import json
 from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import AsyncMock, Mock
 
-from aiohttp import ClientError
+import pytest
+from aiohttp import ClientError, WSServerHandshakeError
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
@@ -388,3 +389,22 @@ async def test_builder_signin_uses_ma_credentials_and_rejects_cross_site(
         "/builder-auth", json={"username": "test-user", "password": "wrong-test-password"}
     )
     assert response.status == 401
+
+
+async def test_ws_rejects_same_site_browser(http_client: TestClient[Any, Any]) -> None:
+    """A browser on another origin must not receive player snapshots or stream tokens."""
+    with pytest.raises(WSServerHandshakeError) as error:
+        await http_client.ws_connect("/ws", headers={"Sec-Fetch-Site": "same-site"})
+
+    assert error.value.status == 403
+
+
+@pytest.mark.parametrize("fetch_site", ["same-origin", "none"])
+async def test_ws_accepts_same_origin_or_direct_navigation(
+    http_client: TestClient[Any, Any], fetch_site: str
+) -> None:
+    """The origin guard keeps legitimate browser connections working."""
+    ws = await http_client.ws_connect("/ws", headers={"Sec-Fetch-Site": fetch_site})
+    payload = json.loads((await ws.receive()).data)
+    assert payload["type"] == "welcome"
+    await ws.close()

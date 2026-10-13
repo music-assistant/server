@@ -686,12 +686,12 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
     @staticmethod
     def _reject_cross_site(request: web.Request) -> web.Response | None:
         """
-        Reject browser cross-site requests to state-changing endpoints (CSRF guard).
+        Reject browser requests from other origins (CSRF guard).
 
         Legitimate callers are same-origin (kiosk SPA) or non-browser clients that
         omit the header entirely — both pass.
         """
-        if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+        if request.headers.get("Sec-Fetch-Site", "").lower() not in {"", "same-origin", "none"}:
             return web.json_response({"error": "Cross-site request rejected"}, status=403)
         return None
 

@@ -8,10 +8,14 @@ from typing import cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import ItemMapping
+from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player_queue import PlayerQueue
 
 import music_assistant.providers.web_kiosk.provider as provider_module
+from music_assistant.controllers.streams import StreamsController
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
 
@@ -364,3 +368,50 @@ async def test_background_media_work_reports_unexpected_errors(
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     assert results == [error]
+
+
+@pytest.mark.parametrize("flow_reason", ["crossfade", "overlay", "plugin"])
+async def test_html5_stream_stays_per_item_when_ma_requires_flow(
+    provider: WebKioskProvider, mass_mock: Mock, player: object, flow_reason: str
+) -> None:
+    """The real MA resolver cannot turn this browser's per-track playback into queue flow."""
+    mass_mock.config.get_raw_core_config_value.return_value = "INFO"
+    streams = StreamsController(mass_mock)
+    streams._base_url = "http://ma.local:8095"
+    mass_mock.streams = streams
+    mass_mock.players.get_player.return_value = player
+    player.config.get_value.side_effect = lambda key, default=None: (  # type: ignore[attr-defined]
+        "mp3" if key == "output_codec" else default
+    )
+    queue = PlayerQueue(
+        queue_id="wk_test",
+        active=True,
+        display_name="Kiosk",
+        available=True,
+        items=2,
+        crossfade_enabled=flow_reason == "crossfade",
+        overlay_enabled=flow_reason == "overlay",
+        overlay_source=ItemMapping(
+            item_id="overlay", provider="builtin", name="Overlay", media_type=MediaType.SOUND_EFFECT
+        )
+        if flow_reason == "overlay"
+        else None,
+    )
+    mass_mock.player_queues.get.return_value = queue
+    if flow_reason == "plugin":
+        streams.set_flow_mode_required("wk_test", "test-owner", True)
+    media = PlayerMedia(
+        uri="unused",
+        media_type=MediaType.TRACK,
+        source_id="wk_test",
+        queue_item_id="item-1",
+        queue_session_id="session-1",
+    )
+    # Establish that this is a genuine flow-triggering MA configuration.
+    assert await streams.resolve_stream_url("wk_test", media) == (
+        "http://ma.local:8095/flow/session-1/wk_test/item-1/wk_test.mp3"
+    )
+
+    assert await provider.get_ma_stream_url("wk_test", media) == (
+        "http://ma.local:8095/single/session-1/wk_test/item-1/wk_test.mp3"
+    )
