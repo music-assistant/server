@@ -628,10 +628,12 @@ class SmartPlaylistProvider(PluginProvider):
                 library_item.item_id, self._description_for(prov_id, parsed_rules)
             )
             if rules_changed:
+                # by uri, so the refresh loads the item with the new description: the
+                # item fetched above still holds the old one and would write it back
                 self.mass.call_later(
                     5,
                     self.mass.metadata.update_metadata,
-                    library_item,
+                    library_item.uri,
                     task_id=f"smart_playlist_metadata_refresh_{prov_id}",
                     force_refresh=True,
                 )
