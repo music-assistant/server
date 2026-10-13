@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 VALIDATION_MESSAGE = "Hello"
 # the user is waiting on the form, so do not sit on an unresponsive endpoint
 VALIDATION_TIMEOUT = ClientTimeout(total=30)
+# the errors of a test render the server accepted but could not complete
+RENDER_ERRORS = ("render_failed", "render_incomplete")
 
 
 async def run_setup(session: SetupSession) -> None:
@@ -116,10 +118,10 @@ async def run_setup(session: SetupSession) -> None:
             await _validate_credentials(session, base_url, api_key, model, response_format, voice)
         except SetupFlowError as err:
             errors = {"base": err}
-            if err.translation_key == "render_failed" and not listed:
+            if err.translation_key in RENDER_ERRORS and not listed:
                 # the voice may not exist on this server, and only the user can name its voices
                 ask_voices = True
-                errors["base"] = SetupFlowError(str(err), "voices_not_listed", err.translation_args)
+                errors[CONF_VOICES] = SetupFlowError("Voices not listed", "voices_not_listed")
             continue
 
         finish_values: dict[str, ConfigValueType] = {
@@ -181,10 +183,8 @@ async def _validate_credentials(
             audio_data = await response.read()
     except ClientPayloadError as err:
         # some servers (mlx-audio) answer 200 OK and then abort the body when rendering fails
-        detail = "the server stopped while rendering the test phrase"
-        raise SetupFlowError(f"Speech request failed: {err}", "render_failed", [detail]) from err
+        raise SetupFlowError(f"Speech request aborted: {err}", "render_incomplete") from err
     except (ClientError, TimeoutError) as err:
         raise SetupFlowError(f"Connection failed: {err}", "cannot_connect") from err
     if not audio_data:
-        detail = "the server returned no audio"
-        raise SetupFlowError("Speech request returned no audio", "render_failed", [detail])
+        raise SetupFlowError("Speech request returned no audio", "render_incomplete")

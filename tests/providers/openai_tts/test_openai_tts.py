@@ -237,21 +237,27 @@ def test_normalize_base_url(url: str, expected: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("override", "setup_voices", "discovered", "expected"),
+    ("override", "setup_data", "discovered", "expected"),
     [
-        (["override"], ["neutral_female"], ["af_bella"], ["override"]),
-        ([], ["neutral_female"], ["af_bella"], ["neutral_female"]),
-        ([], [], ["af_bella"], ["af_bella"]),
-        ([], [], [], list(DEFAULT_VOICES)),
+        (["override"], {CONF_VOICES: ["neutral_female"]}, ["af_bella"], ["override"]),
+        ([], {CONF_VOICES: ["neutral_female"]}, ["af_bella"], ["neutral_female"]),
+        ([], {CONF_VOICES: []}, ["af_bella"], ["af_bella"]),
+        ([], {CONF_VOICES: []}, [], list(DEFAULT_VOICES)),
+        # installs set up before voices could be entered during setup
+        (["override"], {}, ["af_bella"], ["override"]),
+        ([], {}, ["af_bella"], ["af_bella"]),
     ],
 )
 async def test_resolve_voices_order(
-    override: list[str], setup_voices: list[str], discovered: list[str], expected: list[str]
+    override: list[str],
+    setup_data: dict[str, list[str]],
+    discovered: list[str],
+    expected: list[str],
 ) -> None:
     """The override wins over the setup voices, which win over discovery and the defaults."""
     provider = create_provider(**{CONF_VOICES: override})
     mass: Any = provider.mass
-    mass.config.get = MagicMock(return_value={CONF_VOICES: setup_voices})
+    mass.config.get = MagicMock(return_value=setup_data)
     mass.http_session = create_voices_session({"voices": discovered})
     assert await provider._resolve_voices() == expected
 
@@ -331,7 +337,8 @@ async def test_setup_asks_for_voices_when_the_render_fails_without_listed_voices
 
     session.handle_submit(form_values)
     step = await wait_for_form(session, step)
-    assert step.error_translations["base"].key == "voices_not_listed"
+    assert step.error_translations["base"].key == "render_incomplete"
+    assert step.error_translations[CONF_VOICES].key == "voices_not_listed"
     assert CONF_VOICES in {entry.key for entry in step.entries}
     session.handle_submit({**form_values, CONF_VOICES: ["neutral_female"]})
     await task
@@ -362,7 +369,7 @@ async def test_setup_reports_a_broken_stream_as_a_render_failure() -> None:
         }
     )
     step = await wait_for_form(session, step)
-    assert step.error_translations["base"].key == "render_failed"
+    assert step.error_translations["base"].key == "render_incomplete"
     # the server listed its voices, so there is nothing to ask for
     assert CONF_VOICES not in {entry.key for entry in step.entries}
     task.cancel()
