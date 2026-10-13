@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.providers.web_kiosk import music_assistant.providers.web_kiosk as provider_module
+import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
 if TYPE_CHECKING:
