@@ -26,7 +26,6 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import AudioMetadata
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
@@ -49,7 +48,6 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.camelot import camelot_key
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -110,7 +108,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.media_items import AudioFormat, Track
+    from music_assistant_models.media_items import AudioFormat, AudioMetadata, Track
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -205,20 +203,6 @@ def _merged_from_rows(
             merged.update(row_data)
             found = True
     return merged if found else None
-
-
-def _audio_metadata_from_analysis(analysis: AudioAnalysisData | None) -> AudioMetadata | None:
-    """Return the bpm and musical key of an analysis, or None when it holds neither."""
-    if analysis is None or (analysis.bpm is None and analysis.key is None):
-        return None
-    musical_key: str | None = None
-    if analysis.key is not None:
-        musical_key = f"{analysis.key} {analysis.mode}" if analysis.mode else analysis.key
-    return AudioMetadata(
-        bpm=analysis.bpm,
-        musical_key=musical_key,
-        camelot_key=camelot_key(analysis.key, analysis.mode),
-    )
 
 
 def _first_non_finite_field(analysis: AudioAnalysisData) -> str | None:
@@ -672,7 +656,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             analysis = await self.get_audio_analysis(
                 mapping.item_id, mapping.provider_instance, priority=priority
             )
-            if (metadata := _audio_metadata_from_analysis(analysis)) is not None:
+            if analysis is not None and (metadata := analysis.as_audio_metadata()) is not None:
                 return metadata
         return None
 
@@ -744,7 +728,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     merged = _merged_from_rows(
                         rows_by_key.get(key, ()), available_aa_domains, TRACK_EXPORT_AA_PRIORITY
                     )
-                    metadata_by_key[key] = _audio_metadata_from_analysis(merged)
+                    metadata_by_key[key] = merged.as_audio_metadata() if merged else None
                 if (metadata := metadata_by_key[key]) is not None:
                     results[index] = metadata
                     break
