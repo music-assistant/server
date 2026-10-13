@@ -972,6 +972,10 @@ class AlbumsController(MediaControllerBase[Album]):
         for track in assembled.tracks:
             if track.provider != "library":
                 track.album = album_mapping
+        # a source's own entry of a track plays in its place when that source plays the album
+        for own_entries in assembled.own_entries.values():
+            for entry in own_entries.values():
+                entry.album = album_mapping
         if lookup_error is not None and not any(track.available for track in assembled.tracks):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise lookup_error

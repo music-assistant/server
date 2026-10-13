@@ -1229,7 +1229,9 @@ class MediaResolver:
         """
         Resolve an album to its tracks, each pinned to its copy on the one source it plays from.
 
-        A track that source does not have is played from the album without a pinned copy.
+        A track the album lists as another source's entry plays as the chosen source's own
+        entry, when it has one. A track the chosen source does not have plays as the album
+        lists it.
 
         :param album: The album to play.
         :param start_item: Optional item_id/uri of the track to start from.
@@ -1246,35 +1248,37 @@ class MediaResolver:
             album.item_id, album.provider, in_library_only=self._album_library_tracks_only()
         )
         tracks = [track for track in listing.tracks if track.available]
-        source, copies = await self._album_source(listing, tracks, userid)
+        source, served = await self._album_source(listing, tracks, userid)
         if source is not None:
             self.logger.debug("Playing album %s from %s", album.name, source)
         container = ItemMapping.from_item(album)
         resolved: list[ResolvedItem] = []
         for track in self._album_order(tracks, start_item, sort_by, keep_preceding_items):
-            if (copy := copies.get(cast("str", track.uri))) is None:
-                if source is not None:
-                    self.logger.debug(
-                        "%s has no copy on %s, the source of album %s; any of its copies may play",
-                        track.name,
-                        source,
-                        album.name,
+            if (played := served.get(cast("str", track.uri))) is not None:
+                item, copy = played
+                resolved.append(
+                    ResolvedItem(
+                        item,
+                        QueueItemOrigin(
+                            container=container, provider_instance=source, item_id=copy.item_id
+                        ),
                     )
-                resolved.append(ResolvedItem(track, QueueItemOrigin(container=container)))
-                continue
-            resolved.append(
-                ResolvedItem(
-                    track,
-                    QueueItemOrigin(
-                        container=container, provider_instance=source, item_id=copy.item_id
-                    ),
                 )
-            )
+                continue
+            if source is not None:
+                self.logger.debug(
+                    "%s has no copy on %s, the source of album %s; it plays as the album lists it",
+                    track.name,
+                    source,
+                    album.name,
+                )
+            # nothing is pinned without a source
+            resolved.append(ResolvedItem(track, origin_for(album, track, pin=source is not None)))
         return resolved
 
     async def _album_source(
         self, listing: AlbumListing, tracks: list[Track], userid: str | None
-    ) -> tuple[str | None, dict[str, ProviderMapping]]:
+    ) -> tuple[str | None, dict[str, tuple[Track, ProviderMapping]]]:
         """
         Choose the one source an album plays from, with the copy it serves of each track.
 
@@ -1284,12 +1288,13 @@ class MediaResolver:
         :param listing: The album's tracks, and the entry each source lists for them.
         :param tracks: The album's tracks to play.
         :param userid: Optional user the playback is for.
-        :return: The provider instance chosen, if any, and its copy of each track by uri.
+        :return: The provider instance chosen, if any, and per track uri the item to queue for
+            the track with the copy it plays.
         """
         # not the queue's user: the queue takes on the playback user once the play is resolved
         user = await self.mass.webserver.auth.get_user(userid) if userid else None
         allowed, preferred = playback_sources_for(self.mass, user)
-        copies: dict[str, dict[str, ProviderMapping]] = {}
+        served_by: dict[str, dict[str, tuple[Track, ProviderMapping]]] = {}
         listed: list[ContainerListing] = []
         for instance_id, listed_ids in listing.listed_ids.items():
             provider = self.mass.get_provider(instance_id, provider_type=MusicProvider)
@@ -1300,17 +1305,23 @@ class MediaResolver:
                 or (allowed is not None and instance_id not in allowed)
             ):
                 continue
-            served = copies[instance_id] = {
-                uri: copy
-                for track in tracks
-                if (uri := cast("str", track.uri)) in listed_ids
-                and (copy := self._served_copy(track, provider, listed_ids[uri])) is not None
-            }
+            own_entries = listing.own_entries.get(instance_id, {})
+            served: dict[str, tuple[Track, ProviderMapping]] = {}
+            for track in tracks:
+                uri = cast("str", track.uri)
+                if (item_id := listed_ids.get(uri)) is None:
+                    continue
+                # a track listed as another source's entry plays as this source's own entry
+                for item in (track, own_entries.get(uri)):
+                    if item and (copy := self._served_copy(item, provider, item_id)) is not None:
+                        served[uri] = (item, copy)
+                        break
+            served_by[instance_id] = served
             listed.append(
                 ContainerListing(
                     instance_id=instance_id,
                     is_streaming=provider.is_streaming_provider,
-                    copies=list(served.values()),
+                    copies=[copy for _, copy in served.values()],
                     complete=all(
                         track.uri in served for track in tracks if track.provider == "library"
                     ),
@@ -1319,7 +1330,7 @@ class MediaResolver:
         source = select_container_source(listed, preferred, DEFAULT_POLICY)
         if source is None:
             return None, {}
-        return source, copies[source]
+        return source, served_by[source]
 
     def _mark_container_played(
         self,

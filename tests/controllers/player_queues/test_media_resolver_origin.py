@@ -15,7 +15,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.enums import ContentType, ExternalID, MediaType
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import (
     Album,
@@ -34,7 +34,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.queue_item import QueueItemOrigin
 
-from music_assistant.controllers.music.media.album_tracks import AlbumListing, mapped_album_listing
+from music_assistant.controllers.music.media.album_tracks import (
+    AlbumListing,
+    album_listing,
+    mapped_album_listing,
+)
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 
 TIDAL = "tidal--abc"
@@ -48,6 +52,7 @@ OTHER_FILESYSTEM = "filesystem_local--pqr"
 FOLDER_PATH = "Music/Miles Davis/Kind of Blue"
 CD_QUALITY = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16)
 HIRES = AudioFormat(content_type=ContentType.FLAC, sample_rate=96000, bit_depth=24)
+LOSSY = AudioFormat(content_type=ContentType.OGG, bit_rate=320)
 
 
 def _mapping(instance: str, item_id: str) -> ProviderMapping:
@@ -179,7 +184,7 @@ async def loaded_sources_fixture() -> AsyncGenerator[None]:
     """Load the album's sources, so its tracks are available to play."""
     previous = get_global_cache_value("available_providers")
     await set_global_cache_values(
-        {"available_providers": {TIDAL, OTHER_TIDAL, QOBUZ, FILESYSTEM, OTHER_FILESYSTEM}}
+        {"available_providers": {TIDAL, OTHER_TIDAL, SPOTIFY, QOBUZ, FILESYSTEM, OTHER_FILESYSTEM}}
     )
     yield
     await set_global_cache_values({"available_providers": previous})
@@ -274,7 +279,7 @@ def _two_sources_and_a_bonus() -> AlbumListing:
 
 @pytest.mark.usefixtures("loaded_sources")
 async def test_an_album_play_pins_every_track_to_the_one_source_chosen() -> None:
-    """The album plays from its best complete source; a track that source lacks is left free."""
+    """The album plays from its best complete source; a track that source lacks keeps its entry."""
     listing = _two_sources_and_a_bonus()
     resolver = _album_resolver(listing, local={FILESYSTEM})
     album = _album()
@@ -285,7 +290,7 @@ async def test_an_album_play_pins_every_track_to_the_one_source_chosen() -> None
     assert [x.item for x in resolved] == listing.tracks
     assert [_container(x) for x in resolved] == [ItemMapping.from_item(album)] * 3
     assert _container(resolved[0]).media_type == MediaType.ALBUM
-    assert [_pin(x) for x in resolved] == [(TIDAL, "t1"), (TIDAL, "t2"), (None, None)]
+    assert [_pin(x) for x in resolved] == [(TIDAL, "t1"), (TIDAL, "t2"), (QOBUZ, "q3")]
     debug = cast("Mock", resolver.logger).debug
     assert any(call.args[1:] == ("q3", TIDAL, album.name) for call in debug.call_args_list)
 
@@ -320,6 +325,37 @@ async def test_an_album_plays_from_a_source_of_the_playback_user(
     get_user.assert_awaited_once_with("u1")
     sources.assert_called_once_with(resolver.mass, user)
     assert [_pin(x) for x in resolved][: len(pins)] == pins
+
+
+def _entry(instance: str, position: int, audio_format: AudioFormat) -> Track:
+    """Build the entry of a streaming service's listing of the album at the given position."""
+    track = _track(
+        f"{instance[0]}{position}",
+        instance,
+        _copy(instance, f"{instance[0]}{position}", audio_format),
+    )
+    track.external_ids = {(ExternalID.ISRC, f"GBAYC21{position:05d}")}
+    track.disc_number, track.track_number = 1, position
+    return track
+
+
+@pytest.mark.usefixtures("loaded_sources")
+async def test_an_album_of_provider_entries_plays_the_chosen_sources_own_entries() -> None:
+    """Tracks that are not in the library play as the chosen service's entries, where it has them."""
+    spotify = [_entry(SPOTIFY, position, LOSSY) for position in (1, 2, 3)]
+    tidal = [_entry(TIDAL, position, HIRES) for position in (1, 2)]
+    # the album page lists Spotify's entries, the first service by instance id
+    listing = album_listing([], [(TIDAL, tidal), (SPOTIFY, spotify)])
+    assert listing.tracks == spotify
+    resolver = _album_resolver(listing)
+    album = _album()
+
+    with _sources():
+        resolved = await resolver._resolve_media_items(album)
+
+    assert [x.item for x in resolved] == [*tidal, spotify[2]]
+    assert [_container(x) for x in resolved] == [ItemMapping.from_item(album)] * 3
+    assert [_pin(x) for x in resolved] == [(TIDAL, "t1"), (TIDAL, "t2"), (SPOTIFY, "s3")]
 
 
 @pytest.mark.usefixtures("loaded_sources")

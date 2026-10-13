@@ -24,6 +24,9 @@ class AlbumListing:
     tracks: list[Track]
     # by the instance that lists them: the provider item id it lists, by the track's uri
     listed_ids: dict[str, dict[str, str]]
+    # by instance: its own entry of a track that is listed as another source's entry, by the
+    # track's uri
+    own_entries: dict[str, dict[str, Track]] = field(default_factory=dict)
 
 
 def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]]) -> list[Track]:
@@ -49,9 +52,10 @@ def album_listing(
 
     The tracks are the library rows followed by the entries `select_album_tracks` lists next
     to them. An entry counts for the library row its provider id, ISRC, position or unique
-    title names, otherwise for the listed entry it was merged with; a library row a listing
-    hands back counts under its own copies on that listing's instance. An instance that lists
-    a track more than once lists it under the lowest id.
+    title names, otherwise for the listed entry it was merged with, which then keeps it as
+    that instance's own entry of the track; a library row a listing hands back counts under
+    its own copies on that listing's instance. An instance that lists a track more than once
+    lists it under the lowest id.
 
     :param library: The album's library rows.
     :param listings: The album's tracklists, each with the provider instance that served it.
@@ -59,6 +63,7 @@ def album_listing(
     entries = _entries(library, [tracks for _, tracks in listings])
     slots = _place(entries)
     listed_ids: dict[str, dict[str, str]] = {}
+    own_entries: dict[str, dict[str, Track]] = {}
     for instance, tracks in listings:
         for track in tracks:
             if track.provider == "library":
@@ -66,10 +71,13 @@ def album_listing(
                     if mapping.provider_instance == instance:
                         _list(listed_ids, instance, track, mapping.item_id)
             elif (slot := slots.joined.get(id(track))) is not None:
-                _list(listed_ids, instance, slots.tracks[slot], track.item_id)
+                listed = slots.tracks[slot]
+                _list(listed_ids, instance, listed, track.item_id)
+                if track is not listed:
+                    _keep_own_entry(own_entries, instance, listed, track)
             elif (row := _library_row(track, entries)) is not None:
                 _list(listed_ids, instance, row, track.item_id)
-    return AlbumListing([*library, *slots.listed()], listed_ids)
+    return AlbumListing([*library, *slots.listed()], listed_ids, own_entries)
 
 
 def mapped_album_listing(tracks: list[Track]) -> AlbumListing:
@@ -448,6 +456,23 @@ def _list(listed_ids: dict[str, dict[str, str]], instance: str, track: Track, it
     listed = listed_ids.setdefault(instance, {})
     uri = cast("str", track.uri)
     listed[uri] = min(item_id, listed.get(uri, item_id))
+
+
+def _keep_own_entry(
+    own_entries: dict[str, dict[str, Track]], instance: str, track: Track, entry: Track
+) -> None:
+    """
+    Keep an instance's own entry of a track listed as another entry; its lowest id counts.
+
+    :param own_entries: The own entry of each instance, by the listed track's uri.
+    :param instance: The provider instance the entry belongs to.
+    :param track: The track as the album lists it.
+    :param entry: The instance's own entry of that track.
+    """
+    entries = own_entries.setdefault(instance, {})
+    uri = cast("str", track.uri)
+    if (kept := entries.get(uri)) is None or entry.item_id < kept.item_id:
+        entries[uri] = entry
 
 
 def _matching_order(

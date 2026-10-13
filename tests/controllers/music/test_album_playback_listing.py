@@ -136,15 +136,28 @@ def test_a_bonus_track_is_listed_under_the_entry_each_source_has() -> None:
 
     listing = album_listing([row], [(TIDAL, tidal), (QOBUZ, qobuz)])
 
-    assert len(listing.tracks) == 2
+    # the album page lists the bonus track as the entry of the first source by instance id
+    assert listing.tracks == [row, qobuz[1]]
     bonus = listing.tracks[1]
-    assert listing.tracks[0] is row
-    # the bonus track is listed as one source's entry, which counts under its own id
-    assert (bonus.provider, bonus.item_id) in {(TIDAL, "t2"), (QOBUZ, "q2")}
     assert listing.listed_ids == {
         TIDAL: {row.uri: "t1", bonus.uri: "t2"},
         QOBUZ: {row.uri: "q1", bonus.uri: "q2"},
     }
+    # the other source keeps its own entry of it, to play in its place
+    assert listing.own_entries == {TIDAL: {bonus.uri: tidal[1]}}
+
+
+def test_a_source_keeps_the_entry_with_the_lowest_id_of_a_track() -> None:
+    """An instance that lists a track twice (as two of its albums) keeps the lowest id of it."""
+    album = [_entry(QOBUZ, "q1", 1, _isrc(1))]
+    first = [_entry(TIDAL, "t9", 1, _isrc(1))]
+    second = [_entry(TIDAL, "t5", 1, _isrc(1))]
+
+    listing = album_listing([], [(TIDAL, first), (QOBUZ, album), (TIDAL, second)])
+
+    assert listing.tracks == album
+    assert listing.listed_ids == {QOBUZ: {album[0].uri: "q1"}, TIDAL: {album[0].uri: "t5"}}
+    assert listing.own_entries == {TIDAL: {album[0].uri: second[0]}}
 
 
 @pytest.mark.parametrize(
@@ -286,6 +299,33 @@ async def test_only_the_library_tracks_are_listed_under_their_own_copies(
     fetch.assert_not_awaited()
     assert [track.uri for track in listing.tracks] == [row.uri]
     assert listing.listed_ids == {"qobuz_1": {row.uri: "t0"}}
+
+
+async def test_a_sources_own_entry_is_listed_on_the_library_album(mass: MusicAssistant) -> None:
+    """A source's own entry of a track that is not in the library is a track of the album too."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_t", provider_domain="tidal", provider_instance="tidal_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "tidal_1"}})
+    listings = {"qobuz_1": _listed_tracks("qobuz_1", 1, 2), "tidal_1": _listed_tracks("tidal_1", 1)}
+
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        AsyncMock(side_effect=lambda _item_id, instance: listings[instance]),
+    ):
+        listing = await mass.music.albums.playback_listing(library_album.item_id, "library")
+
+    assert [(track.provider, track.item_id) for track in listing.tracks] == [
+        ("qobuz_1", "t1"),
+        ("qobuz_1", "t2"),
+    ]
+    own_entry = listing.own_entries["tidal_1"][str(listing.tracks[0].uri)]
+    assert (own_entry.provider, own_entry.item_id) == ("tidal_1", "t1")
+    assert own_entry.album is not None
+    assert own_entry.album.uri == library_album.uri
 
 
 async def test_an_album_outside_the_library_lists_each_track_under_its_own_id(
