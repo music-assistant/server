@@ -18,6 +18,9 @@ HLS_API = "https://api-v2.soundcloud.com/media/soundcloud:tracks:1/abc/stream/hl
 AAC_API = "https://api-v2.soundcloud.com/media/soundcloud:tracks:1/abc/stream/aac"
 PROGRESSIVE_CDN = "https://cf-media.sndcdn.com/gBClm0KpoWnf.128.mp3"
 HLS_CDN = "https://cf-hls-media.sndcdn.com/playlist/gBClm0KpoWnf.128.mp3/playlist.m3u8"
+AAC_CDN = (
+    "https://playback.media-streaming.soundcloud.cloud/gBClm0KpoWnf/aac_160k/abc/playlist.m3u8"
+)
 
 NOW = 1700000000
 
@@ -96,11 +99,40 @@ async def test_stream_url_falls_back_to_hls(provider: SoundcloudMusicProvider) -
     assert result == HLS_CDN
 
 
-async def test_stream_url_ignores_non_mp3_presets(provider: SoundcloudMusicProvider) -> None:
-    """Presets we cannot play are never requested."""
-    provider._soundcloud.get = _resolver({AAC_API: {"url": "https://example.com/aac"}})
+async def test_stream_url_falls_back_to_aac(provider: SoundcloudMusicProvider) -> None:
+    """An AAC HLS transcoding is used when the track has no mp3 variant at all."""
+    provider._soundcloud.get = _resolver({AAC_API: {"url": AAC_CDN}})
 
     result = await provider._get_stream_url(_track_info([_transcoding("aac_160k", "hls", AAC_API)]))
+
+    assert result == AAC_CDN
+
+
+async def test_stream_url_prefers_progressive_mp3_over_aac(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """Progressive mp3 is still picked over AAC when the track has both."""
+    provider._soundcloud.get = _resolver(
+        {PROGRESSIVE_API: {"url": PROGRESSIVE_CDN}, AAC_API: {"url": AAC_CDN}}
+    )
+
+    result = await provider._get_stream_url(
+        _track_info(
+            [
+                _transcoding("aac_160k", "hls", AAC_API),
+                _transcoding("mp3_0_1", "progressive", PROGRESSIVE_API),
+            ]
+        )
+    )
+
+    assert result == PROGRESSIVE_CDN
+
+
+async def test_stream_url_ignores_unsupported_presets(provider: SoundcloudMusicProvider) -> None:
+    """Presets we cannot play are never requested."""
+    provider._soundcloud.get = _resolver({HLS_API: {"url": "https://example.com/abr"}})
+
+    result = await provider._get_stream_url(_track_info([_transcoding("abr_sq", "hls", HLS_API)]))
 
     assert result is None
     provider._soundcloud.get.assert_not_awaited()
@@ -147,7 +179,14 @@ async def test_stream_details_for_hls_url(provider: SoundcloudMusicProvider) -> 
     assert streamdetails.stream_type == StreamType.HLS
 
 
-@pytest.mark.parametrize("param", ["Expires", "expire"])
+async def test_stream_details_for_aac_hls_url(provider: SoundcloudMusicProvider) -> None:
+    """An AAC playlist served outside the legacy HLS CDN is streamed as HLS."""
+    streamdetails = await _stream_details(provider, AAC_CDN)
+
+    assert streamdetails.stream_type == StreamType.HLS
+
+
+@pytest.mark.parametrize("param", ["Expires", "expires", "expire"])
 async def test_stream_details_expiry_from_url(
     provider: SoundcloudMusicProvider, param: str
 ) -> None:
