@@ -2798,25 +2798,80 @@ async def test_force_stop_does_not_wait_for_artwork_render() -> None:
     process.kill.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_process_eof_cleans_up_command_pipe() -> None:
-    """A naturally ended CLI stream removes its command pipe."""
+async def _run_stderr_reader_to(
+    status_line: str,
+) -> tuple[MagicMock, AirPlayStream, AsyncMock, list[Any]]:
+    """
+    Drive the stderr reader through one terminal status line.
+
+    :param status_line: The line the binary ends the stream with.
+    :return: The player, the stream, the mocked command pipe removal and the
+        awaitables the stream handed to ``mass.create_task``.
+    """
     player = _make_player()
     stream = AirPlayStream(player)
     process = MagicMock()
     stream._cli_proc = process
+    scheduled: list[Any] = []
+
+    def create_task(target: Any, **_kwargs: Any) -> MagicMock:
+        scheduled.append(target)
+        return MagicMock()
+
+    player.provider.mass.create_task.side_effect = create_task
 
     async def _stderr_lines() -> AsyncGenerator[str]:
-        yield "[STATUS] eof"
+        yield status_line
 
     with (
         patch.object(process, "iter_stderr", return_value=_stderr_lines()),
         patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
     ):
         await stream._stderr_reader()
+    return player, stream, remove_pipe, scheduled
+
+
+@pytest.mark.asyncio
+async def test_process_eof_tells_the_binary_to_stop() -> None:
+    """
+    A stream whose input ended has the binary end the receiver session.
+
+    The binary reports eof once its drain is done but keeps the session open
+    awaiting a new START, so the stream stops it instead of only removing the
+    command pipe, which would leave the session to the binary's idle timeout.
+    """
+    player, stream, remove_pipe, scheduled = await _run_stderr_reader_to("[STATUS] eof")
+
+    assert stream._stopped is True
+    remove_pipe.assert_not_awaited()
+    assert len(scheduled) == 1
+    process = cast("MagicMock", stream._cli_proc)
+    process.closed = False
+    process.write_eof = AsyncMock()
+    process.close = AsyncMock()
+
+    with (
+        patch.object(
+            stream.commands_pipe, "write", new_callable=AsyncMock, return_value=True
+        ) as write_pipe,
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
+    ):
+        await scheduled[0]
+
+    write_pipe.assert_awaited_once_with(b"ACTION=STOP\n")
+    remove_pipe.assert_awaited_once()
+    process.close.assert_awaited_once()
+    player.schedule_group_rejoin.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_idle_timeout_cleans_up_command_pipe() -> None:
+    """A binary that ended the session on its idle timeout only leaves its pipe behind."""
+    player, stream, remove_pipe, scheduled = await _run_stderr_reader_to("[STATUS] idle_timeout")
 
     assert stream._stopped is True
     remove_pipe.assert_awaited_once()
+    assert not scheduled
     player.schedule_group_rejoin.assert_not_called()
 
 

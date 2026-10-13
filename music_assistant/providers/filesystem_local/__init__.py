@@ -16,7 +16,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from functools import cached_property
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import aiofiles
@@ -945,6 +945,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
 
         file_item = await self.resolve(prov_playlist_id)
         playlist = Playlist(
@@ -1044,6 +1045,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
 
         file_item = await self.resolve(prov_playlist_id)
         # We are using the checksum of the playlist file here to invalidate the cache
@@ -1182,6 +1184,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
         playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(
             playlist_filename, encoding="utf-8", opener=self._open_file
@@ -1204,6 +1207,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
         ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
@@ -4252,8 +4256,15 @@ class LocalFileSystemProvider(MusicProvider):
                     paths.append(path)
         return paths
 
+    def _check_playlist_path(self, prov_playlist_id: str) -> None:
+        """Raise MediaNotFoundError when a path does not name a playlist file."""
+        if PurePosixPath(prov_playlist_id).suffix[1:].lower() not in PLAYLIST_EXTENSIONS:
+            msg = f"Not a playlist file: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
+
     async def _write_playlist_file(self, file_path: str, data: str) -> None:
-        """Write playlist data to a regular (non-symlink) file inside the library root."""
+        """Write playlist data to a regular (non-symlink) playlist file inside the library root."""
+        self._check_playlist_path(file_path)
         relative_path = os.path.relpath(self.get_absolute_path(file_path), self.base_path)
         parts = [part for part in Path(relative_path).parts if part != "."]
         msg = f"Playlist is not a regular file inside the library: {file_path}"

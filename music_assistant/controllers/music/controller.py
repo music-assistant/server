@@ -2532,6 +2532,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Add provider mapping to the given library item."""
         ctrl = self.get_controller(media_type)
+        # only a mapping the provider itself returns as this media type is accepted
+        await ctrl.get_provider_item(
+            mapping.item_id,
+            mapping.provider_instance,
+            allow_fallback=False,
+            strict_provider_instance=True,
+        )
+        provider = self.mass.get_provider(mapping.provider_instance)
+        if provider is None or provider.domain != mapping.provider_domain:
+            msg = f"Provider domain {mapping.provider_domain} does not match {mapping.provider_instance}"
+            raise InvalidDataError(msg)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
     @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)
