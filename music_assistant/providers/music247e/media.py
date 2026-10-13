@@ -198,12 +198,11 @@ class Music247eMediaManager:
             ]
         if "tracks" in result:
             search_result.tracks = [
-                await parse_track(self.provider, item) for item in result["tracks"].get("items", [])
+                parse_track(self.provider, item) for item in result["tracks"].get("items", [])
             ]
         if "playlists" in result:
             search_result.playlists = [
-                await parse_playlist(self.provider, item)
-                for item in result["playlists"].get("items", [])
+                parse_playlist(self.provider, item) for item in result["playlists"].get("items", [])
             ]
 
         return search_result
@@ -301,6 +300,7 @@ class Music247eMediaManager:
                             items {
                                 id
                                 title
+                                availableToStream
                                 cover(size: $imageSize)
                                 isrc
                                 duration
@@ -339,7 +339,7 @@ class Music247eMediaManager:
         tracks = []
 
         for item in result["data"]["catalog"]["artist"]["tracks"]["items"]:
-            tracks.append(await parse_track(self.provider, item))
+            tracks.append(parse_track(self.provider, item))
 
         return tracks
 
@@ -482,11 +482,11 @@ class Music247eMediaManager:
         if not result or not result.get("data", {}).get("catalog", {}).get("track"):
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
-        track = await parse_track(self.provider, result["data"]["catalog"]["track"])
+        track = parse_track(self.provider, result["data"]["catalog"]["track"])
 
         if result["data"]["catalog"]["track"].get("lyrics"):
             lyrics = await self._get_lyrics(prov_track_id)
-            parsed_lyrics, parsed_lrc_lyrics = await parse_lyrics(lyrics)
+            parsed_lyrics, parsed_lrc_lyrics = parse_lyrics(lyrics)
 
             if parsed_lyrics:
                 self.logger.debug("Attached lyrics to track")
@@ -521,7 +521,7 @@ class Music247eMediaManager:
         if not result or not result.get("data", {}).get("playlists", {}).get("playlist"):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
 
-        return await parse_playlist(self.provider, result["data"]["playlists"]["playlist"])
+        return parse_playlist(self.provider, result["data"]["playlists"]["playlist"])
 
     async def get_album_tracks(
         self,
@@ -537,6 +537,7 @@ class Music247eMediaManager:
                             items {
                                 id
                                 title
+                                availableToStream
                                 cover(size: $imageSize)
                                 isrc
                                 duration
@@ -577,7 +578,7 @@ class Music247eMediaManager:
             variables,
             ["data", "catalog", "album", "tracks"],
         ):
-            track = await parse_track(self.provider, item)
+            track = parse_track(self.provider, item)
             track.position = i
             tracks.append(track)
             i += 1
@@ -599,6 +600,7 @@ class Music247eMediaManager:
                         items {
                             id
                             title
+                            availableToStream
                             cover(size: $imageSize)
                             isrc
                             duration
@@ -643,7 +645,7 @@ class Music247eMediaManager:
         async for item in self.api.paginate_graphql(
             query, variables, ["data", "playlists", "playlist", "tracks"]
         ):
-            track = await parse_track(self.provider, item)
+            track = parse_track(self.provider, item)
             track.position = i
             tracks.append(track)
             i += 1
@@ -661,6 +663,7 @@ class Music247eMediaManager:
                             items {
                                 id
                                 title
+                                availableToStream
                                 cover(size: $imageSize)
                                 isrc
                                 duration
@@ -696,7 +699,7 @@ class Music247eMediaManager:
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
         return [
-            await parse_track(self.provider, item)
+            parse_track(self.provider, item)
             for item in result["data"]["catalog"]["track"]["similarTracks"]["items"]
         ]
 

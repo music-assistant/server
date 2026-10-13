@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.media_items import UniqueList
+from music_assistant_models.media_items import Track, UniqueList
 
 from music_assistant.providers.music247e.provider import Music247eProvider
 from music_assistant.providers.music247e.recommendations import Music247eRecommendationsManager
@@ -43,6 +43,7 @@ GRAPHQL_RESULT = {
                                 "id": "track1",
                                 "title": "Track One",
                                 "duration": 200,
+                                "availableToStream": False,
                                 "artist": {"id": "artist1", "title": "Artist One"},
                             }
                         ]
@@ -58,6 +59,7 @@ GRAPHQL_RESULT = {
                                 "id": "track2",
                                 "title": "Track Two",
                                 "duration": 180,
+                                "availableToStream": False,
                                 "artist": {"id": "artist2", "title": "Artist Two"},
                             }
                         ]
@@ -127,6 +129,10 @@ async def test_rows_and_items_share_one_payload_fetch(
     assert [item.name for item in album_items] == ["Album One"]
     assert [item.item_id for item in track_items] == ["track1"]
     assert [item.name for item in track_items] == ["Track One"]
+    track = track_items[0]
+    assert isinstance(track, Track)
+    assert next(iter(track.provider_mappings)).available is False
+    assert "availableToStream" in api.post_graphql.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -141,6 +147,10 @@ async def test_get_recommendation_items_returns_row_items(
     api.post_graphql.assert_awaited_once()
     assert [item.item_id for item in items] == ["track2"]
     assert [item.name for item in items] == ["Track Two"]
+    track = items[0]
+    assert isinstance(track, Track)
+    assert next(iter(track.provider_mappings)).available is False
+    assert "availableToStream" in api.post_graphql.call_args.args[0]
 
 
 @pytest.mark.asyncio

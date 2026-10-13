@@ -125,6 +125,7 @@ class Music247eRecommendationsManager:
                         items {
                             id
                             title
+                            availableToStream
                             cover(size: $imageSize)
                             isrc
                             duration
@@ -202,7 +203,7 @@ class Music247eRecommendationsManager:
                     media_type=MediaType.TRACK,
                     items=UniqueList(
                         [
-                            await parse_track(self.provider, item)
+                            parse_track(self.provider, item)
                             for item in rec_data.get("tracks", {}).get("items", [])
                         ]
                     ),

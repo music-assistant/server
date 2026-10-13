@@ -182,7 +182,7 @@ class Music247eLibraryManager:
             query, variables, ["data", "me", "favorites", "tracks"]
         ):
             self.logger.log(VERBOSE_LOG_LEVEL, "Parsing track item: %s", item)
-            yield await parse_track(self.provider, item)
+            yield parse_track(self.provider, item)
 
     async def get_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
@@ -214,7 +214,7 @@ class Music247eLibraryManager:
             query, variables, ["data", "me", "playlists", "combinedPlaylists"]
         ):
             self.logger.log(VERBOSE_LOG_LEVEL, "Parsing playlist item: %s", item)
-            yield await parse_playlist(self.provider, item)
+            yield parse_playlist(self.provider, item)
 
     async def add_item(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""

@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.music247e.provider import Music247eProvider
 
 
-async def parse_track(provider: Music247eProvider, track_obj: JsonLike) -> Track:
+def parse_track(provider: Music247eProvider, track_obj: JsonLike) -> Track:
     """Parse track data from the 24-7 (247e) API response."""
     track = Track(
         item_id=track_obj["id"],
@@ -132,6 +132,7 @@ def parse_album(provider: Music247eProvider, album_obj: JsonLike) -> Album:
                 item_id=str(album_obj["id"]),
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
+                available=album_obj.get("available", True),
                 audio_format=AudioFormat(
                     content_type=ContentType.MP4,
                     bit_rate=try_parse_int(provider.playback_quality),
@@ -184,7 +185,7 @@ def parse_album(provider: Music247eProvider, album_obj: JsonLike) -> Album:
     return album
 
 
-async def parse_playlist(provider: Music247eProvider, playlist_obj: JsonLike) -> Playlist:
+def parse_playlist(provider: Music247eProvider, playlist_obj: JsonLike) -> Playlist:
     """Parse playlist data from the 24-7 (247e) API response."""
     playlist = Playlist(
         item_id=str(playlist_obj["id"]),
@@ -218,7 +219,7 @@ async def parse_playlist(provider: Music247eProvider, playlist_obj: JsonLike) ->
     return playlist
 
 
-async def parse_lyrics(lyrics: list[JsonLike]) -> tuple[str | None, str | None]:
+def parse_lyrics(lyrics: list[JsonLike]) -> tuple[str | None, str | None]:
     """
     Parse the 24-7 (247e) lyrics payload and extract the lyric text in two formats if possible.
 

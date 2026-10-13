@@ -55,9 +55,7 @@ class Music247ePlaylistManager:
                 translation_args=[name],
             )
 
-        return await parse_playlist(
-            self.provider, result["data"]["playlists"]["create"]["playlist"]
-        )
+        return parse_playlist(self.provider, result["data"]["playlists"]["create"]["playlist"])
 
     async def add_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
