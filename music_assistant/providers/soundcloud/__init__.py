@@ -519,12 +519,12 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not track_auth:
             return None
         transcodings = track_info.get("media", {}).get("transcodings", [])
-        # Two passes: prefer progressive mp3, fall back to any mp3 (which may be HLS)
+        # Two passes: prefer progressive mp3, fall back to any mp3 or aac (which may be HLS)
         for preferred_protocol in ("progressive", None):
             for transcoding in transcodings:
                 preset = transcoding.get("preset", "")
                 protocol = transcoding.get("format", {}).get("protocol", "")
-                if not preset.startswith("mp3"):
+                if not preset.startswith(("mp3", "aac")):
                     continue
                 if preferred_protocol is not None and protocol != preferred_protocol:
                     continue
@@ -553,7 +553,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         # that makes a fresh HTTP request to the stored URL, which may have expired.
         expiration = 30  # conservative default if expiry cannot be determined
         if parsed_qs := parse_qs(urlparse(url).query):
-            for param in ("Expires", "expire"):
+            for param in ("Expires", "expires", "expire"):
                 if expire_ts := parsed_qs.get(param, [None])[0]:
                     expiration = max(30, int(expire_ts) - int(time.time()) - 10)
                     break
@@ -566,7 +566,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 content_type=ContentType.UNKNOWN,
             ),
             stream_type=StreamType.HLS
-            if url.startswith("https://cf-hls-media.sndcdn.com")
+            if (url.startswith("https://cf-hls-media.sndcdn.com") or ".m3u8" in url)
             else StreamType.HTTP,
             path=url,
             can_seek=True,
