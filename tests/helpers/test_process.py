@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from signal import SIGKILL
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,6 +20,7 @@ from music_assistant.helpers.process import (
     check_output,
     collect_child_process_counts,
     get_subprocess_env,
+    open_in_thread,
     parse_child_process_name,
 )
 
@@ -37,6 +40,30 @@ _WEDGED_CHILD = (
 _NOISY_CHILD = (
     "import sys, time; sys.stdout.write('x' * 300000); sys.stdout.flush(); time.sleep(30)"
 )
+
+# Exits on SIGINT, but only after a pause, so a reader is still blocked on stdout
+# once close() stops waiting for it (the tests shorten that wait to well below the
+# pause), and then writes more than a pipe holds: unless something keeps reading,
+# it blocks on the full pipe instead of exiting. The handler only flags the signal:
+# SIGINT can land while "ready" is still being flushed, and a write from the handler
+# would then fail as reentrant.
+_SLOW_EXIT_LINE = "bye" * 21
+_SLOW_EXIT_LINES = 5000
+_SLOW_EXIT_CHILD = f"""
+import signal, sys, time
+
+interrupted = []
+signal.signal(signal.SIGINT, lambda *_: interrupted.append(True))
+sys.stdout.write("ready\\n")
+sys.stdout.flush()
+deadline = time.monotonic() + 30
+while not interrupted and time.monotonic() < deadline:
+    time.sleep(0.01)
+if interrupted:
+    time.sleep(1)
+    sys.stdout.write("{_SLOW_EXIT_LINE}\\n" * {_SLOW_EXIT_LINES})
+    sys.stdout.flush()
+"""
 
 
 @pytest.fixture(name="piped_process")
@@ -83,6 +110,15 @@ async def _consume(read_fd: int, total: int) -> None:
     remaining = total
     while remaining > 0:
         remaining -= len(await asyncio.to_thread(os.read, read_fd, 65536))
+
+
+async def _collect_lines(
+    lines: AsyncGenerator[str], into: list[str], first_seen: asyncio.Event
+) -> None:
+    """Collect every line of an output stream, flagging once the first one arrived."""
+    async for line in lines:
+        into.append(line)
+        first_seen.set()
 
 
 @pytest.mark.asyncio
@@ -368,6 +404,111 @@ async def test_close_reaps_a_child_when_cancelled_while_waiting_for_exit(
     assert proc.returncode is not None
 
 
+@pytest.mark.asyncio
+async def test_close_leaves_a_live_reader_in_charge_of_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A reader kept on stdout across close() keeps draining it while the child is reaped.
+
+    asyncio refuses a second concurrent read on a stream, so close() must leave
+    that pipe to the reader and only wait for the exit: a child that exits on
+    SIGINT by itself is then reaped as such rather than SIGKILLed, and the
+    reader sees everything it wrote on the way out.
+    """
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _SLOW_EXIT_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    lines: list[str] = []
+    ready = asyncio.Event()
+    reader = asyncio.create_task(_collect_lines(proc.iter_stdout(), lines, ready))
+    await asyncio.wait_for(ready.wait(), 5)
+
+    async with asyncio.timeout(5):
+        await proc.close()
+
+    assert proc.returncode == 0
+    await asyncio.wait_for(reader, 5)
+    assert lines == ["ready", *[_SLOW_EXIT_LINE] * _SLOW_EXIT_LINES]
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_while_a_reader_is_still_on_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A child ignoring SIGINT is still SIGKILLed while a reader is blocked on its stdout.
+
+    Giving up on the pipe because of the concurrent read must not skip the
+    escalation: the child would stay alive and unreaped, with nothing coming
+    back for it.
+    """
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    ready = asyncio.Event()
+    reader = asyncio.create_task(_collect_lines(proc.iter_stdout(), [], ready))
+    await asyncio.wait_for(ready.wait(), 5)
+
+    async with asyncio.timeout(10):
+        await proc.close()
+
+    assert proc.returncode == -SIGKILL
+    # the kill closed the pipe, which is what ends the reader
+    await asyncio.wait_for(reader, 5)
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_while_its_attached_stderr_reader_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An attached stderr reader that never sees EOF does not keep close() from reaping.
+
+    The reader is cancelled once the release budget is spent, and the child is
+    escalated to SIGKILL like any other that holds its pipes open.
+    """
+    monkeypatch.setattr(process_module, "PIPE_DRAIN_TIMEOUT", 0.2)
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    proc = AsyncProcess([sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=True)
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+    reader = asyncio.create_task(_collect_lines(proc.iter_stderr(), [], asyncio.Event()))
+    proc.attach_stderr_reader(reader)
+    await asyncio.sleep(0)  # let the reader block on the (silent) stderr
+
+    async with asyncio.timeout(10):
+        await proc.close()
+
+    assert proc.returncode == -SIGKILL
+    assert reader.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_close_does_not_leave_stdout_to_a_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Two overlapping close() calls still leave stdout reporting EOF afterwards.
+
+    The second call times out on the locks the first one holds, which must not
+    pass for a reader keeping the stream: a later read would then wait forever
+    on a lock no reader is going to release.
+    """
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    proc = AsyncProcess(["sleep", "30"], stdout=True)
+    await proc.start()
+
+    await asyncio.gather(proc.close(), proc.close())
+
+    assert proc.returncode is not None
+    assert await asyncio.wait_for(proc.read_stdout(), 1) == b""
+
+
 def test_parse_child_process_name() -> None:
     """Test that a /proc stat line yields the process name only for a matching parent."""
     # comm may contain spaces and parentheses; ppid is the field after the state field
@@ -450,3 +591,38 @@ def _is_running(pid: int) -> bool:
         return False
     # the state follows the command name, which is wrapped in parentheses
     return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+async def test_open_in_thread_closes_a_descriptor_opened_after_cancellation(
+    tmp_path: Path,
+) -> None:
+    """An open that only completes after its caller was cancelled leaves no descriptor behind."""
+    path = tmp_path / "track.flac"
+    path.write_bytes(b"x")
+    started = threading.Event()
+    release = threading.Event()
+    opened: list[int] = []
+
+    def _slow_open(file: str, flags: int) -> int:
+        started.set()
+        release.wait(5)
+        opened.append(os.open(file, flags))
+        return opened[0]
+
+    task = asyncio.create_task(open_in_thread(_slow_open, str(path), os.O_RDONLY))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+
+    async with asyncio.timeout(5):
+        while not opened:
+            await asyncio.sleep(0.01)
+        # the late descriptor is closed on the event loop once the open completes
+        while True:
+            try:
+                os.fstat(opened[0])
+            except OSError:
+                break
+            await asyncio.sleep(0.01)
