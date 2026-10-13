@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from aioaudiobookshelf.exceptions import ServiceUnavailableError as AbsServiceUnavailableError
 from aiohttp import ClientSession, hdrs, web
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import MediaType
@@ -51,8 +53,26 @@ async def abs_server() -> AsyncIterator[TestServer]:
             headers={hdrs.CONTENT_RANGE: f"bytes {start}-{len(PART) - 1}/{len(PART)}"},
         )
 
+    async def _serve_endless(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        with suppress(ConnectionError):
+            while True:
+                await response.write(PART)
+        return response
+
+    async def _serve_dropped(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={hdrs.CONTENT_LENGTH: str(2 * len(PART))})
+        await response.prepare(request)
+        await response.write(PART)
+        assert request.transport is not None
+        request.transport.close()
+        return response
+
     app = web.Application()
     app.router.add_get("/api/items/book1/file/1", _serve_part)
+    app.router.add_get("/endless", _serve_endless)
+    app.router.add_get("/dropped", _serve_dropped)
     server = TestServer(app)
     await server.start_server()
     try:
@@ -73,22 +93,24 @@ async def test_stream_details(stream_provider: Audiobookshelf) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("range_header", "status", "body"),
-    [(None, 200, PART), ("bytes=1000-", 206, PART[1000:])],
-)
-async def test_part_is_proxied_without_token(
-    stream_provider: Audiobookshelf,
-    abs_server: TestServer,
-    range_header: str | None,
-    status: int,
-    body: bytes,
-) -> None:
-    """The part is streamed through, so the token never reaches the caller."""
-    app = web.Application()
-    app.router.add_get("/part", stream_provider._handle_session_part_request)
-    headers = {hdrs.RANGE: range_header} if range_header else {}
+@pytest.fixture
+async def part_proxy(
+    stream_provider: Audiobookshelf, abs_server: TestServer
+) -> AsyncIterator[tuple[TestClient[web.Request, web.Application], list[object]]]:
+    """Serve the part handler against the fake abs, recording what each request ended with."""
+    outcomes: list[object] = []
 
+    async def _handle(request: web.Request) -> web.StreamResponse:
+        try:
+            response = await stream_provider._handle_session_part_request(request)
+        except BaseException as err:
+            outcomes.append(err)
+            raise
+        outcomes.append(response)
+        return response
+
+    app = web.Application()
+    app.router.add_get("/part", _handle)
     async with ClientSession() as http_session, TestClient(TestServer(app)) as client:
         stream_provider.mass.http_session = http_session  # type: ignore[misc]
         with patch.object(
@@ -96,8 +118,62 @@ async def test_part_is_proxied_without_token(
             "get_setup_value",
             return_value=str(abs_server.make_url("")).rstrip("/"),
         ):
-            response = await client.get(
-                "/part", params={"session_id": "session1", "part_id": "0"}, headers=headers
-            )
-            assert response.status == status
-            assert await response.read() == body
+            yield client, outcomes
+
+
+@pytest.mark.parametrize(
+    ("range_header", "status", "body"),
+    [(None, 200, PART), ("bytes=1000-", 206, PART[1000:])],
+)
+async def test_part_is_proxied_without_token(
+    part_proxy: tuple[TestClient[web.Request, web.Application], list[object]],
+    range_header: str | None,
+    status: int,
+    body: bytes,
+) -> None:
+    """The part is streamed through, so the token never reaches the caller."""
+    client, _ = part_proxy
+    headers = {hdrs.RANGE: range_header} if range_header else {}
+    response = await client.get(
+        "/part", params={"session_id": "session1", "part_id": "0"}, headers=headers
+    )
+    assert response.status == status
+    assert await response.read() == body
+
+
+@pytest.mark.parametrize("abs_path", ["/endless", "/dropped"])
+async def test_part_ends_cleanly_on_hang_up(
+    stream_provider: Audiobookshelf,
+    part_proxy: tuple[TestClient[web.Request, web.Application], list[object]],
+    abs_path: str,
+) -> None:
+    """A client or abs hanging up mid part ends the request without an error."""
+    client, outcomes = part_proxy
+    session = stream_provider._client.get_open_session.return_value  # type: ignore[attr-defined]
+    session.audio_tracks[0].content_url = abs_path
+    response = await client.get("/part", params={"session_id": "session1", "part_id": "0"})
+    # ffmpeg hangs up e.g. when it seeks
+    await response.content.readexactly(len(PART))
+    response.close()
+
+    async with asyncio.timeout(5):
+        while not outcomes:
+            await asyncio.sleep(0.01)
+    assert isinstance(outcomes[0], web.StreamResponse)
+
+
+@pytest.mark.parametrize("failing_call", ["open_session", "part"])
+async def test_part_abs_unreachable(
+    stream_provider: Audiobookshelf,
+    part_proxy: tuple[TestClient[web.Request, web.Application], list[object]],
+    failing_call: str,
+) -> None:
+    """An unreachable abs is a bad gateway, not a server error."""
+    client, _ = part_proxy
+    if failing_call == "open_session":
+        stream_provider._client.get_open_session.side_effect = (  # type: ignore[attr-defined]
+            AbsServiceUnavailableError
+        )
+    with patch.object(stream_provider, "get_setup_value", return_value="http://127.0.0.1:1"):
+        response = await client.get("/part", params={"session_id": "session1", "part_id": "0"})
+    assert response.status == 502

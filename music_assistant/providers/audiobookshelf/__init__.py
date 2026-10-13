@@ -73,7 +73,7 @@ from aioaudiobookshelf.schema.shelf import (
 )
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
-from aiohttp import hdrs, web
+from aiohttp import ClientError, hdrs, web
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ProviderConfig,
@@ -1058,6 +1058,8 @@ for more details.
             abs_session = await self._client.get_open_session(session_id=session_id)
         except AbsSessionNotFoundError as err:
             raise web.HTTPNotFound from err
+        except AbsServiceUnavailableError as err:
+            raise web.HTTPBadGateway(text="Audiobookshelf unreachable") from err
         try:
             part_track = abs_session.audio_tracks[int(part_id)]
         except IndexError:
@@ -1067,12 +1069,17 @@ for more details.
         headers = self._client.session_config.headers
         if range_header := request.headers.get(hdrs.RANGE):
             headers[hdrs.RANGE] = range_header
-        async with self.mass.http_session.get(
-            f"{base_url}{part_track.content_url}",
-            headers=headers,
-            ssl=self._client.session_config.verify_ssl,
-            timeout=PART_STREAM_TIMEOUT,
-        ) as abs_response:
+        try:
+            abs_response = await self.mass.http_session.get(
+                f"{base_url}{part_track.content_url}",
+                headers=headers,
+                ssl=self._client.session_config.verify_ssl,
+                timeout=PART_STREAM_TIMEOUT,
+            )
+        except ClientError as err:
+            self.logger.warning("Requesting part %s from Audiobookshelf failed: %s", part_id, err)
+            raise web.HTTPBadGateway(text="Audiobookshelf unreachable") from err
+        async with abs_response:
             response = web.StreamResponse(
                 status=abs_response.status,
                 headers={
@@ -1081,11 +1088,17 @@ for more details.
                     if name in abs_response.headers
                 },
             )
-            await response.prepare(request)
-            async for chunk in abs_response.content.iter_chunked(PART_STREAM_CHUNK_SIZE):
-                await response.write(chunk)
-            await response.write_eof()
-            return response
+            try:
+                await response.prepare(request)
+                async for chunk in abs_response.content.iter_chunked(PART_STREAM_CHUNK_SIZE):
+                    await response.write(chunk)
+                await response.write_eof()
+            except ConnectionError:
+                # ffmpeg hangs up e.g. when it seeks or has probed enough
+                self.logger.debug("Client disconnected from part %s", part_id)
+            except ClientError as err:
+                self.logger.warning("Audiobookshelf interrupted part %s: %s", part_id, err)
+        return response
 
     @handle_refresh_token
     async def get_resume_position(
