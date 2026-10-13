@@ -500,7 +500,7 @@ def test_read_stream_source_policy(stored: dict[str, str], mode: StreamSourceMod
 async def test_the_setting_offers_every_mode_and_defaults_to_best_quality(
     streams_controller: StreamsController,
 ) -> None:
-    """The streams settings offer the three modes; until one is chosen, best quality applies."""
+    """The streams settings offer the three modes: best quality until another one is saved."""
     mass = streams_controller.mass
     entry = next(
         entry
@@ -509,6 +509,7 @@ async def test_the_setting_offers_every_mode_and_defaults_to_best_quality(
     )
 
     assert entry.category == "source_selection"
+    assert entry.default_value == StreamSourceMode.BEST_QUALITY
     assert [option.value for option in entry.options] == [
         "best_quality",
         "prefer_local",
@@ -516,5 +517,7 @@ async def test_the_setting_offers_every_mode_and_defaults_to_best_quality(
     ]
     streams_controller.config = await mass.config.get_core_config(streams_controller.domain)
     assert read_stream_source_policy(mass) == DEFAULT_POLICY
-    streams_controller.config.update({CONF_STREAM_SOURCE_MODE: "prefer_local"})
+    await mass.config.save_core_config(
+        streams_controller.domain, {CONF_STREAM_SOURCE_MODE: "prefer_local"}
+    )
     assert read_stream_source_policy(mass) == PREFER_LOCAL

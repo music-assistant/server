@@ -15,15 +15,15 @@
     },
     "stream_source_mode": {
       "label": "Which source plays",
-      "description": "Which copy plays when a track is available from more than one source, such as your own files and a streaming service.",
+      "description": "How Music Assistant picks the copy to play when a track is available from more than one source, such as your own files and a streaming service.",
       "options": {
         "best_quality": "Best quality",
         "prefer_local": "Prefer local",
         "best_quality_per_track": "Best quality for every track"
       },
       "option_descriptions": {
-        "best_quality": "Play the highest quality copy. An album, playlist or folder still plays from the source you started it from.",
-        "prefer_local": "Play from your local and self-hosted sources (files, Plex, Subsonic, ...) before streaming services, then pick the highest quality. An album, playlist or folder still plays from the source you started it from.",
+        "best_quality": "Play the highest quality copy. An album plays all of its tracks from one source, and a playlist or folder plays from the source it comes from.",
+        "prefer_local": "Play from your local and self-hosted sources (files, Plex, Subsonic, ...) before streaming services, then pick the highest quality. An album plays all of its tracks from one source, and a playlist or folder plays from the source it comes from.",
         "best_quality_per_track": "Pick the highest quality copy for every track on its own, even inside an album, playlist or folder."
       }
     },

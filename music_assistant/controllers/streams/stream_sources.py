@@ -5,7 +5,8 @@ A library item often has several copies: a local file, the same track on one or 
 streaming services, another account of the same service. This module decides the order those
 copies are tried in, and the one source the tracks of an album are all played from. The
 caller expands the mappings to the provider instances that may serve them and applies the
-access rules, this module only sorts.
+access rules, this module only sorts. The source selection settings it sorts under are read
+from the streams settings.
 """
 
 from __future__ import annotations
