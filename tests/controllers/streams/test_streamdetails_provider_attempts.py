@@ -381,55 +381,6 @@ async def test_the_pinned_copy_is_passed_over_when_every_track_is_ranked_on_its_
     pinned.get_stream_details.assert_not_awaited()
 
 
-@pytest.mark.parametrize("media_type", [MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK])
-async def test_an_episode_or_audiobook_keeps_its_account_when_every_track_is_ranked_on_its_own(
-    media_type: MediaType,
-) -> None:
-    """With best quality for every track, an episode or audiobook still plays where it started."""
-    started_instance = "spotify--household"
-    own_instance = "spotify--own"
-    started = _music_provider(started_instance)
-    own = _music_provider(own_instance)
-    audio = _audio(
-        {started_instance: started, own_instance: own},
-        owned=[own_instance],
-        mode=StreamSourceMode.BEST_QUALITY_PER_TRACK,
-    )
-    cast("MagicMock", audio.mass).providers = [started, own]
-    mappings = {_mapping(started_instance)}
-    media_item = (
-        PodcastEpisode(
-            item_id=ITEM_ID,
-            provider=started_instance,
-            name="Episode 1",
-            provider_mappings=mappings,
-            position=1,
-            podcast=ItemMapping(
-                media_type=MediaType.PODCAST,
-                item_id="show",
-                provider=started_instance,
-                name="Show",
-            ),
-        )
-        if media_type == MediaType.PODCAST_EPISODE
-        else Audiobook(item_id="7", provider="library", name="Dune", provider_mappings=mappings)
-    )
-    queue_item = QueueItem(
-        queue_id="q1",
-        queue_item_id="qi1",
-        name=media_item.name,
-        duration=None,
-        media_item=media_item,
-        origin=QueueItemOrigin(provider_instance=started_instance, item_id=ITEM_ID),
-    )
-
-    streamdetails = await audio.get_stream_details(queue_item=queue_item)
-
-    # without the pin the playback user's own account would stand in for it
-    assert streamdetails.provider == started_instance
-    own.get_stream_details.assert_not_awaited()
-
-
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
@@ -460,13 +411,16 @@ async def test_a_local_copy_plays_before_a_better_streaming_one_when_preferring_
     assert streamdetails.provider == expected
 
 
-async def test_an_audiobook_plays_from_the_account_it_was_started_from() -> None:
+@pytest.mark.parametrize("mode", list(StreamSourceMode))
+async def test_an_audiobook_plays_from_the_account_it_was_started_from(
+    mode: StreamSourceMode,
+) -> None:
     """Of two equal accounts of one service, the one the audiobook was started from plays."""
     first_instance = "spotify--first"
     second_instance = "spotify--second"
     first = _music_provider(first_instance)
     second = _music_provider(second_instance)
-    audio = _audio({first_instance: first, second_instance: second})
+    audio = _audio({first_instance: first, second_instance: second}, mode=mode)
     audiobook = Audiobook(
         item_id="7",
         provider="library",
@@ -487,6 +441,42 @@ async def test_an_audiobook_plays_from_the_account_it_was_started_from() -> None
     # without the pin the first account would win the tie-break on its instance id
     assert streamdetails.provider == second_instance
     first.get_stream_details.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", list(StreamSourceMode))
+async def test_an_episode_plays_from_the_service_it_was_started_from(
+    mode: StreamSourceMode,
+) -> None:
+    """Of an episode on gPodder and on Spotify, the copy it was started from plays."""
+    gpodder_instance = "gpodder--feeds"
+    spotify_instance = "spotify--podcasts"
+    gpodder = _music_provider(gpodder_instance)
+    spotify = _music_provider(spotify_instance)
+    audio = _audio({gpodder_instance: gpodder, spotify_instance: spotify}, mode=mode)
+    episode = PodcastEpisode(
+        item_id=ITEM_ID,
+        provider=spotify_instance,
+        name="Episode 1",
+        provider_mappings={_mapping(gpodder_instance), _mapping(spotify_instance)},
+        position=1,
+        podcast=ItemMapping(
+            media_type=MediaType.PODCAST, item_id="show", provider=spotify_instance, name="Show"
+        ),
+    )
+    queue_item = QueueItem(
+        queue_id="q1",
+        queue_item_id="qi1",
+        name="Episode 1",
+        duration=None,
+        media_item=episode,
+        origin=QueueItemOrigin(provider_instance=spotify_instance, item_id=ITEM_ID),
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    # without the pin gPodder would win the tie-break on its instance id
+    assert streamdetails.provider == spotify_instance
+    gpodder.get_stream_details.assert_not_awaited()
 
 
 async def test_mapping_falls_back_to_compatible_streaming_provider_instance() -> None:

@@ -400,16 +400,16 @@ async def test_an_album_of_provider_entries_plays_the_chosen_sources_own_entries
 
 @pytest.mark.usefixtures("loaded_sources")
 @pytest.mark.parametrize(
-    ("preferred", "played"),
-    [((), ["t1", "t2", "s3"]), ([SPOTIFY], ["s1", "s2", "s3"])],
-    ids=["the best quality", "the user's own account first"],
+    ("spotify_format", "tidal_format", "preferred"),
+    [(LOSSY, HIRES, ()), (HIRES, LOSSY, [TIDAL])],
+    ids=["the best quality", "the user's own account before a better quality"],
 )
 async def test_a_track_outside_the_library_plays_its_best_entry_when_ranked_on_its_own(
-    preferred: list[str], played: list[str]
+    spotify_format: AudioFormat, tidal_format: AudioFormat, preferred: list[str]
 ) -> None:
     """Ranking every track on its own, a track not in the library plays the best entry listed."""
-    spotify = [_entry(SPOTIFY, position, LOSSY) for position in (1, 2, 3)]
-    tidal = [_entry(TIDAL, position, HIRES) for position in (1, 2)]
+    spotify = [_entry(SPOTIFY, position, spotify_format) for position in (1, 2, 3)]
+    tidal = [_entry(TIDAL, position, tidal_format) for position in (1, 2)]
     # the album page lists Spotify's entries, the first service by instance id
     listing = album_listing([], [(TIDAL, tidal), (SPOTIFY, spotify)])
     resolver = _album_resolver(listing, mode=StreamSourceMode.BEST_QUALITY_PER_TRACK)
@@ -418,7 +418,7 @@ async def test_a_track_outside_the_library_plays_its_best_entry_when_ranked_on_i
     with _sources(preferred=preferred):
         resolved = await resolver._resolve_media_items(album)
 
-    assert [x.item.item_id for x in resolved] == played
+    assert [x.item for x in resolved] == [*tidal, spotify[2]]
     assert [_container(x) for x in resolved] == [ItemMapping.from_item(album)] * 3
     assert [_pin(x) for x in resolved] == [(None, None)] * 3
 

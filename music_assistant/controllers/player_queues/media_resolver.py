@@ -1236,7 +1236,8 @@ class MediaResolver:
         A track the album lists as another source's entry plays as the chosen source's own
         entry, when it has one. A track the chosen source does not have plays as the album
         lists it. When every track is ranked on its own, no source is chosen and nothing is
-        pinned; a track that is not in the library then plays the best entry any source lists.
+        pinned; a track that is not in the library then plays the best entry listed by a
+        source the playback user may play from.
 
         :param album: The album to play.
         :param start_item: Optional item_id/uri of the track to start from.
@@ -1305,7 +1306,7 @@ class MediaResolver:
         :param userid: Optional user the playback is for.
         :param queue_id: Optional queue the playback is requested for.
         :return: The provider instance chosen, if any, and per track uri the item to queue for
-            the track with the copy it plays.
+            the track with the copy chosen for it.
         """
         # not the queue's user: the queue takes on the playback user once the play is resolved
         user = await self.mass.webserver.auth.get_user(userid) if userid else None
@@ -1564,10 +1565,10 @@ class MediaResolver:
         policy: StreamSourcePolicy,
     ) -> dict[str, tuple[Track, ProviderMapping]]:
         """
-        Return per track uri the entry to play of each album track that is not in the library.
+        Return the entry to play, with its copy, of each album track outside the library.
 
-        That is the entry whose copy would rank first at playback among the sources serving
-        the track.
+        Keyed by track uri. That is the entry whose copy would rank first at playback among
+        the sources serving the track; a track no source serves is left out.
 
         :param tracks: The album's tracks to play.
         :param served_by: Per source, the item and copy it serves of each track uri.
