@@ -61,6 +61,9 @@ music_assistant/providers/soundcloud/__init__.py	7
 music_assistant/providers/tidal/tidal_page_parser.py	2
 music_assistant/providers/tunein/__init__.py	2
 music_assistant/providers/vban_receiver/stats.py	2
+music_assistant/providers/web_kiosk/http_server.py	1
+music_assistant/providers/web_kiosk/player.py	1
+music_assistant/providers/web_kiosk/provider.py	17
 music_assistant/providers/webdav/provider.py	4
 music_assistant/providers/yousee/auth_manager.py	1
 music_assistant/providers/yousee/media.py	5

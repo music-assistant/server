@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Web Kiosk</title>
+<script>
+try {
+  var q = new URLSearchParams(location.search);
+  if (q.get('sendspin') === '1') document.documentElement.classList.add('sendspin');
+  if (q.get('controls') !== '0') document.documentElement.classList.add('controls');
+} catch (e) {}
+</script>
+<style>
+:root { --bg:#0c0c10; --fg:#ececf2; --muted:#9a9aa6; --accent:#4f8cff; }
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; overflow:hidden; }
+body.kiosk { background:#000; }
+#kiosk { display:none; position:fixed; inset:0; background:#000; color:#fff; overflow:hidden; }
+body.kiosk #kiosk { display:block; }
+#kiosk-bg { position:absolute; inset:0; background-size:cover; background-position:center; filter:blur(40px) brightness(.4); transform:scale(1.1); transition:opacity .8s; }
+#kiosk-bg img { width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .8s; }
+#kiosk-center { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:40px 40px 24px; z-index:2; min-height:0; }
+html.controls #kiosk-center { bottom:188px; }
+#kiosk-artbox { position:relative; width:min(46vh,46vw); height:auto; aspect-ratio:1; max-height:min(46vh,46vw); flex:0 1 auto; min-height:0; border-radius:14px; background:#16161c; box-shadow:0 20px 60px rgba(0,0,0,.6); overflow:hidden; }
+#kiosk-art { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:none; }
+#kiosk-artbox.has-art #kiosk-art { display:block; }
+/* 57 columns by 33 rows. 1.15vmin is 2.5% of the art square, so the mark fills it. */
+.kiosk-mark { position:absolute; inset:0; margin:0; display:flex; align-items:center; justify-content:center; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono","DejaVu Sans Mono",monospace; line-height:1; letter-spacing:0; white-space:pre; font-size:min(1.15vh,1.15vw); user-select:none; }
+#kiosk-mark-ma { color:#18BCF2; }
+#kiosk-mark-sp { color:#E25C4C; display:none; }
+html.sendspin #kiosk-mark-ma { display:none; }
+html.sendspin #kiosk-mark-sp { display:flex; }
+#kiosk-artbox.has-art .kiosk-mark { display:none; }
+#kiosk-title { font-size:clamp(20px,4vw,44px); font-weight:700; text-align:center; text-shadow:0 2px 20px rgba(0,0,0,.8); max-width:92vw; }
+#kiosk-artist { font-size:clamp(15px,2.6vw,26px); color:#cfcfe0; text-align:center; max-width:92vw; }
+#kiosk-progress { width:min(70vw,640px); display:flex; align-items:center; gap:12px; font-variant-numeric:tabular-nums; color:#cfcfe0; }
+#kiosk-progress input { flex:1; height:32px; }
+#kiosk-controls { position:absolute; left:0; right:0; bottom:0; display:flex; flex-direction:column; align-items:center; gap:14px; padding:22px 16px 28px; z-index:6; opacity:0; pointer-events:none; transition:opacity .4s; background:linear-gradient(transparent, rgba(0,0,0,.8)); }
+#kiosk-controls.visible { opacity:1; pointer-events:auto; }
+#kiosk-transport { display:flex; justify-content:center; gap:22px; }
+#kiosk-controls button { font-size:40px; background:rgba(255,255,255,.08); border:none; color:#fff; width:72px; height:72px; border-radius:50%; cursor:pointer; }
+#kiosk-controls button:hover { background:rgba(255,255,255,.2); }
+#kiosk-volume { width:min(240px,70vw); height:32px; }
+#kiosk-seek:focus-visible, #kiosk-volume:focus-visible, #kiosk-controls button:focus-visible { outline:2px solid #fff; outline-offset:3px; }
+#kiosk-viz { position:absolute; inset:0; z-index:1; width:100%; height:100%; }
+#kiosk-lyrics { width:min(720px,92vw); text-align:center; }
+#kiosk-lyrics .l { margin:0; line-height:1.3; min-height:1.3em; color:rgba(255,255,255,.4); font-size:clamp(13px,1.8vw,18px); }
+#kiosk-lyrics .l.current { color:#fff; font-weight:600; font-size:clamp(16px,2.6vw,26px); }
+#kiosk-party { position:absolute; right:28px; bottom:206px; z-index:5; text-align:center; }
+html:not(.controls) #kiosk-party { bottom:28px; }
+#kiosk-party img { width:150px; height:150px; border-radius:12px; background:#fff; padding:6px; }
+#kiosk-party .name { font-size:14px; color:#cfcfe0; margin-top:6px; }
+#kiosk-party .qr { font-size:12px; color:#9a9aa6; margin-top:2px; }
+#kiosk-queue { position:absolute; right:16px; top:16px; width:min(340px,calc(100vw - 32px)); max-height:55vh; overflow-y:auto; z-index:4; background:rgba(10,10,14,.55); border-radius:12px; padding:12px; backdrop-filter:blur(8px); }
+#kiosk-queue .qrow { display:flex; align-items:center; gap:10px; padding:6px; border-radius:8px; font-size:14px; }
+#kiosk-queue .qrow.active { background:rgba(255,255,255,.12); }
+#kiosk-queue .qrow img { width:34px; height:34px; border-radius:5px; object-fit:cover; flex-shrink:0; }
+#kiosk-queue .qmeta { flex:1; min-width:0; display:flex; flex-direction:column; }
+#kiosk-queue .qt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#kiosk-queue .qa { color:#9a9aa6; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#kiosk-sync { position:absolute; top:16px; left:50%; transform:translateX(-50%); z-index:6; font-size:12px; letter-spacing:1px; color:#9a9aa6; padding:6px 12px; border-radius:20px; background:rgba(10,10,14,.5); }
+#kiosk-sync.synced { color:#7ce38b; }
+#kiosk-sync.error { color:#ff8a8a; }
+#kiosk-pair { position:absolute; left:50%; top:64px; transform:translateX(-50%); z-index:7; padding:14px 22px; border-radius:12px; background:rgba(10,10,14,.82); font-size:22px; letter-spacing:2px; text-align:center; }
+#kiosk-status { position:absolute; top:48px; left:50%; transform:translateX(-50%); z-index:8; max-width:min(420px,calc(100vw - 32px)); font-size:13px; color:#ffd2d2; background:rgba(10,10,14,.72); padding:8px 12px; border-radius:8px; text-align:center; }
+#kiosk-status.audio-prompt { top:50%; transform:translate(-50%,-50%); font-size:clamp(16px,2.4vw,22px); padding:16px 22px; cursor:pointer; }
+@media (max-width:1100px) {
+  #kiosk-queue { top:52px; right:12px; left:12px; width:auto; max-height:22vh; }
+  body.kiosk:has(#kiosk-queue:not(.hidden)) #kiosk-center { justify-content:flex-start; padding:28vh 16px 24px; }
+  #kiosk-party { right:12px; }
+  #kiosk-party img { width:112px; height:112px; }
+}
+.hidden { display:none !important; }
+</style>
+</head>
+<body class="kiosk">
+<div id="kiosk">
+  <canvas id="kiosk-viz"></canvas>
+  <div id="kiosk-bg"><img id="kiosk-bg-img" alt=""></div>
+  <div id="kiosk-center">
+    <div id="kiosk-artbox">
+      <img id="kiosk-art" alt="">
+      <pre id="kiosk-mark-ma" class="kiosk-mark" aria-hidden="true">                         .+###+.                         
+                        :#######:                        
+                      :###########:                      
+                    .+#############+.                    
+                   +#################+                   
+                 :#####################:                 
+               .+#######################+.               
+              +###########################+              
+            :###############################:            
+          .###################################.          
+         +#####################################+         
+       :#########################################:       
+     .#############################################.     
+    +###############################################+    
+  :###################################################:  
+ +#####################################################+ 
+:#######################################################:
+#######. .####+  :####: .+#########+  +##+  +############
+######+   +###.   ####   :#########   .##:   ############
+######+   +###.   ####   :########:   ####   .###########
+######+   +###.   ####   :#######+   :####:   +##########
+######+   +###.   ####   :#######.   ######   .##########
+######+   +###.   ####   :######+   :######:   +#########
+######+   +###.   ####   :######    ########    #########
+######+   +###.   ####   :#####:   +########+   :########
+######+   +###.   ####   :#####   .##########.   ########
+######+   +###.   ####   :####:   +##########+   :#######
+######+   +###.   ####   :####   .############:   #######
+######+   +###.   ####   :###.   ##############   .######
+#########################################################
+#########################################################
+#########################################################
+.#######################################################.</pre>
+      <pre id="kiosk-mark-sp" class="kiosk-mark" aria-hidden="true">                          .:++#####++:.                  
+                       :+###############+:         ::    
+                     :#######++:::++#######:      ###+   
+                   .#####+:           :+###+      +####  
+                  :####+      .:::.      :.   .    +###+ 
+                 :####.    :#########:      .###.   ####:
+                .####.   :############+     :####   .###+
+                +###:   +####+.   .++:       +###:   ####
+               .####   :####.                +###:   ####
+               :###+   +###.                 ####.   ####
+               :###+   +###.                +####   :###+
+               .###+   +###+      .##+       +##    ####.
+    ..          ####.   ####.     #####            +###+ 
+   +##+         :###+   .##.       +###+          ####+  
+  +####          +###+       .##    +###:         +##+   
+ +###+            #####     .####   .####          ..    
+.####    ##+       +##.      +###:   +###.               
++###:   ####+                .###+   +###:               
+####   .####                 .###+   +###:               
+####   :###+                .####:   ####.               
+####   :###+       :++.   .+####+   :###+                
++###.   ####:     +############:   .####.                
+:####   .###.      :#########:    :####:                 
+ +###+    .   .:      .:::.      +####:                  
+  ####+      +###+:           :+#####.                   
+   +###      :#######++:::++#######:                     
+    ::         :+###############+.                       
+                  .:++#####++:.                          </pre>
+    </div>
+    <div id="kiosk-title">—</div>
+    <div id="kiosk-artist">—</div>
+    <div id="kiosk-lyrics" class="hidden" aria-live="polite"></div>
+    <div id="kiosk-progress">
+      <span id="kiosk-time">0:00</span>
+      <input type="range" id="kiosk-seek" min="0" max="1000" value="0" aria-label="Position">
+      <span id="kiosk-dur">0:00</span>
+    </div>
+  </div>
+  <div id="kiosk-sync"></div>
+  <div id="kiosk-pair" class="hidden"></div>
+  <div id="kiosk-status" class="hidden" role="status"></div>
+  <div id="kiosk-queue" class="hidden"></div>
+  <div id="kiosk-party" class="hidden"></div>
+  <div id="kiosk-controls">
+    <div id="kiosk-transport">
+      <button type="button" id="k-prev" aria-label="Previous">⏮</button>
+      <button type="button" id="k-play" aria-label="Play">▶</button>
+      <button type="button" id="k-next" aria-label="Next">⏭</button>
+    </div>
+    <input type="range" id="kiosk-volume" min="0" max="100" value="100" aria-label="Volume">
+  </div>
+</div>
+
+<script src="/web/web.js"></script>
+</body>
+</html>
