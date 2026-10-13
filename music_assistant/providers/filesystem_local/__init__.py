@@ -88,6 +88,7 @@ from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls, sanitize_playlist_filename
 from music_assistant.helpers.podcast_parsers import get_publisher_number
+from music_assistant.helpers.process import open_in_thread
 from music_assistant.helpers.tags import (
     AudioTags,
     async_parse_tags,
@@ -1261,6 +1262,18 @@ class LocalFileSystemProvider(MusicProvider):
         # only CUE-derived tracks use StreamType.CUSTOM in this provider
         async for chunk in self._cue.get_audio_stream(streamdetails, seek_position):
             yield chunk
+
+    async def open_local_file(self, path: str) -> int | None:
+        """
+        Open a file of this source for playback, if it lies inside the folder of this source.
+
+        :param path: The absolute path of the file.
+        :raises MediaNotFoundError: If the file can not be read or lies outside the folder.
+        """
+        try:
+            return await open_in_thread(self._open_file, path, os.O_RDONLY)
+        except OSError as err:
+            raise MediaNotFoundError(f"Unable to read media file {path}: {err}") from err
 
     async def resolve_image(self, path: str) -> str | bytes | None:
         """

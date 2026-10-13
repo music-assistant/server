@@ -219,6 +219,10 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             raise MediaNotFoundError(f"No embedded image found: {path}")
         return await self._read_file(path)
 
+    async def open_local_file(self, path: str) -> int | None:
+        """Return None: the stream path of a cloud file is its URL, which ffmpeg opens itself."""
+        return None
+
     # ------------------------------------------------------------------
     # API hooks (implemented by the concrete cloud provider); hooks must
     # translate client library errors into MA errors: ProviderUnavailableError
