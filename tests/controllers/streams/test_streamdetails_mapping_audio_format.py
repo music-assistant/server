@@ -9,7 +9,7 @@ stored on the mapping, without any extra provider request.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import ContentType, MediaType, StreamType
@@ -255,4 +255,5 @@ async def test_a_queue_item_without_duration_takes_the_duration_of_its_stream() 
     await audio.get_stream_details(queue_item=queue_item)
 
     assert queue_item.duration == 237
-    audio.mass.player_queues.signal_update.assert_called_once_with("q1", items_changed=True)
+    mass = cast("MagicMock", audio.mass)
+    mass.player_queues.signal_update.assert_called_once_with("q1", items_changed=True)
