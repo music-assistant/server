@@ -297,9 +297,13 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
         return_value=("5065835a-d69f-4a1b-8c2d-5065835ad69f", "192.168.1.41")
     )
     provider.line_in = MagicMock(return_value=None)  # type: ignore[attr-defined]
+    provider.room_model = MagicMock(  # type: ignore[attr-defined]
+        return_value="Raumfeld Soundbar"
+    )
     player = RaumfeldPlayer(
         provider,  # type: ignore[arg-type]
         "raumfeld_5065835ad69f",
         "TV",
     )
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
+    assert player.device_info.model == "Raumfeld Soundbar"
