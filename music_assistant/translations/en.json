@@ -733,7 +733,7 @@
   "core.player_queues.config_entries.autoplay_mode.disabled_reasons.albums": "Needs an album artist order (albums by release or random albums) and an artist selection other than top tracks.",
   "core.player_queues.config_entries.autoplay_mode.disabled_reasons.similar": "No music or metadata provider that can supply similar tracks is currently available.",
   "core.player_queues.config_entries.autoplay_mode.label": "Autoplay source",
-  "core.player_queues.config_entries.autoplay_mode.option_descriptions.albums": "Plays the next album of the last track's artist, in the artist order. When the artist has no album left, a similar artist's album plays, else Auto picks one. Turn off shuffle to hear the albums in full.",
+  "core.player_queues.config_entries.autoplay_mode.option_descriptions.albums": "Plays the next album of the last track's artist, in the artist order. When the artist has no album left, a similar artist's album plays, else Auto picks one. Turn off shuffle so each album plays in order.",
   "core.player_queues.config_entries.autoplay_mode.option_descriptions.global": "Follow the Player Queues default.",
   "core.player_queues.config_entries.autoplay_mode.options.albums": "Whole albums, same artist first",
   "core.player_queues.config_entries.autoplay_mode.options.auto": "Automatic — similar tracks, falling back to your library",
