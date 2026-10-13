@@ -1,0 +1,11 @@
+{
+  "packages": {
+    "@sendspin/sendspin-js": "5.0.0",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@noble/ciphers": "1.3.0"
+  },
+  "esbuild": "0.28.2",
+  "sha256": "f1e54ff63e5e1c827c0f465ac5f64f603741cf6e2bde7e8a57010ce05486dc2d",
+  "opusFallback": false
+}

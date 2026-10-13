@@ -859,7 +859,7 @@
                 onStateChange: function () { setSync('synced'); },
                 onPairingPin: function (pin) { showPairPin(pin); }
             };
-            // opus-encdec is not vendored; browsers without WebCodecs stay on FLAC/PCM.
+            // The SDK bundle omits software Opus; browsers without WebCodecs use FLAC/PCM.
             if (typeof AudioDecoder === 'undefined') cfg.codecs = ['flac', 'pcm'];
             var player = new module.SendspinPlayer(cfg);
             window.__sendspinPlayer = player;
