@@ -77,7 +77,7 @@ from music_assistant.providers.musicbrainz.provider import (
     release_matches_album,
 )
 
-from .album_tracks import album_track_backfills, select_album_tracks
+from .album_tracks import AlbumListing, album_listing, album_track_backfills, mapped_album_listing
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
 if TYPE_CHECKING:
@@ -495,6 +495,36 @@ class AlbumsController(MediaControllerBase[Album]):
             offset=offset,
         )
 
+    async def playback_listing(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
+    ) -> AlbumListing:
+        """
+        Return the tracks to play for an album, and the entry each of its sources lists for them.
+
+        The tracks are those of the album's tracks listing, in its order. A library album is
+        assembled anew from its sources' listings; without listings (an album outside the
+        library, or only its library tracks) each track is listed under its own copies.
+
+        :param item_id: The album id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param in_library_only: Only list the tracks that are in the library.
+        """
+        if not in_library_only and (
+            library_album := await self.get_library_item_by_prov_id(
+                item_id, provider_instance_id_or_domain
+            )
+        ):
+            assembled, _ = await self._assemble(library_album, self._ensure_provider_filter(None))
+            return replace(
+                assembled, tracks=apply_listing(assembled.tracks, ListingType.ALBUM_TRACKS)
+            )
+        return mapped_album_listing(
+            await self.tracks(item_id, provider_instance_id_or_domain, in_library_only, limit=None)
+        )
+
     async def versions(
         self,
         item_id: str,
@@ -853,11 +883,25 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         Return the tracks of a library album: its library tracks plus what its providers add.
 
+        :param library_album: The library album.
+        :param allowed_providers: The provider instances the listing is limited to, if any.
+        """
+        assembled, complete = await self._assemble(library_album, allowed_providers)
+        return Listing(assembled.tracks, complete=complete)
+
+    async def _assemble(
+        self, library_album: Album, allowed_providers: list[str] | None
+    ) -> tuple[AlbumListing, bool]:
+        """
+        Assemble a library album from its library tracks and its providers' listings.
+
         A failing provider lookup leaves the listing incomplete, and is only raised when it
         leaves nothing to play; a source that is not loaded leaves it incomplete as well.
 
         :param library_album: The library album.
         :param allowed_providers: The provider instances the listing is limited to, if any.
+        :return: The tracks with the entry each source lists for them, and whether every
+            source answered.
         """
         db_items = await self.get_library_album_tracks(
             library_album.item_id, provider_filter=allowed_providers
@@ -865,7 +909,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
         # we need to make sure that we don't return duplicates
-        listings: list[list[Track]] = []
+        listings: list[tuple[str, list[Track]]] = []
         lookup_error: Exception | None = None
         unanswered = False
         fetched: set[tuple[str, str]] = set()
@@ -884,10 +928,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 own_instance is not None
                 and own_instance.instance_id == provider_mapping.provider_instance
             )
-            listing = (
-                own_instance.instance_id if own_instance else provider_mapping.provider_instance,
-                provider_mapping.item_id,
+            served_by = (
+                own_instance.instance_id if own_instance else provider_mapping.provider_instance
             )
+            listing = (served_by, provider_mapping.item_id)
             if listing in fetched:
                 continue
             fetched.add(listing)
@@ -911,8 +955,10 @@ class AlbumsController(MediaControllerBase[Album]):
                     err,
                 )
                 continue
-            listings.append(provider_tracks)
-        for db_track, source in album_track_backfills(db_items, listings):
+            listings.append((served_by, provider_tracks))
+        for db_track, source in album_track_backfills(
+            db_items, [provider_tracks for _, provider_tracks in listings]
+        ):
             await self._set_album_track(
                 db_id=int(library_album.item_id),
                 db_track_id=int(db_track.item_id),
@@ -920,16 +966,20 @@ class AlbumsController(MediaControllerBase[Album]):
             )
             db_track.disc_number = source.disc_number
             db_track.track_number = source.track_number
-        result: list[Track] = list(db_items)
+        assembled = album_listing(db_items, listings)
         # a reference to the album, which carries no user's favorite state
         album_mapping = ItemMapping.from_item(library_album)
-        for provider_track in select_album_tracks(db_items, listings):
-            provider_track.album = album_mapping
-            result.append(provider_track)
-        if lookup_error is not None and not any(track.available for track in result):
+        for track in assembled.tracks:
+            if track.provider != "library":
+                track.album = album_mapping
+        # a source's own entry of a track plays in its place when that source plays the album
+        for own_entries in assembled.own_entries.values():
+            for entry in own_entries.values():
+                entry.album = album_mapping
+        if lookup_error is not None and not any(track.available for track in assembled.tracks):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise lookup_error
-        return Listing(result, complete=lookup_error is None and not unanswered)
+        return assembled, lookup_error is None and not unanswered
 
     async def _backfill_album_on_tracks(
         self, album_tracks: list[Track], item_id: str, provider_instance_id_or_domain: str
@@ -953,7 +1003,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if track.album is None:
                 track.album = album_mapping
 
-    async def _verify_musicbrainz_mapping(self, mapping: ProviderMapping) -> bool:
+    async def _verify_musicbrainz_mapping(self, db_item: Album, mapping: ProviderMapping) -> bool:
         """Return True if a linked album exists on the provider, checked for Apple Music only."""
         # MusicBrainz links Apple Music albums per storefront, so a linked album may not
         # exist in the user's storefront; the other providers' catalogs are worldwide

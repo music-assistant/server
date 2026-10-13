@@ -74,6 +74,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     CACHE_CATEGORY_SEARCH_RESULTS,
     CONF_DELETED_PROVIDERS,
+    CONF_KEEP_REMASTERS_APART,
     CONF_RESET_DB,
     CONF_TRACK_RECONCILIATION_CURSOR,
     CONF_TRACK_RECONCILIATION_RESCAN_DUE,
@@ -137,6 +138,7 @@ from music_assistant.helpers.compare import (
     compare_strings,
     compare_track,
     compare_version,
+    set_keep_remasters_apart,
 )
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
@@ -339,6 +341,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Return all Config Entries for this core module (if any)."""
         return (
             ConfigEntry(
+                key=CONF_KEEP_REMASTERS_APART,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+                immediate_apply=True,
+            ),
+            ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
                 category="generic",
@@ -385,6 +394,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self.config = config
+        set_keep_remasters_apart(bool(config.get_value(CONF_KEEP_REMASTERS_APART)))
         # setup library database
         await self._setup_database()
 
@@ -406,6 +416,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Cleanup on exit."""
         if self._database:
             await self._database.close()
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        set_keep_remasters_apart(bool(config.get_value(CONF_KEEP_REMASTERS_APART)))
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this controller to include in diagnostics reports."""
@@ -2517,6 +2532,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Add provider mapping to the given library item."""
         ctrl = self.get_controller(media_type)
+        # only a mapping the provider itself returns as this media type is accepted
+        await ctrl.get_provider_item(
+            mapping.item_id,
+            mapping.provider_instance,
+            allow_fallback=False,
+            strict_provider_instance=True,
+        )
+        provider = self.mass.get_provider(mapping.provider_instance)
+        if provider is None or provider.domain != mapping.provider_domain:
+            msg = f"Provider domain {mapping.provider_domain} does not match {mapping.provider_instance}"
+            raise InvalidDataError(msg)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
     @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)

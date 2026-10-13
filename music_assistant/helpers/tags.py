@@ -542,6 +542,11 @@ class AudioTags:
         return None
 
     @property
+    def musicbrainz_releasetrackid(self) -> str | None:
+        """Return musicbrainz_releasetrackid tag if present."""
+        return self.tags.get("musicbrainzreleasetrackid")
+
+    @property
     def title_sort(self) -> str | None:
         """Return sort title tag (if exists)."""
         if tag := self.tags.get("titlesort"):
@@ -1079,6 +1084,10 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
         result["musicbrainzrecordingid"] = _decode_mp4_freeform_single(
             tags["----:com.apple.iTunes:MusicBrainz Recording Id"]
         )
+    if "----:com.apple.iTunes:MusicBrainz Release Track Id" in tags:
+        result["musicbrainzreleasetrackid"] = _decode_mp4_freeform_single(
+            tags["----:com.apple.iTunes:MusicBrainz Release Track Id"]
+        )
 
     # Multi-value tags (return as list to match ID3 behavior)
     if "----:com.apple.iTunes:MusicBrainz Artist Id" in tags:
@@ -1179,7 +1188,7 @@ def _id3_get_tag_text(tags: ID3Tags, key: str) -> Any | None:
     return None
 
 
-def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
+def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
     """
     Parse ID3 tags (MP3 files) from mutagen ID3Tags object.
 
@@ -1229,6 +1238,8 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
         )
     if trackid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Track Id"):
         result["musicbrainztrackid"] = trackid[0]
+    if releasetrackid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Release Track Id"):
+        result["musicbrainzreleasetrackid"] = releasetrackid[0]
 
     # MusicBrainz tags (multi-value)
     if albumartistid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Album Artist Id"):
@@ -1377,7 +1388,7 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     if mb_track := _vorbis_get_single(tags, "MUSICBRAINZ_TRACKID"):
         result["musicbrainzrecordingid"] = mb_track
     if mb_reltrack := _vorbis_get_single(tags, "MUSICBRAINZ_RELEASETRACKID"):
-        result["musicbrainztrackid"] = mb_reltrack
+        result["musicbrainzreleasetrackid"] = mb_reltrack
 
     # MusicBrainz tags (multi-value)
     if mb_aa_ids := _vorbis_get_multi(tags, "MUSICBRAINZ_ALBUMARTISTID"):
@@ -1525,7 +1536,7 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
         # MUSICBRAINZ_TRACKID in APEv2 is actually the recording ID
         result["musicbrainzrecordingid"] = mb_trackid
     if mb_releasetrackid := _apev2_get_single(tags, "MUSICBRAINZ_RELEASETRACKID"):
-        result["musicbrainztrackid"] = mb_releasetrackid
+        result["musicbrainzreleasetrackid"] = mb_releasetrackid
 
     # MusicBrainz IDs - multi-value (can have multiple artist IDs)
     if mb_artistid := _apev2_get_multi(tags, "MUSICBRAINZ_ARTISTID"):
