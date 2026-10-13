@@ -44,22 +44,25 @@ _NOISY_CHILD = (
 # Exits on SIGINT, but only after a pause, so a reader is still blocked on stdout
 # once close() stops waiting for it (the tests shorten that wait to well below the
 # pause), and then writes more than a pipe holds: unless something keeps reading,
-# it blocks on the full pipe instead of exiting.
+# it blocks on the full pipe instead of exiting. The handler only flags the signal:
+# SIGINT can land while "ready" is still being flushed, and a write from the handler
+# would then fail as reentrant.
 _SLOW_EXIT_LINE = "bye" * 21
 _SLOW_EXIT_LINES = 5000
 _SLOW_EXIT_CHILD = f"""
 import signal, sys, time
 
-def leave(*_):
+interrupted = []
+signal.signal(signal.SIGINT, lambda *_: interrupted.append(True))
+sys.stdout.write("ready\\n")
+sys.stdout.flush()
+deadline = time.monotonic() + 30
+while not interrupted and time.monotonic() < deadline:
+    time.sleep(0.01)
+if interrupted:
     time.sleep(1)
     sys.stdout.write("{_SLOW_EXIT_LINE}\\n" * {_SLOW_EXIT_LINES})
     sys.stdout.flush()
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, leave)
-sys.stdout.write("ready\\n")
-sys.stdout.flush()
-time.sleep(30)
 """
 
 
