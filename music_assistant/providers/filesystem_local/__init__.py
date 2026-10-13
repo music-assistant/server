@@ -4259,9 +4259,10 @@ class LocalFileSystemProvider(MusicProvider):
             raise InvalidDataError(msg)
 
         def _write() -> None:
-            # every component is opened relative to the previous directory without following
+            # the root is checked against its resolved location like every read, and every
+            # further component is opened relative to the previous directory without following
             # symlinks, so what was checked is what gets written, even if the tree changes
-            dir_fd = os.open(self.base_path, os.O_RDONLY | os.O_DIRECTORY)
+            dir_fd = self._open_file(self.base_path, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 for part in parts[:-1]:
                     next_fd = os.open(
