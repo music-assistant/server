@@ -527,6 +527,9 @@ _RADIO_META: dict[str, str | None] = {
 }
 
 
+_ZONE = "http://192.168.1.41:52552/zone.xml"
+
+
 def _external_player() -> tuple[RaumfeldPlayer, MagicMock]:
     """Build a RaumfeldPlayer with the state the external-source handling touches."""
     player = _room_player()
@@ -552,7 +555,7 @@ def _external_player() -> tuple[RaumfeldPlayer, MagicMock]:
     provider = MagicMock()
     provider.host = host
     provider.get_zone_for_room.return_value = ["Bar"]
-    provider.zone_location.return_value = "http://192.168.1.41:52552/zone.xml"
+    provider.zone_location.return_value = _ZONE
     provider.room_renderer_location.return_value = _RENDERER
     player._provider = provider
     return player, host
@@ -636,27 +639,32 @@ async def test_zone_playback_from_the_raumfeld_app_is_followed() -> None:
 
 async def test_pause_goes_to_the_renderer_that_plays() -> None:
     """Spotify Connect is paused on the room itself, other sources on the zone."""
-    player, host = _external_player()
-    with patch.object(player, "update_state"):
+    player, _ = _external_player()
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
+    ):
         player._set_external(_SPOTIFY_META, "Pause", 315, via_room=True)
         await player.pause()
-        host.async_room_pause.assert_awaited_once_with("Bar")
-        host.async_zone_pause.assert_not_awaited()
+        action.assert_awaited_once_with(_RENDERER, "Pause")
         assert player._attr_playback_state == PlaybackState.PAUSED
         player._set_external(_RADIO_META, "Pause", None, via_room=False)
         with patch.object(player, "_active_zone", return_value=["Bar"]):
             await player.pause()
-    host.async_zone_pause.assert_awaited_once_with(["Bar"])
+    action.assert_awaited_with(_ZONE, "Pause")
 
 
 async def test_resume_continues_the_external_source() -> None:
     """Play on a paused external source resumes it instead of starting the queue."""
-    player, host = _external_player()
+    player, _ = _external_player()
     player._set_external(_SPOTIFY_META, "Play", 315, via_room=True)
     player._attr_playback_state = PlaybackState.PAUSED
-    with patch.object(player, "update_state"):
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
+    ):
         await player.play()
-    host.async_room_play.assert_awaited_once_with("Bar")
+    action.assert_awaited_once_with(_RENDERER, "Play", Speed="1")
     assert player._attr_playback_state == PlaybackState.PLAYING
 
 
@@ -665,15 +673,35 @@ async def test_seek_sends_an_absolute_time() -> None:
     player, _ = _external_player()
     player._set_external(_SPOTIFY_META, "Seek", 315, via_room=True)
     with (
-        patch("music_assistant.providers.raumfeld.player.hassfeld_upnp") as upnp,
         patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
     ):
-        upnp.async_seek = AsyncMock()
         await player.seek(3725)
-    upnp.async_seek.assert_awaited_once_with(
-        player.mass.http_session, _RENDERER, "ABS_TIME", "01:02:05"
-    )
+    action.assert_awaited_once_with(_RENDERER, "Seek", Unit="ABS_TIME", Target="01:02:05")
     assert player._attr_elapsed_time == 3725.0
+
+
+async def test_a_rejected_command_is_reported() -> None:
+    """A command the renderer rejects fails, and the state it would have set is not set."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause", 315, via_room=True)
+    with (
+        patch.object(player, "_transport_action", AsyncMock(side_effect=TimeoutError)),
+        pytest.raises(PlayerCommandFailed, match="Pause failed on Bar"),
+    ):
+        await player.pause()
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+async def test_a_command_without_anything_playing_is_reported() -> None:
+    """A command for a source whose zone is gone fails instead of doing nothing."""
+    player, _ = _external_player()
+    player._set_external(_RADIO_META, "Pause", None, via_room=False)
+    with (
+        patch.object(player, "_active_zone", return_value=None),
+        pytest.raises(PlayerCommandFailed, match="nothing is playing"),
+    ):
+        await player.next_track()
 
 
 def test_paused_external_source_shows_where_it_stopped() -> None:

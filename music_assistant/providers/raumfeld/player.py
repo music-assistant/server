@@ -25,8 +25,6 @@ from .constants import (
 from .helpers import external_source, parse_didl_metadata, parse_duration, query_last_change
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
     import hassfeld
     from music_assistant_models.config_entries import ConfigEntry
 
@@ -276,9 +274,7 @@ class RaumfeldPlayer(Player):
         """Send PLAY/resume command."""
         if self._external_source is not None:
             # resume what the host or the speaker itself was playing, where it paused
-            await self._external_command(
-                self.raumfeld.host.async_room_play, self.raumfeld.host.async_zone_play
-            )
+            await self._external_command("Play", Speed="1")
             self._attr_playback_state = PlaybackState.PLAYING
             self.update_state()
             return
@@ -304,9 +300,7 @@ class RaumfeldPlayer(Player):
         # standby/unassigned room has no zone the host can address
         if self._external_via_room:
             # Spotify Connect plays on the room's own renderer, outside any zone
-            location = self.raumfeld.room_renderer_location(self.room)
-            if location is not None:
-                await hassfeld_upnp.async_stop(self.mass.http_session, location)
+            await self._external_command("Stop")
         elif (zone := self._active_zone()) is not None:
             try:
                 await self.raumfeld.host.async_zone_stop(zone)
@@ -323,42 +317,26 @@ class RaumfeldPlayer(Player):
 
     async def pause(self) -> None:
         """Send PAUSE command (only offered while an external source is playing)."""
-        await self._external_command(
-            self.raumfeld.host.async_room_pause, self.raumfeld.host.async_zone_pause
-        )
+        await self._external_command("Pause")
         self._freeze_elapsed()
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
     async def next_track(self) -> None:
         """Send NEXT TRACK command (only offered while an external source is playing)."""
-        await self._external_command(
-            self.raumfeld.host.async_room_next_track, self.raumfeld.host.async_zone_next_track
-        )
+        await self._external_command("Next")
 
     async def previous_track(self) -> None:
         """Send PREVIOUS TRACK command (only offered while an external source is playing)."""
-        await self._external_command(
-            self.raumfeld.host.async_room_previous_track,
-            self.raumfeld.host.async_zone_previous_track,
-        )
+        await self._external_command("Previous")
 
     async def seek(self, position: int) -> None:
         """Send SEEK command (only offered while an external source is playing)."""
-        if self._external_via_room:
-            location = self.raumfeld.room_renderer_location(self.room)
-        elif (zone := self._active_zone()) is not None:
-            location = self.raumfeld.zone_location(zone)
-        else:
-            location = None
-        if location is None:
-            raise PlayerCommandFailed(f"Failed to seek on {self.room}: nothing is playing")
         hours, remainder = divmod(max(position, 0), 3600)
         target = f"{hours:02d}:{remainder // 60:02d}:{remainder % 60:02d}"
-        await hassfeld_upnp.async_seek(self.mass.http_session, location, "ABS_TIME", target)
+        await self._external_command("Seek", Unit="ABS_TIME", Target=target)
         self._attr_elapsed_time = float(position)
         self._attr_elapsed_time_last_updated = time.time()
-        self._play_started_at = time.time()
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -708,19 +686,33 @@ class RaumfeldPlayer(Player):
 
     async def _call_transport(self, location: str, action_name: str) -> dict[str, str] | None:
         """
-        Call a parameterless AVTransport action, returning ``None`` if it failed.
+        Read from a renderer's AVTransport service, returning ``None`` if that failed.
 
         :param location: The device description URL of the renderer to call.
         :param action_name: The AVTransport action to call.
         """
         try:
-            action = await hassfeld_upnp.get_dlna_action(
-                location, SERVICE_AV_TRANSPORT, action_name, session=self.mass.http_session
-            )
-            response: dict[str, str] = await action.async_call(InstanceID=0)
+            return await self._transport_action(location, action_name)
         except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("%s failed on %s: %r", action_name, location, err)
             return None
+
+    async def _transport_action(
+        self, location: str, action_name: str, **arguments: str
+    ) -> dict[str, str]:
+        """
+        Call an AVTransport action on a renderer and return its response.
+
+        :param location: The device description URL of the renderer to call.
+        :param action_name: The AVTransport action to call.
+        :param arguments: The action's arguments, besides the instance id.
+        """
+        # not through hassfeld's own wrappers: those swallow every error, so a command
+        # the renderer rejected would be reported as done
+        action = await hassfeld_upnp.get_dlna_action(
+            location, SERVICE_AV_TRANSPORT, action_name, session=self.mass.http_session
+        )
+        response: dict[str, str] = await action.async_call(InstanceID=0, **arguments)
         return response
 
     def _set_external(
@@ -781,24 +773,26 @@ class RaumfeldPlayer(Player):
         self._attr_source_list = list(self._static_sources)
         self._attr_supported_features -= EXTERNAL_SOURCE_FEATURES
 
-    async def _external_command(
-        self,
-        room_command: Callable[[str], Awaitable[None]],
-        zone_command: Callable[[list[str]], Awaitable[None]],
-    ) -> None:
+    async def _external_command(self, action_name: str, **arguments: str) -> None:
         """
         Send a transport command to whichever renderer plays the external source.
 
-        :param room_command: The host call that addresses the room's own renderer.
-        :param zone_command: The host call that addresses the room's zone.
+        :param action_name: The AVTransport action to call.
+        :param arguments: The action's arguments, besides the instance id.
         """
+        # Spotify Connect plays on the room's own renderer, everything else on its zone
+        if self._external_via_room:
+            location = self.raumfeld.room_renderer_location(self.room)
+        elif (zone := self._active_zone()) is not None:
+            location = self.raumfeld.zone_location(zone)
+        else:
+            location = None
+        if location is None:
+            raise PlayerCommandFailed(f"{action_name} failed on {self.room}: nothing is playing")
         try:
-            if self._external_via_room:
-                await room_command(self.room)
-            elif (zone := self._active_zone()) is not None:
-                await zone_command(zone)
-        except HOST_ERRORS as err:
-            raise PlayerCommandFailed(f"Command failed on {self.room}: {err!r}") from err
+            await self._transport_action(location, action_name, **arguments)
+        except (*HOST_ERRORS, UpnpError) as err:
+            raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
         # poll fast for a while so the new state and track show up promptly
         self._play_started_at = time.time()
 
