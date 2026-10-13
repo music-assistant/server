@@ -14,7 +14,18 @@
         set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* noop */ } }
     };
     var deviceId = params.get('device_id') || LS.get('wk_device_id');
-    if (!deviceId) { deviceId = 'wk-' + crypto.randomUUID(); LS.set('wk_device_id', deviceId); }
+    if (!deviceId) { deviceId = createDeviceId(); LS.set('wk_device_id', deviceId); }
+
+    function createDeviceId() {
+        if (typeof crypto.randomUUID === 'function') return 'wk-' + crypto.randomUUID();
+        // randomUUID requires a secure context; LAN kiosks also run over plain HTTP.
+        var bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 15) | 64;
+        bytes[8] = (bytes[8] & 63) | 128;
+        var hex = Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+        return 'wk-' + hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16)
+            + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+    }
     var sendspinClientId = '';
     var sendspinModule = null;
     // True only while the Sendspin server is actually streaming audio here.
