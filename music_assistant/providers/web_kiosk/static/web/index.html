@@ -38,11 +38,6 @@ html.sendspin #kiosk-mark-sp { display:flex; }
 #kiosk-lyrics { width:min(720px,92vw); text-align:center; }
 #kiosk-lyrics .l { margin:0; line-height:1.3; min-height:1.3em; color:rgba(255,255,255,.4); font-size:clamp(13px,1.8vw,18px); }
 #kiosk-lyrics .l.current { color:#fff; font-weight:600; font-size:clamp(16px,2.6vw,26px); }
-#kiosk-party { position:absolute; right:28px; bottom:calc(var(--kiosk-bar-height) + 24px); z-index:5; text-align:center; }
-html:not(.controls) #kiosk-party { bottom:28px; }
-#kiosk-party img { width:150px; height:150px; border-radius:12px; background:#fff; padding:6px; }
-#kiosk-party .name { font-size:14px; color:#cfcfe0; margin-top:6px; }
-#kiosk-party .qr { font-size:12px; color:#9a9aa6; margin-top:2px; }
 #kiosk-queue { position:absolute; right:16px; top:16px; width:min(340px,calc(100vw - 32px)); max-height:55vh; overflow-y:auto; z-index:4; background:rgba(10,10,14,.55); border-radius:12px; padding:12px; backdrop-filter:blur(8px); }
 #kiosk-queue .qrow { display:flex; align-items:center; gap:10px; padding:6px; border-radius:8px; font-size:14px; }
 #kiosk-queue .qrow.active { background:rgba(255,255,255,.12); }
@@ -59,8 +54,6 @@ html:not(.controls) #kiosk-party { bottom:28px; }
 @media (max-width:1100px) {
   #kiosk-queue { top:52px; right:12px; left:12px; width:auto; max-height:22vh; }
   body.kiosk:has(#kiosk-queue:not(.hidden)) #kiosk-center { justify-content:flex-start; padding:28vh 16px 24px; }
-  #kiosk-party { right:12px; }
-  #kiosk-party img { width:112px; height:112px; }
 }
 .hidden { display:none !important; }
 </style>
@@ -202,7 +195,6 @@ SOFTWARE.</desc>
   <div id="kiosk-pair" class="hidden"></div>
   <div id="kiosk-status" class="hidden" role="status"></div>
   <div id="kiosk-queue" class="hidden"></div>
-  <div id="kiosk-party" class="hidden"></div>
   <div id="kiosk-controls" role="region" aria-label="Player controls">
     <div id="kiosk-bar-track">
       <div id="kiosk-bar-artbox">
@@ -225,22 +217,25 @@ SOFTWARE.</desc>
         <div id="kiosk-time-labels"><span id="kiosk-time">0:00</span><span id="kiosk-dur">0:00</span></div>
       </div>
     </div>
-    <div id="kiosk-volume-control">
-      <button type="button" id="k-volume-button" class="kiosk-control" aria-label="Volume: 100%" aria-controls="kiosk-volume-panel" aria-expanded="false" title="Volume">
-        <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-icon" href="#k-icon-volume-2"></use></svg>
-        <span id="k-volume-level">100%</span>
-      </button>
-      <div id="kiosk-volume-panel" role="group" aria-label="Volume">
-        <div class="volume-panel-heading">
-          <span>Volume</span>
-          <button type="button" id="k-volume-close" class="kiosk-control" aria-label="Close volume" title="Close"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-x"></use></svg></button>
-        </div>
-        <div class="volume-range-row">
-          <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-slider-icon" href="#k-icon-volume-2"></use></svg>
-          <input type="range" id="kiosk-volume" class="kiosk-slider" min="0" max="100" value="100" aria-label="Volume">
-          <span id="k-volume-panel-level">100%</span>
+    <div id="kiosk-bar-actions">
+      <div id="kiosk-volume-control">
+        <button type="button" id="k-volume-button" class="kiosk-control" aria-label="Volume: 100%" aria-controls="kiosk-volume-panel" aria-expanded="false" title="Volume">
+          <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-icon" href="#k-icon-volume-2"></use></svg>
+          <span id="k-volume-level">100%</span>
+        </button>
+        <div id="kiosk-volume-panel" role="group" aria-label="Volume">
+          <div class="volume-panel-heading">
+            <span>Volume</span>
+            <button type="button" id="k-volume-close" class="kiosk-control" aria-label="Close volume" title="Close"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-x"></use></svg></button>
+          </div>
+          <div class="volume-range-row">
+            <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-slider-icon" href="#k-icon-volume-2"></use></svg>
+            <input type="range" id="kiosk-volume" class="kiosk-slider" min="0" max="100" value="100" aria-label="Volume">
+            <span id="k-volume-panel-level">100%</span>
+          </div>
         </div>
       </div>
+      <div id="kiosk-party" class="hidden"></div>
     </div>
   </div>
 </div>

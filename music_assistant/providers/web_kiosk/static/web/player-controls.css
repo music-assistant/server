@@ -64,6 +64,7 @@
 .kiosk-slider:hover::-webkit-slider-thumb, .kiosk-slider:focus-visible::-webkit-slider-thumb { opacity:1; }
 .kiosk-slider:hover::-moz-range-thumb, .kiosk-slider:focus-visible::-moz-range-thumb { opacity:1; }
 .kiosk-slider:disabled { cursor:default; opacity:.4; }
+#kiosk-bar-actions { display:flex; align-items:center; justify-content:flex-end; gap:12px; min-width:0; }
 #kiosk-volume-control { display:flex; justify-content:flex-end; min-width:0; }
 #k-volume-button { flex-direction:column; width:64px; height:80px; gap:4px; border-radius:0; }
 #k-volume-button .kiosk-icon { width:28px; height:28px; stroke-width:1.4; }
@@ -81,6 +82,7 @@
 html:not(.controls) #kiosk-controls { display:block; background:transparent; box-shadow:none; height:auto; opacity:1; pointer-events:auto; padding:16px; }
 html:not(.controls) #kiosk-bar-track, html:not(.controls) #kiosk-transport, html:not(.controls) #kiosk-volume-control { display:none; }
 html:not(.controls) #kiosk-progress { width:min(70vw,640px); margin:auto; }
+html.controls:has(#kiosk-party:not(.hidden)) { --kiosk-bar-height:calc(128px + env(safe-area-inset-bottom,0px)); }
 @media (max-width:768px) {
   :root { --kiosk-bar-height:calc(132px + env(safe-area-inset-bottom,0px)); }
   html.controls #kiosk-controls {
@@ -122,8 +124,11 @@ html:not(.controls) #kiosk-progress { width:min(70vw,640px); margin:auto; }
   #kiosk-lyrics { width:100%; }
   #kiosk-queue { top:84px; max-height:18vh; }
   body.kiosk:has(#kiosk-queue:not(.hidden)) #kiosk-center { padding-top:calc(84px + 18vh); }
-  #kiosk-party img { width:80px; height:80px; }
-  #kiosk-party .name { max-width:100px; font-size:11px; overflow-wrap:anywhere; }
+  #kiosk-bar-actions { display:contents; }
+  html.controls:has(#kiosk-party:not(.hidden)) { --kiosk-bar-height:calc(164px + env(safe-area-inset-bottom,0px)); }
+  html.controls #kiosk-controls:has(#kiosk-party:not(.hidden)) { height:128px; grid-template-columns:minmax(0,1fr) 44px 88px; grid-template-rows:48px 60px; }
+  #kiosk-party { grid-column:3; grid-row:1/3; width:88px; }
+  html.controls #kiosk-controls:has(#kiosk-party:not(.hidden)) #kiosk-volume-control { grid-column:1/3; }
 }
 @media (max-height:500px) {
   #kiosk-center { gap:8px; padding:16px; }
@@ -142,3 +147,12 @@ html:not(.controls) #kiosk-progress { width:min(70vw,640px); margin:auto; }
   #kiosk-lyrics .l.current { font-size:15px; }
 }
 @media (prefers-reduced-motion:reduce) { #kiosk-controls, .kiosk-control { transition:none; } }
+
+html.controls #kiosk-controls:has(#kiosk-party:not(.hidden)) { opacity:1; pointer-events:auto; }
+#kiosk-party { flex-shrink:0; width:88px; text-align:center; }
+#kiosk-party img { display:block; width:80px; height:80px; margin:auto; border-radius:6px; background:#fff; padding:4px; }
+#kiosk-party .name, #kiosk-party .qr { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:12px; margin-top:2px; }
+#kiosk-party .name { font-size:10px; color:#cfcfe0; }
+#kiosk-party .qr { font-size:9px; color:var(--ma-muted); }
+html:not(.controls) #kiosk-bar-actions { display:contents; }
+html:not(.controls) #kiosk-party { position:fixed; right:max(16px,env(safe-area-inset-right,0px)); bottom:max(16px,env(safe-area-inset-bottom,0px)); }
