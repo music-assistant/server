@@ -441,14 +441,38 @@ async def test_power_off_puts_the_room_in_manual_standby() -> None:
 async def test_power_on_wakes_the_room() -> None:
     """Powering on takes the room out of standby."""
     player, host = _powered_player("MANUAL_STANDBY")
-    with (
-        patch.object(player, "update_state"),
-        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
-        patch("music_assistant.providers.raumfeld.player.WAKE_TIMEOUT", 0),
-    ):
+
+    async def leave_standby(_room: str) -> None:
+        host.get_room_power_state.return_value = "ACTIVE"
+
+    host.async_leave_standby.side_effect = leave_standby
+    with patch.object(player, "update_state"):
         await player.power(True)
     host.async_leave_standby.assert_awaited_once_with("Bar")
     assert player._attr_powered is True
+
+
+async def test_power_on_fails_when_the_room_stays_in_standby() -> None:
+    """A room that does not wake up is not reported as powered on."""
+    player, _ = _powered_player("MANUAL_STANDBY")
+    player._attr_powered = False
+    with (
+        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
+        patch("music_assistant.providers.raumfeld.player.WAKE_TIMEOUT", 0),
+        pytest.raises(PlayerCommandFailed, match="did not leave standby"),
+    ):
+        await player.power(True)
+    assert player._attr_powered is False
+
+
+async def test_power_on_fails_when_the_wake_command_fails() -> None:
+    """A host error on the wake command surfaces instead of reporting the room as on."""
+    player, host = _powered_player("MANUAL_STANDBY")
+    player._attr_powered = False
+    host.async_leave_standby.side_effect = TimeoutError
+    with pytest.raises(PlayerCommandFailed, match="Failed to wake Bar"):
+        await player.power(True)
+    assert player._attr_powered is False
 
 
 async def test_power_off_failure_is_reported() -> None:

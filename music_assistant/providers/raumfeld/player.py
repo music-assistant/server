@@ -242,7 +242,7 @@ class RaumfeldPlayer(Player):
         """Send POWER command: wake the room, or switch it off (manual standby)."""
         self._power_changed_at = time.time()
         if powered:
-            await self._wake_rooms([self.room])
+            await self._wake_rooms([self.room], strict=True)
         else:
             try:
                 await self.raumfeld.host.async_enter_manual_standby(self.room)
@@ -692,8 +692,14 @@ class RaumfeldPlayer(Player):
         self._attr_elapsed_time = 0.0
         self._attr_elapsed_time_last_updated = time.time()
 
-    async def _wake_rooms(self, zone: list[str]) -> None:
-        """Bring the zone's rooms out of standby and wait until they report awake."""
+    async def _wake_rooms(self, zone: list[str], strict: bool = False) -> None:
+        """
+        Bring the zone's rooms out of standby and wait until they report awake.
+
+        :param zone: The rooms to wake.
+        :param strict: Fail when a room does not wake up. Without it a failure is only
+            logged, which suits playback: that goes on to address the zone either way.
+        """
         host = self.raumfeld.host
         woke = False
         for room in zone:
@@ -704,6 +710,8 @@ class RaumfeldPlayer(Player):
                     await host.async_leave_standby(room)
                     woke = True
             except HOST_ERRORS as err:
+                if strict:
+                    raise PlayerCommandFailed(f"Failed to wake {room}: {err!r}") from err
                 self.logger.debug("Failed to wake room %s: %r", room, err)
         if not woke:
             return
@@ -717,6 +725,8 @@ class RaumfeldPlayer(Player):
             except HOST_ERRORS as err:
                 self.logger.debug("Failed to read power state while waking: %r", err)
             await asyncio.sleep(WAKE_POLL_INTERVAL)
+        if strict:
+            raise PlayerCommandFailed(f"{', '.join(zone)} did not leave standby")
 
     def _active_zone(self) -> list[str] | None:
         """Return this room's zone if the host can address it, else ``None``."""
