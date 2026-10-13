@@ -4276,27 +4276,28 @@ class LocalFileSystemProvider(MusicProvider):
                 except FileNotFoundError:
                     existing = None
                 old_fd = -1
-                if existing is not None:
-                    if not stat.S_ISREG(existing.st_mode):
-                        raise InvalidDataError(msg)
-                    # replacing the entry must not get around the file's own write permission
-                    probe_flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-                    old_fd = os.open(name, probe_flags, dir_fd=dir_fd)
-                # written to a new file and renamed into place, so no existing inode is opened
-                # for writing or truncated, whatever else links to it
-                temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-                temp_fd = os.open(temp_name, flags, 0o666, dir_fd=dir_fd)
                 try:
-                    with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
-                        if old_fd >= 0:
-                            _copy_file_security(old_fd, _file.fileno())
-                        _file.write(data)
-                    os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-                except BaseException:
-                    with contextlib.suppress(OSError):
-                        os.unlink(temp_name, dir_fd=dir_fd)
-                    raise
+                    if existing is not None:
+                        if not stat.S_ISREG(existing.st_mode):
+                            raise InvalidDataError(msg)
+                        # replacing the entry must not get around the file's own write permission
+                        probe_flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                        old_fd = os.open(name, probe_flags, dir_fd=dir_fd)
+                    # written to a new file and renamed into place, so no existing inode is
+                    # opened for writing or truncated, whatever else links to it
+                    temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                    temp_fd = os.open(temp_name, flags, 0o666, dir_fd=dir_fd)
+                    try:
+                        with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
+                            if old_fd >= 0:
+                                _copy_file_security(old_fd, _file.fileno())
+                            _file.write(data)
+                        os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    except BaseException:
+                        with contextlib.suppress(OSError):
+                            os.unlink(temp_name, dir_fd=dir_fd)
+                        raise
                 finally:
                     if old_fd >= 0:
                         os.close(old_fd)
