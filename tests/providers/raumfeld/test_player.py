@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_FLOW_MODE
 from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
@@ -303,3 +305,21 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
         "TV",
     )
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
+
+
+async def test_no_zone_for_the_room_is_reported() -> None:
+    """A room the host gives no zone raises a clear error instead of playing into nothing."""
+    player = _flow_player()
+    player.room = "Bar"
+    host = MagicMock()
+    host.async_create_zone = AsyncMock()
+    host.roomlst_to_zoneudn.return_value = None
+    provider = MagicMock()
+    provider.host = host
+    provider.get_zone_for_room.return_value = None
+    player._provider = provider
+    with (
+        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
+        pytest.raises(PlayerCommandFailed, match="no zone for Bar"),
+    ):
+        await player._ensure_playable_zone()
