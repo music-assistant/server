@@ -22,6 +22,7 @@ import time
 import weakref
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope, UserRole
@@ -87,6 +88,7 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_GROUP_MEMBERS,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
@@ -1946,6 +1948,61 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self.mass.create_task(
                 self.mass.webserver.auth.remove_from_user_filters(player_ids=player_ids)
             )
+
+    def carry_over_player_config(self, player_id: str, replacement_player_id: str) -> None:
+        """
+        Copy a player's stored config onto the player that replaces it under a new id.
+
+        The replacement keeps the name, values and DSP settings it already has and takes
+        over the protocol parent of the replaced player. Call this before the replacement
+        registers, then delete the old config with delete_player_config once it has.
+
+        :param player_id: Player ID of the player that is replaced.
+        :param replacement_player_id: Player ID that takes its place.
+        """
+        source_raw = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        if not isinstance(source_raw, dict):
+            return
+        target_key = f"{CONF_PLAYERS}/{replacement_player_id}"
+        target_raw = self.mass.config.get(target_key)
+        previous_parent_id = self._get_cached_protocol_parent_id(replacement_player_id)
+        if not isinstance(target_raw, dict):
+            self.mass.config.set(
+                target_key, {**deepcopy(source_raw), "player_id": replacement_player_id}
+            )
+        else:
+            if source_raw.get("name") and not target_raw.get("name"):
+                self.mass.config.set_raw_player_config_value(
+                    replacement_player_id, "name", source_raw["name"]
+                )
+            source_values = source_raw.get("values")
+            target_values = target_raw.get("values")
+            target_values = target_values if isinstance(target_values, dict) else {}
+            for key, value in (source_values if isinstance(source_values, dict) else {}).items():
+                if key in target_values and key != CONF_PROTOCOL_PARENT_ID:
+                    continue
+                self.mass.config.set_raw_player_config_value(
+                    replacement_player_id, key, deepcopy(value)
+                )
+        source_dsp = self.mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}")
+        if source_dsp and not self.mass.config.get(f"{CONF_PLAYER_DSP}/{replacement_player_id}"):
+            self.mass.config.set(f"{CONF_PLAYER_DSP}/{replacement_player_id}", deepcopy(source_dsp))
+        # a parent that gets enabled or disabled only cascades to the protocol players it lists
+        parent_id = self._get_cached_protocol_parent_id(replacement_player_id)
+        if previous_parent_id and previous_parent_id != parent_id:
+            if previous_parent := self.get_player(previous_parent_id):
+                self._remove_protocol_ids_from_parent(previous_parent, {replacement_player_id})
+            else:
+                self._remove_protocol_id_from_cache(previous_parent_id, replacement_player_id)
+        if parent_id and (parent := self.get_player(parent_id)):
+            self._migrate_protocol_ids_to_parent(parent, {replacement_player_id})
+        elif parent_id and isinstance(self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"), dict):
+            cached_ids = self._get_cached_protocol_ids(parent_id)
+            if replacement_player_id not in cached_ids:
+                self.mass.config.set(
+                    f"{CONF_PLAYERS}/{parent_id}/values/{CONF_LINKED_PROTOCOL_IDS}",
+                    [*cached_ids, replacement_player_id],
+                )
 
     def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
         """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
