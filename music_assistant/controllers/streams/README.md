@@ -58,7 +58,7 @@ controllers/streams/
   __init__.py          - Package init, exports StreamsController
   controller.py        - StreamsController: HTTP endpoints, public streaming API
   audio.py             - StreamsAudio: audio processing, stream acquisition, DSP/filters
-  audio_processing.py  - AudioProcessingManager: runtime processing details (normalization, DSP, output quality) of queue and live source playback
+  audio_processing.py  - AudioProcessingManager: processing details (normalization, DSP, output quality) reported to clients
   stream_sources.py    - Ranking of the copies of a media item (local file, streaming accounts) in the order they are tried
   audio_buffer.py      - AudioBuffer: in-memory PCM audio buffering with seek support
   audio_analysis.py    - AudioAnalysisController: analysis storage (audio_analysis.db) and scheduling
@@ -263,7 +263,7 @@ audio stream:
 |------|-------------|-------------|
 | Queue tracks | Yes (SEEKABLE) | Regular track playback with full buffering |
 | Radio streams | Yes (ROLLING) | Short rolling buffer, non-seekable |
-| Announcements | Yes (SEEKABLE) | Short one-off audio (TTS), rendered once and shared by all consumers |
+| Announcements | No (own in-memory render) | Short one-off audio (TTS), rendered once and shared by all consumers |
 | Plugin sources | No | Real-time audio (microphone, aux), streamed directly |
 
 ## Configuration
