@@ -107,7 +107,12 @@ class Music247eAPIClient:
             # Navigate to the page containing items and pageInfo
             page_data = result
             for key in page_path:
-                page_data = page_data.get(key, {})
+                next_page_data = page_data.get(key)
+                if not isinstance(next_page_data, dict):
+                    raise InvalidDataError(
+                        f"Missing GraphQL page path: {'/'.join(page_path)}"
+                    )
+                page_data = next_page_data
 
             for item in page_data.get("items", []):
                 yield item
