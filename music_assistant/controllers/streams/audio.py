@@ -234,9 +234,8 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
     InvalidDataError,
 )
 
-# A radio station that fails after playing is restarted on fresh stream details from its
-# provider (signed stream urls expire). Runs shorter than the minimum playtime count toward
-# the restart limit, so a station that keeps failing does not hammer its provider.
+# Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
+# shorter than the minimum playtime count toward the limit so its provider is not hammered.
 RADIO_MAX_FAILED_RESTARTS = 3
 RADIO_RESTART_MIN_PLAYTIME = 60
 RADIO_RESTART_DELAY = 1.0
