@@ -14,6 +14,7 @@ import stat
 import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path, PurePosixPath
@@ -2235,11 +2236,14 @@ class LocalFileSystemProvider(MusicProvider):
         """
         Yield an album's tracks, lazily, so a caller needing only the first can stop early.
 
-        Served from the database when this id is already mapped; otherwise (the second,
-        id-changed fetch of a manual "Refresh item" that has just resolved a previously
-        synthetic album onto its real folder, before that mapping is persisted) the folder's
-        own tracks are parsed directly, so the refresh still succeeds instead of raising on a
-        mapping that is only about to exist.
+        Served from the database when this id is already mapped: the library tracks with a
+        file in the album's folder, each carrying only those files, so a recording's file in
+        another album's folder is left out; under an album id that is no folder, the tracks
+        keep all of their files on this provider. Otherwise (the second, id-changed fetch of a
+        manual "Refresh item" that has just resolved a previously synthetic album onto its real
+        folder, before that mapping is persisted) the folder's own tracks are parsed directly,
+        so the refresh still succeeds instead of raising on a mapping that is only about to
+        exist.
 
         :param prov_album_id: This provider's album id (a path, once resolved).
         """
@@ -2248,9 +2252,29 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if db_album is not None:
             album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
+            files = {
+                id(track): {
+                    x for x in track.provider_mappings if x.provider_instance == self.instance_id
+                }
+                for track in album_tracks
+            }
+            # the album's files sit in its folder or in a disc folder below it, as
+            # _scan_folder_tracks finds them
+            in_folder = {
+                track_id: {
+                    x
+                    for x in own
+                    if prov_album_id
+                    in (os.path.dirname(x.item_id), os.path.dirname(os.path.dirname(x.item_id)))
+                }
+                for track_id, own in files.items()
+            }
+            # an album id made up of the artist and album name holds no files
+            if any(in_folder.values()):
+                files = in_folder
             for track in album_tracks:
-                if any(x.provider_instance == self.instance_id for x in track.provider_mappings):
-                    yield track
+                if own := files[id(track)]:
+                    yield replace(track, provider_mappings=own)
             return
         if not await self.exists(prov_album_id):
             msg = f"Album not found: {prov_album_id}"
