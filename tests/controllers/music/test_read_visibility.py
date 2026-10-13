@@ -103,6 +103,9 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
     mass_minimal.streams = MagicMock()
     mass_minimal.streams.audio_analysis.delete_audio_analysis = AsyncMock()
     mass_minimal.streams.audio_analysis.get_track_audio_metadata = AsyncMock(return_value=None)
+    mass_minimal.streams.audio_analysis.get_tracks_audio_metadata = AsyncMock(
+        side_effect=lambda tracks: [None] * len(tracks)
+    )
     mass_minimal.metadata = MagicMock()
     mass_minimal.webserver = MagicMock()
     mass_minimal.webserver.auth.get_user = AsyncMock(return_value=None)

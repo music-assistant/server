@@ -548,9 +548,10 @@ def _artist_listing_setup(
     controller = ArtistsController.__new__(ArtistsController)
     controller.mass = mass
     controller.logger = Mock()
-    controller.get_library_item = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
-    # keep provider artists (not resolved to a library equivalent)
-    controller.get_library_item_by_prov_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    # the library artist itself resolves, provider artists stay unresolved
+    controller.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _item_id, provider: ref_item if provider == "library" else None
+    )
     return controller, music_prov, metadata_prov, ref_item
 
 
