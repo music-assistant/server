@@ -242,3 +242,17 @@ async def test_a_mapping_removed_meanwhile_does_not_fail_the_write() -> None:
     await audio.get_stream_details(queue_item=_queue_item(_library_track(_mapping())))
 
     await scheduled[0]
+
+
+async def test_a_queue_item_without_duration_takes_the_duration_of_its_stream() -> None:
+    """The duration the provider declares on the stream is stored on the queue item."""
+    audio, _, _ = _audio(_provider(FLAC))
+    track = Track(
+        item_id=ITEM_ID, provider=INSTANCE, name="15 Step", provider_mappings={_mapping()}
+    )
+    queue_item = _queue_item(track)
+
+    await audio.get_stream_details(queue_item=queue_item)
+
+    assert queue_item.duration == 237
+    audio.mass.player_queues.signal_update.assert_called_once_with("q1", items_changed=True)
