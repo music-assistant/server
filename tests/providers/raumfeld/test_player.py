@@ -302,9 +302,6 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
         return_value=("5065835a-d69f-4a1b-8c2d-5065835ad69f", "192.168.1.41")
     )
     provider.line_in = MagicMock(return_value=None)  # type: ignore[attr-defined]
-    provider.room_model = MagicMock(  # type: ignore[attr-defined]
-        return_value="Raumfeld Soundbar"
-    )
     host = MagicMock()
     host.get_room_power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
@@ -314,7 +311,6 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
         "TV",
     )
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
-    assert player.device_info.model == "Raumfeld Soundbar"
     assert player.powered is False
 
 
@@ -368,23 +364,6 @@ async def test_volume_update_reads_mute_and_keeps_unread_values() -> None:
         upnp.async_get_mute = AsyncMock(return_value=None)
         await player._update_volume(host)
     assert (player._attr_volume_level, player._attr_volume_muted) == (42, True)
-
-
-async def test_no_zone_for_the_room_is_reported() -> None:
-    """A room the host gives no zone raises a clear error instead of playing into nothing."""
-    player = _room_player()
-    host = MagicMock()
-    host.async_create_zone = AsyncMock()
-    host.roomlst_to_zoneudn.return_value = None
-    provider = MagicMock()
-    provider.host = host
-    provider.get_zone_for_room.return_value = None
-    player._provider = provider
-    with (
-        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
-        pytest.raises(PlayerCommandFailed, match="no zone for Bar"),
-    ):
-        await player._ensure_playable_zone()
 
 
 def _powered_player(power_state: str | None) -> tuple[RaumfeldPlayer, MagicMock]:

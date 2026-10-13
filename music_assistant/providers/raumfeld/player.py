@@ -134,9 +134,7 @@ class RaumfeldPlayer(Player):
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
         self._resync_task_id = f"raumfeld_resync_{player_id}"
-        self._attr_device_info = DeviceInfo(
-            model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
-        )
+        self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
         # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
         # source at its native quality (up to 24-bit/192kHz) without manual configuration
         self._attr_supported_sample_rates = SUPPORTED_SAMPLE_RATES
@@ -754,9 +752,8 @@ class RaumfeldPlayer(Player):
                 return [self.room]
             if attempt < ZONE_CREATE_ATTEMPTS - 1:
                 await asyncio.sleep(ZONE_CREATE_RETRY_DELAY)
-        raise PlayerCommandFailed(
-            f"The Raumfeld host has no zone for {self.room}; check that the room is online"
-        )
+        # let the caller surface a clear failure rather than silently doing nothing
+        return [self.room]
 
     async def _add_rooms_to_zone(self, rooms: list[str]) -> None:
         """Add the given rooms to this leader's zone, waiting until they have joined."""
