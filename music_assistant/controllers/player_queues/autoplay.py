@@ -16,7 +16,7 @@ from contextlib import suppress
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
-from music_assistant_models.enums import AlbumType, MediaType, SortField
+from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature, SortField
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Playlist, Track
 
@@ -54,7 +54,8 @@ AUTOPLAY_BATCH_SIZE = 25
 GENRE_SEED_ITEM_COUNT = 3
 # albums the whole-albums mode tries before it falls back to the Auto mode
 ALBUM_PICK_ATTEMPTS = 3
-# any provider error only skips the album, so the refill goes on
+SIMILAR_ARTISTS_LIMIT = 10
+# any provider error only skips that album or lookup, so the refill goes on
 ALBUM_LOAD_ERRORS: Final[tuple[type[Exception], ...]] = (
     MusicAssistantError,
     *PROVIDER_FETCH_ERRORS,
@@ -243,14 +244,13 @@ class Autoplay:
         except MusicAssistantError as err:
             self.logger.debug("Unable to load artist %s, using Auto instead: %s", seed.name, err)
             return []
-        candidates = await self.queues.artist_album_candidates(
-            artist, _played_albums(tracks), anchor
-        )
-        if candidates is None:
-            self.logger.info("Unable to list the albums of %s, using Auto instead", artist.name)
-            return []
-        for copies in candidates[:ALBUM_PICK_ATTEMPTS]:
-            if album_tracks := await self._album_tracks_to_play(queue_data.userid, copies):
+        played = _played_albums(tracks)
+        if album_tracks := await self._next_album_tracks(queue_data.userid, artist, played, anchor):
+            return album_tracks
+        for similar in (await self._similar_artists(artist))[:ALBUM_PICK_ATTEMPTS]:
+            if album_tracks := await self._next_album_tracks(
+                queue_data.userid, similar, played, None
+            ):
                 return album_tracks
         return []
 
@@ -294,6 +294,54 @@ class Autoplay:
                 return album_tracks
         self.logger.debug("Auto found no album to play, keeping its tracks")
         return []
+
+    async def _next_album_tracks(
+        self,
+        userid: str | None,
+        artist: Artist,
+        played: list[Album | ItemMapping],
+        anchor: Album | None,
+    ) -> list[Track]:
+        """Return the tracks of the next album of the artist that loads, or an empty list."""
+        candidates = await self.queues.artist_album_candidates(artist, played, anchor)
+        if candidates is None:
+            self.logger.info("Unable to list the albums of %s", artist.name)
+            return []
+        for copies in candidates[:ALBUM_PICK_ATTEMPTS]:
+            if album_tracks := await self._album_tracks_to_play(userid, copies):
+                return album_tracks
+        return []
+
+    async def _similar_artists(self, artist: Artist) -> list[Artist]:
+        """Return MA's similar artists of the artist, asked with its library copy if any."""
+        library_artist = (
+            artist
+            if artist.provider == "library"
+            else await self.mass.music.artists.get_library_item_by_prov_id(
+                artist.item_id, artist.provider
+            )
+        )
+        if library_artist is None:
+            provider = self.mass.get_provider(artist.provider)
+            # MA logs a warning for every lookup a provider can't answer
+            if (
+                provider is None
+                or ProviderFeature.SIMILAR_ARTISTS not in provider.supported_features
+            ):
+                return []
+        artist = library_artist or artist
+        try:
+            return await self.mass.music.artists.similar_artists(
+                artist.item_id, artist.provider, limit=SIMILAR_ARTISTS_LIMIT
+            )
+        except ALBUM_LOAD_ERRORS as err:
+            self.logger.log(
+                provider_fetch_log_level(err),
+                "Unable to fetch the similar artists of %s: %s",
+                artist.name,
+                err,
+            )
+            return []
 
     async def _album_tracks_to_play(
         self, userid: str | None, copies: Sequence[Album | ItemMapping]

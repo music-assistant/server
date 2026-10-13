@@ -19,11 +19,11 @@
         "similar": "Similar to what you played",
         "library": "Infinite mix from your library",
         "playlist": "Tracks from a playlist",
-        "albums": "Whole albums by the same artist",
+        "albums": "Whole albums, same artist first",
         "global": "Global"
       },
       "option_descriptions": {
-        "albums": "Plays the next album of the last track's artist, in the artist order. When the artist has no album left, Auto picks the next album. Turn off shuffle to hear the albums in full.",
+        "albums": "Plays the next album of the last track's artist, in the artist order. When the artist has no album left, a similar artist's album plays, else Auto picks one. Turn off shuffle to hear the albums in full.",
         "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {

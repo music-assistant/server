@@ -385,6 +385,85 @@ async def test_an_album_that_fails_is_skipped_up_to_three_times(
     assert _names(result) == ([f"{expected} 1", f"{expected} 2"] if expected else [])
 
 
+async def _similar_setup(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, similar: dict[str, tuple[int, ...]]
+) -> tuple[PlayerQueue, Artist, AsyncMock]:
+    """
+    Queue the only album of a library artist, whose similar artists have albums of those years.
+
+    A similar artist named "Played" has its albums in the queue too. Returns the lookup mock.
+    """
+    seed = await _add_artist(mass)
+    last = _queued_track([seed], await _add_album(mass, seed, "Waterloo", 1974))
+    queued = []
+    artists = []
+    for name, years in similar.items():
+        artist = await _library_artist(mass, name)
+        artists.append(artist)
+        for year in years:
+            album = await _add_album(mass, artist, f"{name} {year}", year)
+            if name == "Played":
+                queued.append(_queued_track([seed], album))
+    lookup = AsyncMock(return_value=artists)
+    monkeypatch.setattr(mass.music.artists, "similar_artists", lookup)
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    return _queue(mass, monkeypatch, *queued, last), seed, lookup
+
+
+def _album_of(tracks: list[Track]) -> set[str]:
+    """Return the album names the tracks are named after."""
+    return {track.name.rsplit(" ", 1)[0] for track in tracks}
+
+
+async def test_a_similar_artist_plays_next_when_the_artist_runs_out(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first similar artist with an album left plays its oldest album."""
+    queue, seed, lookup = await _similar_setup(
+        mass, monkeypatch, {"Played": (1980,), "Empty": (), "Next": (1990, 1985)}
+    )
+
+    result = await Autoplay(mass.player_queues).get_album_tracks(queue)
+
+    assert _album_of(result) == {"Next 1985"}
+    lookup.assert_awaited_once_with(seed.item_id, "library", limit=10)
+
+
+async def test_at_most_three_similar_artists_are_tried(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Similar artists without an album left count, so a fourth is not tried."""
+    queue, _seed, _lookup = await _similar_setup(
+        mass, monkeypatch, {"Played": (1980,), "Empty": (), "Other": (), "Late": (1990,)}
+    )
+
+    assert await Autoplay(mass.player_queues).get_album_tracks(queue) == []
+
+
+async def test_a_failed_similar_artists_lookup_leaves_the_pick_to_auto(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider error while asking for similar artists gives no album, so Auto picks."""
+    queue, _seed, lookup = await _similar_setup(mass, monkeypatch, {"Next": (1990,)})
+    lookup.side_effect = LoginFailed("expired")
+
+    assert await Autoplay(mass.player_queues).get_album_tracks(queue) == []
+
+
+async def test_no_similar_artists_lookup_when_the_provider_has_none(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An artist outside the library whose provider lacks similar artists is not looked up."""
+    _stub_provider(mass, [])
+    lookup = AsyncMock(return_value=[])
+    monkeypatch.setattr(mass.music.artists, "similar_artists", lookup)
+    queue = _queue(mass, monkeypatch, _queued_track([_provider_artist()], None))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    assert await Autoplay(mass.player_queues).get_album_tracks(queue) == []
+    lookup.assert_not_awaited()
+
+
 async def test_after_an_auto_track_the_albums_of_its_artist_play(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
