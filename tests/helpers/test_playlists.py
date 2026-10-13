@@ -11,6 +11,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
     AudioFormat,
+    AudioMetadata,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -1683,6 +1684,42 @@ async def test_tracks_stops_on_empty_page() -> None:
 
     assert len(result) == 7
     assert get_tracks.await_count == 2
+
+
+def _playlist_track(item_id: str, audio_metadata: AudioMetadata | None = None) -> Track:
+    return Track(
+        item_id=item_id,
+        provider="some_provider",
+        name=item_id,
+        provider_mappings=set(),
+        audio_metadata=audio_metadata,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tracks_add_audio_metadata_per_page() -> None:
+    """Tracks without audio metadata get it from stored analysis, one lookup per page."""
+    controller = _make_controller()
+    from_provider = AudioMetadata(bpm=99.0)
+    page0 = [_playlist_track("a"), _playlist_track("b", from_provider)]
+    page1 = [
+        _playlist_track("c"),
+        Radio(item_id="r", provider="some_provider", name="r", provider_mappings=set()),
+    ]
+    cast("Any", controller)._get_provider_playlist_tracks = AsyncMock(
+        side_effect=[page0, page1, []]
+    )
+    lookup = AsyncMock(side_effect=[[AudioMetadata(bpm=120.0)], [None]])
+    cast("Any", controller.mass).streams.audio_analysis.get_tracks_audio_metadata = lookup
+
+    result = [t async for t in controller.tracks("abc", "some_provider")]
+
+    assert [cast("Track", t).audio_metadata for t in result[:3]] == [
+        AudioMetadata(bpm=120.0),
+        from_provider,
+        None,
+    ]
+    assert [call.args[0] for call in lookup.await_args_list] == [[page0[0]], [page1[0]]]
 
 
 # --------------------------------------------------------------------------- #
