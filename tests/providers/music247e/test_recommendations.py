@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.media_items import Track, UniqueList
+from music_assistant_models.media_items import Album, ItemMapping, Track, UniqueList
 
 from music_assistant.providers.music247e.provider import Music247eProvider
 from music_assistant.providers.music247e.recommendations import Music247eRecommendationsManager
@@ -29,6 +29,9 @@ GRAPHQL_RESULT = {
                                 "id": "album1",
                                 "title": "Album One",
                                 "artist": {"id": "artist1", "title": "Artist One"},
+                                "featuredArtists": {
+                                    "items": [{"id": "artist2", "title": "Artist Two"}]
+                                },
                             }
                         ]
                     },
@@ -45,6 +48,17 @@ GRAPHQL_RESULT = {
                                 "duration": 200,
                                 "availableToStream": False,
                                 "artist": {"id": "artist1", "title": "Artist One"},
+                                "featuredArtists": {
+                                    "items": [{"id": "artist2", "title": "Artist Two"}]
+                                },
+                                "album": {
+                                    "id": "album1",
+                                    "title": "Album One",
+                                    "artist": {"id": "artist1", "title": "Artist One"},
+                                    "available": False,
+                                    "releaseDate": "2020-01-01",
+                                    "cover": "https://example.invalid/album.jpg",
+                                },
                             }
                         ]
                     },
@@ -129,8 +143,25 @@ async def test_rows_and_items_share_one_payload_fetch(
     assert [item.name for item in album_items] == ["Album One"]
     assert [item.item_id for item in track_items] == ["track1"]
     assert [item.name for item in track_items] == ["Track One"]
+    album = album_items[0]
+    assert isinstance(album, Album)
+    assert all(isinstance(artist, ItemMapping) for artist in album.artists)
+    assert [artist.item_id for artist in album.artists] == ["artist1", "artist2"]
     track = track_items[0]
     assert isinstance(track, Track)
+    assert all(isinstance(artist, ItemMapping) for artist in track.artists)
+    assert [artist.item_id for artist in track.artists] == ["artist1", "artist2"]
+    assert isinstance(track.album, ItemMapping)
+    assert track.album.item_id == "album1"
+    assert track.album.provider == provider.instance_id
+    assert track.album.name == "Album One"
+    assert track.album.available is False
+    assert track.album.year == 2020
+    assert track.album.image is not None
+    assert track.album.image.path == "https://example.invalid/album.jpg"
+    serialized_track = track.to_dict()
+    assert "artists" not in serialized_track["album"]
+    assert "provider_mappings" not in serialized_track["artists"][0]
     assert next(iter(track.provider_mappings)).available is False
     assert "availableToStream" in api.post_graphql.call_args.args[0]
 

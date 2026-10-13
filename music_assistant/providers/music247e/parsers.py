@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType
+from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    ItemMapping,
     MediaItemImage,
     Playlist,
     ProviderMapping,
@@ -56,15 +57,15 @@ def parse_track(provider: Music247eProvider, track_obj: JsonLike) -> Track:
         track.external_ids.add((ExternalID.ISRC, isrc))
 
     if "artist" in track_obj:
-        artist = parse_artist(provider, track_obj["artist"])
+        artist = _parse_item_mapping(provider, track_obj["artist"], MediaType.ARTIST)
         track.artists.append(artist)
 
     for feat_artist_obj in track_obj.get("featuredArtists", {}).get("items", []):
-        feat_artist = parse_artist(provider, feat_artist_obj)
+        feat_artist = _parse_item_mapping(provider, feat_artist_obj, MediaType.ARTIST)
         track.artists.append(feat_artist)
 
     if "album" in track_obj:
-        album = parse_album(provider, track_obj["album"])
+        album = _parse_item_mapping(provider, track_obj["album"], MediaType.ALBUM)
         track.album = album
 
     if track_genre := track_obj.get("genre"):
@@ -146,10 +147,10 @@ def parse_album(provider: Music247eProvider, album_obj: JsonLike) -> Album:
     if album_upc := album_obj.get("upc"):
         album.external_ids.add((ExternalID.BARCODE, album_upc))
 
-    album.artists.append(parse_artist(provider, album_obj["artist"]))
+    album.artists.append(_parse_item_mapping(provider, album_obj["artist"], MediaType.ARTIST))
 
     for feat_artist_obj in album_obj.get("featuredArtists", {}).get("items", []):
-        feat_artist = parse_artist(provider, feat_artist_obj)
+        feat_artist = _parse_item_mapping(provider, feat_artist_obj, MediaType.ARTIST)
         album.artists.append(feat_artist)
 
     if album_genre := album_obj.get("genre"):
@@ -244,3 +245,35 @@ def parse_lyrics(lyrics: list[JsonLike]) -> tuple[str | None, str | None]:
     lrc = lrc.strip()
 
     return plain or None, lrc or None
+
+
+def _parse_item_mapping(
+    provider: Music247eProvider, item_obj: JsonLike, media_type: MediaType
+) -> ItemMapping:
+    """Parse a compact nested artist or album reference."""
+    item_id = str(item_obj["id"])
+    name, version = (
+        parse_title_and_version(item_obj["title"])
+        if media_type == MediaType.ALBUM
+        else (item_obj["title"], "")
+    )
+    if media_type == MediaType.ARTIST and item_id == VARIOUS_ARTISTS_ID:
+        name = VARIOUS_ARTISTS_NAME
+    mapping = ItemMapping(
+        media_type=media_type,
+        item_id=item_id,
+        provider=provider.instance_id,
+        name=name,
+        version=version,
+        available=item_obj.get("available", True),
+    )
+    if cover := item_obj.get("cover"):
+        mapping.image = MediaItemImage(
+            type=ImageType.THUMB,
+            path=cover,
+            remotely_accessible=True,
+            provider=provider.instance_id,
+        )
+    if media_type == MediaType.ALBUM and (release_date := item_obj.get("releaseDate")):
+        mapping.year = try_parse_int(release_date[:4])
+    return mapping
