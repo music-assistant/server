@@ -188,7 +188,7 @@ class TestNativeVolumePinOnConfigChange:
     """Config-change hook re-applies the pin when the pin or volume_control changes."""
 
     async def test_config_change_of_pin_triggers_apply(self, mock_mass: MagicMock) -> None:
-        """Changing values/native_volume runs the apply helper."""
+        """Changing values/native_volume runs the apply helper before set_config."""
         controller = PlayerController(mock_mass)
         player, _volume_set = _make_player(mock_mass)
         controller._players[player.player_id] = player
@@ -205,19 +205,30 @@ class TestNativeVolumePinOnConfigChange:
                 )
             },
         )
+        call_order: list[str] = []
+
+        async def _apply(_player: Any) -> None:
+            call_order.append("apply")
+
+        def _set_config(_config: PlayerConfig) -> None:
+            call_order.append("set_config")
 
         with (
-            patch.object(controller, "_apply_native_volume_pin", new_callable=AsyncMock) as apply,
-            patch.object(player, "set_config"),
+            patch.object(
+                controller, "_apply_native_volume_pin", new_callable=AsyncMock, side_effect=_apply
+            ) as apply,
+            patch.object(player, "set_config", side_effect=_set_config) as set_config,
             patch.object(player, "on_config_updated", new_callable=AsyncMock),
             patch.object(player, "update_state"),
         ):
             await controller.on_player_config_change(config, {f"values/{CONF_NATIVE_VOLUME}"})
 
         apply.assert_awaited_once_with(player)
+        set_config.assert_called_once_with(config)
+        assert call_order == ["apply", "set_config"]
 
     async def test_config_change_propagates_apply_errors(self, mock_mass: MagicMock) -> None:
-        """Device rejection on config change must raise (save rolls back)."""
+        """Device rejection on config change must raise before mutating live config."""
         controller = PlayerController(mock_mass)
         player, _volume_set = _make_player(mock_mass)
         controller._players[player.player_id] = player
@@ -242,12 +253,16 @@ class TestNativeVolumePinOnConfigChange:
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("device rejected"),
             ),
-            patch.object(player, "set_config"),
-            patch.object(player, "on_config_updated", new_callable=AsyncMock),
-            patch.object(player, "update_state"),
+            patch.object(player, "set_config") as set_config,
+            patch.object(player, "on_config_updated", new_callable=AsyncMock) as on_updated,
+            patch.object(player, "update_state") as update_state,
             pytest.raises(RuntimeError, match="device rejected"),
         ):
             await controller.on_player_config_change(config, {f"values/{CONF_NATIVE_VOLUME}"})
+
+        set_config.assert_not_called()
+        on_updated.assert_not_awaited()
+        update_state.assert_not_called()
 
     async def test_unrelated_config_change_does_not_apply(self, mock_mass: MagicMock) -> None:
         """Unrelated config keys do not re-apply the pin."""

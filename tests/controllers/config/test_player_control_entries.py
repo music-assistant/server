@@ -141,32 +141,32 @@ async def test_group_player_only_gets_a_power_control(mass_minimal: MusicAssista
     assert set(entries) == {CONF_POWER_CONTROL}
 
 
-async def test_native_volume_hidden_when_volume_control_is_native(
+async def test_native_volume_visible_when_volume_control_is_native(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """Native volume pin is hidden when UI volume already uses the native player."""
+    """Native volume pin stays visible on native control so draft switches can set it."""
     entry = _entries_by_key(
         mass_minimal,
         {PlayerFeature.VOLUME_SET},
         stored_volume_control=PLAYER_CONTROL_NATIVE,
     )[CONF_NATIVE_VOLUME]
-    assert entry.hidden is True
+    assert entry.hidden is False
     assert entry.default_value is None
     assert entry.required is False
     assert entry.range == (0, 100)
     assert entry.category == "player_controls"
 
 
-async def test_native_volume_hidden_when_volume_control_is_follow_protocol(
+async def test_native_volume_visible_when_volume_control_is_follow_protocol(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """Native volume pin is hidden when volume follows a protocol player."""
+    """Native volume pin stays visible on follow_protocol for draft volume_control switches."""
     entry = _entries_by_key(
         mass_minimal,
         {PlayerFeature.VOLUME_SET},
         stored_volume_control=PLAYER_CONTROL_PROTOCOL,
     )[CONF_NATIVE_VOLUME]
-    assert entry.hidden is True
+    assert entry.hidden is False
 
 
 async def test_native_volume_visible_for_external_volume_control(

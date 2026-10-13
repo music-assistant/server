@@ -2559,11 +2559,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             else None
         )
 
+        # Apply the Softvol pin before mutating the live Player config so a
+        # failing volume_set leaves the in-memory Player untouched while
+        # save_player_config rolls storage back.
+        await self._maybe_apply_native_volume_pin_on_config_change(player, changed_keys)
         # ensure player state gets updated with any updated config
         player.set_config(config)
         await player.on_config_updated()
         player.update_state()
-        await self._maybe_apply_native_volume_pin_on_config_change(player, changed_keys)
         # if the PlayerQueue was playing, restart playback
         if resume_queue and resume_queue.state == PlaybackState.PLAYING:
             requires_restart = any(
