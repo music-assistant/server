@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from music_assistant_models.enums import SortField
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.mass import MusicAssistant
@@ -91,3 +92,12 @@ async def test_folder_filter_root_includes_all_tracks_of_provider(mass: MusicAss
     """The root folder of a provider matches every track of that provider."""
     result = await mass.music.tracks.library_items(folder=f"{FS}://")
     assert len(result) == 7
+
+
+@pytest.mark.parametrize("folder", ["Rock", "://Rock", "spotify--x://"])
+async def test_folder_filter_rejects_non_filesystem_folder(
+    mass: MusicAssistant, folder: str
+) -> None:
+    """A folder must live on a filesystem provider instance."""
+    with pytest.raises(InvalidDataError):
+        await mass.music.tracks.library_items(folder=folder)

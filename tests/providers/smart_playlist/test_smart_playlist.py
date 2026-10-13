@@ -119,10 +119,11 @@ class TestSmartPlaylistRules:
         )
         assert rules.human_readable() == "Folders: Rock/Classic, /"
 
-    def test_validate_rejects_folder_without_provider(self) -> None:
+    @pytest.mark.parametrize("folder", ["Rock/Classic", "://Rock", "spotify--x://"])
+    def test_validate_rejects_folder_without_provider(self, folder: str) -> None:
         """A folder path must name the filesystem provider instance it lives on."""
         with pytest.raises(InvalidDataError):
-            validate_rules(SmartPlaylistRules(folder_paths=["Rock/Classic"]))
+            validate_rules(SmartPlaylistRules(folder_paths=[folder]))
         validate_rules(SmartPlaylistRules(folder_paths=["filesystem_local--abc://Rock"]))
 
     def test_human_readable_no_rules(self) -> None:

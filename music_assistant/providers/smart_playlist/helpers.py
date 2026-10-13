@@ -355,8 +355,12 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
         )
         raise InvalidDataError(msg)
     for folder_path in rules.folder_paths:
-        if "://" not in folder_path:
-            msg = f"Invalid folder path: {folder_path!r}. Expected '<provider_instance>://<path>'"
+        prov_instance, sep, _ = folder_path.partition("://")
+        if not sep or not prov_instance.startswith("filesystem_"):
+            msg = (
+                f"Invalid folder path: {folder_path!r}. "
+                "Expected '<filesystem provider instance>://<path>'"
+            )
             raise InvalidDataError(msg)
     total_seeds = len(rules.all_seed_uris())
     if total_seeds > MAX_SEEDS:

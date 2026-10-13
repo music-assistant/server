@@ -1021,7 +1021,12 @@ class TracksController(MediaControllerBase[Track]):
         """
         folder_conditions = []
         for idx, folder in enumerate(folders):
-            prov_instance, _, rel_path = folder.partition("://")
+            prov_instance, sep, rel_path = folder.partition("://")
+            if not sep or not prov_instance.startswith("filesystem_"):
+                msg = (
+                    f"Invalid folder {folder!r}, expected '<filesystem provider instance>://<path>'"
+                )
+                raise InvalidDataError(msg)
             query_params[f"folder_prov_{idx}"] = prov_instance
             condition = f"folder_pm.provider_instance = :folder_prov_{idx}"
             if rel_path := rel_path.strip("/"):
