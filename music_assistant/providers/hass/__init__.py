@@ -441,32 +441,37 @@ class HomeAssistantProvider(PluginProvider):
         (announcement-capable) media_player entity.
 
         :param mac_addresses: Device MAC addresses to look up (case-insensitive).
-        :param platform: The HA integration domain the media_player entities must belong to.
+        :param platform: The HA integration domain the devices and their media_player entities
+            must belong to.
         :return: Correlation info keyed by lowercased MAC address; devices unknown
-            to Home Assistant are absent from the result.
+            to Home Assistant or to that integration are absent from the result.
         """
         wanted_macs = {mac.lower() for mac in mac_addresses}
         if not wanted_macs:
             return {}
         device_registry = await self.get_device_registry()
-        device_by_mac: dict[str, Device] = {
-            connection[1].lower(): device
+        mac_devices = [
+            (connection[1].lower(), device)
             for device in device_registry.values()
             for connection in device.get("connections", [])
             if len(connection) == 2
             and connection[0] == "mac"
             and connection[1].lower() in wanted_macs
-        }
-        if not device_by_mac:
+        ]
+        if not mac_devices:
             return {}
+        platform_device_ids: set[str] = set()
         media_players_by_device: dict[str, list[str]] = {}
         for entity_id, entry in (await self.get_entity_registry()).items():
-            if (
-                entry.platform == platform
-                and entity_id.startswith("media_player.")
-                and (device_id := entry.device_id)
-            ):
+            if entry.platform != platform or not (device_id := entry.device_id):
+                continue
+            platform_device_ids.add(device_id)
+            if entity_id.startswith("media_player."):
                 media_players_by_device.setdefault(device_id, []).append(entity_id)
+        # other integrations (e.g. network trackers) register their own devices for the same MAC
+        device_by_mac: dict[str, Device] = {
+            mac: device for mac, device in mac_devices if device["id"] in platform_device_ids
+        }
         candidates_by_mac = {
             mac: media_players_by_device.get(device["id"], [])
             for mac, device in device_by_mac.items()
