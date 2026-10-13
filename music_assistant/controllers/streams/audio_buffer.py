@@ -29,7 +29,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import AudioError
 
-from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, STREAM_START_TIMEOUT, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
     CONF_BUFFER_SIZE,
@@ -73,9 +73,8 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 # Callback signature for cancel observers: invoked when the buffer is cancelled/cleared.
 CancelCallback = Callable[[], None]
 
-# Maximum seconds to wait for the first playable audio, on top of any time the producer
-# is allowed to spend waiting for a provider source-stream slot.
-BUFFER_READY_TIMEOUT: Final[int] = 15
+# Seconds allowed on top of the remaining ready threshold once the first audio arrives.
+BUFFER_READY_MARGIN: Final[int] = 5
 
 
 class AudioBufferEOF(Exception):
@@ -141,6 +140,7 @@ class AudioBuffer:
         self._producer_error: Exception | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
         self.ready = asyncio.Event()
+        self._audio_received = asyncio.Event()
         self._cancel_callbacks: list[CancelCallback] = []
         self._ready_wait_lock = asyncio.Lock()
         # media second currently heard from this buffer (None if unknown),
@@ -438,6 +438,7 @@ class AudioBuffer:
             self._cancelled = True
             self._producer_error = None
             self.ready.clear()
+            self._audio_received.clear()
             self._cancel_callbacks.clear()
             self._data_available.notify_all()
             self._space_available.notify_all()
@@ -475,8 +476,8 @@ class AudioBuffer:
         """
         log_prefix = f"get_buffer[{reason}]" if reason else "get_buffer"
         # the producer may spend its source wait before the first byte arrives,
-        # so the readiness budget covers that wait on top of the audio itself
-        ready_timeout = BUFFER_READY_TIMEOUT + (source_wait_timeout or 0)
+        # so the budget for the first audio covers that wait on top of the stream start
+        first_audio_timeout = STREAM_START_TIMEOUT + (source_wait_timeout or 0)
 
         # reuse existing valid buffer
         existing_buffer: AudioBuffer | None = streamdetails.buffer
@@ -515,7 +516,7 @@ class AudioBuffer:
                 )
                 if wait_ready:
                     await existing_buffer._wait_until_ready(
-                        streamdetails, ready_timeout, log_prefix
+                        streamdetails, first_audio_timeout, log_prefix
                     )
                 return existing_buffer
 
@@ -537,26 +538,28 @@ class AudioBuffer:
         audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=on_complete)
 
         if wait_ready:
-            await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
+            await audio_buffer._wait_until_ready(streamdetails, first_audio_timeout, log_prefix)
 
         return audio_buffer
 
     # -- Private methods --
 
     async def _wait_until_ready(
-        self, streamdetails: StreamDetails, ready_timeout: float, log_prefix: str
+        self, streamdetails: StreamDetails, first_audio_timeout: float, log_prefix: str
     ) -> None:
         """
         Wait until this buffer can serve playback or raise its producer failure.
 
         :param streamdetails: Stream details currently referencing this buffer.
-        :param ready_timeout: Maximum seconds to wait for enough buffered audio.
+        :param first_audio_timeout: Maximum seconds to wait for the first audio to arrive.
+            Once audio flows, the wait continues only for the time the rest of the
+            ready threshold needs.
         :param log_prefix: Caller context for logging.
         """
         async with self._ready_wait_lock:
             if not self.ready.is_set():
                 try:
-                    await asyncio.wait_for(self.ready.wait(), timeout=ready_timeout)
+                    await self._wait_for_audio_then_ready(first_audio_timeout)
                 except TimeoutError as err:
                     # clear() does not wake this wait, and only marks the buffer cancelled
                     # once the producer is gone - so a buffer released elsewhere (to free a
@@ -586,6 +589,13 @@ class AudioBuffer:
             if isinstance(producer_error, AudioError):
                 raise producer_error
             raise AudioError("Failed to stream audio") from producer_error
+
+    async def _wait_for_audio_then_ready(self, first_audio_timeout: float) -> None:
+        """Wait for the first audio, then for the ready threshold; raise TimeoutError if stalled."""
+        await asyncio.wait_for(self._audio_received.wait(), timeout=first_audio_timeout)
+        buffered = self._discarded_chunks + len(self._chunks)
+        remaining = max(0, self._ready_at_chunk - buffered)
+        await asyncio.wait_for(self.ready.wait(), timeout=remaining + BUFFER_READY_MARGIN)
 
     async def _clear_failed_buffer(self, streamdetails: StreamDetails) -> Exception | None:
         """
@@ -621,6 +631,7 @@ class AudioBuffer:
 
             chunk_position = self._discarded_chunks + len(self._chunks)
             self._chunks.append(chunk)
+            self._audio_received.set()
             if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
@@ -655,6 +666,7 @@ class AudioBuffer:
     def _mark_ready(self) -> None:
         """Signal that the buffer holds audio a consumer can start playing."""
         self.ready.set()
+        self._audio_received.set()
         # a source that failed or ended empty also lands here, without the
         # buffer ever having become playable
         if self._chunks and not self.has_error:
@@ -828,7 +840,7 @@ class AudioBuffer:
         """Notify waiting consumers that the producer has failed."""
         async with self._lock:
             if not self.ready.is_set():
-                self.ready.set()
+                self._mark_ready()
             self._data_available.notify_all()
 
 

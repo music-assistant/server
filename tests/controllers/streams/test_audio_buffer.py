@@ -608,6 +608,90 @@ async def test_ready_timeout_reports_the_wait(caplog: pytest.LogCaptureFixture) 
 
 
 @pytest.mark.asyncio
+async def test_ready_wait_extends_while_audio_keeps_arriving() -> None:
+    """A slow source that delivers its first audio late is not given up on."""
+
+    async def _slow_start_source() -> AsyncGenerator[bytes]:
+        await asyncio.sleep(0.2)
+        for _ in range(3):
+            yield ONE_SECOND_CHUNK
+            await asyncio.sleep(0.1)
+
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL, ready_threshold=3)
+    streamdetails.buffer = buf
+    buf.fill(_slow_start_source(), source_name=streamdetails.uri)
+
+    # the buffer only reaches its threshold after the first-audio budget has passed
+    await buf._wait_until_ready(streamdetails, 0.3, "test")
+
+    assert buf.ready.is_set()
+    assert streamdetails.buffer is buf
+    await buf.clear()
+
+
+@pytest.mark.asyncio
+async def test_ready_wait_gives_up_on_a_source_without_audio() -> None:
+    """A source that never delivers audio fails within the first-audio budget."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    streamdetails.buffer = buf
+    buf.fill(_silent_source(), source_name=streamdetails.uri)
+
+    started = time.monotonic()
+    with pytest.raises(AudioError, match="Timeout waiting for audio data"):
+        await buf._wait_until_ready(streamdetails, 0.1, "test")
+
+    assert time.monotonic() - started < 0.5
+
+
+@pytest.mark.asyncio
+async def test_ready_wait_fails_fast_on_a_producer_error_before_first_audio() -> None:
+    """A source that fails before delivering audio surfaces its error without waiting."""
+
+    async def _failing_source() -> AsyncGenerator[bytes]:
+        msg = "source failed"
+        raise AudioError(msg)
+        yield  # type: ignore[unreachable]
+
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    streamdetails.buffer = buf
+    buf.fill(_failing_source(), source_name=streamdetails.uri)
+
+    started = time.monotonic()
+    with pytest.raises(AudioError, match="source failed"):
+        await buf._wait_until_ready(streamdetails, 5, "test")
+
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_ready_wait_gives_up_on_a_source_that_stalls_after_first_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source that stops delivering after its first chunk fails well before the first-audio budget."""
+
+    async def _stalling_source() -> AsyncGenerator[bytes]:
+        yield ONE_SECOND_CHUNK
+        await asyncio.sleep(10)
+        yield ONE_SECOND_CHUNK
+
+    monkeypatch.setattr(audio_buffer_mod, "BUFFER_READY_MARGIN", 0.05)
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL, ready_threshold=2)
+    streamdetails.buffer = buf
+    buf.fill(_stalling_source(), source_name=streamdetails.uri)
+
+    started = time.monotonic()
+    with pytest.raises(AudioError, match="Timeout waiting for audio data"):
+        await buf._wait_until_ready(streamdetails, 5, "test")
+
+    # one chunk (one second of audio) was still missing, plus the margin
+    assert 1 <= time.monotonic() - started < 2
+
+
+@pytest.mark.asyncio
 async def test_ready_timeout_stays_quiet_for_a_released_buffer(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

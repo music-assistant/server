@@ -57,8 +57,8 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   simply cannot reach Spotify. Nor can a guessed stdout marker, which would fail healthy
   playback; the one line the engine is known to print, `login failed`, is handled below.
   So playback fails with a plain `Timeout waiting for audio data`: the queue's
-  readiness budget (`BUFFER_READY_TIMEOUT`, plus any capacity wait) starts before the
-  session's own `_STARTUP_TIMEOUT_S` and runs out first, cancelling the producer where it
+  readiness budget (`STREAM_START_TIMEOUT` for the first audio, plus any capacity wait)
+  or the session's own `_STARTUP_TIMEOUT_S` runs out, cancelling the producer where it
   waits. Either budget running out fails only the item: a sign-in that never arrived is
   never read as a lost pairing. The daemon's own output is logged at DEBUG behind the
   `[soloist]` prefix; capturing a real revocation is what unblocks handling it.
