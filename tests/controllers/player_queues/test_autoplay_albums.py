@@ -26,7 +26,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.constants import VARIOUS_ARTISTS_NAME
+from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.player_queues import autoplay
 from music_assistant.controllers.player_queues.autoplay import Autoplay, albums_mode_available
 from music_assistant.controllers.player_queues.constants import ArtistOrder
@@ -317,7 +317,14 @@ async def test_the_next_album_follows_the_album_artist(
 
 @pytest.mark.parametrize(
     "album_kind",
-    ["various artists", "various artists spelled", "no album", "missing album", "album times out"],
+    [
+        "various artists",
+        "various artists spelled",
+        "various artists by mbid",
+        "no album",
+        "missing album",
+        "album times out",
+    ],
 )
 async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, album_kind: str
@@ -336,6 +343,14 @@ async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
         album.artists[0] = ItemMapping(
             media_type=MediaType.ARTIST, item_id="va", provider="streaming", name="various artists"
         )
+        monkeypatch.setattr(mass.music.albums, "get", AsyncMock(return_value=album))
+    elif album_kind == "various artists by mbid":
+        # a provider may name Various Artists its own way; its MusicBrainz ID still tells
+        assert isinstance(album, Album)
+        album.artists[0] = Artist(
+            item_id="va", provider="streaming", name="Diverse", provider_mappings=set()
+        )
+        album.artists[0].mbid = VARIOUS_ARTISTS_MBID
         monkeypatch.setattr(mass.music.albums, "get", AsyncMock(return_value=album))
     elif album_kind == "missing album":
         album = ItemMapping(
@@ -359,7 +374,13 @@ async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
 async def test_no_album_without_a_music_artist(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, seed: str
 ) -> None:
-    """A track without an artist, with one that can't be loaded, or by an author, gets no album."""
+    """
+    A track without an artist, with one that can't be loaded, or by an author, gets no album.
+
+    Only the author is a seed, so only its similar artists are asked.
+    """
+    lookup = AsyncMock(return_value=[])
+    monkeypatch.setattr(mass.music.artists, "similar_artists", lookup)
     artists: list[Artist | ItemMapping] = []
     if seed in ("missing artist", "artist times out"):
         artists = [
@@ -375,6 +396,7 @@ async def test_no_album_without_a_music_artist(
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
 
     assert await Autoplay(mass.player_queues).get_album_tracks(queue) == []
+    assert lookup.await_count == (seed == "author")
 
 
 @pytest.mark.parametrize(
@@ -688,3 +710,52 @@ async def test_a_stored_artist_asks_its_library_copy_only_when_in_the_library(
 
     asked = (stored.item_id, "library") if in_library else (artist.item_id, artist.provider)
     lookup.assert_awaited_once_with(*asked, limit=10)
+
+
+@pytest.mark.parametrize("ends", ["all played", "can't be listed", "3 fail"])
+async def test_a_similar_artist_plays_next_whatever_ends_the_artist(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, ends: str
+) -> None:
+    """Albums all played, not listed, or 3 failing to load: a similar artist plays next."""
+    queue, seed, _lookup = await _similar_setup(mass, monkeypatch, {"Next": (1990,)})
+    queues = mass.player_queues
+    if ends == "can't be listed":
+        candidates = queues.artist_album_candidates
+
+        async def _unlisted(artist: Artist, *args: Any) -> list[list[Album]] | None:
+            return None if artist.item_id == seed.item_id else await candidates(artist, *args)
+
+        monkeypatch.setattr(queues, "artist_album_candidates", _unlisted)
+    if ends == "3 fail":
+        for year in (1975, 1976, 1977):
+            await _add_album(mass, seed, f"Broken {year}", year)
+        # a 4th album that would load: the 3 failures end the artist first
+        await _add_album(mass, seed, "Good", 1978)
+        copy_tracks = queues.album_copy_tracks
+
+        async def _failing(copies: list[Album | ItemMapping]) -> list[Track]:
+            if copies[0].name.startswith("Broken"):
+                raise MediaNotFoundError("gone")
+            return await copy_tracks(copies)
+
+        monkeypatch.setattr(queues, "album_copy_tracks", _failing)
+
+    result = await Autoplay(queues).get_album_tracks(queue)
+
+    assert _album_of(result) == {"Next 1990"}
+
+
+async def test_a_disliked_track_is_left_out_of_the_album(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The album plays without the tracks its user disliked."""
+    _stub_provider(mass, [_streaming_album("A", 1970)])
+
+    async def _without_disliked(_mass: Any, _userid: Any, items: list[Track]) -> list[Track]:
+        return [track for track in items if track.name != "A 1"]
+
+    monkeypatch.setattr(autoplay, "without_disliked_tracks", _without_disliked)
+    queue = _queue(mass, monkeypatch, _queued_track([_provider_artist()], None))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    assert _names(await Autoplay(mass.player_queues).get_album_tracks(queue)) == ["A 2"]
