@@ -1313,7 +1313,10 @@ class MediaResolver:
                     continue
                 # a track listed as another source's entry plays as this source's own entry
                 for item in (track, own_entries.get(uri)):
-                    if item and (copy := self._served_copy(item, provider, item_id)) is not None:
+                    if (
+                        item is not None
+                        and (copy := self._served_copy(item, provider, item_id)) is not None
+                    ):
                         served[uri] = (item, copy)
                         break
             served_by[instance_id] = served
@@ -1507,11 +1510,17 @@ class MediaResolver:
         :param provider: The instance to play it from.
         :param item_id: The item id the instance lists the track under.
         """
+        copies = [mapping for mapping in track.provider_mappings if mapping.item_id == item_id]
+        if any(
+            not mapping.available and mapping.provider_instance == provider.instance_id
+            for mapping in copies
+        ):
+            # the instance no longer finds this id, so no other account stands in for it either
+            return None
         served = [
             mapping
-            for mapping in track.provider_mappings
+            for mapping in copies
             if mapping.available
-            and mapping.item_id == item_id
             and (
                 mapping.provider_instance == provider.instance_id
                 # another account of a streaming service plays the very same item ids

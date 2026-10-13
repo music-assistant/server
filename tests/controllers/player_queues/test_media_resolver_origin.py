@@ -374,6 +374,20 @@ async def test_an_album_outside_the_library_pins_its_tracks_to_their_own_copies(
 
 
 @pytest.mark.usefixtures("loaded_sources")
+async def test_an_album_plays_only_its_library_tracks_when_set_to() -> None:
+    """The album selection setting decides whether only the library tracks are listed."""
+    resolver = _album_resolver(mapped_album_listing([_track("t1", TIDAL)]))
+    resolver.mass.config.get_raw_core_config_value = Mock(return_value="library_tracks")  # type: ignore[method-assign]
+
+    with _sources():
+        await resolver._resolve_media_items(_album(TIDAL))
+
+    cast("AsyncMock", resolver.mass.music.albums.playback_listing).assert_awaited_once_with(
+        "al1", TIDAL, in_library_only=True
+    )
+
+
+@pytest.mark.usefixtures("loaded_sources")
 async def test_an_album_play_starts_at_the_chosen_track() -> None:
     """The album plays from the chosen track on, the tracks before it at the end when asked."""
     tracks = [_track("t1", TIDAL), _track("t2", TIDAL), _track("t3", TIDAL)]
@@ -421,8 +435,19 @@ async def test_another_account_of_the_service_plays_the_copies_it_lists() -> Non
             {TIDAL: "t1"},
             {TIDAL: OTHER_TIDAL},
         ),
+        # the source no longer finds the id, which another account still plays
+        (
+            _track("1", "library", _copy(TIDAL, "t1", available=False), _copy(OTHER_TIDAL, "t1")),
+            {TIDAL: "t1"},
+            None,
+        ),
     ],
-    ids=["another local library", "an unavailable copy", "a source no longer loaded"],
+    ids=[
+        "another local library",
+        "an unavailable copy",
+        "a source no longer loaded",
+        "an id the source no longer finds",
+    ],
 )
 async def test_a_source_that_can_not_play_its_copy_is_no_album_source(
     row: Track, listed_ids: dict[str, str], gone: dict[str, str] | None

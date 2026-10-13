@@ -20,10 +20,10 @@ def _mapping(item_id: str, instance: str = INSTANCE_ID) -> ProviderMapping:
     )
 
 
-def _row(*mappings: ProviderMapping) -> Track:
+def _row(*mappings: ProviderMapping, item_id: str = "1") -> Track:
     """Build a library track with the given copies."""
     return Track(
-        item_id="1", provider="library", name="Come Together", provider_mappings=set(mappings)
+        item_id=item_id, provider="library", name="Come Together", provider_mappings=set(mappings)
     )
 
 
@@ -55,8 +55,12 @@ async def _listed(provider: LocalFileSystemProvider, album_id: str) -> list[set[
 
 @pytest.mark.parametrize(
     "path",
-    ["Beatles/Abbey Road (1969)/01.flac", "Beatles/Abbey Road (1969)/CD1/01.flac"],
-    ids=["album folder", "disc folder"],
+    [
+        "Beatles/Abbey Road (1969)/01.flac",
+        "Beatles/Abbey Road (1969)/CD1/01.flac",
+        "Beatles/Abbey Road (1969)/Abbey Road.cue::track01",
+    ],
+    ids=["album folder", "disc folder", "cue sheet"],
 )
 async def test_a_track_lists_only_its_file_in_the_album_folder(path: str) -> None:
     """The copy of the same recording in another album's folder is no track of this album."""
@@ -73,8 +77,22 @@ async def test_a_track_lists_only_its_file_in_the_album_folder(path: str) -> Non
     assert len(row.provider_mappings) == 4
 
 
-async def test_a_track_without_a_file_in_the_album_folder_keeps_its_files() -> None:
-    """An album id that is no folder (artist and album name) keeps the track's files here."""
+async def test_a_track_with_its_file_in_another_albums_folder_only_is_left_out() -> None:
+    """A track of the album whose only file here sits in another album's folder is not listed."""
+    rows = [
+        _row(_mapping("Beatles/Abbey Road (1969)/01.flac")),
+        # merged with the remaster's file, and missing from this rip
+        _row(_mapping("Beatles/Abbey Road (2009)/07.flac"), item_id="7"),
+    ]
+    provider = _provider("Beatles/Abbey Road (1969)", rows)
+
+    assert await _listed(provider, "Beatles/Abbey Road (1969)") == [
+        {"Beatles/Abbey Road (1969)/01.flac"}
+    ]
+
+
+async def test_an_album_id_that_is_no_folder_keeps_the_tracks_files() -> None:
+    """An album id made up of the artist and album name keeps the tracks' files here."""
     row = _row(
         _mapping("Various/01 Come Together.mp3"),
         _mapping("Singles/Come Together.flac"),

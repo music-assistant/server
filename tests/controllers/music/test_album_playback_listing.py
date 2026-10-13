@@ -160,6 +160,41 @@ def test_a_source_keeps_the_entry_with_the_lowest_id_of_a_track() -> None:
     assert listing.own_entries == {TIDAL: {album[0].uri: second[0]}}
 
 
+def test_a_source_lists_a_track_under_the_id_the_track_is_mapped_under() -> None:
+    """An account listing a track as two of its albums lists it as the copy the track has."""
+    row = _row("1", 1, _mapping(TIDAL, "250"), isrc=_isrc(1))
+    duplicate = [_entry(TIDAL, "100", 1, _isrc(1))]
+    album = [_entry(TIDAL, "250", 1, _isrc(1))]
+
+    listing = album_listing([row], [(TIDAL, duplicate), (TIDAL, album)])
+
+    assert listing.listed_ids == {TIDAL: {row.uri: "250"}}
+
+
+@pytest.mark.parametrize(
+    ("name", "isrc", "kept"),
+    [
+        ("Song 12", _isrc(13), True),
+        ("Something (Studio Demo)", None, True),
+        ("Something (Studio Demo)", _isrc(13), False),
+    ],
+    ids=["the same title", "no ISRC to tell", "another title and ISRC"],
+)
+def test_a_source_keeps_its_entry_at_a_shared_position_only_for_the_same_track(
+    name: str, isrc: str | None, kept: bool
+) -> None:
+    """Two sources' entries at one position play in each other's place only as one track."""
+    qobuz = [_entry(QOBUZ, "q12", 12, _isrc(12))]
+    tidal = [_entry(TIDAL, "t12", 12, isrc, name=name)]
+
+    listing = album_listing([], [(TIDAL, tidal), (QOBUZ, qobuz)])
+
+    # the album page lists the position once, as the entry of the first source by instance id
+    assert listing.tracks == qobuz
+    assert listing.listed_ids[TIDAL] == {qobuz[0].uri: "t12"}
+    assert listing.own_entries == ({TIDAL: {qobuz[0].uri: tidal[0]}} if kept else {})
+
+
 @pytest.mark.parametrize(
     "entry",
     [
