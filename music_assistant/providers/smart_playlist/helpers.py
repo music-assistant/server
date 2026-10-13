@@ -6,13 +6,16 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import json_dumps, json_loads
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 LOGIC_AND = "AND"
 LOGIC_OR = "OR"
@@ -94,6 +97,14 @@ def _coerce_str_keyed_dict(value: Any, field_name: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise InvalidDataError(f"Expected dict for {field_name}, got {type(value).__name__}")
     return {str(k): str(v) for k, v in value.items()}
+
+
+def _folder_label(path: str, source_names: Mapping[str, str]) -> str:
+    """Return a folder's path prefixed with its music source, as the editor shows it."""
+    prov_instance, _, rel_path = path.partition("://")
+    source = source_names.get(prov_instance, prov_instance)
+    rel_path = rel_path.strip("/")
+    return f"{source}/{rel_path}" if rel_path else source
 
 
 @dataclass
@@ -246,8 +257,12 @@ class SmartPlaylistRules:
             last_played_before_unit=data.get("last_played_before_unit"),
         )
 
-    def human_readable(self) -> str:
-        """Return a human-readable summary of the rules."""
+    def human_readable(self, source_names: Mapping[str, str] | None = None) -> str:
+        """
+        Return a human-readable summary of the rules.
+
+        :param source_names: Music source name per provider instance, to name folders by.
+        """
         parts: list[str] = []
         if self.favorites_only:
             parts.append("Favorites only")
@@ -265,7 +280,7 @@ class SmartPlaylistRules:
             names = [self.album_names.get(aid, str(aid)) for aid in self.album_ids]
             parts.append(f"Albums: {', '.join(names)}")
         if self.folder_paths:
-            names = [path.partition("://")[2] or "/" for path in self.folder_paths]
+            names = [_folder_label(path, source_names or {}) for path in self.folder_paths]
             parts.append(f"Folders: {', '.join(names)}")
         seed_uris = self.all_seed_uris()
         if seed_uris:

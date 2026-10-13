@@ -637,7 +637,7 @@ class SmartPlaylistProvider(PluginProvider):
                 "playlist_id": playlist_id,
                 "name": self._names_store.get(playlist_id, playlist_id),
                 "rules": rules.to_dict(),
-                "summary": rules.human_readable(),
+                "summary": self._summary(rules),
             }
             for playlist_id, rules in self._rules_store.items()
         ]
@@ -1431,13 +1431,17 @@ class SmartPlaylistProvider(PluginProvider):
         except Exception as exc:
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
 
+    def _summary(self, rules: SmartPlaylistRules) -> str:
+        """Return the rules summary, naming folders by their music source."""
+        return rules.human_readable({prov.instance_id: prov.name for prov in self.mass.providers})
+
     def _description_for(self, playlist_id: str, rules: SmartPlaylistRules) -> str:
         """Return the stored AI description when enabled, else the rules summary."""
         if self.config.get_value(CONF_AI_DESCRIPTIONS) and (
             stored := self._descriptions_store.get(playlist_id)
         ):
             return stored
-        return f"{DESCRIPTION_PREFIX}{rules.human_readable()}"
+        return f"{DESCRIPTION_PREFIX}{self._summary(rules)}"
 
     def _schedule_ai_description_refresh(self, playlist_id: str) -> None:
         """Schedule a background AI description refresh, deduped per playlist."""
@@ -1520,7 +1524,7 @@ class SmartPlaylistProvider(PluginProvider):
             f"Write it in the language matching the locale '{locale}'. "
             "Reply with only the description, no quotes or preamble.\n"
             f"Playlist name: {name}\n"
-            f"It contains tracks matching these rules: {rules.human_readable()}"
+            f"It contains tracks matching these rules: {self._summary(rules)}"
         )
 
     async def _load_rules_from_disk(self) -> None:

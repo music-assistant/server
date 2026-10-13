@@ -113,11 +113,14 @@ class TestSmartPlaylistRules:
         assert rules.logic == LOGIC_AND
 
     def test_human_readable_folders(self) -> None:
-        """human_readable lists the folder paths without the provider prefix."""
+        """human_readable names each folder by its music source and full path."""
         rules = SmartPlaylistRules(
             folder_paths=["filesystem_local--abc://Rock/Classic", "filesystem_local--abc://"]
         )
-        assert rules.human_readable() == "Folders: Rock/Classic, /"
+        assert (
+            rules.human_readable({"filesystem_local--abc": "My Music"})
+            == "Folders: My Music/Rock/Classic, My Music"
+        )
 
     @pytest.mark.parametrize("folder", ["Rock/Classic", "://Rock", "spotify--x://"])
     def test_validate_rejects_folder_without_provider(self, folder: str) -> None:
