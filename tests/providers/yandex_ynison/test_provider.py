@@ -1192,14 +1192,17 @@ class TestYnisonStateHandling:
         assert sent["status"]["progress_ms"] == "0"
         assert sent["player_queue"]["current_playable_index"] == 0
 
-    async def test_failed_single_item_next_does_not_restart_local_stream(self) -> None:
-        """A rejected repeat-all queue publication cannot move the local decoder."""
+    @pytest.mark.parametrize("repeat_mode", ["ALL", "NONE"])
+    async def test_failed_single_item_next_does_not_restart_local_stream(
+        self, repeat_mode: str
+    ) -> None:
+        """A rejected queue publication cannot move the local decoder."""
         provider = _make_provider()
         state = _make_ynison_state(
             current_playable_index=0,
             playable_list=[{"playable_id": "t1"}],
         )
-        state.player_state["player_queue"]["options"] = {"repeat_mode": "ALL"}
+        state.player_state["player_queue"]["options"] = {"repeat_mode": repeat_mode}
         client = _mock_ynison(state)
         client.update_player_state.side_effect = YnisonSendError("disconnected")
         provider._ynison = client
@@ -1239,7 +1242,33 @@ class TestYnisonStateHandling:
         assert sent_status["paused"] is True
         assert mock_ynison.update_player_state.await_args.kwargs["strict"] is True
 
-    async def test_failed_queue_advance_returns_stop(self) -> None:
+    @pytest.mark.parametrize("repeat_mode", [None, "NONE"])
+    @pytest.mark.parametrize("queue_size", [1, 3])
+    async def test_explicit_next_at_finite_end_succeeds(
+        self, repeat_mode: str | None, queue_size: int
+    ) -> None:
+        """Publishing the terminal pause at a finite boundary is a successful Next."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=queue_size - 1,
+            playable_list=[{"playable_id": f"t{index}"} for index in range(queue_size)],
+            progress_ms=5000,
+            duration_ms=200000,
+        )
+        if repeat_mode is not None:
+            state.player_state["player_queue"]["options"] = {"repeat_mode": repeat_mode}
+        client = _mock_ynison(state)
+        provider._ynison = client
+
+        await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.NEXT)
+
+        sent = client.update_player_state.call_args.kwargs["player_state"]
+        assert sent["status"]["paused"] is True
+        assert sent["status"]["progress_ms"] == "200000"
+        assert sent["player_queue"]["current_playable_index"] == queue_size - 1
+        assert not provider._track_changed_event.is_set()
+
+    async def test_failed_queue_advance_returns_failure(self) -> None:
         """Natural completion cannot report a transition that failed to send."""
         provider = _make_provider()
         state = _make_ynison_state(
@@ -1250,7 +1279,7 @@ class TestYnisonStateHandling:
         mock_ynison.update_player_state.side_effect = YnisonSendError("down")
         provider._ynison = mock_ynison
 
-        assert await provider._signal_track_completion() == "stop"
+        assert await provider._signal_track_completion() == "failed"
 
     async def test_signal_track_completion_no_send_full_state(self) -> None:
         """Track completion never sends full state reset."""
@@ -4198,6 +4227,35 @@ class TestNaturalEndDifferentiation:
 
         assert calls == [1]
 
+    async def test_failed_natural_navigation_stops_without_waiting_for_track_change(self) -> None:
+        """A failed end-of-track publication stops the stream without a 30-second wait."""
+        provider = self._build()
+        client = _mock_ynison(
+            _make_ynison_state(playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}])
+        )
+        client.update_player_state.side_effect = YnisonSendError("offline")
+        provider._ynison = client
+
+        async def decode(
+            _track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del seek_ms, session_params
+            yield b"\x00" * 4
+
+        _stub_attr(provider, "_stream_track", decode)
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch.object(
+                provider, "_wait_for_track_change", side_effect=AssertionError("unexpected wait")
+            ) as wait,
+        ):
+            await self._drive_to_exhaustion(provider)
+        wait.assert_not_awaited()
+        assert client.update_player_state.await_count == 2
+
     async def test_track_change_during_chunk_loop_suppresses_signal(self) -> None:
         """
         `_track_changed_event` set mid-stream → natural_end False → no signal.
@@ -4850,7 +4908,7 @@ class TestTrackBoundaryRecovery:
             "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
             new=AsyncMock(side_effect=replace_queue),
         ):
-            assert await provider._signal_track_completion() == "stop"
+            assert await provider._signal_track_completion() == "failed"
 
         client.update_player_state.assert_not_awaited()
 

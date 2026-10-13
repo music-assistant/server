@@ -2510,6 +2510,52 @@ class TestSendStrictMode:
 class TestScheduleReconnect:
     """Tests for the extracted `_schedule_reconnect` helper."""
 
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_success_and_cancellation_do_not_log_background_errors(
+        self, client: YnisonClient, cancelled: bool
+    ) -> None:
+        """Normal completion and cancellation cannot be reported as reconnect defects."""
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        loop_errors: list[dict[str, Any]] = []
+        loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+        try:
+            with patch.object(
+                client, "_reconnect", side_effect=asyncio.CancelledError() if cancelled else None
+            ):
+                client._schedule_reconnect()
+                task = client._reconnect_task
+                assert task is not None
+                await asyncio.gather(task, return_exceptions=True)
+        finally:
+            loop.set_exception_handler(previous_handler)
+        client._logger.error.assert_not_called()
+        assert not loop_errors
+
+    async def test_unexpected_refresh_failure_is_logged_before_task_is_awaited(
+        self, client: YnisonClient
+    ) -> None:
+        """A background refresh defect is reported immediately and remains awaitable."""
+        logged = asyncio.Event()
+        failure = RuntimeError("unexpected refresh defect")
+        client._on_auth_failure = AsyncMock(side_effect=failure)
+        client._session = MagicMock(closed=False)
+        client._logger.error.side_effect = lambda *_args, **_kwargs: logged.set()
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock),
+            patch.object(client, "_get_redirect_ticket", side_effect=LoginFailed("expired")),
+        ):
+            client._schedule_reconnect()
+            task = client._reconnect_task
+            assert task is not None
+            try:
+                await asyncio.wait_for(logged.wait(), timeout=1)
+                assert client._logger.error.call_args.kwargs["exc_info"][1] is failure
+                with pytest.raises(RuntimeError, match="unexpected refresh defect"):
+                    await task
+            finally:
+                await asyncio.gather(task, return_exceptions=True)
+
     async def test_schedule_reconnect_creates_task_when_none_alive(
         self, client: YnisonClient
     ) -> None:

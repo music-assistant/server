@@ -719,16 +719,17 @@ class YnisonClient:
         self._has_connected_once = True
 
         # Start message loop
-        self._message_task = asyncio.create_task(self._message_loop())
-        self._message_task.add_done_callback(self._on_message_task_done)
+        self._message_task = asyncio.create_task(self._message_loop(), name="ynison_message_loop")
+        self._message_task.add_done_callback(self._on_background_task_done)
 
-    def _on_message_task_done(self, task: asyncio.Task[None]) -> None:
-        """Report background message failures with their original traceback."""
+    def _on_background_task_done(self, task: asyncio.Task[None]) -> None:
+        """Report unexpected background failures with their original traceback."""
         if task.cancelled():
             return
         if (error := task.exception()) is not None:
             self._logger.error(
-                "Unexpected error in Ynison message task",
+                "Unexpected error in Ynison task %s",
+                task.get_name(),
                 exc_info=(type(error), error, error.__traceback__),
             )
 
@@ -1038,7 +1039,8 @@ class YnisonClient:
             return
         if self._reconnect_task is not None and not self._reconnect_task.done():
             return
-        self._reconnect_task = asyncio.create_task(self._reconnect())
+        self._reconnect_task = asyncio.create_task(self._reconnect(), name="ynison_reconnect")
+        self._reconnect_task.add_done_callback(self._on_background_task_done)
 
 
 def generate_device_id() -> str:

@@ -620,7 +620,7 @@ class YandexYnisonProvider(PluginProvider):
                     if completion == "restart":
                         self._seek_position_ms = 0
                         self._track_changed_event.set()
-                    elif completion == "stop" or not await self._wait_for_track_change(
+                    elif completion in ("stop", "failed") or not await self._wait_for_track_change(
                         (track_id, old_index)
                     ):
                         self._stream_stop_event.set()
@@ -2006,11 +2006,11 @@ class YandexYnisonProvider(PluginProvider):
         *,
         natural: bool,
         duration: int,
-    ) -> Literal["change", "restart", "stop", "radio"]:
+    ) -> Literal["change", "restart", "stop", "failed", "radio"]:
         """Decide and publish navigation against the current serialized queue base."""
         if not (client := self._ynison):
-            return "stop"
-        outcome: Literal["change", "restart", "stop", "radio"] = "stop"
+            return "failed"
+        outcome: Literal["change", "restart", "stop", "failed", "radio"] = "failed"
         original_queue = client.queue_snapshot()
         for key in ("version", "options", "shuffle_optional"):
             original_queue.pop(key, None)
@@ -2055,18 +2055,18 @@ class YandexYnisonProvider(PluginProvider):
 
         for attempt in range(2):
             if not await self._wait_for_ynison_connection(client):
-                return "stop"
+                return "failed"
             try:
                 await client.mutate_player_state(mutate)
                 return outcome
             except ResourceTemporarilyUnavailable:
                 self.logger.warning("Queue navigation superseded", exc_info=True)
-                return "stop"
+                return "failed"
             except YnisonSendError:
                 self.logger.warning("Queue navigation transport failure", exc_info=True)
                 if attempt == 0:
                     await asyncio.sleep(1)
-        return "stop"
+        return "failed"
 
     async def _wait_for_ynison_connection(self, client: YnisonClient) -> bool:
         """Wait at most ten seconds for the same client's transport to recover."""
@@ -2087,14 +2087,14 @@ class YandexYnisonProvider(PluginProvider):
         self,
         *,
         natural: bool = True,
-    ) -> Literal["change", "restart", "stop"]:
+    ) -> Literal["change", "restart", "stop", "failed"]:
         """Serialize navigation, including asynchronous RADIO replenishment."""
         async with self._queue_navigation_lock:
             return await self._complete_track(natural=natural)
 
     async def _complete_track(
         self, *, natural: bool = True
-    ) -> Literal["change", "restart", "stop"]:
+    ) -> Literal["change", "restart", "stop", "failed"]:
         """
         Signal that the current track finished playing.
 
@@ -2108,10 +2108,11 @@ class YandexYnisonProvider(PluginProvider):
 
         :param natural: Whether playback reached the end rather than receiving
             an explicit next command.
-        :return: The stream-loop action after publishing the completion state.
+        :return: The published navigation outcome, or ``failed`` when navigation
+            could not be completed.
         """
         if not self._ynison:
-            return "stop"
+            return "failed"
         duration = self._best_duration_ms()
         self._actual_duration_ms = 0
 
@@ -2159,7 +2160,7 @@ class YandexYnisonProvider(PluginProvider):
             else:
                 expanded = await self._replenish_radio_queue(entity_id, entity_type, playable_list)
             if self._ynison.queue_generation != generation:
-                return "stop"
+                return "failed"
             expanded_next_index = len(playable_list)
             if expanded and expanded_next_index < len(expanded):
                 if await self._advance_queue_index(
@@ -2168,7 +2169,7 @@ class YandexYnisonProvider(PluginProvider):
                     expected_generation=generation,
                 ):
                     return "change"
-                return "stop"
+                return "failed"
             if expanded:
                 self.logger.warning(
                     "Expanded queue has %d items but next_index=%d — re-fetching",
@@ -2183,7 +2184,7 @@ class YandexYnisonProvider(PluginProvider):
                         expected_generation=generation,
                     ):
                         return "change"
-                    return "stop"
+                    return "failed"
                 self.logger.warning("Still cannot advance after re-fetch")
             else:
                 self.logger.warning(
@@ -2191,8 +2192,8 @@ class YandexYnisonProvider(PluginProvider):
                     entity_id,
                     entity_type,
                 )
-            return "stop"
-        return "stop"
+            return "failed"
+        return "failed"
 
     async def _replenish_radio_queue(
         self,
@@ -2368,7 +2369,7 @@ class YandexYnisonProvider(PluginProvider):
         """Handle next track command — signal track end so Yandex advances."""
         self._require_connected_ynison()
         outcome = await self._signal_track_completion(natural=False)
-        if outcome == "stop":
+        if outcome == "failed":
             raise PlayerCommandFailed("Ynison queue advance failed")
         if outcome == "restart":
             self._seek_position_ms = 0
