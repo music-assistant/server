@@ -1,0 +1,56 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "E-Mail"
+    },
+    "password": {
+      "label": "Password"
+    },
+    "otp_code": {
+      "label": "One-time code",
+      "description": "The current code from the authenticator app set up for Amazon two-step verification."
+    },
+    "api_url": {
+      "label": "Companion skill API URL"
+    },
+    "api_username": {
+      "label": "Companion skill API username"
+    },
+    "api_password": {
+      "label": "Companion skill API password"
+    },
+    "alexa_language": {
+      "label": "Alexa language",
+      "description": "Language of the voice command that opens the companion skill on your devices.",
+      "options": {
+        "en-US": "English (USA)",
+        "en-CA": "English (Canada)",
+        "de-DE": "German (Germany)",
+        "es-ES": "Spanish (Spain)",
+        "fr-FR": "French (France)",
+        "fr-CA": "French (Canada)",
+        "it-IT": "Italian (Italy)",
+        "pt-BR": "Portuguese (Brazil)",
+        "nl-NL": "Dutch (Netherlands)"
+      }
+    }
+  },
+  "setup_flow": {
+    "credentials": {
+      "title": "Sign in to Amazon",
+      "description": "Enter your Amazon account details and a one-time code from your authenticator app. Two-step verification with an authenticator app must be enabled on the account. Also enter the address of the companion skill API."
+    },
+    "login": {
+      "title": "Signing in to Amazon",
+      "progress_text": "Signing in to Amazon and registering Music Assistant..."
+    }
+  },
+  "errors": {
+    "invalid_auth": "Amazon rejected the login. Check the e-mail, password and one-time code.",
+    "cannot_connect": "Unable to reach Amazon. Please try again.",
+    "cannot_retrieve_data": "Signed in, but Amazon returned unexpected data. Please try again."
+  },
+  "manifest": {
+    "description": "Stream to Amazon Alexa (Echo) devices, using aioamazondevices."
+  }
+}
