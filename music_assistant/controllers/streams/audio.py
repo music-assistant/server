@@ -3393,6 +3393,10 @@ class StreamsAudio:
                 streamdetails.duration = queue_item.media_item.duration
             elif queue_item.duration:
                 streamdetails.duration = queue_item.duration
+        elif not queue_item.duration:
+            # the next track is only handed to the player for items with a known duration
+            queue_item.duration = streamdetails.duration
+            mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
         if seek_position and not streamdetails.allow_seek:
             self.logger.warning("seeking is not possible on this stream!")
             seek_position = 0
