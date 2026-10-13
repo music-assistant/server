@@ -102,6 +102,7 @@ from music_assistant.controllers.music.helpers import (
     sibling_instance_mappings,
     sort_search_result,
 )
+from music_assistant.controllers.music.listing_cache import invalidate_listings
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.audiobooks import AudiobooksController
@@ -937,11 +938,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Return the sort options a listing offers, the listing's default first.
 
         :param listing: The listing to get the sort options of.
-        :raises InvalidDataError: When the listing does not sort on the server.
         """
-        if (options := LISTING_SORT_OPTIONS.get(listing)) is None:
-            raise InvalidDataError(f"Listing {listing.value} has no sort options")
-        return list(options)
+        return list(LISTING_SORT_OPTIONS[listing])
 
     @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
@@ -1692,6 +1690,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
         if library_id is None:
+            # the item's listings (album tracks, ...) are assembled anew from here on
+            await invalidate_listings(self.mass, media_item)
             return media_item
         # restore in_library state from before the refresh
         for prov_mapping in media_item.provider_mappings:
@@ -1705,7 +1705,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if library_item.media_type == MediaType.ALBUM:
             # update (local) album tracks
             for album_track in await self.albums.tracks(
-                library_item.item_id, library_item.provider, True
+                library_item.item_id, library_item.provider, True, limit=None
             ):
                 for prov_mapping in album_track.provider_mappings:
                     if not (prov := self._visible_provider_for(prov_mapping)):
@@ -1721,6 +1721,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        # the item's listings (album tracks, ...) are assembled anew from here on, after
+        # every change the refresh made
+        await invalidate_listings(self.mass, library_item)
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
@@ -2033,7 +2036,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return None
 
     async def get_resume_position(
-        self, media_item: Audiobook | PodcastEpisode, userid: str | None = None
+        self,
+        media_item: Audiobook | PodcastEpisode,
+        userid: str | None = None,
+        pinned: tuple[str, str] | None = None,
     ) -> tuple[bool, int]:
         """
         Get progress (resume point) details for the given audiobook or episode.
@@ -2045,6 +2051,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         Returns a boolean with the fully_played status
         and an integer with the resume position in ms.
+
+        :param media_item: The audiobook or episode to get the resume point of.
+        :param userid: The user to get the resume point for, by default the session user.
+        :param pinned: The (provider instance, item id) of the copy the item plays from, whose
+            resume point is asked for first.
         """
         provider_fully_played = False
         provider_position_ms = 0
@@ -2070,11 +2081,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             preferred_provider_instances = provider_instances
 
-        preferred_providers = [
-            x
-            for x in media_item.provider_mappings
-            if x.provider_instance in preferred_provider_instances
-        ]
+        preferred_providers = sorted(
+            (
+                x
+                for x in media_item.provider_mappings
+                if x.provider_instance in preferred_provider_instances
+            ),
+            # the copy the item plays from first, then the others in a fixed order
+            key=lambda x: (
+                (x.provider_instance, x.item_id) != pinned,
+                x.provider_instance,
+                x.item_id,
+            ),
+        )
 
         # Try to get position from providers
         for prov_mapping in preferred_providers:
@@ -2498,6 +2517,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Add provider mapping to the given library item."""
         ctrl = self.get_controller(media_type)
+        # only a mapping the provider itself returns as this media type is accepted
+        await ctrl.get_provider_item(
+            mapping.item_id,
+            mapping.provider_instance,
+            allow_fallback=False,
+            strict_provider_instance=True,
+        )
+        provider = self.mass.get_provider(mapping.provider_instance)
+        if provider is None or provider.domain != mapping.provider_domain:
+            msg = f"Provider domain {mapping.provider_domain} does not match {mapping.provider_instance}"
+            raise InvalidDataError(msg)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
     @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)

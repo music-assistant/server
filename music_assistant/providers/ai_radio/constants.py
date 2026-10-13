@@ -30,12 +30,37 @@ ENGINE_RETRY_DELAY = 120
 
 TRANSLATION_OWNER = "provider.ai_radio"
 
+# rules every bundled host ends with, so a persona text only has to describe its own style
+SHARED_HOST_RULES = (
+    "Write for spoken delivery: short sentences, no lists, no headings, no emojis, no stage "
+    "directions. Never invent facts, dates or quotes; when you lack a detail, say less. Never "
+    "mention being an AI. Name artists, tracks and albums in their original language and never "
+    "translate them; when unsure of a name's original form, use its English form. Respelling a "
+    "name for pronunciation is fine."
+)
 DEFAULT_LLM_INSTRUCTIONS = (
-    "Host personality: warm, sharp, music-literate, and slightly premium "
-    "without sounding formal. Program instructions: write for spoken delivery, "
-    "keep segments concise, avoid bullet-point phrasing, avoid clichés, "
-    "mention concrete details when available, and maintain a believable "
-    "radio flow between sections."
+    "You are a warm, sharp, music-literate radio host, slightly premium without "
+    "sounding formal. Keep segments concise, skip cliches and filler, use concrete "
+    "details when you have them, and keep a believable flow from one segment into "
+    f"the next. {SHARED_HOST_RULES}"
+)
+# segment prompts shared by the default host template and the bundled presets
+SONG_TRANSITION_PROMPT = (
+    "The previous track was <prev_songinfo> and the next track is <next_songinfo>. Bridge the two "
+    "with one natural link, such as a shared era, scene, mood or a surprising contrast, then hand "
+    "off by naming the next artist and title once. No filler, and mention the previous track at "
+    "most in passing."
+)
+WEATHER_UPDATE_PROMPT = (
+    "Using <weather_hourly> and <timestamp>, give a short spoken weather update: how it feels "
+    "right now, what changes over the next few hours, and one practical tip if the forecast calls "
+    "for it. Pick the two or three numbers that matter instead of reading the whole table."
+)
+NEWS_BULLETIN_PROMPT = (
+    "Give a short global news bulletin anchored to <timestamp>. Search the web for today's "
+    "headlines and pick two or three current, broadly relevant items, each in one or two spoken "
+    "sentences, fact-focused and clearly separated. Lead with the item most listeners care about "
+    "and skip speculation."
 )
 # appended to every AI query on top of the station's own instructions: how a name has to be
 # spelled to survive the TTS engine is a pipeline concern, not a per-station style choice
@@ -66,12 +91,6 @@ DEFAULT_WEATHER_TIMEOUT_SECONDS = 20
 FAHRENHEIT_COUNTRY_CODES = frozenset(
     {"US", "PR", "GU", "VI", "AS", "MP", "LR", "MM", "BS", "BZ", "KY", "PW"}
 )
-DEFAULT_MAX_CONCURRENT_RUNS = 1
-MAX_FINISHED_SESSIONS = 20
-
-# a show whose playback never starts within this window is declared failed
-SHOW_START_TIMEOUT_SECONDS = 300
-
 # last-resort guard so a wedged engine fails the clip instead of hanging the session.
 # Kept above the deadlines the engines apply themselves (120s in the OpenAI-compatible
 # providers), so their own, more specific error is the one that surfaces.
@@ -79,6 +98,12 @@ AI_QUERY_TIMEOUT_SECONDS = 180
 
 # ffprobe reports no status code, so its message is all we have to spot a failed render
 TTS_SERVER_ERROR_MARKERS = ("Server returned 5XX", "HTTP error 5")
+
+# a session whose renders (an AI query or a TTS call) fail this many times in a row stops
+# asking the engines for RENDER_COOLDOWN_SECONDS: an engine that is out of quota or down
+# fails every clip, and each attempt costs a request against that same quota
+RENDER_FAILURES_BEFORE_COOLDOWN = 3
+RENDER_COOLDOWN_SECONDS = 15 * 60
 
 DEFAULT_TTS_LOUDNESS_BOOST = 3
 
@@ -94,6 +119,10 @@ MIN_LOUDNESS_REFERENCE_SECONDS = 2
 
 # a clip is seconds of audio, so a measurement that takes this long is a wedged fetch
 LOUDNESS_MEASURE_TIMEOUT = 60
+
+# a track without a known duration still has to count for something in the minute
+# bookkeeping, so it is billed as an average length song
+FALLBACK_TRACK_SECONDS = 210
 
 # spoken clips are handed to MA already decoded, so the filter chain runs once here
 # instead of once per output
@@ -163,4 +192,3 @@ EVENT_HOSTS_UPDATED = "hosts_updated"
 EVENT_STATIONS_UPDATED = "stations_updated"
 EVENT_SECTIONS_UPDATED = "sections_updated"
 EVENT_QUEUE_DJ_UPDATED = "queue_dj_updated"
-EVENT_SESSIONS_UPDATED = "sessions_updated"

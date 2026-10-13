@@ -462,3 +462,21 @@ async def test_power_off_failure_is_reported() -> None:
     with pytest.raises(PlayerCommandFailed):
         await player.power(False)
     assert player._attr_powered is True
+
+
+async def test_no_zone_for_the_room_is_reported() -> None:
+    """A room the host gives no zone raises a clear error instead of playing into nothing."""
+    player = _flow_player()
+    player.room = "Bar"
+    host = MagicMock()
+    host.async_create_zone = AsyncMock()
+    host.roomlst_to_zoneudn.return_value = None
+    provider = MagicMock()
+    provider.host = host
+    provider.get_zone_for_room.return_value = None
+    player._provider = provider
+    with (
+        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
+        pytest.raises(PlayerCommandFailed, match="no zone for Bar"),
+    ):
+        await player._ensure_playable_zone()

@@ -47,12 +47,14 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
+    ATTR_QUEUE_DJ,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
     ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
+    CONF_TTS_ENGINE,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_LLM_INSTRUCTIONS,
     MIN_LOUDNESS_REFERENCE_SECONDS,
@@ -61,7 +63,7 @@ from music_assistant.providers.ai_radio.constants import (
     TTS_PEAK_CEILING_DB,
     TTS_SPEECHNORM_FILTER,
 )
-from music_assistant.providers.ai_radio.models import SessionState
+from music_assistant.providers.ai_radio.models import DJQueueState, RenderHealth
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
 
 from .events import ProviderEventRecorder
@@ -76,18 +78,30 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
     def __init__(self) -> None:
         """Initialize the harness with recording stubs."""
         self.logger = logging.getLogger("tests.ai_radio.rendering")
-        self._sessions: dict[str, Any] = {}
         self._hosts: dict[str, dict[str, Any]] = {}
+        self._dj_queues: dict[str, DJQueueState] = {}
+        self.paused: list[tuple[str, str]] = []
+        self.llm_calls = 0
         self.llm_prompts: list[str] = []
         self.tts_texts: list[str] = []
         self.tts_options: list[dict[str, Any] | None] = []
         self.weather_calls = 0
         self.fail_generation = False
+        self.fail_tts = False
+        self.unavailable_tts_engines: set[str] = set()
         self.measure_calls: list[str] = []
         self.measured_loudness: float | None = None
 
+    def get_setup_value(self, key: str, default: Any = None) -> Any:
+        """Return the engine every setup value names."""
+        return "engine-x"
+
     def _configured_now(self) -> Any:
         return __import__("datetime").datetime(2026, 7, 30, 18, 30)
+
+    def _pause_queue_dj(self, queue_id: str, failed_item_id: str) -> None:
+        """Record the queue whose DJ would pause instead of pausing it."""
+        self.paused.append((queue_id, failed_item_id))
 
     async def _generate_text(
         self, instructions: str, prompt: str, web_mode: str, language: str | None = None
@@ -95,6 +109,7 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
         # a real suspension point so concurrent callers actually interleave under
         # asyncio.gather, otherwise the lock in get_stream_details is never exercised
         await asyncio.sleep(0)
+        self.llm_calls += 1
         if self.fail_generation:
             raise RuntimeError("llm down")
         self.llm_prompts.append(prompt)
@@ -104,15 +119,26 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
         self.weather_calls += 1
         return {"<weather_hourly>": f"fresh weather {self.weather_calls}"}
 
+    async def _get_tts_engine(self, engine_uid: str | None = None) -> TTSEngine:
+        """Return a stand-in for the first available engine: the host's, then the default."""
+        for uid in (engine_uid, self.get_setup_value(CONF_TTS_ENGINE)):
+            if uid and uid not in self.unavailable_tts_engines:
+                engine = MagicMock(spec=TTSEngine)
+                engine.uid = uid
+                return engine
+        raise MusicAssistantError("No text-to-speech engine available")
+
     async def _render_tts_media(
         self,
         text: str,
-        engine_uid: str | None = None,
+        engine: TTSEngine,
         language: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[str, StreamType, AudioFormat]:
         self.tts_texts.append(text)
         self.tts_options.append(options)
+        if self.fail_tts:
+            raise RuntimeError("tts quota exceeded")
         return (
             f"http://ha.invalid/api/tts_proxy/{len(self.tts_texts)}.mp3",
             StreamType.HTTP,
@@ -413,23 +439,8 @@ async def test_render_tts_media_does_not_retry_after_a_timeout_style_failure() -
     engine.provider.get_tts_message.assert_awaited_once()
 
 
-async def test_clip_is_found_in_the_owning_sessions_queue() -> None:
-    """The session registry points the lookup at the queue that holds the clip."""
-    renderer = DummyRenderer()
-    session = SessionState(session_id="sess", station_id="st", queue_id="player_b")
-    renderer._sessions = {"sess": session}
-    _attach_queues(
-        renderer,
-        {"player_a": [], "player_b": [_clip_item("sess_001", queue_id="player_b")]},
-    )
-
-    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
-
-    assert streamdetails.item_id == "sess_001"
-
-
-async def test_clip_is_found_by_scanning_every_queue_after_a_restart() -> None:
-    """With the session registry gone, the clip is still located in its persisted queue."""
+async def test_clip_is_found_by_scanning_every_queue() -> None:
+    """Every queue is a candidate, so the clip is located wherever it is persisted."""
     renderer = DummyRenderer()
     _attach_queues(
         renderer,
@@ -471,44 +482,40 @@ async def test_llm_failure_raises_media_not_found() -> None:
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
 
-async def test_render_failure_increments_the_session_skip_counter() -> None:
-    """A skipped clip is recorded on its session without failing the run."""
+async def test_generation_failure_logs_the_skip(caplog: pytest.LogCaptureFixture) -> None:
+    """A clip that fails to generate is skipped and logged, without failing the run."""
     renderer = DummyRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     _attach_queue(renderer, [_clip_item("sess_001")])
     renderer.fail_generation = True
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("failed to generate" in message for message in caplog.messages)
 
 
-async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
-    """A TTS failure surfaces as missing media and is recorded on the owning session."""
+async def test_tts_failure_raises_media_not_found_and_logs_the_skip(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A TTS failure surfaces as missing media and is logged."""
 
     class UnspeakableRenderer(DummyRenderer):
         async def _render_tts_media(
             self,
             text: str,
-            engine_uid: str | None = None,
+            engine: TTSEngine,
             language: str | None = None,
             options: dict[str, Any] | None = None,
         ) -> tuple[str, StreamType, AudioFormat]:
             raise RuntimeError("tts down")
 
     renderer = UnspeakableRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     _attach_queue(renderer, [_clip_item("sess_001")])
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("failed TTS" in message for message in caplog.messages)
 
 
 class NoWeatherRenderer(DummyRenderer):
@@ -519,20 +526,19 @@ class NoWeatherRenderer(DummyRenderer):
         return {}
 
 
-async def test_weather_required_clip_is_skipped_when_weather_is_unavailable() -> None:
+async def test_weather_required_clip_is_skipped_when_weather_is_unavailable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A weather-required clip with no forecast data is skipped instead of airing a guess."""
     renderer = NoWeatherRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     item = _clip_item("sess_001")
     item.extra_attributes[ATTR_WEATHER_REQUIRED] = True
     _attach_queue(renderer, [item])
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("weather data unavailable" in message for message in caplog.messages)
     assert renderer.llm_prompts == []
 
 
@@ -590,7 +596,6 @@ def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRe
 
     monkeypatch.setattr("music_assistant.providers.ai_radio.rendering.async_parse_tags", _raise)
     renderer = RealProbeRenderer()
-    renderer._sessions = {"sess": SessionState(session_id="sess", station_id="st")}
     _attach_queue(renderer, [_clip_item("sess_001")])
     return renderer
 
@@ -600,7 +605,7 @@ def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRe
     ["Server returned 5XX Server Error reply", "HTTP error 500 Internal Server Error"],
 )
 async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
-    server_error: str, monkeypatch: pytest.MonkeyPatch
+    server_error: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """An engine that hands out a URL it cannot render fails the clip, not the playback."""
     renderer = _failing_probe(
@@ -608,16 +613,14 @@ async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
         monkeypatch,
     )
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    session = renderer._sessions["sess"]
-    assert session.skipped_sections == 1
-    assert "Check the logs of the TTS engine" in session.last_render_error
+    assert "Check the logs of the TTS engine" in caplog.text
     # the hint is a guess, so the whole probe message travels with it - the url included,
     # since that is what tells a failing engine apart from a failing tts server behind it
-    assert "http://ha.invalid/api/tts_proxy/1.mp3" in session.last_render_error
-    assert server_error in session.last_render_error
+    assert "http://ha.invalid/api/tts_proxy/1.mp3" in caplog.text
+    assert server_error in caplog.text
 
 
 async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -631,7 +634,273 @@ async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) ->
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
     assert streamdetails.duration is None
-    assert renderer._sessions["sess"].skipped_sections == 0
+
+
+def _dj_clip_item(session_id: str, index: int, **overrides: Any) -> QueueItem:
+    """Build a queue item for a pending clip of the given queue DJ session, hosted by rick."""
+    item = _clip_item(
+        f"{session_id}_{index:03d}",
+        **{ATTR_SESSION_ID: session_id, ATTR_HOST_ID: "rick", **overrides},
+    )
+    item.extra_attributes[ATTR_QUEUE_DJ] = True
+    return item
+
+
+def _failing_dj_renderer(clips: int, **overrides: Any) -> tuple[DummyRenderer, DJQueueState]:
+    """Build a renderer whose TTS engine fails, with the given number of pending DJ clips."""
+    renderer = DummyRenderer()
+    renderer.fail_tts = True
+    state = DJQueueState(queue_id="player_a", host_id="rick", dj_session_id="djlive")
+    renderer._dj_queues = {"player_a": state}
+    _attach_queue(
+        renderer, [_dj_clip_item("djlive", index, **overrides) for index in range(1, clips + 1)]
+    )
+    return renderer, state
+
+
+async def _fail_renders(renderer: DummyRenderer, *clip_ids: str) -> None:
+    """Request each of the given clips, every one of them failing to render."""
+    for clip_id in clip_ids:
+        with pytest.raises(MediaNotFoundError):
+            await renderer.get_stream_details(clip_id, MediaType.SOUND_EFFECT)
+
+
+def _pause_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return the messages of the warnings that announce paused breaks."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "pauses the breaks" in record.getMessage()
+    ]
+
+
+async def test_a_failed_clip_is_not_rendered_again() -> None:
+    """The player's own request after a failed preload does not render the clip a second time."""
+    renderer, state = _failing_dj_renderer(0)
+    item = _dj_clip_item("djlive", 1)
+    signals = _attach_queue(renderer, [item])
+
+    await _fail_renders(renderer, "djlive_001", "djlive_001")
+
+    assert renderer.llm_calls == 1
+    assert len(renderer.tts_texts) == 1
+    assert item.available is False
+    assert state.render_health.failures == 1
+    # one update stores the rendered script, the other publishes the clip as unplayable
+    assert signals == [True, True]
+
+
+async def test_a_request_waiting_behind_a_failed_render_does_not_render_again() -> None:
+    """Two simultaneous requests for a clip that fails cost the engines a single attempt."""
+    renderer, state = _failing_dj_renderer(1)
+
+    results = await asyncio.gather(
+        renderer.get_stream_details("djlive_001", MediaType.SOUND_EFFECT),
+        renderer.get_stream_details("djlive_001", MediaType.SOUND_EFFECT),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, MediaNotFoundError) for result in results)
+    assert len(renderer.tts_texts) == 1
+    assert state.render_health.failures == 1
+
+
+@pytest.mark.parametrize(
+    ("host_engine", "named_engine"),
+    [("", "TTS engine 'engine-x'"), ("tts.rick_voice", "TTS engine 'tts.rick_voice'")],
+)
+async def test_three_failed_renders_in_a_row_pause_the_breaks(
+    host_engine: str, named_engine: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A DJ stops calling the engines after three failures, pauses, and says so once."""
+    renderer, state = _failing_dj_renderer(4, **{ATTR_HOST_ID: "rick"})
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": host_engine}}
+
+    with caplog.at_level(logging.DEBUG, logger="tests.ai_radio.rendering"):
+        await _fail_renders(renderer, "djlive_001", "djlive_002")
+        assert renderer.paused == []
+        await _fail_renders(renderer, "djlive_003")
+        assert state.render_health.cooling_down(asyncio.get_running_loop().time())
+        await _fail_renders(renderer, "djlive_004")
+
+    assert renderer.llm_calls == 3
+    assert len(renderer.tts_texts) == 3
+    assert renderer.paused == [("player_a", "qi_djlive_003")]
+    warnings = _pause_warnings(caplog)
+    assert len(warnings) == 1
+    assert named_engine in warnings[0]
+    assert any(
+        record.levelno == logging.DEBUG and "breaks are paused" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    ("unavailable", "named_engine"),
+    [
+        # the default stands in for the host's engine and is the one named
+        ({"tts.rick_voice"}, "TTS engine 'engine-x'"),
+        # nothing resolves, so the engine the host asked for is named
+        ({"tts.rick_voice", "engine-x"}, "TTS engine 'tts.rick_voice'"),
+    ],
+)
+async def test_the_pause_names_the_engine_that_resolved(
+    unavailable: set[str], named_engine: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The pause names the engine that stood in for the host's, or the host's own when none did."""
+    renderer, state = _failing_dj_renderer(3, **{ATTR_HOST_ID: "rick"})
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
+    renderer.unavailable_tts_engines = unavailable
+
+    with caplog.at_level(logging.WARNING, logger="tests.ai_radio.rendering"):
+        await _fail_renders(renderer, "djlive_001", "djlive_002", "djlive_003")
+
+    assert state.render_health.cooling_down(asyncio.get_running_loop().time())
+    warnings = _pause_warnings(caplog)
+    assert len(warnings) == 1
+    assert named_engine in warnings[0]
+
+
+async def test_a_successful_render_resets_the_failure_count() -> None:
+    """Failures only pause the breaks when they come in a row."""
+    renderer, state = _failing_dj_renderer(5)
+
+    await _fail_renders(renderer, "djlive_001", "djlive_002")
+    renderer.fail_tts = False
+    await renderer.get_stream_details("djlive_003", MediaType.SOUND_EFFECT)
+    assert state.render_health.failures == 0
+    renderer.fail_tts = True
+    await _fail_renders(renderer, "djlive_004", "djlive_005")
+
+    assert state.render_health.failures == 2
+    assert not state.render_health.cooling_down(asyncio.get_running_loop().time())
+
+
+async def test_ai_and_tts_failures_count_alike(caplog: pytest.LogCaptureFixture) -> None:
+    """A failed AI query and a failed TTS call both count towards the pause."""
+    renderer, state = _failing_dj_renderer(3)
+    renderer.fail_tts = False
+    renderer.fail_generation = True
+    await _fail_renders(renderer, "djlive_001")
+    renderer.fail_generation = False
+    renderer.fail_tts = True
+    await _fail_renders(renderer, "djlive_002")
+    renderer.fail_tts = False
+    renderer.fail_generation = True
+
+    with caplog.at_level(logging.WARNING, logger="tests.ai_radio.rendering"):
+        await _fail_renders(renderer, "djlive_003")
+
+    assert state.render_health.cooling_down(asyncio.get_running_loop().time())
+    warnings = _pause_warnings(caplog)
+    assert len(warnings) == 1
+    assert "AI engine 'engine-x'" in warnings[0]
+
+
+async def test_a_failure_after_the_cool_down_restarts_it(caplog: pytest.LogCaptureFixture) -> None:
+    """Once the cool-down is over one render is tried, and its failure pauses the breaks again."""
+    renderer, state = _failing_dj_renderer(4)
+    loop = asyncio.get_running_loop()
+
+    with caplog.at_level(logging.WARNING, logger="tests.ai_radio.rendering"):
+        await _fail_renders(renderer, "djlive_001", "djlive_002", "djlive_003")
+        state.render_health.cooldown_until = loop.time() - 1
+        await _fail_renders(renderer, "djlive_004")
+
+    assert renderer.llm_calls == 4
+    assert state.render_health.cooling_down(loop.time())
+    assert len(_pause_warnings(caplog)) == 2
+    assert [item_id for _queue_id, item_id in renderer.paused] == ["qi_djlive_003", "qi_djlive_004"]
+
+
+def test_a_late_result_during_the_cool_down_leaves_it_alone() -> None:
+    """A render that was in flight when the pause started neither extends nor ends the pause."""
+    health = RenderHealth()
+    assert [health.record_failure(100.0) for _ in range(3)] == [False, False, True]
+    paused_until = health.cooldown_until
+
+    assert health.record_failure(105.0) is False
+    assert health.failures == 4
+    assert health.cooldown_until == paused_until
+    health.record_success(110.0)
+    assert health.failures == 4
+    assert health.cooldown_until == paused_until
+    # once the pause is over the next render decides: a failure starts a new pause, a
+    # success lifts it
+    assert paused_until is not None
+    assert health.record_failure(paused_until) is True
+    restarted_until = health.cooldown_until
+    assert restarted_until is not None
+    assert restarted_until > paused_until
+    health.record_success(restarted_until)
+    assert health.failures == 0
+    assert health.cooldown_until is None
+
+
+async def test_a_success_after_the_cool_down_lifts_it() -> None:
+    """Once the cool-down is over a render that succeeds lets the DJ render freely again."""
+    renderer, state = _failing_dj_renderer(4)
+    await _fail_renders(renderer, "djlive_001", "djlive_002", "djlive_003")
+    state.render_health.cooldown_until = asyncio.get_running_loop().time() - 1
+    renderer.fail_tts = False
+
+    await renderer.get_stream_details("djlive_004", MediaType.SOUND_EFFECT)
+
+    assert renderer.llm_calls == 4
+    assert state.render_health.failures == 0
+    assert state.render_health.cooldown_until is None
+
+
+async def test_the_queue_update_of_the_pausing_failure_finds_the_dj_paused() -> None:
+    """The DJ replan that the mark's queue update starts sees the cool-down already in place."""
+    renderer, state = _failing_dj_renderer(3)
+    loop = asyncio.get_running_loop()
+    paused_at_update: list[bool] = []
+
+    def _record_pause_state(*_args: Any, **_kwargs: Any) -> None:
+        paused_at_update.append(state.render_health.cooling_down(loop.time()))
+
+    cast("Any", renderer).mass.player_queues.signal_update = _record_pause_state
+
+    await _fail_renders(renderer, "djlive_001", "djlive_002", "djlive_003")
+
+    assert paused_at_update[-1] is True
+
+
+async def test_a_clip_left_by_an_earlier_dj_session_counts_against_the_live_dj() -> None:
+    """A clip persisted by the DJ session before a restart talks through the same engines."""
+    renderer, state = _failing_dj_renderer(0)
+    _attach_queue(renderer, [_dj_clip_item("djold", index) for index in range(1, 4)])
+
+    await _fail_renders(renderer, "djold_001", "djold_002", "djold_003")
+
+    assert state.render_health.cooling_down(asyncio.get_running_loop().time())
+    assert renderer.paused == [("player_a", "qi_djold_003")]
+
+
+async def test_a_clip_of_a_host_switched_away_mid_render_counts_nowhere() -> None:
+    """A clip of the previous host, still rendering after a switch, leaves the new host alone."""
+    renderer, state = _failing_dj_renderer(0)
+    _attach_queue(
+        renderer,
+        [_dj_clip_item("djold", index, **{ATTR_HOST_ID: "daisy"}) for index in range(1, 4)],
+    )
+
+    await _fail_renders(renderer, "djold_001", "djold_002", "djold_003")
+
+    assert state.render_health.failures == 0
+    assert renderer.paused == []
+
+
+async def test_a_clip_on_a_queue_without_a_dj_counts_nowhere() -> None:
+    """A queue that runs no DJ has no failure bookkeeping, so its clips are never paused."""
+    renderer, _state = _failing_dj_renderer(3)
+    renderer._dj_queues = {}
+
+    await _fail_renders(renderer, "djlive_001", "djlive_002", "djlive_003")
+
+    assert renderer.llm_calls == 3
+    assert renderer.paused == []
 
 
 async def test_generate_script_uses_host_instructions() -> None:
@@ -855,13 +1124,13 @@ async def test_render_tts_media_forwards_the_hosts_tts_options() -> None:
 async def test_render_tts_media_streams_a_url_over_http() -> None:
     """A TTS engine returning a proxy URL yields an HTTP stream with the MP3 default format."""
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+    engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    path, stream_type, audio_format = await renderer._render_tts_media("hello world")
+    path, stream_type, audio_format = await renderer._render_tts_media("hello world", engine)
 
     assert path == "http://example.test/api/tts_proxy/abc123.mp3"
     assert stream_type == StreamType.HTTP
     assert audio_format.content_type == ContentType.MP3
-    engine = cast("Any", renderer)._get_tts_engine.return_value
     # the provider-scoped engine.id, never engine.uid, and never omitted
     engine.provider.get_tts_message.assert_awaited_once_with(
         "hello world", language=None, engine_id="tts.cloud", options=None
@@ -874,8 +1143,9 @@ async def test_render_tts_media_streams_a_local_file_from_disk(tmp_path: Path) -
     clip.write_bytes(b"")
     renderer = _tts_renderer(str(clip))
     _attach_queue(renderer, [_clip_item("sess_001")])
+    engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    path, stream_type, _ = await renderer._render_tts_media("hello world")
+    path, stream_type, _ = await renderer._render_tts_media("hello world", engine)
 
     assert path == str(clip)
     assert stream_type == StreamType.LOCAL_FILE
@@ -886,8 +1156,9 @@ async def test_render_tts_media_keeps_a_declared_audio_format(tmp_path: Path) ->
     clip = tmp_path / "section.wav"
     clip.write_bytes(b"")
     renderer = _tts_renderer(str(clip), AudioFormat(content_type=ContentType.WAV))
+    engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    _, _, audio_format = await renderer._render_tts_media("hello world")
+    _, _, audio_format = await renderer._render_tts_media("hello world", engine)
 
     assert audio_format.content_type == ContentType.WAV
 
@@ -896,9 +1167,10 @@ async def test_render_tts_media_keeps_a_declared_audio_format(tmp_path: Path) ->
 async def test_render_tts_media_rejects_an_unplayable_path(path: str) -> None:
     """A path that is neither a URL nor an existing file fails loudly instead of degrading."""
     renderer = _tts_renderer(path)
+    engine = cast("Any", renderer)._get_tts_engine.return_value
 
     with pytest.raises(InvalidDataError, match="unusable stream path"):
-        await renderer._render_tts_media("hello world")
+        await renderer._render_tts_media("hello world", engine)
 
 
 async def test_render_tts_media_gives_up_on_a_stalled_engine(
@@ -919,7 +1191,7 @@ async def test_render_tts_media_gives_up_on_a_stalled_engine(
     engine.provider.get_tts_message = AsyncMock(side_effect=_answers_too_late)
 
     with pytest.raises(MusicAssistantError, match="did not respond within"):
-        await renderer._render_tts_media("hello world")
+        await renderer._render_tts_media("hello world", engine)
 
 
 async def test_render_tts_media_reports_an_engine_side_timeout_as_is() -> None:
@@ -929,7 +1201,7 @@ async def test_render_tts_media_reports_an_engine_side_timeout_as_is() -> None:
     engine.provider.get_tts_message = AsyncMock(side_effect=TimeoutError)
 
     with pytest.raises(TimeoutError) as error:
-        await renderer._render_tts_media("hello world")
+        await renderer._render_tts_media("hello world", engine)
     assert "did not respond within" not in str(error.value)
 
 
@@ -1005,6 +1277,23 @@ async def test_the_engine_reference_is_measured_once_and_reused() -> None:
 
     assert len(renderer.measure_calls) == 1
     assert first.data.gain_db == second.data.gain_db
+
+
+async def test_a_host_whose_engine_fell_back_shares_the_default_reference() -> None:
+    """A host whose engine fell back to the default levels against the default's measurement."""
+    renderer = DummyRenderer()
+    renderer.measured_loudness = -18.0
+    renderer._hosts = {"rick": {"id": "rick", "tts_engine": "tts.rick_voice"}}
+    renderer.unavailable_tts_engines = {"tts.rick_voice"}
+    _attach_queue(
+        renderer, [_clip_item("sess_001"), _clip_item("sess_002", **{ATTR_HOST_ID: "rick"})]
+    )
+    _attach_normalization(renderer)
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    await renderer.get_stream_details("sess_002", MediaType.SOUND_EFFECT)
+
+    assert len(renderer.measure_calls) == 1
 
 
 async def test_a_short_clip_levels_itself_but_never_becomes_the_reference() -> None:
@@ -1202,10 +1491,12 @@ def _attach_post(
     lyrics: tuple[str | None, str | None] = (None, None),
     flow_mode: bool = True,
     flow_mode_required: bool = False,
+    boundary_mix_required: bool = False,
+    mixes_item_boundaries: bool = False,
     load_next: QueueItem | Exception | None = None,
 ) -> tuple[AsyncMock, AsyncMock]:
     """
-    Wire the next queue item, the queue's flow mode, its stored analysis and its lyrics.
+    Wire the next queue item, how the queue mixes it, its stored analysis and its lyrics.
 
     The queue's load of the next item yields ``load_next``, or raises it; by default it
     is the next item itself, resolved to its own provider mapping.
@@ -1228,6 +1519,8 @@ def _attach_post(
         queue_id=queue_id, flow_mode=flow_mode
     )
     mass.streams.flow_mode_required = MagicMock(return_value=flow_mode_required)
+    mass.streams.boundary_mix_required = MagicMock(return_value=boundary_mix_required)
+    mass.streams.mixes_item_boundaries = MagicMock(return_value=mixes_item_boundaries)
     get_vocal_onset = AsyncMock(return_value=analysis_onset)
     mass.streams.audio_analysis = SimpleNamespace(get_vocal_onset=get_vocal_onset)
     get_track_lyrics = AsyncMock(return_value=lyrics)
@@ -1400,10 +1693,10 @@ async def test_a_repeated_resolve_does_not_look_the_lyrics_up_again() -> None:
     get_track_lyrics.assert_awaited_once()
 
 
-async def test_a_post_is_skipped_when_the_player_does_not_stream_in_flow_mode(
+async def test_a_post_is_skipped_when_the_player_neither_plays_gapless_nor_streams_in_flow_mode(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Outside flow mode nothing would mix the overlap, so the onset is never looked up."""
+    """Nothing would mix the overlap on such a player, so the onset is never looked up."""
     renderer = DummyRenderer()
     clip = _posting_clip_item()
     _attach_queue(renderer, [clip])
@@ -1420,7 +1713,11 @@ async def test_a_post_is_skipped_when_the_player_does_not_stream_in_flow_mode(
     cast("Any", renderer).mass.player_queues.load_next_queue_item.assert_not_awaited()
     get_vocal_onset.assert_not_awaited()
     get_track_lyrics.assert_not_awaited()
-    skips = [r for r in caplog.records if "does not stream in flow mode" in r.getMessage()]
+    skips = [
+        r
+        for r in caplog.records
+        if "neither plays gapless nor streams in flow mode" in r.getMessage()
+    ]
     assert len(skips) == 1
 
 
@@ -1454,6 +1751,36 @@ async def test_a_show_that_holds_the_queue_in_flow_mode_posts_before_it_streams(
 
     assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
     cast("Any", renderer).mass.streams.flow_mode_required.assert_called_once_with("player_a")
+
+
+async def test_a_post_is_armed_on_a_gapless_player_outside_flow_mode() -> None:
+    """A player that plays gapless gets the overlap mixed between its item streams."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, flow_mode=False, mixes_item_boundaries=True
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
+    cast("Any", renderer).mass.streams.mixes_item_boundaries.assert_called_once_with("player_a")
+
+
+async def test_a_post_is_armed_when_the_show_requires_mixed_boundaries() -> None:
+    """A show's requirement settles the player's side, whatever its protocol looks like now."""
+    renderer = DummyRenderer()
+    clip = _posting_clip_item()
+    _attach_queue(renderer, [clip])
+    _attach_post(
+        renderer, _track_item(), analysis_onset=6.0, flow_mode=False, boundary_mix_required=True
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.tail_overlap == TailOverlap(duration=5.6, next_queue_item_id="qi_track")
+    cast("Any", renderer).mass.streams.mixes_item_boundaries.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -42,14 +42,14 @@ from .constants import (
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
-    ATTR_SESSION_ID,
     ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
+    CONF_AI_ENGINE,
+    CONF_TTS_ENGINE,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_TTS_LOUDNESS_BOOST,
     DEFERRED_PLACEHOLDERS,
-    EVENT_SESSIONS_UPDATED,
     LOUDNESS_MEASURE_TIMEOUT,
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
@@ -58,6 +58,7 @@ from .constants import (
     POST_LYRICS_TIMEOUT,
     POST_MIN_HEAD_SECONDS,
     POST_MIN_SECONDS,
+    RENDER_COOLDOWN_SECONDS,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SERVER_ERROR_MARKERS,
@@ -70,13 +71,14 @@ from .post_window import lyric_onset
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.enums import MediaType
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.plugin import TTSEngine
 
-    from .models import SessionState
+    from .models import DJQueueState, RenderHealth
 
 
 @dataclass(slots=True)
@@ -108,7 +110,13 @@ class AIRadioRenderMixin:
         config: ProviderConfig
         logger: logging.Logger
         _hosts: dict[str, dict[str, Any]]
-        _sessions: dict[str, SessionState]
+        _dj_queues: dict[str, DJQueueState]
+
+        def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+            """Return a value collected by this provider's setup flow."""
+
+        def _pause_queue_dj(self, queue_id: str, failed_item_id: str) -> None:
+            """Pause the queue DJ's breaks until the render cool-down is over."""
 
     _render_locks: dict[str, asyncio.Lock]
     _media_cache: dict[str, _CachedClipMedia]
@@ -128,10 +136,17 @@ class AIRadioRenderMixin:
             raise MediaNotFoundError(f"AI Radio clip {item_id} is not in any queue")
         prompt = str(queue_item.extra_attributes.get(ATTR_PROMPT) or "")
         if not prompt:
-            self._record_skip(queue_item, "clip has no prompt to render")
+            self.logger.warning(
+                "AI Radio clip %s (%s) skipped: clip has no prompt to render",
+                item_id,
+                queue_item.name,
+            )
             raise MediaNotFoundError(f"AI Radio clip {item_id} has no prompt to render")
 
         async with self._lock_for(item_id):
+            # under the lock, so a request that waited here behind a failed render of the same
+            # clip does not render it again
+            self._refuse_unrenderable(queue_item, item_id)
             text = str(queue_item.extra_attributes.get(ATTR_RENDERED_TEXT) or "")
             if not text:
                 text = await self._generate_script(queue_item, prompt, item_id)
@@ -202,6 +217,23 @@ class AIRadioRenderMixin:
         if clip_id not in self._render_locks:
             self._render_locks[clip_id] = asyncio.Lock()
         return self._render_locks[clip_id]
+
+    def _refuse_unrenderable(self, queue_item: QueueItem, clip_id: str) -> None:
+        """Raise MediaNotFoundError when the clip must not be rendered (again)."""
+        if not queue_item.available:
+            # a failed render marked the clip, so the player's own request after the queue's
+            # failed preload does not render it, and bill the engines, a second time
+            raise MediaNotFoundError(f"AI Radio clip {clip_id} already failed to render")
+        health = self._render_health(queue_item)
+        if health is None or not health.cooling_down(asyncio.get_running_loop().time()):
+            return
+        self.logger.debug(
+            "AI Radio clip %s (%s) skipped: breaks are paused after repeated render failures",
+            clip_id,
+            queue_item.name,
+        )
+        self._mark_unplayable(queue_item)
+        raise MediaNotFoundError(f"AI Radio clip {clip_id} skipped while the breaks are paused")
 
     async def _cached_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str
@@ -284,18 +316,12 @@ class AIRadioRenderMixin:
 
     def _candidate_queue_ids(self, clip_id: str) -> list[str]:
         """
-        Return the queue ids to search for a clip, the most likely one first.
+        Return the queue ids to search for a clip.
 
-        The owning session knows its queue, but the session registry is empty after a
-        restart while the clip lives on in the persisted queue, so every queue stays a
-        candidate. Clip ids carry a uuid4-based session id, so a hit is unambiguous.
+        Nothing tracks which queue a clip belongs to, so every queue is a candidate.
+        Clip ids carry a uuid4-based session id, so a hit is unambiguous.
         """
-        queue_ids = [queue.queue_id for queue in self.mass.player_queues.all()]
-        session = self._sessions.get(clip_id.rpartition("_")[0])
-        if session is not None and session.queue_id in queue_ids:
-            queue_ids.remove(session.queue_id)
-            queue_ids.insert(0, session.queue_id)
-        return queue_ids
+        return [queue.queue_id for queue in self.mass.player_queues.all()]
 
     def _find_clip_in_queue(self, clip_id: str, queue_id: str) -> QueueItem | None:
         """Return the queue item holding the given clip, paging through the queue."""
@@ -327,7 +353,6 @@ class AIRadioRenderMixin:
                 self.logger.warning(
                     "AI Radio clip %s (%s) skipped: %s", clip_id, queue_item.name, error
                 )
-                self._record_skip(queue_item, error)
                 raise MediaNotFoundError(f"AI Radio clip {clip_id} has no weather data")
             # weather is optional in this clip, so the LLM must skip it rather than invent it
             for token in empty_weather_tokens:
@@ -354,7 +379,9 @@ class AIRadioRenderMixin:
             self.logger.warning(
                 "AI Radio clip %s (%s) failed to generate: %s", clip_id, queue_item.name, err
             )
-            self._record_skip(queue_item, f"generation failed: {err}")
+            self._record_render_failure(
+                queue_item, f"AI engine '{self.get_setup_value(CONF_AI_ENGINE)}'"
+            )
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed to generate") from err
         if max_chars > 0:
             text = soft_limit_text(text, max_chars=max_chars)
@@ -381,20 +408,27 @@ class AIRadioRenderMixin:
         engine_uid = str(host.get("tts_engine") or "") or None
         language = self._tts_language(str(host.get("language") or ""))
         options = host.get("options") or {}
+        engine: TTSEngine | None = None
         try:
+            engine = await self._get_tts_engine(engine_uid)
             path, stream_type, audio_format = await self._render_tts_media(
-                text, engine_uid, language, options
+                text, engine, language, options
             )
             # the probe is the first fetch, so a failed render surfaces here and not in playback
             duration = await self._probe_duration(path)
         except Exception as err:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
-            self._record_skip(queue_item, f"TTS failed: {err}")
+            # the default stands in for an unavailable host engine, so the pause names the engine
+            # that resolved, or the configured one when none did
+            named = engine.uid if engine else (engine_uid or self.get_setup_value(CONF_TTS_ENGINE))
+            self._record_render_failure(queue_item, f"TTS engine '{named}'")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
+        if (health := self._render_health(queue_item)) is not None:
+            health.record_success(asyncio.get_running_loop().time())
         # measuring costs a fetch and a decode on the just-in-time render path, so it only
         # runs where the reading has somewhere to go
         loudness = (
-            await self._reference_loudness(engine_uid, language, options, path, duration)
+            await self._reference_loudness(engine.uid, language, options, path, duration)
             if self._wanted_loudness(queue_item.queue_id) is not None
             else None
         )
@@ -452,12 +486,11 @@ class AIRadioRenderMixin:
     async def _render_tts_media(
         self,
         text: str,
-        engine_uid: str | None = None,
+        engine: TTSEngine,
         language: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
-        engine = await self._get_tts_engine(engine_uid)
         stream_details = await query_tts_engine_with_language_fallback(
             engine, text, language, logger=self.logger, options=options
         )
@@ -485,14 +518,43 @@ class AIRadioRenderMixin:
             return None
         return int(tags.duration) if tags.duration else None
 
-    def _record_skip(self, queue_item: QueueItem, error: str) -> None:
-        """Record a skipped clip on its owning session."""
-        session_id = str(queue_item.extra_attributes.get(ATTR_SESSION_ID) or "")
-        if (session := self._sessions.get(session_id)) is None:
+    def _mark_unplayable(self, queue_item: QueueItem) -> None:
+        """Mark the clip unplayable, so neither the queue nor a later request renders it again."""
+        queue_item.available = False
+        self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
+
+    def _render_health(self, queue_item: QueueItem) -> RenderHealth | None:
+        """Return the failure bookkeeping of the DJ the clip speaks for, or None without one."""
+        # the host decides which engines speak, so a clip counts against the DJ as long as it
+        # is that host's: also one left behind by an earlier session of the same host (a
+        # restart re-arms with a fresh session id and keeps the queue), but not a clip of a
+        # host that was switched away while the clip was still rendering
+        state = self._dj_queues.get(queue_item.queue_id)
+        if state is None or state.host_id != queue_item.extra_attributes.get(ATTR_HOST_ID):
+            return None
+        return state.render_health
+
+    def _record_render_failure(self, queue_item: QueueItem, engine: str) -> None:
+        """Record a failed engine call, pausing the DJ's breaks after too many in a row."""
+        health = self._render_health(queue_item)
+        # counted ahead of the mark: the mark updates the queue, which runs the DJ's replan
+        # straight away, and that pass has to find the cool-down already in place
+        starts_cooldown = health is not None and health.record_failure(
+            asyncio.get_running_loop().time()
+        )
+        self._mark_unplayable(queue_item)
+        if not starts_cooldown:
             return
-        session.skipped_sections += 1
-        session.last_render_error = error
-        self.signal_provider_event({"event": EVENT_SESSIONS_UPDATED})
+        self.logger.warning(
+            "AI Radio pauses the breaks on queue %s for %d minutes: %d renders in a row failed, "
+            "the last one on %s. Check that engine's own log for the reason (for a Home Assistant "
+            "engine that is the Home Assistant core log); a cloud engine may be out of quota.",
+            queue_item.queue_id,
+            RENDER_COOLDOWN_SECONDS // 60,
+            cast("RenderHealth", health).failures,
+            engine,
+        )
+        self._pause_queue_dj(queue_item.queue_id, queue_item.queue_item_id)
 
     async def _plan_post(
         self, queue_item: QueueItem, clip_id: str, clip_duration: int | None
@@ -518,13 +580,19 @@ class AIRadioRenderMixin:
         if next_item is None or not isinstance(next_item.media_item, Track):
             self._post_skipped(queue_item.name, "no next track in the queue")
             return None
-        # the overlap is only mixed at a flow stream's boundary; a show requires flow mode
-        # before its first play start, so its first clip already passes here
+        # the overlap is only mixed at a flow stream's boundary or between the item streams
+        # of a player that plays gapless; a show requires its boundaries mixed before its
+        # first play start, so its first clip already passes here
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if queue is None or not (
-            queue.flow_mode or self.mass.streams.flow_mode_required(queue.queue_id)
+            queue.flow_mode
+            or self.mass.streams.flow_mode_required(queue.queue_id)
+            or self.mass.streams.boundary_mix_required(queue.queue_id)
+            or self.mass.streams.mixes_item_boundaries(queue.queue_id)
         ):
-            self._post_skipped(next_item.name, "the player does not stream in flow mode")
+            self._post_skipped(
+                next_item.name, "the player neither plays gapless nor streams in flow mode"
+            )
             return None
         # which copy of the track streams is only known once its stream details are
         # resolved: the queue resolves them now rather than when the clip nears its end,

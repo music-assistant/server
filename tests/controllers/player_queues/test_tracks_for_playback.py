@@ -11,11 +11,12 @@ from music_assistant_models.media_items import (
     Audiobook,
     MediaCollection,
     ProviderMapping,
+    Radio,
     Track,
     UniqueList,
 )
 
-from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
@@ -48,6 +49,32 @@ async def test_track_resolves_to_itself() -> None:
     resolver = _resolver()
     track = _trk("solo")
     assert await resolver.get_tracks_for_playback(track) == [track]
+
+
+@pytest.mark.asyncio
+async def test_finite_radio_resolves_to_its_tracklist() -> None:
+    """A finite station resolves to its tracklist; dynamic/stream radios resolve to nothing."""
+    resolver = _resolver()
+    resolver.mass = MagicMock()
+    tracks = [_trk("show")]
+    resolver.mass.music.radio.tracks = AsyncMock(return_value=tracks)
+    show = Radio(
+        item_id="s1",
+        provider="test",
+        name="Show",
+        provider_mappings=set(),
+        is_dynamic=False,
+        is_endless=False,
+    )
+    live = Radio(item_id="s2", provider="test", name="Live", provider_mappings=set())
+    dynamic = Radio(
+        item_id="s3", provider="test", name="Pandora", provider_mappings=set(), is_dynamic=True
+    )
+
+    assert await resolver.get_tracks_for_playback(show) == tracks
+    assert await resolver.get_tracks_for_playback(live) == []
+    assert await resolver.get_tracks_for_playback(dynamic) == []
+    resolver.mass.music.radio.tracks.assert_awaited_once_with(show)
 
 
 @pytest.mark.asyncio
@@ -163,6 +190,6 @@ async def test_audiobook_collection_resolves_existing_items() -> None:
 
     result = await resolver._resolve_media_items(collection, userid="user")
 
-    assert result == [second]
-    assert result[0] is second
+    assert result == [ResolvedItem(second)]
+    assert result[0].item is second
     assert second.resume_position_ms == 12_000
