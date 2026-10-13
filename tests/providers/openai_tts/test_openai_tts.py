@@ -224,6 +224,9 @@ async def test_fetch_backend_voices_requests_the_model_and_reads_data() -> None:
         (" http://192.168.1.47:8000/v1/ ", "http://192.168.1.47:8000/v1"),
         ("http://192.168.1.47:8000/", "http://192.168.1.47:8000/v1"),
         ("192.168.1.47:8000", "http://192.168.1.47:8000/v1"),
+        ("http://[::1]:8000", "http://[::1]:8000/v1"),
+        # malformed input is left for the request to reject, normalizing never raises
+        ("http://[::1", "http://[::1/v1"),
         ("https://api.groq.com/openai/v1", "https://api.groq.com/openai/v1"),
         (
             "https://generativelanguage.googleapis.com/v1beta/openai/",

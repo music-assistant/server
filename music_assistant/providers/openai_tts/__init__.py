@@ -17,7 +17,6 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 import aiofiles
 from aiofiles.os import makedirs, remove, replace
@@ -147,7 +146,7 @@ def normalize_base_url(url: str) -> str:
         if url.endswith(suffix):
             url = url.removesuffix(suffix)
             break
-    if not urlsplit(url).path:
+    if "/" not in url.split("://", 1)[1]:
         url = f"{url}/v1"
     return url
 
