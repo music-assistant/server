@@ -19,7 +19,8 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
-from music_assistant_models.enums import AlbumType, ArtistType, MediaType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.enums import AlbumType, ArtistType, MediaType, SortDirection, SortField
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
@@ -35,14 +36,20 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
+from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
 from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.mass import MusicAssistant
 
 pytestmark = pytest.mark.asyncio
+
+GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
+# the user whose likes and dislikes the seeded library carries
+LISTING_USER = User(user_id="listing-user", username="listing-user", role=UserRole.USER)
 
 
 @pytest.fixture(scope="module")
@@ -64,6 +71,11 @@ def _mapping(provider_instance: str = "prov_a_inst") -> ProviderMapping:
     )
 
 
+async def _like(mass: MusicAssistant, media_type: MediaType, item_id: str, favorite: bool) -> None:
+    """Record the listing user's like or dislike of a seeded library item."""
+    await mass.music.favorites.set(media_type, int(item_id), favorite, [LISTING_USER.user_id])
+
+
 async def _seed_library(mass: MusicAssistant) -> None:
     """Seed artists, albums and tracks covering all listing edge cases."""
     artists: list[Artist] = []
@@ -73,9 +85,11 @@ async def _seed_library(mass: MusicAssistant) -> None:
             provider="library",
             name=f"Artist {idx:02d}",
             provider_mappings={_mapping()},
-            favorite=idx % 2 == 0,
         )
-        artists.append(await mass.music.artists.add_item_to_library(artist))
+        db_artist = await mass.music.artists.add_item_to_library(artist)
+        artists.append(db_artist)
+        if idx % 2 == 0:
+            await _like(mass, MediaType.ARTIST, db_artist.item_id, True)
 
     albums: list[Album] = []
     for idx in range(1, 6):
@@ -90,9 +104,11 @@ async def _seed_library(mass: MusicAssistant) -> None:
                 *([_mapping("prov_b_inst")] if idx % 2 == 0 else []),
             },
             artists=UniqueList([artists[idx % len(artists)]]),
-            favorite=idx % 3 == 0,
         )
-        albums.append(await mass.music.albums.add_item_to_library(album))
+        db_album = await mass.music.albums.add_item_to_library(album)
+        albums.append(db_album)
+        if idx % 3 == 0:
+            await _like(mass, MediaType.ALBUM, db_album.item_id, True)
 
     for idx in range(1, 21):
         track = Track(
@@ -107,9 +123,13 @@ async def _seed_library(mass: MusicAssistant) -> None:
             album=albums[idx % len(albums)],
             disc_number=1,
             track_number=idx,
-            favorite=idx % 5 == 0,
         )
         db_track = await mass.music.tracks.add_item_to_library(track)
+        # a fifth of the tracks is liked, another fifth disliked
+        if idx % 5 == 0:
+            await _like(mass, MediaType.TRACK, db_track.item_id, True)
+        elif idx % 5 == 1:
+            await _like(mass, MediaType.TRACK, db_track.item_id, False)
         # track 3 appears on two albums (fanout in legacy album_tracks JOIN)
         if idx == 3:
             await mass.music.tracks._set_track_album(
@@ -126,9 +146,9 @@ async def _seed_library(mass: MusicAssistant) -> None:
         name="Track hidden",
         provider_mappings={_mapping()},
         artists=UniqueList([artists[0]]),
-        favorite=True,
     )
     db_hidden = await mass.music.tracks.add_item_to_library(hidden)
+    await _like(mass, MediaType.TRACK, db_hidden.item_id, True)
     await mass.music.database.execute(
         f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 0 "
         "WHERE item_id = :item_id AND media_type = 'track'",
@@ -212,13 +232,19 @@ def _legacy_query(  # noqa: PLR0913
     table = controller.db_table
     query_parts: list[str] = list(extra_query_parts or [])
     join_parts: list[str] = list(extra_join_parts or [])
-    params: dict[str, Any] = {}
+    # the production base query this reuses selects the calling user's favorite state
+    params: dict[str, Any] = {"favorite_user_id": LISTING_USER.user_id}
     if search:
         query_parts.append(f"{table}.search_name LIKE :search")
         params["search"] = f"%{create_safe_string(search, True, True)}%"
     if favorite is not None:
-        query_parts.append(f"{table}.favorite = :favorite")
+        query_parts.append(
+            f"{table}.item_id IN (SELECT item_id FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :favorite_user_id AND media_type = :favorite_media_type "
+            "AND favorite = :favorite)"
+        )
         params["favorite"] = favorite
+        params["favorite_media_type"] = controller.media_type.value
     if played_only:
         query_parts.append(f"{table}.last_played > 0")
     if genre_ids:
@@ -286,10 +312,16 @@ async def _compare(
     legacy_rows = await mass.music.database.get_rows_from_query(
         legacy_sql, legacy_params, limit=limit, offset=offset
     )
-    order_by = filter_kwargs.pop("order_by", "sort_name")
-    new_items = await controller.get_library_items_by_query(
-        order_by=order_by, limit=limit, offset=offset, **filter_kwargs
-    )
+    sort_field, sort_direction = LEGACY_SORT_KEYS[filter_kwargs.pop("order_by", "sort_name")]
+    # a favorite belongs to a user, so the listing runs as the one that holds the seeded ones
+    with patch(GET_CURRENT_USER, return_value=LISTING_USER):
+        new_items = await controller.get_library_items_by_query(
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+            **filter_kwargs,
+        )
     assert [str(row["item_id"]) for row in legacy_rows] == [x.item_id for x in new_items]
     # provider mappings must be hydrated identically
     for row, item in zip(legacy_rows, new_items, strict=True):
@@ -405,7 +437,7 @@ async def test_track_listing_artist_join_matches_legacy(seeded_mass: MusicAssist
     legacy_params["search_artist"] = "%artist02%"
     legacy_rows = await seeded_mass.music.database.get_rows_from_query(legacy_sql, legacy_params)
     new_items = await seeded_mass.music.tracks.get_library_items_by_query(
-        order_by="sort_name",
+        sort_field=SortField.SORT_NAME,
         in_library_only=True,
         extra_join_parts=[join],
         extra_query_params={"search_artist": "%artist02%"},
@@ -477,12 +509,44 @@ async def test_hidden_track_excluded_from_library_listing(seeded_mass: MusicAssi
 async def test_random_order_applies_filters(seeded_mass: MusicAssistant) -> None:
     """The random-order subquery applies the provider/in-library filters."""
     items = await seeded_mass.music.tracks.get_library_items_by_query(
-        order_by="random", in_library_only=True, provider_filter=["prov_b_inst"]
+        sort_field=SortField.RANDOM, in_library_only=True, provider_filter=["prov_b_inst"]
     )
     expected = await seeded_mass.music.tracks.get_library_items_by_query(
         in_library_only=True, provider_filter=["prov_b_inst"]
     )
     assert {x.item_id for x in items} == {x.item_id for x in expected}
+
+
+async def test_random_play_count_selects_and_orders_least_played(mass: MusicAssistant) -> None:
+    """random_play_count draws the least-played tracks and returns them least-played first."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(item_id="0", provider="library", name="PC Artist", provider_mappings={_mapping()})
+    )
+    # distinct counts assigned out of order, so row insertion order can't stand in for play order
+    play_count_by_id: dict[str, int] = {}
+    for idx, count in enumerate((7, 2, 9, 0, 5, 1, 8, 3, 6, 4), 1):
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name=f"PC Track {idx:02d}",
+                provider_mappings={_mapping()},
+                artists=UniqueList([artist]),
+            )
+        )
+        await mass.music.database.execute(
+            "UPDATE tracks SET play_count = :count WHERE item_id = :item_id",
+            {"count": count, "item_id": int(track.item_id)},
+        )
+        play_count_by_id[track.item_id] = count
+    await mass.music.database.commit()
+
+    # limit smaller than the library so the candidate subquery, not just the outer sort,
+    # has to apply the play-count bias
+    items = await mass.music.tracks.library_items(order_by="random_play_count", limit=5)
+    ordered_counts = [play_count_by_id[x.item_id] for x in items]
+
+    assert ordered_counts == [0, 1, 2, 3, 4]
 
 
 async def test_album_tracks_returns_album_scoped_disc_and_track_numbers(
@@ -540,7 +604,7 @@ async def test_audiobook_listing_resume_info(seeded_mass: MusicAssistant) -> Non
     # two playlog rows for the same book (e.g. two users/providers)
     for userid, timestamp, seconds_played in (("user-a", 100, 60), ("user-b", 200, 120)):
         await seeded_mass.music.database.insert(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "item_id": db_book.item_id,
                 "provider": "library",
@@ -606,7 +670,8 @@ async def test_audiobook_collections_collapse_and_preserve_order(
 
     items = await controller.get_library_items_by_query(
         in_library_only=True,
-        order_by="name_desc",
+        sort_field=SortField.NAME,
+        sort_direction=SortDirection.DESC,
         collapse_collections=True,
     )
     collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
@@ -625,7 +690,8 @@ async def test_audiobook_collections_collapse_and_preserve_order(
         search_results = await controller.get_library_items_by_query(
             search="Series",
             in_library_only=True,
-            order_by="name_desc",
+            sort_field=SortField.NAME,
+            sort_direction=SortDirection.DESC,
             collapse_collections=True,
         )
     assert [item.name for item in search_results] == ["Beta Series", "Alpha Series"]
@@ -726,7 +792,7 @@ async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistan
 
             with patch.object(database, "get_rows_from_query", spy):
                 await controller.get_library_items_by_query(
-                    order_by="sort_name", in_library_only=True
+                    sort_field=SortField.SORT_NAME, in_library_only=True
                 )
             plan_rows = await database.get_rows_from_query(
                 f"EXPLAIN QUERY PLAN {captured['query']} LIMIT 500 OFFSET 0",

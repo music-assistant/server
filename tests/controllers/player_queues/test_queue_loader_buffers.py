@@ -177,3 +177,37 @@ async def test_other_queues_keep_their_sources() -> None:
     assert other.streamdetails is not None
     assert other.streamdetails.buffer is not None
     assert other.streamdetails.buffer.clear.await_count == 0
+
+
+async def test_a_failed_items_filling_source_is_released() -> None:
+    """A track the player gave up on hands its slot to whatever the player moves on to."""
+    failed = _item(QUEUE_ID, "failed", LIMITED)
+    upcoming = _item(QUEUE_ID, "upcoming", LIMITED)
+    ctrl = _controller((QUEUE_ID, [failed, upcoming]))
+
+    await ctrl.release_failed_item_source(QUEUE_ID, "failed")
+
+    assert failed.streamdetails is not None
+    assert failed.streamdetails.buffer is not None
+    failed.streamdetails.buffer.clear.assert_awaited_once()
+    assert upcoming.streamdetails is not None
+    assert upcoming.streamdetails.buffer is not None
+    assert upcoming.streamdetails.buffer.clear.await_count == 0
+
+
+async def test_releasing_a_failed_item_leaves_finished_and_unlimited_sources_alone() -> None:
+    """Only a source that still holds a capped provider slot is worth cancelling."""
+    completed = _item(QUEUE_ID, "completed", LIMITED, buffering=False)
+    unlimited = _item(QUEUE_ID, "unlimited", UNLIMITED)
+    ctrl = _controller((QUEUE_ID, [completed, unlimited]))
+
+    await ctrl.release_failed_item_source(QUEUE_ID, "completed")
+    await ctrl.release_failed_item_source(QUEUE_ID, "unlimited")
+    # an item the queue no longer holds, and a queue that does not exist, are no-ops
+    await ctrl.release_failed_item_source(QUEUE_ID, "unknown")
+    await ctrl.release_failed_item_source("no_such_queue", "completed")
+
+    for item in (completed, unlimited):
+        assert item.streamdetails is not None
+        assert item.streamdetails.buffer is not None
+        assert item.streamdetails.buffer.clear.await_count == 0

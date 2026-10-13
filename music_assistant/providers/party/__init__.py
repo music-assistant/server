@@ -22,7 +22,8 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
-from music_assistant.controllers.player_queues.helpers import build_queue_item
+from music_assistant.constants import CONF_ENABLED
+from music_assistant.controllers.player_queues.helpers import build_queue_item, committed_index
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
@@ -464,15 +465,22 @@ class PartyPlugin(PluginProvider):
         # Revoke all guest tokens when:
         # 1. The plugin is being removed entirely (is_removed=True)
         # 2. Guest access is disabled in config (provider reload with disabled setting)
+        # 3. The plugin itself is disabled (its config is saved as disabled before unload)
         # This ensures guests are immediately disconnected when access is revoked
-        # Note: We read the LIVE stored value, which also covers reloads that are triggered
-        # outside of a config save. The default must match the config entry's default_value:
+        # Note: We read the LIVE stored values, which also covers reloads that are triggered
+        # outside of a config save. The defaults must match the stored config defaults:
         # only values that differ from their default are persisted, so switching guest access
         # off drops the key entirely.
         guest_access_enabled = self.mass.config.get_raw_provider_config_value(
             self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=False
         )
-        if is_removed or not guest_access_enabled:
+        if (
+            is_removed
+            or not guest_access_enabled
+            or not self.mass.config.get_raw_provider_config_value(
+                self.instance_id, CONF_ENABLED, default=True
+            )
+        ):
             self.logger.debug("Revoking guest tokens...")
             await self._revoke_guest_tokens()
 
@@ -484,8 +492,8 @@ class PartyPlugin(PluginProvider):
         """
         Get the guest access URL for party.
 
-        When remote access is enabled, returns a URL that works from anywhere via WebRTC.
-        Otherwise, returns a local URL that only works on the same network.
+        When an external URL or remote access is configured, returns a URL that works from
+        anywhere. Otherwise, returns a local URL that only works on the same network.
 
         :returns: The guest join URL, or None if guest access is disabled.
         """
@@ -513,10 +521,10 @@ class PartyPlugin(PluginProvider):
 
         :returns: The queue ID for party, or None if no player available.
         """
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return None
-
         if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            # remote mode plays on the guest session's virtual player, which needs guest access
+            if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+                return None
             session = await self._get_session()
             return session.queue_id if session else None
 
@@ -710,12 +718,9 @@ class PartyPlugin(PluginProvider):
                 raise InvalidDataError("This item is already boosted")
 
             if queue.state == PlaybackState.PLAYING:
-                # Use index_in_buffer to avoid moving already-buffered items
-                current_index = (
-                    queue.index_in_buffer
-                    if queue.index_in_buffer is not None
-                    else (queue.current_index if queue.current_index is not None else 0)
-                )
+                # Use the boundary to avoid moving already-buffered items
+                boundary_index = committed_index(queue)
+                current_index = boundary_index if boundary_index is not None else 0
 
                 if item_index <= current_index:
                     raise InvalidDataError(
@@ -816,11 +821,8 @@ class PartyPlugin(PluginProvider):
             # Use index_in_buffer when playing to avoid inserting before an already-buffered
             # track, which would cause the newly added song to be skipped
             if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                current_index = (
-                    queue.index_in_buffer
-                    if queue.index_in_buffer is not None
-                    else (queue.current_index if queue.current_index is not None else 0)
-                )
+                boundary_index = committed_index(queue)
+                current_index = boundary_index if boundary_index is not None else 0
             else:
                 current_index = queue.current_index or 0 if queue else 0
 
@@ -1017,7 +1019,7 @@ class PartyPlugin(PluginProvider):
         """
         Revoke all guest access tokens and codes for party.
 
-        This is called when guest access is disabled or the plugin is removed.
+        This is called when guest access or the plugin is disabled, or the plugin is removed.
         We disconnect WebSocket connections to force the frontend to redirect to login,
         revoke tokens so they can't reconnect, and invalidate pending join codes.
         """

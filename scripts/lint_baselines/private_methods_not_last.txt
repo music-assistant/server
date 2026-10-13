@@ -1,8 +1,6 @@
 # Classes that define a public/dunder method below a private one, predating this check.
 # Private methods must live at the bottom of the class (see AGENTS.md).
 # Regenerate with: uv run -m scripts.check_method_order --update-baseline
-music_assistant/models/music_provider.py	5
-music_assistant/models/player.py	10
 music_assistant/providers/_demo_audio_analysis_provider/__init__.py	3
 music_assistant/providers/alexa/__init__.py	1
 music_assistant/providers/apple_music/api_client.py	8
@@ -14,11 +12,10 @@ music_assistant/providers/audible/audible_helper.py	21
 music_assistant/providers/audiobookshelf/__init__.py	10
 music_assistant/providers/audiobookshelf/helpers.py	4
 music_assistant/providers/bandcamp/__init__.py	11
-music_assistant/providers/bbc_sounds/__init__.py	9
+music_assistant/providers/bbc_sounds/__init__.py	1
 music_assistant/providers/bbc_sounds/adaptor.py	5
 music_assistant/providers/bluesound/player.py	3
 music_assistant/providers/deezer/browse.py	3
-music_assistant/providers/deezer/gw_client.py	5
 music_assistant/providers/deezer/media.py	27
 music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
@@ -31,9 +28,6 @@ music_assistant/providers/internet_archive/helpers.py	6
 music_assistant/providers/internet_archive/provider.py	13
 music_assistant/providers/itunes_podcasts/__init__.py	5
 music_assistant/providers/jellyfin/__init__.py	14
-music_assistant/providers/kion_music/api_client.py	43
-music_assistant/providers/kion_music/provider.py	24
-music_assistant/providers/kion_music/streaming.py	2
 music_assistant/providers/lastfm_recommendations/__init__.py	3
 music_assistant/providers/lastfm_recommendations/api_client.py	12
 music_assistant/providers/lastfm_recommendations/recommendations.py	2
@@ -48,10 +42,8 @@ music_assistant/providers/nicovideo/helpers/hls_seek_optimizer.py	1
 music_assistant/providers/nicovideo/services/search.py	1
 music_assistant/providers/nugs/__init__.py	2
 music_assistant/providers/orf_radiothek/__init__.py	9
-music_assistant/providers/pandora/provider.py	6
 music_assistant/providers/party/__init__.py	4
 music_assistant/providers/phishin/provider.py	4
-music_assistant/providers/plex_connect/gdm.py	2
 music_assistant/providers/plex_connect/playback.py	10
 music_assistant/providers/plex_connect/queue_commands.py	3
 music_assistant/providers/plex_connect/server.py	8

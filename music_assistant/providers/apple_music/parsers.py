@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
@@ -164,9 +166,6 @@ def parse_album(
             name=album_id,
         )
     name, version = parse_title_and_version(attributes["name"])
-    # Check availability: library albums owned by user OR catalog items with playParams
-    is_library_album = is_library_id(album_id) and album_obj.get("type") == "library-albums"
-    has_play_params = attributes.get("playParams", {}).get("id") is not None
     album = Album(
         item_id=album_id,
         provider=provider.domain,
@@ -178,7 +177,7 @@ def parse_album(
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=attributes.get("url"),
-                available=is_library_album or has_play_params,
+                available=_is_available(attributes),
             )
         },
     )
@@ -187,6 +186,14 @@ def parse_album(
         album.artists = album_artists
     if release_date := attributes.get("releaseDate"):
         album.year = int(release_date.split("-")[0])
+        # Apple sends the full date (YYYY-MM-DD) when it is known; for pre-added
+        # albums this is the expected release date in the future, so clients can
+        # surface upcoming releases instead of only the (misleading) year.
+        if len(release_date) == 10:
+            with suppress(ValueError):
+                album.metadata.release_date = datetime.strptime(release_date, "%Y-%m-%d").replace(
+                    tzinfo=UTC
+                )
     if genres := attributes.get("genreNames"):
         album.metadata.genres = set(genres)
     if image := parse_artwork_image(provider, MediaType.ALBUM, album_id, attributes):
@@ -211,7 +218,7 @@ def parse_album(
     inferred_type = infer_album_type(album.name, "")
     if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
         album.album_type = inferred_type
-    album.favorite = is_favourite or False
+    album.favorite = is_favourite
     return album
 
 
@@ -236,9 +243,6 @@ def parse_track(
         track_id = track_obj["id"]
         attributes = {}
     name, version = parse_title_and_version(attributes.get("name", ""))
-    # Check availability: library tracks owned by user OR catalog items with playParams
-    is_library_track = is_library_id(track_id) and track_obj.get("type") == "library-songs"
-    has_play_params = attributes.get("playParams", {}).get("id") is not None
     track = Track(
         item_id=track_id,
         provider=provider.domain,
@@ -252,7 +256,7 @@ def parse_track(
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(content_type=ContentType.AAC),
                 url=attributes.get("url"),
-                available=is_library_track or has_play_params,
+                available=_is_available(attributes),
             )
         },
     )
@@ -301,7 +305,11 @@ def parse_track(
         track.metadata.explicit = content_rating == "explicit"
     if isrc := attributes.get("isrc"):
         track.external_ids.add((ExternalID.ISRC, isrc))
-    track.favorite = is_favourite or False
+    # dateAdded lives on the library object only, never on the catalog copy read above.
+    with suppress(TypeError, ValueError):
+        if added := raw_attributes.get("dateAdded"):
+            track.date_added = datetime.fromisoformat(added).replace(microsecond=0)
+    track.favorite = is_favourite
     return track
 
 
@@ -343,7 +351,7 @@ def parse_playlist(
         playlist.metadata.add_image(image)
     if description := attributes.get("description"):
         playlist.metadata.description = description.get("standard")
-    playlist.favorite = is_favourite or False
+    playlist.favorite = is_favourite
     return playlist
 
 
@@ -416,3 +424,19 @@ def _has_artist_details(artist_obj: dict[str, Any]) -> bool:
     else:
         attributes = artist_obj.get("attributes", {})
     return bool(normalize_unicode(attributes.get("name")))
+
+
+def _is_available(attributes: dict[str, Any]) -> bool:
+    """
+    Return whether Apple will actually serve a stream for this item.
+
+    ``playParams`` is absent entirely for items Apple has withdrawn. It is present
+    but carries a ``purchasedId`` with no ``catalogId`` for purchase-only items
+    (iTunes purchases, and the 2014 U2 giveaway), which the stream endpoint also
+    refuses. Uploads carry neither marker, so they stay available - see
+    music-assistant/support#6032 and #4108.
+    """
+    play_params = attributes.get("playParams") or {}
+    if play_params.get("id") is None:
+        return False
+    return not (play_params.get("purchasedId") is not None and play_params.get("catalogId") is None)

@@ -996,7 +996,7 @@ class AirPlayProvider(PlayerProvider):
             returncode,
         )
 
-    async def _handle_dacp_request(  # noqa: PLR0915
+    async def _handle_dacp_request(  # noqa: C901, PLR0912, PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         """Handle new connection on the socket."""

@@ -37,7 +37,7 @@ _ENTRIES = (
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the credentials and create the provider."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     while True:
         entries = [
@@ -49,4 +49,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

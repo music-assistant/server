@@ -24,6 +24,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.FAVORITE_ALBUMS_EDIT,
     ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.FAVORITE_PLAYLISTS_EDIT,
+    ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    ProviderFeature.ALBUM_BY_EXTERNAL_ID,
 }
 
 MUSIC_APP_TOKEN = app_var("apple_music_token")
@@ -31,10 +33,10 @@ WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
-CONF_MUSIC_APP_TOKEN = "music_app_token"
-CONF_MUSIC_USER_TOKEN = "music_user_token"
-CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
-CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
+CONF_MUSIC_APP_TOKEN = "music_app_token"  # noqa: S105 - config key
+CONF_MUSIC_USER_TOKEN = "music_user_token"  # noqa: S105 - config key
+CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"  # noqa: S105 - config key
+CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"  # noqa: S105 - config key
 CACHE_CATEGORY_DECRYPT_KEY = 1
 MAX_ARTWORK_DIMENSION = 1000
 BLOBSTORE_DOMAIN = "blobstore.apple.com"

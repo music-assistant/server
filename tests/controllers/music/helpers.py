@@ -73,6 +73,7 @@ def create_album(
     name: str = "Test Album",
     artist_name: str | None = "Test Artist",
     artist_item_id: str | None = None,
+    external_ids: set[tuple[ExternalID, str]] | None = None,
 ) -> Album:
     """
     Create an Album as it would be received from a music provider.
@@ -83,6 +84,7 @@ def create_album(
     :param artist_name: The album artist name, or None for an album without artists.
     :param artist_item_id: The item id of the album artist on the provider,
         defaults to one derived from the album item id.
+    :param external_ids: External ids (e.g. a MusicBrainz release id) to attach.
     """
     provider_domain = provider_instance.split("_", maxsplit=1)[0]
     artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -116,4 +118,5 @@ def create_album(
             )
         },
         artists=artists,
+        external_ids=external_ids or set(),
     )

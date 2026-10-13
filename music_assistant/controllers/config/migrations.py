@@ -59,6 +59,12 @@ LEGACY_BOSE_PRESET_KEY_PREFIX = "preset_"
 LEGACY_CONF_TTS_ENTITY = "tts_entity"
 LEGACY_CONF_AI_TASK_ENTITY = "ai_task_entity"
 
+# removed MSX Bridge provider config keys, only referenced by their migration
+LEGACY_MSX_BRIDGE_KEYS = ("enable_player_grouping", "enable_sendspin_bridge")
+
+# player id prefix of the Sendspin clients the removed MSX Sendspin bridge registered
+LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
+
 # engine selection keys of the providers that consume the plugin engines
 CONF_AI_ENGINE = "ai_engine"
 CONF_TTS_ENGINE = "tts_engine"
@@ -494,19 +500,9 @@ PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
 }
 
 
-async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
+async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
-
-    # The background tasks controller originally persisted runtime state directly under
-    # core/tasks, which could create a CoreConfig object without the required domain field.
-    # Repair that single known corruption case on load.
-    # TODO: remove after 2.9 release
-    tasks_core_config = data.get(CONF_CORE, {}).get("tasks")
-    if isinstance(tasks_core_config, dict) and "domain" not in tasks_core_config:
-        tasks_core_config["domain"] = "tasks"
-        LOGGER.warning("Repaired corrupt tasks core configuration")
-        changed = True
 
     # Drop orphaned provider config stubs: a load failure could write last_error back to a
     # provider key whose config had already been removed (e.g. removing an unsupported provider
@@ -580,14 +576,6 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # linked_protocol_ids pointed at its own id was hidden as its own protocol child.
     # TODO: remove after 2.10 release
     if _migrate_self_referential_protocol_links(data):
-        changed = True
-
-    # Drop the persisted schedule for the metadata maintenance tasks that were hardcoded
-    # to run at 04:00 local. They are now registered under new ("_v2") task ids with a
-    # randomized full-day schedule (to avoid spiking the shared MusicBrainz mirror), so the
-    # old persisted state is orphaned and can be removed.
-    # TODO: remove after 2.9 release
-    if _migrate_metadata_maintenance_schedule(data):
         changed = True
 
     # TODO: remove after 2.10 release
@@ -669,6 +657,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # name is no longer shadowed by the auto-generated name stored at creation time.
     # TODO: remove after 2.12 release
     if _migrate_unrenamed_player_names(data):
+        changed = True
+
+    # Drop the retired MSX Bridge grouping and Sendspin bridge settings, move the removed
+    # shared group stream mode to independent and remove the players of the Sendspin bridge.
+    # TODO: remove after 2.12 release
+    if _migrate_msx_bridge_settings(data):
         changed = True
 
     return changed
@@ -1428,30 +1422,6 @@ def _migrate_self_referential_protocol_links(data: dict[str, Any]) -> bool:
     return changed
 
 
-def _migrate_metadata_maintenance_schedule(data: dict[str, Any]) -> bool:
-    """Remove the orphaned persisted state for the pre-randomization metadata task ids."""
-    core_config = data.get(CONF_CORE)
-    if not isinstance(core_config, dict):
-        return False
-    tasks_config = core_config.get("tasks")
-    if not isinstance(tasks_config, dict):
-        return False
-    task_states = tasks_config.get("scheduled_task_states")
-    if not isinstance(task_states, dict):
-        return False
-    legacy_task_ids = (
-        "metadata_missing_artist_metadata_scan",
-        "metadata_playlist_metadata_scan",
-        "metadata_thumb_cache_cleanup",
-    )
-    removed = [task_id for task_id in legacy_task_ids if task_id in task_states]
-    for task_id in removed:
-        del task_states[task_id]
-    if removed:
-        LOGGER.info("Removed orphaned metadata maintenance schedule state for %s", removed)
-    return bool(removed)
-
-
 def _migrate_fully_kiosk_multi_instance(data: dict[str, Any]) -> bool:
     """Collapse legacy multi-instance Fully Kiosk configs into a single provider instance."""
     providers = data.get(CONF_PROVIDERS, {})
@@ -1786,6 +1756,68 @@ def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
             dsp_configs.pop(player_id, None)
         LOGGER.warning("Removed orphaned player configuration %s", player_id)
     return bool(orphaned)
+
+
+def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
+    """
+    Migrate MSX Bridge configs to the settings and players of the current provider.
+
+    The provider no longer offers player grouping, the Sendspin bridge or the shared group
+    stream mode. Their stored values are dropped (shared moves to independent, so the
+    setting holds a choice that can still be selected) and the Sendspin players the bridge
+    registered per TV are removed, as nothing registers them anymore.
+    """
+    changed = False
+    all_provider_configs = data.get(CONF_PROVIDERS)
+    if isinstance(all_provider_configs, dict):
+        for provider_cfg in all_provider_configs.values():
+            if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "msx_bridge":
+                continue
+            provider_values = provider_cfg.get("values")
+            if not isinstance(provider_values, dict):
+                continue
+            for key in LEGACY_MSX_BRIDGE_KEYS:
+                if key in provider_values:
+                    del provider_values[key]
+                    changed = True
+            if provider_values.get("group_stream_mode") == "shared":
+                provider_values["group_stream_mode"] = "independent"
+                changed = True
+    if changed:
+        LOGGER.info("Removed the retired settings from the MSX Bridge provider configuration(s)")
+    all_player_configs = data.get(CONF_PLAYERS)
+    if not isinstance(all_player_configs, dict):
+        return changed
+    bridge_ids = [
+        player_id
+        for player_id in all_player_configs
+        if isinstance(player_id, str) and player_id.startswith(LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX)
+    ]
+    dsp_configs = data.get(CONF_PLAYER_DSP)
+    for player_id in bridge_ids:
+        del all_player_configs[player_id]
+        if isinstance(dsp_configs, dict):
+            dsp_configs.pop(player_id, None)
+        LOGGER.info("Removed obsolete MSX Sendspin bridge player configuration %s", player_id)
+        changed = True
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        cached_ids = player_values.get(CONF_LINKED_PROTOCOL_IDS)
+        if not isinstance(cached_ids, list):
+            continue
+        kept_ids = [
+            pid
+            for pid in cached_ids
+            if not (isinstance(pid, str) and pid.startswith(LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX))
+        ]
+        if len(kept_ids) != len(cached_ids):
+            player_values[CONF_LINKED_PROTOCOL_IDS] = kept_ids
+            changed = True
+    return changed
 
 
 def _migrate_bose_soundtouch_presets(data: dict[str, Any]) -> bool:

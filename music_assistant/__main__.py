@@ -24,7 +24,7 @@ from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.logging import activate_log_queue_handler
-from music_assistant.helpers.util import cap_native_thread_pools
+from music_assistant.helpers.util import cap_native_thread_pools, set_model_cache_dirs
 from music_assistant.mass import MusicAssistant
 
 FORMAT_DATE: Final = "%Y-%m-%d"
@@ -237,7 +237,6 @@ def main() -> None:
 
     # prefer value in hass_options
     log_level = hass_options.get("log_level", args.log_level).upper()
-    dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
     safe_mode = bool(
         args.safe_mode or hass_options.get("safe_mode") or os.environ.get("MASS_SAFE_MODE")
     )
@@ -249,6 +248,7 @@ def main() -> None:
     # because those pools read the environment once at load time.
     blas_budget = cap_native_thread_pools()
     LOGGER.debug("Native BLAS/OpenMP thread pools capped to %d thread(s)", blas_budget)
+    set_model_cache_dirs(cache_dir)
 
     # Raise the open-file soft limit to the hard limit so the concurrent provider
     # imports at startup can't exhaust it (default soft=1024 in HAOS add-on containers).
@@ -269,9 +269,6 @@ def main() -> None:
         loop = asyncio.get_running_loop()
         loop.set_default_executor(ThreadPoolExecutor(max_workers=32))
         activate_log_queue_handler()
-        if dev_mode or log_level == "DEBUG":
-            loop.set_debug(True)
-            loop.slow_callback_duration = 0.2
         loop.set_exception_handler(_global_loop_exception_handler)
 
         stop_event = asyncio.Event()

@@ -24,7 +24,7 @@ from music_assistant.constants import (
     CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_RETIRED_LOCAL_AUDIO_CLEANED,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
 )
 from music_assistant.controllers.config.retired_local_audio import cleanup_retired_local_audio
 from music_assistant.controllers.player_queues.constants import (
@@ -103,7 +103,7 @@ def _store_install(mass: MusicAssistant, provider_enabled: bool = True) -> None:
 async def _store_playlog_entry(mass: MusicAssistant, player_id: str) -> None:
     """Store a playlog row that credits the given player/queue with a playback."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": "track_1",
             "provider": "spotify",
@@ -399,16 +399,16 @@ async def test_a_failing_removal_never_escapes_startup(
     """
     A removal that fails part-way is logged and retried, not raised into start().
 
-    The user-filter rewrite is the fallible step, and it runs once the configs are already
-    gone; letting it escape would abort the boot on a half-deleted install. The flag stays
-    unset instead, so the next startup finishes what is left - every step is idempotent.
+    Letting a failing removal step escape would abort the boot on a half-deleted install.
+    The flag stays unset instead, so the next startup finishes what is left - every step
+    is idempotent.
     """
     _store_install(mass)
 
-    async def _raise(*_args: Any, **_kwargs: Any) -> None:
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(mass.webserver.auth, "remove_from_user_filters", _raise)
+    monkeypatch.setattr(mass.players, "delete_player_config", _raise)
 
     await cleanup_retired_local_audio(mass)
 

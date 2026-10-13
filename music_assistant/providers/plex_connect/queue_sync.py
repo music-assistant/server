@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import PlaybackState, QueueOption
 from plexapi.playqueue import PlayQueue
 
+from music_assistant.controllers.player_queues.helpers import committed_index
+
 from .parsing import plex_item_fields, plex_key_for_item
 
 if TYPE_CHECKING:
@@ -21,6 +23,9 @@ if TYPE_CHECKING:
     from music_assistant.providers.plex import PlexProvider
 
 LOGGER = logging.getLogger(__name__)
+
+# items fetched on each side of the selected track to map a newly created play queue
+CREATED_QUEUE_WINDOW = 200
 
 
 class QueueSyncMixin:
@@ -264,15 +269,16 @@ class QueueSyncMixin:
         :param current_index: The current track index in the MA queue.
         :return: The index of the last item that survives the replace.
         """
-        # REPLACE_NEXT inserts after the buffered index rather than the playing one, so a
-        # player already handed the next track keeps one item more than current_index.
+        # REPLACE_NEXT inserts after the track the player already holds rather than the playing
+        # one, so a player handed its next track keeps one item more than current_index.
         queue = self.provider.mass.player_queues.get(player_id)
         if (
             queue is not None
             and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
             and queue.index_in_buffer is not None
+            and (boundary_index := committed_index(queue)) is not None
         ):
-            return int(queue.index_in_buffer)
+            return boundary_index
         return current_index
 
     async def _replace_remaining_queue(
@@ -395,17 +401,34 @@ class QueueSyncMixin:
                 self.play_queue_id = str(playqueue.playQueueID)
                 self.play_queue_version = playqueue.playQueueVersion
 
-                self.play_queue_item_ids = {}
-                for i, item in enumerate(playqueue.items):
-                    _, play_queue_item_id = plex_item_fields(item)
-                    if play_queue_item_id is not None:
-                        self.play_queue_item_ids[i] = play_queue_item_id
+                self.play_queue_item_ids = self._play_queue_item_ids_by_position(playqueue)
+                total_count = playqueue.playQueueTotalCount
+                if total_count and len(playqueue.items) < total_count:
+                    # the create response only holds a window of the queue
+                    playqueue = await asyncio.to_thread(
+                        PlayQueue.get,
+                        plex_server,
+                        playQueueID=playqueue.playQueueID,
+                        window=CREATED_QUEUE_WINDOW,
+                    )
+                    self.play_queue_item_ids = self._play_queue_item_ids_by_position(playqueue)
 
                 LOGGER.info(
                     f"Created Plex PlayQueue {self.play_queue_id} with {len(plex_items)} tracks"
                 )
         except Exception:
             LOGGER.exception("Error creating Plex PlayQueue")
+
+    def _play_queue_item_ids_by_position(self, playqueue: PlayQueue) -> dict[int, int]:
+        """Map each queue position in a (windowed) play queue to its playQueueItemID."""
+        selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0) or 0
+        window_start = selected_offset - self._selected_item_index(playqueue)
+        item_ids: dict[int, int] = {}
+        for i, item in enumerate(playqueue.items):
+            _, play_queue_item_id = plex_item_fields(item)
+            if play_queue_item_id is not None and window_start + i >= 0:
+                item_ids[window_start + i] = play_queue_item_id
+        return item_ids
 
     async def _sync_initial_queue_to_plex(self) -> None:
         """

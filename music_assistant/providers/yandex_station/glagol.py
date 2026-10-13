@@ -256,7 +256,7 @@ class YandexGlagol:
 
             async for msg in self.ws:
                 if isinstance(msg.data, ServerTimeoutError):
-                    raise msg.data
+                    raise msg.data  # noqa: TRY301 - handled by except below
 
                 if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
                     _LOGGER.debug("[%s] WS close frame received", self.name)

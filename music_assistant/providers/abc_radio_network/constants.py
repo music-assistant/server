@@ -38,6 +38,12 @@ ABC_RADIO_STATIONS: dict[str, ABCRadioStation] = {
         "stream_url": f"{STREAM_BASE_URL}/triplejnsw.m3u8",
         "logo_url": f"{STATION_LOGO_BASE_URL}/c170c3d8b69f13bf43865be27b027687",
     },
+    "h100": {
+        "name": "triple j Hottest",
+        "description": "The music that soundtracked your years, from festivals to firsts",
+        "stream_url": f"{STREAM_BASE_URL}/triplejhottest.m3u8",
+        "logo_url": f"{STATION_LOGO_BASE_URL}/2840abed0762208c491d6f925d4261f3",
+    },
     "doublej": {
         "name": "Double J",
         "description": "Music news, interviews and new releases for grown-up music lovers",

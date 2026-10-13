@@ -8,7 +8,7 @@
     },
     "cpu_profile_enabled": {
       "label": "Periodic CPU profiling",
-      "description": "Automatically capture a CPU profile window at a regular interval. The server runs slightly slower while a window is being captured."
+      "description": "Automatically capture a CPU profile window at a regular interval. Python code runs several times slower while a window is being captured, which can disturb playback on a busy server - prefer the on-demand button unless you are hunting a CPU problem."
     },
     "cpu_profile_duration": {
       "label": "CPU profile window duration (seconds)",
@@ -24,7 +24,7 @@
     },
     "tracemalloc_enabled": {
       "label": "Track memory allocations (tracemalloc)",
-      "description": "Trace Python memory allocations so the report can show the top allocation sites and their growth between reports. Warning: this roughly doubles memory-tracking overhead and slows the server down while enabled - only use it when hunting a memory leak."
+      "description": "Trace Python memory allocations so the report can show the top allocation sites and their growth between reports. Warning: this adds memory and CPU overhead to every allocation while enabled - only use it when hunting a memory leak."
     }
   }
 }

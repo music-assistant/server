@@ -27,9 +27,7 @@ if TYPE_CHECKING:
     )
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.models.music_provider import MusicProvider
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.media_capabilities import RecommendationsMixin
 
 
 class RecommendationsController:
@@ -58,9 +56,7 @@ class RecommendationsController:
         rows_per_source: list[list[RecommendationFolder]] = [
             *await asyncio.gather(
                 *[
-                    self._provider_rows(
-                        cast("MusicProvider | MetadataProvider | PluginProvider", provider)
-                    )
+                    self._provider_rows(cast("RecommendationsMixin", provider))
                     for provider in providers
                 ]
             ),
@@ -95,9 +91,7 @@ class RecommendationsController:
                     return await prov.get_recommendation_items(item_id, providers=providers)
                 # external provider rows don't support provider filtering: their SPI
                 # signature is unchanged, so `providers` is silently ignored here
-                return await cast(
-                    "MusicProvider | MetadataProvider | PluginProvider", prov
-                ).get_recommendation_items(item_id)
+                return await cast("RecommendationsMixin", prov).get_recommendation_items(item_id)
         except TimeoutError:
             self.logger.warning(
                 "Timeout while fetching recommendation items for %s/%s; skipping",
@@ -115,9 +109,7 @@ class RecommendationsController:
             )
             return UniqueList()
 
-    async def _provider_rows(
-        self, provider: MusicProvider | MetadataProvider | PluginProvider
-    ) -> list[RecommendationFolder]:
+    async def _provider_rows(self, provider: RecommendationsMixin) -> list[RecommendationFolder]:
         """Return a provider's recommendation rows, or an empty list if it times out or raises."""
         try:
             async with asyncio.timeout(RECOMMENDATIONS_ROWS_TIMEOUT):

@@ -224,14 +224,43 @@ def test_settled_state_restores_the_poll_interval(sonos_player: SonosPlayer) -> 
     assert sonos_player.poll_interval == POLL_INTERVAL
 
 
-def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
+async def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
     """A transitional state delivered by subscription event is watched closely too."""
     event = MagicMock()
     event.variables = {"transport_state": "TRANSITIONING"}
 
-    sonos_player._handle_avtransport_event(event)
+    await sonos_player._handle_avtransport_event(event)
 
     assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL
+
+
+async def test_avtransport_event_queries_the_speaker_off_the_event_loop(
+    sonos_player: SonosPlayer,
+) -> None:
+    """Fetching track info for a playback event must not stall the event loop."""
+    query_threads: list[int] = []
+
+    def _get_current_track_info() -> dict[str, str]:
+        query_threads.append(threading.get_ident())
+        return {"uri": "x-rincon-mp3radio://radio.example/stream", "position": ""}
+
+    sonos_player.soco.get_current_track_info.side_effect = _get_current_track_info
+    sonos_player.soco.music_source_from_uri = SoCo.music_source_from_uri
+    event = MagicMock()
+    event.variables = {
+        "transport_state": "PLAYING",
+        "enqueued_transport_uri": "x-rincon-mp3radio://radio.example/stream",
+        "current_track_uri": "",
+        "current_track_meta_data": None,
+        "enqueued_transport_uri_meta_data": None,
+    }
+
+    with patch.object(sonos_player, "update_player"):
+        await sonos_player._handle_avtransport_event(event)
+
+    assert sonos_player._attr_playback_state == PlaybackState.PLAYING
+    assert len(query_threads) == 1
+    assert query_threads[0] != threading.get_ident()
 
 
 def test_line_in_is_reported_as_the_active_source(sonos_player: SonosPlayer) -> None:

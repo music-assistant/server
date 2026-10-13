@@ -44,7 +44,7 @@ async def run_setup(session: SetupSession) -> None:
     :param session: The setup session driving the flow.
     """
     host_default = str(session.context.setup_data.get(CONF_BRIDGE_HOST) or "")
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -92,7 +92,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _fetch_bridge_id(host: str, username: str) -> str | None:

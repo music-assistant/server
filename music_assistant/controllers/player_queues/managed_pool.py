@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Track
 
+from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_SOURCE_CAP,
@@ -44,6 +45,7 @@ from music_assistant.controllers.player_queues.helpers import (
     is_dynamic_source,
     space_by_artist,
 )
+from music_assistant.controllers.player_queues.smart_fade_ordering import order_tracks
 from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
@@ -159,11 +161,10 @@ class ManagedPool:
         )
         # the batch is appended after the current tail, so keep its first track clear of the last
         # queued item's artist (the seam the listener actually hears)
-        preceding = (
-            _track_artist_set(items[-1].media_item)
-            if items and isinstance(items[-1].media_item, Track)
-            else set()
+        preceding_track = (
+            items[-1].media_item if items and isinstance(items[-1].media_item, Track) else None
         )
+        preceding = _track_artist_set(preceding_track) if preceding_track is not None else set()
         chosen = allocate_refill(
             sources,
             slots=slots,
@@ -173,8 +174,16 @@ class ManagedPool:
             windows=windows,
             preceding_artists=preceding,
         )
-        # advance each finite source's deque: drop what was just dispatched, rotate recency-denied
-        # tracks to the back, page in more if it is draining, and retire it once fully played
+        if chosen and self.queues.smart_fade_ordering_enabled(queue):
+            # Dynamic Mode already picked the refill tracks. Reorder only that
+            # batch, starting from the queue tail.
+            chosen = await order_tracks(
+                self.mass,
+                chosen,
+                preceding_track=preceding_track,
+            )
+        # Keep the existing finite-source bookkeeping after ordering: mark dispatched tracks,
+        # page more in and retire exhausted sources.
         await self._reconcile_tracks(queue_id, sources, chosen, snapshot, windows)
         return chosen
 
@@ -229,7 +238,7 @@ class ManagedPool:
         for uri, media_item in items.items():
             if is_dynamic_source(media_item):
                 fill_mode = DynamicFillMode.DYNAMIC
-                candidates = await self._fetch_dynamic(media_item)
+                candidates = await self._fetch_dynamic(media_item, queue_data.userid)
             else:
                 # a finite source is materialized once, then its deque feeds (and is advanced by)
                 # every refill so it plays through instead of recycling tracks that age out
@@ -251,10 +260,13 @@ class ManagedPool:
             )
         return sources
 
-    async def _fetch_dynamic(self, media_item: MediaItemType) -> list[Track]:
+    async def _fetch_dynamic(self, media_item: MediaItemType, userid: str | None) -> list[Track]:
         """Fetch the next self-managed batch from a dynamic playlist or radio station."""
         with suppress(MusicAssistantError):
             tracks = await self.queues.get_dynamic_source_tracks(media_item)
+            # the batch is music picked for the user, so their dislikes stay out of it;
+            # the finite sources they added themselves are never filtered
+            tracks = await without_disliked_tracks(self.mass, userid, tracks)
             return [track for track in tracks if track.available]
         return []
 

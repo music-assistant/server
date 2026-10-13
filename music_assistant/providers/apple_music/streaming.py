@@ -126,7 +126,7 @@ class AppleMusicStreamingManager:
                     content = await response.json(loads=json_loads)
                     if content.get("failureType"):
                         message = content.get("failureMessage")
-                        raise MediaNotFoundError(f"Failed to get song stream metadata: {message}")
+                        raise MediaNotFoundError(f"Failed to get song stream metadata: {message}")  # noqa: TRY301 - retried by except below
                     return cast("dict[str, Any]", content["songList"][0])
             except (MediaNotFoundError, ClientError) as exc:
                 if retry:

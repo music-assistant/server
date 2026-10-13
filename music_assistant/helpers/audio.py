@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
@@ -33,7 +34,6 @@ from .ffmpeg import DEFAULT_MP3_BIT_RATE, get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
@@ -52,6 +52,16 @@ SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 _MIME_TYPE_OVERRIDES: Final[dict[str, str]] = {
     "mp3": "audio/mpeg",
 }
+
+DSD_CONTENT_TYPES: Final[frozenset[ContentType]] = frozenset(
+    {
+        ContentType.DSF,
+        ContentType.DSD_LSBF,
+        ContentType.DSD_MSBF,
+        ContentType.DSD_LSBF_PLANAR,
+        ContentType.DSD_MSBF_PLANAR,
+    }
+)
 
 
 def get_mime_type(format_str: str) -> str:
@@ -221,7 +231,6 @@ def create_wave_header(
         bitspersample,  # 16 bits for two byte samples, etc.
     )
     # Generate data chunk
-    # duration = 3600*6.7
     data_chunk_spec = b"<4sL"
     if duration is None:
         # use max value possible
@@ -252,7 +261,6 @@ def create_wave_header(
     file.write(format_chunk)
     file.write(data_chunk)
 
-    # return file.getvalue(), all_chunks_size + 8
     return file.getvalue()
 
 
@@ -342,7 +350,8 @@ def get_parts_from_position(
         # the previous track. If we're within 2 second of the end, skip the current track
         if position + 2 >= part.duration:
             LOGGER.debug(
-                f"Skipping to the next part due to seek position being at the end: {position}",
+                "Skipping to the next part due to seek position being at the end: %s",
+                position,
             )
             if i + 1 < len(parts):
                 return parts[i + 1 :], 0
@@ -613,13 +622,22 @@ def calculate_content_length(
     return int((320000 / 8) * seconds)
 
 
+# Bump whenever an encoder setting in get_ffmpeg_args moves the encoded size. The
+# content-length cache holds measured bytes, so a stale entry announces a body we no
+# longer produce. Older entries are never read again and expire on their own.
+OUTPUT_ENCODING_REVISION: Final[int] = 2
+
+
 def get_output_format_key(fmt: AudioFormat) -> str:
     """
     Get a stable key representing the output encoding parameters.
 
     :param fmt: The output audio format.
     """
-    return f"{fmt.content_type.value}_{fmt.sample_rate}_{fmt.bit_depth}_{fmt.channels}"
+    return (
+        f"{fmt.content_type.value}_{fmt.sample_rate}_{fmt.bit_depth}"
+        f"_{fmt.channels}_r{OUTPUT_ENCODING_REVISION}"
+    )
 
 
 CONTENT_LENGTH_CACHE_CATEGORY = 50
@@ -753,6 +771,58 @@ def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
     :param streamdetails: The stream the audio belongs to.
     """
     return streamdetails.decoded_audio_format or streamdetails.audio_format
+
+
+def is_dsd_audio_format(audio_format: AudioFormat) -> bool:
+    """Return whether an audio format carries or identifies DSD samples."""
+    return (
+        audio_format.content_type in DSD_CONTENT_TYPES
+        or audio_format.codec_type in DSD_CONTENT_TYPES
+    )
+
+
+def is_dsd_stream(streamdetails: StreamDetails) -> bool:
+    """Return whether a stream contains DSD, including DFF/DST local files."""
+    if streamdetails.decoded_audio_format is not None:
+        return is_dsd_audio_format(streamdetails.decoded_audio_format)
+    if is_dsd_audio_format(streamdetails.audio_format):
+        return True
+    path = streamdetails.path
+    if not path or not isinstance(path, (str, list)):
+        return False
+    paths = [path] if isinstance(path, str) else [part.path for part in path]
+    for file_path in paths:
+        parsed = urllib.parse.urlparse(file_path)
+        comparison_path = parsed.path if parsed.scheme in ("http", "https") else file_path
+        if not comparison_path.lower().endswith(".dff"):
+            return False
+    return True
+
+
+def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the PCM output format to request from FFmpeg for the arriving audio.
+
+    :param streamdetails: The stream whose decoded PCM format is required.
+    """
+    arriving = arriving_audio_format(streamdetails)
+    if is_dsd_stream(streamdetails):
+        # DSF's probed 8-bit depth maps to S32 output but still sizes chunks as
+        # 8-bit PCM. Request F32 with matching accounting, also preserving the
+        # decoder's precision for DFF/DST sources whose probe depth defaults to 16.
+        return AudioFormat(
+            content_type=ContentType.PCM_F32LE,
+            codec_type=ContentType.PCM_F32LE,
+            sample_rate=arriving.sample_rate,
+            bit_depth=32,
+            channels=min(arriving.channels, 2),
+        )
+    return AudioFormat(
+        content_type=ContentType.from_bit_depth(arriving.bit_depth),
+        sample_rate=arriving.sample_rate,
+        bit_depth=arriving.bit_depth,
+        channels=min(arriving.channels, 2),
+    )
 
 
 def get_bit_rate(fmt: AudioFormat) -> int:

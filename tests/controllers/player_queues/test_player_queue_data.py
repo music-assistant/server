@@ -171,6 +171,31 @@ def test_cache_round_trip_restores_settings() -> None:
     assert restored.queue.autoplay_enabled is True
 
 
+def test_cache_round_trip_restores_toggle_overrides() -> None:
+    """A pinned autoplay/crossfade override survives a cache round-trip."""
+    queue = _queue()
+    data = PlayerQueueData(queue=queue, autoplay_override=False, crossfade_override=True)
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
+
+    assert restored.autoplay_override is False
+    assert restored.crossfade_override is True
+
+
+def test_from_cache_legacy_without_toggle_overrides_yields_none() -> None:
+    """A legacy cache with no override keys restores as None, i.e. follow the global default."""
+    queue = _queue()
+    data = PlayerQueueData(queue=queue)
+    state = data.to_cache()
+    del state["autoplay_override"]
+    del state["crossfade_override"]
+
+    restored = PlayerQueueData.from_cache(state, data.items_to_cache())
+
+    assert restored.autoplay_override is None
+    assert restored.crossfade_override is None
+
+
 def test_from_cache_keeps_settings_when_item_unreadable() -> None:
     """One unreadable queue item is skipped without losing the other items or the settings."""
     queue = _queue(shuffle_enabled=True, crossfade_enabled=True)

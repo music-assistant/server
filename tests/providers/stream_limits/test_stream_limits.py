@@ -24,7 +24,6 @@ from music_assistant.providers.radiobrowser import RadioBrowserProvider
 from music_assistant.providers.radioparadise.provider import RadioParadiseProvider
 from music_assistant.providers.rain_mood import RainyMoodProvider
 from music_assistant.providers.somafm import SomaFMProvider
-from music_assistant.providers.spotify.provider import SpotifyProvider
 from music_assistant.providers.sverigesradio import SverigesRadio
 from music_assistant.providers.tunein import TuneInProvider
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
@@ -42,8 +41,9 @@ def _limit(provider_cls: type[MusicProvider]) -> int | None:
         (MyDemoMusicprovider, 5),
         (QobuzProvider, 5),
         (LocalFileSystemProvider, None),
-        (SpotifyProvider, 2),
-        (YoutubeMusicProvider, 1),
+        # SpotifyProvider reads its budget from the configured playback backend,
+        # so it is pinned in tests/providers/spotify/test_backends.py instead
+        (YoutubeMusicProvider, 3),
         (AppleMusicProvider, 1),
         (PandoraProvider, 1),
     ],

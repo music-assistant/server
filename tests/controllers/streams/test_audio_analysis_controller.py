@@ -15,6 +15,11 @@ from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer, AudioBufferDiscarded
+from music_assistant.controllers.streams.smart_fades.vocal import (
+    VOCAL_ACTIVITY_BINS,
+    first_vocal_onset,
+)
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
     AudioAnalysisProvider,
@@ -43,6 +48,7 @@ def _create_mock_provider(
     prov.process_pcm_chunk = AsyncMock()
     prov.finalize = AsyncMock()
     prov.cancel = AsyncMock()
+    prov.abort = AsyncMock()
     return prov
 
 
@@ -116,7 +122,9 @@ def mock_stream_details() -> MagicMock:
 @pytest.fixture
 def controller(mock_streams: MagicMock) -> AudioAnalysisController:
     """Return an AudioAnalysisController wired to mock_streams."""
-    return AudioAnalysisController(mock_streams)
+    controller = AudioAnalysisController(mock_streams)
+    controller._database_ready = True
+    return controller
 
 
 @pytest.fixture
@@ -512,7 +520,8 @@ async def test_provider_error_during_chunk_processing_evicts_provider(
 
     The first chunk processes successfully. The second chunk's exception
     triggers eviction. The third chunk is not delivered. The provider's
-    cancel hook is dispatched (replaces finalize for evicted providers).
+    abort hook is dispatched (replaces finalize for evicted providers) so
+    the track is recorded as failed rather than silently left pending.
     """
     call_count = 0
 
@@ -529,9 +538,10 @@ async def test_provider_error_during_chunk_processing_evicts_provider(
 
     # Provider was called twice: chunk 1 (success), chunk 2 (raised → evicted)
     assert call_count == 2
-    # Evicted provider does NOT get finalize, but does get cancel
+    # Evicted provider gets abort (which records the failure), not finalize or cancel
     mock_provider.finalize.assert_not_called()
-    mock_provider.cancel.assert_called_once()
+    mock_provider.cancel.assert_not_called()
+    mock_provider.abort.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -682,3 +692,28 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
 
     assert "test_session" not in provider._sessions
     provider.logger.error.assert_called_once()
+
+
+async def test_get_vocal_onset_is_none_without_analysis(
+    controller: AudioAnalysisController,
+) -> None:
+    """A track without stored analysis has no known vocal onset."""
+    controller.get_audio_analysis = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    assert await controller.get_vocal_onset("test_123", "test_prov") is None
+    controller.get_audio_analysis.assert_awaited_once_with("test_123", "test_prov", MediaType.TRACK)
+
+
+async def test_get_vocal_onset_reads_the_stored_vocal_timeline(
+    controller: AudioAnalysisController,
+) -> None:
+    """The onset comes from the vocal-activity timeline of the stored analysis."""
+    vocal_activity = [0.0] * VOCAL_ACTIVITY_BINS
+    vocal_activity[300:400] = [0.9] * 100
+    analysis = AudioAnalysisData(duration=180.0, vocal_activity=vocal_activity)
+    controller.get_audio_analysis = AsyncMock(return_value=analysis)  # type: ignore[method-assign]
+
+    onset = await controller.get_vocal_onset("test_123", "test_prov")
+
+    assert onset is not None
+    assert onset == first_vocal_onset(analysis)

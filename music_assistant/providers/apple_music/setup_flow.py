@@ -51,7 +51,7 @@ async def run_setup(session: SetupSession) -> None:
     app_token = MUSIC_APP_TOKEN
     # a throttled /v1/test says nothing about validity, so only an explicit rejection counts
     if await _app_token_accepted(mass, app_token) is False:
-        app_token_errors: dict[str, str] | None = None
+        app_token_errors: dict[str, str | SetupFlowError] | None = None
         while True:
             values = await session.form(
                 [
@@ -71,7 +71,7 @@ async def run_setup(session: SetupSession) -> None:
             app_token_errors = {CONF_MUSIC_APP_TOKEN: "invalid_value"}
         collected[CONF_MUSIC_APP_TOKEN] = app_token
 
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         user_values = await session.form(
             [
@@ -109,7 +109,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(attempt)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _app_token_accepted(mass: MusicAssistant, app_token: str) -> bool | None:

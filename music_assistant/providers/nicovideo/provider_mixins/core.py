@@ -71,7 +71,7 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
                 # Try login if credentials are provided
                 login_success = await self.service_manager.auth.try_login()
                 if not login_success:
-                    raise LoginFailed("Login failed with provided credentials")
+                    raise LoginFailed("Login failed with provided credentials")  # noqa: TRY301 - logged by except below
                 self.service_manager.auth.start_periodic_relogin_task()
                 self.logger.debug("nicovideo provider initialized successfully with login")
             else:

@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     ProviderMapping,
+    Radio,
     Track,
 )
 from music_assistant_models.player_queue import PlayerQueue
@@ -145,6 +146,37 @@ async def test_resolve_empty_container_is_not_marked_played(
     mark.assert_not_called()
 
 
+async def test_resolve_finite_radio_expands_to_its_tracks_and_marks_played() -> None:
+    """A finite radio station (an AI Radio show) resolves to its whole tracklist, once."""
+    resolver, mark = _resolver()
+    radio = Radio(
+        item_id="r1",
+        provider="library",
+        name="Show",
+        provider_mappings=set(),
+        is_dynamic=False,
+        is_endless=False,
+    )
+    track = Track(
+        item_id="t1",
+        provider="library",
+        name="T1",
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="test", provider_instance="test")
+        },
+    )
+    resolver.mass.music.radio.tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[track]
+    )
+
+    result = await resolver._resolve_media_items(radio, userid="u1", queue_id="q1")
+
+    assert result == [track]
+    resolver.mass.music.radio.tracks.assert_awaited_once_with(radio)
+    assert mark.call_args.kwargs["user_initiated"] is True
+    assert mark.call_args.args[0].media_type == MediaType.RADIO
+
+
 async def test_enqueued_item_mapping_counts_as_user_initiated() -> None:
     """
     A play requested as an ItemMapping is recorded as explicitly enqueued.
@@ -168,7 +200,7 @@ async def test_enqueued_item_mapping_counts_as_user_initiated() -> None:
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
@@ -240,7 +272,7 @@ def _play_media_controller(
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl.get_config_value = Mock(return_value=default_option)  # type: ignore[method-assign]
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.signal_update = Mock()  # type: ignore[method-assign]

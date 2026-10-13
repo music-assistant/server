@@ -322,19 +322,38 @@ async def test_redirect_within_allowlist_followed(tmp_path: Path) -> None:
     [
         {"../soloist": b"payload"},  # path traversal
         {"/soloist": b"payload"},  # absolute path
-        {"soloist": b"payload", "README": b"docs"},  # extra file
         {"README": b"docs"},  # no soloist binary at all
     ],
 )
 async def test_unsafe_or_unexpected_archive_rejected(
     tmp_path: Path, files: dict[str, bytes]
 ) -> None:
-    """Archives with traversal, absolute paths, extra or missing files are rejected."""
+    """Archives with traversal, absolute paths or no binary at all are rejected."""
     archive = _build_archive(tmp_path / "a.tar.gz", files)
     manager, _ = _make_manager(tmp_path, _serve_archive(archive))
 
     with pytest.raises(InvalidArchiveError):
         await manager.ensure_binary(consent=True)
+
+
+@pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
+async def test_archive_siblings_are_ignored(tmp_path: Path) -> None:
+    """The release ships docs beside the binary: they are skipped, not rejected."""
+    archive = _build_archive(
+        tmp_path / "a.tar.gz",
+        {
+            "CHANGELOG.md": b"# changelog",
+            "THIRD_PARTY_LICENSES.txt": b"licenses",
+            "soloist": _elf_binary("x86_64"),
+        },
+    )
+    manager, _ = _make_manager(tmp_path, _serve_archive(archive))
+
+    path = await manager.ensure_binary(consent=True)
+
+    assert path.is_file()
+    assert path.read_bytes() == _elf_binary("x86_64")
+    assert not (path.parent / "CHANGELOG.md").exists()
 
 
 @pytest.mark.usefixtures("linux_platform", "fake_version_cmd")

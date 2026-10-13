@@ -9,9 +9,11 @@ new items are ready, and hands the audio over in a single swap.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -25,6 +27,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.models.player import Player
 
 NEW_TRACKS = ["n1", "n2", "n3"]
 PLAYING_TRACKS = ["p1", "p2", "p3"]
@@ -69,7 +72,7 @@ def _controller(**queue_kwargs: Any) -> Any:
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
@@ -180,6 +183,30 @@ async def test_replace_releases_the_audio_of_the_items_it_swapped_out() -> None:
     assert order == ["release", "release", "release", "play"]
 
 
+@pytest.mark.parametrize("dynamic", [False, True], ids=["linear", "dynamic"])
+async def test_replace_cancels_the_prewarm_of_the_track_it_swaps_out(dynamic: bool) -> None:
+    """
+    A prewarm still running for the old next track is cancelled before the swap.
+
+    Nothing else stops it: it is only re-triggered near the end of the new track, so left alone
+    it resumes after the swap and warms audio for an item that is no longer on the queue, holding
+    a source slot on a buffer the queue cleanup can no longer reach.
+    """
+    ctrl = _controller(is_dynamic=dynamic, shuffle_enabled=dynamic)
+    replaced = _load_playing_queue(ctrl, with_buffers=True)
+    order: list[str] = []
+    for item in replaced:
+        cast("Any", item.streamdetails).buffer.clear = AsyncMock(
+            side_effect=lambda: order.append("release")
+        )
+    ctrl.mass.cancel_task = Mock(side_effect=order.append)
+
+    await ctrl.play_media("q1", _playlist("pl1", dynamic=dynamic), QueueOption.REPLACE)
+
+    assert order[0] == "prepare_next_audio_buffer_q1"
+    assert order.count("release") == len(replaced)
+
+
 async def test_replace_does_not_hand_the_player_a_next_item_from_the_new_list() -> None:
     """
     The buffered index is dropped before the swap, so no stale position picks the next track.
@@ -284,3 +311,33 @@ async def test_replacing_an_ended_queue_keeps_the_sources_it_just_stored() -> No
     assert _queue(ctrl).ended is False
     assert [source.item_id for source in ctrl._queue_data["q1"].source_items] == ["pl1"]
     assert _item_ids(ctrl) == NEW_TRACKS
+
+
+async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_position() -> None:
+    """A stale player report preserves the new queue position after replacement."""
+    ctrl = _controller()
+    replaced = _load_playing_queue(ctrl)
+    await ctrl.play_media("q1", _playlist(), QueueOption.REPLACE)
+    # Set the position normally established by the mocked play_index.
+    new_items = ctrl._queue_data["q1"].items
+    queue = _queue(ctrl)
+    queue.state = PlaybackState.PLAYING
+    queue.current_index = 0
+    queue.current_item = new_items[0]
+    queue.next_item = new_items[1]
+    player = SimpleNamespace(
+        player_id="q1",
+        active_output_protocol="native",
+        current_media=SimpleNamespace(
+            source_id="q1", queue_item_id=replaced[0].queue_item_id, uri=None
+        ),
+        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=12.0),
+    )
+
+    updated = ctrl._update_current_index_from_player(queue, cast("Player", player))
+
+    assert queue.current_index == 0
+    assert queue.current_item is new_items[0]
+    assert queue.next_item is new_items[1]
+    assert queue.elapsed_time == 0
+    assert updated is False

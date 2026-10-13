@@ -42,9 +42,11 @@ from music_assistant.controllers.player_queues.constants import (
     CLICK_ACTION_BROWSE,
     CLICK_ACTION_DEFAULT_VALUE,
     CLICK_ACTION_PLAY,
+    CONF_AUTOPLAY_ENABLED,
     CONF_AUTOPLAY_LABEL,
     CONF_AUTOPLAY_MODE,
     CONF_AUTOPLAY_PLAYLIST,
+    CONF_CROSSFADE_ENABLED,
     CONF_CROSSFADE_LABEL,
     CONF_DEFAULT_CLICK_ACTION_ALBUM,
     CONF_DEFAULT_CLICK_ACTION_ARTIST,
@@ -64,6 +66,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE,
     CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT,
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
+    CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
     CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
@@ -72,7 +75,11 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_LABEL,
+    CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
+    DEFAULT_AUTOPLAY_ENABLED,
+    DEFAULT_CROSSFADE_ENABLED,
+    ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
     PLAY_ACTION_PLAY_FROM_HERE,
@@ -84,6 +91,7 @@ from music_assistant.controllers.player_queues.constants import (
     SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS,
     SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
     SMART_SHUFFLE_SONG_RECENCY_OPTIONS,
+    ArtistOrder,
 )
 
 if TYPE_CHECKING:
@@ -214,6 +222,17 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
             category=CATEGORY_ITEMS_TO_SELECT,
         ),
         ConfigEntry(
+            key=CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
+            type=ConfigEntryType.STRING,
+            default_value=ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
+            options=[
+                ConfigValueOption(ArtistOrder.SHUFFLED_TRACKS.value),
+                ConfigValueOption(ArtistOrder.RANDOM_ALBUMS.value),
+                ConfigValueOption(ArtistOrder.ALBUMS_BY_RELEASE.value),
+            ],
+            category=CATEGORY_ITEMS_TO_SELECT,
+        ),
+        ConfigEntry(
             key=CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
             type=ConfigEntryType.STRING,
             default_value=ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
@@ -303,6 +322,12 @@ def _smart_shuffle_entries(*, per_queue: bool) -> list[ConfigEntry]:
             per_queue=per_queue,
             global_default=CONF_VALUE_DISABLED,
         ),
+        _onoff_entry(
+            CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
+            CATEGORY_SMART_SHUFFLE,
+            per_queue=per_queue,
+            global_default=CONF_VALUE_DISABLED,
+        ),
     ]
     if per_queue:
         # the recency windows are global-only tuning (not overridable per queue)
@@ -347,7 +372,7 @@ def _recency_entry(
 def _autoplay_entries(
     mass: MusicAssistant, playlist_options: list[ConfigValueOption] | None, *, per_queue: bool
 ) -> list[ConfigEntry]:
-    """Autoplay entries: the mode select (per-queue overridable) + its playlist companion."""
+    """Autoplay entries: the global on/off default, mode select and its playlist companion."""
     similar_available = any(
         ProviderFeature.SIMILAR_TRACKS in provider.supported_features
         for provider in mass.music.providers
@@ -360,12 +385,25 @@ def _autoplay_entries(
     ]
     if per_queue:
         mode_options.append(ConfigValueOption(CONF_VALUE_GLOBAL))
-    return [
+    entries: list[ConfigEntry] = [
         ConfigEntry(
             key=CONF_AUTOPLAY_LABEL,
             type=ConfigEntryType.LABEL,
             category=CATEGORY_AUTOPLAY,
         ),
+    ]
+    if not per_queue:
+        # global-only: the per-queue Autoplay toggle is a runtime command, not a config entry
+        # so we only define the default here
+        entries.append(
+            ConfigEntry(
+                key=CONF_AUTOPLAY_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_AUTOPLAY_ENABLED,
+                category=CATEGORY_AUTOPLAY,
+            )
+        )
+    entries += [
         ConfigEntry(
             key=CONF_AUTOPLAY_MODE,
             type=ConfigEntryType.STRING,
@@ -384,10 +422,11 @@ def _autoplay_entries(
             category=CATEGORY_AUTOPLAY,
         ),
     ]
+    return entries
 
 
 def _crossfade_entries(mass: MusicAssistant, *, per_queue: bool) -> list[ConfigEntry]:
-    """Crossfade entries: the mode select (per-queue overridable) + global-only duration."""
+    """Crossfade entries: the global on/off default, mode select and global-only duration."""
     smart_fades_available = mass.streams.smart_fades_available
     mode_options = [
         ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
@@ -400,12 +439,24 @@ def _crossfade_entries(mass: MusicAssistant, *, per_queue: bool) -> list[ConfigE
         if smart_fades_available
         else CrossfadeMode.STANDARD_CROSSFADE.value
     )
-    entries = [
+    entries: list[ConfigEntry] = [
         ConfigEntry(
             key=CONF_CROSSFADE_LABEL,
             type=ConfigEntryType.LABEL,
             category=CATEGORY_CROSSFADE,
         ),
+    ]
+    if not per_queue:
+        # global-only: the per-queue crossfade toggle is a runtime command, not a config entry
+        entries.append(
+            ConfigEntry(
+                key=CONF_CROSSFADE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_CROSSFADE_ENABLED,
+                category=CATEGORY_CROSSFADE,
+            )
+        )
+    entries += [
         ConfigEntry(
             key=CONF_CROSSFADE_MODE,
             type=ConfigEntryType.STRING,

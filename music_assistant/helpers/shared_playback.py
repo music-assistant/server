@@ -34,6 +34,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.helpers.util import join_task
+from music_assistant.helpers.virtual_player import cleanup_virtual_player
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -326,25 +327,13 @@ class SharedPlaybackSession:
         :param sendspin: Sendspin provider that owns the virtual player.
         :param player_id: Virtual player to remove.
         """
-        last_error: Exception | None = None
-        for delay in REMOTE_REMOVAL_CLEANUP_DELAYS:
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                if not sendspin.is_virtual_player(player_id):
-                    return
-                # awaited to completion on purpose: a timeout is no reliable bound on
-                # the teardown - parts of it swallow the cancellation (see
-                # AsyncProcess.close), and one that does land leaves the player
-                # half torn down for the next attempt to trip over
-                await sendspin.remove_virtual_player(player_id)
-                return
-            except Exception as err:
-                last_error = err
-        LOGGER.warning(
-            "Could not clean up cancelled remote session %s: %s",
+        await cleanup_virtual_player(
             player_id,
-            last_error,
+            REMOTE_REMOVAL_CLEANUP_DELAYS,
+            sendspin.is_virtual_player,
+            sendspin.remove_virtual_player,
+            LOGGER,
+            "Could not clean up cancelled remote session %s: %s",
         )
 
     @classmethod

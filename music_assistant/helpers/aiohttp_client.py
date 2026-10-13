@@ -10,13 +10,13 @@ from functools import cache
 from ssl import SSLContext
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self
+from urllib.request import getproxies
 
 import aiohttp
 from aiohttp import web
 from aiohttp.hdrs import USER_AGENT
 from aiohttp_asyncmdnsresolver.api import AsyncDualMDNSResolver
 from aiohttp_socks import ProxyConnector
-from music_assistant_models.enums import EventType
 from yarl import URL
 
 from music_assistant.constants import APPLICATION_NAME
@@ -26,7 +26,6 @@ from .json import json_dumps, json_loads
 
 if TYPE_CHECKING:
     from aiohttp.typedefs import JSONDecoder
-    from music_assistant_models.event import MassEvent
 
     from music_assistant.mass import MusicAssistant
 
@@ -55,6 +54,9 @@ def create_clientsession(
     """Create a new ClientSession with kwargs, i.e. for cookies."""
     clientsession = aiohttp.ClientSession(
         connector=_get_connector(mass, verify_ssl, socks_url),
+        # honour the (NO_|HTTP_|HTTPS_)PROXY env vars, unless an explicit socks proxy is set;
+        # gated on a proxy being configured as trust_env adds a per-request netrc lookup
+        trust_env=not socks_url and bool(getproxies()),
         json_serialize=json_dumps,
         response_class=MassClientResponse,
         **kwargs,
@@ -98,22 +100,6 @@ async def async_aiohttp_proxy_stream(
             await response.write(data)
 
     return response
-
-
-class MassAsyncDNSResolver(AsyncDualMDNSResolver):
-    """
-    Music Assistant AsyncDNSResolver.
-
-    This is a wrapper around the AsyncDualMDNSResolver to only
-    close the resolver when the Music Assistant instance is closed.
-    """
-
-    async def real_close(self) -> None:
-        """Close the resolver."""
-        await super().close()
-
-    async def close(self) -> None:
-        """Close the resolver."""
 
 
 class MassClientResponse(aiohttp.ClientResponse):
@@ -210,15 +196,10 @@ def _get_connector(
 
 
 @cache
-def _get_resolver(mass: MusicAssistant) -> MassAsyncDNSResolver:
-    """Return the MassAsyncDNSResolver."""
-    resolver = MassAsyncDNSResolver(async_zeroconf=mass.discovery.aiozc)
-
-    async def _close_resolver(event: MassEvent) -> None:  # noqa: ARG001
-        await resolver.real_close()
-
-    mass.subscribe(_close_resolver, EventType.SHUTDOWN)
-    return resolver
+def _get_resolver(mass: MusicAssistant) -> AsyncDualMDNSResolver:
+    """Return the shared resolver, which looks up .local names over both mDNS and DNS."""
+    # lives as long as the process: aiohttp never closes a resolver it was handed
+    return AsyncDualMDNSResolver(async_zeroconf=mass.discovery.aiozc)
 
 
 def get_socks5_url(url_string: str) -> str:

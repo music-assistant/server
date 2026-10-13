@@ -93,9 +93,7 @@ def _with_vocal_activity(
 ) -> AudioAnalysisData:
     """Attach a valid vocal_activity list, active only inside ``active_windows``."""
     assert analysis.duration is not None
-    analysis.extra_data = {
-        "vocal_activity": _vocal_probabilities(analysis.duration, active_windows, level)
-    }
+    analysis.vocal_activity = _vocal_probabilities(analysis.duration, active_windows, level)
     return analysis
 
 
@@ -187,12 +185,18 @@ class TestVocalCollisionAvoidance:
 
 
 class TestShortVocalHandoff:
-    """When every phrased candidate collides, ship the click-free equal-power fallback."""
+    """A collision too severe even for the fallback crossfade ships the click-free handoff."""
 
     def test_short_handoff_when_every_candidate_collides(self) -> None:
-        """Vocals spanning almost the whole tail/head collide at every ladder rung."""
-        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 40.0)])
+        """
+        A sung outro tail against a sung intro head collides at every ladder rung.
+
+        Both masks stay structured (no saturation abstention), yet every
+        rung's overlap collides and the fallback crossfade breaches its
+        severity ceiling, so the click-free handoff ships as the last resort.
+        """
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(225.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
         plan = _plan(out, inc)
 
         assert plan.metrics.strategy is TransitionStrategy.SHORT_VOCAL_HANDOFF
@@ -209,8 +213,8 @@ class TestShortVocalHandoff:
 
     def test_handoff_still_uses_the_qsin_crossfade_filter(self) -> None:
         """The handoff plan renders through the same equal-power StreamingCrossfadeFilter as any other."""
-        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 40.0)])
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(225.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
         plan = _plan(out, inc)
         assert plan.metrics.strategy is TransitionStrategy.SHORT_VOCAL_HANDOFF
 
@@ -222,6 +226,38 @@ class TestShortVocalHandoff:
         )
         crossfade_filters = [f for f in filters if isinstance(f, StreamingCrossfadeFilter)]
         assert len(crossfade_filters) == 1
+
+
+class TestSaturatedVocalAbstention:
+    """Near-continuous vocal on both decks makes the collision guard abstain, not veto."""
+
+    def test_both_decks_saturated_ships_a_normal_blend(self) -> None:
+        """Wall-to-wall masks on both decks carry no structure: a phrased blend still ships."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 41.0)])
+
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert not ctx.vocal_collision_reliable
+
+        plan = _plan(out, inc)
+        assert plan.metrics.strategy is TransitionStrategy.ENERGY_ALIGNED
+        assert plan.crossfade_duration > 1.0
+
+    def test_one_sided_saturation_keeps_the_guard(self) -> None:
+        """A single saturated deck leaves the collision guard fully armed."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
+
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert ctx.vocal_collision_reliable
+
+    def test_short_incoming_track_saturates_over_its_own_span(self) -> None:
+        """A wall-to-wall mask on a sub-45s incoming track still reads saturated."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=30.0), [(0.0, 30.0)])
+
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert not ctx.vocal_collision_reliable
 
 
 class TestOutgoingVocalRetention:
@@ -513,16 +549,18 @@ class TestMissingOrInvalidVocalDataFallsBackToEnergyOnly:
         assert plan == baseline
 
     def test_old_wrapped_contract_matches_the_energy_only_plan(self) -> None:
-        """A row using the old wrapped contract disables vocal logic."""
+        """A real old-wrapped row (kept in extra_data, field None) yields the energy-only plan."""
         baseline = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
-        out = _analysis(120.0, duration=240.0)
-        out.extra_data = {
+        out_data = _analysis(120.0, duration=240.0).to_dict()
+        out_data["extra_data"] = {
             "vocal_activity": {
                 "model": "some_other_model",
                 "frame_duration": 0.1,
                 "probabilities": [0.9] * 2400,
             }
         }
+        out = AudioAnalysisData.from_dict(out_data)
+        assert out.vocal_activity is None
         plan = _plan(out, _analysis(120.0, duration=240.0))
         assert plan == baseline
 
@@ -530,7 +568,7 @@ class TestMissingOrInvalidVocalDataFallsBackToEnergyOnly:
         """A tuple timeline is malformed because the provider contract stores a list."""
         baseline = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
         out = _analysis(120.0, duration=240.0)
-        out.extra_data = {"vocal_activity": tuple([0.9] * 1800)}
+        out.vocal_activity = tuple([0.9] * 1800)  # type: ignore[assignment]
         plan = _plan(out, _analysis(120.0, duration=240.0))
         assert plan == baseline
 
@@ -538,7 +576,7 @@ class TestMissingOrInvalidVocalDataFallsBackToEnergyOnly:
         """A timeline with fewer than 1800 bins is rejected."""
         baseline = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
         out = _analysis(120.0, duration=240.0)
-        out.extra_data = {"vocal_activity": [0.9] * 1000}
+        out.vocal_activity = [0.9] * 1000
         plan = _plan(out, _analysis(120.0, duration=240.0))
         assert plan == baseline
 

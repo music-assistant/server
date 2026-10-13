@@ -13,6 +13,7 @@ from music_assistant.providers.airplay.constants import TVOS_APP_BUNDLE_ID
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
 from music_assistant.providers.airplay.dashboard import AirPlayDashboards
 from music_assistant.providers.airplay.player import GenericAirPlayPlayer
+from tests.common import scheduled_call
 
 PLAYER_ID = "ap1234567890ab"
 
@@ -237,8 +238,9 @@ def test_reconcile_schedules_background_task() -> None:
     create_task = dashboards.mass.create_task
     create_task.assert_called_once()  # type: ignore[attr-defined]
     args, kwargs = create_task.call_args  # type: ignore[attr-defined]
-    assert args[0] == dashboards._async_reconcile
-    assert args[1] == PLAYER_ID
+    name, arguments = scheduled_call(args[0])
+    assert name.endswith("_async_reconcile")
+    assert arguments["player_id"] == PLAYER_ID
     assert kwargs["abort_existing"] is True
 
 

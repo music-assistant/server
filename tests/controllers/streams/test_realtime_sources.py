@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import struct
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
@@ -17,7 +20,7 @@ from music_assistant_models.enums import (
     StreamType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.errors import AudioError, QueueEmpty
 from music_assistant_models.media_items import (
     AudioFormat,
     AudioSource,
@@ -28,13 +31,19 @@ from music_assistant_models.media_items import (
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.streams import controller as controller_mod
 from music_assistant.controllers.streams.audio import (
     MIN_CROSSFADE_DURATION,
+    CrossfadeHandover,
     StreamsAudio,
-    _TailHold,
+    tail_hold_target,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.streams.constants import BufferSize
+from music_assistant.controllers.streams.constants import (
+    BufferSize,
+    PacingProfile,
+    output_pacing_args,
+)
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
@@ -49,6 +58,18 @@ TEST_PCM_FORMAT = AudioFormat(
 
 # One second of silence in the test format
 ONE_SECOND_CHUNK = b"\x00" * TEST_PCM_FORMAT.pcm_sample_size
+
+
+def _audio(pcm_format: AudioFormat, seconds: float) -> bytes:
+    """
+    Return PCM that reads as audio rather than as an item's trailing silence.
+
+    The holdback measures the silent run a buffer ends with, so a fixture filled
+    with zeroes would stand in for a track that has already finished.
+    """
+    frame = struct.pack("<2h", 9000, -9000)
+    size = int(pcm_format.pcm_sample_size * seconds)
+    return (frame * (size // len(frame) + 1))[:size]
 
 
 def _make_stream_details(
@@ -141,8 +162,9 @@ def _buffer(duration_available: float, ready: bool, eof: bool = False) -> AudioB
     audio_buffer.is_valid.return_value = True
     audio_buffer.duration_available = duration_available
     audio_buffer.eof = eof
-    audio_buffer.ready = MagicMock()
-    audio_buffer.ready.is_set.return_value = ready
+    audio_buffer.ready = asyncio.Event()
+    if ready:
+        audio_buffer.ready.set()
     return audio_buffer
 
 
@@ -247,6 +269,25 @@ async def test_ready_threshold_ladder(
     await buffer.clear()
 
 
+async def test_a_source_that_delivers_nothing_fails_before_any_read() -> None:
+    """Acquisition raises, so a refused item never reaches the no-audio revocation."""
+    mass, _scheduled_tasks, _seek_positions = _make_mass_for_get_buffer()
+
+    def _refused(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        async def _gen() -> AsyncGenerator[bytes]:
+            for _ in ():  # never yields; only makes this an async generator
+                yield b""
+            raise AudioError("Spotify would not play spotify:track:aaa")
+
+        return _gen()
+
+    mass.streams.audio.get_media_stream = _refused
+    streamdetails = _make_stream_details(MediaType.TRACK, queue_id="queue-1")
+
+    with pytest.raises(AudioError, match="would not play"):
+        await AudioBuffer.get_buffer(mass, streamdetails, wait_ready=True, reason="test")
+
+
 # -- AudioBuffer.get_buffer: seek handling --
 
 
@@ -288,145 +329,59 @@ async def test_eof_reflects_producer_completion() -> None:
     assert buf.eof
 
 
-# -- _TailHold --
+# -- the holdback decision --
 
 
-async def test_tail_hold_grows_with_the_banked_surplus() -> None:
-    """The holdback takes half of what arrived beyond the wall clock plus a reserve."""
+def test_nothing_is_held_back_until_the_source_has_delivered_it_all() -> None:
+    """
+    The whole holdback decision: nothing before the source is done, the window after.
+
+    Anything held while the source is still delivering has to come out of audio the
+    player was waiting for, and is heard as a dropout at the boundary. Once the
+    source is finished, what is left in hand arrived after it and the player is not
+    waiting on any of it.
+    """
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
-    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer))
-    hold = _TailHold(pcm_format, cast("Any", queue_item))
+    window = 45 * pcm_format.pcm_sample_size
 
-    # nothing arrived yet: nothing may be held
-    assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
+    def _item(buffer: object) -> Any:
+        return cast(
+            "Any",
+            SimpleNamespace(
+                streamdetails=SimpleNamespace(buffer=buffer, duration=300, seek_position=0)
+            ),
+        )
 
-    # 27s arrived in ~4s of wall time: 27 - 4 - 3 (reserve) = 20s is spare, half
-    # of which may be held (the rest keeps growing the player's lead)
-    hold.note_bytes(27 * pcm_format.pcm_sample_size)
-    hold._started = asyncio.get_event_loop().time() - 4.0
-    target = hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size)
-    assert target == 8 * pcm_format.pcm_sample_size
-    larger = hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
-    assert larger % frame_size == 0
-    assert int(9.5 * pcm_format.pcm_sample_size) < larger <= 10 * pcm_format.pcm_sample_size
+    # still delivering, however far ahead it has run: nothing may be held
+    filling = SimpleNamespace(eof=False, has_error=False, duration_available=300.0)
+    assert tail_hold_target(_item(filling), window, frame_size) == 0
 
-    # barely above realtime: within the reserve nothing may be held at all
-    fresh = _TailHold(pcm_format, cast("Any", queue_item))
-    fresh.note_bytes(6 * pcm_format.pcm_sample_size)
-    fresh._started = asyncio.get_event_loop().time() - 4.0
-    assert fresh.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
+    # delivered in full: the whole window, aligned to a frame
+    done = SimpleNamespace(eof=True, has_error=False, duration_available=300.0)
+    target = tail_hold_target(_item(done), window, frame_size)
+    assert target == window
+    assert target % frame_size == 0
 
-    # once the source is done, the rest is resident: full window regardless
-    audio_buffer.eof = True
-    assert (
-        hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
-        == 45 * pcm_format.pcm_sample_size
-    )
+    # a failed source is skipped without a fade, so its remainder plays out
+    failed = SimpleNamespace(eof=True, has_error=True, duration_available=300.0)
+    assert tail_hold_target(_item(failed), window, frame_size) == 0
 
+    # no buffer yet: opening the stream is what creates it
+    assert tail_hold_target(_item(None), window, frame_size) == 0
+    assert tail_hold_target(cast("Any", SimpleNamespace(streamdetails=None)), window, 4) == 0
 
-async def test_tail_hold_sees_a_buffer_attached_after_it_was_created() -> None:
-    """Opening the stream is what creates the buffer, so its EOF must still be seen."""
-    pcm_format = TEST_PCM_FORMAT
-    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    # the tracker is built before the stream is opened, so there is no buffer yet
-    streamdetails = SimpleNamespace(buffer=None)
-    hold = _TailHold(pcm_format, cast("Any", SimpleNamespace(streamdetails=streamdetails)))
-    hold.note_bytes(pcm_format.pcm_sample_size)
-    hold._started = asyncio.get_event_loop().time()
+    # the buffer is read at decision time, so a capacity reselection that replaces
+    # the item's details is picked up rather than remembered from before
+    item = _item(filling)
+    assert tail_hold_target(item, window, frame_size) == 0
+    item.streamdetails = SimpleNamespace(buffer=done, duration=300, seek_position=0)
+    assert tail_hold_target(item, window, frame_size) == window
 
-    # a source that finished delivering releases the full window
-    streamdetails.buffer = SimpleNamespace(eof=True, has_error=False)
-
-    assert (
-        hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
-        == 45 * pcm_format.pcm_sample_size
-    )
-
-
-async def test_tail_hold_counts_a_long_mix_as_listening_time() -> None:
-    """Bytes noted across a long overlap must not read as a suspension and bank a surplus."""
-    pcm_format = TEST_PCM_FORMAT
-    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    queue_item = SimpleNamespace(
-        streamdetails=SimpleNamespace(buffer=SimpleNamespace(eof=False, has_error=False))
-    )
-    hold = _TailHold(pcm_format, cast("Any", queue_item))
-
-    # 20s of audio arrives over 20s of wall clock: the source is keeping pace, so
-    # there is no surplus to hold back
-    hold.note_bytes(pcm_format.pcm_sample_size)
-    now = asyncio.get_event_loop().time()
-    hold._started = now - 20.0
-    hold._last_noted = now
-    hold._received_bytes = 20 * pcm_format.pcm_sample_size
-
-    assert hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size) == 0
-
-
-async def test_tail_hold_follows_a_capacity_reselection() -> None:
-    """A reselection hands the item different details; the tracker must follow them."""
-    pcm_format = TEST_PCM_FORMAT
-    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=None))
-    hold = _TailHold(pcm_format, cast("Any", queue_item))
-    hold.note_bytes(pcm_format.pcm_sample_size)
-    hold._started = asyncio.get_event_loop().time()
-
-    # the source was reselected: the item carries a different streamdetails now
-    queue_item.streamdetails = SimpleNamespace(buffer=SimpleNamespace(eof=True, has_error=False))
-
-    assert (
-        hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
-        == 45 * pcm_format.pcm_sample_size
-    )
-
-
-async def test_tail_hold_releases_everything_for_a_failed_source() -> None:
-    """A failed source is skipped without a fade, so its remaining audio is played out."""
-    pcm_format = TEST_PCM_FORMAT
-    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    audio_buffer = SimpleNamespace(eof=True, has_error=True, duration_available=30.0)
-    hold = _TailHold(
-        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer)))
-    )
-    hold.note_bytes(27 * pcm_format.pcm_sample_size)
-    hold._started = asyncio.get_event_loop().time() - 4.0
-
-    assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
-
-
-async def test_tail_hold_forgives_a_suspended_source() -> None:
-    """A pause is not elapsed listening, so it does not erase the banked surplus."""
-    pcm_format = TEST_PCM_FORMAT
-    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
-    hold = _TailHold(
-        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer)))
-    )
-
-    hold.note_bytes(27 * pcm_format.pcm_sample_size)
-    hold._started = asyncio.get_event_loop().time() - 4.0
-    # the source went quiet for a while, then resumed
-    hold._last_noted = asyncio.get_event_loop().time() - 30.0
-    hold.note_bytes(pcm_format.pcm_sample_size)
-
-    assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) > 0
-
-
-async def test_tail_hold_works_without_a_source_buffer() -> None:
-    """A source without a buffer still banks a holdback out of what it delivered."""
-    pcm_format = TEST_PCM_FORMAT
-    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    hold = _TailHold(
-        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=None)))
-    )
-
-    hold.note_bytes(27 * pcm_format.pcm_sample_size)
-    hold._started = asyncio.get_event_loop().time() - 4.0
-
-    assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) > 0
+    # a window narrower than the source has left is still the cap: the caller keeps
+    # yielding above it, so only the last part of the item is retained
+    narrow = 8 * pcm_format.pcm_sample_size
+    assert tail_hold_target(_item(done), narrow, frame_size) == narrow
 
 
 # -- StreamsAudio._select_buffered_crossfade --
@@ -525,6 +480,113 @@ def test_realtime_incoming_source_not_yet_delivering_skips_the_fade() -> None:
     assert duration == 0
 
 
+def test_a_fade_skipped_for_missing_audio_says_why(caplog: pytest.LogCaptureFixture) -> None:
+    """A requested fade that turns into a hard cut leaves a trace naming the reason."""
+    audio = StreamsAudio(MagicMock())
+    caplog.set_level(logging.DEBUG, logger=audio.logger.name)
+
+    mode, _duration = audio._select_buffered_crossfade(
+        _streamdetails_for_crossfade(None),
+        CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=8,
+    )
+
+    assert mode == CrossfadeMode.DISABLED
+    assert "Not fading into test--1://track/track-1: no prepared audio" in caplog.text
+
+
+# -- StreamsAudio._fade_source_pending --
+
+
+def _incoming_item(streamdetails: StreamDetails) -> SimpleNamespace:
+    """Build the incoming queue item of a fade boundary."""
+    return SimpleNamespace(queue_id="queue-1", queue_item_id="item-2", streamdetails=streamdetails)
+
+
+async def _finished_preparation() -> asyncio.Task[None]:
+    """Return a preparation that is already over."""
+
+    async def _nothing() -> None:
+        return None
+
+    preparation = asyncio.create_task(_nothing())
+    await preparation
+    return preparation
+
+
+def _running_preparation() -> asyncio.Task[None]:
+    """Return a preparation that keeps running until it is cancelled."""
+
+    async def _forever() -> None:
+        await asyncio.Event().wait()
+
+    return asyncio.create_task(_forever())
+
+
+async def _cancel(preparation: asyncio.Task[None]) -> None:
+    """Stop a preparation a test left running."""
+    preparation.cancel()
+    await asyncio.gather(preparation, return_exceptions=True)
+
+
+async def test_a_running_preparation_keeps_the_fade_source_pending() -> None:
+    """A preparation that is still running can still attach the incoming audio."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(None))
+    preparation = _running_preparation()
+
+    assert audio._fade_source_pending(cast("Any", incoming), preparation)
+    await _cancel(preparation)
+
+
+async def test_a_preparation_that_gave_up_ends_the_wait() -> None:
+    """A preparation that ended without attaching audio has nothing more on its way."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(None))
+
+    assert not audio._fade_source_pending(cast("Any", incoming), await _finished_preparation())
+
+
+def test_ready_audio_is_not_pending() -> None:
+    """Incoming audio that is ready is in hand."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(_buffer(20, ready=True)))
+
+    assert not audio._fade_source_pending(cast("Any", incoming), None)
+
+
+def test_attached_audio_that_is_not_ready_is_pending() -> None:
+    """Incoming audio that is attached but not ready yet is still on its way."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(_buffer(0, ready=False)))
+
+    assert audio._fade_source_pending(cast("Any", incoming), None)
+
+
+def test_failed_audio_ends_the_wait() -> None:
+    """Incoming audio that failed will never become ready."""
+    audio = StreamsAudio(MagicMock())
+    failed_buffer = _buffer(0, ready=False)
+    cast("Any", failed_buffer).has_error = True
+    incoming = _incoming_item(_streamdetails_for_crossfade(failed_buffer))
+
+    assert not audio._fade_source_pending(cast("Any", incoming), None)
+
+
+async def test_audio_attached_to_replaced_details_is_found() -> None:
+    """A capacity reselection swaps in new stream details, and their audio is found."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(None))
+    preparation = _running_preparation()
+    assert audio._fade_source_pending(cast("Any", incoming), preparation)
+
+    incoming.streamdetails = _streamdetails_for_crossfade(_buffer(20, ready=True))
+
+    assert not audio._fade_source_pending(cast("Any", incoming), preparation)
+    await _cancel(preparation)
+
+
 # -- Path level: get_queue_item_stream_with_smartfade --
 
 
@@ -593,21 +655,11 @@ async def test_smartfade_realtime_current_item_fades_once_its_source_is_done(
                 fadein_trimmed_duration=0.0,
                 crossfade_duration=8.0,
                 pre_crossfade_duration=0.0,
+                post_crossfade_duration=0.0,
             )
         )
     )
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
-
-    async def _concat_mix(
-        _smart_fade: object,
-        *,
-        fade_in_part: AsyncGenerator[bytes],
-        fade_out_part: bytes,
-        **_kwargs: object,
-    ) -> AsyncGenerator[bytes]:
-        yield fade_out_part
-        async for fade_in_chunk in fade_in_part:
-            yield fade_in_chunk
 
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
 
@@ -616,8 +668,8 @@ async def test_smartfade_realtime_current_item_fades_once_its_source_is_done(
         *_args: object,
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 8)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -634,15 +686,564 @@ async def test_smartfade_realtime_current_item_fades_once_its_source_is_done(
     # is buffered as crossfade data for the next item's own stream
     assert len(output) == pcm_format.pcm_sample_size * 16
     build.assert_awaited_once()
-    crossfade_data = audio._crossfade_data.get("queue-1")
+    crossfade_data = audio._crossfade_handover.get("queue-1")
     assert crossfade_data is not None
     assert crossfade_data.queue_item_id == "next"
 
 
-async def test_smartfade_still_filling_source_fades_from_what_it_banked(
+async def _run_smartfade_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    pcm_format: AudioFormat,
+) -> None:
+    """Stream one item through a boundary with the mixer and next item stubbed out."""
+    next_details = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True),
+        duration=16,
+        seek_position=0,
+        uri="test://next",
+        is_realtime=False,
+        volume_normalization_mode=None,
+    )
+    current_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="current",
+        name="Current",
+        streamdetails=SimpleNamespace(
+            duration=16,
+            seek_position=0,
+            seconds_streamed=0,
+            uri="test://current",
+            buffer=SimpleNamespace(
+                eof=True,
+                cancelled=False,
+                has_error=False,
+                max_size_seconds=300,
+                duration_available=0.0,
+            ),
+            is_realtime=True,
+        ),
+        extra_attributes={},
+    )
+    next_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="next",
+        name="Next",
+        streamdetails=next_details,
+        extra_attributes={},
+        available=True,
+    )
+    mass = cast("Any", audio.mass)
+    mass.player_queues.get.return_value = SimpleNamespace(
+        queue_id="queue-1", display_name="Queue", index_in_buffer=0
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
+    mass.player_queues.index_by_id.return_value = 1
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        audio.smart_fades_mixer,
+        "build",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                timing_info=SimpleNamespace(
+                    fadein_trimmed_duration=0.0,
+                    crossfade_duration=8.0,
+                    pre_crossfade_duration=0.0,
+                    post_crossfade_duration=0.0,
+                )
+            )
+        ),
+    )
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
+
+    async def _item_stream(
+        _queue_item: object, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 8)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", SimpleNamespace(player_id="player-1", name="Player")),
+        cast("Any", current_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+    async for _chunk in stream:
+        pass
+
+
+async def test_the_live_post_handover_streams_into_the_next_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A source still delivering fades from the audio it banked ahead of playback."""
+    """
+    The published boundary mix plays out through the next item's own request.
+
+    The blended intro streams first, and the body continues exactly where the
+    mix stopped reading the item.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+
+    def _sec(value: int) -> bytes:
+        return bytes([value]) * pcm_format.pcm_sample_size
+
+    current_details = SimpleNamespace(
+        duration=16,
+        seek_position=0,
+        seconds_streamed=0,
+        uri="test://current",
+        buffer=SimpleNamespace(
+            eof=True, cancelled=False, has_error=False, max_size_seconds=300, duration_available=0.0
+        ),
+        is_realtime=True,
+    )
+    next_details = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=_buffer(16.0, ready=True),
+        duration=24,
+        seek_position=0,
+        seconds_streamed=0,
+        uri="test://next",
+        is_realtime=False,
+        volume_normalization_mode=None,
+    )
+    current_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="current",
+        name="Current",
+        streamdetails=current_details,
+        extra_attributes={},
+    )
+    next_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="next",
+        name="Next",
+        streamdetails=next_details,
+        extra_attributes={},
+        available=True,
+    )
+    queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", index_in_buffer=0)
+    player = SimpleNamespace(player_id="player-1", name="Player")
+    mass = MagicMock()
+    mass.player_queues.get.return_value = queue
+    # the next item's own boundary has nothing to blend into
+    upcoming = iter([next_item])
+
+    def _load_next(*_args: object, **_kwargs: object) -> Any:
+        if (item := next(upcoming, None)) is None:
+            raise QueueEmpty("queue exhausted")
+        return item
+
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=_load_next)
+    mass.player_queues.index_by_id.return_value = 1
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    build = AsyncMock(
+        return_value=SimpleNamespace(
+            timing_info=SimpleNamespace(
+                fadein_trimmed_duration=0.0,
+                crossfade_duration=8.0,
+                pre_crossfade_duration=0.0,
+                post_crossfade_duration=8.0,
+            )
+        )
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
+
+    async def _item_stream(
+        queue_item: Any,
+        *_args: object,
+        seek_position: float = 0.0,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        if queue_item.queue_item_id == "current":
+            for _ in range(16):
+                yield _sec(0x01)
+        else:
+            # a ramp: a lost, repeated or misplaced second shows in the output
+            for second in range(int(seek_position), 24):
+                yield _sec(0x10 + second)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+
+    outgoing = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", player),
+        cast("Any", current_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+    outgoing_bytes = b"".join([chunk async for chunk in outgoing])
+
+    # the outgoing request plays only its own item's audio
+    assert outgoing_bytes == _sec(0x01) * 16
+    assert audio._crossfade_handover["queue-1"].queue_item_id == "next"
+
+    incoming = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", player),
+        cast("Any", next_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+    incoming_bytes = b"".join([chunk async for chunk in incoming])
+
+    # blended intro first, then the body from exactly where the mix stopped
+    # reading: all 24 seconds of the next item, each exactly once
+    assert incoming_bytes == b"".join(_sec(0x10 + second) for second in range(24))
+    assert "queue-1" not in audio._crossfade_handover
+
+
+async def test_the_handoff_is_claimed_before_the_fade_is_even_sized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The claim must beat the awaits that size the fade, not follow them.
+
+    Sizing a fade waits for the incoming source while the tail plays out. A
+    speaker can ask for that item's url inside that window, and it has nothing to
+    wait for unless the claim is already registered.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    audio = StreamsAudio(MagicMock())
+    audio.setup()
+    claimed_during_sizing = asyncio.Event()
+
+    def _source_pending(_queue_item: object, _preparation: object) -> bool:
+        # stands in for the check on the incoming source
+        if "queue-1" in audio._crossfade_pending:
+            claimed_during_sizing.set()
+        return False
+
+    monkeypatch.setattr(audio, "_fade_source_pending", _source_pending)
+    await _run_smartfade_boundary(monkeypatch, audio, pcm_format)
+
+    assert claimed_during_sizing.is_set(), (
+        "the incoming item had nothing to wait for while its fade was being sized"
+    )
+    # and the claim is gone once the boundary is done with it
+    assert "queue-1" not in audio._crossfade_pending
+
+
+def _ramp(pcm_format: AudioFormat, first: int, seconds: int) -> list[bytes]:
+    """Return one-second chunks that all differ, so a lost or repeated second shows."""
+    return [bytes([first + second]) * pcm_format.pcm_sample_size for second in range(seconds)]
+
+
+async def _concat_mix(
+    _smart_fade: object,
+    *,
+    fade_in_part: AsyncGenerator[bytes],
+    fade_out_part: bytes,
+    **_kwargs: object,
+) -> AsyncGenerator[bytes]:
+    """Stand in for the mixer, playing the tail and then the incoming audio."""
+    yield fade_out_part
+    async for fade_in_chunk in fade_in_part:
+        yield fade_in_chunk
+
+
+async def _fade_sized_on_its_tail(
+    *, pcm_format: AudioFormat, fade_out_data: bytes, **_kwargs: object
+) -> SimpleNamespace:
+    """Stand in for the mixer's build, blending the whole tail it is handed."""
+    return SimpleNamespace(
+        timing_info=SimpleNamespace(
+            fadein_trimmed_duration=0.0,
+            crossfade_duration=len(fade_out_data) / pcm_format.pcm_sample_size,
+            pre_crossfade_duration=0.0,
+            post_crossfade_duration=0.0,
+        )
+    )
+
+
+def _skip_the_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the tail play-out run at once instead of at playback speed."""
+    real_sleep = asyncio.sleep
+
+    async def _no_wait(_delay: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _no_wait)
+
+
+async def _drain(stream: AsyncGenerator[bytes]) -> bytes:
+    """Collect a stream, giving the event loop a turn after every chunk."""
+    output = bytearray()
+    async for chunk in stream:
+        output.extend(chunk)
+        await asyncio.sleep(0)
+    return bytes(output)
+
+
+def _smartfade_waiting_for_its_source(
+    monkeypatch: pytest.MonkeyPatch,
+    audio: StreamsAudio,
+    pcm_format: AudioFormat,
+    incoming_buffer: AudioBuffer | None,
+    preparation: asyncio.Task[None] | None,
+) -> tuple[AsyncGenerator[bytes], SimpleNamespace, AsyncMock]:
+    """
+    Stream a 16 second item that holds its last 8 seconds for a fade.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :param audio: The audio controller to stream with.
+    :param pcm_format: PCM format of the stream.
+    :param incoming_buffer: Audio attached to the incoming item at the boundary.
+    :param preparation: What the boundary is handed as the incoming item's preparation.
+    :return: The stream, the outgoing item and the mixer's build.
+    """
+    current_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="current",
+        name="Current",
+        streamdetails=SimpleNamespace(
+            duration=16,
+            seek_position=0,
+            seconds_streamed=0,
+            uri="test://current",
+            buffer=SimpleNamespace(
+                eof=True,
+                cancelled=False,
+                has_error=False,
+                max_size_seconds=300,
+                duration_available=0.0,
+            ),
+            is_realtime=True,
+        ),
+        extra_attributes={},
+    )
+    next_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="next",
+        name="Next",
+        streamdetails=SimpleNamespace(
+            audio_format=pcm_format,
+            buffer=incoming_buffer,
+            duration=24,
+            seek_position=0,
+            uri="test://next",
+            is_realtime=True,
+            volume_normalization_mode=None,
+        ),
+        extra_attributes={},
+        available=True,
+    )
+    mass = cast("Any", audio.mass)
+    mass.player_queues.get.return_value = SimpleNamespace(
+        queue_id="queue-1", display_name="Queue", index_in_buffer=0
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
+    mass.player_queues.index_by_id.return_value = 1
+    mass.player_queues.prepare_next_audio_buffer.return_value = preparation
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    build = AsyncMock(side_effect=_fade_sized_on_its_tail)
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
+
+    async def _item_stream(
+        queue_item: object, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        chunks = (
+            _ramp(pcm_format, 0x01, 16)
+            if queue_item is current_item
+            else _ramp(pcm_format, 0x40, 24)
+        )
+        for chunk in chunks:
+            yield chunk
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", SimpleNamespace(player_id="player-1", name="Player")),
+        cast("Any", current_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+    return stream, current_item, build
+
+
+async def test_smartfade_plays_its_tail_out_while_the_incoming_audio_is_on_its_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A fade waiting for the incoming audio keeps the player fed from the tail.
+
+    The fade is sized on what is left of the tail once that audio shows up, and the
+    item still comes out whole, each second exactly once.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    audio = StreamsAudio(MagicMock())
+    audio.setup()
+    incoming_buffer = _buffer(16, ready=False)
+    stream, current_item, build = _smartfade_waiting_for_its_source(
+        monkeypatch, audio, pcm_format, incoming_buffer, None
+    )
+    # the item's first 8 seconds pass straight through, its last 8 are held for the fade
+    held_tail = pcm_format.pcm_sample_size * 8
+
+    played_out = 0
+    output = bytearray()
+    async for chunk in stream:
+        output.extend(chunk)
+        # the incoming audio turns up right after the first slice of the tail played out
+        if not played_out and len(output) > held_tail:
+            played_out = len(output) - held_tail
+            incoming_buffer.ready.set()
+
+    assert played_out > 0
+    assert bytes(output) == b"".join(_ramp(pcm_format, 0x01, 16))
+    build.assert_awaited_once()
+    assert build.await_args is not None
+    assert len(build.await_args.kwargs["fade_out_data"]) == held_tail - played_out
+    # the played-out slice counts as streamed audio of the item
+    assert current_item.streamdetails.seconds_streamed == 16
+    await audio._crossfade_handover.pop("queue-1").close()
+
+
+async def test_smartfade_without_incoming_audio_plays_its_whole_tail_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An incoming source that never shows up costs the fade, not the tail or the stream."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    audio = StreamsAudio(MagicMock())
+    audio.setup()
+    preparation = _running_preparation()
+    stream, current_item, build = _smartfade_waiting_for_its_source(
+        monkeypatch, audio, pcm_format, None, preparation
+    )
+    # the play-out paces itself at playback speed; this test is about the loop ending
+    _skip_the_pacing(monkeypatch)
+
+    # the timeout fails the test should the stream never end
+    output = await asyncio.wait_for(_drain(stream), 5)
+    await _cancel(preparation)
+
+    assert output == b"".join(_ramp(pcm_format, 0x01, 16))
+    build.assert_not_awaited()
+    assert current_item.streamdetails.seconds_streamed == 16
+    assert "queue-1" not in audio._crossfade_handover
+
+
+async def test_the_tail_is_not_played_out_faster_than_playback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A player reading ahead cannot take the whole tail while the fade waits.
+
+    A player still in its opening burst pulls as fast as it is served, so the tail
+    has to pace itself: a short wait then costs the fade about as much of its window.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    audio = StreamsAudio(MagicMock())
+    audio.setup()
+    incoming_buffer = _buffer(16, ready=False)
+    stream, _current_item, build = _smartfade_waiting_for_its_source(
+        monkeypatch, audio, pcm_format, incoming_buffer, None
+    )
+    # the item's first 8 seconds pass straight through, its last 8 are held for the fade
+    held_tail = pcm_format.pcm_sample_size * 8
+
+    async def _ready_after(delay: float) -> None:
+        await asyncio.sleep(delay)
+        incoming_buffer.ready.set()
+
+    becoming_ready: asyncio.Task[None] | None = None
+    output = bytearray()
+    async for chunk in stream:
+        output.extend(chunk)
+        if becoming_ready is None and len(output) > held_tail:
+            # the incoming audio shows up 0.3 seconds into the play-out
+            becoming_ready = asyncio.create_task(_ready_after(0.3))
+    assert becoming_ready is not None
+    await becoming_ready
+
+    build.assert_awaited_once()
+    assert build.await_args is not None
+    faded_tail = len(build.await_args.kwargs["fade_out_data"]) / pcm_format.pcm_sample_size
+    # loose bounds keep a loaded machine from failing this; an unpaced play-out
+    # leaves no tail at all
+    assert 6.75 <= faded_tail <= 7.75
+    await audio._crossfade_handover.pop("queue-1").close()
+
+
+async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A speaker asking for the next url early must not lose a nearly-ready fade."""
+    # the real bound has a speaker waiting on its first byte, so it is seconds long;
+    # this test only cares that the wait is bounded at all
+    monkeypatch.setattr("music_assistant.controllers.streams.audio.CROSSFADE_HANDOFF_WAIT", 0.2)
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    audio = StreamsAudio(MagicMock())
+    queue = cast("Any", SimpleNamespace(queue_id="queue-1", display_name="Queue"))
+    item = cast("Any", SimpleNamespace(queue_item_id="next", name="Next"))
+
+    # nothing being mixed: the caller is told so straight away
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is None
+
+    # a fade being mixed for a different item is not this item's to wait for
+    audio._crossfade_pending["queue-1"] = ("other", asyncio.Event())
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is None
+
+    # a fade being mixed for this item is waited for, and picked up when it lands
+    handoff = asyncio.Event()
+    audio._crossfade_pending["queue-1"] = ("next", handoff)
+    expected = CrossfadeHandover(
+        stream=None,
+        fade_in_media_duration=0.0,
+        pcm_format=pcm_format,
+        queue_item_id="next",
+        session_id="session-1",
+    )
+
+    async def _land_it() -> None:
+        await asyncio.sleep(0.05)
+        audio._crossfade_handover["queue-1"] = expected
+        handoff.set()
+
+    task = asyncio.create_task(_land_it())
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is expected
+    await task
+
+    # a mix that never finishes costs the fade, not the stream
+    audio._crossfade_handover.pop("queue-1", None)
+    audio._crossfade_pending["queue-1"] = ("next", asyncio.Event())
+    started = asyncio.get_event_loop().time()
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is None
+    assert asyncio.get_event_loop().time() - started >= 0.2
+
+
+async def test_smartfade_a_source_still_delivering_hands_over_gapless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A source that has not finished delivering has no tail to spare for a fade.
+
+    Holding one back would take audio the player is waiting for, and the boundary
+    is heard as a dropout rather than a blend. Gapless is the honest handover.
+    """
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_S16LE,
         sample_rate=8000,
@@ -701,21 +1302,11 @@ async def test_smartfade_still_filling_source_fades_from_what_it_banked(
                 fadein_trimmed_duration=0.0,
                 crossfade_duration=8.0,
                 pre_crossfade_duration=0.0,
+                post_crossfade_duration=0.0,
             )
         )
     )
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
-
-    async def _concat_mix(
-        _smart_fade: object,
-        *,
-        fade_in_part: AsyncGenerator[bytes],
-        fade_out_part: bytes,
-        **_kwargs: object,
-    ) -> AsyncGenerator[bytes]:
-        yield fade_out_part
-        async for fade_in_chunk in fade_in_part:
-            yield fade_in_chunk
 
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
 
@@ -724,8 +1315,8 @@ async def test_smartfade_still_filling_source_fades_from_what_it_banked(
         *_args: object,
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 8)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -738,13 +1329,10 @@ async def test_smartfade_still_filling_source_fades_from_what_it_banked(
 
     output = b"".join([chunk async for chunk in stream])
 
-    # how much tail the holdback banked depends on the wall clock, so only the
-    # invariants are asserted: the source's own audio is all there, and it faded
+    # every byte the source produced reaches the player, and no fade is planned
     assert len(output) >= pcm_format.pcm_sample_size * 16
-    build.assert_awaited_once()
-    crossfade_data = audio._crossfade_data.get("queue-1")
-    assert crossfade_data is not None
-    assert crossfade_data.queue_item_id == "next"
+    build.assert_not_awaited()
+    assert "queue-1" not in audio._crossfade_handover
 
 
 # -- Path level: get_queue_flow_stream --
@@ -762,6 +1350,7 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
     )
     # the source is done delivering, so only the realtime flag can deny the holdback
     realtime_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         fade_in=False,
@@ -783,6 +1372,7 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
         extra_attributes={},
     )
     next_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=None,
         fade_in=False,
@@ -829,10 +1419,10 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
 
     realtime_chunks = [
-        bytes(pcm_format.pcm_sample_size * 8),
-        bytes(pcm_format.pcm_sample_size * 8),
+        _audio(pcm_format, 8),
+        _audio(pcm_format, 8),
     ]
-    next_chunks = [bytes(pcm_format.pcm_sample_size * 2)]
+    next_chunks = [_audio(pcm_format, 2)]
 
     async def _item_stream(
         queue_item: SimpleNamespace, *_args: object, **_kwargs: object
@@ -927,9 +1517,9 @@ async def test_smartfade_unaligned_chunks_still_crossfade(
         if queue_item is not current_item:
             return
         # a whole second, then chunks that never line up with a second boundary
-        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield _audio(pcm_format, 8)
         for _ in range(30):
-            yield bytes(pcm_format.pcm_sample_size // 3)
+            yield _audio(pcm_format, 1 / 3)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1016,8 +1606,11 @@ async def test_smartfade_short_remainder_still_crossfades(
         if queue_item is not current_item:
             return
         # a seek near the end leaves 34s, less than the 45s smart overlap
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 26)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 26)
+
+    # everything left of a short remainder is fade material: nothing bypasses
+    # the holdback anymore
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1034,7 +1627,7 @@ async def test_smartfade_short_remainder_still_crossfades(
     build.assert_awaited_once()
     assert build.await_args is not None
     fade_out_seconds = len(build.await_args.kwargs["fade_out_data"]) / pcm_format.pcm_sample_size
-    assert fade_out_seconds == pytest.approx(26, abs=1)
+    assert fade_out_seconds == pytest.approx(34, abs=1)
 
 
 async def test_smartfade_stub_remainder_does_not_crossfade(
@@ -1097,8 +1690,8 @@ async def test_smartfade_stub_remainder_does_not_crossfade(
     ) -> AsyncGenerator[bytes]:
         if queue_item is not current_item:
             return
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 2)
+        # 2s remainder: under MIN_CROSSFADE_DURATION, so nothing to blend with
+        yield _audio(pcm_format, 2)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1111,7 +1704,7 @@ async def test_smartfade_stub_remainder_does_not_crossfade(
 
     output = b"".join([chunk async for chunk in stream])
 
-    assert len(output) == pcm_format.pcm_sample_size * 10
+    assert len(output) == pcm_format.pcm_sample_size * 2
     build.assert_not_awaited()
 
 
@@ -1131,6 +1724,7 @@ async def test_flow_reports_no_fade_for_a_realtime_item_until_one_renders(
         channels=2,
     )
     realtime_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         fade_in=False,
@@ -1176,7 +1770,7 @@ async def test_flow_reports_no_fade_for_a_realtime_item_until_one_renders(
     audio.setup()
 
     async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
-        yield bytes(pcm_format.pcm_sample_size * 4)
+        yield _audio(pcm_format, 4)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_flow_stream(
@@ -1202,6 +1796,7 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
         channels=2,
     )
     first_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
         fade_in=False,
@@ -1213,6 +1808,7 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
         is_realtime=False,
     )
     second_details = SimpleNamespace(
+        tail_overlap=None,
         audio_format=pcm_format,
         buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True),
         fade_in=False,
@@ -1304,6 +1900,167 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
     assert seconds_before_transition <= SMART_CROSSFADE_DURATION / 2
 
 
+def _flow_waiting_for_its_source(
+    monkeypatch: pytest.MonkeyPatch,
+    pcm_format: AudioFormat,
+    incoming_buffer: AudioBuffer | None,
+    preparation: asyncio.Task[None] | None,
+) -> tuple[AsyncGenerator[bytes], SimpleNamespace, AsyncMock]:
+    """
+    Stream a flow from a 16 second item that holds its last 8 seconds for a fade.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :param pcm_format: PCM format of the flow.
+    :param incoming_buffer: Audio attached to the incoming item at the boundary.
+    :param preparation: What the boundary is handed as the incoming item's preparation.
+    :return: The flow stream, the queue's data holding its play log, and the mixer's build.
+    """
+    first_details = SimpleNamespace(
+        tail_overlap=None,
+        audio_format=pcm_format,
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        fade_in=False,
+        stream_error=False,
+        uri="test://first",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=16,
+        is_realtime=True,
+    )
+    second_details = SimpleNamespace(
+        tail_overlap=None,
+        audio_format=pcm_format,
+        buffer=incoming_buffer,
+        fade_in=False,
+        stream_error=False,
+        uri="test://second",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=24,
+        is_realtime=True,
+        volume_normalization_mode=None,
+    )
+    first_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="First",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=first_details,
+        duration=16,
+        extra_attributes={},
+    )
+    second_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-2",
+        name="Second",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=second_details,
+        duration=24,
+        extra_attributes={},
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass = MagicMock()
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=[second_item, QueueEmpty])
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.prepare_next_audio_buffer.return_value = preparation
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    mass.config.get_raw_core_config_value.return_value = 8
+    player = MagicMock()
+    player.config.get_value.return_value = "fixed_48000"
+    player.get_supported_sample_rates.return_value = []
+    mass.players.get_player.return_value = player
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    build = AsyncMock(side_effect=_fade_sized_on_its_tail)
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
+
+    async def _item_stream(
+        queue_item: SimpleNamespace, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        chunks = (
+            _ramp(pcm_format, 0x01, 16) if queue_item is first_item else _ramp(pcm_format, 0x40, 24)
+        )
+        for chunk in chunks:
+            yield chunk
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
+    )
+    return stream, queue_data, build
+
+
+async def test_flow_plays_its_tail_out_while_the_incoming_audio_is_on_its_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A flow fade waiting for the incoming audio keeps the player fed from the tail.
+
+    The fade is sized on what is left of the tail once that audio shows up, nothing is
+    lost or played twice, and the played-out part stays credited to the outgoing track.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    incoming_buffer = _buffer(16, ready=False)
+    stream, queue_data, build = _flow_waiting_for_its_source(
+        monkeypatch, pcm_format, incoming_buffer, None
+    )
+    # the first item's first 8 seconds pass straight through, its last 8 are held
+    held_tail = pcm_format.pcm_sample_size * 8
+
+    played_out = 0
+    output = bytearray()
+    async for chunk in stream:
+        output.extend(chunk)
+        # the incoming audio turns up right after the first slice of the tail played out
+        if not played_out and len(output) > held_tail:
+            played_out = len(output) - held_tail
+            incoming_buffer.ready.set()
+
+    assert played_out > 0
+    assert bytes(output) == b"".join(_ramp(pcm_format, 0x01, 16) + _ramp(pcm_format, 0x40, 24))
+    build.assert_awaited_once()
+    assert build.await_args is not None
+    assert len(build.await_args.kwargs["fade_out_data"]) == held_tail - played_out
+    assert queue_data.flow_mode_stream_log[0].seconds_streamed == 16
+
+
+async def test_flow_without_incoming_audio_plays_its_whole_tail_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An incoming source that never shows up costs the flow its fade, not the tail."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    preparation = _running_preparation()
+    stream, queue_data, build = _flow_waiting_for_its_source(
+        monkeypatch, pcm_format, None, preparation
+    )
+    # the play-out paces itself at playback speed; this test is about the loop ending
+    _skip_the_pacing(monkeypatch)
+
+    # the timeout fails the test should the stream never end
+    output = await asyncio.wait_for(_drain(stream), 5)
+    await _cancel(preparation)
+
+    assert output == b"".join(_ramp(pcm_format, 0x01, 16) + _ramp(pcm_format, 0x40, 24))
+    build.assert_not_awaited()
+    assert queue_data.flow_mode_stream_log[0].seconds_streamed == 16
+
+
 # -- StreamsController.serve_queue_item_stream steering --
 
 
@@ -1311,17 +2068,55 @@ class _PcmFormatRequested(Exception):
     """Raised to stop the handler once it has decided on crossfading."""
 
 
-def _single_item_handler(*, is_realtime: bool) -> tuple[Any, MagicMock, dict[str, Any]]:
-    """Return a single-item stream handler that stops once the PCM format is picked."""
+class _FfmpegArgsCaptured(Exception):
+    """Raised to stop the handler once the encode ffmpeg would start."""
+
+
+class _FakeStreamResponse:
+    """Accept the handler's response plumbing without a real HTTP transport."""
+
+    def __init__(self, **_kwargs: Any) -> None:
+        self.content_type: str | None = None
+        self.content_length: int | None = None
+        self.force_closed = False
+
+    def force_close(self) -> None:
+        """Record that the connection was ended."""
+        self.force_closed = True
+
+    def enable_chunked_encoding(self) -> None:
+        """Accept the chunked-profile branch."""
+
+    async def prepare(self, request: Any) -> None:
+        """Accept the response start."""
+
+    async def write(self, chunk: bytes) -> None:
+        """Accept a written chunk."""
+
+
+def _single_item_handler(
+    *,
+    is_realtime: bool,
+    capture_ffmpeg: pytest.MonkeyPatch | None = None,
+    player_provider_domain: str = "test",
+) -> tuple[Any, MagicMock, dict[str, Any]]:
+    """
+    Return a single-item stream handler rigged to stop early.
+
+    Without ``capture_ffmpeg`` it stops once the PCM format is picked; with it, the
+    handler runs on to the encode ffmpeg call and records its keyword arguments.
+    """
     streamdetails = _make_stream_details(MediaType.TRACK, is_realtime=is_realtime)
     queue_item = SimpleNamespace(
         queue_id="queue-1",
         queue_item_id="item-1",
         name="Track",
+        uri="library://track/1",
         duration=180,
         streamdetails=streamdetails,
         media_item=None,
         media_type=MediaType.TRACK,
+        available=True,
         extra_attributes={},
         image=None,
     )
@@ -1339,21 +2134,26 @@ def _single_item_handler(*, is_realtime: bool) -> tuple[Any, MagicMock, dict[str
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
+    player.provider.domain = player_provider_domain
     player.state.supported_features = {PlayerFeature.GAPLESS_PLAYBACK}
     player.state.name = "Player"
     mass.players.get_player.return_value = player
 
     seen: dict[str, Any] = {}
 
-    async def _select_pcm_format(**kwargs: Any) -> None:
+    async def _select_pcm_format(**kwargs: Any) -> Any:
         seen["crossfade_enabled"] = kwargs["crossfade_enabled"]
-        raise _PcmFormatRequested
+        if capture_ffmpeg is None:
+            raise _PcmFormatRequested
+        return TEST_PCM_FORMAT
 
     audio = MagicMock()
     audio.select_pcm_format = _select_pcm_format
+    audio.fade_into_pending = MagicMock(return_value=False)
     controller = cast("Any", object.__new__(StreamsController))
     controller.mass = mass
     controller.audio = audio
+    controller._open_item_streams = {}
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.SMART_CROSSFADE)
@@ -1364,7 +2164,25 @@ def _single_item_handler(*, is_realtime: bool) -> tuple[Any, MagicMock, dict[str
         "player_id": "player-1",
         "session_id": "session-1",
         "queue_item_id": "item-1",
+        "fmt": "flac",
     }
+    if capture_ffmpeg is not None:
+        audio.get_output_format = AsyncMock(
+            return_value=AudioFormat(
+                content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2
+            )
+        )
+        player.get_config_value = MagicMock(return_value="default")
+        controller._update_audio_processing_context = MagicMock()
+
+        def _capture_ffmpeg_args(**kwargs: Any) -> None:
+            seen["extra_input_args"] = kwargs["extra_input_args"]
+            raise _FfmpegArgsCaptured
+
+        capture_ffmpeg.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
+        capture_ffmpeg.setattr(
+            controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse)
+        )
     return controller, request, seen
 
 
@@ -1379,6 +2197,27 @@ async def test_single_item_handler_keeps_crossfade_for_a_realtime_item() -> None
     controller.get_crossfade_mode.assert_called_once()
 
 
+async def test_single_item_handler_is_abortable_throughout_its_setup() -> None:
+    """The response registers for supersede-abort before any setup await, and unregisters."""
+    controller, request, _seen = _single_item_handler(is_realtime=False)
+    registered_during_setup: list[str] = []
+    original_select = controller.audio.select_pcm_format
+
+    async def _spy(**kwargs: Any) -> Any:
+        registered_during_setup.extend(
+            session_id for session_id, _ in controller._open_item_streams.get("queue-1") or []
+        )
+        return await original_select(**kwargs)
+
+    controller.audio.select_pcm_format = _spy
+
+    with pytest.raises(_PcmFormatRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert registered_during_setup == ["session-1"]
+    assert controller._open_item_streams == {}
+
+
 async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None:
     """A buffered item still gets the queue's configured crossfade."""
     controller, request, seen = _single_item_handler(is_realtime=False)
@@ -1388,6 +2227,229 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
 
     assert seen["crossfade_enabled"] is True
     controller.get_crossfade_mode.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("is_realtime", "profile"),
+    [(False, PacingProfile.DEFAULT), (True, PacingProfile.NEAR_REALTIME)],
+    ids=["default", "realtime"],
+)
+async def test_single_item_handler_paces_by_source(
+    monkeypatch: pytest.MonkeyPatch,
+    is_realtime: bool,
+    profile: PacingProfile,
+) -> None:
+    """A buffered item gets the default; a source that feeds just-in-time a gentler pace."""
+    controller, request, seen = _single_item_handler(
+        is_realtime=is_realtime,
+        capture_ffmpeg=monkeypatch,
+        player_provider_domain="sonos",
+    )
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_item_stream(request)
+
+    assert seen["extra_input_args"] == output_pacing_args(profile)
+
+
+@pytest.mark.parametrize("crossfade", [True, False], ids=["crossfade", "plain"])
+async def test_single_item_handler_reports_its_player_connection(
+    monkeypatch: pytest.MonkeyPatch, crossfade: bool
+) -> None:
+    """The item stream is told, from the request's transport, whether the player is still there."""
+    controller, request, _seen = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
+    if not crossfade:
+        controller.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_item_stream(request)
+
+    stream_call = (
+        controller.audio.get_queue_item_stream_with_smartfade.call_args
+        if crossfade
+        else controller.audio.get_queue_item_stream.call_args
+    )
+    connected = stream_call.kwargs["consumer_connected"]
+    assert connected() is True
+    request.transport = None
+    assert connected() is False
+
+
+def _flow_handler(
+    monkeypatch: pytest.MonkeyPatch, *, is_realtime: bool
+) -> tuple[Any, MagicMock, dict[str, Any]]:
+    """Return a flow stream handler rigged to stop at the encode ffmpeg call."""
+    start_queue_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="Track",
+        uri="library://track/1",
+        duration=180,
+        streamdetails=_make_stream_details(MediaType.TRACK, is_realtime=is_realtime),
+        media_item=None,
+        media_type=MediaType.TRACK,
+        extra_attributes={},
+        image=None,
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        current_item=start_queue_item,
+        crossfade_enabled=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    mass = MagicMock()
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
+    mass.player_queues.flow_stream_finished.return_value = False
+    mass.player_queues.get_item.return_value = start_queue_item
+    mass.config.get_raw_player_config_value.return_value = "disabled"
+    player = MagicMock(player_id="player-1", protocol_parent_id=None)
+    player.get_config_value = MagicMock(return_value="default")
+    player.state.name = "Player"
+    mass.players.get_player.return_value = player
+
+    audio = MagicMock()
+    audio.select_flow_pcm_format = AsyncMock(return_value=TEST_PCM_FORMAT)
+    audio.get_output_format = AsyncMock(
+        return_value=AudioFormat(
+            content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2
+        )
+    )
+    audio.get_player_output_plan = MagicMock(return_value=SimpleNamespace(filter_params=[]))
+
+    controller = cast("Any", object.__new__(StreamsController))
+    controller.mass = mass
+    controller.audio = audio
+    controller.logger = MagicMock()
+    controller._log_request = MagicMock()
+    controller._update_audio_processing_context = MagicMock()
+    controller._open_item_streams = {}
+    controller._active_output_streams = 0
+    controller._flow_mode_owners = {}
+    controller._boundary_mix_owners = {}
+    controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.DISABLED)
+
+    seen: dict[str, Any] = {}
+
+    def _capture_ffmpeg_args(**kwargs: Any) -> None:
+        seen["extra_input_args"] = kwargs["extra_input_args"]
+        raise _FfmpegArgsCaptured
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
+    monkeypatch.setattr(controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse))
+
+    request = MagicMock()
+    request.method = "GET"
+    request.headers = {}
+    request.match_info = {
+        "queue_id": "queue-1",
+        "player_id": "player-1",
+        "session_id": "session-1",
+        "queue_item_id": "item-1",
+        "fmt": "flac",
+    }
+    return controller, request, seen
+
+
+@pytest.mark.parametrize("is_realtime", [False, True], ids=["buffered", "realtime"])
+async def test_flow_is_always_paced_close_to_playback(
+    monkeypatch: pytest.MonkeyPatch, is_realtime: bool
+) -> None:
+    """
+    A flow gets the realtime pace whatever it opens on.
+
+    It plays out as one continuous stream, so a player running far ahead of it buys
+    nothing, and a just-in-time source later in the queue would lose the head start
+    its crossfade needs.
+    """
+    controller, request, seen = _flow_handler(monkeypatch, is_realtime=is_realtime)
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_flow_stream(request)
+
+    assert seen["extra_input_args"] == output_pacing_args(PacingProfile.NEAR_REALTIME)
+
+
+async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flow producer sees its player as gone once the connection closed, without a write."""
+    controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_flow_stream(request)
+
+    flow_kwargs = controller.audio.get_queue_flow_stream.call_args.kwargs
+    consumer_connected = flow_kwargs["consumer_connected"]
+    assert consumer_connected() is True
+    request.transport = None
+    assert consumer_connected() is False
+
+
+@pytest.mark.parametrize(
+    ("method", "still_available"),
+    [("HEAD", True), ("GET", False)],
+    ids=["head_probe", "playback_attempt"],
+)
+async def test_single_item_handler_condemns_an_item_only_on_a_playback_attempt(
+    method: str, still_available: bool
+) -> None:
+    """A failed streamdetails fetch 404s either way, but only a GET marks the item unplayable."""
+    controller, request, _seen = _single_item_handler(is_realtime=False)
+    request.method = method
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails = None
+    controller.audio.get_stream_details = AsyncMock(side_effect=AudioError("provider hiccup"))
+
+    with pytest.raises(web.HTTPNotFound):
+        await controller.serve_queue_item_stream(request)
+
+    # pins that both methods reach the fetch, so an earlier exit can never
+    # let the probe case pass for a reason other than the guard under test
+    controller.audio.get_stream_details.assert_awaited_once()
+    assert queue_item.available is still_available
+
+
+def test_the_reported_cause_skips_an_empty_link_in_the_chain() -> None:
+    """A bare TimeoutError ends plenty of chains; reporting it would say nothing."""
+    err = AudioError("Timeout connecting to Shoutcast stream")
+    err.__cause__ = TimeoutError()
+    assert str(controller_mod._root_cause(err)) == "Timeout connecting to Shoutcast stream"
+
+
+async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The response is already sent, so a failed item ends it instead of raising."""
+    controller, request, _ = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
+    controller._active_output_streams = 0
+    controller._flow_mode_owners = {}
+    controller._boundary_mix_owners = {}
+
+    async def _failing_stream(**_kwargs: Any) -> AsyncGenerator[bytes]:
+        yield b"\x01" * 64
+        # the shape get_ffmpeg_stream really raises: the cause carries the provider
+        raise AudioError("Error while feeding audio to FFmpeg") from AudioError(
+            "Spotify would not play spotify:track:aaa"
+        )
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _failing_stream)
+
+    resp = await controller.serve_queue_item_stream(request)
+
+    queue_item = controller.mass.player_queues.get_item.return_value
+    # a mix that fails after this item played in full raises here too, so flagging
+    # the item from here would cost a complete play its report
+    assert not queue_item.streamdetails.stream_error
+    logged = controller.logger.error.call_args
+    assert "Error streaming QueueItem" in logged.args[0]
+    assert queue_item.name in logged.args
+    # every stage replaces the message, so the line must carry the reason at the bottom
+    assert "Spotify would not play" in str(logged.args[-1])
+    # a body short of its announced length leaves the player waiting on the socket
+    assert resp.force_closed is True
 
 
 # -- StreamsAudio.get_stream_details --

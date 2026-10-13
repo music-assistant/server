@@ -284,6 +284,24 @@ class AudioAnalysisProvider(Provider):
         """Cancel an in-progress analysis session."""
         self._sessions.pop(session_id, None)
 
+    async def abort(self, session_id: str, reason: str, retry_at: datetime | None = None) -> None:
+        """
+        Abort an in-progress analysis session and record it as a failure.
+
+        The track is skipped on future scans until the user clears the failure, or
+        until ``retry_at`` passes when one is given.
+
+        :param session_id: The analysis session ID.
+        :param reason: Human-readable reason shown in the failures overview.
+        :param retry_at: Timezone-aware datetime when a retry is allowed; None (default)
+            means do not retry.
+        """
+        session = self._sessions.get(session_id)
+        # cancel() carries the subclass resource cleanup (decoder handles, sample buffers)
+        await self.cancel(session_id)
+        if session is not None:
+            await self._record_failure(session, reason, retry_at)
+
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload, cancelling in-flight analysis work and freeing models."""
         for session_id in list(self._sessions):
