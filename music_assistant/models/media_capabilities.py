@@ -114,6 +114,18 @@ class MediaCatalogMixin(Provider):
         """
         raise NotImplementedError
 
+    async def get_radio_tracks(self, prov_radio_id: str, page: int = 0) -> list[Track]:
+        """
+        Return one page of a tracklisted radio station's finite tracklist.
+
+        Only called for a Radio with ``is_endless`` and ``is_dynamic`` both unset. Return an
+        empty page to signal the end of the listing.
+
+        :param prov_radio_id: Provider-scoped radio id.
+        :param page: Zero-based page index for paginated results.
+        """
+        raise NotImplementedError
+
 
 class RecommendationsMixin(Provider):
     """Methods of a provider that contributes recommendation rows."""
@@ -249,3 +261,18 @@ class AudioStreamMixin(Provider):
         # so an unimplemented provider fails deterministically without emitting
         # a stray empty chunk to the downstream consumer first.
         yield b""  # type: ignore[unreachable]
+
+    async def open_local_file(self, path: str) -> int | None:
+        """
+        Open a local file of this provider's StreamDetails, right before Music Assistant reads it.
+
+        Music Assistant reads the file through the returned descriptor and then closes it, which
+        lets a provider check the very file that is read. It is called on every start, seek or
+        retry of a stream and for each part of a multi-part stream. Return None (the default)
+        to have the path opened as is.
+
+        :param path: The path of a StreamDetails with stream type LOCAL_FILE, or of one of
+            its parts.
+        :raises MediaNotFoundError: If the file can not or may not be read.
+        """
+        return None

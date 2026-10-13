@@ -8,6 +8,9 @@ Music Assistant's core controller for the music library. It aggregates and norma
 - `database.py`: `MusicDatabaseSetupMixin`, mixed into `MusicController` — owns the library database lifecycle (connection setup, schema creation, maintenance). Kept separate because the schema code is large and self-contained.
 - `migrations.py`: the versioned, step-by-step schema migrations (`migrate_database`), kept out of `database.py` as a dependency-injected function so this large block stays self-contained and individually testable.
 - `media/`: the per-media-type sub-controllers (`AlbumsController`, `ArtistsController`, `TracksController`, `RadioController`, `PlaylistController`, `AudiobooksController`, `PodcastsController`, `GenreController`), all sharing `MediaControllerBase`. `MusicController` instantiates one of each and delegates per-type work to them.
+- `sorting.py`: the sort field definitions and the sort options every listing offers (`LISTING_SORT_OPTIONS`, served by `music/sort_options`); the library listings push the chosen sort into SQL.
+- `listing.py`: the in-memory pipeline (`apply_listing`) that searches, sorts and pages a listing assembled from the providers, such as the tracks of an album.
+- `listing_cache.py`: keeps such an assembled listing for a while (`cached_listing`), grouped by the container's uri so an edit or refresh of the container drops it (`invalidate_listings`).
 - `constants.py`: config keys, the database schema version, background-task ids and tuning constants.
 - `helpers.py`: stateless helper functions (needing no controller state) used by the controller.
 - `strings.json`: translatable strings for this module (`core.music.*`), including the `manifest` name/description.

@@ -11,10 +11,12 @@ from music_assistant_models.media_items import MediaItemMetadata, Playlist, Radi
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
+from music_assistant.controllers.player_queues.constants import ArtistOrder
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
     from music_assistant_models.media_items import (
+        Album,
         BrowseFolder,
         MediaItemType,
         PlayableMediaItemType,
@@ -123,6 +125,11 @@ def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist 
     return isinstance(item, Playlist | Radio) and item.is_dynamic
 
 
+def is_finite_radio(item: MediaItemType | BrowseFolder) -> TypeGuard[Radio]:
+    """Return True for a radio station with a fixed tracklist the queue plays out and ends."""
+    return isinstance(item, Radio) and not item.is_endless and not item.is_dynamic
+
+
 def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
     """
     Return the queue's most recently added dynamic source, if it has one.
@@ -205,6 +212,32 @@ def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
         key_fn, reverse = key_map[sort_by]
         return sorted(tracks, key=key_fn, reverse=reverse)
     return list(tracks)
+
+
+def album_release_order(album: Album) -> tuple[bool, int, str, str]:
+    """
+    Return the sort key for release order: oldest first, albums without a year last.
+
+    :param album: The album to sort.
+    """
+    return (
+        not album.year,
+        album.year or 0,
+        album.name.casefold(),
+        (album.version or "").casefold(),
+    )
+
+
+def order_albums(albums: list[Album], order: ArtistOrder) -> list[Album]:
+    """
+    Return the albums in the artist order: by release for the release order, else shuffled.
+
+    :param albums: The albums to order.
+    :param order: The artist order.
+    """
+    if order is ArtistOrder.ALBUMS_BY_RELEASE:
+        return sorted(albums, key=album_release_order)
+    return random.sample(albums, len(albums))
 
 
 def get_current_playback_speed(queue: PlayerQueue) -> float:

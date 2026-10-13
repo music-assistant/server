@@ -309,6 +309,7 @@ class _MemberPipeline:
     config: _PipelineConfig
     processor: _BufferedFfmpegProcessor | None = None
     ready: bool = False
+    push_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class SendspinPlaybackSession:
@@ -614,8 +615,9 @@ class SendspinPlaybackSession:
                     history_end_us=history_end_us,
                 )
                 self._join_catchup[player_id] = state
+                # Start eagerly so the feed holds the write lock before any commit fanout.
                 snapshot_task = asyncio.create_task(
-                    self._feed_join_history(player_id, processor, history_snapshot)
+                    self._feed_join_history(player_id, state, history_snapshot), eager_start=True
                 )
                 self._attach_task_exception_logger(snapshot_task, f"join_snapshot_{player_id}")
                 state.snapshot_task = snapshot_task
@@ -640,14 +642,11 @@ class SendspinPlaybackSession:
     async def _feed_join_history(
         self,
         player_id: str,
-        processor: _BufferedFfmpegProcessor,
+        state: _JoinCatchupState,
         history_snapshot: list[_HistoryChunk],
     ) -> None:
         """Feed historical PCM into a join-catchup processor."""
-        async with self._state_lock:
-            state = self._join_catchup.get(player_id)
-        if state is None or state.processor is not processor:
-            return
+        processor = state.processor
         async with state.write_lock:
             first_history_start_us: int | None = None
             previous_end_us: int | None = None
@@ -698,26 +697,28 @@ class SendspinPlaybackSession:
     ) -> None:
         """Promote join catchup processor to the member's live DSP processor."""
         old_processor: _BufferedFfmpegProcessor | None = None
-        async with self._state_lock:
-            state = self._join_catchup.pop(player_id, None)
-            if state is None:
-                return
-            old_processor = pipeline.processor
-            pipeline.processor = state.processor
-        if state.snapshot_task is not None:
-            state.snapshot_task.cancel()
+        # Hold live pushes until the writer has flushed the PCM queued ahead of them.
+        async with pipeline.push_lock:
+            async with self._state_lock:
+                state = self._join_catchup.pop(player_id, None)
+                if state is None:
+                    return
+                old_processor = pipeline.processor
+                pipeline.processor = state.processor
+            if state.snapshot_task is not None:
+                state.snapshot_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await state.snapshot_task
+            # Let writer flush queued PCM before handoff; cancel if queue is full.
+            try:
+                state.input_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                state.writer_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
-                await state.snapshot_task
-        # Let writer flush queued PCM before handoff; cancel if queue is full.
-        try:
-            state.input_queue.put_nowait(None)
-        except asyncio.QueueFull:
-            state.writer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await state.writer_task
-        state.drainer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await state.drainer_task
+                await state.writer_task
+            state.drainer_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await state.drainer_task
         if self._producer_eof_sent and pipeline.config.requires_transform:
             with suppress(Exception):
                 await pipeline.processor.write_eof()
@@ -1418,10 +1419,11 @@ class SendspinPlaybackSession:
 
     async def _transform_member_chunk(self, pipeline: _MemberPipeline, chunk: bytes) -> None:
         """Push one PCM chunk into a member DSP pipeline."""
-        processor = pipeline.processor
-        if processor is None:
-            return
-        await processor.push(chunk)
+        async with pipeline.push_lock:
+            processor = pipeline.processor
+            if processor is None:
+                return
+            await processor.push(chunk)
 
     async def _read_member_chunk(
         self,

@@ -676,3 +676,53 @@ async def test_item_stays_playable_when_its_filtered_buffer_read_hits_the_limit(
     assert chunks == []
     assert queue_item.available
     assert streamdetails.stream_error is True
+
+
+async def test_a_consumer_that_left_gets_no_source_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audio prepared for a consumer that disconnected meanwhile is never started."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE))
+    details = _streamdetails(BUSY_INSTANCE)
+    queue_item.streamdetails = details
+    mass = _mass()
+    audio = StreamsAudio(mass)
+    get_buffer = AsyncMock()
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(
+        queue_item, reason="streaming", consumer_connected=lambda: False
+    )
+
+    assert result is None
+    get_buffer.assert_not_awaited()
+    # the item keeps its details, and no paused queue is stopped on its behalf
+    assert queue_item.streamdetails is details
+    mass.player_queues.has_paused_stream_slot_holder.assert_not_called()
+
+
+async def test_a_consumer_leaving_between_attempts_ends_the_reselection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fallback source is not opened for a consumer that left during the capacity miss."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    audio = StreamsAudio(_mass())
+    fallback_details = _streamdetails(FALLBACK_INSTANCE)
+    audio.get_stream_details = AsyncMock(return_value=fallback_details)  # type: ignore[method-assign]
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), MagicMock(spec=AudioBuffer)])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+    connected = iter([True, False])
+
+    result = await audio.get_audio_buffer(
+        queue_item,
+        reason="streaming",
+        capacity_wait_timeout=1,
+        consumer_connected=lambda: next(connected),
+    )
+
+    assert result is None
+    assert get_buffer.await_count == 1
