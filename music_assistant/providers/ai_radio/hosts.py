@@ -14,7 +14,15 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import async_json_loads, json_dumps
 
-from .constants import DEFAULT_LLM_INSTRUCTIONS, EVENT_HOSTS_UPDATED, MERGE_SECTION_PROMPT
+from .constants import (
+    DEFAULT_LLM_INSTRUCTIONS,
+    EVENT_HOSTS_UPDATED,
+    MERGE_SECTION_PROMPT,
+    NEWS_BULLETIN_PROMPT,
+    SHARED_HOST_RULES,
+    SONG_TRANSITION_PROMPT,
+    WEATHER_UPDATE_PROMPT,
+)
 from .helpers import slugify
 
 if TYPE_CHECKING:
@@ -57,31 +65,24 @@ class _PresetHost:
     segments: tuple[_PresetSegment, ...]
 
 
-SONG_TRANSITION_PROMPT = (
-    "The previous track was <prev_songinfo> and the next track is <next_songinfo>. "
-    "Create a natural radio transition that connects both songs, sounds informed "
-    "but concise, and avoids filler or repetition."
-)
-
 PRESET_HOSTS: tuple[_PresetHost, ...] = (
     _PresetHost(
         host_id="morning_show",
         name="Morning show",
         instructions=(
-            "Host personality: warm, energetic, upbeat morning-show host who sounds "
-            "fully awake and glad to be on air. Program instructions: write for spoken "
-            "delivery, keep segments concise, avoid bullet-point phrasing, avoid "
-            "cliches, mention concrete details when available, and maintain a "
-            "believable radio flow between sections."
+            "You are a warm, energetic morning-show host who sounds fully awake and glad to be on "
+            "air. Keep segments brief, skip cliches and filler, use concrete details when you "
+            "have them, and keep a believable flow from one segment into the next. "
+            f"{SHARED_HOST_RULES}"
         ),
         segments=(
             _PresetSegment(
                 segment_id="intro",
                 name="Intro",
                 prompt=(
-                    "The next track is <next_songinfo>. Open the morning show like a "
-                    "warm, upbeat host: brief good-morning greeting, one concrete hook "
-                    "about the song or artist, and a clean handoff into the music."
+                    "The next track is <next_songinfo>. Open the morning show: a brief "
+                    "good-morning greeting, one concrete hook about the song or artist, then hand "
+                    "off by naming the artist and title once."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -92,9 +93,10 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 name="Transition",
                 prompt=(
                     "The previous track was <prev_songinfo> and the next track is "
-                    "<next_songinfo>. Create a natural, energetic morning-show "
-                    "transition that connects both songs, sounds informed but concise, "
-                    "and avoids filler or repetition."
+                    "<next_songinfo>. Link the two songs with upbeat morning energy, such as a "
+                    "shared mood, era or a playful contrast, then hand off by naming the next "
+                    "artist and title once. No filler, and mention the previous track at most in "
+                    "passing."
                 ),
                 web_search="allow",
                 max_chars=650,
@@ -103,11 +105,7 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
             _PresetSegment(
                 segment_id="weather",
                 name="Weather",
-                prompt=(
-                    "Using <weather_hourly> and <timestamp>, deliver a short spoken "
-                    "weather update with the current outlook, a useful next-hours "
-                    "summary, and smooth morning-show phrasing."
-                ),
+                prompt=WEATHER_UPDATE_PROMPT,
                 web_search="disabled",
                 max_chars=500,
                 plays=_Plays("every_n_min", 60),
@@ -115,12 +113,7 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
             _PresetSegment(
                 segment_id="news",
                 name="News",
-                prompt=(
-                    "Create a short global news bulletin anchored to <timestamp>. Use "
-                    "web search. Include two or three current items that are broadly "
-                    "relevant, clearly separated, fact-focused, and written for spoken "
-                    "delivery."
-                ),
+                prompt=NEWS_BULLETIN_PROMPT,
                 web_search="force",
                 max_chars=700,
                 plays=_Plays("every_n_min", 60),
@@ -129,9 +122,9 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 segment_id="sign_off",
                 name="Sign-off",
                 prompt=(
-                    "The last track played was <prev_songinfo>. Close the morning show "
-                    "with a memorable sign-off: brief reflection, warm farewell, and "
-                    "language that sounds like the end of a real radio segment."
+                    "The last track played was <prev_songinfo>. Close the morning show: one short "
+                    "reflection on the set or that last track, a warm farewell, and a line that "
+                    "sounds like the real end of a radio segment. Do not announce another track."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -143,9 +136,8 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
         host_id="minimal_dj",
         name="Minimal DJ",
         instructions=(
-            "Host personality: minimal, calm, understated DJ who lets the music lead. "
-            "Program instructions: keep every segment brief, avoid small talk, avoid "
-            "cliches, and never overshadow the songs with unnecessary commentary."
+            "You are a calm, understated DJ who lets the music lead. Keep every segment to one or "
+            f"two short sentences, with no small talk and no cliches. {SHARED_HOST_RULES}"
         ),
         segments=(
             _PresetSegment(
@@ -153,8 +145,8 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 name="Transition",
                 prompt=(
                     "The previous track was <prev_songinfo> and the next track is "
-                    "<next_songinfo>. Give a short, minimal DJ transition: one or two "
-                    "sentences, calm tone, no filler, just enough to bridge the songs."
+                    "<next_songinfo>. One or two calm sentences that bridge the songs and name "
+                    "the next artist and title once. Nothing more."
                 ),
                 web_search="disabled",
                 max_chars=300,
@@ -166,19 +158,19 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
         host_id="music_nerd",
         name="Music nerd",
         instructions=(
-            "Host personality: knowledgeable, enthusiastic music nerd who loves sharing "
-            "context without lecturing. Program instructions: write for spoken delivery, "
-            "keep segments concise, favor concrete facts over generic praise, avoid "
-            "cliches, and maintain a believable radio flow between sections."
+            "You are an enthusiastic, knowledgeable music nerd who shares context without "
+            "lecturing. Keep segments concise, favor specific facts over generic praise, skip "
+            "cliches, and keep a believable flow from one segment into the next. "
+            f"{SHARED_HOST_RULES}"
         ),
         segments=(
             _PresetSegment(
                 segment_id="intro",
                 name="Intro",
                 prompt=(
-                    "The next track is <next_songinfo>. Open the program like a "
-                    "knowledgeable music host: brief welcome, one genuinely interesting "
-                    "detail about the artist or genre, and a clean handoff into the music."
+                    "The next track is <next_songinfo>. Open the program: a brief welcome, one "
+                    "genuinely interesting detail about the artist, the record or the genre, then "
+                    "hand off by naming the artist and title once."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -188,9 +180,10 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 segment_id="artist_fact",
                 name="Artist fact",
                 prompt=(
-                    "The next track is <next_songinfo>. Share one specific, "
-                    "well-researched fact about the artist, the recording, or its "
-                    "influence. Keep it precise and avoid generic trivia."
+                    "The next track is <next_songinfo>. Share one specific, verifiable fact about "
+                    "the artist, the recording or its influence, in two to four spoken sentences. "
+                    "No generic trivia and no 'did you know' framing. If no solid fact is "
+                    "available, say less rather than guess."
                 ),
                 web_search="allow",
                 max_chars=500,
@@ -210,19 +203,18 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
         host_id="party_host",
         name="Party host",
         instructions=(
-            "Host personality: high-energy, confident party host who keeps the crowd "
-            "hyped. Program instructions: write for spoken delivery, keep segments "
-            "concise, avoid bullet-point phrasing, avoid cliches, and maintain a "
-            "believable, energetic radio flow between sections."
+            "You are a high-energy, confident party host who keeps the crowd hyped. Keep segments "
+            "brief and punchy, skip cliches and filler, and keep the energy flowing from one "
+            f"segment into the next. {SHARED_HOST_RULES}"
         ),
         segments=(
             _PresetSegment(
                 segment_id="hype_intro",
                 name="Hype intro",
                 prompt=(
-                    "The next track is <next_songinfo>. Open the party like a hype "
-                    "radio host: high energy, one confident line about the song or "
-                    "artist, and a clean handoff that gets people moving."
+                    "The next track is <next_songinfo>. Kick off the party: high energy, one "
+                    "confident line about the song or artist, then hand off by naming the artist "
+                    "and title once and getting people moving."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -233,9 +225,9 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 name="Shout-out",
                 prompt=(
                     "The previous track was <prev_songinfo> and the next track is "
-                    "<next_songinfo>. Deliver a high-energy party transition with a "
-                    "quick shout-out vibe: keep it fun, confident, and concise, and "
-                    "avoid filler or repetition."
+                    "<next_songinfo>. Deliver a high-energy party transition: a quick shout-out "
+                    "to the room, one line that links the two songs, and a hand-off naming the "
+                    "next artist and title once. Keep it fun, confident and tight."
                 ),
                 web_search="allow",
                 max_chars=650,
@@ -245,9 +237,9 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 segment_id="sign_off",
                 name="Sign-off",
                 prompt=(
-                    "The last track played was <prev_songinfo>. Close the party with a "
-                    "memorable, high-energy sign-off: brief hype recap, warm farewell, "
-                    "and language that sounds like the end of a real party set."
+                    "The last track played was <prev_songinfo>. Close the party: a quick "
+                    "high-energy recap of the set, a warm thank-you and farewell, and a line that "
+                    "sounds like the real end of a party set. Do not announce another track."
                 ),
                 web_search="disabled",
                 max_chars=650,
