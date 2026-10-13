@@ -690,19 +690,11 @@ class MediaResolver:
                 len(ordered),
             )
             ordered = ordered[split:] + ordered[:split]
-        # a mapping has no metadata to compare, so it matches by ID only
         return [
-            copies[album.uri]
-            for album in ordered
-            if not any(
-                compare_item_ids(copy, item)
-                or (isinstance(item, Album) and compare_album(copy, item))
-                for copy in copies[album.uri]
-                for item in played
-            )
+            copies[album.uri] for album in ordered if not album_is_played(copies[album.uri], played)
         ]
 
-    async def album_copy_tracks(self, copies: list[Album]) -> list[Track]:
+    async def album_copy_tracks(self, copies: Sequence[Album | ItemMapping]) -> list[Track]:
         """
         Return the tracks of the first copy of an album with tracks to play.
 
@@ -874,7 +866,7 @@ class MediaResolver:
                     albums.append([album])
         return albums
 
-    async def _album_tracks(self, album: Album) -> list[Track]:
+    async def _album_tracks(self, album: Album | ItemMapping) -> list[Track]:
         """
         Return the available tracks of the given album, following the album selection setting.
 
@@ -1263,3 +1255,21 @@ class MediaResolver:
                 container, userid=userid, queue_id=queue_id, user_initiated=True
             )
         )
+
+
+def album_is_played(
+    copies: Sequence[Album | ItemMapping], played: Sequence[Album | ItemMapping]
+) -> bool:
+    """
+    Return whether any copy of an album matches one of the played albums.
+
+    :param copies: The album's copies.
+    :param played: The albums that already played.
+    """
+    # a mapping has no metadata to compare, so it matches by ID only
+    return any(
+        compare_item_ids(copy, item)
+        or (isinstance(copy, Album) and isinstance(item, Album) and compare_album(copy, item))
+        for copy in copies
+        for item in played
+    )

@@ -717,19 +717,34 @@ async def test_an_album_batch_is_added_whole_without_the_recency_gate() -> None:
     assert [item.media_item.item_id for item in loaded] == ["a1", "a2"]
 
 
-async def test_no_album_falls_back_to_auto_with_the_recency_gate() -> None:
-    """Without an album to play, the albums mode runs the Auto mode, gated as usual."""
+@pytest.mark.parametrize(("auto_album", "expected"), [(["a1", "a2"], ["a1", "a2"]), ([], ["s1"])])
+async def test_without_an_album_auto_picks_the_next_album(
+    auto_album: list[str], expected: list[str]
+) -> None:
+    """Without an album of the artist, Auto's gated pick gives the album, or loose tracks."""
     loader = _loader(_queue_item(_track()), seeds=[_track()])
     loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
     loader._autoplay.get_album_tracks = AsyncMock(return_value=[])
-    loader._get_similar_tracks = AsyncMock(return_value=[_track("s1")])
+    loader._autoplay.get_album_of_tracks = AsyncMock(
+        return_value=[_track(item_id) for item_id in auto_album]
+    )
+    loader._get_similar_tracks = AsyncMock(return_value=[_track("s1"), _track("s2")])
     loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
 
-    with patch(
-        "music_assistant.controllers.player_queues.queue_loader.gate_tracks", return_value=[]
-    ) as gate:
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.queue_loader.gate_tracks",
+            side_effect=lambda tracks, *_: tracks[:1],
+        ) as gate,
+        patch(
+            "music_assistant.controllers.player_queues.queue_loader.without_disliked_tracks",
+            AsyncMock(side_effect=lambda _mass, _userid, tracks: tracks),
+        ),
+    ):
         await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
 
-    loader._get_similar_tracks.assert_awaited_once()
     gate.assert_called_once()
-    loader.load.assert_not_awaited()
+    picked_from = loader._autoplay.get_album_of_tracks.await_args.args[1]
+    assert [track.item_id for track in picked_from] == ["s1"]
+    loaded = loader.load.await_args.args[1]
+    assert [item.media_item.item_id for item in loaded] == expected

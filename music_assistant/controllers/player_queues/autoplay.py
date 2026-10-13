@@ -36,9 +36,12 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
     ArtistOrder,
 )
+from music_assistant.controllers.player_queues.media_resolver import album_is_played
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.player_queue import PlayerQueue
 
@@ -195,7 +198,7 @@ class Autoplay:
 
         The artist is the album artist, or the track's artist for a compilation or a track
         without an album. Returns an empty list when there is no album to play, so the caller
-        falls back to the Auto mode.
+        lets Auto pick the next album.
 
         :param queue: The queue being refilled.
         """
@@ -235,28 +238,71 @@ class Autoplay:
         except MusicAssistantError as err:
             self.logger.debug("Unable to load artist %s, using Auto instead: %s", seed.name, err)
             return []
-        played = list({track.album.uri: track.album for track in tracks if track.album}.values())
-        candidates = await self.queues.artist_album_candidates(artist, played, anchor)
+        candidates = await self.queues.artist_album_candidates(
+            artist, _played_albums(tracks), anchor
+        )
         if candidates is None:
             self.logger.info("Unable to list the albums of %s, using Auto instead", artist.name)
             return []
         for copies in candidates[:ALBUM_PICK_ATTEMPTS]:
-            try:
-                album_tracks = await self.queues.album_copy_tracks(copies)
-            except PROVIDER_FETCH_ERRORS as err:
-                self.logger.log(
-                    provider_fetch_log_level(err),
-                    "Unable to fetch the tracks of album %s: %s",
-                    copies[0].name,
-                    err,
-                )
-                continue
-            if album_tracks := await without_disliked_tracks(
-                self.mass, queue_data.userid, album_tracks
-            ):
+            if album_tracks := await self._album_tracks_to_play(queue_data.userid, copies):
                 return album_tracks
-            self.logger.debug("Album %s has no tracks to play", copies[0].name)
         return []
+
+    async def get_album_of_tracks(self, queue: PlayerQueue, tracks: list[Track]) -> list[Track]:
+        """
+        Return the whole album of the first of Auto's tracks whose album hasn't played yet.
+
+        Keeps the whole-albums mode in albums when the artist has none left: Auto picks, and its
+        track's album plays. Returns an empty list when no album fits, so the caller keeps Auto's
+        tracks.
+
+        :param queue: The queue being refilled.
+        :param tracks: Auto's tracks, in the order to try their albums.
+        """
+        if not albums_mode_available(self.mass):
+            return []
+        queue_data = self.queues.queue_data(queue.queue_id)
+        skipped = _played_albums(
+            [item.media_item for item in queue_data.items if isinstance(item.media_item, Track)]
+        )
+        attempts = 0
+        for track in tracks:
+            if attempts == ALBUM_PICK_ATTEMPTS:
+                break
+            if track.album is None or album_is_played([track.album], skipped):
+                continue
+            # an album is tried once, also when several of Auto's tracks come from it
+            skipped.append(track.album)
+            attempts += 1
+            if album_tracks := await self._album_tracks_to_play(queue_data.userid, [track.album]):
+                return album_tracks
+        self.logger.debug("Auto found no album to play, adding its tracks")
+        return []
+
+    async def _album_tracks_to_play(
+        self, userid: str | None, copies: Sequence[Album | ItemMapping]
+    ) -> list[Track]:
+        """
+        Return the album's tracks without the disliked ones, or an empty list when it fails.
+
+        :param userid: The user the queue plays for.
+        :param copies: The album's copies, in the order to try them.
+        """
+        try:
+            album_tracks = await self.queues.album_copy_tracks(copies)
+        except PROVIDER_FETCH_ERRORS as err:
+            self.logger.log(
+                provider_fetch_log_level(err),
+                "Unable to fetch the tracks of album %s: %s",
+                copies[0].name,
+                err,
+            )
+            return []
+        album_tracks = await without_disliked_tracks(self.mass, userid, album_tracks)
+        if not album_tracks:
+            self.logger.debug("Album %s has no tracks to play", copies[0].name)
+        return album_tracks
 
     def _autoplay_playlist_uri(self, queue_id: str) -> ConfigValueType:
         """
@@ -329,3 +375,8 @@ def _is_various_artists(artist: Artist | ItemMapping) -> bool:
     return artist.name == VARIOUS_ARTISTS_NAME or (
         isinstance(artist, Artist) and artist.mbid == VARIOUS_ARTISTS_MBID
     )
+
+
+def _played_albums(tracks: list[Track]) -> list[Album | ItemMapping]:
+    """Return the albums of the given tracks, once each."""
+    return list({track.album.uri: track.album for track in tracks if track.album}.values())

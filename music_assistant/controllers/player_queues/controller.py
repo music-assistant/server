@@ -1795,7 +1795,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         return await self._media_resolver.artist_album_candidates(artist, played, anchor)
 
-    async def album_copy_tracks(self, copies: list[Album]) -> list[Track]:
+    async def album_copy_tracks(self, copies: Sequence[Album | ItemMapping]) -> list[Track]:
         """
         Return the tracks of the first copy of an album with tracks to play.
 

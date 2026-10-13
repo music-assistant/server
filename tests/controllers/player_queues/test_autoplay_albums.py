@@ -403,3 +403,71 @@ async def test_after_an_auto_track_the_albums_of_its_artist_play(
     result = await Autoplay(mass.player_queues).get_album_tracks(queue)
 
     assert _names(result) == ["Late 1", "Late 2", "Late 3"]
+
+
+async def test_auto_picks_the_first_album_not_played_yet(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto's tracks give the next album: no album and played albums are skipped."""
+    played, picked, later = (_streaming_album(name, 1970) for name in "ABC")
+    lookup = _stub_provider(mass, [played, picked, later])
+    artist = _provider_artist()
+    queue = _queue(mass, monkeypatch, _queued_track([artist], played))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    auto = [
+        _queued_track([artist], None),
+        _queued_track([artist], ItemMapping.from_item(played)),
+        _queued_track([artist], ItemMapping.from_item(picked)),
+        _queued_track([artist], ItemMapping.from_item(later)),
+    ]
+
+    result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
+
+    assert _names(result) == ["B 1", "B 2"]
+    assert lookup.await_count == 1
+
+
+@pytest.mark.parametrize(("failing", "expected"), [("A", "B"), ("AB", None)])
+async def test_auto_tries_each_album_once(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, failing: str, expected: str | None
+) -> None:
+    """An album that fails is tried once; with none left, Auto's loose tracks stay."""
+    albums = [_streaming_album(name, 1970) for name in "AB"]
+    lookup = _stub_provider(mass, albums)
+    names = {album.item_id: album.name for album in albums}
+    tracks = lookup.side_effect
+
+    def _tracks(item_id: str, *args: Any, **kwargs: Any) -> list[Track]:
+        if names[item_id] in failing:
+            raise MediaNotFoundError("gone")
+        return cast("list[Track]", tracks(item_id, *args, **kwargs))
+
+    lookup.side_effect = _tracks
+    artist = _provider_artist()
+    queue = _queue(mass, monkeypatch, _queued_track([artist], None))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    first, second = (ItemMapping.from_item(album) for album in albums)
+    auto = [_queued_track([artist], album) for album in (first, first, second)]
+
+    result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
+
+    assert _names(result) == ([f"{expected} 1", f"{expected} 2"] if expected else [])
+    assert lookup.await_count == 2
+
+
+async def test_auto_keeps_loose_tracks_when_the_mode_cant_play(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the shuffled artist order, Auto's tracks are not widened to their album."""
+    album = _streaming_album("A", 1970)
+    lookup = _stub_provider(mass, [album])
+    artist = _provider_artist()
+    queue = _queue(mass, monkeypatch, _queued_track([artist], None))
+    _set_order(mass, ArtistOrder.SHUFFLED_TRACKS)
+
+    result = await Autoplay(mass.player_queues).get_album_of_tracks(
+        queue, [_queued_track([artist], ItemMapping.from_item(album))]
+    )
+
+    assert result == []
+    lookup.assert_not_awaited()
