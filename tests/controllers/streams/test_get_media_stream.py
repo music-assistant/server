@@ -1314,14 +1314,14 @@ async def test_radio_stream_keeps_restarting_after_long_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A radio stream that fails only after long runs restarts beyond the budget."""
-    runs = [(b"chunk",)] * (audio_mod.RADIO_MAX_FAILED_RESTARTS + 2)
+    pcm_format = _make_pcm_format()
+    long_run = b"\0" * (audio_mod.RADIO_RESTART_MIN_PLAYTIME * pcm_format.pcm_sample_size)
+    runs = [(long_run,)] * (audio_mod.RADIO_MAX_FAILED_RESTARTS + 2)
     audio, streamdetails, get_stream_details, _ = _radio_refresh_setup(monkeypatch, *runs)
-    clock = iter(range(0, 100_000, audio_mod.RADIO_RESTART_MIN_PLAYTIME))
-    cast("MagicMock", audio.mass.loop.time).side_effect = lambda: next(clock)
-    stream = audio.get_media_stream(streamdetails, _make_pcm_format())
+    stream = audio.get_media_stream(streamdetails, pcm_format)
 
     chunks = [await anext(stream) for _ in runs]
     await stream.aclose()
 
-    assert chunks == [b"chunk"] * len(runs)
+    assert chunks == [long_run] * len(runs)
     assert get_stream_details.await_count == len(runs) - 1

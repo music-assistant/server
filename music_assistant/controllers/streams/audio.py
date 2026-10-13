@@ -4564,7 +4564,7 @@ class StreamsAudio:
         played = False
         failed_restarts = 0
         while True:
-            run_start = self.mass.loop.time()
+            run_bytes = 0
             try:
                 if played:
                     await self._refresh_radio_stream_details(streamdetails)
@@ -4575,6 +4575,7 @@ class StreamsAudio:
                 ) as media_stream:
                     async for chunk in media_stream:
                         played = True
+                        run_bytes += len(chunk)
                         yield chunk
                 return
             except ProviderStreamLimitError:
@@ -4582,7 +4583,7 @@ class StreamsAudio:
             except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
                 if not played:
                     raise
-                if self.mass.loop.time() - run_start >= RADIO_RESTART_MIN_PLAYTIME:
+                if run_bytes / pcm_format.pcm_sample_size >= RADIO_RESTART_MIN_PLAYTIME:
                     failed_restarts = 0
                 failed_restarts += 1
                 if failed_restarts > RADIO_MAX_FAILED_RESTARTS:
