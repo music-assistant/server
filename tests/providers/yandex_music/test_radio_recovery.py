@@ -37,6 +37,23 @@ def make_station_provider() -> tuple[YandexMusicProvider, ClientAsync, _WaveStat
     return provider, raw, wave
 
 
+def attach_stream_resolver(provider: YandexMusicProvider, seconds: int) -> None:
+    """Replace CDN resolution with fresh stream details, preserving the provider boundary."""
+
+    def resolve(item_id: str) -> StreamDetails:
+        return StreamDetails(
+            provider="yandex_music_instance",
+            item_id=item_id,
+            audio_format=AudioFormat(content_type=ContentType.FLAC),
+            media_type=MediaType.TRACK,
+            duration=100,
+            seconds_streamed=seconds,
+            data={"url": "https://cdn.example/audio"},
+        )
+
+    provider._streaming = Mock(get_stream_details=AsyncMock(side_effect=resolve))
+
+
 @pytest.mark.parametrize("seconds", [7, 100])
 @pytest.mark.parametrize("drain_limit", [0, 1, 2])
 @pytest.mark.parametrize("ended", [False, True])
@@ -47,6 +64,7 @@ async def test_prefetch_keeps_feedback_batch_with_each_track(
     provider, raw, wave = make_station_provider()
     provider.config = Mock(instance_id="yandex_music_instance")
     provider.manifest = Mock(domain="yandex_music")
+    attach_stream_resolver(provider, seconds)
     wave.reset_session()
     station = "user:onyourwave#discover"
     responses = iter(
@@ -84,16 +102,8 @@ async def test_prefetch_keeps_feedback_batch_with_each_track(
                 f"{track_id}@{station}" for track_id in [43, 44][:drain_limit]
             ]
         for track_id in [42, 43, 44][: 1 + drain_limit]:
-            await provider.on_streamed(
-                StreamDetails(
-                    provider="yandex_music_instance",
-                    item_id=f"{track_id}@{station}",
-                    audio_format=AudioFormat(content_type=ContentType.FLAC),
-                    media_type=MediaType.TRACK,
-                    duration=100,
-                    seconds_streamed=seconds,
-                )
-            )
+            details = await provider.get_stream_details(f"{track_id}@{station}")
+            await provider.on_streamed(details)
     feedback = [call.kwargs["json"] for call in post.await_args_list if "feedback" in call.args[0]]
     assert [body["batchId"] for body in feedback] == ["first-batch"] + ["next-batch"] * drain_limit
     assert all(
@@ -102,13 +112,13 @@ async def test_prefetch_keeps_feedback_batch_with_each_track(
     )
 
 
-def test_session_reset_discards_track_batch_metadata() -> None:
-    """A replacement session cannot use feedback metadata from its predecessor."""
+def test_session_reset_discards_queued_feedback_contexts() -> None:
+    """A replacement session drops unused track metadata from its predecessor."""
     _, _, wave = make_station_provider()
     wave.remember_track_batch([Track(id=42)], "old-batch")
-    assert wave.track_batch_ids == {"42": "old-batch"}
+    assert wave.track_feedback_contexts == {"42": ("expired", "old-batch")}
     wave.reset_session()
-    assert not wave.track_batch_ids
+    assert not wave.track_feedback_contexts
     assert wave.settings == {"language": "russian"}
 
 
@@ -138,6 +148,98 @@ async def test_station_recovers_unknown_session_once_and_preserves_settings() ->
         "settingDiversity:discover",
         "settingLanguage:russian",
     ]
+
+
+@pytest.mark.parametrize("seconds", [7, 100])
+@pytest.mark.parametrize("replacement_id", [42, 43])
+@pytest.mark.parametrize("strip_data", [False, True])
+async def test_expired_prefetch_does_not_report_old_track_to_replacement_session(
+    seconds: int, replacement_id: int, strip_data: bool
+) -> None:
+    """An old stream cannot borrow session ownership from a replacement radio batch."""
+    provider, raw, wave = make_station_provider()
+    wave.remember_track_batch([Track(id=42)], "old-batch")
+    station = "user:onyourwave#discover"
+
+    attach_stream_resolver(provider, seconds)
+    old_stream = await provider.get_stream_details(f"42@{station}")
+    responses = iter(
+        [
+            {"unknownSession": True},
+            {
+                "radioSessionId": "fresh",
+                "batchId": "fresh-batch",
+                "sequence": [{"type": "track", "track": {"id": replacement_id}, "liked": False}],
+            },
+            [{"id": replacement_id}],
+        ]
+    )
+
+    async def respond(url: str, *_args: object, **_kwargs: object) -> object:
+        if "feedback" in url:
+            return {"result": "ok"}
+        return next(responses)
+
+    post = AsyncMock(side_effect=respond)
+    with patch.object(raw.request, "post", post):
+        await provider._prefetch_rotor_session(station)
+        assert wave.session_id == "fresh"
+        if strip_data:
+            old_stream.data = None
+        await provider.on_streamed(old_stream)
+        feedback = [c.kwargs["json"] for c in post.await_args_list if "feedback" in c.args[0]]
+        assert [body["event"]["type"] for body in feedback] == ["radioStarted"]
+        fresh_stream = await provider.get_stream_details(f"{replacement_id}@{station}")
+        await provider.on_streamed(fresh_stream)
+    feedback = [c for c in post.await_args_list if "feedback" in c.args[0]]
+    assert len(feedback) == 2
+    assert "/session/fresh/feedback" in feedback[-1].args[0]
+    assert feedback[-1].kwargs["json"]["batchId"] == "fresh-batch"
+    assert feedback[-1].kwargs["json"]["event"]["trackId"] == str(replacement_id)
+
+
+@pytest.mark.parametrize("replace_state", [False, True])
+async def test_feedback_ownership_is_captured_before_stream_resolution(
+    replace_state: bool,
+) -> None:
+    """A reset or state replacement during resolution cannot relabel an existing stream."""
+    provider, raw, wave = make_station_provider()
+    wave.remember_track_batch([Track(id=42)], "old-batch")
+    station = "user:onyourwave#discover"
+    attach_stream_resolver(provider, 100)
+    resolver = provider.streaming.get_stream_details
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed(item_id: str) -> StreamDetails:
+        started.set()
+        await release.wait()
+        return await resolver(item_id)
+
+    with patch.object(provider.streaming, "get_stream_details", AsyncMock(side_effect=delayed)):
+        pending = asyncio.create_task(provider.get_stream_details(f"42@{station}"))
+        await started.wait()
+        if replace_state:
+            wave = _WaveState()
+            provider._wave_states[station] = wave
+        else:
+            wave.reset_session()
+        wave.session_id = "fresh"
+        wave.batch_id = "fresh-batch"
+        wave.remember_track_batch([Track(id=42)], "fresh-batch")
+        release.set()
+        old_stream = await pending
+    post = AsyncMock(return_value={"result": "ok"})
+    with patch.object(raw.request, "post", post):
+        await provider.on_streamed(old_stream)
+        post.assert_not_awaited()
+        assert wave.track_feedback_contexts == {"42": ("fresh", "fresh-batch")}
+        fresh_stream = await provider.get_stream_details(f"42@{station}")
+        await provider.on_streamed(fresh_stream)
+    post.assert_awaited_once()
+    assert post.await_args is not None
+    assert post.await_args.kwargs["json"]["batchId"] == "fresh-batch"
+    assert not wave.track_feedback_contexts
 
 
 async def test_station_delivers_final_tracks_from_terminated_session() -> None:

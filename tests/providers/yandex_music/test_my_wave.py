@@ -11,6 +11,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Playlist, ProviderMapping
 from music_assistant_models.media_items import Track as MATrack
+from yandex_music import Track as YandexTrack
 
 from music_assistant.providers.yandex_music.browse import _BrowseRouter
 from music_assistant.providers.yandex_music.constants import (
@@ -746,6 +747,7 @@ async def test_send_wave_feedback_uses_session_api_when_session_id_present() -> 
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.batch_id = "batch_a"
+    wave.remember_track_batch([YandexTrack(id=100)], "batch_a")
 
     result = await YandexMusicProvider._send_wave_feedback(
         provider, wave, "user:onyourwave", "trackStarted", track_id="100"

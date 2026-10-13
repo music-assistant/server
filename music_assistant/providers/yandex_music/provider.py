@@ -390,7 +390,7 @@ class _WaveState:
     def __init__(self) -> None:
         self.session_id: str | None = None
         self.batch_id: str | None = None
-        self.track_batch_ids: dict[str, str | None] = {}
+        self.track_feedback_contexts: dict[str, tuple[str, str | None]] = {}
         self.last_track_id: str | None = None
         self.playlist_next_cursor: str | None = None
         self.seen_track_ids: set[str] = set()
@@ -404,7 +404,7 @@ class _WaveState:
         """Clear playback state for a new session, retaining station settings and lock."""
         self.session_id = None
         self.batch_id = None
-        self.track_batch_ids.clear()
+        self.track_feedback_contexts.clear()
         self.last_track_id = None
         self.playlist_next_cursor = None
         self.radio_started_sent = False
@@ -413,11 +413,13 @@ class _WaveState:
         self.seen_track_ids.clear()
 
     def remember_track_batch(self, tracks: Sequence[YandexTrack], batch_id: str | None) -> None:
-        """Keep the originating batch for track feedback until the session resets."""
+        """Keep each track's originating session and batch for playback feedback."""
+        if self.session_id is None:
+            return
         for track in tracks:
             track_id = getattr(track, "id", None)
             if track_id is not None:
-                self.track_batch_ids[str(track_id)] = batch_id
+                self.track_feedback_contexts[str(track_id)] = (self.session_id, batch_id)
 
 
 class YandexMusicProvider(MusicProvider):
@@ -1407,7 +1409,18 @@ class YandexMusicProvider(MusicProvider):
         """
         if media_type == MediaType.AUDIOBOOK:
             return await self._get_audiobook_stream_details(item_id)
-        return await self.streaming.get_stream_details(item_id)
+        track_id, station_id = _parse_radio_item_id(item_id)
+        wave = self._wave_states.get(station_id) if station_id else None
+        context = wave.track_feedback_contexts.get(track_id) if wave else None
+        details = await self.streaming.get_stream_details(item_id)
+        if station_id:
+            data = details.data if isinstance(details.data, dict) else {}
+            details.data = {
+                **data,
+                "radio_session_id": context[0] if context else None,
+                "radio_batch_id": context[1] if context else None,
+            }
+        return details
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -1574,13 +1587,29 @@ class YandexMusicProvider(MusicProvider):
         track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
         if not station_id:
             return
+        session_id = data.get("radio_session_id") if data else None
+        if not isinstance(session_id, str):
+            return
+        batch_id = data.get("radio_batch_id") if data else None
+        context = (session_id, batch_id if isinstance(batch_id, str) else None)
         seconds = int(streamdetails.seconds_streamed or 0)
         duration = int(streamdetails.duration or 0)
         feedback_type = "trackFinished" if duration and seconds >= max(0, duration - 10) else "skip"
-        wave = self._wave_states.get(station_id) or self._get_wave_state(station_id)
-        await self._send_wave_feedback(
-            wave, station_id, feedback_type, track_id=track_id, total_played_seconds=seconds
-        )
+        wave = self._wave_states.get(station_id)
+        if wave is None:
+            return
+        try:
+            await self._send_wave_feedback(
+                wave,
+                station_id,
+                feedback_type,
+                track_id=track_id,
+                total_played_seconds=seconds,
+                context=context,
+            )
+        finally:
+            if wave.track_feedback_contexts.get(track_id) == context:
+                del wave.track_feedback_contexts[track_id]
 
     def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
         """
@@ -2362,6 +2391,7 @@ class YandexMusicProvider(MusicProvider):
         *,
         track_id: str | None = None,
         total_played_seconds: int | None = None,
+        context: tuple[str, str | None] | None = None,
     ) -> bool:
         """
         Route rotor feedback to the session endpoint.
@@ -2383,6 +2413,7 @@ class YandexMusicProvider(MusicProvider):
         :param event_type: Rotor event type (radioStarted, trackStarted, …).
         :param track_id: Yandex track ID the event refers to.
         :param total_played_seconds: Seconds played (trackFinished / skip only).
+        :param context: Originating session and batch captured for this stream.
         :return: True if the feedback POST succeeded, False when skipped.
         """
         if not wave.session_id:
@@ -2392,14 +2423,16 @@ class YandexMusicProvider(MusicProvider):
                 station_id,
             )
             return False
+        if track_id:
+            context = context or wave.track_feedback_contexts.get(track_id)
+            if context is None or context[0] != wave.session_id:
+                return False
         return await self.client.rotor_session_feedback(
             wave.session_id,
             event_type,
             track_id=track_id,
             total_played_seconds=total_played_seconds,
-            batch_id=wave.track_batch_ids.get(track_id, wave.batch_id)
-            if track_id
-            else wave.batch_id,
+            batch_id=context[1] if track_id and context else wave.batch_id,
         )
 
     async def _prefetch_rotor_session(self, station_key: str) -> None:
