@@ -12,6 +12,7 @@ from music_assistant_models.media_items import ItemMapping
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.parsers_v2 import (
     _map_album_type,
+    _parse_camelot_key,
     _parse_iso_duration,
     _select_image_url,
     _split_title_version,
@@ -378,3 +379,22 @@ def test_select_image_url_empty() -> None:
 def test_parse_iso_duration(value: str, expected: int) -> None:
     """Test ISO-8601 duration parsing including the hours component."""
     assert _parse_iso_duration(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("key", "scale", "expected"),
+    [
+        ("A", "MINOR", "8A"),
+        ("A", "AEOLIAN", "8A"),
+        ("A", "HARMONIC_MINOR", "8A"),
+        ("A", "MELODIC_MINOR", "8A"),
+        ("A", "PENTATONIC_MINOR", "8A"),
+        ("FSharp", "PENTATONIC_MAJOR", "2B"),
+        ("A", "DORIAN", None),
+        ("A", "UNKNOWN", None),
+        (None, "MAJOR", None),
+    ],
+)
+def test_parse_camelot_key(key: str | None, scale: str | None, expected: str | None) -> None:
+    """Test Camelot mapping of Tidal's key and scale enums."""
+    assert _parse_camelot_key(key, scale) == expected
