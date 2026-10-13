@@ -61,6 +61,7 @@ def test_parse_track(provider_mock: Mock) -> None:
     assert track.audio_metadata is not None
     assert track.audio_metadata.bpm == 120.0
     assert track.audio_metadata.musical_key == "Eb major"
+    assert track.audio_metadata.camelot_key == "5B"
     assert [a.name for a in track.artists] == ["Lukas Graham"]
     assert track.album is not None
     assert track.album.item_id == "58756127"

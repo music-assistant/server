@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.camelot import camelot_key
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 from .constants import (
@@ -87,6 +88,16 @@ _KEY_PITCH = {
     "A": "A",
     "Bb": "Bb",
     "B": "B",
+}
+# Tidal scales that sit on the major (B) or minor (A) side of the Camelot wheel.
+_CAMELOT_MODE = {
+    "MAJOR": "major",
+    "PENTATONIC_MAJOR": "major",
+    "MINOR": "minor",
+    "AEOLIAN": "minor",
+    "HARMONIC_MINOR": "minor",
+    "MELODIC_MINOR": "minor",
+    "PENTATONIC_MINOR": "minor",
 }
 
 
@@ -233,9 +244,14 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
         track.metadata.performers = performers
 
     bpm = attributes.get("bpm")
-    musical_key = _parse_musical_key(attributes.get("key"), attributes.get("keyScale"))
+    key, key_scale = attributes.get("key"), attributes.get("keyScale")
+    musical_key = _parse_musical_key(key, key_scale)
     if bpm is not None or musical_key:
-        track.audio_metadata = AudioMetadata(bpm=bpm, musical_key=musical_key)
+        track.audio_metadata = AudioMetadata(
+            bpm=bpm,
+            musical_key=musical_key,
+            camelot_key=_parse_camelot_key(key, key_scale),
+        )
 
     # The album relationship carries a minimal album resource; use an ItemMapping
     # (as with the unofficial API) and take the track image from the album cover.
@@ -442,6 +458,11 @@ def _parse_musical_key(key: str | None, scale: str | None) -> str | None:
     if scale and scale != "UNKNOWN":
         return f"{pitch} {scale.lower().replace('_', ' ')}"
     return pitch
+
+
+def _parse_camelot_key(key: str | None, scale: str | None) -> str | None:
+    """Build a Camelot wheel value (e.g. "11A") from Tidal's key and scale enums."""
+    return camelot_key(_KEY_PITCH.get(key or ""), _CAMELOT_MODE.get(scale or ""))
 
 
 def _map_album_type(

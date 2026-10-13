@@ -47,6 +47,7 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.camelot import camelot_key
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -660,7 +661,11 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             musical_key: str | None = None
             if analysis.key is not None:
                 musical_key = f"{analysis.key} {analysis.mode}" if analysis.mode else analysis.key
-            return AudioMetadata(bpm=analysis.bpm, musical_key=musical_key)
+            return AudioMetadata(
+                bpm=analysis.bpm,
+                musical_key=musical_key,
+                camelot_key=camelot_key(analysis.key, analysis.mode),
+            )
         return None
 
     async def get_vocal_onset(
