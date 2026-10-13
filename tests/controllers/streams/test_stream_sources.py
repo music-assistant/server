@@ -18,6 +18,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 from music_assistant_models.media_items import AudioFormat, ProviderMapping
 
 from music_assistant.controllers.streams.stream_sources import (
+    ContainerListing,
     QualityTier,
     SourceCandidate,
     StreamSourceMode,
@@ -25,6 +26,7 @@ from music_assistant.controllers.streams.stream_sources import (
     quality_tier,
     rank_provider_mappings,
     rank_stream_sources,
+    select_container_source,
 )
 
 if TYPE_CHECKING:
@@ -106,6 +108,31 @@ def _candidate(
 def _ids(ranked: list[SourceCandidate]) -> list[str]:
     """Return the ranked candidates as ``instance/item id`` strings."""
     return [f"{candidate.provider.instance_id}/{candidate.mapping.item_id}" for candidate in ranked]
+
+
+def _listing(
+    instance: str,
+    *formats: AudioFormat,
+    is_streaming: bool = True,
+    complete: bool = True,
+) -> ContainerListing:
+    """
+    Build what an instance lists of an album: one copy per format given.
+
+    :param instance: The instance listing the album.
+    :param formats: The format of each copy it lists; one CD quality FLAC by default.
+    :param is_streaming: Whether the instance is an account of a streaming service.
+    :param complete: Whether it lists every track the album has in the library.
+    """
+    return ContainerListing(
+        instance_id=instance,
+        is_streaming=is_streaming,
+        copies=[
+            _mapping(instance, item_id=str(number), audio_format=audio_format)
+            for number, audio_format in enumerate(formats or (_format(),), start=1)
+        ],
+        complete=complete,
+    )
 
 
 @pytest.mark.parametrize(
@@ -350,3 +377,91 @@ async def test_rank_provider_mappings_pins_the_streamed_copy_and_knows_local_sou
         assert rank_provider_mappings({plex, deezer}, policy=PREFER_LOCAL) == [plex, deezer]
     finally:
         await set_global_cache_values({"non_streaming_providers": previous})
+
+
+MP3 = _format(ContentType.MP3, bit_rate=320)
+HIRES = _format(sample_rate=96000, bit_depth=24)
+
+
+@pytest.mark.parametrize(
+    ("listed", "options", "expected"),
+    [
+        (
+            [_listing(TIDAL), _listing(SPOTIFY, HIRES, complete=False)],
+            {},
+            TIDAL,
+        ),
+        (
+            [_listing(TIDAL), _listing(SPOTIFY, MP3, complete=False)],
+            {"preferred": [SPOTIFY]},
+            SPOTIFY,
+        ),
+        (
+            [_listing(LOCAL, MP3, is_streaming=False), _listing(TIDAL, HIRES)],
+            {"policy": PREFER_LOCAL},
+            LOCAL,
+        ),
+        (
+            [_listing(LOCAL, MP3, is_streaming=False, complete=False), _listing(SPOTIFY)],
+            {"policy": PREFER_LOCAL, "preferred": [SPOTIFY]},
+            LOCAL,
+        ),
+        (
+            [_listing(LOCAL, MP3, is_streaming=False), _listing(TIDAL, HIRES)],
+            {},
+            TIDAL,
+        ),
+        (
+            [_listing(TIDAL, _format(), _format()), _listing(OTHER_TIDAL, HIRES, MP3)],
+            {},
+            TIDAL,
+        ),
+        (
+            [
+                _listing(TIDAL, _format(), _format(), _format(sample_rate=48000)),
+                _listing(OTHER_TIDAL, _format(), _format(sample_rate=48000), HIRES),
+            ],
+            {},
+            OTHER_TIDAL,
+        ),
+        (
+            [_listing(DEEZER), _listing(PLEX, is_streaming=False)],
+            {},
+            PLEX,
+        ),
+        (
+            [_listing(OTHER_TIDAL), _listing(TIDAL)],
+            {},
+            TIDAL,
+        ),
+    ],
+    ids=[
+        "a complete listing comes before a better partial one",
+        "the own account comes before a complete listing",
+        "a local source comes first when preferring local",
+        "a local source comes before the own account when preferring local",
+        "quality decides over a local source by default",
+        "the poorest copy decides the quality tier",
+        "the median score decides within a tier",
+        "a local source wins a tie",
+        "equal listings are chosen by instance id",
+    ],
+)
+def test_select_container_source_level(
+    listed: list[ContainerListing], options: dict[str, Any], expected: str
+) -> None:
+    """One level of the album source key decides, with every level above it equal."""
+    assert select_container_source(listed, **options) == expected
+    assert select_container_source(list(reversed(listed)), **options) == expected
+
+
+def test_no_container_source_when_every_track_is_ranked_on_its_own() -> None:
+    """Ranking every track on its own chooses no source for the album."""
+    assert select_container_source([_listing(LOCAL, is_streaming=False)], policy=PER_TRACK) is None
+
+
+def test_no_container_source_without_a_listed_copy() -> None:
+    """An instance that serves none of the album's tracks is no source of it."""
+    assert select_container_source([]) is None
+    empty = ContainerListing(instance_id=TIDAL, is_streaming=True, copies=[], complete=True)
+    assert select_container_source([empty, _listing(SPOTIFY, MP3, complete=False)]) == SPOTIFY
