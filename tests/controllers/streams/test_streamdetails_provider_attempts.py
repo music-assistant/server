@@ -33,6 +33,8 @@ from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
+from music_assistant.controllers.streams.stream_sources import StreamSourceMode
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
 
@@ -103,7 +105,11 @@ def _streamdetails(item_id: str, media_type: MediaType, provider: str) -> Stream
     )
 
 
-def _audio(providers: dict[str, MagicMock], owned: list[str] | None = None) -> StreamsAudio:
+def _audio(
+    providers: dict[str, MagicMock],
+    owned: list[str] | None = None,
+    mode: StreamSourceMode = StreamSourceMode.BEST_QUALITY,
+) -> StreamsAudio:
     """
     Build a StreamsAudio whose mass resolves the given provider instances.
 
@@ -111,6 +117,7 @@ def _audio(providers: dict[str, MagicMock], owned: list[str] | None = None) -> S
     :param owned: The music sources the playback user owns, which are steered to first. The
         other instances stay household sources, so they are usable but not preferred. Omit
         for no playback user at all.
+    :param mode: The source selection mode of the streams settings.
     """
     mass = MagicMock()
     for instance_id, provider in providers.items():
@@ -137,7 +144,9 @@ def _audio(providers: dict[str, MagicMock], owned: list[str] | None = None) -> S
             for instance_id in providers
         },
     )
-    mass.streams.get_config_value.return_value = -17
+    mass.streams.get_config_value.side_effect = lambda key, *_args, **_kwargs: (
+        mode if key == CONF_STREAM_SOURCE_MODE else -17
+    )
     return StreamsAudio(mass)
 
 
@@ -336,6 +345,59 @@ async def test_an_excluded_pinned_instance_is_passed_over() -> None:
 
     assert streamdetails.provider == other_instance
     pinned.get_stream_details.assert_not_awaited()
+
+
+async def test_the_pinned_copy_is_passed_over_when_every_track_is_ranked_on_its_own() -> None:
+    """With best quality for every track, a better copy plays instead of the listed one."""
+    pinned_instance = "tidal--lofi"
+    other_instance = "qobuz--hifi"
+    pinned = _music_provider(pinned_instance)
+    other = _music_provider(other_instance)
+    audio = _audio(
+        {pinned_instance: pinned, other_instance: other},
+        mode=StreamSourceMode.BEST_QUALITY_PER_TRACK,
+    )
+    queue_item = _pinned_to(
+        _queue_item(
+            _mapping(pinned_instance),
+            _mapping(other_instance, content_type=ContentType.FLAC),
+        ),
+        pinned_instance,
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    assert streamdetails.provider == other_instance
+    pinned.get_stream_details.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (StreamSourceMode.PREFER_LOCAL, "filesystem_local--files"),
+        (StreamSourceMode.BEST_QUALITY, "tidal--hifi"),
+    ],
+    ids=["prefer local", "best quality"],
+)
+async def test_a_local_copy_plays_before_a_better_streaming_one_when_preferring_local(
+    mode: StreamSourceMode, expected: str
+) -> None:
+    """Preferring local plays a local MP3 ahead of a streaming FLAC, which wins by default."""
+    local_instance = "filesystem_local--files"
+    streaming_instance = "tidal--hifi"
+    local = _music_provider(local_instance)
+    streaming = _music_provider(streaming_instance)
+    audio = _audio({local_instance: local, streaming_instance: streaming}, mode=mode)
+    local.is_streaming_provider = False
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(local_instance),
+            _mapping(streaming_instance, content_type=ContentType.FLAC),
+        )
+    )
+
+    assert streamdetails.provider == expected
 
 
 async def test_an_audiobook_plays_from_the_account_it_was_started_from() -> None:

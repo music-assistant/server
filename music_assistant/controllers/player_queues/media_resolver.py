@@ -54,8 +54,8 @@ from music_assistant.controllers.player_queues.helpers import (
     sort_tracks,
 )
 from music_assistant.controllers.streams.stream_sources import (
-    DEFAULT_POLICY,
     ContainerListing,
+    read_stream_source_policy,
     select_container_source,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
@@ -1098,7 +1098,7 @@ class MediaResolver:
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
             return await self._resolve_album(
-                media_item, start_item, userid, sort_by, keep_preceding_items
+                media_item, start_item, userid, queue_id, sort_by, keep_preceding_items
             )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
@@ -1223,6 +1223,7 @@ class MediaResolver:
         album: Album,
         start_item: str | None,
         userid: str | None,
+        queue_id: str | None,
         sort_by: str | None,
         keep_preceding_items: bool,
     ) -> list[ResolvedItem]:
@@ -1236,6 +1237,7 @@ class MediaResolver:
         :param album: The album to play.
         :param start_item: Optional item_id/uri of the track to start from.
         :param userid: Optional user the playback is for.
+        :param queue_id: Optional queue the playback is requested for.
         :param sort_by: Optional sort key to order the tracks by before applying start_item.
         :param keep_preceding_items: Move the tracks before start_item behind the rest instead
             of dropping them, so the full album is returned with start_item first.
@@ -1248,7 +1250,7 @@ class MediaResolver:
             album.item_id, album.provider, in_library_only=self._album_library_tracks_only()
         )
         tracks = [track for track in listing.tracks if track.available]
-        source, served = await self._album_source(listing, tracks, userid)
+        source, served = await self._album_source(listing, tracks, userid, queue_id)
         if source is not None:
             self.logger.debug("Playing album %s from %s", album.name, source)
         container = ItemMapping.from_item(album)
@@ -1277,17 +1279,23 @@ class MediaResolver:
         return resolved
 
     async def _album_source(
-        self, listing: AlbumListing, tracks: list[Track], userid: str | None
+        self,
+        listing: AlbumListing,
+        tracks: list[Track],
+        userid: str | None,
+        queue_id: str | None,
     ) -> tuple[str | None, dict[str, tuple[Track, ProviderMapping]]]:
         """
         Choose the one source an album plays from, with the copy it serves of each track.
 
         Only the sources the playback user may play from count, each with the copies of the
-        listed tracks it can serve.
+        listed tracks it can serve. No source is chosen when the source selection settings
+        pick the best copy for every track on its own.
 
         :param listing: The album's tracks, and the entry each source lists for them.
         :param tracks: The album's tracks to play.
         :param userid: Optional user the playback is for.
+        :param queue_id: Optional queue the playback is requested for.
         :return: The provider instance chosen, if any, and per track uri the item to queue for
             the track with the copy it plays.
         """
@@ -1330,7 +1338,9 @@ class MediaResolver:
                     ),
                 )
             )
-        source = select_container_source(listed, preferred, DEFAULT_POLICY)
+        source = select_container_source(
+            listed, preferred, read_stream_source_policy(self.mass, queue_id)
+        )
         if source is None:
             return None, {}
         return source, served_by[source]

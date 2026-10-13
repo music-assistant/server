@@ -40,6 +40,8 @@ from music_assistant.controllers.music.media.album_tracks import (
     mapped_album_listing,
 )
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
+from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
+from music_assistant.controllers.streams.stream_sources import StreamSourceMode
 
 TIDAL = "tidal--abc"
 OTHER_TIDAL = "tidal--stu"
@@ -325,6 +327,40 @@ async def test_an_album_plays_from_a_source_of_the_playback_user(
     get_user.assert_awaited_once_with("u1")
     sources.assert_called_once_with(resolver.mass, user)
     assert [_pin(x) for x in resolved][: len(pins)] == pins
+
+
+@pytest.mark.usefixtures("loaded_sources")
+@pytest.mark.parametrize(
+    ("mode", "pins"),
+    [
+        (StreamSourceMode.BEST_QUALITY, [(TIDAL, "t1"), (TIDAL, "t2"), (QOBUZ, "q3")]),
+        (
+            StreamSourceMode.PREFER_LOCAL,
+            [
+                (FILESYSTEM, f"{FOLDER_PATH}/01.flac"),
+                (FILESYSTEM, f"{FOLDER_PATH}/02.flac"),
+                (QOBUZ, "q3"),
+            ],
+        ),
+        (StreamSourceMode.BEST_QUALITY_PER_TRACK, [(None, None)] * 3),
+    ],
+    ids=["best quality", "prefer local", "best quality for every track"],
+)
+async def test_the_source_selection_mode_decides_the_album_source(
+    mode: StreamSourceMode, pins: list[tuple[str | None, str | None]]
+) -> None:
+    """Preferring local plays the album from the files; ranking every track on its own pins none."""
+    resolver = _album_resolver(_two_sources_and_a_bonus(), local={FILESYSTEM})
+    resolver.mass.streams.get_config_value = Mock(  # type: ignore[method-assign]
+        side_effect=lambda key, *_args, **_kwargs: {CONF_STREAM_SOURCE_MODE: mode}[key]
+    )
+    album = _album()
+
+    with _sources():
+        resolved = await resolver._resolve_media_items(album, queue_id="q1")
+
+    assert [_container(x) for x in resolved] == [ItemMapping.from_item(album)] * 3
+    assert [_pin(x) for x in resolved] == pins
 
 
 def _entry(instance: str, position: int, audio_format: AudioFormat) -> Track:
