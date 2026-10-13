@@ -623,6 +623,24 @@ async def test_tracks_audio_metadata_chunks_item_ids(
 
 
 @pytest.mark.asyncio
+async def test_tracks_audio_metadata_skips_corrupt_header(ctrl: AudioAnalysisController) -> None:
+    """A malformed stored header is skipped in SQL and does not hide the other provider's row."""
+    tracks = await _setup_metadata_fixture(ctrl)
+    await ctrl.database.execute(
+        f"UPDATE {AA_TABLE_ANALYSIS} SET header = :header "
+        "WHERE item_id = :item_id AND aa_provider_domain = :domain",
+        {"header": "{not json", "item_id": "t1", "domain": SMART_FADES_ANALYSIS_DOMAIN},
+    )
+    await ctrl.database.commit()
+
+    result = await ctrl.get_tracks_audio_metadata(tracks)
+
+    assert result[0] is not None
+    assert result[0].bpm == 100.0
+    assert result[0].musical_key == "D"
+
+
+@pytest.mark.asyncio
 async def test_tracks_audio_metadata_without_database(ctrl: AudioAnalysisController) -> None:
     """Every track gets None while the analysis database is not ready."""
     track = Track(item_id="t0", provider="fs--a", name="Test", provider_mappings=set())

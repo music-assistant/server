@@ -666,8 +666,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         """
         Return AudioMetadata (bpm, musical key) for many tracks at once.
 
-        Each entry matches what get_track_audio_metadata returns for that track; the stored
-        analysis for all tracks is read with a few queries instead of one per track.
+        Each entry matches what get_track_audio_metadata returns for that track. Only the
+        scalars are read from the stored headers, in a few queries instead of one per track.
 
         :param tracks: The tracks to look up stored analysis data for.
         :returns: One entry per given track, in the same order; None where no analysis exists.
@@ -697,19 +697,22 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
         domain_params = {f"domain{i}": domain for i, domain in enumerate(wanted_domains)}
         domain_placeholders = ",".join(f":{name}" for name in domain_params)
-        rows_by_key: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+        # rows arrive lowest priority first, so folding them in order lets the
+        # first-listed domain win each field, as in _merged_from_rows
+        priority_order = " ".join(f"WHEN :{name} THEN {i}" for i, name in enumerate(domain_params))
+        analysis_by_key: dict[tuple[str, str], AudioAnalysisData] = defaultdict(AudioAnalysisData)
         for prov_key, item_ids in item_ids_by_prov_key.items():
-            for chunk in batched(sorted(item_ids), _AUDIO_METADATA_BATCH_SIZE, strict=False):
+            for chunk in batched(item_ids, _AUDIO_METADATA_BATCH_SIZE, strict=False):
                 params: dict[str, Any] = {f"id{i}": item_id for i, item_id in enumerate(chunk)}
                 id_placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
                 rows = await self.database.get_rows_from_query(
-                    f"SELECT id, item_id, aa_provider_domain, "
-                    f"CAST(header AS BLOB) AS header, payload "
+                    "SELECT item_id, json_extract(header, '$.bpm') AS bpm, "
+                    "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode "
                     f"FROM {AA_TABLE_ANALYSIS} "
-                    f"WHERE provider = :provider AND media_type = :media_type "
+                    "WHERE provider = :provider AND media_type = :media_type "
                     f"AND aa_provider_domain IN ({domain_placeholders}) "
-                    f"AND item_id IN ({id_placeholders}) "
-                    "ORDER BY timestamp_created ASC",
+                    f"AND item_id IN ({id_placeholders}) AND json_valid(header) "
+                    f"ORDER BY CASE aa_provider_domain {priority_order} END DESC",
                     {
                         **params,
                         **domain_params,
@@ -719,16 +722,20 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     limit=0,
                 )
                 for row in rows:
-                    rows_by_key[(prov_key, row["item_id"])].append(row)
+                    analysis_by_key[(prov_key, row["item_id"])].update(
+                        AudioAnalysisData(
+                            bpm=None if row["bpm"] is None else float(row["bpm"]),
+                            key=row["key"],
+                            mode=row["mode"],
+                        )
+                    )
 
         metadata_by_key: dict[tuple[str, str], AudioMetadata | None] = {}
         for index, track_keys in enumerate(ranked_keys):
             for key in track_keys:
                 if key not in metadata_by_key:
-                    merged = _merged_from_rows(
-                        rows_by_key.get(key, ()), available_aa_domains, TRACK_EXPORT_AA_PRIORITY
-                    )
-                    metadata_by_key[key] = merged.as_audio_metadata() if merged else None
+                    analysis = analysis_by_key.get(key)
+                    metadata_by_key[key] = analysis.as_audio_metadata() if analysis else None
                 if (metadata := metadata_by_key[key]) is not None:
                     results[index] = metadata
                     break

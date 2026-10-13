@@ -1944,21 +1944,6 @@ async def test_get_track_audio_metadata_asks_the_copy_playback_would_pick_first(
 
 
 @pytest.mark.asyncio
-async def test_get_tracks_audio_metadata_skips_unparsable_rows() -> None:
-    """The batched lookup skips corrupt rows and keeps the good one."""
-    corrupt = _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 7)
-    corrupt["header"] = json_dumps({"spectral_centroid": [100.0, None]})
-    c = _analysis_controller_with_rows([corrupt, _aa_row(SONIC_ANALYSIS_DOMAIN, 8, bpm=101.0)])
-
-    result = await c.get_tracks_audio_metadata([_track_with_mapping()])
-
-    assert result[0] is not None
-    assert result[0].bpm == 101.0
-    delete_mock = cast("AsyncMock", c.database.delete)
-    delete_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_get_wave_form_returns_rms_bins() -> None:
     """wave_form returns the stored RMS energy bins as a plain list of floats."""
     rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32).tolist()
