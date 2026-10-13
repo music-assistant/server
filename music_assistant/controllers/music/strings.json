@@ -6,7 +6,7 @@
   "config_entries": {
     "keep_remasters_apart": {
       "label": "Keep remastered versions apart",
-      "description": "When enabled, a remastered track or album is kept as a separate item in your library instead of being merged with the original, or with a remaster from another year. Tracks and albums that were already merged stay merged."
+      "description": "When enabled, a track or album named as a remaster (for example \"Remastered 2009\" in its title) is kept as a separate item in your library instead of being merged with the original, or with a remaster from another year. Tracks and albums that were already merged stay merged."
     },
     "reset_db": {
       "label": "Reset library database",
