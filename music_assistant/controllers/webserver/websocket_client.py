@@ -58,6 +58,7 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
     set_sendspin_player_id,
 )
+from .helpers.login_flow import AuthTransport
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -95,6 +96,8 @@ class WebsocketClientHandler:
         self._hidden_playlists: set[str] = set()
         # Track WebRTC session ID if this is a WebRTC gateway connection
         self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
+        peername = request.transport.get_extra_info("peername") if request.transport else None
+        self._peer_address: str | None = peername[0] if peername else None
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
@@ -116,6 +119,17 @@ class WebsocketClientHandler:
     def webrtc_session_id(self) -> str | None:
         """Return the id of the WebRTC session this client connected through, if any."""
         return self._webrtc_session_id
+
+    @property
+    def auth_transport(self) -> AuthTransport:
+        """Return how this client reaches the server."""
+        if self._is_ingress_proxy:
+            return AuthTransport.INGRESS
+        if self.webserver.remote_access.is_gateway_connection(
+            self._webrtc_session_id, self._peer_address
+        ):
+            return AuthTransport.REMOTE
+        return AuthTransport.DIRECT
 
     @property
     def request_host(self) -> str:

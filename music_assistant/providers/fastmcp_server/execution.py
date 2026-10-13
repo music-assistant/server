@@ -14,8 +14,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from fastmcp.exceptions import ToolError
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError, ToolError
 from mcp.types import INVALID_REQUEST, METHOD_NOT_FOUND
 from music_assistant_models.auth import AuthProviderType, Scope
 from music_assistant_models.errors import (
@@ -363,7 +362,7 @@ class DynamicAPIAdapter:
         impersonating = bool(impersonated)
         try:
             if entry.compiled_signature is None:
-                raise ValueError(f"Tool {entry.name!r} has no compiled signature")
+                raise ValueError(f"Tool {entry.name!r} has no compiled signature")  # noqa: TRY301 - converted to tool_failure below
             parsed = entry.compiled_signature.parse(call_arguments)
         except (KeyError, TypeError, ValueError) as exc:
             raise tool_failure(
@@ -487,7 +486,7 @@ class DynamicAPIAdapter:
                         "authorization.denied",
                         impersonating=impersonating,
                     )
-                    raise ToolError(
+                    raise ToolError(  # noqa: TRY301 - handled by except below
                         "Authorization changed to require confirmation; retry the operation"
                     )
                 execution_started = True
@@ -1040,7 +1039,7 @@ class DynamicAPIAdapter:
             entry = self._reauthorize_entry(entry, auth, policy)
             if impersonated_user is not None:
                 if getattr(impersonated_user, "enabled", True) is False:
-                    raise ToolError("Unable to impersonate requested user")
+                    raise ToolError("Unable to impersonate requested user")  # noqa: TRY301 - wrapped by except below
                 self._enforce_target_filters(impersonated_user, entry.command, arguments)
             elif auth is not None:
                 self._enforce_target_filters(auth[1], entry.command, arguments)
@@ -1049,7 +1048,7 @@ class DynamicAPIAdapter:
             if decision.effective_mode(policy, preflight.additional_required) is PolicyMode.DENY:
                 denied = self._denied_capability(decision, preflight, policy)
                 suffix = f" (requires {denied})" if denied is not None else ""
-                raise ToolError(f"Tool {entry.name!r} not found or not permitted{suffix}")
+                raise ToolError(f"Tool {entry.name!r} not found or not permitted{suffix}")  # noqa: TRY301 - wrapped by except below
         except (ToolError, InsufficientPermissions) as exc:
             raise _InvocationAuthorizationError(str(exc), actual_invocation) from exc
         return actual_invocation
@@ -1090,7 +1089,7 @@ class DynamicAPIAdapter:
             )
         try:
             if not self._authentication_is_still_exact(auth):
-                raise ToolError("Authentication is required")
+                raise ToolError("Authentication is required")  # noqa: TRY301 - wrapped by except below
             entry = self._reauthorize_entry(invocation.entry, auth, policy)
             final_invocation = dataclasses.replace(final_invocation, entry=entry)
             if impersonated_user is not None:
@@ -1109,9 +1108,9 @@ class DynamicAPIAdapter:
                         and not self._scope_is_allowed(caller, Scope.USERS_IMPERSONATE)
                     )
                 ):
-                    raise ToolError("Unable to impersonate requested user")
+                    raise ToolError("Unable to impersonate requested user")  # noqa: TRY301 - wrapped by except below
                 if getattr(impersonated_user, "enabled", True) is False:
-                    raise ToolError("Unable to impersonate requested user")
+                    raise ToolError("Unable to impersonate requested user")  # noqa: TRY301 - wrapped by except below
                 self._enforce_target_filters(
                     impersonated_user,
                     invocation.entry.command,
@@ -1125,11 +1124,11 @@ class DynamicAPIAdapter:
                 )
             decision = entry.decision
             if decision is None:
-                raise ToolError(f"Tool {entry.name!r} not found or not permitted")
+                raise ToolError(f"Tool {entry.name!r} not found or not permitted")  # noqa: TRY301 - wrapped by except below
             if decision.effective_mode(policy, preflight.additional_required) is PolicyMode.DENY:
                 denied = self._denied_capability(decision, preflight, policy)
                 suffix = f" (requires {denied})" if denied is not None else ""
-                raise ToolError(f"Tool {entry.name!r} not found or not permitted{suffix}")
+                raise ToolError(f"Tool {entry.name!r} not found or not permitted{suffix}")  # noqa: TRY301 - wrapped by except below
         except (ToolError, InsufficientPermissions) as exc:
             raise _InvocationAuthorizationError(str(exc), final_invocation) from exc
         return final_invocation
@@ -1429,6 +1428,13 @@ class DynamicAPIAdapter:
                 f"Capability {capability!r} requires confirmation; set it to Allow or use an "
                 "elicitation-capable client"
             ) from None
+        except ToolError as exc:
+            # FastMCP refuses server-initiated elicitation on sessionless
+            # (2026-07-28) connections and inside background tasks.
+            raise ToolError(
+                f"Capability {capability!r} requires confirmation; set it to Allow or use an "
+                "elicitation-capable client"
+            ) from exc
         except McpError as exc:
             if exc.error.code in (INVALID_REQUEST, METHOD_NOT_FOUND):
                 raise ToolError(

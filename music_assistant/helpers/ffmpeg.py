@@ -110,6 +110,7 @@ class FFMpeg(AsyncProcess):
         audio_output: str | int = "-",
         collect_log_history: bool = False,
         loglevel: str = "info",
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         """Initialize AsyncProcess."""
         ffmpeg_args = get_ffmpeg_args(
@@ -158,6 +159,7 @@ class FFMpeg(AsyncProcess):
             stdin=stdin,
             stdout=stdout,
             stderr=True,
+            pass_fds=pass_fds,
         )
         self.logger = LOGGER
 
@@ -274,8 +276,8 @@ class FFMpeg(AsyncProcess):
         status = "running"
         chunk_count = 0
         self.logger.log(VERBOSE_LOG_LEVEL, "Start reading audio data from source...")
+        start = time.time()
         try:
-            start = time.time()
             while True:
                 try:
                     chunk = await anext(self.audio_input)
@@ -398,6 +400,7 @@ async def probe_audio_stream(
     input_path: str,
     extra_input_args: Sequence[str] = (),
     timeout: float = AUDIO_PROBE_TIMEOUT,
+    pass_fds: tuple[int, ...] = (),
 ) -> FFMpegStreamInfo | None:
     """
     Detect the format of the first audio stream of a file or URL.
@@ -405,6 +408,7 @@ async def probe_audio_stream(
     :param input_path: Local file path or URL of the source.
     :param extra_input_args: Input arguments needed to open the source (e.g. headers).
     :param timeout: Maximum seconds the probe may take.
+    :param pass_fds: Descriptors ffprobe needs to open the source.
     :returns: The detected stream details, or None if the source could not be probed.
     """
     args = [
@@ -423,7 +427,7 @@ async def probe_audio_stream(
         "-i",
         input_path,
     ]
-    proc = AsyncProcess(args, stdout=True)
+    proc = AsyncProcess(args, stdout=True, pass_fds=pass_fds)
     try:
         await proc.start()
         stdout, _ = await proc.communicate(timeout=timeout)
@@ -465,12 +469,15 @@ async def get_ffmpeg_stream(
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
     extra_output_args: list[str] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> AsyncGenerator[bytes]:
     """
     Get the ffmpeg audio stream as async generator.
 
     Takes care of resampling and/or recoding if needed,
     according to player preferences.
+
+    :param pass_fds: Descriptors ffmpeg needs to open its input(s).
     """
     async with FFMpeg(
         audio_input=audio_input,
@@ -480,6 +487,7 @@ async def get_ffmpeg_stream(
         extra_input_args=extra_input_args,
         extra_output_args=extra_output_args,
         collect_log_history=True,
+        pass_fds=pass_fds,
     ) as ffmpeg_proc:
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
@@ -505,6 +513,7 @@ async def get_ffmpeg_overlay_stream(
     pcm_format: AudioFormat,
     overlay_volume: int = 100,
     chunk_size: int | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> AsyncGenerator[bytes]:
     """
     Mix a looping audio overlay into a PCM audio stream.
@@ -520,6 +529,7 @@ async def get_ffmpeg_overlay_stream(
         percent (100 = equally loud, max 200).
     :param pcm_format: PCM format of both the main input and the mixed output.
     :param chunk_size: Optional exact chunk size for the yielded audio.
+    :param pass_fds: Descriptors ffmpeg needs to open the overlay input.
     """
     async with FFMpeg(
         audio_input=audio_input,
@@ -529,6 +539,7 @@ async def get_ffmpeg_overlay_stream(
         output_format=pcm_format,
         filter_params=[_build_overlay_mixer(overlay_input, pcm_format, overlay_volume)],
         collect_log_history=True,
+        pass_fds=pass_fds,
     ) as ffmpeg_proc:
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
@@ -640,7 +651,7 @@ def get_ffmpeg_args(
             } & {ContentType.MP3, ContentType.MPEG}:
                 # without a Xing TOC ffmpeg parses every frame up to the target; fastseek
                 # jumps there by byte offset via a Range request instead
-                _add_input_fflag(input_args, "+fastseek")
+                add_input_fflag(input_args, "+fastseek")
         if input_format.content_type.is_pcm():
             input_args += [
                 *get_ffmpeg_channel_args(input_format),
@@ -774,6 +785,22 @@ def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
     if get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED):
         return ["-extension_picky", "0"]
     return []
+
+
+def add_input_fflag(input_args: list[str], flag: str) -> None:
+    """
+    Add a format flag to the input args, merging it into an existing -fflags option.
+
+    :param input_args: The ffmpeg input args to extend in place.
+    :param flag: The flag to add, including its sign (e.g. "+fastseek").
+    """
+    if "-fflags" in input_args:
+        # ffmpeg only honours the last -fflags given to an input
+        idx = len(input_args) - input_args[::-1].index("-fflags")
+        if flag not in input_args[idx]:
+            input_args[idx] += flag
+    else:
+        input_args += ["-fflags", flag]
 
 
 async def check_ffmpeg_version() -> None:
@@ -1028,16 +1055,6 @@ def _is_stream_limit_error(err: BaseException) -> bool:
     from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
 
     return isinstance(err, ProviderStreamLimitError)
-
-
-def _add_input_fflag(input_args: list[str], flag: str) -> None:
-    """Add a format flag to the input, merging into an existing -fflags option."""
-    if "-fflags" in input_args:
-        # ffmpeg only honours the last -fflags given to an input
-        idx = len(input_args) - input_args[::-1].index("-fflags")
-        input_args[idx] += flag
-    else:
-        input_args += ["-fflags", flag]
 
 
 def _parse_ffprobe_stream_info(output: bytes) -> FFMpegStreamInfo | None:

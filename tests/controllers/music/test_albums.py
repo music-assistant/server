@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.enums import ExternalID, ImageType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.enums import ExternalID, ImageType, SortDirection, SortField
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -31,9 +31,9 @@ ALBUM_IMAGE = "http://images/album1.jpg"
 
 
 @pytest.fixture(name="mass")
-def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
-    """Run on a library-only instance: these tests only touch the library."""
-    return music_mass
+def mass_fixture(music_mass_with_cache: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance with a cache store: album listings are cached."""
+    return music_mass_with_cache
 
 
 def _detailed_album(item_id: str = "album1") -> Album:
@@ -444,6 +444,117 @@ async def test_album_tracks_show_the_album_image_through_the_album(mass: MusicAs
     assert tracks[0].image is not None
     assert tracks[0].image.path == ALBUM_IMAGE
     assert tracks[0].metadata.images == [track_image]
+    # a reference to the album, so the listing carries no user's state of the album
+    assert isinstance(tracks[0].album, ItemMapping)
+    assert tracks[0].album.item_id == album.item_id
+
+
+async def test_album_tracks_follow_the_listing_contract(mass: MusicAssistant) -> None:
+    """The tracks are searched, sorted and paged on the server, from one assembly of the album."""
+    album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "album_q"))
+    provider_tracks = [
+        create_track("qobuz_1", "t1", name="Zebra", duration=100),
+        create_track("qobuz_1", "t2", name="Apple", duration=300),
+        create_track("qobuz_1", "t3", name="Mango", duration=200),
+    ]
+    for number, track in enumerate(provider_tracks, start=1):
+        track.track_number = number
+    fetch = AsyncMock(return_value=provider_tracks)
+
+    async def _tracks(**kwargs: Any) -> list[str]:
+        tracks = await mass.music.albums.tracks(album.item_id, "library", **kwargs)
+        return [track.item_id for track in tracks]
+
+    with (
+        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
+        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+    ):
+        assert await _tracks() == ["t1", "t2", "t3"]
+        assert await _tracks(sort_field=SortField.DURATION, sort_direction=SortDirection.DESC) == [
+            "t2",
+            "t3",
+            "t1",
+        ]
+        assert await _tracks(search="mango") == ["t3"]
+        assert await _tracks(sort_field=SortField.NAME, limit=1, offset=1) == ["t3"]
+        assert await _tracks(limit=None) == ["t1", "t2", "t3"]
+        with pytest.raises(InvalidDataError):
+            await _tracks(sort_field=SortField.YEAR)
+    fetch.assert_awaited_once()
+
+
+async def test_library_album_tracks_are_the_whole_album(mass: MusicAssistant) -> None:
+    """The library tracks of an album are read without the listing page size."""
+    with patch.object(
+        mass.music.tracks, "get_library_items_by_query", AsyncMock(return_value=[])
+    ) as query:
+        await mass.music.albums.get_library_album_tracks("1")
+    assert query.await_args is not None
+    assert query.await_args.kwargs["limit"] == 0
+
+
+async def test_album_tracks_outside_the_library_are_listed_once(mass: MusicAssistant) -> None:
+    """An album that is not in the library is fetched once, from the instance its provider resolves to."""
+    fetch = AsyncMock(return_value=[create_track("qobuz_1", "t1"), create_track("qobuz_1", "t2")])
+    with (
+        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
+        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+        patch.object(mass.music.albums, "_backfill_album_on_tracks", AsyncMock()),
+    ):
+        # the domain and the instance it resolves to share one listing
+        first = await mass.music.albums.tracks("album_x", "qobuz")
+        second = await mass.music.albums.tracks("album_x", "qobuz_1")
+    fetch.assert_awaited_once_with("album_x", "qobuz_1")
+    assert [track.item_id for track in first] == [track.item_id for track in second] == ["t1", "t2"]
+
+
+async def test_album_tracks_of_an_unavailable_provider_are_not_kept(mass: MusicAssistant) -> None:
+    """Without the provider there is nothing to list, and nothing is cached as the listing."""
+    assert await mass.music.albums.tracks("album_x", "qobuz_1") == []
+    fetch = AsyncMock(return_value=[create_track("qobuz_1", "t1")])
+    with (
+        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
+        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+        patch.object(mass.music.albums, "_backfill_album_on_tracks", AsyncMock()),
+    ):
+        tracks = await mass.music.albums.tracks("album_x", "qobuz_1")
+    assert [track.item_id for track in tracks] == ["t1"]
+
+
+async def test_album_tracks_of_a_source_not_loaded_are_assembled_again(
+    mass: MusicAssistant,
+) -> None:
+    """A listing assembled while one of the album's sources is not loaded is not kept."""
+    library_album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "album_q"))
+    fetch = AsyncMock(return_value=[_album_track("qobuz_1", "Shared", 1, available=True)])
+    # the library-only fixture loads no provider at all
+    with patch.object(mass.music.albums, "_get_provider_album_tracks", fetch):
+        for _ in range(2):
+            tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+            assert [track.name for track in tracks] == ["Shared"]
+    assert fetch.await_count == 2
+
+
+async def test_album_tracks_missing_a_provider_are_assembled_again(mass: MusicAssistant) -> None:
+    """A listing one provider could not contribute to is not kept: the next call asks again."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_s", provider_domain="spotify", provider_instance="spotify_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+
+    async def _provider_tracks(_item_id: str, instance: str) -> list[Track]:
+        if instance == "spotify_1":
+            raise MediaNotFoundError("album withdrawn")
+        return [_album_track("qobuz_1", "Shared", 1, available=True)]
+
+    fetch = AsyncMock(side_effect=_provider_tracks)
+    with patch.object(mass.music.albums, "_get_provider_album_tracks", fetch):
+        for _ in range(2):
+            tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+            assert [track.name for track in tracks] == ["Shared"]
+    assert fetch.await_count == 4
 
 
 async def test_album_tracks_keep_distinct_classical_movements(mass: MusicAssistant) -> None:

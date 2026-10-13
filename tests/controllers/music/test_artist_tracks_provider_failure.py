@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -66,10 +66,10 @@ def _listing(
 
 def _failing_album_tracks(
     failing: set[str],
-) -> Callable[[str, str], Awaitable[list[Track]]]:
+) -> Callable[..., Awaitable[list[Track]]]:
     """Return a fake album tracklist fetch that fails for the given album ids only."""
 
-    async def _tracks(item_id: str, _provider: str) -> list[Track]:
+    async def _tracks(item_id: str, _provider: str, **_kwargs: Any) -> list[Track]:
         if item_id in failing:
             raise MediaNotFoundError(f"Failed to get album tracks for {item_id}")
         return [_track(f"{item_id} track")]
@@ -117,10 +117,9 @@ def _album_tracks_failing_on(
 
 def _exhausted(cause: Exception) -> RetriesExhausted:
     """Return the error a provider raises once it gave up retrying on the given failure."""
-    try:
-        raise RetriesExhausted("Retries exhausted, failed after 8 attempts") from cause
-    except RetriesExhausted as err:
-        return err
+    err = RetriesExhausted("Retries exhausted, failed after 8 attempts")
+    err.__cause__ = cause
+    return err
 
 
 async def test_provider_artist_tracks_stop_when_provider_is_rate_limited(
@@ -201,7 +200,7 @@ async def test_provider_artist_tracks_raise_when_remaining_tracks_unavailable(
     # the provider itself is available: it is the tracks it lists that are not
     await set_global_cache_values({"available_providers": {_PROVIDER}})
 
-    async def _album_tracks(item_id: str, _provider: str) -> list[Track]:
+    async def _album_tracks(item_id: str, _provider: str, **_kwargs: Any) -> list[Track]:
         if item_id == "Broken":
             raise MediaNotFoundError("Failed to get album tracks for Broken")
         return [_track("Trashed track", available=False)]

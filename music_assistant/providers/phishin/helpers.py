@@ -53,7 +53,7 @@ async def api_request(
             timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
         ) as response:
             if response.status == 404:
-                raise MediaNotFoundError(f"Resource not found: {url}")
+                raise MediaNotFoundError(f"Resource not found: {url}")  # noqa: TRY301 - re-raised by except below
             response.raise_for_status()
             return await response.json()
     except MediaNotFoundError:

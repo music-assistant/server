@@ -15,10 +15,13 @@ import logging
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.filters import (
+    MIX_CEILING_DB,
+    EchoOutFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
     Filter,
     GradualTimeStretchFilter,
+    HighPassSweepFilter,
     PeakFilter,
     ShelfFilter,
     ShelfType,
@@ -95,10 +98,23 @@ class TransitionRenderer:
                     trimmed_seconds=plan.fadeout_trim.trimmed_seconds,
                 )
             )
-        # outgoing shelves before the stretch keep their schedules in musical input time
+        # outgoing shelves and effects before the stretch keep their schedules in
+        # musical input time
         self._append_shelf(filters, plan.eq_plan.low_out, "fadeout")
         self._append_shelf(filters, plan.eq_plan.high_out, "fadeout")
         self._append_shelf(filters, plan.eq_plan.mid_out, "fadeout")
+        if plan.highpass is not None:
+            filters.append(
+                HighPassSweepFilter(
+                    self.logger,
+                    plan.highpass.start_s,
+                    plan.highpass.end_s,
+                    start_hz=plan.highpass.start_hz,
+                    end_hz=plan.highpass.end_hz,
+                )
+            )
+        if plan.echo is not None:
+            filters.append(EchoOutFilter(self.logger, plan.echo.cut_s, plan.echo.beat_s))
         if plan.tempo_plan:
             filters.append(GradualTimeStretchFilter(self.logger, plan.tempo_plan.steps))
         if plan.fadein_trim_start is not None:
@@ -110,13 +126,16 @@ class TransitionRenderer:
         self._append_shelf(filters, plan.eq_plan.mid_in, "fadein")
         # the streaming blend is positioned at the planned pre-point, so it can
         # emit while the incoming window is still arriving; the hard cut at the
-        # planned end keeps any time-stretch drift out of the incoming audio
+        # planned end keeps any time-stretch drift out of the incoming audio. An echo
+        # out sums its taps with the incoming track at full level, so its mix is limited
         filters.append(
             StreamingCrossfadeFilter(
                 logger=self.logger,
                 crossfade_samples=crossfade_samples,
                 pre_crossfade_samples=pre_crossfade_samples,
                 fadeout_curve=plan.fadeout_curve,
+                fadein_curve=plan.fadein_curve,
+                limit_db=MIX_CEILING_DB if plan.echo is not None else None,
             )
         )
         return filters

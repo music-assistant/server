@@ -953,7 +953,7 @@ class QobuzProvider(MusicProvider):
 
     @throttle_with_retries
     async def _get_data(
-        self, endpoint: str, sign_request: bool = False, **kwargs: Any
+        self, /, endpoint: str, sign_request: bool = False, **kwargs: Any
     ) -> dict[str, Any] | None:
         """Get data from api."""
         self.logger.debug("Handling GET request to %s", endpoint)

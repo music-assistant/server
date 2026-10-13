@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
+import socketio.exceptions
 from aioaudiobookshelf.client.session_configuration import (
     SessionConfiguration as AbsSessionConfiguration,
 )
@@ -21,6 +22,9 @@ from aioaudiobookshelf.exceptions import (
 )
 from aioaudiobookshelf.exceptions import (
     NotFoundError as AbsNotFoundError,
+)
+from aioaudiobookshelf.exceptions import (
+    ServiceUnavailableError as AbsServiceUnavailableError,
 )
 from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFoundError
 from aioaudiobookshelf.exceptions import (
@@ -86,6 +90,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -252,6 +257,10 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                 self._client, self._client_socket = await aioabs.get_user_and_socket_client(
                     session_config=session_config, username=username, password=password
                 )
+            libraries = await self._client.get_all_libraries()
+            # cache username
+            self.abs_username = (await self._client.get_my_user()).username
+            # connect the socket last: a failed init is never unloaded, so it would leak
             await self._client_socket.init_client()
         except AbsLoginError as exc:
             raise LoginFailed(
@@ -259,6 +268,11 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                 translation_key="login_failed",
                 translation_owner=self.translation_owner,
                 translation_args=[base_url],
+            ) from exc
+        except (AbsServiceUnavailableError, socketio.exceptions.ConnectionError) as exc:
+            # lets mass retry the load once the server is reachable again
+            raise ProviderUnavailableError(
+                f"Audiobookshelf instance at {base_url} is unreachable."
             ) from exc
 
         if token_old is not None and token_api is None:
@@ -298,12 +312,8 @@ for more details.
         else:
             self.libraries = LibrariesHelper.from_dict(cached_libraries)
 
-        libraries = await self._client.get_all_libraries()
         if libraries:
             self._sync_library_keys(libraries)
-
-        # cache username
-        self.abs_username = (await self._client.get_my_user()).username
 
         # set socket callbacks
         self._client_socket.set_item_callbacks(

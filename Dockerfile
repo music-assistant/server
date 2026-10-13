@@ -4,8 +4,8 @@ ARG BASE_IMAGE_VERSION=latest
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.
-ARG CLIAIRPLAY_VERSION=v0.5.5
-ARG CLIAIRPLAY_CHECKSUMS_SHA256=5b8722dc7578cdef4b4a481096f99c8db587412ac4e3f9211a0d60b78775867c
+ARG CLIAIRPLAY_VERSION=v0.5.6
+ARG CLIAIRPLAY_CHECKSUMS_SHA256=92b9b079c1c82d7ecd8c7ba6a9bbe20d634cad295638f522ee9cd69740077bce
 ARG TARGETARCH
 
 # Download the cliairplay release asset for this image architecture.
@@ -101,6 +101,12 @@ RUN SITE_PACKAGES="$("$VIRTUAL_ENV/bin/python" -c \
 
 # Pre-compile Python bytecode for faster startup
 RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
+
+# Identifies the official release image, see music_assistant/helpers/build_info.py
+ARG MASS_REVISION
+ARG MASS_WHEEL_SHA256
+RUN printf '{"version": "%s", "revision": "%s", "wheel_sha256": "%s"}\n' \
+    "$MASS_VERSION" "$MASS_REVISION" "$MASS_WHEEL_SHA256" > /app/build_info.json
 
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root

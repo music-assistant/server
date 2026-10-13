@@ -55,13 +55,21 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   cannot carry that decision on its own: `logged_in=false` is also what a healthy daemon
   reports before it finishes restoring, and nothing tells it apart from a daemon that
   simply cannot reach Spotify. Nor can a guessed stdout marker, which would fail healthy
-  playback. So playback fails with a plain `Timeout waiting for audio data`: the queue's
+  playback; the one line the engine is known to print, `login failed`, is handled below.
+  So playback fails with a plain `Timeout waiting for audio data`: the queue's
   readiness budget (`BUFFER_READY_TIMEOUT`, plus any capacity wait) starts before the
   session's own `_STARTUP_TIMEOUT_S` and runs out first, cancelling the producer where it
-  waits. That also leaves `_raise_startup_error`'s "never logged in" branch to the case it
-  can still reach — a login lost after it was established. The daemon's own output is
-  logged at DEBUG behind the `[soloist]` prefix; capturing a real revocation is what
-  unblocks handling it.
+  waits. Either budget running out fails only the item: a sign-in that never arrived is
+  never read as a lost pairing. The daemon's own output is logged at DEBUG behind the
+  `[soloist]` prefix; capturing a real revocation is what unblocks handling it.
+- **A sign-in Spotify turns down is a failed item, not a lost pairing.** The daemon then
+  prints `login failed: make sure --api-key is valid`, keeps running and reports nothing
+  else: no event, no exit. Seen in production as a one-off that the next daemon, with the
+  same key and session, did not repeat. The line fails the item at once with a plain
+  `AudioError` (the queue moves on, the item stays available) instead of leaving a daemon
+  that will not play to sit out the startup budget. A key that really is bad fails every
+  track the same way, so the message says to check it; the queue stops after its load
+  attempts run out and shows that message.
 - **Streaming quality** is a provider option, shared with the Spotify Connect provider's
   tiers and defaulting to lossless. It is a ceiling: Spotify serves the best the account
   is entitled to below it. Hidden on librespot, which passes Spotify's own file through.

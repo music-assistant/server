@@ -41,13 +41,13 @@ API_DEFAULT_RESOURCE_VERSION = (
 
 # Provider configuration keys
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
+CONF_PASSWORD = "password"  # noqa: S105 - config key
 CONF_LANGUAGES = "languages"
 CONF_KIDS_MODE = "kids_mode"
 
 
 # LANGUAGES - Available languages for discovery features (recommendations, search)
-# Format: {name: isoValue}
+# mapping each name to its iso value
 DEFAULT_LANGUAGES = {
     "English": "en",
 }

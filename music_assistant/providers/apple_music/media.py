@@ -271,13 +271,15 @@ class AppleMusicMediaManager:
         else:
             endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
             response = await self.api.get_data(endpoint, include="artists")
-        album = await self.get_album(prov_album_id)
         tracks = []
         for track_obj in response["data"]:
             if "id" not in track_obj:
                 continue
             track = parse_track(self.provider, track_obj)
-            track.album = album
+            # the listing omits the album relation, so parse_track would make the album name
+            # stand in as its id; callers attach the album they asked for instead, which saves
+            # fetching it again for every album a library sync imports
+            track.album = None
             tracks.append(track)
         return tracks
 

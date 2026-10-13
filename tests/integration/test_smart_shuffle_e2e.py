@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from music_assistant_models.enums import MediaType
 
-from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_ENABLED, DB_TABLE_PLAYLOG
+from music_assistant.constants import (
+    CONF_PLAYER_QUEUES,
+    CONF_VALUE_ENABLED,
+    DB_TABLE_MEDIA_PROGRESS,
+)
 from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
@@ -64,7 +68,7 @@ async def test_smart_shuffle_pushes_recently_played_to_back(e2e_mass: MusicAssis
     now = int(time.time())
     for track in recent_tracks:
         await e2e_mass.music.database.insert(
-            DB_TABLE_PLAYLOG,
+            DB_TABLE_MEDIA_PROGRESS,
             {
                 "item_id": track.item_id,
                 "provider": track.provider,

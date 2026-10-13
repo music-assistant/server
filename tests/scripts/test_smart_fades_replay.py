@@ -13,6 +13,7 @@ from scripts.smart_fades_replay import (
     Replayer,
     TrackInfo,
     _snapshot,
+    drum_class,
     random_pairs,
     style_bucket,
     summarize,
@@ -66,6 +67,17 @@ def test_vocal_class_needs_more_than_a_tenth_to_sing(
     assert vocal_class(out_duty, in_duty) == expected
 
 
+@pytest.mark.parametrize(
+    ("kickless", "clash_bars", "expected"),
+    [(True, 9.0, "kickless"), (False, 2.01, "clash > 2"), (False, 2.0, "overlap")],
+)
+def test_drum_class_needs_more_than_two_bars_to_clash(
+    kickless: bool, clash_bars: float, expected: str
+) -> None:
+    """A kickless side never clashes; two kicks clash above 2 weighted bars."""
+    assert drum_class(kickless, clash_bars) == expected
+
+
 def test_random_pairs_are_reproducible_distinct_and_cross_album() -> None:
     """The same seed draws the same pairs, never twice and never within one album."""
     keys = [(f"t{n}", "filesystem--x") for n in range(6)]
@@ -92,9 +104,13 @@ def test_random_pairs_draw_from_the_bucket_pools() -> None:
 def test_summarize_aggregates_tiers_triggers_and_reasons() -> None:
     """The summary counts outcomes, overlap by tier, quick fade triggers and N/A reasons."""
     rows = [
-        _plan_row("FULL_BLEND", 16.0, "neither", "blend: short top rung"),
+        _plan_row("FULL_BLEND", 16.0, "neither", "blend: short top rung", style="BLEND"),
         _plan_row("QUICK_FADE", 2.0, "both sing", "QF: tempo", qf_trigger="tempo"),
         _plan_row("QUICK_FADE", 3.0, "outgoing only", "QF: meter", qf_trigger="meter"),
+        _plan_row(
+            "QUICK_FADE", 8.0, "neither", "QF: tempo", qf_trigger="tempo", style="FILTER_OUT"
+        ),
+        _plan_row("QUICK_FADE", 2.0, "neither", "QF: tempo", qf_trigger="tempo", style="ECHO_OUT"),
         {
             **_pair_row(),
             "outcome": "not_applicable",
@@ -106,11 +122,14 @@ def test_summarize_aggregates_tiers_triggers_and_reasons() -> None:
     summary = summarize(rows, tracks, "header")
 
     assert summary.startswith("header\n")
-    assert "QUICK_FADE: 2 (50.0%), FULL_BLEND: 1 (25.0%), not_applicable: 1 (25.0%)" in summary
-    assert "  QUICK_FADE       2   2.50   2.10   2.90 100.0% 100.0%" in summary
-    assert "== QUICK_FADE 2; trigger: {'tempo': 1, 'meter': 1}" in summary
-    assert "== short (<8 s) shipped: 2 of 3, by cause" in summary
-    assert "   both sing         1 100.0%  2.00s | 1 | 0 | 0 | 0 | 0 | 0" in summary
+    assert "QUICK_FADE: 4 (66.7%), FULL_BLEND: 1 (16.7%), not_applicable: 1 (16.7%)" in summary
+    assert "== QUICK_FADE 4; trigger: {'tempo': 3, 'meter': 1}" in summary
+    assert "== short (<8 s) shipped: 3 of 5, by cause" in summary
+    assert "   both sing         1 100.0%  2.00s | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0" in summary
+    assert "  BLEND            1  16.00  16.00  16.00   0.0%   0.0%" in summary
+    assert "  FILTER_OUT       1   8.00   8.00   8.00   0.0%   0.0%" in summary
+    assert "  ECHO_OUT         1   2.00   2.00   2.00 100.0% 100.0%" in summary
+    assert "  CUT              2   2.50   2.10   2.90 100.0% 100.0%" in summary
     assert "  outgoing tail is mostly silent: 1" in summary
     assert "bucketed 1 (100.0%)" in summary
 
@@ -199,7 +218,68 @@ def test_replayer_plans_a_pair_and_reports_its_facts(monkeypatch: pytest.MonkeyP
     assert row["bars"] == 8
     assert row["vocal_class"] == "unknown"
     assert row["rhythm_safe"] is False
+    assert row["drum_class"] == "clash > 2"
     assert row["cause"] == "blend: short top rung"
+    assert row["style"] == "BLEND"
+    assert (row["fadeout_curve"], row["fadein_curve"]) == ("qsin", "qsin")
+    assert row["quiet_tail_s"] == row["quiet_head_s"] == 0.0
+    assert row["rhythm_clash_bars"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("kick_in_head", "cause"),
+    [(False, "segue: short quiet material"), (True, "segue: shrunk for a clash")],
+)
+def test_replayer_reports_a_segue_and_its_cause(
+    monkeypatch: pytest.MonkeyPatch, kick_in_head: bool, cause: str
+) -> None:
+    """A kicked quiet tail into a track 25% faster segues over it, shorter when kicks clash."""
+    monkeypatch.setattr(CandidateSelector, "select", CandidateSelector.select)
+    monkeypatch.setattr(CandidateSelector, "_score", CandidateSelector._score)
+    out_key, in_key = ("out", "filesystem--x"), ("in", "filesystem--x")
+    fade_out = _analysis_with_bands(1.0, 0.5, 0.5, 0.3)
+    fade_out.rms_energy = [0.5] * 1765 + [0.1] * 35
+    low_in = [1.0] * 1800 if kick_in_head else [0.01] * 90 + [1.0] * 1710
+    fade_in = _analysis_with_bands(low_in, 0.5, 0.5, 0.3)
+    fade_in.bpm = 150.0
+    analyses = {out_key: fade_out, in_key: fade_in}
+    tracks = {key: TrackInfo(name=key[0]) for key in analyses}
+
+    row = Replayer(analyses, tracks, ceiling=45.0).replay(out_key, in_key)
+
+    assert row["style"] == "SEGUE"
+    assert row["source"] == "segue"
+    assert row["bars"] == ""
+    # the 4.7s quiet tail starts on the next downbeat, 4s before the audible end
+    assert row["quiet_tail_s"] == pytest.approx(4.0)
+    assert row["segue_ideal_s"] == pytest.approx(4.0)
+    assert row["fadeout_curve"] == "nofade"
+    assert row["cause"] == cause
+    assert row["shipped_via"] == "main"
+    assert (row["rhythm_clash_bars"] > 0.0) is kick_in_head
+
+
+def test_replayer_reports_a_filter_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two loud kicked ends 11.7% apart ship a filter out, with its kick clash and trim."""
+    monkeypatch.setattr(CandidateSelector, "select", CandidateSelector.select)
+    monkeypatch.setattr(CandidateSelector, "_score", CandidateSelector._score)
+    out_key, in_key = ("out", "filesystem--x"), ("in", "filesystem--x")
+    fade_in = _analysis_with_bands(1.0, 0.5, 0.5, 0.3)
+    fade_in.bpm = 134.0
+    analyses = {out_key: _analysis_with_bands(1.0, 0.5, 0.5, 0.3), in_key: fade_in}
+    tracks = {key: TrackInfo(name=key[0]) for key in analyses}
+
+    row = Replayer(analyses, tracks, ceiling=45.0).replay(out_key, in_key)
+
+    assert row["style"] == "FILTER_OUT"
+    assert row["source"] == "filter-out"
+    assert row["bars"] == 4
+    assert row["cause"] == "QF: tempo"
+    assert (row["fadeout_curve"], row["fadein_curve"]) == ("qsin", "qsin")
+    assert row["overlap_s"] == pytest.approx(8.0)
+    # the filter ends on the last downbeat, 2s before the loud end of the buffer
+    assert row["audible_trim_s"] == pytest.approx(2.0)
+    assert 0.0 < row["rhythm_clash_bars"] <= 2.0
 
 
 def _data_files(folder: Path) -> dict[str, bytes]:
@@ -215,7 +295,7 @@ def _pair_row() -> dict[str, Any]:
 
 
 def _plan_row(
-    tier: str, overlap: float, vocals: str, cause: str, qf_trigger: str = ""
+    tier: str, overlap: float, vocals: str, cause: str, qf_trigger: str = "", style: str = "CUT"
 ) -> dict[str, Any]:
     """Return a planned row with the columns the summary reads."""
     return {
@@ -226,6 +306,9 @@ def _plan_row(
         "tier": tier,
         "qf_trigger": qf_trigger,
         "strategy": "ENERGY_ALIGNED",
+        "style": style,
+        "fadeout_curve": "qsin",
+        "fadein_curve": "qsin",
         "shipped_via": "main",
         "source": "energy-ladder",
         "bars": 1,
