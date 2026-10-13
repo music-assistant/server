@@ -67,6 +67,69 @@ async def test_top_items_counts_history_not_media_progress(mass: MusicAssistant)
     assert results[0].play_count == 1
 
 
+async def test_top_items_combines_provider_plays_with_library_identity(
+    mass: MusicAssistant,
+) -> None:
+    """Mapped provider plays and library plays count as one logical item."""
+    user = await mass.webserver.auth.create_user("statistics-top-items-identity")
+    library_track_id = await mass.music.database.insert(
+        DB_TABLE_TRACKS,
+        {
+            "name": "Shared Track",
+            "sort_name": "shared track",
+            "metadata": "{}",
+            "search_name": "shared track",
+            "search_sort_name": "shared track",
+        },
+    )
+    for provider_domain, provider_instance, provider_item_id in (
+        ("apple_music", "apple_music--account", "apple-track"),
+        ("tidal", "tidal--account", "tidal-track"),
+    ):
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": MediaType.TRACK.value,
+                "item_id": library_track_id,
+                "provider_domain": provider_domain,
+                "provider_instance": provider_instance,
+                "provider_item_id": provider_item_id,
+            },
+        )
+
+    plays = (
+        (str(library_track_id), "library", "Shared Track"),
+        ("apple-track", "apple_music--account", "Apple Track"),
+        ("tidal-track", "tidal--account", "Tidal Track"),
+        ("unmapped-track", "apple_music--account", "Unmapped Track"),
+    )
+    for item_id, provider, name in plays:
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": item_id,
+                "provider": provider,
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": name,
+                "timestamp": 1_000,
+            },
+        )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
+
+    assert [
+        (result.item.item_id, result.item.provider, result.play_count) for result in results
+    ] == [
+        (str(library_track_id), "library", 3),
+        ("unmapped-track", "apple_music--account", 1),
+    ]
+
+
 async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssistant) -> None:
     """Artists with the same display name retain separate counts by provider identity."""
     user = await mass.webserver.auth.create_user("statistics-artists")
@@ -645,6 +708,89 @@ async def test_statistics_cache_uses_core_cache_and_scopes_by_user(
         assert await cached_value(mass.statistics, "shared-args") == 2
 
     assert calls == 2
+
+
+async def test_statistics_cache_invalidates_only_affected_users(mass: MusicAssistant) -> None:
+    """A user's completed play leaves another user's cached statistics intact."""
+    first_user = await mass.webserver.auth.create_user("statistics-cache-write-first")
+    second_user = await mass.webserver.auth.create_user("statistics-cache-write-second")
+    calls = 0
+
+    @cache_statistics()
+    async def cached_value(_self: object) -> int:
+        nonlocal calls
+        calls += 1
+        return calls
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=first_user,
+    ):
+        assert await cached_value(mass.statistics) == 1
+    await _wait_for_statistics_cache_entry(mass, first_user.user_id)
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=second_user,
+    ):
+        assert await cached_value(mass.statistics) == 2
+    await _wait_for_statistics_cache_entry(mass, second_user.user_id)
+
+    mass.statistics.invalidate_statistics_cache(
+        play_history_written=True, user_ids=[first_user.user_id]
+    )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=second_user,
+    ):
+        assert await cached_value(mass.statistics) == 2
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=first_user,
+    ):
+        assert await cached_value(mass.statistics) == 3
+
+
+async def test_statistics_cache_global_invalidation_rotates_all_user_keys(
+    mass: MusicAssistant,
+) -> None:
+    """Clearing the user map never reuses cache keys from an earlier generation."""
+    users = [
+        await mass.webserver.auth.create_user("statistics-global-first"),
+        await mass.webserver.auth.create_user("statistics-global-second"),
+    ]
+    calls = 0
+
+    @cache_statistics()
+    async def cached_value(_self: object) -> int:
+        nonlocal calls
+        calls += 1
+        return calls
+
+    for index, user in enumerate(users, start=1):
+        with patch(
+            "music_assistant.controllers.statistics.controller.get_current_user",
+            return_value=user,
+        ):
+            assert await cached_value(mass.statistics) == index
+        await _wait_for_statistics_cache_entry(mass, user.user_id)
+
+    generations = dict(mass.statistics._statistics_user_cache_generations)
+    mass.statistics.invalidate_statistics_cache(play_history_written=False)
+    assert mass.statistics._statistics_user_cache_generations == generations
+    mass.statistics.invalidate_statistics_cache(play_history_written=True)
+    assert mass.statistics._statistics_user_cache_generations == {}
+
+    for index, user in enumerate(users, start=3):
+        with patch(
+            "music_assistant.controllers.statistics.controller.get_current_user",
+            return_value=user,
+        ):
+            assert await cached_value(mass.statistics) == index
+        assert (
+            mass.statistics._statistics_user_cache_generations[user.user_id]
+            != generations[user.user_id]
+        )
 
 
 async def test_statistics_cache_does_not_store_inflight_result_after_invalidation(

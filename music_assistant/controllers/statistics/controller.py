@@ -107,10 +107,14 @@ def cache_statistics(
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
             user = get_current_user()
             user_id = user.user_id if user else "anonymous"
+            generation = self._statistics_user_cache_generations.get(user_id)
+            if generation is None:
+                generation = uuid4().hex
+                self._statistics_user_cache_generations[user_id] = generation
             return await cached_method(
                 self,
                 user_id,
-                self._statistics_cache_generation,
+                generation,
                 *args,
                 **kwargs,
             )
@@ -128,17 +132,24 @@ class StatisticsController(CoreController):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
         super().__init__(mass)
-        self._statistics_cache_generation = uuid4().hex
+        self._statistics_user_cache_generations: dict[str, str] = {}
         self.manifest.name = "Statistics controller"
         self.manifest.description = (
             "Music Assistant's core controller for playlog statistics and listening analytics."
         )
         self.manifest.icon = "poll"
 
-    def invalidate_statistics_cache(self, *, play_history_written: bool) -> None:
-        """Invalidate prior statistics cache keys after a completed play is recorded."""
-        if play_history_written:
-            self._statistics_cache_generation = uuid4().hex
+    def invalidate_statistics_cache(
+        self, *, play_history_written: bool, user_ids: list[str] | None = None
+    ) -> None:
+        """Invalidate statistics for affected users, or all users when IDs are omitted."""
+        if not play_history_written:
+            return
+        if user_ids is None:
+            self._statistics_user_cache_generations.clear()
+            return
+        for user_id in user_ids:
+            self._statistics_user_cache_generations.pop(user_id, None)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of statistics module."""
@@ -180,6 +191,31 @@ class StatisticsController(CoreController):
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
         query = f"""
+            WITH normalized_history AS (
+                SELECT
+                    CASE
+                        WHEN play_history.provider = 'library' THEN play_history.item_id
+                        WHEN provider_mappings.item_id IS NOT NULL
+                            THEN CAST(provider_mappings.item_id AS TEXT)
+                        ELSE play_history.item_id
+                    END AS item_id,
+                    CASE
+                        WHEN play_history.provider = 'library'
+                            OR provider_mappings.item_id IS NOT NULL THEN 'library'
+                        ELSE play_history.provider
+                    END AS provider,
+                    play_history.media_type,
+                    play_history.name,
+                    play_history.image
+                FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
+                    ON provider_mappings.media_type = play_history.media_type
+                    AND provider_mappings.provider_instance = play_history.provider
+                    AND provider_mappings.provider_item_id = play_history.item_id
+                WHERE play_history.userid = :user_id
+                    AND play_history.media_type = :media_type
+                    AND play_history.timestamp >= :cutoff_timestamp
+            )
             SELECT
                 item_id,
                 provider,
@@ -187,10 +223,7 @@ class StatisticsController(CoreController):
                 MAX(name) as name,
                 MAX(image) as image,
                 COUNT(*) as play_count
-            FROM {DB_TABLE_PLAY_HISTORY}
-            WHERE userid = :user_id
-                AND media_type = :media_type
-                AND timestamp >= :cutoff_timestamp
+            FROM normalized_history
             GROUP BY item_id, provider, media_type
             ORDER BY play_count DESC
         """
