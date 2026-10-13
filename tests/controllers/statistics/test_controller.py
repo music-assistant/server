@@ -527,18 +527,18 @@ async def test_plays_over_time_does_not_inherit_default_query_limit(
     assert get_rows.await_args.kwargs["limit"] == 0
 
 
-async def test_plays_over_time_rejects_unsupported_granularity(mass: MusicAssistant) -> None:
-    """Unsupported chart granularities do not silently return daily data."""
+async def test_plays_over_time_rejects_unsupported_parameters(mass: MusicAssistant) -> None:
+    """Unsupported chart parameters do not silently return default data."""
     user = await mass.webserver.auth.create_user("statistics-invalid-granularity")
 
-    with (
-        patch(
-            "music_assistant.controllers.statistics.controller.get_current_user",
-            return_value=user,
-        ),
-        pytest.raises(InvalidDataError),
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
     ):
-        await mass.statistics.get_plays_over_time(granularity="fortnight")
+        with pytest.raises(InvalidDataError):
+            await mass.statistics.get_plays_over_time(granularity="fortnight")
+        with pytest.raises(InvalidDataError):
+            await mass.statistics.get_plays_over_time(period="fortnight")
 
 
 async def test_played_item_ids_returns_more_than_database_default_limit(

@@ -779,5 +779,4 @@ class StatisticsController(CoreController):
         if period == "all_time":
             # Beginning of time (0)
             return 0.0
-        # Default to week
-        return now - (7 * 86400)
+        raise InvalidDataError("period must be today, week, month, year, or all_time")
