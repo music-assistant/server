@@ -679,6 +679,66 @@ async def test_image_generation_goes_straight_to_a_known_images_endpoint(mass: A
     assert mass.http_session.request.call_args.args[1] == f"{BASE_URL}/images/generations"
 
 
+def _download_response(chunks: list[bytes], content_length: int | None = None) -> MagicMock:
+    """Build a fake aiohttp response streaming a downloaded image in the given chunks."""
+    response = MagicMock()
+    response.status = 200
+    response.content_length = content_length
+    response.content.read = AsyncMock(side_effect=[*chunks, b""])
+    return response
+
+
+async def test_image_generation_downloads_an_image_handed_out_by_url(mass: AsyncMock) -> None:
+    """An images endpoint answering with a URL has the image downloaded from it."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(
+            response=_json_response(200, {"data": [{"url": "https://cdn.example.com/x.png"}]})
+        )
+    )
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"png-", b"bytes"]))
+    )
+
+    image, _ = await helpers.image_generation(
+        mass, BASE_URL, "", model="dall-e-3", prompt="A cat", timeout=10, use_images_endpoint=True
+    )
+
+    assert image == b"png-bytes"
+    assert mass.http_session.get.call_args.args[0] == "https://cdn.example.com/x.png"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # declared too large up front
+        _download_response([b"x"], content_length=helpers.MAX_IMAGE_BYTES + 1),
+        # no declared length, but more arrives than the limit
+        _download_response([b"x" * helpers.MAX_IMAGE_BYTES, b"x"]),
+    ],
+)
+async def test_image_generation_refuses_an_oversized_download(
+    mass: AsyncMock, response: MagicMock
+) -> None:
+    """A downloaded image over the size limit is refused instead of read into memory."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(
+            response=_json_response(200, {"data": [{"url": "https://cdn.example.com/x.png"}]})
+        )
+    )
+    mass.http_session.get = MagicMock(return_value=_response_cm(response=response))
+
+    with pytest.raises(InvalidDataError, match="larger than the download limit"):
+        await helpers.image_generation(
+            mass,
+            BASE_URL,
+            "",
+            model="dall-e-3",
+            prompt="A cat",
+            timeout=10,
+            use_images_endpoint=True,
+        )
+
+
 async def test_image_generation_raises_when_neither_endpoint_returns_an_image(
     mass: AsyncMock,
 ) -> None:

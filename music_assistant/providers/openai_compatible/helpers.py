@@ -31,6 +31,10 @@ DATA_URL = re.compile(r"^data:image/[\w.+-]+;base64,(?P<data>.+)$", re.DOTALL)
 # OpenAI's own image endpoint takes an explicit size; square suits every current consumer
 IMAGE_SIZE = "1024x1024"
 
+# a generated image handed out by URL is downloaded whole, so cap what is read
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+IMAGE_READ_CHUNK_SIZE = 64 * 1024
+
 # an upstream failure message is echoed into the raised error, so keep it bounded
 MAX_ERROR_DETAIL_CHARS = 200
 
@@ -208,7 +212,7 @@ async def _download(mass: MusicAssistant, url: str, timeout: int) -> bytes:
     try:
         async with mass.http_session.get(url, timeout=ClientTimeout(total=timeout)) as response:
             status = response.status
-            body = await response.read()
+            body = await _read_image(response)
     except (TimeoutError, aiohttp.ClientError) as err:
         msg = f"Could not download the generated image: {err}"
         raise ProviderUnavailableError(msg) from err
@@ -216,6 +220,20 @@ async def _download(mass: MusicAssistant, url: str, timeout: int) -> bytes:
         msg = f"Could not download the generated image ({status})"
         raise InvalidDataError(msg)
     return body
+
+
+async def _read_image(response: aiohttp.ClientResponse) -> bytes:
+    """Return the body of a downloaded image, refusing one over the size limit."""
+    too_large = "The generated image is larger than the download limit"
+    if (response.content_length or 0) > MAX_IMAGE_BYTES:
+        raise InvalidDataError(too_large)
+    # the declared length can be absent or wrong, so cap what is actually read
+    body = bytearray()
+    while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
+        body.extend(chunk)
+        if len(body) > MAX_IMAGE_BYTES:
+            raise InvalidDataError(too_large)
+    return bytes(body)
 
 
 def _decode_base64(data: str) -> bytes:

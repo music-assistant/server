@@ -789,6 +789,57 @@ async def test_regenerate_makes_new_covers_and_descriptions(
     _mass(provider).create_task.assert_called_once()
 
 
+async def test_regenerating_twice_within_a_second_still_regenerates(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Every press of regenerate keys the covers anew, also within the same second."""
+    _mass(provider).create_task = MagicMock(side_effect=lambda coro, **_kw: coro.close())
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.time.time", return_value=2_000_000_000.0
+    ):
+        await provider.handle_config_action(CONF_ACTION_REGENERATE)
+        first = provider._ai._generation
+        await provider.handle_config_action(CONF_ACTION_REGENERATE)
+
+    assert provider._ai._generation > first
+
+
+async def test_a_failed_write_leaves_no_cover_file(provider: PlaylistMetadataProvider) -> None:
+    """A cover that could not be written in full is not kept, so the next refresh retries."""
+    playlist = _smart_playlist()
+    with patch.object(Path, "replace", side_effect=OSError("No space left on device")):
+        await provider.get_playlist_metadata(playlist)
+
+    assert playlist.image is None
+    assert list(Path(provider._images_dir).iterdir()) == []
+
+    await provider.get_playlist_metadata(playlist)
+
+    assert _engine_calls(provider) == 2
+    assert playlist.image is not None
+
+
+async def test_refresh_takes_the_cover_off_a_playlist_that_got_its_own_artwork(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A playlist that got artwork of its own is refreshed so its generated cover comes off."""
+    own_cover = _image("https://example.com/mine.jpg", provider="builtin")
+    playlist = _smart_playlist(images=[_image("ai_234_cover.jpg", provider=INSTANCE_ID), own_cover])
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        return_value=_async_iter([playlist])
+    )
+    _mass(provider).metadata.update_metadata = AsyncMock()
+
+    await provider._ai.refresh()
+
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(playlist, force_refresh=True)
+
+    await provider.get_playlist_metadata(playlist)
+
+    assert list(playlist.metadata.images or []) == [own_cover]
+    assert _engine_calls(provider) == 0
+
+
 async def test_preview_shows_covers_and_description_without_storing(
     provider: PlaylistMetadataProvider,
 ) -> None:

@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import os
 import string
+import tempfile
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
@@ -423,7 +424,9 @@ class AIArtwork:
 
         The current covers and descriptions stay in place until their replacement is ready.
         """
-        self._generation = int(time.time())
+        # always moves forward, also for a second press within the same second, while staying
+        # ahead of a counter that restarted with an emptied cache
+        self._generation = max(self._generation + 1, int(time.time()))
         await self.mass.cache.set(
             CACHE_KEY_GENERATION,
             self._generation,
@@ -527,8 +530,8 @@ class AIArtwork:
         Refresh the playlists that lack their generated cover or description, or lost them.
 
         This also puts back a description something else replaced, such as the smart playlist
-        provider when its rules are edited, and swaps generated covers that are no longer
-        wanted for the collage.
+        provider when its rules are edited, and takes generated covers off that are no longer
+        wanted, such as when the playlist got artwork of its own.
         """
         image_engine = (
             await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
@@ -542,8 +545,11 @@ class AIArtwork:
         )
         async for playlist in self.mass.music.playlists.iter_library_items():
             in_scope = self.in_scope(playlist)
-            if self.own_images(playlist) and (not self.covers_enabled or not in_scope):
-                # the metadata refresh puts the collage back in its place
+            if self.own_images(playlist) and (
+                not self.covers_enabled or not in_scope or await self._has_own_artwork(playlist)
+            ):
+                # the metadata refresh takes the generated cover off, for the playlist's own
+                # artwork or the collage
                 await self.mass.metadata.update_metadata(playlist, force_refresh=True)
                 continue
             if not in_scope:
@@ -596,10 +602,7 @@ class AIArtwork:
             await self._record(self._generated_at, CACHE_KEY_GENERATED_AT)
             try:
                 cover = await self._render(playlist, engine, self._look())
-                await asyncio.to_thread(
-                    Path(self._images_dir, file_name).write_bytes,
-                    cover,
-                )
+                await asyncio.to_thread(_write_file, self._images_dir, file_name, cover)
             except Exception as err:
                 # an unreachable or misbehaving engine must not break the metadata refresh,
                 # the next refresh simply tries again
@@ -1033,6 +1036,19 @@ def _overlay_layout(look: CoverLook) -> TitleLayout | None:
     if not look.title_overlay:
         return None
     return CUSTOM_LAYOUT if look.style == Style.CUSTOM else STYLE_PRESETS[look.style].layout
+
+
+def _write_file(directory: str, file_name: str, data: bytes) -> None:
+    """Write a file in full or not at all, so a failed write never leaves a partial cover."""
+    fd, tmp_name = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(data)
+        tmp_path.replace(Path(directory, file_name))
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _render_cover(image: bytes, layout: TitleLayout | None, title: str) -> bytes:
