@@ -202,6 +202,7 @@ class _SessionHarness:
         assert task is not None
         for _ in range(1000):
             if task.done():
+                await task
                 return
             self.commit_permits.release()
             await self.settle()
