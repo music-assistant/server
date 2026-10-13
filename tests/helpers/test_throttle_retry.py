@@ -152,6 +152,16 @@ class TestBasicBehavior:
         assert isinstance(exc_info.value.__cause__, ResourceTemporarilyUnavailable)
         assert not isinstance(exc_info.value.__cause__, RateLimited)
 
+    async def test_retries_exhausted_on_a_rate_limit(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """Retries running out on a rate limit keep the rate limit as the cause."""
+        provider.set_side_effects([RateLimited("rate limited")] * 5)
+        with pytest.raises(RetriesExhausted) as exc_info:
+            await provider.api_call("test")
+        assert provider.call_count == 5
+        assert isinstance(exc_info.value.__cause__, RateLimited)
+
     async def test_recovery_after_failures(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
