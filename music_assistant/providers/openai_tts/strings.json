@@ -2,7 +2,7 @@
   "config_entries": {
     "base_url": {
       "label": "API endpoint",
-      "description": "The base URL of the speech API, e.g. https://api.openai.com/v1 for the OpenAI cloud API or the address of your own server, such as http://localhost:8880/v1 for Kokoro-FastAPI."
+      "description": "The base URL of the speech API, e.g. https://api.openai.com/v1 for the OpenAI cloud API. For your own server the address is enough, such as http://192.168.1.10:8000 (the /v1 path is added automatically); a full .../v1/audio/speech URL works too."
     },
     "api_key": {
       "label": "API key",
@@ -37,7 +37,10 @@
   "errors": {
     "invalid_auth": "The API rejected the given API key.",
     "endpoint_not_found": "No speech endpoint was found at this address. Please check the API endpoint.",
-    "cannot_connect": "Could not reach the speech API. Please check the address and try again."
+    "cannot_connect": "Could not reach the speech API. Please check the address and try again.",
+    "render_failed": "The speech API could not render the test phrase: {0}. Please check the model and the audio format.",
+    "render_incomplete": "The speech API stopped before the test phrase was rendered. Please check the model and the audio format.",
+    "voices_not_listed": "Your server did not list its voices. If it uses its own voice names, enter them here."
   },
   "manifest": {
     "description": "Turns text into speech using the OpenAI speech API, and works with self-hostable servers that implement the same endpoint such as Kokoro-FastAPI, LocalAI and Speaches."
