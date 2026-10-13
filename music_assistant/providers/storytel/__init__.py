@@ -264,7 +264,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         account_languages = self._api.available_languages
         available_languages = account_languages or ALL_LANGUAGES
         fallback_languages = self._account_fallback_languages()
-        # Read the raw persisted value (bypassing the config entry's own default_value fallback used for display) so an unset selection is distinguishable from one that merely happens to match that display default.
+        # Read the raw value: unlike get_setup_value(), it's None if never persisted.
         languages_list = self.mass.config.get_raw_provider_config_value(
             self.instance_id, CONF_LANGUAGES
         )
@@ -701,13 +701,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         return recommendations or []
 
     def _account_fallback_languages(self) -> dict[str, str]:
-        """
-        Return the languages to use when no explicit selection has been made, mapping name to ISO.
-
-        Mirrors the authenticated account's own checked-by-default languages, falling back to
-        any language it still has access to, or else the static default before authentication
-        or when the account reports no language data at all.
-        """
+        """Return the languages to use when no selection has been made, mapping name to ISO value."""
         if self._api is None:
             return DEFAULT_LANGUAGES.copy()
         account_languages = self._api.available_languages
@@ -719,14 +713,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         return {first_name: first_iso}
 
     def _sync_reconciled_languages(self) -> None:
-        """
-        Mirror the helper's post-revalidation language reconciliation onto the provider.
-
-        ``StorytelHelper.revalidate_account()`` drops or falls back a selection that is no
-        longer available to the account, but only updates its own internal mapping; without
-        this, the provider's own ``_languages`` and the persisted ``CONF_LANGUAGES`` config
-        value would keep advertising languages the refreshed options no longer offer.
-        """
+        """Apply the helper's reconciled language selection to the provider and persisted config."""
         if self._api is None:
             return
         reconciled_languages = self._api.languages

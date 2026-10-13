@@ -167,21 +167,12 @@ class StorytelHelper:
 
     @property
     def available_languages(self) -> dict[str, str]:
-        """
-        Return the content languages available to the authenticated account.
-
-        Mapping of name to ISO value, populated from the account's own language list on
-        login/revalidation. Empty until the first successful authentication.
-        """
+        """Return the account's available content languages, mapping name to ISO value."""
         return self._available_languages
 
     @property
     def default_languages(self) -> dict[str, str]:
-        """
-        Return the account's own default-checked content languages, mapping name to ISO value.
-
-        Mirrors the languages the Storytel app itself checks by default for this account.
-        """
+        """Return the account's own default-checked content languages, mapping name to ISO value."""
         return self._default_languages
 
     @property
@@ -1116,11 +1107,8 @@ class StorytelHelper:
         """
         Drop any selected languages no longer available to the account.
 
-        Called after revalidation refreshes ``available_languages``, so a previously
-        selected language that has since lost entitlement (e.g. a region or subscription
-        change) is no longer sent to the API. Falls back to the account's own
-        default-checked languages, or else any language it still has, rather than the
-        static default, since that may not be available to this account either.
+        Falls back to the account's own default-checked languages, or else any available
+        language.
         """
         if not self._available_languages:
             return
