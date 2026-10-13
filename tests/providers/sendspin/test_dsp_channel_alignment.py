@@ -384,3 +384,30 @@ async def test_join_before_first_history_append_keeps_alignment(
         _assert_aligned(harness.offsets_us(channel_id))
     finally:
         await harness.close()
+
+
+async def test_source_end_during_promotion_keeps_join_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DSP joiner promoted while the source ends still plays the end of the stream."""
+    harness = _SessionHarness(monkeypatch, dsp_ids={DSP_ID}, yielding_writes=True)
+    try:
+        await harness.start(source_limit=40)
+        await harness.commit(20)
+        await harness.add_member(DSP_ID)
+        channel_id = harness.session._member_pipelines[DSP_ID].channel_id
+        catchup_ffmpeg = harness.ffmpegs[-1]
+
+        # End the source while the promotion flushes the join backlog into the catch-up ffmpeg.
+        def end_source_once_promoted() -> None:
+            if DSP_ID not in harness.session._join_catchup:
+                harness.end_source()
+
+        catchup_ffmpeg.on_write = end_source_once_promoted
+        await harness.finish()
+
+        assert harness.source_ended
+        _assert_aligned(harness.offsets_us(channel_id))
+        assert harness.chunks(channel_id)[-1] == harness.chunks(MAIN_CHANNEL)[-1]
+    finally:
+        await harness.close()

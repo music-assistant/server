@@ -955,9 +955,10 @@ class SendspinPlaybackSession:
                 # internal buffers instead of blocking on the last read.
                 _, pipelines = await self._snapshot_active_pipelines()
                 for _, pipeline in pipelines:
-                    if pipeline.processor is not None and pipeline.config.requires_transform:
-                        with suppress(Exception):
-                            await pipeline.processor.write_eof()
+                    async with pipeline.push_lock:
+                        if pipeline.processor is not None and pipeline.config.requires_transform:
+                            with suppress(Exception):
+                                await pipeline.processor.write_eof()
                 # Producer finished normally; send a None sentinel so the
                 # consumer exits cleanly.  The queue may be full, so retry
                 # with a deadline before falling back to cancellation.
