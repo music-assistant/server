@@ -567,7 +567,7 @@ class AsyncProcess:
         if first_close:
             self._stdout_left_to_reader = self._stdout_lock.locked()
         drains = [
-            stream.read(-1)
+            self._drain_under_lock(stream, lock)
             for stream, lock in (
                 (self.proc.stdout, self._stdout_lock),
                 (self.proc.stderr, self._stderr_lock),
@@ -686,6 +686,16 @@ class AsyncProcess:
         except asyncio.CancelledError as err:
             return cancelled or err
         return cancelled
+
+    async def _drain_under_lock(self, stream: asyncio.StreamReader, lock: asyncio.Lock) -> None:
+        """
+        Read one of the process' pipes through to EOF, with no reader joining in meanwhile.
+
+        :param stream: The stream to drain.
+        :param lock: The lock guarding that stream's readers.
+        """
+        async with lock:
+            await stream.read(-1)
 
     async def _drain_stdin_locked(self, timeout: float) -> bool:
         """
