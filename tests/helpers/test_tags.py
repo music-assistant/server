@@ -1,5 +1,6 @@
 """Tests for parsing audio file tags (ID3, MP4/AAC, Vorbis, APEv2, etc.)."""
 
+import os
 import pathlib
 import shutil
 import subprocess
@@ -1147,6 +1148,25 @@ def test_audiobook_credits_are_read_from_a_wavpack_file(tmp_path: pathlib.Path) 
 
     assert result.get("narrators") == ["Jane Reader", "John Voice"]
     assert result.get("writers") == ["Jane Austen", "John Writer"]
+
+
+def test_parse_tags_mutagen_through_a_descriptor_keeps_the_format(tmp_path: pathlib.Path) -> None:
+    """A FLAC file with an ID3 header in front is read as FLAC, also through its descriptor."""
+    dest = tmp_path / "id3-in-front.flac"
+    shutil.copy(FILE_FLAC, dest)
+    id3 = ID3()  # type: ignore[no-untyped-call]
+    id3.add(TCOM(encoding=3, text="Composer"))  # type: ignore[no-untyped-call]
+    id3.save(str(dest))
+    expected = parse_tags_mutagen(str(dest))
+
+    fd = os.open(dest, os.O_RDONLY)
+    try:
+        result = parse_tags_mutagen(str(dest), fd)
+    finally:
+        os.close(fd)
+
+    assert expected
+    assert result == expected
 
 
 async def test_audiobook_author_falls_back_to_the_album_artist(tmp_path: pathlib.Path) -> None:

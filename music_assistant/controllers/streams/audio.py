@@ -168,6 +168,7 @@ from music_assistant.helpers.playlists import (
     parse_playlist_data,
     read_playlist_body,
 )
+from music_assistant.helpers.process import descriptor_path
 from music_assistant.helpers.provider_access import exact_provider, playback_sources
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.util import (
@@ -177,6 +178,7 @@ from music_assistant.helpers.util import (
     parse_title_and_version,
     remove_file,
 )
+from music_assistant.models.media_capabilities import AudioStreamMixin
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
@@ -186,7 +188,6 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.media_capabilities import AudioStreamMixin
     from music_assistant.models.player import Player
     from music_assistant.models.provider import Provider
 
@@ -1122,14 +1123,15 @@ class StreamsAudio:
         if not isinstance(streamdetails.path, list):
             raise InvalidDataError("Multi-file streamdetails requires a list of MultiPartPath")
         parts, seek_position = get_parts_from_position(streamdetails.path, seek_position)
-        files_list = [part.path for part in parts]
+        files_list, pass_fds = await self.open_local_files(
+            streamdetails, [part.path for part in parts]
+        )
 
         # concat input files
         temp_file = f"/tmp/{shortuuid.random(20)}.txt"  # noqa: S108
-        async with aiofiles.open(temp_file, "w") as f:
-            await f.write(build_concat_filelist(files_list))
-
         try:
+            async with aiofiles.open(temp_file, "w") as f:
+                await f.write(build_concat_filelist(files_list))
             async for chunk in get_ffmpeg_stream(
                 audio_input=temp_file,
                 input_format=streamdetails.audio_format,
@@ -1149,10 +1151,51 @@ class StreamsAudio:
                     "-ss",
                     str(seek_position),
                 ],
+                pass_fds=pass_fds,
             ):
                 yield chunk
         finally:
+            for fd in pass_fds:
+                os.close(fd)
             await remove_file(temp_file)
+
+    async def open_local_files(
+        self, streamdetails: StreamDetails, paths: list[str]
+    ) -> tuple[list[str], tuple[int, ...]]:
+        """
+        Return the inputs ffmpeg opens for the paths of a stream, with the descriptors it needs.
+
+        The provider of a local file stream may open each file itself, so ffmpeg reads the
+        file the provider checked. Other paths are returned as they are. The caller closes
+        the descriptors once ffmpeg has started or ended.
+
+        :param streamdetails: The stream the paths belong to.
+        :param paths: The path of the stream, or of each of its parts.
+        :raises AudioError: If the provider is not loaded, or can not or may not open a file.
+        """
+        if streamdetails.stream_type != StreamType.LOCAL_FILE:
+            return paths, ()
+        provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+        if provider is None:
+            raise AudioError(f"Unable to open {streamdetails.uri}: its provider is not loaded")
+        if not isinstance(provider, AudioStreamMixin):
+            return paths, ()
+        inputs: list[str] = []
+        fds: list[int] = []
+        try:
+            for path in paths:
+                if (fd := await provider.open_local_file(path)) is None:
+                    inputs.append(path)
+                    continue
+                fds.append(fd)
+                inputs.append(descriptor_path(fd))
+        except BaseException as err:
+            for fd in fds:
+                os.close(fd)
+            if isinstance(err, MediaNotFoundError):
+                raise AudioError(f"Unable to open {streamdetails.uri}: {err}") from err
+            raise
+        return inputs, tuple(fds)
 
     def get_player_output_plan(
         self,
@@ -3175,20 +3218,26 @@ class StreamsAudio:
         :param audio_input: The audio stream (raw PCM in ``pcm_format``) to mix into.
         :param pcm_format: PCM format of both the input and the mixed output.
         """
-        overlay_input = await self._resolve_overlay_input(queue)
-        if overlay_input is None:
+        overlay = await self._resolve_overlay_input(queue)
+        if overlay is None:
             # overlay source unavailable: degrade gracefully to music-only
             async for chunk in audio_input:
                 yield chunk
             return
-        async for chunk in get_ffmpeg_overlay_stream(
-            audio_input=audio_input,
-            overlay_input=overlay_input,
-            pcm_format=pcm_format,
-            overlay_volume=queue.overlay_volume,
-            chunk_size=pcm_format.pcm_sample_size,
-        ):
-            yield chunk
+        overlay_input, pass_fds = overlay
+        try:
+            async for chunk in get_ffmpeg_overlay_stream(
+                audio_input=audio_input,
+                overlay_input=overlay_input,
+                pcm_format=pcm_format,
+                overlay_volume=queue.overlay_volume,
+                chunk_size=pcm_format.pcm_sample_size,
+                pass_fds=pass_fds,
+            ):
+                yield chunk
+        finally:
+            for fd in pass_fds:
+                os.close(fd)
 
     def crossfade_allowed(
         self,
@@ -3215,6 +3264,17 @@ class StreamsAudio:
                     "Skipping the tail overlap of %s: the next item is not the track it was "
                     "planned against",
                     queue_item.name,
+                )
+                return False
+            if not self._may_mix_across_sample_rates(
+                player_id, flow_mode, sample_rate, next_sample_rate
+            ):
+                self.logger.info(
+                    "Skipping the tail overlap of %s: the player does not play gapless across "
+                    "different sample rates (%s vs %s)",
+                    queue_item.name,
+                    sample_rate,
+                    next_sample_rate,
                 )
                 return False
             return True
@@ -3259,16 +3319,8 @@ class StreamsAudio:
             return False
 
         # check if we're allowed to crossfade on different sample rates
-        if (
-            not flow_mode
-            and sample_rate
-            and next_sample_rate
-            and sample_rate != next_sample_rate
-            and not self.mass.config.get_raw_player_config_value(
-                player_id,
-                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
-                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
-            )
+        if not self._may_mix_across_sample_rates(
+            player_id, flow_mode, sample_rate, next_sample_rate
         ):
             self.logger.debug(
                 "Skipping crossfade: player(protocol) does not support gapless playback "
@@ -4354,6 +4406,10 @@ class StreamsAudio:
         first_chunk_received = False
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
         ffmpeg_input_format = arriving_audio_format(streamdetails)
+        pass_fds: tuple[int, ...] = ()
+        if isinstance(audio_source, str):
+            inputs, pass_fds = await self.open_local_files(streamdetails, [audio_source])
+            audio_source = inputs[0]
         ffmpeg_proc = FFMpeg(
             audio_input=audio_source,
             input_format=ffmpeg_input_format,
@@ -4362,6 +4418,7 @@ class StreamsAudio:
             extra_input_args=extra_input_args,
             collect_log_history=True,
             loglevel=ffmpeg_loglevel,
+            pass_fds=pass_fds,
         )
 
         try:
@@ -4460,6 +4517,8 @@ class StreamsAudio:
             logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
             raise AudioError(f"Error while streaming: {err}") from err
         finally:
+            for fd in pass_fds:
+                os.close(fd)
             # An ffmpeg wedged on an input that will never deliver again pays close()'s
             # full drain - some 12 seconds in practice - under a held player lock,
             # before the SIGKILL that was always coming. Once the process has exited
@@ -4665,6 +4724,33 @@ class StreamsAudio:
                 played / pcm_format.pcm_sample_size,
                 queue_item.name,
             )
+
+    def _may_mix_across_sample_rates(
+        self,
+        player_id: str,
+        flow_mode: bool,
+        sample_rate: int | None,
+        next_sample_rate: int | None,
+    ) -> bool:
+        """
+        Return whether a boundary mix may span two items that stream at different rates.
+
+        :param player_id: The player the items play on.
+        :param flow_mode: Whether the items play on one flow stream.
+        :param sample_rate: PCM sample rate of the outgoing item, when known.
+        :param next_sample_rate: PCM sample rate of the incoming item, when known.
+        """
+        # a flow stream plays every item at one rate; between item streams the rate
+        # switch lands inside the mix, so the player has to play gapless across rates
+        if flow_mode or not sample_rate or not next_sample_rate or sample_rate == next_sample_rate:
+            return True
+        return bool(
+            self.mass.config.get_raw_player_config_value(
+                player_id,
+                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
+                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
+            )
+        )
 
     def _select_buffered_crossfade(
         self,
@@ -5452,12 +5538,14 @@ class StreamsAudio:
             raise InvalidDataError(msg)
         return [part.path for part in url]
 
-    async def _resolve_overlay_input(self, queue: PlayerQueue) -> str | None:
+    async def _resolve_overlay_input(
+        self, queue: PlayerQueue
+    ) -> tuple[str, tuple[int, ...]] | None:
         """
-        Resolve the queue's overlay source to a file path or URL for ffmpeg.
+        Resolve the queue's overlay source to the input for ffmpeg, with the descriptors it needs.
 
         Returns None (with a warning logged) when the source can not be resolved,
-        so the caller can degrade to music-only playback.
+        so the caller can degrade to music-only playback. The caller closes the descriptors.
         """
         if not (mapping := queue.overlay_source):
             return None
@@ -5497,7 +5585,16 @@ class StreamsAudio:
                 streamdetails.path,
             )
             return None
-        return streamdetails.path
+        try:
+            inputs, pass_fds = await self.open_local_files(streamdetails, [streamdetails.path])
+        except AudioError as err:
+            self.logger.warning(
+                "Audio overlay source %s can not be read (%s) - continuing without overlay",
+                mapping.uri,
+                err,
+            )
+            return None
+        return inputs[0], pass_fds
 
     async def _add_remote_mp3_input_args(
         self,

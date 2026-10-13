@@ -6,12 +6,14 @@ streams the captured PCM as that item's audio. These tests lock down the pure
 logic around that: lead-silence trimming, the run's cushion and its sink
 backpressure, tail-padding suppression, startup and event handling, delivery
 validation, run acquisition (busy/replaced/superseded), paired-session
-adoption and setup. No real process or PulseAudio is involved.
+adoption and setup. No PulseAudio is involved, and a real child process stands
+in for the engine only where the run's teardown is under test.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, cast
@@ -23,6 +25,8 @@ from music_assistant_models.errors import AudioError, LoginFailed
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers import process as process_module
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.providers.spotify.backends import StreamSupersededError
 from music_assistant.providers.spotify.backends import soloist as soloist_backend
@@ -54,6 +58,14 @@ AUDIOBOOK = "spotify:show:book"
 CHAPTER_A = "spotify:episode:ch1"
 CHAPTER_B = "spotify:episode:ch2"
 CHAPTER_C = "spotify:episode:ch3"
+
+# Stands in for an engine that honours SIGINT but takes a moment to exit on it,
+# longer than the (shortened) wait close() grants the run's log reader.
+_SLOW_EXIT_ENGINE = (
+    "import signal, sys, time; "
+    "signal.signal(signal.SIGINT, lambda *_: (time.sleep(1), sys.exit(0))); "
+    "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)"
+)
 
 
 def test_trim_drops_an_all_zero_chunk_within_the_bound() -> None:
@@ -560,6 +572,36 @@ async def test_a_stopped_run_is_not_judged_incomplete(tmp_path: Path) -> None:
     run._stopped = True
     run._finish_delivery()
     assert await _collect(run) == b"\x01" * _FRAME_BYTES
+
+
+async def test_stop_does_not_report_an_engine_that_exits_on_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    An engine that takes its time to exit on SIGINT is not reported as unstoppable.
+
+    The run's log reader stays on the engine's stdout across the close, so the
+    close has to reap the engine without reading that pipe itself; the warning
+    is reserved for an engine that survived the SIGKILL escalation.
+    """
+    monkeypatch.setattr(process_module, "STREAM_RELEASE_TIMEOUT", 0.2)
+    run = _make_run(tmp_path)
+    ready = asyncio.Event()
+    run.logger = MagicMock()
+    run.logger.debug.side_effect = lambda _fmt, line: ready.set() if line == "ready" else None
+    proc = AsyncProcess(
+        [sys.executable, "-c", _SLOW_EXIT_ENGINE], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    run._proc = proc
+    run._log_task = asyncio.create_task(run._log_output(proc))
+    await asyncio.wait_for(ready.wait(), 5)
+
+    async with asyncio.timeout(5):
+        await run.stop()
+
+    run.logger.warning.assert_not_called()
+    assert proc.returncode == 0
 
 
 async def test_a_seek_counts_towards_the_delivery(tmp_path: Path) -> None:

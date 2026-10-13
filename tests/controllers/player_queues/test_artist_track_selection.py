@@ -12,6 +12,7 @@ the multi-source union/dedup directly with mocked sources.
 from __future__ import annotations
 
 import logging
+from functools import partial
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -23,6 +24,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    ArtistOrder,
 )
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
@@ -152,6 +154,11 @@ def _fake_queues(selection: str) -> MagicMock:
     fake._resolve_library_artist = AsyncMock(
         return_value=_artist_obj({_prov_mapping("p1", "a1", in_library=True)})
     )
+    fake.get_artist_order = MagicMock(return_value=ArtistOrder.SHUFFLED_TRACKS)
+    fake._album_order_applies = MagicMock(return_value=False)
+    # the real resolution under the shuffled order
+    fake.resolve_artist_tracks = partial(MediaResolver.resolve_artist_tracks, fake)
+    fake._shuffled_artist_tracks = partial(MediaResolver._shuffled_artist_tracks, fake)
     return fake
 
 
