@@ -46,6 +46,7 @@
     var displayHold = null;
     var seekPointer = false;
     var volumeTimer = null;
+    var volumePanelOpen = false;
     var queue = [];
     var queueIndex = -1;
     var lyricsLines = [];
@@ -162,7 +163,11 @@
         switch (msg.type) {
             case 'welcome':
                 playerId = msg.player_id;
+                var playerLabel = document.getElementById('kiosk-player-id');
+                playerLabel.textContent = 'Player ID: ' + playerId;
+                playerLabel.classList.remove('hidden');
                 setStatus('');
+                sync();
                 if (TOKEN) { fetchQueue(); fetchParty(); }
                 if (SENDSPIN) initSendspin();
                 if (audio.ended) reportTrackEnded();
@@ -220,7 +225,7 @@
                 break;
             case 'volume':
                 audio.volume = (msg.level || 0) / 100;
-                document.getElementById('kiosk-volume').value = msg.level || 0;
+                syncVolume(msg.level || 0);
                 break;
             case 'wave':
                 if (typeof msg.seq === 'number' && msg.seq !== waveGen) {
@@ -401,6 +406,14 @@
         art.alt = current.title && current.title !== '—' ? current.title : '';
         document.getElementById('kiosk-title').textContent = current.title || '—';
         document.getElementById('kiosk-artist').textContent = current.artist || '—';
+        document.getElementById('kiosk-bar-title').textContent = current.title && current.title !== '—' ? current.title : 'Nothing playing';
+        document.getElementById('kiosk-bar-artist').textContent = current.artist && current.artist !== '—' ? current.artist : 'Web Kiosk';
+        var barArt = document.getElementById('kiosk-bar-art');
+        var barBox = document.getElementById('kiosk-bar-artbox');
+        barArt.onload = function () { barBox.classList.add('has-art'); barArt.classList.remove('hidden'); };
+        barArt.onerror = function () { barBox.classList.remove('has-art'); barArt.classList.add('hidden'); };
+        if (src) barArt.src = src;
+        else { clearImage(barArt); barBox.classList.remove('has-art'); barArt.classList.add('hidden'); }
         if (!src) {
             showEmblem();
             paintClock();
@@ -440,18 +453,27 @@
         if (seekPointer) return;
         var t = songTime();
         document.getElementById('kiosk-time').textContent = fmt(t);
-        if (dur) document.getElementById('kiosk-seek').value = String(Math.round((t / dur) * 1000));
+        var seek = document.getElementById('kiosk-seek');
+        var position = dur ? Math.max(0, Math.min(1000, Math.round((t / dur) * 1000))) : 0;
+        seek.disabled = !playerId || !dur;
+        seek.value = String(position);
+        seek.style.setProperty('--progress', (position / 10) + '%');
     }
     function sync() {
         var playBtn = document.getElementById('k-play');
-        playBtn.textContent = playing ? '⏸' : '▶';
+        document.getElementById('k-play-icon').setAttribute('href', playing ? '#k-icon-pause' : '#k-icon-play');
         playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+        playBtn.title = playing ? 'Pause' : 'Play';
+        ['k-play', 'k-prev', 'k-next', 'k-volume-button', 'kiosk-volume'].forEach(function (id) {
+            document.getElementById(id).disabled = !playerId;
+        });
         // Freeze the Sendspin clock at the pause so the bars stay on that moment.
         if (sendspinStreaming && vizWasPlaying && !playing && waveAnchorAt) {
             waveAnchor += (performance.now() - waveAnchorAt) / 1000;
             waveAnchorAt = performance.now();
         }
         vizWasPlaying = playing;
+        paintClock();
         syncViz();
     }
 
@@ -751,7 +773,11 @@
             waveAnchorAt = performance.now();
         }
         document.getElementById('kiosk-time').textContent = fmt(t);
-        if (dur) document.getElementById('kiosk-seek').value = String(Math.round((t / dur) * 1000));
+        if (dur) {
+            var seek = document.getElementById('kiosk-seek');
+            seek.value = String(Math.round((t / dur) * 1000));
+            seek.style.setProperty('--progress', ((t / dur) * 100) + '%');
+        }
         if (!vizFrame) paintViz();
         paintLyrics();
         // The queue rebuilds the stream. Do not move audio.currentTime to the
@@ -764,7 +790,7 @@
     function applyVolume(level, immediate) {
         level = Math.max(0, Math.min(100, Math.round(level)));
         audio.volume = level / 100;
-        document.getElementById('kiosk-volume').value = String(level);
+        syncVolume(level);
         clearTimeout(volumeTimer);
         var send = function () {
             cmd('players/cmd/volume_set', { volume_level: level }).catch(function () {});
@@ -773,7 +799,35 @@
         else volumeTimer = setTimeout(send, 80);
     }
 
+    function syncVolume(level) {
+        level = Math.max(0, Math.min(100, Math.round(level)));
+        var slider = document.getElementById('kiosk-volume');
+        slider.value = String(level);
+        slider.style.setProperty('--progress', level + '%');
+        slider.setAttribute('aria-valuetext', level + '%');
+        document.getElementById('k-volume-level').textContent = level + '%';
+        document.getElementById('k-volume-panel-level').textContent = level + '%';
+        document.getElementById('k-volume-button').setAttribute('aria-label', 'Volume: ' + level + '%');
+        var icon = level === 0 ? 'volume-x' : level <= 50 ? 'volume-1' : 'volume-2';
+        ['k-volume-icon', 'k-volume-slider-icon'].forEach(function (id) {
+            document.getElementById(id).setAttribute('href', '#k-icon-' + icon);
+        });
+    }
+
+    function setVolumePanel(open) {
+        volumePanelOpen = open;
+        document.getElementById('kiosk-controls').dataset.volumeOpen = String(open);
+        document.getElementById('k-volume-button').setAttribute('aria-expanded', String(open));
+        if (open) document.getElementById('kiosk-volume').focus();
+        showKioskControls();
+    }
+
     function bindControls() {
+        document.getElementById('k-volume-button').onclick = function () { setVolumePanel(!volumePanelOpen); };
+        document.getElementById('k-volume-close').onclick = function () { setVolumePanel(false); };
+        document.addEventListener('pointerdown', function (e) {
+            if (volumePanelOpen && !document.getElementById('kiosk-volume-control').contains(e.target)) setVolumePanel(false);
+        });
         document.getElementById('k-play').onclick = function () {
             cmd(playing ? 'players/cmd/pause' : 'players/cmd/play').catch(function () {});
         };
@@ -789,6 +843,7 @@
         kseek.oninput = function (e) {
             var t = (Number(e.target.value) / 1000) * (current.duration || 0);
             document.getElementById('kiosk-time').textContent = fmt(t);
+            e.target.style.setProperty('--progress', (Number(e.target.value) / 10) + '%');
         };
         kseek.onchange = function (e) {
             seekPointer = false;
@@ -821,7 +876,12 @@
     }
 
     document.addEventListener('keydown', function (e) {
-        if (e.target.tagName === 'INPUT') return;
+        if (e.key === 'Escape' && volumePanelOpen) {
+            setVolumePanel(false);
+            document.getElementById('k-volume-button').focus();
+            return;
+        }
+        if (/^(INPUT|BUTTON|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
         switch (e.key) {
             case ' ': e.preventDefault(); cmd(playing ? 'players/cmd/pause' : 'players/cmd/play').catch(function () {}); break;
             case 'ArrowRight': seekToSong(songTime() + 10); break;
@@ -929,6 +989,7 @@
         bindControls();
         renderNow();
         sync();
+        syncVolume(audio.volume * 100);
         prepareAudioUnlock();
         await prepareSendspinIdentity();
         connectWS();
