@@ -206,7 +206,10 @@ def _copy(
 
 
 def _album_resolver(
-    listing: AlbumListing, local: Collection[str] = (), gone: dict[str, str] | None = None
+    listing: AlbumListing,
+    local: Collection[str] = (),
+    gone: dict[str, str] | None = None,
+    mode: StreamSourceMode = StreamSourceMode.BEST_QUALITY,
 ) -> MediaResolver:
     """
     Build a bare resolver that plays an album the given listing lists.
@@ -214,12 +217,16 @@ def _album_resolver(
     :param listing: The album's tracks and what each of its sources lists of them.
     :param local: The instances that are local sources rather than streaming services.
     :param gone: The instances that are no longer loaded, with the account answering for each.
+    :param mode: The source selection mode of the streams settings.
     """
     resolver = _resolver()
     # the album selection setting is not the library tracks only
     resolver.queues = Mock()
     resolver.mass.music.albums.playback_listing = AsyncMock(return_value=listing)  # type: ignore[method-assign]
     resolver.mass.webserver.auth.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    resolver.mass.streams.get_config_value = Mock(  # type: ignore[method-assign]
+        side_effect=lambda key, *_args, **_kwargs: {CONF_STREAM_SOURCE_MODE: mode}[key]
+    )
 
     def _get_provider(instance: str, **_kwargs: Any) -> SimpleNamespace:
         instance = (gone or {}).get(instance, instance)
@@ -350,10 +357,7 @@ async def test_the_source_selection_mode_decides_the_album_source(
     mode: StreamSourceMode, pins: list[tuple[str | None, str | None]]
 ) -> None:
     """Preferring local plays the album from the files; ranking every track on its own pins none."""
-    resolver = _album_resolver(_two_sources_and_a_bonus(), local={FILESYSTEM})
-    resolver.mass.streams.get_config_value = Mock(  # type: ignore[method-assign]
-        side_effect=lambda key, *_args, **_kwargs: {CONF_STREAM_SOURCE_MODE: mode}[key]
-    )
+    resolver = _album_resolver(_two_sources_and_a_bonus(), local={FILESYSTEM}, mode=mode)
     album = _album()
 
     with _sources():
@@ -392,6 +396,31 @@ async def test_an_album_of_provider_entries_plays_the_chosen_sources_own_entries
     assert [x.item for x in resolved] == [*tidal, spotify[2]]
     assert [_container(x) for x in resolved] == [ItemMapping.from_item(album)] * 3
     assert [_pin(x) for x in resolved] == [(TIDAL, "t1"), (TIDAL, "t2"), (SPOTIFY, "s3")]
+
+
+@pytest.mark.usefixtures("loaded_sources")
+@pytest.mark.parametrize(
+    ("preferred", "played"),
+    [((), ["t1", "t2", "s3"]), ([SPOTIFY], ["s1", "s2", "s3"])],
+    ids=["the best quality", "the user's own account first"],
+)
+async def test_a_track_outside_the_library_plays_its_best_entry_when_ranked_on_its_own(
+    preferred: list[str], played: list[str]
+) -> None:
+    """Ranking every track on its own, a track not in the library plays the best entry listed."""
+    spotify = [_entry(SPOTIFY, position, LOSSY) for position in (1, 2, 3)]
+    tidal = [_entry(TIDAL, position, HIRES) for position in (1, 2)]
+    # the album page lists Spotify's entries, the first service by instance id
+    listing = album_listing([], [(TIDAL, tidal), (SPOTIFY, spotify)])
+    resolver = _album_resolver(listing, mode=StreamSourceMode.BEST_QUALITY_PER_TRACK)
+    album = _album()
+
+    with _sources(preferred=preferred):
+        resolved = await resolver._resolve_media_items(album)
+
+    assert [x.item.item_id for x in resolved] == played
+    assert [_container(x) for x in resolved] == [ItemMapping.from_item(album)] * 3
+    assert [_pin(x) for x in resolved] == [(None, None)] * 3
 
 
 @pytest.mark.usefixtures("loaded_sources")

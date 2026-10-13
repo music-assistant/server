@@ -26,8 +26,10 @@ from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
     ItemMapping,
+    PodcastEpisode,
     ProviderMapping,
     SoundEffect,
+    Track,
 )
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.streamdetails import StreamDetails
@@ -63,9 +65,16 @@ def _mapping(
     )
 
 
-def _queue_item(*mappings: ProviderMapping) -> QueueItem:
-    """Build a queue item whose media item carries the given provider mappings."""
-    media_item = SoundEffect(
+def _queue_item(
+    *mappings: ProviderMapping, item_type: type[SoundEffect | Track] = SoundEffect
+) -> QueueItem:
+    """
+    Build a queue item whose media item carries the given provider mappings.
+
+    :param mappings: The provider mappings of the media item.
+    :param item_type: The kind of media item, a sound effect by default.
+    """
+    media_item = item_type(
         item_id=ITEM_ID,
         provider=mappings[0].provider_instance,
         name="Intro",
@@ -361,6 +370,7 @@ async def test_the_pinned_copy_is_passed_over_when_every_track_is_ranked_on_its_
         _queue_item(
             _mapping(pinned_instance),
             _mapping(other_instance, content_type=ContentType.FLAC),
+            item_type=Track,
         ),
         pinned_instance,
     )
@@ -369,6 +379,55 @@ async def test_the_pinned_copy_is_passed_over_when_every_track_is_ranked_on_its_
 
     assert streamdetails.provider == other_instance
     pinned.get_stream_details.assert_not_awaited()
+
+
+@pytest.mark.parametrize("media_type", [MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK])
+async def test_an_episode_or_audiobook_keeps_its_account_when_every_track_is_ranked_on_its_own(
+    media_type: MediaType,
+) -> None:
+    """With best quality for every track, an episode or audiobook still plays where it started."""
+    started_instance = "spotify--household"
+    own_instance = "spotify--own"
+    started = _music_provider(started_instance)
+    own = _music_provider(own_instance)
+    audio = _audio(
+        {started_instance: started, own_instance: own},
+        owned=[own_instance],
+        mode=StreamSourceMode.BEST_QUALITY_PER_TRACK,
+    )
+    cast("MagicMock", audio.mass).providers = [started, own]
+    mappings = {_mapping(started_instance)}
+    media_item = (
+        PodcastEpisode(
+            item_id=ITEM_ID,
+            provider=started_instance,
+            name="Episode 1",
+            provider_mappings=mappings,
+            position=1,
+            podcast=ItemMapping(
+                media_type=MediaType.PODCAST,
+                item_id="show",
+                provider=started_instance,
+                name="Show",
+            ),
+        )
+        if media_type == MediaType.PODCAST_EPISODE
+        else Audiobook(item_id="7", provider="library", name="Dune", provider_mappings=mappings)
+    )
+    queue_item = QueueItem(
+        queue_id="q1",
+        queue_item_id="qi1",
+        name=media_item.name,
+        duration=None,
+        media_item=media_item,
+        origin=QueueItemOrigin(provider_instance=started_instance, item_id=ITEM_ID),
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    # without the pin the playback user's own account would stand in for it
+    assert streamdetails.provider == started_instance
+    own.get_stream_details.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -394,6 +453,7 @@ async def test_a_local_copy_plays_before_a_better_streaming_one_when_preferring_
         queue_item=_queue_item(
             _mapping(local_instance),
             _mapping(streaming_instance, content_type=ContentType.FLAC),
+            item_type=Track,
         )
     )
 

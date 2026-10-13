@@ -119,6 +119,7 @@ from music_assistant.controllers.streams.smart_fades.fades import SmartFade, Sta
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.stream_sources import (
     SourceCandidate,
+    StreamSourceMode,
     StreamSourcePolicy,
     rank_provider_mappings,
     rank_stream_sources,
@@ -3691,6 +3692,13 @@ class StreamsAudio:
                 else None
             )
             policy = read_stream_source_policy(mass, queue_item.queue_id)
+            if policy.mode == StreamSourceMode.BEST_QUALITY_PER_TRACK and media_item.media_type in (
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST_EPISODE,
+            ):
+                # ranking every track on its own is about music: the pin keeps an audiobook or
+                # episode, and its progress, on the account it was started from
+                policy = replace(policy, mode=StreamSourceMode.BEST_QUALITY)
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
