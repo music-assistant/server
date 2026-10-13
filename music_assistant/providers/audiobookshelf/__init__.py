@@ -183,7 +183,7 @@ P = ParamSpec("P")
 class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
     """Audiobookshelf MusicProvider."""
 
-    recommendation_payload_version = "2"  # series as collections, authors as artists
+    recommendation_payload_version = "3"  # no token in image urls
     _on_unload_callbacks: list[Callable[[], None]]
 
     def __init__(
