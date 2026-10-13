@@ -566,7 +566,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 content_type=ContentType.UNKNOWN,
             ),
             stream_type=StreamType.HLS
-            if (url.startswith("https://cf-hls-media.sndcdn.com") or ".m3u8" in url)
+            if (
+                url.startswith("https://cf-hls-media.sndcdn.com")
+                or urlparse(url).path.endswith(".m3u8")
+            )
             else StreamType.HTTP,
             path=url,
             can_seek=True,

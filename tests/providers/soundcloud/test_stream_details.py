@@ -186,6 +186,15 @@ async def test_stream_details_for_aac_hls_url(provider: SoundcloudMusicProvider)
     assert streamdetails.stream_type == StreamType.HLS
 
 
+async def test_stream_details_progressive_url_with_m3u8_in_query(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """Only the url path decides HLS, a progressive url mentioning .m3u8 in its query stays HTTP."""
+    streamdetails = await _stream_details(provider, f"{PROGRESSIVE_CDN}?ref=playlist.m3u8")
+
+    assert streamdetails.stream_type == StreamType.HTTP
+
+
 @pytest.mark.parametrize("param", ["Expires", "expires", "expire"])
 async def test_stream_details_expiry_from_url(
     provider: SoundcloudMusicProvider, param: str
