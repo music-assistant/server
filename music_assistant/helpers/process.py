@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 
 # if TYPE_CHECKING:
 from collections import Counter
@@ -32,6 +33,11 @@ DEFAULT_CHUNKSIZE = 64000
 # terminate/SIGKILL escalation that actually reaps it.
 PIPE_DRAIN_TIMEOUT = 5
 
+# Ceiling on waiting for a caller's reader or writer to let go of a stream while
+# closing. A reader still on a pipe past it keeps that pipe: asyncio refuses a second
+# concurrent read, so the drain is left to the reader and the process is only waited for.
+STREAM_RELEASE_TIMEOUT = 5
+
 _PROC_ROOT = Path("/proc")
 
 
@@ -43,6 +49,37 @@ def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     if env:
         result.update(env)
     return result
+
+
+def descriptor_path(fd: int) -> str:
+    """
+    Return a path that opens the file of an open descriptor.
+
+    Opening it reaches that same file wherever its path leads by now, also from a child
+    process the descriptor is passed to (``pass_fds``).
+
+    :param fd: The open descriptor.
+    """
+    # on Linux every open gets a file position of its own; on macOS it shares the descriptor's
+    return f"/proc/self/fd/{fd}" if sys.platform == "linux" else f"/dev/fd/{fd}"
+
+
+async def open_in_thread(opener: Callable[[str, int], int], path: str, flags: int) -> int:
+    """
+    Open a path in a worker thread with an opener like that of open() and return the descriptor.
+
+    A descriptor the opener only returns after the caller was cancelled is closed.
+
+    :param opener: Called with the path and the os.open flags, returns the descriptor.
+    :param path: The path to open.
+    :param flags: The flags for os.open.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(opener, path, flags))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        task.add_done_callback(_close_late_descriptor)
+        raise
 
 
 def collect_child_process_counts(
@@ -151,6 +188,9 @@ class AsyncProcess:
         self._stdin_lock = asyncio.Lock()
         self._close_called = False
         self._stdin_eof = False
+        # set by close() when a reader kept stdout past the release budget: that
+        # reader then stays in charge of the stream until EOF
+        self._stdout_left_to_reader = False
         self._returncode: int | None = None
 
     @property
@@ -230,7 +270,7 @@ class AsyncProcess:
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
-        if self._close_called:
+        if self._close_called and not self._stdout_left_to_reader:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stdout is not None  # for type checking
@@ -248,7 +288,7 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        if self._close_called:
+        if self._close_called and not self._stdout_left_to_reader:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stdout is not None  # for type checking
@@ -340,8 +380,9 @@ class AsyncProcess:
         """Read line from stdout."""
         # keyed on the close flag rather than the returncode (like read() and
         # readexactly()): a process that already exited still has its last
-        # lines sitting in the stream buffer, and those must still be readable
-        if self._close_called:
+        # lines sitting in the stream buffer, and those must still be readable.
+        # A reader close() left the stream to reads on until EOF.
+        if self._close_called and not self._stdout_left_to_reader:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stdout is not None  # for type checking
@@ -379,12 +420,19 @@ class AsyncProcess:
         An enclosing timeout is not a reliable bound on this call: the cleanup may
         swallow the cancellation and run to completion, and a cancellation that does
         land is only re-raised after the terminate/SIGKILL escalation has run.
+
+        A reader the caller keeps on stdout or stderr past the release budget is
+        left in place: it keeps draining its stream while the process is waited
+        for and, if need be, killed.
         """
         if self._close_called and self.returncode is not None:
             # Already closed and reaped, so there is nothing left to signal or
             # drain. The stream locks below are still held by that first call
-            # and would only be waited out again (5s each).
+            # (or were left to a reader) and would only be waited out again.
             return
+        # a concurrent second close() times out on the locks the first one holds,
+        # so only the first call may leave stdout to a reader
+        first_close = not self._close_called
         self._close_called = True
         if not self.proc:
             return
@@ -394,7 +442,7 @@ class AsyncProcess:
 
         # close stdin to signal we're done sending data
         with suppress(TimeoutError, asyncio.CancelledError):
-            await asyncio.wait_for(self._stdin_lock.acquire(), 5)
+            await asyncio.wait_for(self._stdin_lock.acquire(), STREAM_RELEASE_TIMEOUT)
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
         elif not self.proc.stdin and self.proc.returncode is None:
@@ -407,20 +455,25 @@ class AsyncProcess:
         # child that is still running, so it is held here and re-raised at the very end.
         cancelled: asyncio.CancelledError | None = None
 
-        # ensure we have no more readers active and stdout is drained
-        with suppress(TimeoutError, asyncio.CancelledError):
-            await asyncio.wait_for(self._stdout_lock.acquire(), 5)
-        if self.proc.stdout and not self.proc.stdout.at_eof():
+        # ensure we have no more readers active and stdout is drained; a reader that
+        # keeps the stream past the release budget drains it itself
+        stdout_left_to_reader = not await self._acquire_stream_lock(self._stdout_lock)
+        if first_close:
+            self._stdout_left_to_reader = stdout_left_to_reader
+        if self.proc.stdout and not stdout_left_to_reader and not self.proc.stdout.at_eof():
             cancelled = await self._drain_pipe(self.proc.stdout, cancelled)
+        # stderr needs no flag of its own: read_stderr() keys on the returncode and
+        # a reader left there reads on until the exit anyway
+        stderr_left_to_reader = False
         # if we have a stderr task active, allow it to finish
         if self._stderr_reader_task:
             with suppress(TimeoutError, asyncio.CancelledError):
-                await asyncio.wait_for(self._stderr_reader_task, 5)
+                await asyncio.wait_for(self._stderr_reader_task, STREAM_RELEASE_TIMEOUT)
         elif self.proc.stderr and not self.proc.stderr.at_eof():
-            with suppress(TimeoutError, asyncio.CancelledError):
-                await asyncio.wait_for(self._stderr_lock.acquire(), 5)
-            # drain stderr
-            cancelled = await self._drain_pipe(self.proc.stderr, cancelled)
+            stderr_left_to_reader = not await self._acquire_stream_lock(self._stderr_lock)
+            if not stderr_left_to_reader:
+                # drain stderr
+                cancelled = await self._drain_pipe(self.proc.stderr, cancelled)
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
@@ -429,8 +482,13 @@ class AsyncProcess:
         terminate_attempts = 0
         while self.returncode is None:
             try:
-                # use communicate to flush all pipe buffers
-                await asyncio.wait_for(self.proc.communicate(), 2)
+                if stdout_left_to_reader or stderr_left_to_reader:
+                    # a pipe with a reader still on it cannot be read here as well
+                    # (asyncio refuses the concurrent read), so only wait for the exit
+                    await asyncio.wait_for(self.proc.wait(), 2)
+                else:
+                    # use communicate to flush all pipe buffers
+                    await asyncio.wait_for(self.proc.communicate(), 2)
             except (TimeoutError, asyncio.CancelledError) as err:
                 if isinstance(err, asyncio.CancelledError):
                     cancelled = cancelled or err
@@ -580,6 +638,19 @@ class AsyncProcess:
             if line := raw.decode("utf-8", errors="ignore").strip():
                 yield line
 
+    async def _acquire_stream_lock(self, lock: asyncio.Lock) -> bool:
+        """
+        Take one of the stream locks for closing, within the stream release budget.
+
+        :param lock: The lock guarding the stream's readers.
+        :return: True once the lock is held, False when a reader kept it past the budget.
+        """
+        try:
+            await asyncio.wait_for(lock.acquire(), STREAM_RELEASE_TIMEOUT)
+        except TimeoutError, asyncio.CancelledError:
+            return False
+        return True
+
     async def _drain_pipe(
         self, stream: asyncio.StreamReader, cancelled: asyncio.CancelledError | None
     ) -> asyncio.CancelledError | None:
@@ -708,3 +779,9 @@ async def communicate(
     stdout, stderr = await proc.communicate(input)
     assert proc.returncode is not None  # for type checking
     return (proc.returncode, stdout, stderr)
+
+
+def _close_late_descriptor(task: asyncio.Future[int]) -> None:
+    """Close the descriptor of an open whose caller was cancelled."""
+    if not task.cancelled() and task.exception() is None:
+        os.close(task.result())

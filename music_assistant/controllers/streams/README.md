@@ -138,7 +138,7 @@ Supporting modules in `helpers/`:
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
 - **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
-- **Crossfade management**: `crossfade_allowed`, `clear_crossfade_handover`
+- **Crossfade management**: `crossfade_allowed`, `fade_into_pending`, `clear_crossfade_handover`
 
 `AudioProcessingManager`, initialized as `self.audio_processing` on the
 StreamsController, combines queue processing and per-player output plans into complete
@@ -180,6 +180,8 @@ Smart fades mix the outgoing track's held-back tail (up to 45 seconds) with the 
 - `SMART_CROSSFADE`: `SmartCrossFade` plans the transition with `SmartCrossFadePlanner` and renders it with `TransitionRenderer`
 - `STANDARD_CROSSFADE`: `StandardCrossFade`, a fixed-length overlap after stripping trailing silence
 - `VOICE_OVER`: `VoiceOverFade`, a declared transition that plays as declared and is never planned
+
+An item that declares a tail overlap (`StreamDetails.tail_overlap`) plays it as `VOICE_OVER` into the item it was planned against, whatever the queue's crossfade setting: on the flow stream, and per item on a player that plays gapless, where the incoming item's request takes the smart fade stream to pick the mix up. A direct PCM stream of a single item never mixes its boundary. A plugin about to queue such items asks for the queue's boundaries to be mixed with `set_boundary_mix_required`; at each play start the controller then puts only a player whose selected output protocol cannot play gapless in flow mode.
 
 A smart crossfade falls back to the standard crossfade when a track has no analysis row with BPM and beats, when the planner raises `SmartFadeNotApplicable` (the held-back tail falls silent within its first 8 seconds, or no candidate fits), or when the build fails.
 
