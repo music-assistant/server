@@ -364,3 +364,23 @@ async def test_leader_switch_to_dsp_member_keeps_alignment(
         _assert_aligned(harness.offsets_us(leader_channel))
     finally:
         await harness.close()
+
+
+async def test_join_before_first_history_append_keeps_alignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DSP member joining before the first commit reaches history plays in sync."""
+    harness = _SessionHarness(monkeypatch, dsp_ids={DSP_ID})
+    try:
+        # The producer is 4 slices ahead of the first commit, which is not in history yet.
+        await harness.start(source_limit=5)
+        assert not harness.session._history
+
+        await harness.add_member(DSP_ID)
+        harness.allow_source(None)
+        await harness.commit(30)
+
+        channel_id = harness.session._member_pipelines[DSP_ID].channel_id
+        _assert_aligned(harness.offsets_us(channel_id))
+    finally:
+        await harness.close()

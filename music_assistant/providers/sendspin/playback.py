@@ -582,10 +582,12 @@ class SendspinPlaybackSession:
 
         async with self._state_lock:
             history_snapshot = list(self._history)
-        if not history_snapshot:
-            await processor.close()
-            return
-        history_end_us = history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+        # With no history yet, the commit fanout feeds the processor from the first chunk on.
+        history_end_us = (
+            history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+            if history_snapshot
+            else None
+        )
         writer_task: asyncio.Task[None] | None = None
         drainer_task: asyncio.Task[None] | None = None
         snapshot_task: asyncio.Task[None] | None = None
