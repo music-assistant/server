@@ -386,8 +386,12 @@ for more details.
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
-        # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
-        # payload tasks, so no fetch is still running against the clients logging out below
+        # first, so no socket callback starts new work during the unload, and a failing
+        # logout can't leave the socket reconnecting forever
+        await self._client_socket.logout()
+
+        # run the unload chain next: RecommendationPayloadMixin cancels and awaits its
+        # payload tasks, so no fetch is still running against the client logging out below
         await super().unload(is_removed)
 
         # cancel a pending user update, it would outlive the clients it syncs against
@@ -412,8 +416,6 @@ for more details.
             return_exceptions=True,
         )
         self.sessions.clear()
-        # first, so a failing logout can't leave the socket reconnecting forever
-        await self._client_socket.logout()
         try:
             await self._client.logout()
         except AbsError as err:
