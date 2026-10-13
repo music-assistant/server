@@ -953,7 +953,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if track.album is None:
                 track.album = album_mapping
 
-    async def _verify_musicbrainz_mapping(self, mapping: ProviderMapping) -> bool:
+    async def _verify_musicbrainz_mapping(self, db_item: Album, mapping: ProviderMapping) -> bool:
         """Return True if a linked album exists on the provider, checked for Apple Music only."""
         # MusicBrainz links Apple Music albums per storefront, so a linked album may not
         # exist in the user's storefront; the other providers' catalogs are worldwide

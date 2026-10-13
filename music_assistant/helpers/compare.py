@@ -146,6 +146,11 @@ def set_keep_remasters_apart(enabled: bool) -> None:
     _keep_remasters_apart = enabled
 
 
+def get_keep_remasters_apart() -> bool:
+    """Return whether matching keeps a remaster apart from the original and other remasters."""
+    return _keep_remasters_apart
+
+
 def compare_media_item(
     base_item: MediaItemType | ItemMapping,
     compare_item: MediaItemType | ItemMapping,
