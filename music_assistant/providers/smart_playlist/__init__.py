@@ -604,13 +604,15 @@ class SmartPlaylistProvider(PluginProvider):
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         if existing is not None:
             parsed_rules.is_dynamic = existing.is_dynamic
-            # the user never got the folders on sources hidden from them, so keep those, and
-            # keep the stored order so an unchanged save does not count as a rule change
-            visible = self._visible_folders(existing.folder_paths)
+            stored = existing.folder_paths
             submitted = parsed_rules.folder_paths
-            parsed_rules.folder_paths = [
-                path for path in existing.folder_paths if path not in visible or path in submitted
-            ] + [path for path in submitted if path not in existing.folder_paths]
+            visible = self._visible_folders(stored)
+            # the user never got the folders on sources hidden from them, so those stay
+            hidden = [folder for folder in stored if folder not in visible]
+            # in the stored order, so an unchanged save does not count as a rule change
+            kept = [folder for folder in stored if folder in hidden or folder in submitted]
+            added = [folder for folder in submitted if folder not in stored]
+            parsed_rules.folder_paths = kept + added
         self._validate_rules(parsed_rules)
 
         rules_changed = existing is None or existing.to_dict() != parsed_rules.to_dict()
@@ -811,8 +813,7 @@ class SmartPlaylistProvider(PluginProvider):
                     and t.metadata.popularity >= rules.min_popularity
                 ]
 
-            # the library queries apply it already, the browsed folder tracks still need it
-            tracks = _filter_by_explicit(tracks, rules.explicit)
+            # Explicit filter is now handled at SQL level via _get_library_tracks()
 
             if rules.year_from is not None or rules.year_to is not None:
                 tracks = [
@@ -1193,7 +1194,9 @@ class SmartPlaylistProvider(PluginProvider):
             )
 
         if has_folder:
-            base_tracks = await self._folder_tracks(rules.folder_paths, user_provider_filter)
+            base_tracks = await self._folder_tracks(
+                rules.folder_paths, rules.explicit, user_provider_filter
+            )
         else:
             favorite = True if rules.favorites_only else None
             genre_ids = rules.genre_ids if has_genre else None
@@ -1266,7 +1269,9 @@ class SmartPlaylistProvider(PluginProvider):
                     track_sets[track.uri] = track
 
         if rules.folder_paths:
-            for track in await self._folder_tracks(rules.folder_paths, user_provider_filter):
+            for track in await self._folder_tracks(
+                rules.folder_paths, rules.explicit, user_provider_filter
+            ):
                 if track.uri:
                     track_sets[track.uri] = track
 
@@ -1335,12 +1340,16 @@ class SmartPlaylistProvider(PluginProvider):
         )
 
     async def _folder_tracks(
-        self, folder_paths: list[str], user_provider_filter: list[str] | None = None
+        self,
+        folder_paths: list[str],
+        explicit: bool | None = None,
+        user_provider_filter: list[str] | None = None,
     ) -> list[Track]:
         """
         Return the library tracks found by browsing the given folders recursively.
 
         :param folder_paths: The browse paths of the folders.
+        :param explicit: True for explicit tracks only, False to leave them out, None for all.
         :param user_provider_filter: The music sources the tracks are limited to.
         """
         # a background refresh has no user for browse to check, only the user's sources
@@ -1365,7 +1374,7 @@ class SmartPlaylistProvider(PluginProvider):
                         pending.append(item.path)
                 elif isinstance(item, Track) and item.provider == "library" and item.uri:
                     tracks[item.uri] = item
-        return list(tracks.values())
+        return _filter_by_explicit(list(tracks.values()), explicit)
 
     async def _tracks_from_seeds(
         self, seed_uris: list[str], target_size: int, is_dynamic: bool

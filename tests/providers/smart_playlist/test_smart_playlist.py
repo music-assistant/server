@@ -757,7 +757,7 @@ async def test_folder_tracks_browses_recursively() -> None:
 
     # a background refresh has no user for browse to check, only the user's sources
     mass.music.browse.reset_mock()
-    assert await plugin._folder_tracks([root], ["filesystem_local--other"]) == []
+    assert await plugin._folder_tracks([root], None, ["filesystem_local--other"]) == []
     mass.music.browse.assert_not_called()
 
 
