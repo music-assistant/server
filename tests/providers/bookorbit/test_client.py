@@ -132,10 +132,12 @@ async def test_query_audiobooks_filters_formats_and_paginates(aiohttp_client: An
     async def query(request: web.Request) -> web.Response:
         body = json.loads(await request.text())
         bodies.append(body)
-        page = body.get("page", 0)
+        page = body["pagination"]["page"]
         if page == 0:
-            return web.json_response({"items": [{"id": 1}, {"id": 2}], "page": 0, "totalPages": 2})
-        return web.json_response({"items": [{"id": 3}], "page": 1, "totalPages": 2})
+            return web.json_response(
+                {"items": [{"id": 1}, {"id": 2}], "total": 3, "page": 0, "size": 100}
+            )
+        return web.json_response({"items": [{"id": 3}], "total": 3, "page": 1, "size": 100})
 
     app = web.Application()
     app.router.add_post("/api/v1/books/query", query)
@@ -146,10 +148,50 @@ async def test_query_audiobooks_filters_formats_and_paginates(aiohttp_client: An
     books = await bo.query_audiobooks(library_id=7)
     assert [b["id"] for b in books] == [1, 2, 3]
     assert len(bodies) == 2
-    dumped = json.dumps(bodies[0])
-    assert "includesAny" in dumped
-    assert "m4b" in dumped
-    assert "7" in dumped
+    assert bodies[0] == {
+        "filter": {
+            "type": "group",
+            "join": "AND",
+            "rules": [
+                {
+                    "type": "rule",
+                    "field": "format",
+                    "operator": "includesAny",
+                    "value": ["flac", "m4a", "m4b", "mp3", "ogg", "opus"],
+                },
+                {
+                    "type": "rule",
+                    "field": "library",
+                    "operator": "includesAny",
+                    "value": [7],
+                },
+            ],
+        },
+        "sort": [{"field": "title", "dir": "asc"}],
+        "pagination": {"page": 0, "size": 100},
+    }
+    assert bodies[1]["pagination"] == {"page": 1, "size": 100}
+
+
+@pytest.mark.asyncio
+async def test_query_audiobooks_omits_library_filter_when_unset(aiohttp_client: Any) -> None:
+    """Query audiobooks omits library filter when library_id is None."""
+    bodies: list[dict[str, Any]] = []
+
+    async def query(request: web.Request) -> web.Response:
+        bodies.append(json.loads(await request.text()))
+        return web.json_response({"items": [], "total": 0, "page": 0, "size": 100})
+
+    app = web.Application()
+    app.router.add_post("/api/v1/books/query", query)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    assert await bo.query_audiobooks() == []
+    rules = bodies[0]["filter"]["rules"]
+    assert len(rules) == 1
+    assert rules[0]["field"] == "format"
 
 
 @pytest.mark.asyncio

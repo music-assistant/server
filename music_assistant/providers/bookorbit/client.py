@@ -119,11 +119,12 @@ class BookOrbitClient:
             books.extend(items)
             if not items or not isinstance(payload, dict):
                 break
-            total_pages = payload.get("totalPages")
-            if total_pages is not None:
-                if page + 1 >= int(total_pages):
+            total = payload.get("total")
+            page_size = int(payload.get("size") or QUERY_PAGE_SIZE)
+            if total is not None:
+                if len(books) >= int(total):
                     break
-            elif len(items) < QUERY_PAGE_SIZE:
+            elif len(items) < page_size:
                 break
         return books
 
@@ -203,17 +204,27 @@ class BookOrbitClient:
 
     @staticmethod
     def _build_query(library_id: int | None, page: int) -> dict[str, Any]:
-        # NOTE: body shape is a best guess at BookOrbit's BookQuery (not yet verified
-        # against a live instance); kept in one place so it is easy to adjust.
         rules: list[dict[str, Any]] = [
-            {"field": "format", "operator": "includesAny", "value": sorted(AUDIO_FORMATS)}
+            {
+                "type": "rule",
+                "field": "format",
+                "operator": "includesAny",
+                "value": sorted(AUDIO_FORMATS),
+            }
         ]
         if library_id is not None:
-            rules.append({"field": "library", "operator": "eq", "value": library_id})
+            rules.append(
+                {
+                    "type": "rule",
+                    "field": "library",
+                    "operator": "includesAny",
+                    "value": [library_id],
+                }
+            )
         return {
-            "filter": {"conjunction": "and", "rules": rules},
-            "page": page,
-            "pageSize": QUERY_PAGE_SIZE,
+            "filter": {"type": "group", "join": "AND", "rules": rules},
+            "sort": [{"field": "title", "dir": "asc"}],
+            "pagination": {"page": page, "size": QUERY_PAGE_SIZE},
         }
 
     @staticmethod
