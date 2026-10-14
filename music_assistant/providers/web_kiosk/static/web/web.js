@@ -64,6 +64,7 @@
     var lyricsLines = [];
     var lyricsIdx = -1;
     var endReported = false;
+    var playbackGeneration = '';
 
     var audio = new Audio();
     audio.volume = 1;
@@ -160,9 +161,9 @@
     }
     function sendWS(obj) { if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify(obj)); } catch (e) { /* noop */ } } }
     function reportTrackEnded() {
-        if (endReported || isPrimeSource() || sendspinStreaming) return;
+        if (endReported || !playbackGeneration || !audio.ended || isPrimeSource() || sendspinStreaming) return;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        sendWS({ type: 'ended' });
+        sendWS({ type: 'ended', playback_generation: playbackGeneration });
         endReported = true;
     }
 
@@ -203,6 +204,7 @@
                 // uses that output unless a Sendspin stream is already playing here.
                 if (sendspinStreaming) break;
                 if (msg.path) {
+                    playbackGeneration = typeof msg.playback_generation === 'string' ? msg.playback_generation : '';
                     pendingSeek = null;
                     hasTrack = true;
                     current = {
@@ -221,7 +223,8 @@
                 }
                 break;
             case 'stop':
-                if (msg.showNotification && !confirm('Stop playback?')) break;
+                playbackGeneration = '';
+                endReported = true;
                 audio.pause(); audio.removeAttribute('src');
                 pendingSeek = null;
                 displayHold = null;
@@ -232,6 +235,8 @@
                 pendingLyrics = null;
                 renderNow();
                 playing = false; sync();
+                hideAudioPrompt();
+                setStatus(msg.showNotification ? 'Playback stopped' : '');
                 break;
             case 'pause':
                 audio.pause(); playing = false; sync();
@@ -936,10 +941,9 @@
         audio.onended = function () {
             // The page often has no Music Assistant token, so next goes over
             // the player socket. The provider then advances the queue.
-            if (isPrimeSource() || sendspinStreaming) return;
+            if (isPrimeSource() || sendspinStreaming || !audio.ended) return;
             playing = false;
             sync();
-            endReported = false;
             reportTrackEnded();
         };
     }

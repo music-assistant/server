@@ -299,6 +299,7 @@ class WebKioskProvider(PlayerProvider):
         self,
         player_id: str,
         *,
+        playback_generation: str,
         title: str | None = None,
         artist: str | None = None,
         image_url: str | None = None,
@@ -310,6 +311,7 @@ class WebKioskProvider(PlayerProvider):
             seq = self.next_wave_seq(player_id)
             self.http_server.broadcast_play(
                 player_id,
+                playback_generation=playback_generation,
                 title=title,
                 artist=artist,
                 image_url=image_url,
@@ -336,9 +338,9 @@ class WebKioskProvider(PlayerProvider):
         """Look up the current track's lyrics and send them to the page."""
         self._spawn(self._publish_lyrics(player_id, seq))
 
-    def track_ended(self, player_id: str) -> None:
+    def track_ended(self, player_id: str, playback_generation: str) -> None:
         """Advance the queue after the browser finishes its audio file."""
-        self._spawn(self._advance_after_track(player_id))
+        self._spawn(self._advance_after_track(player_id, playback_generation))
 
     def notify_play_paused(self, player_id: str) -> None:
         """Notify the kiosk WebSocket client that playback is paused."""
@@ -507,10 +509,12 @@ class WebKioskProvider(PlayerProvider):
         plain, lrc = await self.mass.metadata.get_track_lyrics(media)
         return parse_track_lyrics(plain, lrc)
 
-    async def _advance_after_track(self, player_id: str) -> None:
+    async def _advance_after_track(self, player_id: str, playback_generation: str) -> None:
         """Play the next queue item, or stop when this track was the last one."""
         player = self.mass.players.get_player(player_id)
         if not isinstance(player, WebKioskPlayer) or player.playback_state != PlaybackState.PLAYING:
+            return
+        if playback_generation != player.playback_generation:
             return
         if player._track_end_handled or not player.playback_reached_end():
             return

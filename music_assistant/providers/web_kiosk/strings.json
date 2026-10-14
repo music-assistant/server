@@ -9,8 +9,8 @@
       "description": "Unregister kiosk players after this many minutes without activity."
     },
     "show_stop_notification": {
-      "label": "Show notification before closing player",
-      "description": "Show confirmation dialog in the kiosk when stopping playback from MA."
+      "label": "Show notification when playback stops",
+      "description": "Show an informational notification in the kiosk after playback is stopped from MA."
     },
     "enable_sendspin_bridge": {
       "label": "Sendspin bridge (experimental)",

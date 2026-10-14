@@ -107,6 +107,7 @@ class WebKioskHTTPServer:
         self,
         player_id: str,
         *,
+        playback_generation: str,
         title: str | None = None,
         artist: str | None = None,
         image_url: str | None = None,
@@ -124,6 +125,7 @@ class WebKioskHTTPServer:
             "type": "play",
             "path": play_path,
             "player_id": player_id,
+            "playback_generation": playback_generation,
         }
         if title:
             payload["title"] = title
@@ -506,6 +508,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             "type": "play",
             "path": play_path,
             "player_id": player.player_id,
+            "playback_generation": player.playback_generation,
             "title": media.title,
             "artist": media.artist,
             "image_url": media.image_url,
@@ -664,7 +667,9 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 player.note_seek(float(position))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "ended":
-            self.provider.track_ended(player_id)
+            generation = msg.get("playback_generation")
+            if isinstance(generation, str) and generation:
+                self.provider.track_ended(player_id, generation)
             self.provider.on_player_activity(player_id)
         else:
             logger.debug("Unknown WS message type from %s: %s", player_id, msg_type)

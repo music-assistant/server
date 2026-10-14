@@ -16,6 +16,7 @@ from music_assistant_models.player_queue import PlayerQueue
 
 import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.controllers.streams import StreamsController
+from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
 
@@ -162,7 +163,9 @@ async def test_track_end_plays_the_next_item(
     mass_mock.player_queues.index_by_id.return_value = 1
     mass_mock.player_queues.play_index = AsyncMock()
 
-    await provider._advance_after_track("wk_test")
+    await provider._advance_after_track(
+        "wk_test", cast("WebKioskPlayer", player).playback_generation
+    )
 
     mass_mock.player_queues.play_index.assert_awaited_once_with("wk_test", 1)
     mass_mock.players.cmd_stop.assert_not_awaited()
@@ -179,7 +182,9 @@ async def test_track_end_stops_when_nothing_follows(
     mass_mock.player_queues.get_next_item.return_value = None
     mass_mock.player_queues.play_index = AsyncMock()
 
-    await provider._advance_after_track("wk_test")
+    await provider._advance_after_track(
+        "wk_test", cast("WebKioskPlayer", player).playback_generation
+    )
 
     mass_mock.players.cmd_stop.assert_awaited_once_with("wk_test")
     mass_mock.player_queues.play_index.assert_not_awaited()
@@ -196,7 +201,9 @@ async def test_track_end_ignores_a_position_still_in_the_song(
     mass_mock.players.get_player.return_value = player
     mass_mock.player_queues.play_index = AsyncMock()
 
-    await provider._advance_after_track("wk_test")
+    await provider._advance_after_track(
+        "wk_test", cast("WebKioskPlayer", player).playback_generation
+    )
 
     mass_mock.player_queues.play_index.assert_not_awaited()
     mass_mock.players.cmd_stop.assert_not_awaited()
@@ -216,8 +223,12 @@ async def test_track_end_runs_once_per_play(
     mass_mock.player_queues.index_by_id.return_value = 1
     mass_mock.player_queues.play_index = AsyncMock()
 
-    await provider._advance_after_track("wk_test")
-    await provider._advance_after_track("wk_test")
+    await provider._advance_after_track(
+        "wk_test", cast("WebKioskPlayer", player).playback_generation
+    )
+    await provider._advance_after_track(
+        "wk_test", cast("WebKioskPlayer", player).playback_generation
+    )
 
     mass_mock.player_queues.play_index.assert_awaited_once()
 
@@ -364,7 +375,7 @@ async def test_background_media_work_reports_unexpected_errors(
         _playing_at_end(player)
         mass_mock.players.get_player.return_value = player
         mass_mock.player_queues.get_active_queue.side_effect = error
-        provider.track_ended("wk_test")
+        provider.track_ended("wk_test", cast("WebKioskPlayer", player).playback_generation)
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     assert results == [error]
@@ -415,3 +426,29 @@ async def test_html5_stream_stays_per_item_when_ma_requires_flow(
     assert await provider.get_ma_stream_url("wk_test", media) == (
         "http://ma.local:8095/single/session-1/wk_test/item-1/wk_test.mp3"
     )
+
+
+async def test_queued_end_task_rechecks_generation_before_advancing(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """A valid end becomes stale if playback changes before its background task runs."""
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: object) -> asyncio.Task[None]:
+        task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.get_active_queue.return_value = Mock(
+        queue_id="wk_test", current_index=0
+    )
+    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="next")
+    mass_mock.player_queues.index_by_id.return_value = 1
+    mass_mock.player_queues.play_index = AsyncMock()
+    await player.play_media(PlayerMedia(uri="old", duration=5, media_type=MediaType.TRACK))
+    provider.track_ended("wk_test", player.playback_generation)
+    await player.play_media(PlayerMedia(uri="new", duration=5, media_type=MediaType.TRACK))
+    await asyncio.gather(*tasks)
+    mass_mock.player_queues.play_index.assert_not_awaited()

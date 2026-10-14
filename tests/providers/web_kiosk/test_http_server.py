@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiohttp import ClientError, WSServerHandshakeError
+from music_assistant_models.enums import MediaType
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
@@ -104,10 +105,10 @@ async def test_ws_ended_asks_the_provider_to_advance(
     ws = await http_client.ws_connect("/ws?device_id=endnext")
     hello = json.loads((await ws.receive()).data)
 
-    await ws.send_str(json.dumps({"type": "ended"}))
+    await ws.send_str(json.dumps({"type": "ended", "playback_generation": "test-generation"}))
     await asyncio.sleep(0.05)
 
-    provider.track_ended.assert_called_once_with(hello["player_id"])
+    provider.track_ended.assert_called_once_with(hello["player_id"], "test-generation")
     await ws.close()
 
 
@@ -407,4 +408,94 @@ async def test_ws_accepts_same_origin_or_direct_navigation(
     ws = await http_client.ws_connect("/ws", headers={"Sec-Fetch-Site": fetch_site})
     payload = json.loads((await ws.receive()).data)
     assert payload["type"] == "welcome"
+    await ws.close()
+
+
+@pytest.mark.parametrize(("duration", "stream_duration"), [(5, 5), (180, 4)])
+async def test_delayed_ended_cannot_advance_a_replacement_stream(
+    http_client: TestClient[Any, Any],
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    player: WebKioskPlayer,
+    duration: int,
+    stream_duration: int,
+) -> None:
+    """Old end messages cannot skip a short replacement track or a seek near its end."""
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: object) -> asyncio.Task[None]:
+        task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.get_active_queue.return_value = Mock(
+        queue_id="wk_test", current_index=0
+    )
+    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="next")
+    mass_mock.player_queues.index_by_id.return_value = 1
+    mass_mock.player_queues.play_index = AsyncMock()
+    provider.spawn_wave = Mock()  # type: ignore[method-assign]
+    provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
+    await player.play_media(PlayerMedia(uri="old", duration=30, media_type=MediaType.TRACK))
+    first = await http_client.ws_connect("/ws?device_id=test")
+    await first.receive_json()
+    old_play = await first.receive_json()
+    await player.play_media(
+        PlayerMedia(
+            uri="new",
+            duration=duration,
+            stream_duration=stream_duration,
+            media_type=MediaType.TRACK,
+        )
+    )
+    second = await http_client.ws_connect("/ws?device_id=test")
+    await second.receive_json()
+    new_play = await second.receive_json()
+    processed = asyncio.Event()
+    provider.on_player_activity = Mock(side_effect=lambda _: processed.set())  # type: ignore[method-assign]
+    try:
+        await first.send_json(
+            {"type": "ended", "playback_generation": old_play.get("playback_generation", "old")}
+        )
+        await processed.wait()
+        await asyncio.sleep(0)
+        mass_mock.player_queues.play_index.assert_not_awaited()
+        processed.clear()
+        await second.send_json(
+            {"type": "ended", "playback_generation": new_play.get("playback_generation", "new")}
+        )
+        await processed.wait()
+        await asyncio.sleep(0)
+        mass_mock.player_queues.play_index.assert_awaited_once_with("wk_test", 1)
+        processed.clear()
+        await second.send_json(
+            {"type": "ended", "playback_generation": new_play["playback_generation"]}
+        )
+        await processed.wait()
+        await asyncio.sleep(0)
+        mass_mock.player_queues.play_index.assert_awaited_once()
+    finally:
+        await first.close()
+        await second.close()
+        await provider.unload()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_ws_ignores_ended_without_a_playback_generation(
+    http_client: TestClient[Any, Any], provider: WebKioskProvider
+) -> None:
+    """A cached client cannot advance playback with an unidentified end message."""
+    provider.track_ended = Mock()  # type: ignore[method-assign]
+    ws = await http_client.ws_connect("/ws?device_id=untagged")
+    await ws.receive_json()
+    processed = asyncio.Event()
+    provider.on_player_activity = Mock(side_effect=lambda _: processed.set())  # type: ignore[method-assign]
+    await ws.send_json({"type": "ended"})
+    await processed.wait()
+    provider.track_ended.assert_not_called()
     await ws.close()

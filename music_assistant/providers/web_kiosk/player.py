@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -92,6 +93,12 @@ class WebKioskPlayer(Player):
         self._skip_ws_depth = 0
         self._accepted_position = False
         self._track_end_handled = False
+        self._playback_generation = secrets.token_hex(16)
+
+    @property
+    def playback_generation(self) -> str:
+        """Return the identity of the current playback instance."""
+        return self._playback_generation
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -127,6 +134,7 @@ class WebKioskPlayer(Player):
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command — store media for the kiosk to fetch."""
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
+        self._playback_generation = secrets.token_hex(16)
         self.current_stream_url = media.uri
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
@@ -142,6 +150,7 @@ class WebKioskPlayer(Player):
             song_length, stream_start = media_timeline(media)
             cast("WebKioskProvider", self.provider).notify_play_started(
                 self.player_id,
+                playback_generation=self.playback_generation,
                 title=media.title,
                 artist=media.artist,
                 image_url=media.image_url,
@@ -173,6 +182,7 @@ class WebKioskPlayer(Player):
     async def stop(self) -> None:
         """Handle STOP command."""
         self.logger.info("stop on %s", self.display_name)
+        self._playback_generation = secrets.token_hex(16)
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_current_media = None
         self._attr_elapsed_time = None
