@@ -614,3 +614,18 @@ async def test_builder_omits_inactive_ma_url_option(http_client: TestClient[Any,
     response = await http_client.get("/")
     assert response.status == 200
     assert 'id="ma_url"' not in await response.text()
+
+
+async def test_browser_device_info_describes_browser(
+    http_client: TestClient[Any, Any], mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """Browser identification replaces repeated provider-name placeholders."""
+    mass_mock.players.get_player.return_value = player
+    agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/129.0.0.0 Safari/537.36"
+    ws = await http_client.ws_connect("/ws", headers={"User-Agent": agent})
+    welcome = await ws.receive_json()
+    assert player.device_info.model == "Chrome 129 (Linux)"
+    assert player.device_info.manufacturer == "Google Inc."
+    assert player.device_info.software_version == "129.0.0.0"
+    assert welcome["device_info"]["model"] == player.device_info.model
+    await ws.close()

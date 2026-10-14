@@ -472,6 +472,13 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                         "type": "welcome",
                         "player_id": player_id,
                         "server_version": self.provider.mass.version,
+                        "device_info": {
+                            "model": player.device_info.model,
+                            "manufacturer": player.device_info.manufacturer,
+                            "software_version": player.device_info.software_version,
+                        }
+                        if player
+                        else {},
                     }
                 ),
             )
@@ -786,6 +793,12 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         remote_ip = request.remote
         display_name = self.provider.player_display_name(player_id, remote_ip=remote_ip)
         player = await self.provider.get_or_register_player(
-            player_id, display_name=display_name, ip_address=remote_ip
+            player_id,
+            display_name=display_name,
+            ip_address=remote_ip,
+            sendspin_client_id=normalize_sendspin_client_id(
+                request.query.get("sendspin_client_id")
+            ),
+            user_agent=request.headers.get("User-Agent"),
         )
         return player_id, device_param, player

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, cast
+from uuid import NAMESPACE_URL, uuid5
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError, UnsupportedFeaturedException
 from music_assistant_models.player import DeviceInfo
 
@@ -45,6 +47,40 @@ def media_timeline(media: object) -> tuple[float | None, float]:
     return duration, 0.0
 
 
+def browser_device_info(user_agent: str) -> tuple[str, str, str | None]:
+    """Describe browser software without guessing the physical device manufacturer."""
+    agent = user_agent[:1024]
+    name, vendor, version = "Web browser", "Unknown", None
+    for browser, manufacturer, pattern in (
+        ("Samsung Internet", "Samsung", r"SamsungBrowser/([\d.]+)"),
+        ("Edge", "Microsoft", r"Edg(?:e|A|iOS)?/([\d.]+)"),
+        ("Opera", "Opera", r"(?:OPR|Opera)/([\d.]+)"),
+        ("Firefox", "Mozilla", r"(?:Firefox|FxiOS)/([\d.]+)"),
+        ("Chrome", "Google Inc.", r"(?:Chrome|CriOS)/([\d.]+)"),
+        ("Safari", "Apple", r"Version/([\d.]+).*Safari/"),
+    ):
+        if match := re.search(pattern, agent):
+            name, vendor, version = browser, manufacturer, match.group(1)[:40]
+            break
+    model = f"{name} {version.split('.')[0]}" if version else name
+    for marker, platform in (
+        ("Android", "Android"),
+        ("iPhone", "iOS"),
+        ("iPad", "iPadOS"),
+        ("Tizen", "Tizen"),
+        ("Web0S", "webOS"),
+        ("webOS", "webOS"),
+        (r"Cr[O]S", "ChromeOS"),
+        ("Windows", "Windows"),
+        ("Macintosh", "macOS"),
+        ("Linux", "Linux"),
+    ):
+        if re.search(marker, agent):
+            model += f" ({platform})"
+            break
+    return model, vendor, version
+
+
 class WebKioskPlayer(Player):
     """Represents a web browser kiosk as a Music Assistant player."""
 
@@ -79,8 +115,11 @@ class WebKioskPlayer(Player):
             PlayerFeature.SEEK,
         }
         self._attr_device_info = DeviceInfo(
-            model="Web Kiosk",
-            manufacturer="Web Kiosk",
+            model="Web browser",
+            manufacturer="Unknown",
+        )
+        self._attr_device_info.add_identifier(
+            IdentifierType.UUID, str(uuid5(NAMESPACE_URL, f"music-assistant:web-kiosk:{player_id}"))
         )
         if ip_address:
             self._attr_device_info.ip_address = ip_address
@@ -139,6 +178,15 @@ class WebKioskPlayer(Player):
         else:
             self._attr_supported_features.discard(PlayerFeature.VOLUME_SET)
         self.update_state()
+
+    def update_browser_info(self, user_agent: str) -> None:
+        """Update model, browser vendor and version from the connected browser."""
+        model, vendor, version = browser_device_info(user_agent)
+        self._attr_device_info.model = model
+        self._attr_device_info.manufacturer = vendor
+        self._attr_device_info.software_version = version
+        if self.initialized.is_set():
+            self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command — store media for the kiosk to fetch."""

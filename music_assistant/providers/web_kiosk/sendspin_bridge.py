@@ -12,13 +12,15 @@ through this bridge.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec
+from aiosendspin.models.types import AudioCodec, PlayerCommand
+from music_assistant_models.enums import IdentifierType
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
@@ -75,22 +77,17 @@ class WebKioskSendspinBridge:
         """Return whether the bridge is registered with Sendspin."""
         return self._client is not None
 
-    async def start(self) -> None:
-        """Register the kiosk as an external Sendspin client."""
-        if sendspin_prov := cast(
-            "SendspinProvider | None", self.provider.mass.get_provider("sendspin")
-        ):
-            sendspin_prov.register_bridge_underlying_player(
-                self.client_id, self.kiosk_player.player_id
-            )
-        hello = ClientHelloPayload(
+    @property
+    def hello_payload(self) -> ClientHelloPayload:
+        """Return the identity and commands this browser bridge supports."""
+        return ClientHelloPayload(
             client_id=self.client_id,
             name=f"{self.kiosk_player.display_name} (Sendspin)",
             version=1,
-            supported_roles=[BRIDGE_ROLE_ID],
+            supported_roles=["player@v1"],
             device_info=SendspinDeviceInfo(
-                product_name="Web Kiosk",
-                manufacturer="Web Kiosk",
+                product_name=f"Web Kiosk / {self.kiosk_player.device_info.model}",
+                manufacturer=self.kiosk_player.device_info.manufacturer,
             ),
             player_support=ClientHelloPlayerSupport(
                 supported_formats=[
@@ -102,11 +99,43 @@ class WebKioskSendspinBridge:
                     )
                 ],
                 buffer_capacity=1_000,
-                supported_commands=[],
+                supported_commands=[PlayerCommand.VOLUME],
             ),
         )
+
+    async def start(self) -> None:
+        """Register the kiosk as an external Sendspin client."""
+        if sendspin_prov := cast(
+            "SendspinProvider | None", self.provider.mass.get_provider("sendspin")
+        ):
+            sendspin_prov.register_bridge_identifiers(
+                self.client_id,
+                {
+                    IdentifierType.UUID: self.kiosk_player.device_info.identifiers[
+                        IdentifierType.UUID
+                    ]
+                },
+            )
+            sendspin_prov.register_bridge_underlying_player(
+                self.client_id, self.kiosk_player.player_id
+            )
+        hello = self.hello_payload
+        existing = self.sendspin_server.get_client(self.client_id)
+        if sendspin_prov is not None and existing is not None and existing.is_connected:
+            await sendspin_prov.apply_bridge_claim(
+                self.client_id,
+                {
+                    IdentifierType.UUID: self.kiosk_player.device_info.identifiers[
+                        IdentifierType.UUID
+                    ]
+                },
+                hello,
+                underlying_player_id=self.kiosk_player.player_id,
+            )
+            self._client = existing
+            return
         self._client = self.sendspin_server.register_external_player(
-            hello, on_stream_start=self._on_stream_start
+            replace(hello, supported_roles=[BRIDGE_ROLE_ID]), on_stream_start=self._on_stream_start
         )
         # The bridge role is a no-op audio sink until the kiosk's JS client
         # connects and takes over; audio requirements make the server treat
@@ -185,6 +214,39 @@ class WebKioskSendspinBridge:
 
 class WebKioskSendspinBridgeManager(SendspinBridgeManagerBase[WebKioskSendspinBridge]):
     """Manages Sendspin bridges for all web kiosk players."""
+
+    async def prepare_player(self, player: WebKioskPlayer) -> None:
+        """Declare the browser identity before MA registers its native kiosk player."""
+        client_id = player.sendspin_client_id
+        sendspin = self.sendspin_provider
+        if (
+            not self._should_have_bridge(player)
+            or not client_id
+            or sendspin is None
+            or self.sendspin_server is None
+        ):
+            return
+        identifiers = {IdentifierType.UUID: player.device_info.identifiers[IdentifierType.UUID]}
+        sendspin.register_bridge_identifiers(client_id, identifiers)
+        sendspin.register_bridge_underlying_player(client_id, player.player_id)
+        existing = self.mass.players.get_player(client_id)
+        if existing is None:
+            return
+        parent = self.mass.players.get_player(existing.protocol_parent_id or "")
+        if (
+            parent is not None
+            and parent.provider.domain == "universal_player"
+            and {link.output_protocol_id for link in parent.linked_output_protocols} == {client_id}
+        ):
+            # Give MA's one-output wrapper the browser identity before native registration.
+            # MA then owns the wrapper replacement and configuration/group migration.
+            parent.device_info.add_identifier(IdentifierType.UUID, identifiers[IdentifierType.UUID])
+        await sendspin.apply_bridge_claim(
+            client_id,
+            identifiers,
+            self._create_bridge(player).hello_payload,
+            underlying_player_id=player.player_id,
+        )
 
     async def release_bridge(self, player_id: str, permanent: bool = False) -> None:
         """Detach a kiosk's bridge and relinquish its identity ownership."""

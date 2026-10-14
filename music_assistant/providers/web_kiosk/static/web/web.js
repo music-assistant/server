@@ -67,6 +67,7 @@
 
     var playerId = '';
     var serverVersion = '';
+    var browserModel = 'Web browser';
     var hasTrack = false;
     var partyExpanded = false;
     var ws = null;
@@ -304,6 +305,7 @@
     function handleWS(msg) {
         switch (msg.type) {
             case 'welcome':
+                if (msg.device_info && typeof msg.device_info.model === 'string') browserModel = msg.device_info.model;
                 playerId = msg.player_id;
                 serverVersion = typeof msg.server_version === 'string' ? msg.server_version : '';
                 renderNow();
@@ -1320,7 +1322,7 @@
             var cfg = {
                 baseUrl: sendspinUrl,
                 clientName: 'Web Kiosk',
-                productName: 'Web Kiosk',
+                productName: 'Web Kiosk / ' + browserModel,
                 correctionMode: 'sync',
                 storage: sdkStorage,
                 codecs: verified.codecs,

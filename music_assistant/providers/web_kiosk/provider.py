@@ -178,6 +178,8 @@ class WebKioskProvider(PlayerProvider):
         player_id: str,
         display_name: str | None = None,
         ip_address: str | None = None,
+        sendspin_client_id: str | None = None,
+        user_agent: str | None = None,
     ) -> WebKioskPlayer | None:
         """
         Get or register a kiosk player for the given player_id.
@@ -189,9 +191,16 @@ class WebKioskProvider(PlayerProvider):
                 return None
             existing = self.mass.players.get_player(player_id, raise_unavailable=False)
             if existing and isinstance(existing, WebKioskPlayer):
+                if user_agent:
+                    existing.update_browser_info(user_agent)
                 if ip_address and not existing.device_info.ip_address:
                     existing.device_info.ip_address = ip_address
                 self.on_player_activity(player_id)
+                if sendspin_client_id:
+                    await self._set_sendspin_owner(existing, sendspin_client_id)
+                    if self.bridge_manager:
+                        await self.bridge_manager.prepare_player(existing)
+                        await self.bridge_manager.evaluate_bridge(existing)
                 return existing
             name = display_name or self.player_display_name(player_id)
             player = WebKioskPlayer(
@@ -200,6 +209,12 @@ class WebKioskProvider(PlayerProvider):
                 name=name,
                 ip_address=ip_address,
             )
+            if user_agent:
+                player.update_browser_info(user_agent)
+            if sendspin_client_id:
+                await self._set_sendspin_owner(player, sendspin_client_id)
+                if self.bridge_manager:
+                    await self.bridge_manager.prepare_player(player)
             await self.mass.players.register(player)
             self._player_last_activity[player_id] = time.monotonic()
             self.logger.info("Registered kiosk player: %s (%s)", name, player_id)
@@ -219,19 +234,7 @@ class WebKioskProvider(PlayerProvider):
         async with self._player_lock:
             if self._unloading:
                 return
-            owner = self._sendspin_owners.get(client_id)
-            if owner is not None and owner is not player:
-                owner.sendspin_client_id = None
-                if self.bridge_manager:
-                    await self.bridge_manager.release_bridge(owner.player_id)
-            previous = player.sendspin_client_id
-            if previous and previous != client_id:
-                player.sendspin_client_id = None
-                if self.bridge_manager:
-                    await self.bridge_manager.release_bridge(player.player_id)
-                self._sendspin_owners.pop(previous, None)
-            player.sendspin_client_id = client_id
-            self._sendspin_owners[client_id] = player
+            await self._set_sendspin_owner(player, client_id)
             if self.bridge_manager:
                 await self.bridge_manager.evaluate_bridge(player)
 
@@ -559,6 +562,22 @@ class WebKioskProvider(PlayerProvider):
             return f"http://{host}:{port}/kiosk"
         return f"http://<ma-host>:{port}/kiosk"
 
+    async def _set_sendspin_owner(self, player: WebKioskPlayer, client_id: str) -> None:
+        """Transfer identity ownership while the player lifecycle lock is held."""
+        owner = self._sendspin_owners.get(client_id)
+        if owner is not None and owner is not player:
+            owner.sendspin_client_id = None
+            if self.bridge_manager:
+                await self.bridge_manager.release_bridge(owner.player_id)
+        previous = player.sendspin_client_id
+        if previous and previous != client_id:
+            player.sendspin_client_id = None
+            if self.bridge_manager:
+                await self.bridge_manager.release_bridge(player.player_id)
+            self._sendspin_owners.pop(previous, None)
+        player.sendspin_client_id = client_id
+        self._sendspin_owners[client_id] = player
+
     async def _handle_player_unregister(
         self, player_id: str, *, only_if_disconnected: bool = False, permanent: bool = False
     ) -> None:
@@ -577,7 +596,10 @@ class WebKioskProvider(PlayerProvider):
             try:
                 if self.bridge_manager:
                     await self.bridge_manager.release_bridge(player_id, permanent=permanent)
-                await self.mass.players.unregister(player_id)
+                if permanent:
+                    await self.mass.players.unregister(player_id, permanent=True)
+                else:
+                    await self.mass.players.unregister(player_id)
             finally:
                 for client_id, owner in list(self._sendspin_owners.items()):
                     if owner.player_id == player_id:

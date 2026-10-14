@@ -508,10 +508,10 @@ async def test_sendspin_identity_has_one_kiosk_owner(
     assert second.sendspin_client_id == "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
     mass_mock.players.get_player.return_value = Mock()
     await provider.remove_player(first.player_id)
-    mass_mock.players.unregister.assert_awaited_once_with("wk_first")
+    mass_mock.players.unregister.assert_awaited_once_with("wk_first", permanent=True)
     mass_mock.players.unregister.reset_mock()
     await provider.remove_player(second.player_id)
     assert mass_mock.players.unregister.await_args_list == [
         (("hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",), {"permanent": True}),
-        (("wk_second",), {}),
+        (("wk_second",), {"permanent": True}),
     ]
