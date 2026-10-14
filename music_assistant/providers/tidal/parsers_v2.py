@@ -508,7 +508,7 @@ def _resolve_image(
 
 
 def _is_album_cover(artwork: dict[str, Any] | None) -> bool:
-    """Return whether an artwork comes in album cover sizes, larger than any artist picture."""
+    """Return whether an artwork is an album cover rather than an artist picture."""
     files = (artwork or {}).get("attributes", {}).get("files") or []
     return any(file.get("meta", {}).get("width", 0) > _MAX_ARTIST_PICTURE_WIDTH for file in files)
 
