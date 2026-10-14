@@ -328,9 +328,10 @@ mode, then the playback user's own accounts, then a source that lists every libr
 quality. Each track is pinned to the chosen source's entry; a track that source lacks plays as the
 album lists it. When every track is to be ranked on its own (the `best_quality_per_track` mode) no
 source is chosen and nothing is pinned, and a track outside the library plays the best entry any
-of the album's sources lists. The source is chosen at enqueue time, so a changed setting applies
-to the albums queued after it; only `best_quality_per_track` also reaches the albums already
-queued, as it ignores their pins at playback.
+of the album's sources lists. The source is chosen at enqueue time, so a changed source mode
+applies to the albums queued after it; only `best_quality_per_track` also reaches the albums
+already queued, as it ignores their pins at playback. The upgrade threshold is applied at
+playback, so it reaches them as well.
 
 Data flow: media item → `ResolvedItem`s with their origin → `QueueItem.origin` → the pinned copy
 first when the stream is selected.

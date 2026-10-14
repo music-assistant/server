@@ -358,6 +358,10 @@ def _upgrade_shortfall(
 
     A copy no better than the copy that came first falls short as far as that one, so it stays
     behind every better copy.
+
+    :param audio_format: The audio format of the copy.
+    :param winner_tier: The quality tier of the copy that came first.
+    :param upgrade_below: The upgrade quality.
     """
     return max(upgrade_below - max(quality_tier(audio_format), winner_tier), 0)
 
