@@ -67,7 +67,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_media_type_from_item_id,
 )
 from music_assistant.helpers.compare import compare_album
-from music_assistant.helpers.provider_access import playback_sources_for
+from music_assistant.helpers.provider_access import playback_instance_for, playback_sources_for
 from music_assistant.helpers.util import is_disc_dir
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
@@ -308,7 +308,7 @@ class MediaResolver:
         for artist in artists:
             try:
                 top_tracks = await self.mass.music.artists.top_tracks(
-                    artist.item_id, artist.provider
+                    artist.item_id, artist.provider, limit=None
                 )
                 # a provider can list top tracks that are all unplayable here, which must
                 # not stand in for the artist's playable tracks
@@ -316,7 +316,7 @@ class MediaResolver:
                 if not artist_tracks:
                     # not get_artist_tracks: a top_tracks preference would repeat the empty lookup
                     all_tracks = await self.mass.music.artists.tracks(
-                        artist.item_id, artist.provider
+                        artist.item_id, artist.provider, limit=None
                     )
                     artist_tracks = [track for track in all_tracks if track.available]
             except PROVIDER_FETCH_ERRORS as err:
@@ -628,7 +628,10 @@ class MediaResolver:
         async with ImpersonatedUser(self.mass, user=userid):
             # ensure we get the position status on the current user
             all_audiobooks = await self.mass.music.artists.audiobooks(
-                author_narrator.item_id, author_narrator.provider, author_narrator.artist_type
+                author_narrator.item_id,
+                author_narrator.provider,
+                author_narrator.artist_type,
+                limit=None,
             )
         for book in all_audiobooks:
             # do not use get_resume_position here, as an artist may potentially have a lot of audiobooks,
@@ -757,7 +760,9 @@ class MediaResolver:
         """
         library_albums: list[Album] = []
         if (library_artist := await self._resolve_library_artist(artist)) is not None:
-            library_albums = await self.mass.music.artists.albums(library_artist.item_id, "library")
+            library_albums = await self.mass.music.artists.albums(
+                library_artist.item_id, "library", limit=None
+            )
         # singles are left out; library compilations stay, as a local collection may have no
         # albums otherwise
         albums = [
@@ -829,7 +834,9 @@ class MediaResolver:
         :param artist_items_conf: The artist selection setting.
         """
         if artist_items_conf == "top_tracks":
-            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+            tracks = await self.mass.music.artists.top_tracks(
+                artist.item_id, artist.provider, limit=None
+            )
             random.shuffle(tracks)
             return tracks
         # legacy "library_album_tracks" also resolves to the in-library tracks
@@ -840,7 +847,9 @@ class MediaResolver:
         if artist_items_conf == "prefer_library":
             tracks = await self._library_artist_tracks(artist)
             if not tracks:
-                tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+                tracks = await self.mass.music.artists.top_tracks(
+                    artist.item_id, artist.provider, limit=None
+                )
             random.shuffle(tracks)
             return tracks
         result: list[Track] = []
@@ -955,7 +964,7 @@ class MediaResolver:
         """
         if (library_artist := await self._resolve_library_artist(artist)) is None:
             return []
-        return await self.mass.music.artists.tracks(library_artist.item_id, "library")
+        return await self.mass.music.artists.tracks(library_artist.item_id, "library", limit=None)
 
     async def _provider_artist_tracks(self, artist: Artist) -> list[Track]:
         """
@@ -970,7 +979,9 @@ class MediaResolver:
                 continue
             try:
                 tracks.extend(
-                    await self.mass.music.artists.tracks(mapping.item_id, mapping.provider_instance)
+                    await self.mass.music.artists.tracks(
+                        mapping.item_id, mapping.provider_instance, limit=None
+                    )
                 )
             except PROVIDER_FETCH_ERRORS as err:
                 # one failing provider must not drop the tracks of the artist's other providers
@@ -1018,7 +1029,9 @@ class MediaResolver:
                 continue
             try:
                 albums.extend(
-                    await self.mass.music.artists.albums(mapping.item_id, mapping.provider_instance)
+                    await self.mass.music.artists.albums(
+                        mapping.item_id, mapping.provider_instance, limit=None
+                    )
                 )
                 listed = True
             except PROVIDER_FETCH_ERRORS as err:
@@ -1236,8 +1249,8 @@ class MediaResolver:
         A track the album lists as another source's entry plays as the chosen source's own
         entry, when it has one. A track the chosen source does not have plays as the album
         lists it. When every track is ranked on its own, no source is chosen and nothing is
-        pinned; a track that is not in the library then plays the best entry listed by a
-        source the playback user may play from.
+        pinned; a track that is not in the library then plays the best entry a source the
+        playback user may play from serves.
 
         :param album: The album to play.
         :param start_item: Optional item_id/uri of the track to start from.
@@ -1297,9 +1310,11 @@ class MediaResolver:
         Choose the one source an album plays from, with the copy it serves of each track.
 
         Only the sources the playback user may play from count, each with the copies of the
-        listed tracks it can serve. No source is chosen when the source selection settings
-        pick the best copy for every track on its own; a track that is not in the library
-        then plays the entry whose copy ranks best among the sources.
+        listed tracks it can serve. An account of a streaming service also serves the listings
+        of that service's accounts the user may not play from. No source is chosen when
+        the source selection settings pick the best copy for every track on its own; a track
+        that is not in the library then plays the entry whose copy ranks best among the
+        sources.
 
         :param listing: The album's tracks, and the entry each source lists for them.
         :param tracks: The album's tracks to play.
@@ -1313,22 +1328,27 @@ class MediaResolver:
         allowed, preferred = playback_sources_for(self.mass, user)
         providers: dict[str, MusicProvider] = {}
         served_by: dict[str, dict[str, tuple[Track, ProviderMapping]]] = {}
-        listed: list[ContainerListing] = []
-        for instance_id, listed_ids in listing.listed_ids.items():
-            provider = self.mass.get_provider(instance_id, provider_type=MusicProvider)
+        # an account's own listing counts first, then the listings it plays in place of
+        # the accounts of its streaming service the user may not play from
+        for instance_id, listed_ids in sorted(
+            listing.listed_ids.items(),
+            key=lambda entry: (allowed is not None and entry[0] not in allowed, entry[0]),
+        ):
+            if (serving_id := playback_instance_for(self.mass, instance_id, allowed)) is None:
+                continue
+            provider = self.mass.get_provider(serving_id, provider_type=MusicProvider)
             if (
                 provider is None
                 # an instance that went away hands its lookups to another account
-                or provider.instance_id != instance_id
-                or (allowed is not None and instance_id not in allowed)
+                or provider.instance_id != serving_id
             ):
                 continue
-            providers[instance_id] = provider
+            providers[serving_id] = provider
             own_entries = listing.own_entries.get(instance_id, {})
-            served: dict[str, tuple[Track, ProviderMapping]] = {}
+            served = served_by.setdefault(serving_id, {})
             for track in tracks:
                 uri = cast("str", track.uri)
-                if (item_id := listed_ids.get(uri)) is None:
+                if uri in served or (item_id := listed_ids.get(uri)) is None:
                     continue
                 # a track listed as another source's entry plays as this source's own entry
                 for item in (track, own_entries.get(uri)):
@@ -1338,17 +1358,17 @@ class MediaResolver:
                     ):
                         served[uri] = (item, copy)
                         break
-            served_by[instance_id] = served
-            listed.append(
-                ContainerListing(
-                    instance_id=instance_id,
-                    is_streaming=provider.is_streaming_provider,
-                    copies=[copy for _, copy in served.values()],
-                    complete=all(
-                        track.uri in served for track in tracks if track.provider == "library"
-                    ),
-                )
+        listed = [
+            ContainerListing(
+                instance_id=instance_id,
+                is_streaming=providers[instance_id].is_streaming_provider,
+                copies=[copy for _, copy in served.values()],
+                complete=all(
+                    track.uri in served for track in tracks if track.provider == "library"
+                ),
             )
+            for instance_id, served in served_by.items()
+        ]
         policy = read_stream_source_policy(self.mass, queue_id)
         source = select_container_source(listed, preferred, policy)
         if source is None:
