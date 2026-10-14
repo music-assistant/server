@@ -285,6 +285,21 @@ async def test_get_data_auth_error_raises_login_failed(status: int) -> None:
 
 @pytest.mark.parametrize("status", [401, 403])
 @pytest.mark.asyncio
+async def test_get_data_catalog_auth_error_blames_app_token(status: int) -> None:
+    """Catalog requests carry only the app token, so a rejection there does not ask to sign in."""
+    client, provider = _make_client()
+    provider.mass.http_session.get = MagicMock(
+        return_value=_FakeRequestCtx(_make_response(status=status))
+    )
+    with (
+        patch(_SLEEP_TARGET, new=AsyncMock()),
+        pytest.raises(LoginFailed, match="app token is invalid or expired"),
+    ):
+        await client.get_data("catalog/us/songs/1")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.asyncio
 async def test_write_requests_auth_error_raises_login_failed(status: int) -> None:
     """Library mutations report a rejected user token as LoginFailed too."""
     client, provider = _make_client()
@@ -392,3 +407,43 @@ async def test_get_data_requests_supported_user_language(
         await client.get_data("catalog/jp/artists/159260351")
     params = provider.mass.http_session.get.call_args.kwargs["params"]
     assert params.get("l") == expected_language
+
+
+@pytest.mark.asyncio
+async def test_get_data_counts_attempts_429s_and_retries_exhausted() -> None:
+    """Every attempt, every 429 and the final give-up are counted against the endpoint family."""
+    client, provider = _make_client()
+    # an own throttler, so this test's cooldown does not leak into the class-level one
+    client.throttler = ThrottlerManager(rate_limit=1, period=0.25, retry_attempts=3)
+    provider.mass.http_session.get = MagicMock(
+        return_value=_FakeRequestCtx(_make_response(status=429))
+    )
+    with patch(_SLEEP_TARGET, new=AsyncMock()), pytest.raises(RetriesExhausted):
+        await client.get_data("catalog/us/songs/1440857781")
+    attempts = 3
+    assert client.request_counter.as_dict() == {
+        "catalog/songs/{id}": {
+            "attempts": attempts,
+            "rate_limited": attempts,
+            "retries_exhausted": 1,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_catalog_requests_omit_music_user_token() -> None:
+    """Catalog requests carry only the developer token, user requests carry both tokens."""
+    client, provider = _make_client()
+    client.throttler = ThrottlerManager(rate_limit=1, period=0.25)
+    provider.mass.http_session.get = MagicMock(
+        side_effect=lambda *_a, **_kw: _FakeRequestCtx(_make_response(json_data={}))
+    )
+    with patch(_SLEEP_TARGET, new=AsyncMock()):
+        await client.get_data("catalog/us/songs/1")
+        await client.get_data("me/storefront")
+    catalog_call, me_call = provider.mass.http_session.get.call_args_list
+    assert catalog_call.kwargs["headers"] == {"Authorization": "Bearer app-token"}
+    assert me_call.kwargs["headers"] == {
+        "Authorization": "Bearer app-token",
+        "Music-User-Token": "user-token",
+    }

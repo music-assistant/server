@@ -217,10 +217,23 @@ class ThrottlerManager:
     """Throttler manager that extends asyncio Throttle by retrying."""
 
     def __init__(
-        self, rate_limit: int, period: float = 1, retry_attempts: int = 5, initial_backoff: int = 5
+        self,
+        rate_limit: int,
+        period: float = 1,
+        retry_attempts: int = 5,
+        initial_backoff: int = 5,
+        low_priority_retry_attempts: int | None = None,
     ):
-        """Initialize the AsyncThrottledContextManager."""
+        """
+        Initialize the AsyncThrottledContextManager.
+
+        :param low_priority_retry_attempts: Attempts a low priority call gets, None for
+            retry_attempts.
+        """
         self.retry_attempts = retry_attempts
+        self.low_priority_retry_attempts = (
+            retry_attempts if low_priority_retry_attempts is None else low_priority_retry_attempts
+        )
         self.initial_backoff = initial_backoff
         self.throttler = Throttler(rate_limit, period)
         self._cooldown_until: float = 0.0
@@ -307,9 +320,14 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
     async def wrapper(self: ProviderT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call async function using the throttler with retries."""
         throttler = self.throttler
+        attempts = (
+            throttler.low_priority_retry_attempts
+            if current_priority() is RequestPriority.LOW
+            else throttler.retry_attempts
+        )
         exp_backoff = throttler.initial_backoff
         honored_until = 0.0
-        for attempt in range(throttler.retry_attempts):
+        for attempt in range(attempts):
             # every attempt goes through the gate: a cooldown another caller armed while
             # we were backing off must hold this retry too, and a retry is a request like
             # any other, so it takes a rate limit slot of its own
@@ -322,9 +340,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                     try:
                         return await func(self, *args, **kwargs)
                     except ResourceTemporarilyUnavailable as e:
-                        self.logger.info(
-                            "Attempt %s/%s failed: %s", attempt + 1, throttler.retry_attempts, e
-                        )
+                        self.logger.info("Attempt %s/%s failed: %s", attempt + 1, attempts, e)
                         server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
                         if server_wait > MAX_WAIT_TIME:
                             if isinstance(e, RateLimited):
@@ -335,7 +351,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                                 server_wait,
                             )
                             raise _give_up(e, server_wait) from e
-                        if attempt < throttler.retry_attempts - 1:
+                        if attempt < attempts - 1:
                             if isinstance(e, RateLimited):
                                 # Retry-After is a floor, not a target: escalate above it,
                                 # jittering up only so we never retry sooner than asked
@@ -365,7 +381,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                 # raised by the gate: a rate limit of the call itself is handled above
                 self.logger.debug("%s skipped during a rate limit cooldown: %s", func.__name__, e)
                 raise _give_up(e, e.backoff_time) from e
-        msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
+        msg = f"Retries exhausted, failed after {attempts} attempts"
         raise RetriesExhausted(msg)
 
     return wrapper

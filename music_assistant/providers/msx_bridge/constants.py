@@ -19,7 +19,6 @@ DEFAULT_SHOW_STOP_NOTIFICATION = False
 GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Local compatibility proxy
 GROUP_STREAM_MODE_REDIRECT = "redirect"  # Redirect TVs to the MA Streamserver directly
 DEFAULT_GROUP_STREAM_MODE = GROUP_STREAM_MODE_REDIRECT
-LEGACY_GROUP_STREAM_MODE_SHARED = "shared"
 
 # Player ID prefix for dynamically registered players
 MSX_PLAYER_ID_PREFIX = "msx_"

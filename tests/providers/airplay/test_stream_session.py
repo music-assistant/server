@@ -212,7 +212,9 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
         patch.object(session, "_start_client", side_effect=start_client),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
         patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
     ):
         await session.start(MagicMock())
 
@@ -255,7 +257,7 @@ async def test_group_start_never_anchors_before_every_receiver_clock_is_usable()
         patch.object(session, "_start_client", side_effect=start_client),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
         patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.start(MagicMock())
 
@@ -287,7 +289,7 @@ async def test_solo_start_waits_for_the_receiver_clock_projection() -> None:
         patch.object(session, "_start_client", side_effect=start_client),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
         patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.start(MagicMock())
 
@@ -319,7 +321,7 @@ async def test_solo_start_with_a_usable_clock_keeps_the_short_lead() -> None:
         patch.object(session, "_start_client", side_effect=start_client),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
         patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.start(MagicMock())
 
@@ -441,7 +443,9 @@ async def test_initial_single_player_starts_after_connect(
         patch.object(session, "_start_client", side_effect=start_client),
         patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=200.0),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=200.0
+        ),
     ):
         await session.start(MagicMock())
 
@@ -667,7 +671,9 @@ async def test_standby_resumes_warm_on_existing_streams(
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
     ):
         assert await session.replace(MagicMock(), media)
 
@@ -713,7 +719,9 @@ async def test_warm_replace_flushes_all_before_starting_any() -> None:
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
     ):
         replace_task = asyncio.create_task(session.replace(MagicMock(), MagicMock(elapsed_time=0)))
         await delayed_waiting.wait()
@@ -767,7 +775,9 @@ async def test_warm_replace_stops_old_audio_and_ffmpeg_before_flush() -> None:
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
     ):
         assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
 
@@ -817,7 +827,9 @@ async def test_warm_replace_start_failure_falls_back_to_cold() -> None:
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
     ):
         assert await session.replace(MagicMock(), MagicMock(elapsed_time=0)) is False
 
@@ -855,7 +867,9 @@ def test_warm_anchor_clears_the_receivers_queued_audio(
         player.stream.warm_lead_ms = warm_lead_ms
         player.config.get_value = MagicMock(return_value=adjust_ms)
 
-    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0):
+    with patch(
+        "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+    ):
         anchor = session._anchor_start_unix_ms(warm=True)
 
     assert anchor == 100_000 + expected_requirement_ms + AIRPLAY_SPLICE_LEAD_MARGIN_MS
@@ -879,7 +893,9 @@ def test_warm_anchor_clears_the_head_every_flushed_member_froze() -> None:
     second.config.get_value = MagicMock(return_value=300)
     session.sync_clients.append(second)
 
-    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0):
+    with patch(
+        "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+    ):
         anchor = session._anchor_start_unix_ms(warm=True)
 
     # the later head wins, and the offset its member adds comes back out of it
@@ -1032,7 +1048,9 @@ async def test_warm_replace_rearms_the_feed_question() -> None:
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
     ):
         assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
 
@@ -1279,7 +1297,10 @@ async def test_a_replacement_claiming_the_session_cancels_the_withheld_eof() -> 
         with (
             patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
             patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-            patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+            patch(
+                "music_assistant.providers.airplay.stream_session.cli_clock_time",
+                return_value=100.0,
+            ),
         ):
             assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
 
@@ -1406,7 +1427,7 @@ async def test_late_join_caps_prime_at_whole_ring_when_position_predates_it() ->
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
@@ -1571,7 +1592,7 @@ async def test_late_join_primes_from_ring_tail_at_headroom() -> None:
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
@@ -1617,7 +1638,7 @@ async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> No
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
@@ -1655,7 +1676,7 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
@@ -1692,7 +1713,7 @@ async def test_late_join_anchors_on_the_reported_clock_readiness(
         caplog.at_level(logging.DEBUG),
         patch.object(session, "_start_client", side_effect=setup_with_projection),
         patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.add_client(player)
 
@@ -1728,7 +1749,7 @@ async def test_late_join_floor_wins_over_a_clock_that_is_already_ready(
         caplog.at_level(logging.DEBUG),
         patch.object(session, "_start_client", side_effect=setup_with_projection),
         patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.add_client(player)
 
@@ -1749,7 +1770,7 @@ async def test_late_join_falls_back_to_the_floor_without_a_clock_projection() ->
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
         patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
@@ -1783,7 +1804,7 @@ async def test_late_join_without_a_projection_still_joins(readiness: ClockReadin
     with (
         patch.object(session, "_start_client", side_effect=setup_without_projection),
         patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.add_client(player)
 
@@ -1806,7 +1827,7 @@ async def test_late_joiner_with_a_stalled_clock_is_not_added() -> None:
         patch.object(session, "_start_client", side_effect=setup_stalled),
         patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
         patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.add_client(player)
 
@@ -1880,7 +1901,7 @@ async def test_late_join_feed_keeps_flowing_while_start_ack_is_outstanding() -> 
     with (
         patch.object(session, "_start_client", side_effect=setup_deferred_ack),
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         join = asyncio.create_task(session.add_client(player))
         await asyncio.wait_for(ack_outstanding.wait(), timeout=5)
@@ -1963,7 +1984,7 @@ async def test_late_join_maps_content_from_the_acked_instant() -> None:
     with (
         patch.object(session, "_start_client", side_effect=setup_deferred_ack),
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.add_client(player)
 
@@ -2053,7 +2074,9 @@ async def test_replace_clears_skip_and_shift_state() -> None:
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=100.0
+        ),
     ):
         assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
 
@@ -2120,7 +2143,7 @@ async def test_late_join_pads_with_silence_when_the_ring_ran_out_under_a_committ
     with (
         patch.object(session, "_start_client", side_effect=setup_with_feed),
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.add_client(player)
 
@@ -2173,7 +2196,7 @@ async def test_late_join_ring_shortfall_keeps_a_misaligned_ring_head_frame_align
     with (
         patch.object(session, "_start_client", side_effect=setup_with_feed),
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.add_client(player)
 
@@ -2192,7 +2215,7 @@ def test_ring_grows_to_the_observed_write_head_lead() -> None:
     session = _make_session(now - 100.0, 100.0)
     assert session._pcm_buffer_max == int(AIRPLAY_LATE_JOIN_RING_MIN_SECONDS * PCM_SAMPLE_SIZE)
 
-    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+    with patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now):
         # A 4s lead stays under the floor, which keeps the ring where it was.
         session.seconds_streamed = 104.0
         session._observe_write_head_lead()
@@ -2222,13 +2245,13 @@ def test_write_head_lead_is_not_measured_before_the_anchor_arrives() -> None:
     now = 1_000_000.0
     # Anchored 2.5s into the future: nothing is audible yet.
     session = _make_session(now + 2.5, 8.0)
-    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+    with patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now):
         session._observe_write_head_lead()
     assert session._peak_lead_seconds == 0.0
     assert session._pcm_buffer_max == int(AIRPLAY_LATE_JOIN_RING_MIN_SECONDS * PCM_SAMPLE_SIZE)
 
     unanchored = _make_session(0.0, 8.0)
-    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+    with patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now):
         unanchored._observe_write_head_lead()
     assert unanchored._peak_lead_seconds == 0.0
 
@@ -2260,7 +2283,7 @@ async def test_late_join_silence_pad_is_bounded_and_reports_the_residual() -> No
     with (
         patch.object(session, "_start_client", side_effect=setup_with_stale_ack),
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+        patch("music_assistant.providers.airplay.stream_session.cli_clock_time", return_value=now),
     ):
         await session.add_client(player)
 

@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
+from hassfeld import upnp as hassfeld_upnp
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
@@ -73,6 +74,14 @@ ZONE_CREATE_RETRY_DELAY = 0.75
 WAKE_TIMEOUT = 5.0
 WAKE_POLL_INTERVAL = 0.3
 
+# The power state the host reports for a room that was switched off. A room in
+# AUTOMATIC_STANDBY merely went idle and wakes by itself for playback, so it counts as on:
+# every idle room ends up there, and reporting those as off would have MA ungroup them.
+POWER_STATE_OFF = "MANUAL_STANDBY"
+# How long (seconds) after a power command the host's reported power state is ignored, as
+# it follows the command with a delay and would briefly report the old state back.
+POWER_SETTLE_TIME = 5.0
+
 
 def _map_transport_state(state: str | None) -> PlaybackState:
     """Map a UPnP ``CurrentTransportState`` value to a Music Assistant PlaybackState."""
@@ -121,9 +130,13 @@ class RaumfeldPlayer(Player):
         self._advance_armed = False
         self._prev_playing = False
         self._near_end = False
+        # timestamp of the last power command, see POWER_SETTLE_TIME
+        self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
         self._resync_task_id = f"raumfeld_resync_{player_id}"
-        self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
+        self._attr_device_info = DeviceInfo(
+            model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
+        )
         # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
         # source at its native quality (up to 24-bit/192kHz) without manual configuration
         self._attr_supported_sample_rates = SUPPORTED_SAMPLE_RATES
@@ -144,6 +157,7 @@ class RaumfeldPlayer(Player):
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, renderer_ip)
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.SET_MEMBERS,
@@ -157,6 +171,7 @@ class RaumfeldPlayer(Player):
             # Without PAUSE, MA treats pause as stop and, on resume, re-streams the track
             # from the stored position (resume_pos) - which resumes where the user paused.
         }
+        self._attr_powered = self._read_powered()
         # Raumfeld rooms can be (sync-)grouped with any other room of this provider.
         self._attr_can_group_with = {provider.instance_id}
         # expose the room's analog input as a selectable source when it has one
@@ -221,6 +236,19 @@ class RaumfeldPlayer(Player):
         :param member_ids: Player ids in the group, with this player (the leader) first.
         """
         self._attr_group_members = member_ids
+        self.update_state()
+
+    async def power(self, powered: bool) -> None:
+        """Send POWER command: wake the room, or switch it off (manual standby)."""
+        self._power_changed_at = time.time()
+        if powered:
+            await self._wake_rooms([self.room], strict=True)
+        else:
+            try:
+                await self.raumfeld.host.async_enter_manual_standby(self.room)
+            except HOST_ERRORS as err:
+                raise PlayerCommandFailed(f"Failed to power off {self.room}: {err!r}") from err
+        self._attr_powered = powered
         self.update_state()
 
     async def play(self) -> None:
@@ -330,13 +358,15 @@ class RaumfeldPlayer(Player):
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
-        """Send VOLUME_MUTE command for this room's zone."""
-        # muting is a zone operation; skip it while the room is not in an active zone
-        if (zone := self._active_zone()) is not None:
-            try:
-                await self.raumfeld.host.async_set_zone_mute(zone, muted)
-            except HOST_ERRORS as err:
-                raise PlayerCommandFailed(f"Failed to mute {self.room}: {err!r}") from err
+        """Send VOLUME_MUTE command to this room's renderer."""
+        # Mute the room's own renderer rather than its zone: the zone mutes every room in
+        # the group at once, and a room that plays nothing is in no zone at all.
+        if (location := self.raumfeld.room_renderer_location(self.room)) is None:
+            raise PlayerCommandFailed(f"Failed to mute {self.room}: its renderer is unknown")
+        try:
+            await hassfeld_upnp.async_set_mute(self.mass.http_session, location, muted)
+        except HOST_ERRORS as err:
+            raise PlayerCommandFailed(f"Failed to mute {self.room}: {err!r}") from err
         self._attr_volume_muted = muted
         self.update_state()
 
@@ -398,13 +428,12 @@ class RaumfeldPlayer(Player):
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
         host = self.raumfeld.host
+        self._update_power()
         # a grouped follower shares the zone's transport/position with its leader, so it
         # polls only its own (per-room) volume and mirrors the leader's state: without that a
         # stopped group would leave the follower reading as playing until it is ungrouped
         if self.synced_to and self.synced_to != self.player_id:
-            volume = await self._read_volume(host)
-            if volume is not None:
-                self._attr_volume_level = volume
+            await self._update_volume(host)
             leader = self.mass.players.get_player(self.synced_to)
             self._attr_playback_state = leader.playback_state if leader else PlaybackState.IDLE
             if self._attr_playback_state == PlaybackState.PLAYING:
@@ -418,9 +447,7 @@ class RaumfeldPlayer(Player):
         # only be read from a zone - asking anyway costs two round-trips per poll and
         # leaves the host resolving a missing zone. Read just the volume instead.
         if (zone := self._active_zone()) is None:
-            volume = await self._read_volume(host)
-            if volume is not None:
-                self._attr_volume_level = volume
+            await self._update_volume(host)
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_poll_interval = IDLE_POLL_INTERVAL
             self.update_state()
@@ -430,14 +457,11 @@ class RaumfeldPlayer(Player):
         # cycle costs one round-trip of wall time instead of three, keeping state snappy.
         # State always comes from the zone: the room's own renderer reports no TrackURI and
         # a meaningless RelTime, so it can only be asked *whether* it plays, not what.
-        volume, transport, position = await asyncio.gather(
-            self._read_volume(host),
+        _, transport, position = await asyncio.gather(
+            self._update_volume(host),
             self._read_transport(host, zone),
             self._read_position(host, zone),
         )
-
-        if volume is not None:
-            self._attr_volume_level = volume
 
         playing = False
         ended = False
@@ -510,6 +534,30 @@ class RaumfeldPlayer(Player):
         self._attr_elapsed_time = float(elapsed)
         self._attr_elapsed_time_last_updated = now
 
+    def _update_power(self) -> None:
+        """Follow the power state the host reports, once a power command has settled."""
+        if time.time() - self._power_changed_at < POWER_SETTLE_TIME:
+            return
+        if (powered := self._read_powered()) is not None:
+            self._attr_powered = powered
+
+    def _read_powered(self) -> bool | None:
+        """Return whether the room is switched on, or ``None`` if the host does not say."""
+        try:
+            state = self.raumfeld.host.get_room_power_state(self.room)
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to read power state for %s: %r", self.room, err)
+            return None
+        return state != POWER_STATE_OFF if state else None
+
+    async def _update_volume(self, host: hassfeld.RaumfeldHost) -> None:
+        """Read this room's volume and mute state, keeping the last value of one not read."""
+        volume, muted = await asyncio.gather(self._read_volume(host), self._read_mute())
+        if volume is not None:
+            self._attr_volume_level = volume
+        if muted is not None:
+            self._attr_volume_muted = muted
+
     async def _read_volume(self, host: hassfeld.RaumfeldHost) -> int | None:
         """Read this room's volume (0-100), or ``None`` on a host error."""
         try:
@@ -520,6 +568,18 @@ class RaumfeldPlayer(Player):
         if isinstance(volume, dict):
             volume = volume.get("CurrentVolume")
         return int(volume) if volume is not None else None
+
+    async def _read_mute(self) -> bool | None:
+        """Read this room's mute state, or ``None`` if it could not be read."""
+        if (location := self.raumfeld.room_renderer_location(self.room)) is None:
+            return None
+        try:
+            # hassfeld swallows a failed read and returns None
+            muted = await hassfeld_upnp.async_get_mute(self.mass.http_session, location)
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to read mute state for %s: %r", self.room, err)
+            return None
+        return bool(muted) if muted is not None else None
 
     async def _read_transport(
         self, host: hassfeld.RaumfeldHost, zone: list[str]
@@ -632,18 +692,33 @@ class RaumfeldPlayer(Player):
         self._attr_elapsed_time = 0.0
         self._attr_elapsed_time_last_updated = time.time()
 
-    async def _wake_rooms(self, zone: list[str]) -> None:
-        """Bring the zone's rooms out of standby and wait until they report awake."""
+    async def _wake_rooms(self, zone: list[str], strict: bool = False) -> None:
+        """
+        Bring the zone's rooms out of standby and wait until they report awake.
+
+        :param zone: The rooms to wake.
+        :param strict: Fail when a room does not wake up. Without it a failure is only
+            logged, which suits playback: that goes on to address the zone either way.
+        """
         host = self.raumfeld.host
         woke = False
         for room in zone:
             # rooms in MANUAL_STANDBY do not auto-power-on for playback (unlike
             # AUTOMATIC_STANDBY); leaving standby is a no-op for an already-awake room
             try:
-                if "STANDBY" in (host.get_room_power_state(room) or ""):
+                state = host.get_room_power_state(room)
+                if state is None and strict:
+                    # the host does not know the room (renamed, or gone), so there is
+                    # nothing to confirm it against
+                    raise PlayerCommandFailed(
+                        f"Failed to wake {room}: the host reports no power state for it"
+                    )
+                if "STANDBY" in (state or ""):
                     await host.async_leave_standby(room)
                     woke = True
             except HOST_ERRORS as err:
+                if strict:
+                    raise PlayerCommandFailed(f"Failed to wake {room}: {err!r}") from err
                 self.logger.debug("Failed to wake room %s: %r", room, err)
         if not woke:
             return
@@ -652,11 +727,15 @@ class RaumfeldPlayer(Player):
         deadline = time.time() + WAKE_TIMEOUT
         while time.time() < deadline:
             try:
-                if all("STANDBY" not in (host.get_room_power_state(r) or "") for r in zone):
+                states = [host.get_room_power_state(room) for room in zone]
+                # a room the host stops reporting counts as awake only when lenient
+                if all("STANDBY" not in state if state else not strict for state in states):
                     return
             except HOST_ERRORS as err:
                 self.logger.debug("Failed to read power state while waking: %r", err)
             await asyncio.sleep(WAKE_POLL_INTERVAL)
+        if strict:
+            raise PlayerCommandFailed(f"{', '.join(zone)} did not leave standby")
 
     def _active_zone(self) -> list[str] | None:
         """Return this room's zone if the host can address it, else ``None``."""

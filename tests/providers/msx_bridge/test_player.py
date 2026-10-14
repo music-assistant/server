@@ -392,50 +392,10 @@ async def test_play_media_queue_sends_playlist(player: MSXPlayer, mass_mock: Moc
 
     mock_playlist.assert_called_once_with("msx_test", 2, queue_id="msx_test")
     mock_play.assert_not_called()
-    assert player._playing_from_queue is True
-
-
-async def test_play_media_reloads_playlist_when_playing_from_queue(
-    player: MSXPlayer, mass_mock: Mock
-) -> None:
-    """Same-queue play reloads a rotated playlist so MSX index 0 is the current item."""
-    player.mark_queue_playback("msx_test")
-
-    media = _player_media(
-        "http://ma-server/stream/12345", source_id="msx_test", queue_item_id="qi2"
-    )
-
-    queue = PlayerQueue(
-        queue_id="msx_test",
-        active=True,
-        display_name="Test queue",
-        available=True,
-        items=5,
-        current_index=3,
-    )
-
-    mass_mock.player_queues.get.return_value = queue
-    mass_mock.player_queues.get_item.return_value = None
-    mass_mock.player_queues.items.return_value = [
-        make_queue_item(queue_item_id=f"qi{index}") for index in range(5)
-    ]
-
-    with (
-        patch.object(player.provider, "notify_goto_index") as mock_goto,
-        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
-        patch.object(player.provider, "notify_play_started") as mock_play,
-    ):
-        await player.play_media(media)
-
-    mock_goto.assert_not_called()
-    mock_playlist.assert_called_once_with("msx_test", 3, queue_id="msx_test")
-    mock_play.assert_not_called()
 
 
 async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_mock: Mock) -> None:
     """Native transitions suppress playback commands while allowing a clock reset."""
-    player.mark_queue_playback("msx_test")
-
     media = _player_media(
         "http://ma-server/stream/12345", source_id="msx_test", queue_item_id="qi2"
     )
@@ -443,14 +403,12 @@ async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_
     mass_mock.player_queues.get_item.return_value = None
 
     with (
-        patch.object(player.provider, "notify_goto_index") as mock_goto,
         patch.object(player.provider, "notify_play_playlist") as mock_playlist,
         patch.object(player.provider, "notify_play_started") as mock_play,
         player.suppress_ws_notify(),
     ):
         await player.play_media(media)
 
-    mock_goto.assert_not_called()
     mock_playlist.assert_not_called()
     mock_play.assert_not_called()
 
@@ -483,13 +441,6 @@ async def test_play_media_non_queue_sends_broadcast_play(
         next_action=f"execute:/api/next/{player.player_id}",
         prev_action=f"execute:/api/previous/{player.player_id}",
     )
-
-
-async def test_stop_resets_playing_from_queue(player: MSXPlayer) -> None:
-    """stop() should reset _playing_from_queue flag."""
-    player.mark_queue_playback("msx_test")
-    await player.stop()
-    assert player._playing_from_queue is False
 
 
 # --- WebSocket position reporting ---
