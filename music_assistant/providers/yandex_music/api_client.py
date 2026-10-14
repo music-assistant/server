@@ -1943,11 +1943,9 @@ class YandexMusicClient:
         ]
         if not track_ids:
             return []
-        try:
-            full_tracks = await self.get_tracks(track_ids)
-        except ResourceTemporarilyUnavailable as err:
-            LOGGER.warning("Rotor session track hydration failed: %s", err)
-            return []
+        # A failed lookup is not an empty final batch. Propagate the failure so
+        # callers retain their session state and can retry before marking it ended.
+        full_tracks = await self.get_tracks(track_ids)
         order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
         return [order_map[tid] for tid in track_ids if tid in order_map]
 
