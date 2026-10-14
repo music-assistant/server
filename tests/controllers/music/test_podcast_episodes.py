@@ -66,8 +66,12 @@ class _StubPodcastProvider(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Remember the play reports the provider receives."""
+        """Take a play report in as progress of its own, as Audiobookshelf does."""
         self.played.append((prov_item_id, fully_played))
+        for episode in self.episodes:
+            if episode.item_id == prov_item_id:
+                episode.fully_played = fully_played
+                episode.resume_position_ms = position * 1000
 
 
 @pytest.fixture(name="mass")
@@ -268,14 +272,13 @@ async def test_the_users_progress_wins_over_what_the_provider_reports(
     assert provider.listings == 1
 
 
-async def test_a_played_episode_shows_as_played_at_once(mass: MusicAssistant) -> None:
+async def test_a_marked_episode_shows_so_on_the_next_request(mass: MusicAssistant) -> None:
     """
-    An episode marked (un)played shows so on the very next request.
+    An episode marked played or unplayed shows so on the very next request.
 
-    The podcast is fetched anew at once, and once more when its provider has taken the report in.
+    Marking returns once the provider, which keeps progress of its own, has taken it in.
     """
     provider = _StubPodcastProvider(_episodes(2))
-    # the provider keeps progress of its own, which it has not heard of yet
     provider.episodes[0].fully_played = False
     provider.episodes[0].resume_position_ms = 5000
     episode = provider.episodes[0]
@@ -283,9 +286,13 @@ async def test_a_played_episode_shows_as_played_at_once(mass: MusicAssistant) ->
     async def _listed_episode() -> PodcastEpisode:
         return (await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE))[0]
 
+    def _provider_played() -> bool | None:
+        return episode.fully_played
+
     with (
         _with_provider(mass, provider),
-        _held_play_reports(mass) as deliver_reports,
+        # nothing is left to the background: a report held there never reaches the provider
+        _held_play_reports(mass),
         _as_user(USER_A),
         patch.object(mass.webserver.auth, "get_user", AsyncMock(return_value=USER_A)),
         # the user may play from the provider, which is not configured here
@@ -294,21 +301,16 @@ async def test_a_played_episode_shows_as_played_at_once(mass: MusicAssistant) ->
             return_value=None,
         ),
     ):
-        await _listed_episode()
-        await mass.music.mark_item_played(episode, fully_played=True, userid=USER_A.user_id)
-        assert (await _listed_episode()).fully_played is True
-        assert provider.listings == 2
-        await deliver_reports()
-        await _listed_episode()
-        assert provider.listings == 3
-        await mass.music.mark_item_unplayed(episode, userid=USER_A.user_id)
-        # without the user's progress, what the provider reports shows
         assert (await _listed_episode()).fully_played is False
-        assert provider.listings == 4
-        await deliver_reports()
-        await _listed_episode()
+        await mass.music.mark_item_played(episode, fully_played=True, userid=USER_A.user_id)
+        assert _provider_played() is True
+        assert (await _listed_episode()).fully_played is True
+        await mass.music.mark_item_unplayed(episode, userid=USER_A.user_id)
+        assert _provider_played() is False
+        # what the provider lists now shows, as the user's progress is gone
+        assert (await _listed_episode()).fully_played is False
     assert provider.played == [("ep2", True), ("ep2", False)]
-    assert provider.listings == 5
+    assert provider.listings == 3
 
 
 async def test_the_progress_of_a_playing_episode_keeps_the_cached_listing(
@@ -324,10 +326,10 @@ async def test_the_progress_of_a_playing_episode_keeps_the_cached_listing(
         await deliver_reports()
         await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
         assert provider.listings == 1
+        # the provider takes a stop in before the call returns
         await mass.music.mark_item_played(
             provider.episodes[0], fully_played=False, seconds_played=60
         )
-        await deliver_reports()
         await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
     assert provider.played == [("ep2", False), ("ep2", False)]
     assert provider.listings == 2
