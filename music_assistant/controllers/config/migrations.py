@@ -8,10 +8,11 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import CrossfadeMode
+from music_assistant_models.enums import CrossfadeMode, TaskScheduleType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
@@ -36,6 +37,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
 )
+from music_assistant.controllers.tasks.constants import TASK_STATE_CONFIG_KEY
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
 
 if TYPE_CHECKING:
@@ -500,7 +502,7 @@ PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
 }
 
 
-async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0915
+async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0912, PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 
@@ -663,6 +665,11 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: C901, PLR0915
     # shared group stream mode to independent and remove the players of the Sendspin bridge.
     # TODO: remove after 2.12 release
     if _migrate_msx_bridge_settings(data):
+        changed = True
+
+    # Move Apple Music library sync tasks still on the former 12 hour default to 24 hours.
+    # TODO: remove after 2.13 release
+    if _migrate_apple_music_sync_schedule(data):
         changed = True
 
     return changed
@@ -1951,3 +1958,47 @@ def _migrate_player_icons(data: dict[str, Any]) -> bool:
         # any other unknown value is left in place: clients render the fallback icon
         # for unknown ids and the value may become a valid id in a future icon set
     return changed
+
+
+def _migrate_apple_music_sync_schedule(data: dict[str, Any]) -> bool:
+    """
+    Move Apple Music library sync tasks still on the former 12 hour default to 24 hours, once.
+
+    The tasks controller stores the full schedule of every scheduled task, so a changed default
+    never reaches existing installs. Guarded by CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED so a
+    12 hour schedule the user picks afterwards is kept. Returns True when the settings were
+    modified, including the first run's marker.
+    """
+    if data.get(CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED):
+        return False
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    apple_sync_prefixes = tuple(
+        f"music_sync_{instance_id}_"
+        for instance_id, provider_cfg in all_provider_configs.items()
+        if isinstance(provider_cfg, dict) and provider_cfg.get("domain") == "apple_music"
+    )
+    if not apple_sync_prefixes:
+        return False
+    core_cfg = data.get(CONF_CORE)
+    tasks_cfg = core_cfg.get("tasks") if isinstance(core_cfg, dict) else None
+    task_states = tasks_cfg.get(TASK_STATE_CONFIG_KEY) if isinstance(tasks_cfg, dict) else None
+    if not isinstance(task_states, dict):
+        task_states = {}
+    migrated = 0
+    for task_id, state in task_states.items():
+        schedule = state.get("schedule") if isinstance(state, dict) else None
+        if (
+            task_id.startswith(apple_sync_prefixes)
+            and isinstance(schedule, dict)
+            and schedule.get("type") == TaskScheduleType.HOURLY.value
+            and schedule.get("every") == 12
+        ):
+            schedule["every"] = 24
+            migrated += 1
+    if migrated:
+        LOGGER.info("Moved %d Apple Music library sync task(s) to a daily schedule", migrated)
+    # claim the marker even when nothing moved, so a 12 hour schedule picked later is kept
+    data[CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED] = True
+    return True
