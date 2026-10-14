@@ -2,20 +2,21 @@
 
 import asyncio
 import logging
+import time
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiosonos.const import EventType as SonosEventType
-from aiosonos.const import GroupCoordinatorChangedEvent
+from aiosonos.const import GroupCoordinatorChangedEvent, SessionErrorEvent
 from aiosonos.exceptions import FailedCommand
 
 from music_assistant.providers.sonos import player as player_module
 from music_assistant.providers.sonos.player import SonosPlayer
 
 if TYPE_CHECKING:
-    from aiosonos.api.models import GroupCoordinatorChanged
+    from aiosonos.api.models import GroupCoordinatorChanged, SessionError
 
 OFFICE = "RINCON_F0F6C1CC8D0401400"
 BATHROOM = "RINCON_48A6B86DD3F101400"
@@ -54,6 +55,20 @@ def _updated() -> GroupCoordinatorChangedEvent:
     )
 
 
+def _evicted() -> SessionErrorEvent:
+    """Build the event a speaker sends when another app or source took the group over."""
+    body = cast(
+        "SessionError",
+        {
+            "_objectType": "sessionError",
+            "errorCode": "ERROR_SESSION_EVICTED",
+            "reason": "Another user joined the session.",
+            "sessionId": "session1",
+        },
+    )
+    return SessionErrorEvent(SonosEventType.SESSION_ERROR, OFFICE_GROUP, body)
+
+
 def _player(mass: MagicMock, player_id: str) -> SonosPlayer:
     """Create a connected SonosPlayer with a mocked client."""
     player = SonosPlayer.__new__(SonosPlayer)
@@ -66,6 +81,7 @@ def _player(mass: MagicMock, player_id: str) -> SonosPlayer:
     player._config.name = None
     player.connected = True
     player.cloud_queue_id = None
+    player._evicted_cloud_queue = None
     player.client = MagicMock()
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
     player.stop = AsyncMock()  # type: ignore[method-assign]
@@ -192,3 +208,27 @@ async def test_a_refused_stop_is_logged(caplog: pytest.LogCaptureFixture) -> Non
         await scheduled.pop()
 
     assert "Could not stop playback" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_move_right_after_an_eviction_still_stops_our_queue() -> None:
+    """The speaker may evict our session just before it reports the move."""
+    office, bathroom, scheduled = _office_and_bathroom()
+    office._on_session_error(_evicted())
+
+    office._on_group_coordinator_changed(_moved())
+    await scheduled.pop()
+
+    cast("AsyncMock", bathroom.stop).assert_awaited_once()
+    assert office._evicted_cloud_queue is None
+
+
+def test_a_move_long_after_an_eviction_is_left_alone() -> None:
+    """Once the grace period is over, an evicted queue is no longer ours to stop."""
+    office, _, scheduled = _office_and_bathroom()
+    office._on_session_error(_evicted())
+    office._evicted_cloud_queue = (OFFICE, time.monotonic() - player_module.EVICTED_QUEUE_GRACE - 1)
+
+    office._on_group_coordinator_changed(_moved())
+
+    assert scheduled == []

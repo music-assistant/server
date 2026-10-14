@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 from aiohttp import ClientError
 from aiosonos.api.models import (
+    AudioClipStatus,
     Container,
     ContainerType,
     GroupStatus,
@@ -67,7 +68,7 @@ from music_assistant.providers.sonos.const import (
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
-    from aiosonos.api.models import GroupCoordinatorChanged, PlaybackError
+    from aiosonos.api.models import GroupCoordinatorChanged, PlaybackError, SessionError
     from aiosonos.group import SonosGroup
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.queue_item import QueueItem
@@ -102,6 +103,19 @@ WAKE_TIMEOUT = 15
 WAKE_PLAY_KICK_TIMEOUT = 2
 # seconds the new coordinator of a group moved outside MA gets to report the role
 MOVED_GROUP_TIMEOUT = 5
+# seconds a queue released on a session eviction still counts for a coordinator move:
+# the speaker may send the eviction just before the move
+EVICTED_QUEUE_GRACE = 5
+# seconds past an announcement's own duration to wait for the speaker to report it done
+ANNOUNCEMENT_STATUS_MARGIN = 5
+# clip states after which the speaker no longer plays the clip
+FINISHED_CLIP_STATES = (
+    AudioClipStatus.DONE,
+    AudioClipStatus.DISMISSED,
+    AudioClipStatus.INTERRUPTED,
+    AudioClipStatus.ERROR,
+)
+SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
 
 
 class SonosPlayer(Player):
@@ -146,6 +160,8 @@ class SonosPlayer(Player):
         # failures already logged, so the speaker's resends are not logged again
         self.reported_playback_errors: deque[str] = deque(maxlen=REPORTED_ERROR_HISTORY)
         self._announcement_media: PlayerMedia | None = None
+        # the queue a session eviction released, and when (time.monotonic)
+        self._evicted_cloud_queue: tuple[str, float] | None = None
 
     @property
     def source_list(self) -> list[PlayerSource]:
@@ -258,6 +274,9 @@ class SonosPlayer(Player):
             self.client.subscribe(
                 self._on_group_coordinator_changed, SonosEventType.GROUP_COORDINATOR_CHANGED
             )
+        )
+        self._on_unload_callbacks.append(
+            self.client.subscribe(self._on_session_error, SonosEventType.SESSION_ERROR)
         )
 
     async def get_config_entries(self) -> list[ConfigEntry]:
@@ -477,6 +496,7 @@ class SonosPlayer(Player):
                 translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
             )
+        self._evicted_cloud_queue = None
         # for now always reset the active session
         self.group_controller.active_session_id = None
         # what is playing stays described until its replacement is loaded below: there are
@@ -817,14 +837,31 @@ class SonosPlayer(Player):
             announcement.uri,
             self.display_name,
         )
-        await self.client.player.play_audio_clip(
-            announcement.uri, volume_level, name="Announcement"
+        finished = asyncio.Event()
+        clip_id: str | None = None
+
+        def _check_clip(_event: SonosEvent | None = None) -> None:
+            if clip_id and self.client.player.audio_clip_status(clip_id) in FINISHED_CLIP_STATES:
+                finished.set()
+
+        # Wait until the speaker reports the announcement finished playing; this is
+        # helpful for people who want to play announcements in a sequence. Its expected
+        # duration (plus a margin) bounds the wait should the speaker report nothing
+        unsubscribe = self.client.subscribe(
+            _check_clip, SonosEventType.AUDIO_CLIP_STATUS, self.player_id
         )
-        # Wait until the announcement is finished playing
-        # This is helpful for people who want to play announcements in a sequence
-        # yeah we can also setup a subscription on the sonos player for this, but this is easier
-        duration = await self.mass.streams.get_announcement_duration(announcement)
-        await asyncio.sleep(duration or 10)
+        try:
+            clip = await self.client.player.play_audio_clip(
+                announcement.uri, volume_level, name="Announcement"
+            )
+            clip_id = clip["id"]
+            _check_clip()
+            duration = await self.mass.streams.get_announcement_duration(announcement)
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout((duration or 10) + ANNOUNCEMENT_STATUS_MARGIN):
+                    await finished.wait()
+        finally:
+            unsubscribe()
 
     def on_player_event(self, event: SonosEvent | None) -> None:
         """Handle incoming event from player."""
@@ -1191,8 +1228,8 @@ class SonosPlayer(Player):
                     # the speaker reports the action for its current state only
                     can_play_pause=actions.get("canPlay", False) or actions.get("canPause", False),
                     can_seek=actions.get("canSeek", False),
-                    can_next_previous=actions.get("canSkip", False)
-                    and actions.get("canSkipBack", False),
+                    can_next_previous=active_group.playback_actions.can_skip
+                    and active_group.playback_actions.can_skip_to_previous,
                 )
             )
             source_index = len(self._attr_source_list) - 1
@@ -1248,7 +1285,7 @@ class SonosPlayer(Player):
         # Arc switching to TV), Sonos elects a member that carries on with a copy of our
         # cloud queue; as when the leader leaves a sync group in MA, playback stops instead
         data = cast("GroupCoordinatorChanged", event.data)
-        if data["groupStatus"] != GroupStatus.MOVED or not (queue_id := self.cloud_queue_id):
+        if data["groupStatus"] != GroupStatus.MOVED or not (queue_id := self._moved_queue_id()):
             # a group change Music Assistant made itself stops our queue first
             return
         new_coordinator_id = data.get("playerId")
@@ -1291,9 +1328,10 @@ class SonosPlayer(Player):
                 self.display_name,
             )
             return
-        if self.cloud_queue_id != queue_id:
+        if self.cloud_queue_id not in (queue_id, None):
             # this player was given something else to play in the meantime
             return
+        self._evicted_cloud_queue = None
         self.logger.info(
             "The speakers moved the group of %s to %s outside Music Assistant, stopping playback",
             self.display_name,
@@ -1307,6 +1345,32 @@ class SonosPlayer(Player):
             self.logger.warning(
                 "Could not stop playback on %s: %s", new_coordinator.display_name, err
             )
+
+    def _moved_queue_id(self) -> str | None:
+        """Return the queue this player serves, or released on an eviction just before."""
+        if self.cloud_queue_id:
+            return self.cloud_queue_id
+        if self._evicted_cloud_queue is None:
+            return None
+        queue_id, evicted_at = self._evicted_cloud_queue
+        if time.monotonic() - evicted_at > EVICTED_QUEUE_GRACE:
+            return None
+        return queue_id
+
+    def _on_session_error(self, event: SonosEvent) -> None:
+        """Release our queue when another app or source took the speaker over."""
+        error = cast("SessionError", event.data)
+        if error.get("errorCode") != SESSION_EVICTED_ERROR or not (queue_id := self.cloud_queue_id):
+            return
+        # the speaker no longer plays our queue and must not be sent commands for it;
+        # Music Assistant does not take it back without the user asking
+        self.logger.info(
+            "Another app or source took over %s, releasing the Music Assistant queue",
+            self.display_name,
+        )
+        self.cloud_queue_id = None
+        self._evicted_cloud_queue = (queue_id, time.monotonic())
+        self.update_state()
 
     async def _player_media_for_speaker(self, queue_item: QueueItem) -> PlayerMedia:
         """Return the media for a queue item, with its stream URL resolved for this player."""
