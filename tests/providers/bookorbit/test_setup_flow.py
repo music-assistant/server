@@ -201,3 +201,77 @@ async def test_validate_connection_raises_setup_flow_error_on_unreachable_host()
                 },
             )
         assert exc.value.translation_key == "connection_failed"
+
+
+@pytest.mark.asyncio
+async def test_validate_connection_raises_setup_flow_error_on_empty_password() -> None:
+    """First setup without a password surfaces password_required, not KeyError."""
+    mass = mock.Mock()
+    async with aiohttp.ClientSession() as http:
+        mass.http_session = http
+        session = _make_session(mock.AsyncMock(), mass)
+        with pytest.raises(SetupFlowError) as exc:
+            await _validate_connection(
+                session,
+                {
+                    CONF_URL: "http://127.0.0.1:9",
+                    CONF_USERNAME: "u",
+                    CONF_VERIFY_SSL: True,
+                },
+            )
+        assert exc.value.translation_key == "password_required"
+
+
+@pytest.mark.asyncio
+async def test_run_setup_reconfigure_blank_password_keeps_stored_and_validates(
+    aiohttp_server: Any,
+) -> None:
+    """Reconfigure with unchanged username and blank password reuses the saved password."""
+    collected: dict[str, Any] = {}
+
+    async def login(request: web.Request) -> web.Response:
+        assert (await request.json()) == {"username": "u", "password": "stored-secret"}
+        resp = web.json_response({"accessToken": "tok"})
+        resp.set_cookie("refresh_token", "ref", path="/")
+        return resp
+
+    async def libraries(_request: web.Request) -> web.Response:
+        return web.json_response([])
+
+    app = web.Application()
+    app.router.add_post("/api/v1/auth/login", login)
+    app.router.add_get("/api/v1/libraries", libraries)
+    server = await aiohttp_server(app)
+    base = str(server.make_url("/")).rstrip("/")
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"instance_id": "bookorbit--test"}
+
+    mass = mock.Mock()
+    async with aiohttp.ClientSession() as http:
+        mass.http_session = http
+        session = _make_session(
+            finish,
+            mass,
+            setup_data={
+                CONF_URL: base,
+                CONF_USERNAME: "u",
+                CONF_PASSWORD: "stored-secret",
+                CONF_VERIFY_SSL: True,
+            },
+        )
+        task = asyncio.create_task(run_setup(session))
+        await _wait_for_form(session)
+        session.handle_submit(
+            {
+                CONF_URL: base,
+                CONF_USERNAME: "u",
+                CONF_PASSWORD: None,
+                CONF_VERIFY_SSL: True,
+            }
+        )
+        await _wait_for(lambda: session.finished)
+        await task
+
+        assert collected[CONF_PASSWORD] == "stored-secret"
