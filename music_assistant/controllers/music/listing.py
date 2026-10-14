@@ -72,7 +72,8 @@ def apply_listing[ItemT: ListingItem](
     """
     Search, sort and page a listing assembled in memory.
 
-    Items that sort the same keep the order the source lists them in.
+    Items that sort the same keep the order the source lists them in, the tracks of one album
+    their disc and track order.
 
     :param items: The whole listing, in the order the source lists it.
     :param listing: The listing the items belong to, which decides the sort options.
@@ -92,6 +93,8 @@ def apply_listing[ItemT: ListingItem](
     elif field != SortField.ORIGINAL:
         if (sort_key := _SORT_KEYS.get(field)) is None:
             raise InvalidDataError(f"Sort field {field.value} cannot be sorted in memory")
+        if tie_key := _TIE_KEYS.get(field):
+            result.sort(key=tie_key)
         result.sort(key=sort_key, reverse=direction == SortDirection.DESC)
     return result[offset : offset + limit] if limit else result[offset:]
 
@@ -125,9 +128,10 @@ def _artist_name(item: ListingItem) -> str:
     return _normalize(artists[0].name) if artists else ""
 
 
-def _album_name(item: ListingItem) -> str:
+def _album_name(item: ListingItem) -> tuple[str, str]:
+    # albums that share a name stay apart
     album = getattr(item, "album", None)
-    return _normalize(album.name) if album else ""
+    return (_normalize(album.name), album.uri or "") if album else ("", "")
 
 
 def _track_number(item: ListingItem) -> tuple[int, int]:
@@ -148,4 +152,10 @@ _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
     SortField.TRACK_NUMBER: _track_number,
     SortField.ALBUM_NAME: _album_name,
     SortField.PROVIDER: lambda item: item.provider,
+}
+
+# the order among the items a sort field ties, whichever the direction
+_TIE_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
+    # the tracks of one album keep their disc and track order
+    SortField.ALBUM_NAME: _track_number,
 }

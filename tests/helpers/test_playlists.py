@@ -1645,7 +1645,7 @@ def test_construct_keeps_the_provider_instance() -> None:
 
 
 # --------------------------------------------------------------------------- #
-#  PlaylistController.tracks() — provider-driven pagination                    #
+#  PlaylistController.iter_tracks() — provider-driven pagination               #
 # --------------------------------------------------------------------------- #
 
 
@@ -1658,14 +1658,14 @@ def _make_controller() -> PlaylistController:
 
 @pytest.mark.asyncio
 async def test_tracks_relays_all_provider_pages() -> None:
-    """tracks() relays every non-empty provider page until exhausted (provider decides size)."""
+    """iter_tracks() relays every non-empty provider page until exhausted (provider decides size)."""
     controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(20)]
     page1 = [MagicMock(spec=Track) for _ in range(15)]
     get_tracks = AsyncMock(side_effect=[page0, page1, []])
     cast("Any", controller)._get_provider_playlist_tracks = get_tracks
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     # No controller-side cap: a multi-page (e.g. dynamic) list is relayed in full.
     assert len(result) == 35
@@ -1674,13 +1674,13 @@ async def test_tracks_relays_all_provider_pages() -> None:
 
 @pytest.mark.asyncio
 async def test_tracks_stops_on_empty_page() -> None:
-    """tracks() stops fetching once the provider yields an empty page."""
+    """iter_tracks() stops fetching once the provider yields an empty page."""
     controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(7)]
     get_tracks = AsyncMock(side_effect=[page0, []])
     cast("Any", controller)._get_provider_playlist_tracks = get_tracks
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     assert len(result) == 7
     assert get_tracks.await_count == 2
@@ -1712,7 +1712,7 @@ async def test_tracks_add_audio_metadata_per_page() -> None:
     lookup = AsyncMock(side_effect=[[AudioMetadata(bpm=120.0)], [None]])
     cast("Any", controller.mass).streams.audio_analysis.get_tracks_audio_metadata = lookup
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     assert [cast("Track", t).audio_metadata for t in result[:3]] == [
         AudioMetadata(bpm=120.0),

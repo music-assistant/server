@@ -433,7 +433,9 @@ class MetadataEnrichmentMixin:
         playlist_genres: dict[str, int] = {}
         # retrieve metadata for the playlist from the tracks (such as genres etc.)
         # TODO: retrieve style/mood ?
-        async for track in self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
+        async for track in self.mass.music.playlists.iter_tracks(
+            playlist.item_id, playlist.provider
+        ):
             if track.metadata.genres:
                 genres = track.metadata.genres
             elif (

@@ -46,6 +46,11 @@ def _make_prov(
     return prov
 
 
+def _similar_track(item_id: str) -> Track:
+    """Return a track as a provider lists it among the similar tracks."""
+    return Track(item_id=item_id, provider="m_a", name=item_id, provider_mappings=set())
+
+
 def _mass_with_empty_cache() -> Mock:
     """Return a mocked server whose cache holds nothing, as a listing reads it first."""
     mass = Mock()
@@ -106,7 +111,9 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     metadata_prov.available = True
     metadata_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
     metadata_prov.priority = 50
-    metadata_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
+    metadata_prov.get_similar_tracks = AsyncMock(
+        return_value=[_similar_track("t1"), _similar_track("t2")]
+    )
     music_prov = _make_prov("m_a", ProviderType.MUSIC, set())
 
     def get_provider(instance_id: str, **_: object) -> Mock | None:
@@ -131,7 +138,7 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
 
     result = await controller.similar_tracks("abc", "m_a", limit=5)
 
-    assert result == ["t1", "t2"]
+    assert [track.item_id for track in result] == ["t1", "t2"]
     metadata_prov.get_similar_tracks.assert_awaited_once()
     call_kwargs = metadata_prov.get_similar_tracks.await_args.kwargs
     # the limit pages the listing, which holds what the provider is asked for
@@ -148,7 +155,9 @@ async def test_similar_tracks_skips_failed_provider_mapping() -> None:
     working_prov = Mock(spec=MusicProvider)
     working_prov.name = "Working"
     working_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
-    working_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
+    working_prov.get_similar_tracks = AsyncMock(
+        return_value=[_similar_track("t1"), _similar_track("t2")]
+    )
     mass.get_provider.side_effect = lambda instance_id: {
         "failed": failed_prov,
         "working": working_prov,
@@ -176,7 +185,7 @@ async def test_similar_tracks_skips_failed_provider_mapping() -> None:
 
     result = await controller.similar_tracks("seed", "library")
 
-    assert result == ["t1", "t2"]
+    assert [track.item_id for track in result] == ["t1", "t2"]
     failed_prov.get_similar_tracks.assert_awaited_once()
     working_prov.get_similar_tracks.assert_awaited_once()
 
