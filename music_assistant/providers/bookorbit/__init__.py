@@ -5,14 +5,26 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientError, ClientResponseError
-from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
+from aiohttp import ClientError, ClientResponseError, web
+from music_assistant_models.enums import (
+    ArtistType,
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Audiobook, BrowseFolder, SearchResults
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioFormat,
+    BrowseFolder,
+    SearchResults,
+)
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.models.music_provider import MusicProvider
 
@@ -24,6 +36,10 @@ from .constants import (
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    PART_STREAM_CHUNK_SIZE,
+    PART_STREAM_HEADERS,
+    PART_STREAM_TIMEOUT,
+    STREAMDETAILS_EXPIRATION_S,
     BrowseItemsTranslationKey,
     BrowsePaths,
 )
@@ -36,9 +52,11 @@ from .parsers import (
     parse_author,
     parse_narrator,
 )
+from .progress import build_progress_update, parse_resume_position
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Iterable, Sequence
+    from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
+    from datetime import datetime
 
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType
@@ -104,6 +122,7 @@ class BookOrbitProvider(MusicProvider):
     """BookOrbit MusicProvider (audiobooks)."""
 
     _client: BookOrbitClient
+    _unregister_route: Callable[[], None] | None = None
 
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from the config and log in."""
@@ -127,6 +146,17 @@ class BookOrbitProvider(MusicProvider):
             raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
         except ClientError as err:
             raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
+        # audio files are proxied by MA, so no token ends up in a stream url
+        self._unregister_route = self.mass.streams.register_dynamic_route(
+            f"/{self.instance_id}_part_stream", self._handle_part_request
+        )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        await super().unload(is_removed)
+        if unregister := self._unregister_route:
+            self._unregister_route = None
+            unregister()
 
     @property
     def supported_artist_types(self) -> set[ArtistType]:
@@ -176,6 +206,80 @@ class BookOrbitProvider(MusicProvider):
         if not _audio_files(book):
             raise MediaNotFoundError(f"BookOrbit book {prov_audiobook_id} has no audio files")
         return parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Get the stream of an audiobook: one HTTP part per audio file, proxied by MA."""
+        if media_type != MediaType.AUDIOBOOK:
+            raise MediaNotFoundError("Stream unknown")
+        book = await self._get_book(item_id, fresh=True)
+        files = _audio_files(book)
+        if not files:
+            raise MediaNotFoundError(f"BookOrbit book {item_id} has no audio files")
+        parts = [
+            MultiPartPath(
+                path=(
+                    f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
+                    f"book_id={book['id']}&file_id={file['id']}"
+                ),
+                duration=file.get("durationSeconds"),
+            )
+            for file in files
+        ]
+        duration = parse_audiobook(
+            book, provider_instance_id=self.instance_id, base_url=self.base_url
+        ).duration
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(content_type=ContentType.try_parse(files[0]["format"])),
+            media_type=media_type,
+            stream_type=StreamType.HTTP,
+            duration=duration,
+            path=parts[0].path if len(parts) == 1 else parts,
+            can_seek=True,
+            allow_seek=True,
+            expiration=STREAMDETAILS_EXPIRATION_S,
+        )
+
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
+        """Return (fully played, position in ms, timestamp) from BookOrbit's audio progress."""
+        if media_type != MediaType.AUDIOBOOK:
+            raise NotImplementedError
+        book = await self._get_book(item_id)
+        progress = await self._client.get_audio_progress(book["id"])
+        if not progress:
+            raise NotImplementedError  # fall back to MA's own position
+        return parse_resume_position(_audio_files(book), progress)
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Report progress of an audiobook to BookOrbit."""
+        if media_type != MediaType.AUDIOBOOK:
+            return
+        try:
+            book = await self._get_book(prov_item_id)
+            update = build_progress_update(
+                _audio_files(book), position=position, fully_played=fully_played
+            )
+            if update is None:
+                return
+            await self._client.upsert_audio_progress(
+                book["id"],
+                percentage=update.percentage,
+                current_file_id=update.current_file_id,
+                position_seconds=update.position_seconds,
+            )
+        except (ClientError, BookOrbitAuthError, MediaNotFoundError) as err:
+            self.logger.warning("Updating BookOrbit progress of %s failed: %s", prov_item_id, err)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
@@ -242,6 +346,53 @@ class BookOrbitProvider(MusicProvider):
         if MediaType.ARTIST in media_types:
             results.artists = await self._search_artists(query, limit)
         return results
+
+    async def _get_book(self, item_id: str, *, fresh: bool = False) -> dict[str, Any]:
+        """Return the BookDetail of a book (from the catalog unless fresh is requested)."""
+        if not fresh and (book := self._catalog.get(item_id)):
+            return book
+        try:
+            return await self._client.get_book(int(item_id))
+        except ValueError as err:
+            raise MediaNotFoundError(f"Invalid BookOrbit book id {item_id}") from err
+        except ClientResponseError as err:
+            if err.status == 404:
+                raise MediaNotFoundError(f"BookOrbit book {item_id} not found") from err
+            raise
+
+    async def _handle_part_request(self, request: web.Request) -> web.StreamResponse:
+        """Proxy one audio file of a book, with a fresh token and range support."""
+        try:
+            file_id = int(request.query["file_id"])
+        except KeyError, ValueError:
+            return web.Response(status=400, text="Missing or invalid file_id")
+        try:
+            upstream = await self._client.open_file(
+                file_id,
+                range_header=request.headers.get("Range"),
+                timeout=PART_STREAM_TIMEOUT,
+            )
+        except (ClientError, BookOrbitAuthError) as err:
+            self.logger.warning("Requesting file %s from BookOrbit failed: %s", file_id, err)
+            raise web.HTTPBadGateway(text="BookOrbit unreachable") from err
+        async with upstream:
+            response = web.StreamResponse(
+                status=upstream.status,
+                headers={
+                    name: upstream.headers[name]
+                    for name in PART_STREAM_HEADERS
+                    if name in upstream.headers
+                },
+            )
+            try:
+                await response.prepare(request)
+                async for chunk in upstream.content.iter_chunked(PART_STREAM_CHUNK_SIZE):
+                    await response.write(chunk)
+                await response.write_eof()
+            except ConnectionError:
+                # ffmpeg hangs up e.g. when it seeks or has probed enough
+                self.logger.debug("Client disconnected from file %s", file_id)
+        return response
 
     async def _refresh_catalog(self, *, force: bool = False) -> None:
         """Fetch all audiobooks (with details) from accessible libraries."""

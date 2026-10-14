@@ -2,9 +2,23 @@
 
 from enum import StrEnum
 
+from aiohttp import hdrs
 from aiohttp.client import ClientTimeout
 
 AIOHTTP_TIMEOUT = ClientTimeout(total=10 * 60, sock_connect=60)
+
+# a file may stream for hours, only a stalled server is an error
+PART_STREAM_TIMEOUT = ClientTimeout(total=None, sock_connect=60, sock_read=60)
+PART_STREAM_CHUNK_SIZE = 64 * 1024
+# what ffmpeg needs to read and seek in a proxied file
+PART_STREAM_HEADERS = (
+    hdrs.ACCEPT_RANGES,
+    hdrs.CONTENT_LENGTH,
+    hdrs.CONTENT_RANGE,
+    hdrs.CONTENT_TYPE,
+)
+# expire stream details after 5 min of not using them
+STREAMDETAILS_EXPIRATION_S = 300
 
 DOMAIN = "bookorbit"
 

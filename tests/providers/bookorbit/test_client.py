@@ -236,3 +236,37 @@ def test_stream_url_and_helpers() -> None:
     assert is_audio_format("M4B")
     assert not is_audio_format("epub")
     assert not is_audio_format(None)
+
+
+@pytest.mark.asyncio
+async def test_open_file_sends_bearer_and_range_and_retries_on_401(aiohttp_client: Any) -> None:
+    """Files are fetched with the bearer token; a 401 refreshes the token and retries."""
+    seen: list[tuple[str | None, str | None]] = []
+
+    async def login(_request: web.Request) -> web.Response:
+        resp = web.json_response({"accessToken": "stale"})
+        resp.set_cookie("refresh_token", "refresh-1", path="/")
+        return resp
+
+    async def refresh(_request: web.Request) -> web.Response:
+        return web.json_response({"accessToken": "fresh"})
+
+    async def serve(request: web.Request) -> web.Response:
+        auth = request.headers.get("Authorization")
+        seen.append((auth, request.headers.get("Range")))
+        if auth != "Bearer fresh":
+            return web.Response(status=401)
+        return web.Response(status=206, body=b"abc")
+
+    app = web.Application()
+    app.router.add_post("/api/v1/auth/login", login)
+    app.router.add_post("/api/v1/auth/refresh", refresh)
+    app.router.add_get("/api/v1/books/files/{file_id}/serve", serve)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    resp = await bo.open_file(7, range_header="bytes=0-2")
+    async with resp:
+        assert resp.status == 206
+        assert await resp.read() == b"abc"
+    assert seen == [("Bearer stale", "bytes=0-2"), ("Bearer fresh", "bytes=0-2")]

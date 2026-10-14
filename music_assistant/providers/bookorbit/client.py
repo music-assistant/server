@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientResponseError, ClientSession
+from aiohttp import ClientResponse, ClientResponseError, ClientSession, ClientTimeout
 
 from music_assistant.providers.bookorbit.constants import API_PREFIX, AUDIO_FORMATS
 from music_assistant.providers.bookorbit.helpers import normalize_base_url
@@ -180,6 +180,33 @@ class BookOrbitClient:
     def stream_url(self, file_id: int) -> str:
         """Return the absolute URL serving a book file."""
         return f"{self.base_url}{API_PREFIX}/books/files/{file_id}/serve"
+
+    async def open_file(
+        self,
+        file_id: int,
+        *,
+        range_header: str | None = None,
+        timeout: ClientTimeout | None = None,
+    ) -> ClientResponse:
+        """
+        Open a book file for streaming; the caller must release the response.
+
+        On 401 the token is refreshed (or the client logs in again) and the request retried once.
+        """
+        if not self.access_token:
+            await self.login()
+        extra = {"Range": range_header} if range_header else None
+        for attempt in range(2):
+            kwargs: dict[str, Any] = {"headers": self._headers(extra), "ssl": self.verify_ssl}
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            resp = await self.session.get(self.stream_url(file_id), **kwargs)
+            if resp.status != 401:
+                return resp
+            resp.release()
+            if attempt == 0 and not await self.refresh():
+                await self.login()
+        raise BookOrbitAuthError(f"file {file_id}: HTTP 401 after re-authentication")
 
     async def _search(self, endpoint: str, query: str) -> list[dict[str, Any]]:
         payload = await self.request("GET", f"{API_PREFIX}/{endpoint}", params={"q": query})
