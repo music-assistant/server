@@ -5,7 +5,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, PropertyMock, call, patch
 
 import pytest
 from music_assistant_models.enums import EventType, MediaType
@@ -117,14 +117,25 @@ _MARKER_RESPONSES: dict[str, dict[str, Any]] = {
 
 
 @pytest.mark.parametrize(
-    ("media_type", "expected"),
+    ("media_type", "expected", "expected_calls"),
     [
-        (MediaType.TRACK, "845|i.new"),
-        (MediaType.ARTIST, "49"),
-        (MediaType.ALBUM, "106|l.new|2026-10-12T16:53:07Z|False"),
+        (
+            MediaType.TRACK,
+            "845|i.new",
+            [call("me/library/songs", limit=1, sort="-dateAdded")],
+        ),
+        (MediaType.ARTIST, "49", [call("me/library/artists", limit=1)]),
+        (
+            MediaType.ALBUM,
+            "106|l.new|2026-10-12T16:53:07Z|False",
+            [
+                call("me/library/albums", limit=1),
+                call("me/library/recently-added", limit=1),
+            ],
+        ),
     ],
 )
-async def test_sync_marker(media_type: MediaType, expected: str) -> None:
+async def test_sync_marker(media_type: MediaType, expected: str, expected_calls: list[Any]) -> None:
     """The marker combines the library total with the newest addition where Apple has one."""
     provider = MagicMock()
     provider.library_sync_album_tracks_enabled = Mock(return_value=False)
@@ -134,6 +145,7 @@ async def test_sync_marker(media_type: MediaType, expected: str) -> None:
     manager = AppleMusicLibraryManager(provider)
 
     assert await manager.get_sync_marker(media_type) == expected
+    assert provider.api_client.get_data.await_args_list == expected_calls
 
 
 async def test_sync_marker_without_total_raises() -> None:
