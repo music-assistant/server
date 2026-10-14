@@ -151,9 +151,11 @@ class MetadataEnrichmentMixin:
                 )
 
         # The musicbrainz ID is mandatory for all metadata lookups
+        merge_mbid: str | None = None
         if not artist.mbid:
-            if mbid := await self._get_artist_mbid(artist):
-                artist.mbid = mbid
+            if found := await self._get_artist_mbid(artist):
+                artist.mbid, by_name = found
+                merge_mbid = None if by_name else artist.mbid
         retry_soon = await self._link_artist_to_musicbrainz(artist)
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
@@ -215,6 +217,11 @@ class MetadataEnrichmentMixin:
         # set timestamp, used to determine when this function was last called
         artist.metadata.last_refresh = _refresh_timestamp(retry_soon)
         await self.mass.music.artists.update_item_in_library(artist.item_id, artist)
+        # an id a name search found may belong to a namesake, so only a reliable one merges
+        if merge_mbid:
+            await self.mass.music.artists.merge_library_artists_by_mbid(
+                int(artist.item_id), merge_mbid
+            )
 
     def _select_description(
         self,
@@ -709,19 +716,19 @@ class MetadataEnrichmentMixin:
         """Return the MusicBrainz provider, if it is loaded."""
         return cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
 
-    async def _get_artist_mbid(self, artist: Artist) -> str | None:
-        """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
+    async def _get_artist_mbid(self, artist: Artist) -> tuple[str, bool] | None:
+        """Fetch the artist's MusicBrainz id and whether only its name identified it."""
         if artist.mbid:
-            return artist.mbid
+            return artist.mbid, False
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
-            return VARIOUS_ARTISTS_MBID
+            return VARIOUS_ARTISTS_MBID, True
 
         if not (musicbrainz := self._musicbrainz_provider()):
             return None
         # the artist's own streaming service links cost neither a database read nor a
         # provider request, so they are tried on their own first
-        if mb_artist := await musicbrainz.resolve_artist(artist, [], []):
-            return mb_artist.id
+        if identified := await musicbrainz.identify_artist(artist, [], []):
+            return identified[0].id, identified[1]
         # the library's own albums and tracks carry the MusicBrainz ids, barcodes and ISRCs
         # the lookup keys on, so those come before anything a provider has to be asked for
         ref_albums = _identifying_first(
@@ -730,8 +737,8 @@ class MetadataEnrichmentMixin:
         ref_tracks = _identifying_first(
             await self.mass.music.artists.tracks(artist.item_id, artist.provider)
         )
-        if mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, ref_tracks):
-            return mb_artist.id
+        if identified := await musicbrainz.identify_artist(artist, ref_albums, ref_tracks):
+            return identified[0].id, identified[1]
         # last resort for library items without identifiers: the providers' top tracks
         tried = {track.uri for track in ref_tracks}
         top_tracks = _identifying_first(
@@ -744,9 +751,9 @@ class MetadataEnrichmentMixin:
             ]
         )
         if top_tracks and (
-            mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, top_tracks)
+            identified := await musicbrainz.identify_artist(artist, ref_albums, top_tracks)
         ):
-            return mb_artist.id
+            return identified[0].id, identified[1]
 
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
