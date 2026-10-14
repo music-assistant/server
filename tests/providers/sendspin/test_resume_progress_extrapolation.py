@@ -1,12 +1,4 @@
-"""
-Tests for progress extrapolation across a resume-from-stop gap.
-
-Pausing a Sendspin group falls back to STOP. On the first metadata push after
-resume, PlayerMedia.corrected_elapsed_time still extrapolates from the pre-stop
-elapsed_time_last_updated, which would report the entire stopped period (hours
-or days) as track progress. The computation must fall back to the retained
-elapsed time when the extrapolation window is not fresh.
-"""
+"""Tests for metadata progress extrapolation."""
 
 from __future__ import annotations
 
@@ -35,16 +27,10 @@ def _media(elapsed: int | None, *, updated_ago: float | None = None) -> PlayerMe
     )
 
 
-def test_fresh_extrapolation_is_trusted() -> None:
-    """A few seconds of interpolation past the last update is normal playback."""
-    result = _compute(_media(145, updated_ago=2.5), is_playing=True)
-    assert 147_000 <= result <= 148_500
-
-
-def test_stale_extrapolation_falls_back_to_retained_elapsed() -> None:
-    """A days-old anchor means the gap is stopped time, not track progress."""
-    five_days = 5 * 24 * 3600.0
-    assert _compute(_media(145, updated_ago=five_days), is_playing=True) == 145_000
+def test_steady_playback_extrapolates_from_an_old_anchor() -> None:
+    """A push 90 s into steady playback reports the live position, not the anchor."""
+    result = _compute(_media(0, updated_ago=90.0), is_playing=True)
+    assert 90_000 <= result <= 91_500
 
 
 def test_not_playing_keeps_the_fixed_position() -> None:
@@ -75,3 +61,17 @@ def test_metadata_builder_preserves_unknown_duration_progress() -> None:
 
     assert metadata.track_duration == 0
     assert metadata.track_progress == 12_000
+
+
+def test_metadata_builder_clamps_progress_to_duration() -> None:
+    """Extrapolation never reports a position past the end of the track."""
+    player = MagicMock()
+    player.state.playback_state = PlaybackState.PLAYING
+    player._compute_track_progress_ms = SendspinPlayer._compute_track_progress_ms.__get__(
+        player, SendspinPlayer
+    )
+    media = _media(170, updated_ago=60.0)
+    media.duration = 180
+    metadata = SendspinPlayer._build_current_media_metadata(player, media, None, is_playing=True)
+
+    assert metadata.track_progress == 180_000

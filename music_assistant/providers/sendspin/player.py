@@ -234,10 +234,6 @@ PAIR_CONFIRM_TIMEOUT = 30.0
 # Seconds a Cast-bridged member gets to report its Sendspin app ready.
 CAST_APP_READY_TIMEOUT = 30.0
 
-# Longest gap since elapsed_time_last_updated across which corrected_elapsed_time
-# is still trusted for metadata progress.
-MAX_PROGRESS_EXTRAPOLATION = 30.0
-
 # PlayerMedia fields behind MEDIA_IDENTITY_KEYS, derived so the same-item check in
 # play_media() cannot drift from what update_state() treats as a media change.
 _MEDIA_IDENTITY_FIELDS = tuple(
@@ -2379,9 +2375,7 @@ class SendspinPlayer(SendspinBasePlayer):
             float(current_media.elapsed_time) if current_media.elapsed_time is not None else None
         )
         if is_playing and (corrected := current_media.corrected_elapsed_time) is not None:
-            # Only trust the extrapolation across a fresh window.
-            if elapsed_time is None or corrected - elapsed_time <= MAX_PROGRESS_EXTRAPOLATION:
-                elapsed_time = corrected
+            elapsed_time = corrected
         if elapsed_time is None:
             elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
         return max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
