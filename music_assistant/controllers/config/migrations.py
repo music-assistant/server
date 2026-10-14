@@ -1981,9 +1981,13 @@ def _migrate_apple_music_sync_schedule(data: dict[str, Any]) -> bool:
     )
     if not apple_sync_prefixes:
         return False
-    task_states = data.get(CONF_CORE, {}).get("tasks", {}).get(TASK_STATE_CONFIG_KEY, {})
+    core_cfg = data.get(CONF_CORE)
+    tasks_cfg = core_cfg.get("tasks") if isinstance(core_cfg, dict) else None
+    task_states = tasks_cfg.get(TASK_STATE_CONFIG_KEY) if isinstance(tasks_cfg, dict) else None
+    if not isinstance(task_states, dict):
+        task_states = {}
     migrated = 0
-    for task_id, state in task_states.items() if isinstance(task_states, dict) else ():
+    for task_id, state in task_states.items():
         schedule = state.get("schedule") if isinstance(state, dict) else None
         if (
             task_id.startswith(apple_sync_prefixes)

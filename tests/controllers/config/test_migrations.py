@@ -1708,3 +1708,13 @@ def test_migrate_apple_music_sync_schedule_noop_without_apple_music() -> None:
     }
     assert _migrate_apple_music_sync_schedule(data) is False
     assert CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED not in data
+
+
+def test_migrate_apple_music_sync_schedule_survives_malformed_state() -> None:
+    """Malformed task state is skipped without raising."""
+    data: dict[str, Any] = {
+        "providers": {"apple_music--a": {"domain": "apple_music"}},
+        "core": {"tasks": "broken"},
+    }
+    assert _migrate_apple_music_sync_schedule(data) is True
+    assert data["core"] == {"tasks": "broken"}
