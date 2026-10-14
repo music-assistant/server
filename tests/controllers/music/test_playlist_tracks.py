@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, patch
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ListingType, MediaType, SortDirection, SortField
@@ -13,8 +14,18 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_uri
-from music_assistant_models.media_items import Playlist, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioMetadata,
+    ItemMapping,
+    Playlist,
+    PodcastEpisode,
+    ProviderMapping,
+    Radio,
+    Track,
+)
 
+from music_assistant.constants import PlaylistPlayableItem
 from music_assistant.controllers.cache.constants import BYPASS_CACHE
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_LISTINGS
 from music_assistant.models.music_provider import MusicProvider
@@ -33,7 +44,10 @@ class _StubPlaylistProvider(MusicProvider):
     """Music provider listing one playlist in pages, counting the pages it is asked for."""
 
     def __init__(
-        self, tracks: list[Track], page_size: int = 2, instance_id: str = INSTANCE
+        self,
+        tracks: Sequence[PlaylistPlayableItem],
+        page_size: int = 2,
+        instance_id: str = INSTANCE,
     ) -> None:
         """
         Initialize the stub provider.
@@ -42,10 +56,10 @@ class _StubPlaylistProvider(MusicProvider):
         :param page_size: The number of tracks per page.
         :param instance_id: The instance id, whose first part is the domain.
         """
-        self.tracks = tracks
+        self.tracks = list(tracks)
         self.page_size = page_size
         self.is_dynamic = False
-        self.failing_details = False
+        self.details_error: Exception | None = None
         self.failing_page: int | None = None
         self.details_fetched = 0
         self.pages_fetched = 0
@@ -61,11 +75,13 @@ class _StubPlaylistProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Return the playlist, dynamic when the test says so."""
         self.details_fetched += 1
-        if self.failing_details:
-            raise ResourceTemporarilyUnavailable("rate limited")
+        if self.details_error:
+            raise self.details_error
         return _playlist(self.instance_id, prov_playlist_id, is_dynamic=self.is_dynamic)
 
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, page: int = 0
+    ) -> list[PlaylistPlayableItem]:
         """Return one page of the playlist."""
         self.pages_fetched += 1
         self.bypassed.append(BYPASS_CACHE.get())
@@ -226,10 +242,17 @@ async def test_a_cached_playlist_is_not_looked_up_again(mass: MusicAssistant) ->
     assert provider.pages_fetched == 2
 
 
-async def test_a_playlist_without_details_is_served_but_not_kept(mass: MusicAssistant) -> None:
+@pytest.mark.parametrize(
+    "details_error",
+    # a provider that offers no playlist details (Audiobookshelf) raises NotImplementedError
+    [ResourceTemporarilyUnavailable("rate limited"), NotImplementedError()],
+)
+async def test_a_playlist_without_details_is_served_but_not_kept(
+    mass: MusicAssistant, details_error: Exception
+) -> None:
     """A playlist whose details can not be fetched may be dynamic: it is listed, not kept."""
     provider = _StubPlaylistProvider(_playlist_tracks(2))
-    provider.failing_details = True
+    provider.details_error = details_error
     with _with_provider(mass, provider):
         for _ in range(2):
             assert _ids(await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)) == ["t1", "t2"]
@@ -247,6 +270,77 @@ async def test_a_refresh_fetches_the_playlist_anew_and_keeps_that(mass: MusicAss
         served = await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)
     assert _ids(refreshed) == _ids(served) == ["t1"]
     assert provider.pages_fetched == 4
+
+
+async def test_a_refresh_of_the_listing_bypasses_the_caches_of_the_provider(
+    mass: MusicAssistant,
+) -> None:
+    """force_refresh and allow_dynamic_tracks fetch the pages past the caches of the provider."""
+    provider = _StubPlaylistProvider(_playlist_tracks(1))
+    with _with_provider(mass, provider):
+        await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)
+        await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE, force_refresh=True)
+        await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE, allow_dynamic_tracks=True)
+        await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)
+    # two pages a walk; the last request is served from what the refresh kept
+    assert provider.bypassed == [False, False, True, True, True, True]
+
+
+async def test_the_audio_analysis_of_a_cached_playlist_is_kept(mass: MusicAssistant) -> None:
+    """The bpm and key the stored audio analysis adds come with the cached playlist too."""
+    provider = _StubPlaylistProvider(_playlist_tracks(2))
+    analysis = AudioMetadata(bpm=120.0, musical_key="F# minor", camelot_key="11A")
+    lookup = AsyncMock(return_value=[analysis, None])
+    with (
+        _with_provider(mass, provider),
+        patch.object(mass.streams.audio_analysis, "get_tracks_audio_metadata", lookup),
+    ):
+        filled = await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)
+        cached = await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)
+    assert cached[0] is not filled[0]
+    for listing in (filled, cached):
+        assert [getattr(item, "audio_metadata", None) for item in listing] == [analysis, None]
+    lookup.assert_awaited_once()
+
+
+async def test_a_cached_playlist_rebuilds_every_kind_of_item(mass: MusicAssistant) -> None:
+    """Radio stations, podcast episodes and audiobooks in a playlist come back as themselves."""
+    podcast = ItemMapping(
+        media_type=MediaType.PODCAST, item_id="show", provider=INSTANCE, name="Show"
+    )
+
+    def _mappings(item_id: str) -> set[ProviderMapping]:
+        return {
+            ProviderMapping(item_id=item_id, provider_domain="spotify", provider_instance=INSTANCE)
+        }
+
+    items: list[PlaylistPlayableItem] = [
+        create_track(INSTANCE, "track"),
+        Radio(
+            item_id="radio", provider=INSTANCE, name="Radio", provider_mappings=_mappings("radio")
+        ),
+        PodcastEpisode(
+            item_id="episode",
+            provider=INSTANCE,
+            name="Episode",
+            provider_mappings=_mappings("episode"),
+            position=1,
+            podcast=podcast,
+        ),
+        Audiobook(
+            item_id="book", provider=INSTANCE, name="Book", provider_mappings=_mappings("book")
+        ),
+    ]
+    for position, item in enumerate(items, start=1):
+        item.position = position
+    provider = _StubPlaylistProvider(items, page_size=10)
+    with _with_provider(mass, provider):
+        await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)
+        cached = await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)
+    assert [type(item) for item in cached] == [Track, Radio, PodcastEpisode, Audiobook]
+    assert _ids(cached) == ["track", "radio", "episode", "book"]
+    assert cast("PodcastEpisode", cached[2]).podcast.item_id == "show"
+    assert provider.pages_fetched == 2
 
 
 async def test_a_dynamic_playlist_is_never_cached(mass: MusicAssistant) -> None:

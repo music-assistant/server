@@ -90,6 +90,11 @@ _PROVIDER_PLAYLIST_ADD_BATCH_SIZE: Final[int] = 100
 _MIGRATION_REPORT_DETAIL_LIMIT: Final[int] = 200
 _MIGRATION_RESOLVE_BATCH_SIZE: Final[int] = 5
 _MIGRATION_VERIFY_RETRY_DELAYS: Final[tuple[int, ...]] = (1, 2, 4)
+# on top of the fetch failures, a provider may offer no playlist details at all
+_PLAYLIST_DETAILS_ERRORS: Final[tuple[type[Exception], ...]] = (
+    *PROVIDER_FETCH_ERRORS,
+    NotImplementedError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -1696,6 +1701,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         A page that fails after the first leaves the listing incomplete; a failing first
         page is raised.
+
+        :param item_id: The playlist id on the provider.
+        :param provider_instance_id: The provider instance the playlist is on.
+        :param force_refresh: Bypass the caches of the provider.
+        :param strict_provider_instance: Only accept this exact provider instance.
         """
         items: list[PlaylistPlayableItem] = []
         try:
@@ -1733,7 +1743,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # whether a playlist outside the library is dynamic shows in its details only
         try:
             playlist = await self.get(item_id, provider_instance_id, allow_update_metadata=False)
-        except PROVIDER_FETCH_ERRORS:
+        except _PLAYLIST_DETAILS_ERRORS:
             return Listing(listing.items, complete=False)
         # the fresh sample a dynamic playlist hands out is never kept
         return Listing(listing.items, complete=not playlist.is_dynamic)

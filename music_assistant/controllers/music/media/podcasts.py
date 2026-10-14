@@ -496,6 +496,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
         :param item_id: The podcast id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :raises MediaNotFoundError: The podcast is not in the library, or the caller may use
+            none of its providers.
         """
         # always check if we have a library item for this podcast
         if provider_instance_id_or_domain == "library":
@@ -537,6 +539,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
         The episodes carry the resume info their provider reports, none from the playlog. A
         provider failing part way leaves the listing incomplete; failing at once is raised.
+
+        :param item_id: The podcast id on the provider.
+        :param provider: The provider of the podcast.
         """
         episodes: list[PodcastEpisode] = []
         try:

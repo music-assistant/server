@@ -3534,21 +3534,26 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                                 media_item=media_item,
                                 is_playing=is_playing,
                             ),
+                            is_playing=is_playing,
                         )
                     )
 
-    async def _report_play(self, media_item: MediaItemType, report: Awaitable[None]) -> None:
+    async def _report_play(
+        self, media_item: MediaItemType, report: Awaitable[None], *, is_playing: bool
+    ) -> None:
         """
         Make a play report to a music source.
 
         :param media_item: The played item.
         :param report: The report to the music source.
+        :param is_playing: Whether the item is still playing.
         """
         try:
             await report
         finally:
-            if isinstance(media_item, PodcastEpisode) and media_item.podcast:
-                # the cached episode listing holds the played state the music source reports
+            # the cached episode listing holds the played state the music source reports,
+            # which a pause, stop or end of the episode, or marking it (un)played, changes
+            if not is_playing and isinstance(media_item, PodcastEpisode) and media_item.podcast:
                 await invalidate_listings(self.mass, media_item.podcast)
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:

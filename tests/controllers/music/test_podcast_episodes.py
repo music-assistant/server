@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
@@ -116,6 +117,21 @@ def _with_provider(mass: MusicAssistant, provider: _StubPodcastProvider) -> Any:
         return provider if provider_id in (provider.instance_id, provider.domain) else None
 
     return patch.object(mass, "get_provider", side_effect=_get_provider)
+
+
+@contextmanager
+def _held_play_reports(mass: MusicAssistant) -> Iterator[Callable[[], Awaitable[None]]]:
+    """Hold the play reports to the providers until the function this yields delivers them."""
+    reports: list[Coroutine[Any, Any, None]] = []
+
+    async def _deliver() -> None:
+        while reports:
+            await reports.pop(0)
+
+    with patch.object(
+        mass, "create_task", side_effect=lambda coro, *_a, **_k: reports.append(coro)
+    ):
+        yield _deliver
 
 
 def _as_user(user: User | None) -> Any:
@@ -255,28 +271,41 @@ async def test_a_play_report_drops_the_cached_listing_of_its_podcast(
 ) -> None:
     """Once its provider was told an episode was (un)played, the podcast is fetched anew."""
     provider = _StubPodcastProvider(_episodes(2))
-    reports: list[Coroutine[Any, Any, None]] = []
-
-    async def _deliver_reports() -> None:
-        while reports:
-            await reports.pop(0)
-
-    with (
-        _with_provider(mass, provider),
-        patch.object(mass, "create_task", side_effect=lambda coro, *_a, **_k: reports.append(coro)),
-    ):
+    with _with_provider(mass, provider), _held_play_reports(mass) as deliver_reports:
         await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
         await mass.music.mark_item_played(provider.episodes[0], fully_played=True)
         # until the provider is told, what it lists is what the cache holds
         await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
         assert provider.listings == 1
-        await _deliver_reports()
+        await deliver_reports()
         await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
         await mass.music.mark_item_unplayed(provider.episodes[0])
-        await _deliver_reports()
+        await deliver_reports()
         await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
     assert provider.played == [("ep2", True), ("ep2", False)]
     assert provider.listings == 3
+
+
+async def test_the_progress_of_a_playing_episode_keeps_the_cached_listing(
+    mass: MusicAssistant,
+) -> None:
+    """The progress reports while an episode plays keep the listing; a stop drops it."""
+    provider = _StubPodcastProvider(_episodes(2))
+    with _with_provider(mass, provider), _held_play_reports(mass) as deliver_reports:
+        await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
+        await mass.music.mark_item_played(
+            provider.episodes[0], fully_played=False, seconds_played=30, is_playing=True
+        )
+        await deliver_reports()
+        await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
+        assert provider.listings == 1
+        await mass.music.mark_item_played(
+            provider.episodes[0], fully_played=False, seconds_played=60
+        )
+        await deliver_reports()
+        await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
+    assert provider.played == [("ep2", False), ("ep2", False)]
+    assert provider.listings == 2
 
 
 async def test_a_podcast_a_provider_delivers_in_part_is_not_kept(mass: MusicAssistant) -> None:
