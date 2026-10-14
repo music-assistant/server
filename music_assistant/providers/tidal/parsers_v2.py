@@ -124,7 +124,7 @@ def parse_artist(provider: TidalProvider, doc: JsonApiDocument, resource: dict[s
         artist.metadata.popularity = _scale_popularity(attributes["popularity"])
     if links := _parse_links(attributes):
         artist.metadata.links = links
-    # an artist without a picture of their own gets one of their album covers as profile art
+    # An artist without a picture of their own gets one of their album covers as profile art
     if not _is_album_cover(doc.related_one(resource, "profileArt")) and (
         image := _resolve_image(provider, doc, resource, "profileArt")
     ):
