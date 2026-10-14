@@ -21,9 +21,11 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.media_items import (
+    BrowseFolder,
     Genre,
+    ItemMapping,
     MediaItemImage,
     Playlist,
     ProviderMapping,
@@ -705,9 +707,63 @@ async def test_explicit_filter_generates_sql_query_parts() -> None:
     assert call_kwargs["explicit"] is None
 
 
+def _library_track(item_id: str) -> Track:
+    """Build a library track as browse returns it."""
+    mapping = ProviderMapping(
+        item_id=item_id, provider_domain="library", provider_instance="library", available=True
+    )
+    return Track(
+        item_id=item_id,
+        provider="library",
+        name=f"Track {item_id}",
+        uri=f"library://track/{item_id}",
+        provider_mappings={mapping},
+    )
+
+
 @pytest.mark.asyncio
-async def test_folder_rule_passed_to_library_query() -> None:
-    """Folder paths restrict the library query in AND logic and add a source in OR logic."""
+async def test_folder_tracks_browses_recursively() -> None:
+    """Folder tracks come from browsing the folders and their subfolders."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    root, sub = "filesystem_local--abc://Rock", "filesystem_local--abc://Rock/Classic"
+    listings: dict[str, list[Any]] = {
+        root: [
+            BrowseFolder(item_id="back", provider="x", path="filesystem_local--abc://", name=".."),
+            BrowseFolder(item_id="Rock/Classic", provider="x", path=sub, name="Classic"),
+            _library_track("1"),
+            # not in the library (yet), so no smart playlist can hold it
+            ItemMapping(media_type=MediaType.TRACK, item_id="new.mp3", provider="x", name="new"),
+        ],
+        sub: [_library_track("2")],
+    }
+
+    async def browse(path: str) -> list[Any]:
+        if path not in listings:
+            msg = "hidden"
+            raise InsufficientPermissions(msg)
+        return listings[path]
+
+    mass.music.browse = AsyncMock(side_effect=browse)
+
+    tracks = await plugin._folder_tracks([root, "filesystem_local--hidden://Diary"])
+    assert {t.item_id for t in tracks} == {"1", "2"}
+    # the parent entry is not followed
+    assert "filesystem_local--abc://" not in [c.args[0] for c in mass.music.browse.call_args_list]
+
+    # a background refresh has no user for browse to check, only the user's sources
+    mass.music.browse.reset_mock()
+    assert await plugin._folder_tracks([root], ["filesystem_local--other"]) == []
+    mass.music.browse.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_folder_rule_is_the_base_in_and_and_a_source_in_or() -> None:
+    """Folder tracks are the base in AND logic and add a source in OR logic."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -716,29 +772,33 @@ async def test_folder_rule_passed_to_library_query() -> None:
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
     folders = ["filesystem_local--abc://Rock"]
 
-    folder_track = _make_mock_track("1", uri="library://track/1")
-    fav_track = _make_mock_track("2", uri="library://track/2")
-
-    async def mock_get_library(**kwargs: Any) -> list[MagicMock]:
-        if kwargs.get("folder_paths"):
-            return [folder_track]
-        return [fav_track]
-
-    library_mock = AsyncMock(side_effect=mock_get_library)
+    folder_track = _make_mock_track("1", uri="library://track/1", favorite=True)
+    other_folder_track = _make_mock_track("3", uri="library://track/3")
+    fav_track = _make_mock_track("2", uri="library://track/2", favorite=True)
+    folder_mock = AsyncMock(return_value=[folder_track, other_folder_track])
+    library_mock = AsyncMock(return_value=[fav_track])
+    cast("Any", plugin)._folder_tracks = folder_mock
     cast("Any", plugin)._get_library_tracks = library_mock
 
     result = await plugin._evaluate_and(SmartPlaylistRules(folder_paths=folders, limit=10))
+    assert result == [folder_track, other_folder_track]
+    library_mock.assert_not_called()
+
+    # favorites narrow the folder tracks down instead of querying the library
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, favorites_only=True, limit=10)
+    )
     assert result == [folder_track]
-    assert library_mock.call_args.kwargs["folder_paths"] == folders
+    library_mock.assert_not_called()
 
     result = await plugin._evaluate_or(
         SmartPlaylistRules(folder_paths=folders, favorites_only=True, logic=LOGIC_OR, limit=10)
     )
-    assert {t.uri for t in result} == {"library://track/1", "library://track/2"}
-
-    mass.music.tracks.library_items = AsyncMock(return_value=[])
-    await SmartPlaylistProvider._get_library_tracks(plugin, folder_paths=folders)
-    assert mass.music.tracks.library_items.call_args.kwargs["folder"] == folders
+    assert {t.uri for t in result} == {
+        "library://track/1",
+        "library://track/2",
+        "library://track/3",
+    }
 
 
 @pytest.mark.asyncio

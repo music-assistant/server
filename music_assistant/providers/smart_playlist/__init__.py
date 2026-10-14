@@ -811,7 +811,8 @@ class SmartPlaylistProvider(PluginProvider):
                     and t.metadata.popularity >= rules.min_popularity
                 ]
 
-            # Explicit filter is now handled at SQL level via _get_library_tracks()
+            # the library queries apply it already, the browsed folder tracks still need it
+            tracks = _filter_by_explicit(tracks, rules.explicit)
 
             if rules.year_from is not None or rules.year_to is not None:
                 tracks = [
@@ -1191,19 +1192,25 @@ class SmartPlaylistProvider(PluginProvider):
                 user_provider_filter=user_provider_filter,
             )
 
-        favorite = True if rules.favorites_only else None
-        genre_ids = rules.genre_ids if has_genre else None
-        base_tracks = await self._get_library_tracks(
-            favorite=favorite,
-            genre_ids=genre_ids,
-            explicit=rules.explicit,
-            limit=min(rules.limit * 5, 2000),
-            user_provider_filter=user_provider_filter,
-            folder_paths=rules.folder_paths if has_folder else None,
-        )
+        if has_folder:
+            base_tracks = await self._folder_tracks(rules.folder_paths, user_provider_filter)
+        else:
+            favorite = True if rules.favorites_only else None
+            genre_ids = rules.genre_ids if has_genre else None
+            base_tracks = await self._get_library_tracks(
+                favorite=favorite,
+                genre_ids=genre_ids,
+                explicit=rules.explicit,
+                limit=min(rules.limit * 5, 2000),
+                user_provider_filter=user_provider_filter,
+            )
+
+        # the library query applies it already, the browsed folder tracks still need it
+        if rules.favorites_only:
+            base_tracks = [t for t in base_tracks if t.favorite]
 
         # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
-        if has_genre and len(rules.genre_ids) > 1:
+        if has_genre and (has_folder or len(rules.genre_ids) > 1):
             base_tracks = await self._filter_tracks_with_all_genres(base_tracks, rules.genre_ids)
 
         if not has_artist and not has_album:
@@ -1259,12 +1266,7 @@ class SmartPlaylistProvider(PluginProvider):
                     track_sets[track.uri] = track
 
         if rules.folder_paths:
-            for track in await self._get_library_tracks(
-                explicit=rules.explicit,
-                limit=fetch_limit,
-                user_provider_filter=user_provider_filter,
-                folder_paths=rules.folder_paths,
-            ):
+            for track in await self._folder_tracks(rules.folder_paths, user_provider_filter):
                 if track.uri:
                     track_sets[track.uri] = track
 
@@ -1320,7 +1322,6 @@ class SmartPlaylistProvider(PluginProvider):
         explicit: bool | None = None,
         limit: int = 500,
         user_provider_filter: list[str] | None = None,
-        folder_paths: list[str] | None = None,
     ) -> list[Track]:
         """Fetch library tracks with optional filters."""
         return await self.mass.music.tracks.library_items(
@@ -1331,8 +1332,40 @@ class SmartPlaylistProvider(PluginProvider):
             sort_field=SortField.RANDOM,
             provider=user_provider_filter,
             summary=False,
-            folder=folder_paths,
         )
+
+    async def _folder_tracks(
+        self, folder_paths: list[str], user_provider_filter: list[str] | None = None
+    ) -> list[Track]:
+        """
+        Return the library tracks found by browsing the given folders recursively.
+
+        :param folder_paths: The browse paths of the folders.
+        :param user_provider_filter: The music sources the tracks are limited to.
+        """
+        # a background refresh has no user for browse to check, only the user's sources
+        pending = [
+            path
+            for path in folder_paths
+            if user_provider_filter is None or path.partition("://")[0] in user_provider_filter
+        ]
+        tracks: dict[str, Track] = {}
+        # stops at the same cap as the library queries, a huge folder yields the tracks found first
+        while pending and len(tracks) < FETCH_LIMIT:
+            path = pending.pop()
+            try:
+                items = await self.mass.music.browse(path)
+            except MusicAssistantError as err:
+                # e.g. a folder on a source hidden from the user, or one that is gone
+                self.logger.debug("Skipping folder %s: %s", path, err)
+                continue
+            for item in items:
+                if isinstance(item, BrowseFolder):
+                    if item.path and item.name != "..":
+                        pending.append(item.path)
+                elif isinstance(item, Track) and item.provider == "library" and item.uri:
+                    tracks[item.uri] = item
+        return list(tracks.values())
 
     async def _tracks_from_seeds(
         self, seed_uris: list[str], target_size: int, is_dynamic: bool
