@@ -108,12 +108,16 @@ class BookOrbitClient:
 
     async def query_audiobooks(self, *, library_id: int | None = None) -> list[dict[str, Any]]:
         """Return all audio-format books (optionally limited to one library)."""
+        if library_id is not None:
+            query_path = f"{API_PREFIX}/libraries/{library_id}/books"
+        else:
+            query_path = f"{API_PREFIX}/books/query"
         books: list[dict[str, Any]] = []
         for page in range(QUERY_MAX_PAGES):
             payload = await self.request(
                 "POST",
-                f"{API_PREFIX}/books/query",
-                json=self._build_query(library_id, page),
+                query_path,
+                json=self._build_query(page),
             )
             items = self._extract_items(payload)
             books.extend(items)
@@ -203,26 +207,20 @@ class BookOrbitClient:
             return status, await resp.read()
 
     @staticmethod
-    def _build_query(library_id: int | None, page: int) -> dict[str, Any]:
-        rules: list[dict[str, Any]] = [
-            {
-                "type": "rule",
-                "field": "format",
-                "operator": "includesAny",
-                "value": sorted(AUDIO_FORMATS),
-            }
-        ]
-        if library_id is not None:
-            rules.append(
-                {
-                    "type": "rule",
-                    "field": "library",
-                    "operator": "includesAny",
-                    "value": [library_id],
-                }
-            )
+    def _build_query(page: int) -> dict[str, Any]:
         return {
-            "filter": {"type": "group", "join": "AND", "rules": rules},
+            "filter": {
+                "type": "group",
+                "join": "AND",
+                "rules": [
+                    {
+                        "type": "rule",
+                        "field": "format",
+                        "operator": "includesAny",
+                        "value": sorted(AUDIO_FORMATS),
+                    }
+                ],
+            },
             "sort": [{"field": "title", "dir": "asc"}],
             "pagination": {"page": page, "size": QUERY_PAGE_SIZE},
         }

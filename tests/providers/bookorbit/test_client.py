@@ -140,7 +140,7 @@ async def test_query_audiobooks_filters_formats_and_paginates(aiohttp_client: An
         return web.json_response({"items": [{"id": 3}], "total": 3, "page": 1, "size": 100})
 
     app = web.Application()
-    app.router.add_post("/api/v1/books/query", query)
+    app.router.add_post("/api/v1/libraries/{library_id}/books", query)
     client = await aiohttp_client(app)
 
     bo = _make(client)
@@ -158,12 +158,6 @@ async def test_query_audiobooks_filters_formats_and_paginates(aiohttp_client: An
                     "field": "format",
                     "operator": "includesAny",
                     "value": ["flac", "m4a", "m4b", "mp3", "ogg", "opus"],
-                },
-                {
-                    "type": "rule",
-                    "field": "library",
-                    "operator": "includesAny",
-                    "value": [7],
                 },
             ],
         },
