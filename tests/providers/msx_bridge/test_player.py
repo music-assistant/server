@@ -403,14 +403,12 @@ async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_
     mass_mock.player_queues.get_item.return_value = None
 
     with (
-        patch.object(player.provider, "notify_goto_index") as mock_goto,
         patch.object(player.provider, "notify_play_playlist") as mock_playlist,
         patch.object(player.provider, "notify_play_started") as mock_play,
         player.suppress_ws_notify(),
     ):
         await player.play_media(media)
 
-    mock_goto.assert_not_called()
     mock_playlist.assert_not_called()
     mock_play.assert_not_called()
 

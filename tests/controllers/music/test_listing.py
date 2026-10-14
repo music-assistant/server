@@ -26,6 +26,7 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.music.listing import (
     _SORT_KEYS,
     apply_listing,
+    legacy_sort,
     resolve_listing_sort,
 )
 from music_assistant.controllers.music.sorting import LIBRARY_LISTINGS, LISTING_SORT_OPTIONS
@@ -389,6 +390,14 @@ def test_resolve_listing_sort_rejects_what_the_listing_lacks() -> None:
         resolve_listing_sort(ListingType.ALBUM_TRACKS, SortField.YEAR)
     with pytest.raises(InvalidDataError):
         resolve_listing_sort(ListingType.ALBUM_TRACKS, order_by="not_a_sort_key")
+
+
+def test_legacy_sort_maps_a_deprecated_key_to_its_typed_sort() -> None:
+    """A deprecated key stands for a sort field and its direction; an unknown key is rejected."""
+    assert legacy_sort("timestamp_added_desc") == (SortField.TIMESTAMP_ADDED, SortDirection.DESC)
+    assert legacy_sort("random") == (SortField.RANDOM, None)
+    with pytest.raises(InvalidDataError):
+        legacy_sort("not_a_sort_key")
 
 
 def test_every_listing_offers_sort_fields_its_items_carry() -> None:
