@@ -881,6 +881,29 @@ class TestSyncMediaItemGenres:
         assert excluded_id not in mapped
         assert len(mapped) == len(names) - 1
 
+    async def test_sync_of_an_excluded_genre_writes_nothing(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A provider still reporting an excluded genre leaves the item's mappings untouched."""
+        excluded = await genre_ctrl.add_item_to_library(_make_genre("SyncExcludedKnown"))
+        track = await _add_test_track(mass, "Sync Track Excluded Known")
+        await genre_ctrl.sync_media_item_genres(
+            MediaType.TRACK, track.item_id, {"SyncExcludedKnown"}
+        )
+        await genre_ctrl.exclude_genre_from_media_item(
+            excluded.item_id, MediaType.TRACK, track.item_id
+        )
+        genre_ctrl._sync_lookup_cache.clear()
+
+        with patch.object(
+            genre_ctrl, "_find_genres_for_alias", wraps=genre_ctrl._find_genres_for_alias
+        ) as full_path:
+            await genre_ctrl.sync_media_item_genres(
+                MediaType.TRACK, track.item_id, {"SyncExcludedKnown"}
+            )
+
+        full_path.assert_not_called()
+
     async def test_sync_skips_empty_names(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
