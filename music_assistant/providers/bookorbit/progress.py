@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 FULLY_PLAYED_PERCENTAGE = 100.0
@@ -81,4 +81,6 @@ def parse_resume_position(
     if updated_at := progress.get("updatedAt"):
         with suppress(TypeError, ValueError):
             timestamp = datetime.fromisoformat(str(updated_at))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
     return fully_played, int(position * 1000), timestamp

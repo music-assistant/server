@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import UTC
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from aiohttp import ClientError
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 
@@ -118,6 +121,20 @@ def test_resume_finished_book(book_multifile: dict[str, Any]) -> None:
     assert timestamp is None
 
 
+def test_resume_naive_updated_at_is_utc_aware(book_multifile: dict[str, Any]) -> None:
+    """Naive updatedAt timestamps are treated as UTC."""
+    files = _audio_files(book_multifile)
+    progress = {
+        "currentFileId": 771,
+        "positionSeconds": 0.0,
+        "percentage": 0.0,
+        "updatedAt": "2026-10-14T12:00:00",
+    }
+    _, _, timestamp = parse_resume_position(files, progress)
+    assert timestamp is not None
+    assert timestamp.tzinfo == UTC
+
+
 def test_resume_unknown_file_falls_back_to_percentage(book_multifile: dict[str, Any]) -> None:
     """If the stored file is gone, the percentage is used."""
     files = _audio_files(book_multifile)
@@ -181,6 +198,16 @@ async def test_get_resume_position_reads_progress(
 
 
 @pytest.mark.asyncio
+async def test_get_resume_position_client_error_falls_back(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Progress fetch errors defer to MA's own position."""
+    _client(provider).get_audio_progress.side_effect = ClientError("connection reset")
+    with pytest.raises(NotImplementedError):
+        await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
 async def test_get_resume_position_without_progress_falls_back(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
@@ -210,6 +237,25 @@ async def test_on_played_patches_progress(
     assert kwargs["current_file_id"] == 772
     assert kwargs["position_seconds"] == pytest.approx(49.5)
     assert kwargs["percentage"] == pytest.approx(150 / 301.0 * 100)
+
+
+@pytest.mark.asyncio
+async def test_on_played_skips_multi_file_without_durations(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Multi-file books with unknown file durations must not PATCH bogus percentages."""
+    book = deepcopy(book_multifile)
+    book["files"][0]["durationSeconds"] = None
+    _client(provider).get_book = AsyncMock(return_value=book)
+    await provider.on_played(
+        MediaType.AUDIOBOOK,
+        str(book["id"]),
+        fully_played=False,
+        position=150,
+        media_item=Mock(),
+        is_playing=True,
+    )
+    _client(provider).upsert_audio_progress.assert_not_awaited()
 
 
 @pytest.mark.asyncio

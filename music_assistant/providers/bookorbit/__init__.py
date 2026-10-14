@@ -248,7 +248,10 @@ class BookOrbitProvider(MusicProvider):
         if media_type != MediaType.AUDIOBOOK:
             raise NotImplementedError
         book = await self._get_book(item_id)
-        progress = await self._client.get_audio_progress(book["id"])
+        try:
+            progress = await self._client.get_audio_progress(book["id"])
+        except (ClientError, MediaNotFoundError) as err:
+            raise NotImplementedError from err
         if not progress:
             raise NotImplementedError  # fall back to MA's own position
         return parse_resume_position(_audio_files(book), progress)
@@ -267,9 +270,14 @@ class BookOrbitProvider(MusicProvider):
             return
         try:
             book = await self._get_book(prov_item_id)
-            update = build_progress_update(
-                _audio_files(book), position=position, fully_played=fully_played
-            )
+            files = _audio_files(book)
+            if len(files) > 1 and any(f.get("durationSeconds") is None for f in files):
+                self.logger.debug(
+                    "Skipping BookOrbit progress for %s: missing durationSeconds on a file",
+                    prov_item_id,
+                )
+                return
+            update = build_progress_update(files, position=position, fully_played=fully_played)
             if update is None:
                 return
             await self._client.upsert_audio_progress(
@@ -372,7 +380,7 @@ class BookOrbitProvider(MusicProvider):
                 range_header=request.headers.get("Range"),
                 timeout=PART_STREAM_TIMEOUT,
             )
-        except (ClientError, BookOrbitAuthError) as err:
+        except (ClientError, BookOrbitAuthError, TimeoutError) as err:
             self.logger.warning("Requesting file %s from BookOrbit failed: %s", file_id, err)
             raise web.HTTPBadGateway(text="BookOrbit unreachable") from err
         async with upstream:
@@ -392,6 +400,10 @@ class BookOrbitProvider(MusicProvider):
             except ConnectionError:
                 # ffmpeg hangs up e.g. when it seeks or has probed enough
                 self.logger.debug("Client disconnected from file %s", file_id)
+            except TimeoutError as err:
+                self.logger.warning("BookOrbit interrupted file %s: %s", file_id, err)
+            except ClientError as err:
+                self.logger.warning("BookOrbit interrupted file %s: %s", file_id, err)
         return response
 
     async def _refresh_catalog(self, *, force: bool = False) -> None:
