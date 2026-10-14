@@ -28,22 +28,21 @@ small { color:#aaa; }
 <p id="error" role="alert"></p>
 </form>
 <script>
-document.getElementById('signin').onsubmit = async function (event) {
+document.getElementById('signin').onsubmit = function (event) {
     event.preventDefault();
     var error = document.getElementById('error');
     error.textContent = '';
-    try {
-        var response = await fetch('/builder-auth', {
+        return fetch('/builder-auth', {
             method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({
                 username:document.getElementById('username').value,
                 password:document.getElementById('password').value,
                 token:document.getElementById('token').value.trim()
             })
-        });
+        }).then(function (response) {
         if (!response.ok) { error.textContent = 'Music Assistant sign-in failed.'; return; }
         location.assign('/');
-    } catch (e) { error.textContent = 'Could not connect to Music Assistant.'; }
+        }).catch(function () { error.textContent = 'Could not connect to Music Assistant.'; });
 };
 </script>
 </body>

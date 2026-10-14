@@ -186,6 +186,11 @@ class WebKioskSendspinBridge:
 class WebKioskSendspinBridgeManager(SendspinBridgeManagerBase[WebKioskSendspinBridge]):
     """Manages Sendspin bridges for all web kiosk players."""
 
+    async def release_bridge(self, player_id: str, permanent: bool = False) -> None:
+        """Detach a kiosk's bridge and relinquish its identity ownership."""
+        await self.remove_bridge(player_id, permanent=permanent)
+        self._client_ids.pop(player_id, None)
+
     def _bridge_client_id(self, player: Player) -> str | None:
         """Return the browser Sendspin identity bridging the given player."""
         if not isinstance(player, WebKioskPlayer):

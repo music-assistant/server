@@ -18,6 +18,7 @@ import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
+from music_assistant.providers.web_kiosk.sendspin_bridge import WebKioskSendspinBridgeManager
 
 
 def test_stream_token_is_deterministic_and_sized(provider: WebKioskProvider) -> None:
@@ -468,3 +469,49 @@ async def test_queued_end_task_rechecks_generation_before_advancing(
     await player.play_media(PlayerMedia(uri="new", duration=5, media_type=MediaType.TRACK))
     await asyncio.gather(*tasks)
     mass_mock.player_queues.play_index.assert_not_awaited()
+
+
+async def test_closing_kiosk_preserves_sendspin_settings(
+    provider: WebKioskProvider, mass_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing a page detaches the bridge without deleting its saved settings."""
+    monkeypatch.setattr(provider_module, "PLAYER_DISCONNECT_GRACE_SECONDS", 0)
+    _run_tasks(mass_mock)
+    manager = WebKioskSendspinBridgeManager(provider)
+    provider.bridge_manager = manager
+    player = await provider.get_or_register_player("wk_test")
+    assert player is not None
+    await provider.note_sendspin_client_id(player, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo")
+    mass_mock.players.get_player.side_effect = lambda pid, **_: (
+        player if pid == "wk_test" else Mock()
+    )
+    provider.schedule_player_close(player.player_id)
+    await asyncio.sleep(0.02)
+    assert mass_mock.players.unregister.await_args_list == [(("wk_test",), {})]
+    mass_mock.players.delete_player_config.assert_not_called()
+
+
+async def test_sendspin_identity_has_one_kiosk_owner(
+    provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """Switching device IDs transfers one identity without leaving a destructive old owner."""
+    provider.bridge_manager = WebKioskSendspinBridgeManager(provider)
+    first = await provider.get_or_register_player("wk_first")
+    second = await provider.get_or_register_player("wk_second")
+    assert first is not None
+    assert second is not None
+    await asyncio.gather(
+        provider.note_sendspin_client_id(first, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"),
+        provider.note_sendspin_client_id(second, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"),
+    )
+    assert first.sendspin_client_id is None
+    assert second.sendspin_client_id == "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+    mass_mock.players.get_player.return_value = Mock()
+    await provider.remove_player(first.player_id)
+    mass_mock.players.unregister.assert_awaited_once_with("wk_first")
+    mass_mock.players.unregister.reset_mock()
+    await provider.remove_player(second.player_id)
+    assert mass_mock.players.unregister.await_args_list == [
+        (("hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",), {"permanent": True}),
+        (("wk_second",), {}),
+    ]

@@ -4,33 +4,56 @@
 
     var params = new URLSearchParams(location.search);
     // /kiosk is the player; /web and kiosk=1 remain compatible aliases.
-    var SENDSPIN = params.get('sendspin') !== '0';
+    var REQUESTED_SENDSPIN = params.get('sendspin') !== '0';
+    var SENDSPIN = REQUESTED_SENDSPIN && supportsSendspin();
+    if (SENDSPIN && location.protocol === 'https:') {
+        try {
+            var endpoint = new URL(params.get('sendspin_url') || getDefaultSendspinUrl());
+            SENDSPIN = endpoint.protocol === 'https:' || endpoint.protocol === 'wss:';
+        } catch (e) { SENDSPIN = false; }
+    }
     if (SENDSPIN) document.documentElement.classList.add('sendspin');
     var FLAG = function (name) { return params.get(name) === '1'; };
+    var REMOTE = FLAG('remote');
+    var LITE = FLAG('lite');
+    var KEEP_AWAKE = FLAG('wake_lock');
+    document.documentElement.classList.toggle('lite', LITE);
     var SHOW = { controls: FLAG('controls'), party: FLAG('party'), viz: FLAG('viz'), lyrics: FLAG('lyrics'), queue: FLAG('queue'), playerId: FLAG('show_player_id') };
     document.documentElement.classList.toggle('controls', SHOW.controls);
+    document.documentElement.classList.toggle('no-grid', !window.CSS || !CSS.supports || !CSS.supports('display', 'grid'));
 
+    var memoryStorage = Object.create(null);
     var LS = {
-        get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-        set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* noop */ } }
+        get: function (k) {
+            if (Object.prototype.hasOwnProperty.call(memoryStorage, k)) return memoryStorage[k];
+            try { memoryStorage[k] = localStorage.getItem(k); } catch (e) { memoryStorage[k] = null; }
+            return memoryStorage[k];
+        },
+        set: function (k, v) { memoryStorage[k] = String(v); try { localStorage.setItem(k, String(v)); } catch (e) { /* memory is retained for this page */ } }
     };
+    var sdkStorage = { getItem:LS.get, setItem:LS.set };
     var deviceId = params.get('device_id') || LS.get('wk_device_id');
     if (!deviceId) { deviceId = createDeviceId(); LS.set('wk_device_id', deviceId); }
 
     function createDeviceId() {
-        if (typeof crypto.randomUUID === 'function') return 'wk-' + crypto.randomUUID();
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return 'wk-' + crypto.randomUUID();
         // randomUUID requires a secure context; LAN kiosks also run over plain HTTP.
-        var bytes = crypto.getRandomValues(new Uint8Array(16));
+        var bytes = new Uint8Array(16);
+        if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') crypto.getRandomValues(bytes);
+        else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
         bytes[6] = (bytes[6] & 15) | 64;
         bytes[8] = (bytes[8] & 63) | 128;
-        var hex = Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+        var hex = Array.from(bytes, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
         return 'wk-' + hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16)
             + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
     }
     var sendspinClientId = '';
     var sendspinModule = null;
+    var sendspinConnecting = false;
     // True only while the Sendspin server is actually streaming audio here.
     var sendspinStreaming = false;
+    var sendspinAudioAt = 0;
+    var sendspinReceivedAudio = false;
     var MA_URL = (params.get('ma_url') || LS.get('wk_ma_url') || '').replace(/\/$/, '');
     var fragment = new URLSearchParams(location.hash.slice(1));
     var TOKEN = fragment.get('token') || params.get('token') || LS.get('wk_token') || '';
@@ -49,6 +72,11 @@
     var hasTrack = false;
     var partyExpanded = false;
     var ws = null;
+    var reconnectTimer = null;
+    var bootReady = false;
+    var wakeLock = null;
+    var wakePending = false;
+    var wakeGeneration = 0;
     var msgSeq = 0;
     var playing = false;
     var current = { title: '—', artist: '—', image: '', duration: 0, start: 0 };
@@ -63,11 +91,18 @@
     var queueIndex = -1;
     var lyricsLines = [];
     var lyricsIdx = -1;
+    var renderedLyrics = null;
     var endReported = false;
     var playbackGeneration = '';
 
     var audio = new Audio();
     audio.volume = 1;
+    var mediaVolumeWritable = true;
+    try {
+        audio.volume = 0.5;
+        mediaVolumeWritable = Math.abs(audio.volume - 0.5) < 0.01;
+        audio.volume = 1;
+    } catch (e) { mediaVolumeWritable = false; }
     // Browsers withhold sound until the document receives a tap or a key.
     // That one gesture covers later tracks. A reload asks again.
     var AUDIO_PROMPT = 'Tap or press a key to start audio';
@@ -75,19 +110,21 @@
     var htmlUnlocked = false;
     var sendspinUnlocked = !SENDSPIN;
     var audioArmed = false;
+    var activationEvents = window.PointerEvent ? ['pointerdown', 'keydown'] : ['touchstart', 'touchend', 'mousedown', 'click', 'keydown'];
     var silentUrl = '';
 
-    async function rpc(command, args) {
+    function rpc(command, args) {
         // Same origin as this page. The kiosk server forwards the call to MA,
         // because the browser will not call MA's port from this one.
-        if (!TOKEN) throw new Error('Configure token');
-        var res = await fetch('/api', {
+        if (!TOKEN) return Promise.reject(new Error('Configure token'));
+        return fetch('/api', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
             body: JSON.stringify({ command: command, args: args || {}, message_id: String(++msgSeq) })
+        }).then(function (res) {
+            if (!res.ok) return res.text().then(function (text) { throw new Error(text); });
+            return res.json();
         });
-        if (!res.ok) throw new Error(await res.text());
-        return res.json();
     }
 
     function setStatus(t) {
@@ -98,6 +135,14 @@
         el.classList.toggle('audio-prompt', el.textContent === AUDIO_PROMPT);
     }
     function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    function replaceContent(el, child) {
+        while (el.firstChild) el.removeChild(el.firstChild);
+        if (child) el.appendChild(child);
+    }
+    function setIconHref(el, href) {
+        el.setAttribute('href', href);
+        el.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', href);
+    }
     function fmt(sec) {
         sec = Math.max(0, Math.floor(sec || 0));
         var m = Math.floor(sec / 60), s = sec % 60;
@@ -151,13 +196,86 @@
     }
 
     function connectWS() {
+        if (navigator.onLine === false || (ws && ws.readyState <= WebSocket.OPEN)) return;
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
         var proto = location.protocol === 'https:' ? 'wss' : 'ws';
         var qs = 'device_id=' + encodeURIComponent(deviceId);
         if (sendspinClientId) qs += '&sendspin_client_id=' + encodeURIComponent(sendspinClientId);
-        ws = new WebSocket(proto + '://' + location.host + '/ws?' + qs);
-        ws.onmessage = function (ev) { handleWS(JSON.parse(ev.data)); };
-        ws.onclose = function () { ws = null; setTimeout(connectWS, 2000); };
-        ws.onerror = function () { try { ws.close(); } catch (e) { /* noop */ } };
+        var socket = new WebSocket(proto + '://' + location.host + '/ws?' + qs);
+        ws = socket;
+        socket.onmessage = function (ev) { if (ws === socket) handleWS(JSON.parse(ev.data)); };
+        socket.onclose = function () {
+            if (ws !== socket) return;
+            ws = null;
+            clearTimeout(reconnectTimer);
+            reconnectTimer = setTimeout(connectWS, 2000);
+        };
+        socket.onerror = function () { try { socket.close(); } catch (e) { /* noop */ } };
+    }
+    function recoverPage(forceReconnect) {
+        if (!bootReady || document.hidden || navigator.onLine === false) return;
+        if (forceReconnect && ws) {
+            var previous = ws;
+            ws = null;
+            previous.close();
+        }
+        connectWS();
+        if (playing && !sendspinStreaming && audio.paused && !isPrimeSource()) startPlayback();
+        var player = window.__sendspinPlayer;
+        if (SENDSPIN && player) {
+            if (!sendspinReceivedAudio) sendspinAudioAt = performance.now();
+            if (sendspinStreaming && playing) player.unlock().catch(function () {
+                sendspinUnlocked = false;
+                armAudioUnlock();
+                showAudioPrompt();
+            });
+            if (!player.isConnected && !sendspinConnecting) {
+                sendspinConnecting = true;
+                Promise.resolve().then(function () { return player.connect(); }).then(function () {
+                    sendspinConnecting = false;
+                }, function () {
+                    sendspinConnecting = false;
+                    if (window.__sendspinPlayer === player) useHtml5();
+                });
+            }
+        }
+        paintClock();
+        paintLyrics(true);
+        syncViz();
+        refreshWakeLock();
+        if (SHOW.party) fetchParty();
+        if (SHOW.queue && TOKEN) fetchQueue();
+    }
+    window.addEventListener('online', function () { recoverPage(true); });
+    window.addEventListener('pageshow', function (event) { recoverPage(!!event.persisted); });
+    document.addEventListener('visibilitychange', function () {
+        if (document.hidden && vizFrame) { cancelAnimationFrame(vizFrame); vizFrame = 0; }
+        refreshWakeLock();
+        recoverPage(false);
+    });
+    function refreshWakeLock() {
+        if (!KEEP_AWAKE || !navigator.wakeLock || !navigator.wakeLock.request) return;
+        if (document.hidden) {
+            wakeGeneration++;
+            var previous = wakeLock;
+            wakeLock = null;
+            if (previous) Promise.resolve(previous.release()).catch(function () {});
+            return;
+        }
+        if (wakePending || (wakeLock && !wakeLock.released)) return;
+        var generation = wakeGeneration;
+        wakePending = true;
+        Promise.resolve().then(function () { return navigator.wakeLock.request('screen'); }).then(function (lock) {
+            wakePending = false;
+            if (document.hidden || generation !== wakeGeneration) {
+                Promise.resolve(lock.release()).catch(function () {});
+                if (!document.hidden) refreshWakeLock();
+                return;
+            }
+            wakeLock = lock;
+            lock.addEventListener('release', function () { if (wakeLock === lock) wakeLock = null; });
+        }).catch(function () { wakePending = false; });
     }
     function sendWS(obj) { if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify(obj)); } catch (e) { /* noop */ } } }
     function reportTrackEnded() {
@@ -254,6 +372,7 @@
                 break;
             case 'volume':
                 audio.volume = (msg.level || 0) / 100;
+                if (sendspinStreaming && window.__sendspinPlayer && window.__sendspinPlayer.volume !== (msg.level || 0)) window.__sendspinPlayer.setVolume(msg.level || 0);
                 syncVolume(msg.level || 0);
                 break;
             case 'wave':
@@ -273,7 +392,7 @@
             case 'sendspin':
                 if (msg.url) {
                     var target = new URL(msg.url, location.protocol + '//' + location.host);
-                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'ma_url', 'device_id', 'sendspin_url'].forEach(function (name) {
+                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'remote', 'lite', 'wake_lock', 'ma_url', 'device_id', 'sendspin_url'].forEach(function (name) {
                         if (params.has(name) && !target.searchParams.has(name)) target.searchParams.set(name, params.get(name));
                     });
                     location.href = target.toString();
@@ -337,11 +456,11 @@
     }
     function maybeDisarmAudio() {
         if (!htmlUnlocked || !sendspinUnlocked) return;
-        document.removeEventListener('pointerdown', onAudioGesture, true);
-        document.removeEventListener('keydown', onAudioGesture, true);
+        activationEvents.forEach(function (name) { document.removeEventListener(name, onAudioGesture, true); });
         audioArmed = false;
     }
     function onAudioGesture(ev) {
+        refreshWakeLock();
         if (ev.type === 'keydown' && ev.repeat) return;
         var needHtml = !htmlUnlocked;
         var needSendspin = SENDSPIN && !sendspinUnlocked;
@@ -378,8 +497,7 @@
     function armAudioUnlock() {
         if (audioArmed) return;
         audioArmed = true;
-        document.addEventListener('pointerdown', onAudioGesture, true);
-        document.addEventListener('keydown', onAudioGesture, true);
+        activationEvents.forEach(function (name) { document.addEventListener(name, onAudioGesture, true); });
     }
     function prepareAudioUnlock() {
         armAudioUnlock();
@@ -454,8 +572,9 @@
         var barBox = document.getElementById('kiosk-bar-artbox');
         barArt.onload = function () { barBox.classList.add('has-art'); barArt.classList.remove('hidden'); };
         barArt.onerror = function () { barBox.classList.remove('has-art'); barArt.classList.add('hidden'); };
-        barBox.classList.toggle('project-art', !src);
-        barArt.src = src || logo;
+        barBox.classList.add('project-art');
+        barArt.src = logo;
+        barArt.alt = SENDSPIN ? 'Sendspin' : 'HTML5';
         if (!src) {
             showEmblem();
             paintClock();
@@ -502,11 +621,11 @@
     }
     function sync() {
         var playBtn = document.getElementById('k-play');
-        document.getElementById('k-play-icon').setAttribute('href', playing ? '#k-icon-pause' : '#k-icon-play');
+        setIconHref(document.getElementById('k-play-icon'), playing ? '#k-icon-pause' : '#k-icon-play');
         playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
         playBtn.title = playing ? 'Pause' : 'Play';
         ['k-play', 'k-prev', 'k-next', 'k-volume-button', 'kiosk-volume'].forEach(function (id) {
-            document.getElementById(id).disabled = !playerId;
+            document.getElementById(id).disabled = !playerId || (id === 'kiosk-volume' && !sendspinStreaming && !mediaVolumeWritable);
         });
         // Freeze the Sendspin clock at the pause so the bars stay on that moment.
         if (sendspinStreaming && vizWasPlaying && !playing && waveAnchorAt) {
@@ -531,6 +650,8 @@
     var waveAnchorAt = 0;
     var vizSeekUntil = 0;
     var vizFrame = 0;
+    var lastVizPaint = 0;
+    var lastLyricsPaint = 0;
     var vizWasPlaying = false;
     var waveGen = 0;
     var pendingWave = null;
@@ -694,11 +815,12 @@
     }
     function vizLoop() {
         vizFrame = requestAnimationFrame(vizLoop);
-        if (SHOW.viz) paintViz();
-        paintLyrics();
+        var now = performance.now();
+        if (SHOW.viz && now - lastVizPaint >= (LITE ? 1000 / 15 : 1000 / 30)) { lastVizPaint = now; paintViz(); }
+        if (now - lastLyricsPaint >= 100) { lastLyricsPaint = now; paintLyrics(); }
     }
     function syncViz() {
-        var follow = playing && (SHOW.viz || (SHOW.lyrics && lyricsLines.length));
+        var follow = !document.hidden && playing && (SHOW.viz || (SHOW.lyrics && lyricsLines.length));
         if (!follow) {
             if (vizFrame) { cancelAnimationFrame(vizFrame); vizFrame = 0; }
             if (SHOW.viz) paintViz();
@@ -729,18 +851,56 @@
         }
         return idx;
     }
-    function paintLyrics() {
+    function paintLyrics(resized) {
         var el = document.getElementById('kiosk-lyrics');
         if (!el) return;
         if (!SHOW.lyrics || !lyricsLines.length) {
+            document.documentElement.classList.remove('lyrics-visible');
             if (!el.classList.contains('hidden')) el.classList.add('hidden');
             if (el.childElementCount) el.textContent = '';
             lyricsIdx = -1;
+            renderedLyrics = null;
             return;
         }
+        document.documentElement.classList.add('lyrics-visible');
+        el.classList.remove('hidden');
+        var wide = window.innerWidth > 768 && !document.documentElement.classList.contains('no-grid');
+        var layout = wide ? 'wide' : 'compact';
         var idx = lyricIndex(vizTime(), vizDuration());
-        if (idx === lyricsIdx && el.childElementCount === 3) return;
+        var changed = renderedLyrics !== lyricsLines || el.dataset.layout !== layout;
+        if (wide) {
+            var content;
+            if (changed) {
+                content = document.createElement('div');
+                content.classList.add('lyrics-content');
+                lyricsLines.forEach(function (line) {
+                    var row = document.createElement('div');
+                    row.classList.add('l');
+                    row.textContent = line.text;
+                    content.appendChild(row);
+                });
+                replaceContent(el, content);
+            }
+            content = el.children[0];
+            if (changed || idx !== lyricsIdx) {
+                Array.from(content.children).forEach(function (row, i) {
+                    row.classList.toggle('current', i === idx);
+                    row.classList.toggle('far', Math.abs(i - idx) > 1);
+                });
+            }
+            if (changed || idx !== lyricsIdx || resized) {
+                var active = content.children[Math.max(0, idx)];
+                content.style.transform = 'translateY(' + (el.clientHeight / 2 - active.offsetTop - active.offsetHeight / 2) + 'px)';
+            }
+            lyricsIdx = idx;
+            renderedLyrics = lyricsLines;
+            el.dataset.layout = layout;
+            return;
+        }
+        if (!changed && idx === lyricsIdx) return;
         lyricsIdx = idx;
+        renderedLyrics = lyricsLines;
+        el.dataset.layout = layout;
         var prev = idx > 0 ? lyricsLines[idx - 1].text : '';
         var cur = idx >= 0 ? lyricsLines[idx].text : '';
         var next = idx >= 0 && idx + 1 < lyricsLines.length ? lyricsLines[idx + 1].text : (idx < 0 && lyricsLines.length ? lyricsLines[0].text : '');
@@ -749,7 +909,10 @@
             '<div class="l current">' + esc(cur) + '</div>' +
             '<div class="l">' + esc(next) + '</div>';
     }
-    window.addEventListener('resize', function () { if (!vizFrame) paintViz(); });
+    window.addEventListener('resize', function () {
+        paintLyrics(true);
+        if (!vizFrame) paintViz();
+    });
 
     function setPartyExpanded(open) {
         var party = document.getElementById('kiosk-party');
@@ -767,16 +930,17 @@
         var party = document.getElementById('kiosk-party');
         party.classList.add('hidden');
         party.dataset.version = '';
+        document.documentElement.classList.remove('party-active');
         setPartyExpanded(false);
     }
 
-    async function fetchParty() {
+    function fetchParty() {
         var el = document.getElementById('kiosk-party');
         if (!SHOW.party) { hideParty(); return; }
-        try {
-            var res = await fetch('/api/party');
-            if (!res.ok) { hideParty(); return; }
-            var info = await res.json();
+        return fetch('/api/party').then(function (res) {
+            if (!res.ok) throw new Error('Party unavailable');
+            return res.json();
+        }).then(function (info) {
             if (!info || !info.active) {
                 hideParty();
                 return;
@@ -785,11 +949,13 @@
             if (el.dataset.version === version && !el.classList.contains('hidden')) return;
             el.dataset.version = version;
             el.classList.remove('hidden');
-            el.innerHTML = '<img src="/api/party/qr.svg?v=' + encodeURIComponent(version) + '" alt="Join">' +
-                (info.name ? '<div class="name">' + esc(info.name) + '</div>' : '') +
-                (info.qr_text ? '<div class="qr">' + esc(info.qr_text) + '</div>' : '');
+            document.documentElement.classList.add('party-active');
+            el.title = [info.name || 'Party', info.qr_text || 'Enlarge QR'].join(' — ');
+            var thumbnail = document.getElementById('kiosk-party-thumbnail');
+            thumbnail.onerror = hideParty;
+            thumbnail.src = '/api/party/qr.svg?v=' + encodeURIComponent(version);
             setPartyExpanded(partyExpanded);
-        } catch (e) { hideParty(); }
+        }).catch(hideParty);
     }
 
     function fetchQueue() {
@@ -808,9 +974,10 @@
     }
     function renderQueue() {
         var el = document.getElementById('kiosk-queue');
+        document.documentElement.classList.toggle('queue-active', !!queue.length);
         if (!queue.length) { el.classList.add('hidden'); return; }
         el.classList.remove('hidden');
-        el.replaceChildren();
+        replaceContent(el);
         queue.forEach(function (qi, i) {
             var mi = qi.media_item || {};
             var row = document.createElement('div');
@@ -866,8 +1033,10 @@
         });
     }
     function applyVolume(level, immediate) {
+        if (!sendspinStreaming && !mediaVolumeWritable) { setStatus('Use the device volume buttons'); return; }
         level = Math.max(0, Math.min(100, Math.round(level)));
         audio.volume = level / 100;
+        if (sendspinStreaming && window.__sendspinPlayer && window.__sendspinPlayer.volume !== level) window.__sendspinPlayer.setVolume(level);
         syncVolume(level);
         clearTimeout(volumeTimer);
         var send = function () {
@@ -878,6 +1047,13 @@
     }
 
     function syncVolume(level) {
+        if (!sendspinStreaming && !mediaVolumeWritable) {
+            document.getElementById('kiosk-volume').disabled = true;
+            document.getElementById('k-volume-level').textContent = 'Device';
+            document.getElementById('k-volume-panel-level').textContent = 'Device';
+            document.getElementById('k-volume-button').setAttribute('aria-label', 'Use device volume buttons');
+            return;
+        }
         level = Math.max(0, Math.min(100, Math.round(level)));
         var slider = document.getElementById('kiosk-volume');
         slider.value = String(level);
@@ -888,7 +1064,7 @@
         document.getElementById('k-volume-button').setAttribute('aria-label', 'Volume: ' + level + '%');
         var icon = level === 0 ? 'volume-x' : level <= 50 ? 'volume-1' : 'volume-2';
         ['k-volume-icon', 'k-volume-slider-icon'].forEach(function (id) {
-            document.getElementById(id).setAttribute('href', '#k-icon-' + icon);
+            setIconHref(document.getElementById(id), '#k-icon-' + icon);
         });
     }
 
@@ -908,7 +1084,7 @@
         };
         document.getElementById('k-volume-button').onclick = function () { setVolumePanel(!volumePanelOpen); };
         document.getElementById('k-volume-close').onclick = function () { setVolumePanel(false); };
-        document.addEventListener('pointerdown', function (e) {
+        document.addEventListener(window.PointerEvent ? 'pointerdown' : 'mousedown', function (e) {
             if (volumePanelOpen && !document.getElementById('kiosk-volume-control').contains(e.target)) setVolumePanel(false);
         });
         document.getElementById('k-play').onclick = function () {
@@ -923,6 +1099,10 @@
         kseek.addEventListener('pointerdown', function () { seekPointer = true; });
         kseek.addEventListener('pointerup', function () { seekPointer = false; });
         kseek.addEventListener('pointercancel', function () { seekPointer = false; });
+        if (!window.PointerEvent) {
+            ['mousedown', 'touchstart'].forEach(function (name) { kseek.addEventListener(name, function () { seekPointer = true; }); });
+            ['mouseup', 'touchend', 'touchcancel'].forEach(function (name) { document.addEventListener(name, function () { seekPointer = false; }); });
+        }
         kseek.oninput = function (e) {
             var t = (Number(e.target.value) / 1000) * vizDuration();
             document.getElementById('kiosk-time').textContent = fmt(t);
@@ -958,18 +1138,23 @@
     }
 
     document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && partyExpanded) {
+        var key = normalizedKey(e);
+        showKioskControls();
+        if (key === 'Escape' && partyExpanded) {
+            if (e.preventDefault) e.preventDefault();
             setPartyExpanded(false);
             document.getElementById('kiosk-party').focus();
             return;
         }
-        if (e.key === 'Escape' && volumePanelOpen) {
+        if (key === 'Escape' && volumePanelOpen) {
+            if (e.preventDefault) e.preventDefault();
             setVolumePanel(false);
             document.getElementById('k-volume-button').focus();
             return;
         }
+        if (REMOTE && remoteKey(e, key)) return;
         if (/^(INPUT|BUTTON|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
-        switch (e.key) {
+        switch (key) {
             case ' ': e.preventDefault(); cmd(playing ? 'players/cmd/pause' : 'players/cmd/play').catch(function () {}); break;
             case 'ArrowRight': seekToSong(songTime() + 10); break;
             case 'ArrowLeft': seekToSong(Math.max(0, songTime() - 10)); break;
@@ -980,8 +1165,73 @@
         }
     });
 
+    function normalizedKey(e) {
+        if (e.key && e.key !== 'Unidentified') return e.key;
+        return { 13:'Enter', 27:'Escape', 32:' ', 37:'ArrowLeft', 38:'ArrowUp', 39:'ArrowRight', 40:'ArrowDown', 10009:'Escape', 461:'Escape' }[e.keyCode] || '';
+    }
+    function remoteKey(e, key) {
+        if (key === 'Enter') {
+            if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return false;
+            var button = e.target && e.target.tagName === 'BUTTON' ? e.target : document.getElementById(SHOW.controls ? 'k-play' : 'kiosk-party');
+            if (button && !button.disabled && !button.classList.contains('hidden') && button.getClientRects().length) {
+                e.preventDefault();
+                button.focus();
+                button.click();
+                return true;
+            }
+        }
+        if (!/^Arrow/.test(key)) return false;
+        if (e.target && e.target.tagName === 'INPUT' && (key === 'ArrowLeft' || key === 'ArrowRight')) return false;
+        var ids = ['kiosk-party', 'k-prev', 'k-play', 'k-next', 'k-volume-button', 'kiosk-seek', 'kiosk-volume', 'k-volume-close'];
+        var candidates = ids.map(function (id) { return document.getElementById(id); }).filter(function (el) {
+            return el && !el.disabled && !el.classList.contains('hidden') && el.getClientRects().length;
+        });
+        var currentFocus = document.activeElement;
+        var currentRect = currentFocus && currentFocus.getBoundingClientRect();
+        var selected = null;
+        var best = Infinity;
+        candidates.forEach(function (el) {
+            if (el === currentFocus) return;
+            if (!currentRect || candidates.indexOf(currentFocus) < 0) {
+                if (!selected || el.id === 'k-play') selected = el;
+                return;
+            }
+            var rect = el.getBoundingClientRect();
+            var dx = rect.left + rect.width / 2 - currentRect.left - currentRect.width / 2;
+            var dy = rect.top + rect.height / 2 - currentRect.top - currentRect.height / 2;
+            var horizontal = key === 'ArrowLeft' || key === 'ArrowRight';
+            var forward = horizontal ? dx : dy;
+            if (key === 'ArrowLeft' || key === 'ArrowUp') forward = -forward;
+            var score = forward + Math.abs(horizontal ? dy : dx) * 2;
+            if (forward > 2 && score < best) { best = score; selected = el; }
+        });
+        e.preventDefault();
+        if (selected) selected.focus();
+        return true;
+    }
+
     function getDefaultSendspinUrl() {
         return 'http://' + location.hostname + ':8927';
+    }
+    function supportsSendspin() {
+        return typeof BigInt === 'function' && typeof DataView.prototype.getBigInt64 === 'function'
+            && typeof AudioContext === 'function' && typeof TextEncoder === 'function'
+            && typeof TextDecoder === 'function' && typeof crypto !== 'undefined'
+            && typeof crypto.getRandomValues === 'function';
+    }
+    function useHtml5() {
+        SENDSPIN = false;
+        sendspinClientId = '';
+        sendspinStreaming = false;
+        sendspinUnlocked = true;
+        var failed = window.__sendspinPlayer;
+        window.__sendspinPlayer = null;
+        if (failed && typeof failed.disconnect === 'function') failed.disconnect();
+        document.documentElement.classList.remove('sendspin');
+        setSync('fallback');
+        renderNow();
+        maybeDisarmAudio();
+        setStatus('');
     }
     function showPairPin(pin) {
         var el = document.getElementById('kiosk-pair');
@@ -990,38 +1240,92 @@
         el.classList.remove('hidden');
         el.textContent = 'Pairing code ' + pin;
     }
-    async function loadSendspinModule() {
-        if (!sendspinModule) sendspinModule = await import('./sendspin-js/index.js');
-        return sendspinModule;
+    var sendspinLoad = null;
+    function loadSendspinModule() {
+        if (sendspinModule) return Promise.resolve(sendspinModule);
+        if (sendspinLoad) return sendspinLoad;
+        sendspinLoad = new Promise(function (resolve, reject) {
+            var script = document.createElement('script');
+            script.src = '/web/sendspin-js/index.js';
+            script.onload = function () {
+                sendspinModule = window.WebKioskSendspin;
+                if (sendspinModule) resolve(sendspinModule);
+                else reject(new Error('Sendspin SDK unavailable'));
+            };
+            script.onerror = function () { sendspinLoad = null; reject(new Error('Sendspin SDK could not load')); };
+            document.head.appendChild(script);
+        });
+        return sendspinLoad;
     }
-    async function prepareSendspinIdentity() {
-        try {
-            var module = await loadSendspinModule();
-            var identity = module.loadSendspinClientIdentity();
+    function prepareSendspinIdentity() {
+        return loadSendspinModule().then(function (module) {
+            var identity = module.loadSendspinClientIdentity(sdkStorage);
             sendspinClientId = identity && identity.clientId ? identity.clientId : '';
-        } catch (e) {
+        }).catch(function () {
             sendspinClientId = '';
-        }
+            useHtml5();
+        });
     }
-    async function initSendspin() {
+    function probeWithTimeout(promise) {
+        return new Promise(function (resolve) {
+            var timer = setTimeout(function () { resolve(false); }, 1500);
+            Promise.resolve(promise).then(function (supported) { clearTimeout(timer); resolve(!!supported); }, function () { clearTimeout(timer); resolve(false); });
+        });
+    }
+    var codecProbe = null;
+    function verifiedCodecs() {
+        if (codecProbe) return codecProbe;
+        var opus = Promise.resolve(false);
+        if (window.isSecureContext && typeof AudioDecoder !== 'undefined' && typeof AudioDecoder.isConfigSupported === 'function') {
+            opus = Promise.resolve().then(function () {
+                return AudioDecoder.isConfigSupported({ codec:'opus', sampleRate:48000, numberOfChannels:2 });
+            }).then(function (result) { return result.supported; });
+        }
+        var flac = Promise.resolve(false);
+        if (typeof OfflineAudioContext !== 'undefined') {
+            flac = fetch('/web/flac-probe.flac').then(function (response) {
+                if (!response.ok) throw new Error('FLAC probe unavailable');
+                return response.arrayBuffer();
+            }).then(function (sample) {
+                var context = new OfflineAudioContext(2, 1, 48000);
+                return new Promise(function (resolve, reject) {
+                    var decoding = context.decodeAudioData(sample, resolve, reject);
+                    if (decoding && decoding.then) decoding.then(resolve, reject);
+                });
+            }).then(function (buffer) { return buffer && buffer.length > 0; });
+        }
+        codecProbe = Promise.all([probeWithTimeout(opus), probeWithTimeout(flac)]).then(function (results) {
+            var codecs = [];
+            if (results[0]) codecs.push('opus');
+            if (results[1]) codecs.push('flac');
+            codecs.push('pcm');
+            return codecs;
+        });
+        return codecProbe;
+    }
+    function initSendspin() {
         if (!SENDSPIN || window.__sendspinPlayer) return;
+        sendspinConnecting = true;
         setStatus('Connecting Sendspin…');
-        try {
-            var module = await loadSendspinModule();
+        return loadSendspinModule().then(function (module) {
+            return verifiedCodecs().then(function (codecs) { return { module:module, codecs:codecs }; });
+        }).then(function (verified) {
+            var module = verified.module;
             var sendspinUrl = params.get('sendspin_url') || getDefaultSendspinUrl();
             var cfg = {
                 baseUrl: sendspinUrl,
                 clientName: 'Web Kiosk',
                 productName: 'Web Kiosk',
                 correctionMode: 'sync',
+                storage: sdkStorage,
+                codecs: verified.codecs,
                 onStateChange: function (state) {
                     setSync('synced');
                     if (sendspinStreaming) { playing = state.isPlaying; sync(); }
+                    if (sendspinStreaming && typeof state.volume === 'number') syncVolume(state.volume);
                 },
                 onPairingPin: function (pin) { showPairPin(pin); }
             };
-            // The SDK bundle omits software Opus; browsers without WebCodecs use FLAC/PCM.
-            if (typeof AudioDecoder === 'undefined') cfg.codecs = ['flac', 'pcm'];
             var player = new module.SendspinPlayer(cfg);
             window.__sendspinPlayer = player;
             wrapSendspinHooks(player.core);
@@ -1031,15 +1335,17 @@
                     maybeDisarmAudio();
                 }).catch(function () { /* the next gesture tries again */ });
             }
-            await player.connect();
+            return player.connect();
+        }).then(function () {
+            sendspinConnecting = false;
+            if (!SENDSPIN) return;
             setSync('synced');
             setStatus('');
-        } catch (e) {
-            setSync('error');
-            setStatus('Sendspin error: ' + e.message);
-            sendspinUnlocked = true;
-            maybeDisarmAudio();
-        }
+        }).catch(function (e) {
+            sendspinConnecting = false;
+            useHtml5();
+            document.getElementById('kiosk-sync').title = e.message || 'Sendspin unavailable';
+        });
     }
     function wrapSendspinHooks(core) {
         // The core exposes these callbacks as setters only. Read the stored
@@ -1052,6 +1358,8 @@
             };
         }
         chain('onStreamStart', function () {
+            sendspinAudioAt = performance.now();
+            sendspinReceivedAudio = false;
             waveAnchor = songTime();
             waveAnchorAt = performance.now();
             sendspinStreaming = true;
@@ -1069,23 +1377,31 @@
         chain('onStreamClear', function () {
             sendspinStreaming = false;
         });
+        chain('onAudioData', function () { sendspinReceivedAudio = true; });
     }
     function setSync(state) {
         var el = document.getElementById('kiosk-sync');
         el.className = state;
-        el.textContent = state === 'synced' ? 'SYNC' : state === 'error' ? 'ERROR' : 'SYNCING…';
+        el.textContent = state === 'synced' ? 'SYNC' : state === 'fallback' ? 'HTML5' : state === 'error' ? 'ERROR' : 'SYNCING…';
     }
 
-    async function boot() {
+    function boot() {
         document.body.classList.add('kiosk');
         bindControls();
         renderNow();
+        if (REQUESTED_SENDSPIN && !SENDSPIN) setSync('fallback');
         sync();
         syncVolume(audio.volume * 100);
         prepareAudioUnlock();
-        await prepareSendspinIdentity();
+        var ready = SENDSPIN ? prepareSendspinIdentity() : Promise.resolve();
+        ready.then(function () {
+        bootReady = true;
         connectWS();
+        refreshWakeLock();
         setInterval(function () { if (sendspinStreaming) paintClock(); }, 500);
+        if (SENDSPIN) setInterval(function () {
+            if (sendspinStreaming && !sendspinReceivedAudio && sendspinUnlocked && playing && performance.now() - sendspinAudioAt > 10000) useHtml5();
+        }, 1000);
         if (SHOW.party) {
             fetchParty();
             setInterval(fetchParty, 10000);
@@ -1096,6 +1412,7 @@
             document.addEventListener('touchstart', showKioskControls, { passive: true });
             showKioskControls();
         }
+        });
     }
     boot();
 })();

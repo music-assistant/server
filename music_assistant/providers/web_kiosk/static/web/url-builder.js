@@ -5,10 +5,10 @@
         var target = new URL('/kiosk', output.dataset.base);
         var mode = document.querySelector('input[name="mode"]:checked').value;
         if (mode === 'html5') target.searchParams.set('sendspin', '0');
-        ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id'].forEach(function (name) {
+        ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'remote', 'lite', 'wake_lock'].forEach(function (name) {
             if (document.getElementById(name).checked) target.searchParams.set(name, '1');
         });
-        ['ma_url', 'device_id'].forEach(function (name) {
+        ['ma_url', 'device_id', 'sendspin_url'].forEach(function (name) {
             var value = document.getElementById(name).value.trim();
             if (value) target.searchParams.set(name, value);
         });

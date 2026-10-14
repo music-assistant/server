@@ -60,6 +60,7 @@ class WebKioskProvider(PlayerProvider):
         super().__init__(*args, **kwargs)
         self._unloading = False
         self._player_lock = asyncio.Lock()
+        self._sendspin_owners: dict[str, WebKioskPlayer] = {}
         self._player_last_activity = {}
         self._disconnect_tasks = {}
         self._wave_seq = {}
@@ -173,6 +174,7 @@ class WebKioskProvider(PlayerProvider):
                 except MusicAssistantError:
                     self.logger.exception("Error unregistering player %s", player.player_id)
         self._player_last_activity.clear()
+        self._sendspin_owners.clear()
         self.logger.info("Web Kiosk provider unloaded")
 
     async def discover_players(self) -> None:
@@ -218,20 +220,27 @@ class WebKioskProvider(PlayerProvider):
 
         sendspin-js 5 mints a cryptographic client id. Music Assistant
         (aiosendspin 10) only lets that browser take over the bridge when the
-        external player was registered under the same id. A changed identity
-        drops the previous bridge player so a stale Sendspin player does not
-        linger.
+        external player was registered under the same id. Identity ownership
+        transfers between kiosks without deleting saved Sendspin settings.
         """
-        previous = player.sendspin_client_id
-        if previous == client_id:
+        async with self._player_lock:
+            if self._unloading:
+                return
+            owner = self._sendspin_owners.get(client_id)
+            if owner is not None and owner is not player:
+                owner.sendspin_client_id = None
+                if self.bridge_manager:
+                    await self.bridge_manager.release_bridge(owner.player_id)
+            previous = player.sendspin_client_id
+            if previous and previous != client_id:
+                player.sendspin_client_id = None
+                if self.bridge_manager:
+                    await self.bridge_manager.release_bridge(player.player_id)
+                self._sendspin_owners.pop(previous, None)
+            player.sendspin_client_id = client_id
+            self._sendspin_owners[client_id] = player
             if self.bridge_manager:
                 await self.bridge_manager.evaluate_bridge(player)
-            return
-        player.sendspin_client_id = client_id
-        if self.bridge_manager and previous:
-            await self.bridge_manager.remove_bridge(player.player_id, permanent=True)
-        if self.bridge_manager:
-            await self.bridge_manager.evaluate_bridge(player)
 
     def schedule_player_close(self, player_id: str) -> None:
         """
@@ -292,7 +301,7 @@ class WebKioskProvider(PlayerProvider):
         """
         if self.http_server:
             self.http_server.broadcast_stop(player_id)
-        await self._handle_player_unregister(player_id)
+        await self._handle_player_unregister(player_id, permanent=True)
         self.logger.info("Player %s removed by user", player_id)
 
     def notify_play_started(
@@ -558,7 +567,7 @@ class WebKioskProvider(PlayerProvider):
         return f"http://<ma-host>:{port}/kiosk"
 
     async def _handle_player_unregister(
-        self, player_id: str, *, only_if_disconnected: bool = False
+        self, player_id: str, *, only_if_disconnected: bool = False, permanent: bool = False
     ) -> None:
         """Unregister a player while excluding concurrent registration."""
         async with self._player_lock:
@@ -574,9 +583,13 @@ class WebKioskProvider(PlayerProvider):
             self.logger.debug("Unregistering kiosk player %s", player_id)
             try:
                 if self.bridge_manager:
-                    await self.bridge_manager.remove_bridge(player_id, permanent=True)
+                    await self.bridge_manager.release_bridge(player_id, permanent=permanent)
                 await self.mass.players.unregister(player_id)
             finally:
+                for client_id, owner in list(self._sendspin_owners.items()):
+                    if owner.player_id == player_id:
+                        owner.sendspin_client_id = None
+                        self._sendspin_owners.pop(client_id, None)
                 self._player_last_activity.pop(player_id, None)
 
     async def _run_idle_timeout_loop(self) -> None:

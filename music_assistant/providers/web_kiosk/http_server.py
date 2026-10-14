@@ -342,6 +342,9 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <label><input type="checkbox" id="lyrics"> Lyrics</label>
 <label><input type="checkbox" id="queue"> Queue</label>
 <label><input type="checkbox" id="show_player_id"> Player ID</label>
+<label><input type="checkbox" id="remote"> TV remote navigation</label>
+<label><input type="checkbox" id="lite"> Lightweight visuals</label>
+<label><input type="checkbox" id="wake_lock"> Keep screen awake when supported</label>
 </div>
 <div class="row">
 <input type="text" id="ma_url" placeholder="MA server URL (e.g. http://{host_addr}:8095)">
@@ -351,6 +354,9 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 </div>
 <div class="row">
 <input type="text" id="device_id" placeholder="Device id (optional, stored in the browser)">
+</div>
+<div class="row">
+<input type="text" id="sendspin_url" placeholder="Sendspin URL override (optional; HTTPS page needs HTTPS/WSS)">
 </div>
 <div class="row">
 <input readonly id="url" data-base="{html_escape(prefix)}">

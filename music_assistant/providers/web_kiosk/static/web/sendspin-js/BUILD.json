@@ -6,7 +6,13 @@
     "@noble/ciphers": "1.3.0"
   },
   "esbuild": "0.28.2",
-  "sha256": "1c798ab055fa29625152607aa90943cdef22a3d6cf440aa12c5e6a9a1f07c352",
+  "format": "iife",
+  "target": [
+    "chrome67",
+    "safari15",
+    "firefox68"
+  ],
+  "sha256": "e8be0eb25fb4dbbedecc1309b91607ecef6330676717af5489f5d6561df7aee8",
   "opusFallback": false,
   "licensePlacement": "bundle-header"
 }

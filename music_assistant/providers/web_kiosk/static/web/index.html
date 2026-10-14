@@ -16,22 +16,22 @@ try {
 * { box-sizing:border-box; margin:0; padding:0; }
 html,body { height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; overflow:hidden; }
 body.kiosk { background:#000; }
-#kiosk { display:none; position:fixed; inset:0; background:#000; color:#fff; overflow:hidden; }
+#kiosk { display:none; position:fixed; top:0; right:0; bottom:0; left:0; background:#000; color:#fff; overflow:hidden; }
 body.kiosk #kiosk { display:block; }
-#kiosk-bg { position:absolute; inset:0; background-size:cover; background-position:center; filter:blur(40px) brightness(.4); transform:scale(1.1); transition:opacity .8s; }
+#kiosk-bg { position:absolute; top:0; right:0; bottom:0; left:0; background-size:cover; background-position:center; filter:blur(40px) brightness(.4); transform:scale(1.1); transition:opacity .8s; }
 #kiosk-bg img { width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .8s; }
-#kiosk-center { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:40px 40px 24px; z-index:2; min-height:0; }
+#kiosk-center { position:absolute; top:0; right:0; bottom:0; left:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0; padding:40px 40px 24px; z-index:2; min-height:0; }
 html.controls #kiosk-center { bottom:calc(var(--kiosk-bar-height) + 16px); }
-#kiosk-artbox { position:relative; width:min(46vh,46vw); height:auto; aspect-ratio:1; max-height:min(46vh,46vw); flex:0 1 auto; min-height:0; border-radius:14px; background:#16161c; box-shadow:0 20px 60px rgba(0,0,0,.6); overflow:hidden; }
-#kiosk-art { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:none; }
+#kiosk-artbox { position:relative; width:46vw; height:46vw; max-width:46vh; width:min(46vh,46vw); height:min(46vh,46vw); max-height:46vh; max-height:min(46vh,46vw); flex:0 1 auto; min-height:0; border-radius:14px; background:#16161c; box-shadow:0 20px 60px rgba(0,0,0,.6); overflow:hidden; }
+#kiosk-art { position:absolute; top:0; right:0; bottom:0; left:0; width:100%; height:100%; object-fit:cover; display:none; }
 #kiosk-artbox.has-art #kiosk-art { display:block; }
-#kiosk-title { font-size:clamp(20px,4vw,44px); font-weight:700; text-align:center; text-shadow:0 2px 20px rgba(0,0,0,.8); max-width:92vw; }
-#kiosk-artist { font-size:clamp(15px,2.6vw,26px); color:#cfcfe0; text-align:center; max-width:92vw; }
-#kiosk-viz { position:absolute; inset:0; z-index:1; width:100%; height:100%; }
-#kiosk-lyrics { width:min(720px,92vw); text-align:center; }
-#kiosk-lyrics .l { margin:0; line-height:1.3; min-height:1.3em; color:rgba(255,255,255,.4); font-size:clamp(13px,1.8vw,18px); }
-#kiosk-lyrics .l.current { color:#fff; font-weight:600; font-size:clamp(16px,2.6vw,26px); }
-#kiosk-queue { position:absolute; right:16px; top:16px; width:min(340px,calc(100vw - 32px)); max-height:55vh; overflow-y:auto; z-index:4; background:rgba(10,10,14,.55); border-radius:12px; padding:12px; backdrop-filter:blur(8px); }
+#kiosk-title { font-size:32px; font-size:clamp(20px,4vw,44px); font-weight:700; text-align:center; text-shadow:0 2px 20px rgba(0,0,0,.8); max-width:92vw; }
+#kiosk-artist { font-size:20px; font-size:clamp(15px,2.6vw,26px); color:#cfcfe0; text-align:center; max-width:92vw; }
+#kiosk-viz { position:absolute; top:0; right:0; bottom:0; left:0; z-index:1; width:100%; height:100%; }
+#kiosk-lyrics { margin-top:14px; width:92vw; max-width:720px; width:min(720px,92vw); text-align:center; }
+#kiosk-lyrics .l { margin:0; line-height:1.3; min-height:1.3em; color:rgba(255,255,255,.4); font-size:16px; font-size:clamp(13px,1.8vw,18px); }
+#kiosk-lyrics .l.current { color:#fff; font-weight:600; font-size:22px; font-size:clamp(16px,2.6vw,26px); }
+#kiosk-queue { position:absolute; right:16px; top:16px; width:340px; max-width:calc(100vw - 32px); width:min(340px,calc(100vw - 32px)); max-height:55vh; overflow-y:auto; z-index:4; background:rgba(10,10,14,.55); border-radius:12px; padding:12px; backdrop-filter:blur(8px); }
 #kiosk-queue .qrow { display:flex; align-items:center; gap:10px; padding:6px; border-radius:8px; font-size:14px; }
 #kiosk-queue .qrow.active { background:rgba(255,255,255,.12); }
 #kiosk-queue .qrow img { width:34px; height:34px; border-radius:5px; object-fit:cover; flex-shrink:0; }
@@ -42,11 +42,11 @@ html.controls #kiosk-center { bottom:calc(var(--kiosk-bar-height) + 16px); }
 #kiosk-sync.synced { color:#7ce38b; }
 #kiosk-sync.error { color:#ff8a8a; }
 #kiosk-pair { position:absolute; left:50%; top:64px; transform:translateX(-50%); z-index:7; padding:14px 22px; border-radius:12px; background:rgba(10,10,14,.82); font-size:22px; letter-spacing:2px; text-align:center; }
-#kiosk-status { position:absolute; top:48px; left:50%; transform:translateX(-50%); z-index:8; max-width:min(420px,calc(100vw - 32px)); font-size:13px; color:#ffd2d2; background:rgba(10,10,14,.72); padding:8px 12px; border-radius:8px; text-align:center; }
-#kiosk-status.audio-prompt { top:50%; transform:translate(-50%,-50%); font-size:clamp(16px,2.4vw,22px); padding:16px 22px; cursor:pointer; }
+#kiosk-status { position:absolute; top:48px; left:50%; transform:translateX(-50%); z-index:8; max-width:calc(100vw - 32px); max-width:min(420px,calc(100vw - 32px)); font-size:13px; color:#ffd2d2; background:rgba(10,10,14,.72); padding:8px 12px; border-radius:8px; text-align:center; }
+#kiosk-status.audio-prompt { top:50%; transform:translate(-50%,-50%); font-size:22px; font-size:clamp(16px,2.4vw,22px); padding:16px 22px; cursor:pointer; }
 @media (max-width:1100px) {
   #kiosk-queue { top:52px; right:12px; left:12px; width:auto; max-height:22vh; }
-  body.kiosk:has(#kiosk-queue:not(.hidden)) #kiosk-center { justify-content:flex-start; padding:28vh 16px 24px; }
+  html.queue-active body.kiosk #kiosk-center { justify-content:flex-start; padding:28vh 16px 24px; }
 }
 .hidden { display:none !important; }
 </style>
@@ -115,14 +115,16 @@ SOFTWARE.</desc>
   <canvas id="kiosk-viz"></canvas>
   <div id="kiosk-bg"><img id="kiosk-bg-img" alt=""></div>
   <div id="kiosk-center">
-    <div id="kiosk-artbox">
-      <img id="kiosk-art" alt="HTML5" src="/web/html5.svg">
-      <button type="button" id="kiosk-party-expanded" class="hidden" aria-label="Close Party QR" title="Close Party QR">
-        <img id="kiosk-party-art" alt="Join Party">
-      </button>
+    <div id="kiosk-media-details">
+      <div id="kiosk-artbox">
+        <img id="kiosk-art" alt="HTML5" src="/web/html5.svg">
+        <button type="button" id="kiosk-party-expanded" class="hidden" aria-label="Close Party QR" title="Close Party QR">
+          <img id="kiosk-party-art" alt="Join Party">
+        </button>
+      </div>
+      <div id="kiosk-title">—</div>
+      <div id="kiosk-artist">—</div>
     </div>
-    <div id="kiosk-title">—</div>
-    <div id="kiosk-artist">—</div>
     <div id="kiosk-lyrics" class="hidden" aria-live="polite"></div>
   </div>
   <div id="kiosk-sync"></div>
@@ -134,7 +136,10 @@ SOFTWARE.</desc>
     <div id="kiosk-bar-track">
       <div id="kiosk-bar-artbox">
         <img id="kiosk-bar-art" alt="" class="hidden">
-        <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-music"></use></svg>
+        <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-music" xlink:href="#k-icon-music"></use></svg>
+        <button type="button" id="kiosk-party" class="hidden" aria-label="Enlarge Party QR" aria-expanded="false" aria-controls="kiosk-party-expanded">
+          <img id="kiosk-party-thumbnail" alt="Join Party">
+        </button>
       </div>
       <div id="kiosk-bar-meta">
         <div id="kiosk-bar-title">Nothing playing</div>
@@ -143,9 +148,9 @@ SOFTWARE.</desc>
     </div>
     <div id="kiosk-player-center">
       <div id="kiosk-transport">
-        <button type="button" id="k-prev" class="kiosk-control" aria-label="Previous" title="Previous"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-skip-back"></use></svg></button>
-        <button type="button" id="k-play" class="kiosk-control" aria-label="Play" title="Play"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-play-icon" href="#k-icon-play"></use></svg></button>
-        <button type="button" id="k-next" class="kiosk-control" aria-label="Next" title="Next"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-skip-forward"></use></svg></button>
+        <button type="button" id="k-prev" class="kiosk-control" aria-label="Previous" title="Previous"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-skip-back" xlink:href="#k-icon-skip-back"></use></svg></button>
+        <button type="button" id="k-play" class="kiosk-control" aria-label="Play" title="Play"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-play-icon" href="#k-icon-play" xlink:href="#k-icon-play"></use></svg></button>
+        <button type="button" id="k-next" class="kiosk-control" aria-label="Next" title="Next"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-skip-forward" xlink:href="#k-icon-skip-forward"></use></svg></button>
       </div>
       <div id="kiosk-progress">
         <input type="range" id="kiosk-seek" class="kiosk-slider" min="0" max="1000" value="0" aria-label="Position">
@@ -155,22 +160,21 @@ SOFTWARE.</desc>
     <div id="kiosk-bar-actions">
       <div id="kiosk-volume-control">
         <button type="button" id="k-volume-button" class="kiosk-control" aria-label="Volume: 100%" aria-controls="kiosk-volume-panel" aria-expanded="false" title="Volume">
-          <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-icon" href="#k-icon-volume-2"></use></svg>
+          <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-icon" href="#k-icon-volume-2" xlink:href="#k-icon-volume-2"></use></svg>
           <span id="k-volume-level">100%</span>
         </button>
         <div id="kiosk-volume-panel" role="group" aria-label="Volume">
           <div class="volume-panel-heading">
             <span>Volume</span>
-            <button type="button" id="k-volume-close" class="kiosk-control" aria-label="Close volume" title="Close"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-x"></use></svg></button>
+            <button type="button" id="k-volume-close" class="kiosk-control" aria-label="Close volume" title="Close"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#k-icon-x" xlink:href="#k-icon-x"></use></svg></button>
           </div>
           <div class="volume-range-row">
-            <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-slider-icon" href="#k-icon-volume-2"></use></svg>
+            <svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-volume-slider-icon" href="#k-icon-volume-2" xlink:href="#k-icon-volume-2"></use></svg>
             <input type="range" id="kiosk-volume" class="kiosk-slider" min="0" max="100" value="100" aria-label="Volume">
             <span id="k-volume-panel-level">100%</span>
           </div>
         </div>
       </div>
-      <button type="button" id="kiosk-party" class="hidden" aria-label="Enlarge Party QR" aria-expanded="false" aria-controls="kiosk-party-expanded"></button>
     </div>
   </div>
 </div>

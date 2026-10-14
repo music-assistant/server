@@ -120,22 +120,24 @@ async def test_note_sendspin_client_id_replaces_previous_bridge(
     provider: WebKioskProvider, player: WebKioskPlayer
 ) -> None:
     """A new browser identity drops the previous bridge before the next one is built."""
-    manager = Mock()
-    manager.evaluate_bridge = AsyncMock()
-    manager.remove_bridge = AsyncMock()
-    provider.bridge_manager = manager
+    manager = WebKioskSendspinBridgeManager(provider)
+    with (
+        patch.object(manager, "evaluate_bridge", new_callable=AsyncMock) as evaluate_bridge,
+        patch.object(manager, "remove_bridge", new_callable=AsyncMock) as remove_bridge,
+    ):
+        provider.bridge_manager = manager
 
-    await provider.note_sendspin_client_id(player, BROWSER_CLIENT_ID)
+        await provider.note_sendspin_client_id(player, BROWSER_CLIENT_ID)
 
-    assert player.sendspin_client_id == BROWSER_CLIENT_ID
-    manager.remove_bridge.assert_not_awaited()
-    manager.evaluate_bridge.assert_awaited_once_with(player)
+        assert player.sendspin_client_id == BROWSER_CLIENT_ID
+        remove_bridge.assert_not_awaited()
+        evaluate_bridge.assert_awaited_once_with(player)
 
-    replacement = "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"
-    await provider.note_sendspin_client_id(player, replacement)
+        replacement = "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"
+        await provider.note_sendspin_client_id(player, replacement)
 
-    assert player.sendspin_client_id == replacement
-    manager.remove_bridge.assert_awaited_once_with(player.player_id, permanent=True)
+        assert player.sendspin_client_id == replacement
+        remove_bridge.assert_awaited_once_with(player.player_id, permanent=False)
 
 
 @pytest.mark.parametrize(
