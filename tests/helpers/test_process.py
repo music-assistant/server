@@ -334,6 +334,36 @@ async def test_kill_returns_promptly_with_output_left_in_the_pipes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_kill_leaves_a_live_reader_in_charge_of_stdout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A reader still on stdout when the process is killed keeps draining it until EOF.
+
+    asyncio refuses a second concurrent read on a stream, so kill() must leave
+    that pipe to the reader rather than attempt the drain itself and warn about
+    the refused read; the kill closes the pipe, which is what ends the reader.
+    """
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    lines: list[str] = []
+    ready = asyncio.Event()
+    reader = asyncio.create_task(_collect_lines(proc.iter_stdout(), lines, ready))
+    await asyncio.wait_for(ready.wait(), 5)
+
+    started = time.monotonic()
+    await proc.kill()
+
+    assert proc.returncode == -SIGKILL
+    assert time.monotonic() - started < 1
+    await asyncio.wait_for(reader, 5)
+    assert lines == ["ready"]
+    assert "Failed to drain" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_close_reaps_a_child_that_never_closes_its_pipes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
