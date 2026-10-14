@@ -169,32 +169,11 @@ class SendspinSourceProvider(PluginProvider):
         """Return one AudioSource per connected client with an active source role."""
         if (sendspin := self._sendspin_provider) is None:
             return []
-        sources: list[AudioSource] = []
-        for client in sendspin.server_api.connected_clients:
-            if self._get_source_role(client) is None:
-                continue
-            sources.append(
-                AudioSource(
-                    item_id=client.client_id,
-                    provider=self.instance_id,
-                    name=self._source_name(client.client_id),
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id=client.client_id,
-                            provider_domain=self.domain,
-                            provider_instance=self.instance_id,
-                            audio_format=OUTPUT_FORMAT,
-                        )
-                    },
-                    can_play_pause=False,
-                    can_seek=False,
-                    can_next_previous=False,
-                    exclusive=True,
-                    allow_external_trigger=True,
-                    can_initiate=True,
-                )
-            )
-        return sources
+        return [
+            self._audio_source(client)
+            for client in sendspin.server_api.connected_clients
+            if self._get_source_role(client) is not None
+        ]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -377,6 +356,27 @@ class SendspinSourceProvider(PluginProvider):
     def _get_source_role(client: SendspinClient) -> SourceV1Role | None:
         roles = client.roles_by_family("source")
         return cast("SourceV1Role", roles[0]) if roles else None
+
+    def _audio_source(self, client: SendspinClient) -> AudioSource:
+        return AudioSource(
+            item_id=client.client_id,
+            provider=self.instance_id,
+            name=self._source_name(client.client_id),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=client.client_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=OUTPUT_FORMAT,
+                )
+            },
+            can_play_pause=False,
+            can_seek=False,
+            can_next_previous=False,
+            exclusive=True,
+            allow_external_trigger=True,
+            can_initiate=True,
+        )
 
     async def _await_first_audio(self, session: _SourceSession) -> None:
         """
