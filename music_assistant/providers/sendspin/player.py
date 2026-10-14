@@ -97,6 +97,8 @@ from .constants import (
     CONF_ACTION_MANAGEMENT_EXIT,
     CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE,
     CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE,
+    CONF_ACTION_SOURCE_INPUT_DISABLE,
+    CONF_ACTION_SOURCE_INPUT_ENABLE,
     CONF_ACTION_UNPAIR,
     CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
@@ -462,7 +464,7 @@ class SendspinBasePlayer(Player):
         return entries
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
-        """Run an unpair/management action, then re-render the entries."""
+        """Run an unpair/management/input action, then re-render the entries."""
         if self.api.connection is not None:
             provider = cast("SendspinProvider", self.provider)
             alert = await self._handle_security_action(provider, action)
@@ -895,19 +897,27 @@ class SendspinBasePlayer(Player):
                 [action_entry(CONF_ACTION_UNPAIR)],
             )
 
-        trusted_unpaired = (
-            await provider.server_api.pairing_store.trusted_unpaired(self.player_id) is not None
-        )
-        if not trusted_unpaired:
+        trusted_unpaired = await provider.server_api.pairing_store.trusted_unpaired(self.player_id)
+        if trusted_unpaired is None:
             return None, []
-        # Whether the device keeps offering guest access is the device's own call, so there is
-        # nothing to revoke here - only the option to upgrade to a pairing, if it offers one.
+        # Whether the device keeps offering guest access is the device's own call, so guest
+        # access itself has no revoke action here - only the option to upgrade to a pairing,
+        # if it offers one.
         status_key = (
             "security_status_guest_pairable"
             if self._pairing_method_options(provider)
             else "security_status_guest"
         )
-        return ConfigEntry(key=status_key, type=ConfigEntryType.LABEL), []
+        actions: list[ConfigEntry] = []
+        if "source" in self._negotiated_families():
+            actions.append(
+                action_entry(
+                    CONF_ACTION_SOURCE_INPUT_DISABLE
+                    if "source" in trusted_unpaired.approved_roles
+                    else CONF_ACTION_SOURCE_INPUT_ENABLE
+                )
+            )
+        return ConfigEntry(key=status_key, type=ConfigEntryType.LABEL), actions
 
     async def _paired_entries(
         self,
@@ -972,7 +982,7 @@ class SendspinBasePlayer(Player):
     async def _handle_security_action(
         self, provider: SendspinProvider, action: str
     ) -> AlertText | None:
-        """Execute an unpair/management action, returning a localized alert on failure."""
+        """Execute an unpair/management/input action, returning a localized alert on failure."""
         try:
             if action == CONF_ACTION_UNPAIR:
                 await provider.unpair_client(self.player_id)
@@ -985,6 +995,21 @@ class SendspinBasePlayer(Player):
                     raise
             elif action == CONF_ACTION_MANAGEMENT_EXIT:
                 provider.exit_management(self.player_id)
+            elif action in (CONF_ACTION_SOURCE_INPUT_ENABLE, CONF_ACTION_SOURCE_INPUT_DISABLE):
+                allow_input = action == CONF_ACTION_SOURCE_INPUT_ENABLE
+                # Set the decline before revoking and clear it only after approving, so the
+                # device never drops back to needs_setup, not even when the call fails.
+                if not allow_input:
+                    self.mass.config.set_raw_player_config_value(
+                        self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, True
+                    )
+                await provider.set_trusted_unpaired(
+                    self.player_id, enabled=True, allow_input=allow_input
+                )
+                if allow_input:
+                    self.mass.config.set_raw_player_config_value(
+                        self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, False
+                    )
             elif action in _MANAGEMENT_ACTIONS:
                 await provider.management_set_pairing_config(
                     self.player_id, _MANAGEMENT_ACTIONS[action]

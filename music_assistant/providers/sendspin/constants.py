@@ -33,6 +33,8 @@ CONF_SOURCE_APPROVAL_DISMISSED = "source_approval_dismissed"
 CONF_PAIRING_PIN = "pairing_pin"
 
 CONF_ACTION_UNPAIR = "unpair"
+CONF_ACTION_SOURCE_INPUT_ENABLE = "source_input_enable"
+CONF_ACTION_SOURCE_INPUT_DISABLE = "source_input_disable"
 
 CONF_ACTION_MANAGEMENT_ENTER = "management_enter"
 CONF_ACTION_MANAGEMENT_EXIT = "management_exit"

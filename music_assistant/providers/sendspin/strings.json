@@ -83,6 +83,14 @@
       "label": "Unpair",
       "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
     },
+    "source_input_enable": {
+      "label": "Turn on audio input",
+      "description": "Let this device send its audio (such as a line-in) to Music Assistant."
+    },
+    "source_input_disable": {
+      "label": "Turn off audio input",
+      "description": "Stop using this device's audio input."
+    },
     "management_enter": {
       "label": "Manage device settings",
       "description": "Change the device's own pairing settings. While the management section is open, the device rejects connections from other servers."
