@@ -12,6 +12,7 @@ from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import ClientResponseError
 from hass_client.exceptions import BaseHassClientError, FailedCommand
 from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import (
@@ -786,6 +787,38 @@ async def test_ai_generate_image_is_fetched_although_not_an_entity_picture() -> 
             "http://homeassistant.local:8123/ai_task/image/x.png?authSig=abc",
             headers={"Authorization": "Bearer token"},
         )
+
+
+async def test_ai_generate_image_keeps_the_signature_out_of_errors() -> None:
+    """A failed or unexpected image link never puts its signed query in the error."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/api/elsewhere/x.png?authSig=secret"}}
+        )
+        with pytest.raises(MusicAssistantError) as unexpected:
+            await provider.ai_generate_image("A sunset")
+
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=secret"}}
+        )
+        failed = ClientResponseError(
+            MagicMock(real_url="http://ha/ai_task/image/x.png?authSig=secret"),
+            (),
+            status=403,
+            message="Forbidden",
+        )
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock(side_effect=failed)),
+            pytest.raises(MusicAssistantError) as forbidden,
+        ):
+            await provider.ai_generate_image("A sunset")
+
+    assert "secret" not in str(unexpected.value)
+    assert "403" in str(forbidden.value)
+    assert "secret" not in str(forbidden.value)
+    assert forbidden.value.__cause__ is None
 
 
 async def test_ai_generate_image_refuses_a_link_outside_the_ai_task_images() -> None:

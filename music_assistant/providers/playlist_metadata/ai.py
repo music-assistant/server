@@ -91,6 +91,7 @@ from .ai_constants import (
     NO_TEXT_RULES,
     PLAYLISTS_ALL,
     PLAYLISTS_SMART,
+    PREVIEW_CONCURRENCY,
     PREVIEW_SIZE,
     PROMPT_TIMEOUT_SECONDS,
     SEED_SEPARATOR,
@@ -157,6 +158,8 @@ class AIArtwork:
 
     _lock: asyncio.Lock
     _description_lock: asyncio.Lock
+    # one preview at a time, so repeated presses do not stack up paid generations
+    _preview_lock: asyncio.Lock
     # when each cover and description of the last hour was generated, to enforce the hourly limit
     _generated_at: deque[float]
     _described_at: deque[float]
@@ -174,6 +177,7 @@ class AIArtwork:
         self.logger = provider.logger
         self._lock = asyncio.Lock()
         self._description_lock = asyncio.Lock()
+        self._preview_lock = asyncio.Lock()
         self._generated_at = deque()
         self._described_at = deque()
         self._generation = 0
@@ -374,14 +378,28 @@ class AIArtwork:
         text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
         playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
         looks = self._preview_looks()
-        self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
-        description, results = await asyncio.gather(
-            self._preview_description(playlist, text_engine),
-            asyncio.gather(
-                *(self._render(playlist, image_engine, look) for look in looks),
-                return_exceptions=True,
-            ),
-        )
+        if self._preview_lock.locked():
+            raise ActionUnavailable("A preview is already being generated, wait for it to finish")
+        # previews count towards the hourly limit, like the covers they preview
+        if (available := self._available(self._generated_at)) < len(looks):
+            raise ActionUnavailable(
+                f"The hourly limit leaves {available} cover(s) for now, "
+                "pick fewer styles to preview or try again later"
+            )
+        async with self._preview_lock:
+            for _look in looks:
+                await self._record(self._generated_at, CACHE_KEY_GENERATED_AT)
+            self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
+            slots = asyncio.Semaphore(PREVIEW_CONCURRENCY)
+
+            async def render(look: CoverLook) -> bytes:
+                async with slots:
+                    return await self._render(playlist, image_engine, look)
+
+            description, results = await asyncio.gather(
+                self._preview_description(playlist, text_engine),
+                asyncio.gather(*(render(look) for look in looks), return_exceptions=True),
+            )
         entries: list[ConfigEntry] = []
         for look, result in zip(looks, results, strict=True):
             if isinstance(result, BaseException):
@@ -664,8 +682,9 @@ class AIArtwork:
 
     async def _preview_description(self, playlist: Playlist, engine: AIEngine | None) -> str:
         """Return a description to preview for the playlist, empty when none could be written."""
-        if engine is None:
+        if engine is None or self._throttle_delay(self._described_at) is not None:
             return ""
+        await self._record(self._described_at, CACHE_KEY_DESCRIBED_AT)
         try:
             return await self._write_description(playlist, engine)
         except Exception as err:
@@ -795,7 +814,8 @@ class AIArtwork:
                     artist_counts[artist] += 1
                     first_track.setdefault(artist, track)
                 if track.metadata and track.metadata.genres:
-                    genre_counts.update(track.metadata.genres)
+                    # a set, so sorted for the same pick among equally common genres every time
+                    genre_counts.update(sorted(track.metadata.genres))
                 count += 1
                 if count >= MAX_CONTEXT_TRACKS:
                     break
@@ -886,14 +906,22 @@ class AIArtwork:
 
         :param timestamps: When each generation of this kind ran, oldest first.
         """
+        if self._available(timestamps):
+            return None
+        return int(timestamps[0] + THROTTLE_WINDOW_SECONDS - time.time()) + 5
+
+    def _available(self, timestamps: deque[float]) -> int:
+        """
+        Return how many more generations of one kind the hourly limit allows now.
+
+        :param timestamps: When each generation of this kind ran, oldest first.
+        """
         now = time.time()
         while timestamps and now - timestamps[0] >= THROTTLE_WINDOW_SECONDS:
             timestamps.popleft()
         limit = self.provider.config.get_value(CONF_MAX_PER_HOUR)
         limit = limit if isinstance(limit, int) and limit > 0 else DEFAULT_MAX_PER_HOUR
-        if len(timestamps) < limit:
-            return None
-        return int(timestamps[0] + THROTTLE_WINDOW_SECONDS - now) + 5
+        return max(0, limit - len(timestamps))
 
     def _style(self) -> Style:
         """Return the configured style."""

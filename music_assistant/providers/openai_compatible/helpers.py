@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import re
+import socket
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 from aiohttp import ClientTimeout
@@ -34,6 +38,9 @@ IMAGE_SIZE = "1024x1024"
 # a generated image handed out by URL is downloaded whole, so cap what is read
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 IMAGE_READ_CHUNK_SIZE = 64 * 1024
+# redirects of an image link are followed one by one, so every hop can be checked
+MAX_IMAGE_REDIRECTS = 3
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 # an upstream failure message is echoed into the raised error, so keep it bounded
 MAX_ERROR_DETAIL_CHARS = 200
@@ -202,24 +209,76 @@ async def _images_endpoint_image(
     if isinstance(b64_json := image.get("b64_json"), str) and b64_json:
         return _decode_base64(b64_json)
     if isinstance(url := image.get("url"), str) and url.startswith(("http://", "https://")):
-        return await _download(mass, url, timeout)
+        return await _download(mass, base_url, url, timeout)
     msg = "the reply carried no image"
     raise InvalidDataError(msg)
 
 
-async def _download(mass: MusicAssistant, url: str, timeout: int) -> bytes:
-    """Download an image the service handed out by URL."""
-    try:
-        async with mass.http_session.get(url, timeout=ClientTimeout(total=timeout)) as response:
-            status = response.status
-            body = await _read_image(response)
-    except (TimeoutError, aiohttp.ClientError) as err:
-        msg = f"Could not download the generated image: {err}"
-        raise ProviderUnavailableError(msg) from err
-    if status >= 400 or not body:
-        msg = f"Could not download the generated image ({status})"
+async def _download(mass: MusicAssistant, base_url: str, url: str, timeout: int) -> bytes:
+    """
+    Download an image the service handed out by URL.
+
+    :param mass: The Music Assistant instance, for its HTTP session.
+    :param base_url: The base URL of the configured endpoint.
+    :param url: The image link from the service's reply.
+    :param timeout: The timeout of each request, in seconds.
+    """
+    for _ in range(MAX_IMAGE_REDIRECTS + 1):
+        await _check_image_link(base_url, url)
+        try:
+            async with mass.http_session.get(
+                url, timeout=ClientTimeout(total=timeout), allow_redirects=False
+            ) as response:
+                status = response.status
+                location = response.headers.get("Location", "")
+                body = b"" if status in REDIRECT_STATUSES else await _read_image(response)
+        except (TimeoutError, aiohttp.ClientError) as err:
+            msg = f"Could not download the generated image: {err}"
+            raise ProviderUnavailableError(msg) from err
+        if status in REDIRECT_STATUSES and location:
+            url = urljoin(url, location)
+            continue
+        if status >= 400 or not body:
+            msg = f"Could not download the generated image ({status})"
+            raise InvalidDataError(msg)
+        return body
+    msg = "The generated image link redirects too often"
+    raise InvalidDataError(msg)
+
+
+async def _check_image_link(base_url: str, url: str) -> None:
+    """
+    Refuse an image link that reaches a local network, unless it is on the configured endpoint.
+
+    The service picks the link, so it must not make Music Assistant request internal addresses.
+    A local service (such as LocalAI) hands out links to itself, so its own origin is allowed.
+
+    :param base_url: The base URL of the configured endpoint.
+    :param url: The image link to check.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        msg = "the reply carried an invalid image link"
         raise InvalidDataError(msg)
-    return body
+    base = urlsplit(base_url)
+    if (parts.scheme, parts.netloc.lower()) == (base.scheme, base.netloc.lower()):
+        return
+    addresses = await _host_addresses(parts.hostname, parts.port or 0)
+    # a link-local IPv6 address carries its interface after a "%"
+    if not addresses or not all(
+        ip_address(address.split("%", 1)[0]).is_global for address in addresses
+    ):
+        msg = f"the reply carried an image link on a local network: {parts.hostname}"
+        raise InvalidDataError(msg)
+
+
+async def _host_addresses(host: str, port: int) -> list[str]:
+    """Return the IP addresses a host name resolves to, none when it does not resolve."""
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    return [str(info[4][0]) for info in infos]
 
 
 async def _read_image(response: aiohttp.ClientResponse) -> bytes:

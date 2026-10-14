@@ -20,6 +20,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
 from urllib.parse import unquote, urlsplit
 
+from aiohttp import ClientResponseError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import get_websocket_url
@@ -702,10 +703,18 @@ class HomeAssistantProvider(PluginProvider):
         # the link may be prefixed with a Home Assistant URL we can not reach, so only its
         # (signed) path is fetched from the URL we are connected to
         parts = urlsplit(url)
+        # the query carries the signature, so it is never put in an error message
         if not parts.path.startswith(AI_TASK_IMAGE_PATH_PREFIX):
-            msg = f"AI Task returned an unexpected image link: {url}"
+            msg = f"AI Task returned an unexpected image link: {parts.path}"
             raise MusicAssistantError(msg)
-        return await self._fetch_image(f"{parts.path}?{parts.query}" if parts.query else parts.path)
+        try:
+            return await self._fetch_image(
+                f"{parts.path}?{parts.query}" if parts.query else parts.path
+            )
+        except ClientResponseError as err:
+            # its message names the full (signed) URL
+            msg = f"Home Assistant answered the image request with {err.status}"
+            raise MusicAssistantError(msg) from None
 
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """

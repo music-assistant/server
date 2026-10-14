@@ -2,6 +2,7 @@
 
 import base64
 import json
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -679,13 +680,114 @@ async def test_image_generation_goes_straight_to_a_known_images_endpoint(mass: A
     assert mass.http_session.request.call_args.args[1] == f"{BASE_URL}/images/generations"
 
 
-def _download_response(chunks: list[bytes], content_length: int | None = None) -> MagicMock:
+PUBLIC_IP = "93.184.215.14"
+
+
+@pytest.fixture(autouse=True)
+def _resolve_public_hosts() -> Iterator[None]:
+    """Resolve every host to a public address unless a test says otherwise."""
+    with patch(
+        "music_assistant.providers.openai_compatible.helpers._host_addresses",
+        AsyncMock(return_value=[PUBLIC_IP]),
+    ):
+        yield
+
+
+def _download_response(
+    chunks: list[bytes],
+    content_length: int | None = None,
+    *,
+    status: int = 200,
+    location: str = "",
+) -> MagicMock:
     """Build a fake aiohttp response streaming a downloaded image in the given chunks."""
     response = MagicMock()
-    response.status = 200
+    response.status = status
+    response.headers = {"Location": location} if location else {}
     response.content_length = content_length
     response.content.read = AsyncMock(side_effect=[*chunks, b""])
     return response
+
+
+def _url_reply(url: str) -> MagicMock:
+    """Build the images endpoint reply handing out the image by the given URL."""
+    return _response_cm(response=_json_response(200, {"data": [{"url": url}]}))
+
+
+async def _generate_by_url(mass: AsyncMock, url: str) -> bytes:
+    """Run an images endpoint generation whose reply hands out the image by URL."""
+    mass.http_session.request = MagicMock(return_value=_url_reply(url))
+    image, _ = await helpers.image_generation(
+        mass, BASE_URL, "", model="dall-e-3", prompt="A cat", timeout=10, use_images_endpoint=True
+    )
+    return image
+
+
+@pytest.mark.parametrize(
+    "address", ["127.0.0.1", "10.0.1.5", "192.168.1.20", "169.254.169.254", "::1", "fe80::1%eth0"]
+)
+async def test_image_links_to_a_local_network_are_refused(mass: AsyncMock, address: str) -> None:
+    """The service picks the link, so it can not make Music Assistant request internal hosts."""
+    mass.http_session.get = MagicMock()
+    with (
+        patch(
+            "music_assistant.providers.openai_compatible.helpers._host_addresses",
+            AsyncMock(return_value=[PUBLIC_IP, address]),
+        ),
+        pytest.raises(InvalidDataError, match="local network"),
+    ):
+        await _generate_by_url(mass, "https://images.example.com/x.png")
+
+    mass.http_session.get.assert_not_called()
+
+
+async def test_image_links_on_the_configured_endpoint_are_allowed(mass: AsyncMock) -> None:
+    """A local service handing out links to itself still works."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"png"]))
+    )
+    with patch(
+        "music_assistant.providers.openai_compatible.helpers._host_addresses",
+        AsyncMock(return_value=["192.168.1.20"]),
+    ) as host_addresses:
+        assert await _generate_by_url(mass, f"{BASE_URL}/generated/x.png") == b"png"
+
+    host_addresses.assert_not_awaited()
+
+
+async def test_image_link_redirects_are_checked_at_every_hop(mass: AsyncMock) -> None:
+    """A redirect is followed by hand, so its target is checked like the link itself."""
+    mass.http_session.get = MagicMock(
+        side_effect=[
+            _response_cm(
+                response=_download_response([], status=302, location="http://intranet.lan/x")
+            ),
+        ]
+    )
+
+    async def resolve(host: str, _port: int) -> list[str]:
+        return ["10.0.0.7"] if host == "intranet.lan" else [PUBLIC_IP]
+
+    with (
+        patch("music_assistant.providers.openai_compatible.helpers._host_addresses", resolve),
+        pytest.raises(InvalidDataError, match="local network"),
+    ):
+        await _generate_by_url(mass, "https://images.example.com/x.png")
+
+    assert mass.http_session.get.call_args.kwargs["allow_redirects"] is False
+
+
+async def test_image_link_redirects_to_public_hosts_are_followed(mass: AsyncMock) -> None:
+    """A redirect to another public host is followed to the image."""
+    mass.http_session.get = MagicMock(
+        side_effect=[
+            _response_cm(response=_download_response([], status=302, location="/final.png")),
+            _response_cm(response=_download_response([b"png"])),
+        ]
+    )
+
+    assert await _generate_by_url(mass, "https://images.example.com/x.png") == b"png"
+    assert mass.http_session.get.call_args.args[0] == "https://images.example.com/final.png"
 
 
 async def test_image_generation_downloads_an_image_handed_out_by_url(mass: AsyncMock) -> None:

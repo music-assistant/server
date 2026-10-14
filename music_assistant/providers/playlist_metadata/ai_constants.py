@@ -42,6 +42,8 @@ MAX_TITLE_LINES: Final = 3
 MIN_TITLE_SCALE: Final = 0.4
 # previews are sent to the settings page inline, so they are kept small
 PREVIEW_SIZE: Final = 512
+# the preview covers generated at the same time, to go easy on the image engine
+PREVIEW_CONCURRENCY: Final = 2
 
 # image models take a while, a slow one well over a minute
 IMAGE_TIMEOUT_SECONDS: Final = 300

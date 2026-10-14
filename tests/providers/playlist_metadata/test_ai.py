@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import time
@@ -527,6 +528,19 @@ async def test_regular_playlist_context_comes_from_its_tracks(
     assert "Artists/genres: Lady Gaga, Madonna, Pop, Dance." in prompt
 
 
+async def test_equally_common_genres_are_picked_in_a_stable_order(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Genres come as a set, so ties are broken alphabetically rather than by hash order."""
+    _set_config(provider, **{CONF_EXTRA_PLAYLISTS: ["42"]})
+    tracks = [_track("Vogue", "Madonna", {"Pop", "Dance", "House"})]
+    _mass(provider).music.playlists.tracks = MagicMock(side_effect=lambda *_: _async_iter(tracks))
+
+    await provider.get_playlist_metadata(_playlist("builtin", item_id="42", is_editable=True))
+
+    assert "Artists/genres: Madonna, Dance, House, Pop." in _sent_prompt(provider)
+
+
 async def test_resolve_image_returns_a_stored_cover(provider: PlaylistMetadataProvider) -> None:
     """A stored cover is served from the images directory."""
     Path(provider._images_dir, "1_abc.jpg").write_bytes(b"jpeg")
@@ -938,6 +952,63 @@ async def test_preview_still_shows_the_styles_that_worked(
     assert [entry.key for entry in entries or () if entry.key.startswith(CONF_PREVIEW_IMAGE)] == [
         f"{CONF_PREVIEW_IMAGE}_spotify"
     ]
+
+
+async def test_previews_count_towards_the_hourly_limit(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A preview that would go over the hourly limit is refused before anything is generated."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{
+            CONF_PREVIEW_PLAYLIST: "234",
+            CONF_PREVIEW_STYLE: ["spotify", "neon"],
+            CONF_MAX_PER_HOUR: 3,
+        },
+    )
+
+    with _no_engine_pickers():
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+        with pytest.raises(ActionUnavailable, match="leaves 1 cover"):
+            await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert _engine_calls(provider) == 2
+    # the background generation is held to the same limit
+    second = _smart_playlist(item_id="2")
+    await provider.get_playlist_metadata(second)
+    await provider.get_playlist_metadata(_smart_playlist(item_id="3"))
+    assert _engine_calls(provider) == 3
+
+
+async def test_only_one_preview_runs_at_a_time(provider: PlaylistMetadataProvider) -> None:
+    """Pressing preview again while one runs is refused, and covers render two at a time."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234"})
+    release = asyncio.Event()
+    running = 0
+    most_running = 0
+
+    async def generate(*_args: Any, **_kwargs: Any) -> bytes:
+        nonlocal running, most_running
+        running += 1
+        most_running = max(most_running, running)
+        await release.wait()
+        running -= 1
+        return _png()
+
+    provider.test_engine.provider.ai_generate_image = AsyncMock(side_effect=generate)  # type: ignore[attr-defined]
+
+    with _no_engine_pickers():
+        first = asyncio.create_task(provider.handle_config_action(CONF_ACTION_PREVIEW))
+        while not running:
+            await asyncio.sleep(0)
+        with pytest.raises(ActionUnavailable, match="already being generated"):
+            await provider.handle_config_action(CONF_ACTION_PREVIEW)
+        release.set()
+        await first
+
+    assert most_running == 2
 
 
 async def test_preview_without_a_description(provider: PlaylistMetadataProvider) -> None:
