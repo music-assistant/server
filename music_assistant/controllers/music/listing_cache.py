@@ -90,9 +90,7 @@ async def cached_listing[ItemT: MediaItem](
         if (fill := _fills.get(entry)) is None:
             assembled = await _assemble(mass, entry, uri, key, assemble, expiration)
             # the request that assembles the listing sees the state a cached one would carry
-            return cast(
-                "list[ItemT]", await with_user_favorites(mass, get_current_user(), assembled)
-            )
+            return cast("list[ItemT]", await _with_favorites(mass, assembled))
         # a concurrent request is assembling the listing: what it keeps is read on the next
         # round, what it does not keep (or when it goes away) is assembled here, as the
         # calling user, and its failure is this request's failure too
@@ -135,7 +133,16 @@ async def _read(mass: MusicAssistant, uri: str, key: str, item_type: Any) -> lis
         return None
     # rebuilt off the event loop, a listing can hold thousands of items
     items = await asyncio.to_thread(_rebuild, cached, item_type)
-    return await with_user_favorites(mass, get_current_user(), items)
+    return await _with_favorites(mass, items)
+
+
+async def _with_favorites(mass: MusicAssistant, items: list[Any]) -> list[Any]:
+    """Return the items, the media items among them carrying the calling user's favorites."""
+    # a browse folder also lists folders and item mappings, which carry no favorite state
+    await with_user_favorites(
+        mass, get_current_user(), [item for item in items if isinstance(item, MediaItem)]
+    )
+    return items
 
 
 async def _assemble(
