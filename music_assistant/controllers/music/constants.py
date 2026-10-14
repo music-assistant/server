@@ -24,6 +24,9 @@ CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 CACHE_CATEGORY_LISTINGS: Final[int] = 11
 # how long an assembled listing is served without asking the providers again
 LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
+# a browse folder can show what is live right now, so it is kept just long enough to page
+# through it
+BROWSE_CACHE_EXPIRATION: Final[int] = 2 * 60
 # how many similar artists or tracks the providers are asked for, the size of such a listing
 SIMILAR_ITEMS_LIMIT: Final[int] = 25
 

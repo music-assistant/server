@@ -112,6 +112,10 @@ LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
 }
 
 
+class NothingToSync(Exception):
+    """Raised from sync_library when the provider found nothing changed since its last sync."""
+
+
 @dataclass
 class SyncRunState:
     """

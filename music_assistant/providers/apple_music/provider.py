@@ -6,8 +6,9 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -22,9 +23,10 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.controllers.tasks.context import get_current_task
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.external_ids import normalize_external_id
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, NothingToSync
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .api_client import AppleMusicAPIClient
@@ -32,6 +34,7 @@ from .constants import (
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
+    LIBRARY_FULL_SYNC_INTERVAL,
     LIBRARY_SYNC_INTERVAL_HOURS,
     MUSIC_APP_TOKEN,
     SUPPORTED_FEATURES,
@@ -267,6 +270,61 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         schedule.every = LIBRARY_SYNC_INTERVAL_HOURS
         return schedule
 
+    async def sync_library(self, media_type: MediaType) -> None:
+        """
+        Run library sync for this provider.
+
+        A scheduled artist, album or track run is skipped by raising NothingToSync when the
+        library did not change since the last full sync. A skipped album run, and a skipped
+        track run after a song rating changed, still record the current Apple Music ratings.
+        A manual run always syncs.
+
+        :param media_type: The media type to sync.
+        """
+        if media_type == MediaType.PLAYLIST:
+            # costs about as much as a marker, and a marker would miss playlist content changes
+            await super().sync_library(media_type)
+            return
+        favourites: str | None = None
+        try:
+            marker: str | None = await self.library_manager.get_sync_marker(media_type)
+            if media_type == MediaType.TRACK:
+                favourites = await self.library_manager.get_favourites_marker()
+        except (MusicAssistantError, ClientError, KeyError) as err:
+            # a failed check must never become a skip
+            self.logger.warning(
+                "Could not check %s library for changes, running a full sync: %s",
+                media_type.value,
+                err,
+            )
+            marker = None
+        key = f"library_sync_state.{media_type.value}"
+        task = get_current_task()
+        manual_run = task is not None and task.last_run_user_id is not None
+        if marker is not None and not manual_run:
+            state = await self.mass.cache.get(key, provider=self.instance_id)
+            if (
+                state
+                and state["marker"] == marker
+                and time.time() - state["full_sync_at"] < LIBRARY_FULL_SYNC_INTERVAL
+            ):
+                # ratings made in the Apple Music app change no marker
+                if media_type == MediaType.ALBUM or (
+                    media_type == MediaType.TRACK and state.get("favourites") != favourites
+                ):
+                    await self._refresh_favourites(
+                        media_type, key, {**state, "favourites": favourites}
+                    )
+                raise NothingToSync
+        await super().sync_library(media_type)
+        if marker is not None:
+            await self.mass.cache.set(
+                key=key,
+                data={"marker": marker, "full_sync_at": time.time(), "favourites": favourites},
+                expiration=LIBRARY_FULL_SYNC_INTERVAL,
+                provider=self.instance_id,
+            )
+
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         async for item in self._counted_listing(
@@ -336,6 +394,21 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders with items)."""
         return await self.recommendation_manager.get_personal_recommendations()
+
+    async def _refresh_favourites(
+        self, media_type: MediaType, key: str, state: dict[str, Any]
+    ) -> None:
+        """Record the current ratings on a skipped sync, then store its sync state."""
+        self.logger.debug("Refreshing %s favourites on a skipped sync", media_type.value)
+        try:
+            await self.library_manager.refresh_favourites(media_type)
+        except (MusicAssistantError, ClientError) as err:
+            # the skip stands; leaving the state unstored retries the refresh on the next check
+            self.logger.warning("Could not refresh %s favourites: %s", media_type.value, err)
+            return
+        await self.mass.cache.set(
+            key=key, data=state, expiration=LIBRARY_FULL_SYNC_INTERVAL, provider=self.instance_id
+        )
 
     async def _counted_listing[T](
         self, media_type: MediaType, items: AsyncGenerator[T]

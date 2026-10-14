@@ -1,5 +1,6 @@
 """Regression tests for Apple Music parser and library fallbacks."""
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
@@ -8,6 +9,7 @@ import pytest
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import Album, ItemMapping
 
+from music_assistant.controllers.cache.constants import BYPASS_CACHE
 from music_assistant.providers.apple_music.library import _TRACK_PAGE_SIZE, AppleMusicLibraryManager
 from music_assistant.providers.apple_music.media import AppleMusicMediaManager
 from music_assistant.providers.apple_music.parsers import (
@@ -409,6 +411,150 @@ async def test_media_manager_get_playlist_applies_can_edit_hint() -> None:
     playlist = await manager.get_playlist("pl.catalog1", can_edit_hint=True)
 
     assert playlist.is_editable is True
+
+
+def _create_playlist_tracks_manager(
+    cache_store: dict[str, Any], last_modified: dict[str, str]
+) -> tuple[AppleMusicMediaManager, AsyncMock]:
+    """Build a media manager backed by a dict cache, answering playlist and tracks requests."""
+    provider = _create_provider_mock()
+
+    async def _cache_get(key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        # like the real cache, an entry that honours the bypass flag misses under force refresh
+        if kwargs.get("allow_bypass") and BYPASS_CACHE.get():
+            return None, False, False
+        return cache_store.get(key), True, key in cache_store
+
+    async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
+        cache_store[key] = data
+
+    provider.mass.cache.get_with_freshness = AsyncMock(side_effect=_cache_get)
+    provider.mass.cache.set = AsyncMock(side_effect=_cache_set)
+
+    async def _get_data(endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        if endpoint.startswith("me/library/playlists/"):
+            # a library row that follows a catalog playlist, with both dates
+            return {
+                "data": [
+                    {
+                        "id": "p.1",
+                        "attributes": {"lastModifiedDate": "2025-11-02T13:24:04Z"},
+                        "relationships": {
+                            "catalog": {
+                                "data": [
+                                    {
+                                        "id": "pl.1",
+                                        "attributes": {"lastModifiedDate": last_modified["value"]},
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ]
+            }
+        if endpoint.endswith("/tracks"):
+            song = {
+                "id": "1",
+                "type": "songs",
+                "attributes": {
+                    "name": "Track 1",
+                    "artistName": "Artist 1",
+                    "playParams": {"id": "1"},
+                },
+            }
+            return {"data": [song]}
+        return {
+            "data": [{"id": "pl.1", "attributes": {"lastModifiedDate": last_modified["value"]}}]
+        }
+
+    provider.api_client.get_data = AsyncMock(side_effect=_get_data)
+    return AppleMusicMediaManager(provider), provider.api_client.get_data
+
+
+def _tracks_requests(get_data: AsyncMock) -> int:
+    """Count the playlist tracks requests made through the api mock."""
+    return sum(1 for call in get_data.call_args_list if call.args[0].endswith("/tracks"))
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_reuses_cached_pages_while_unchanged() -> None:
+    """An unchanged lastModifiedDate serves the tracks from cache."""
+    cache_store: dict[str, Any] = {}
+    manager, get_data = _create_playlist_tracks_manager(
+        cache_store, {"value": "2026-10-01T10:00:00Z"}
+    )
+
+    first = await manager.get_playlist_tracks("pl.1")
+    await asyncio.sleep(0)
+    second = await manager.get_playlist_tracks("pl.1")
+
+    assert _tracks_requests(get_data) == 1
+    assert len(first) == 1
+    assert len(second) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_refetches_when_last_modified_changes() -> None:
+    """A moved lastModifiedDate refetches the tracks."""
+    cache_store: dict[str, Any] = {}
+    last_modified = {"value": "2026-10-01T10:00:00Z"}
+    manager, get_data = _create_playlist_tracks_manager(cache_store, last_modified)
+
+    await manager.get_playlist_tracks("pl.1")
+    await asyncio.sleep(0)
+    del cache_store["_get_playlist_last_modified.pl.1"]
+    last_modified["value"] = "2026-10-02T10:00:00Z"
+    await manager.get_playlist_tracks("pl.1")
+
+    assert _tracks_requests(get_data) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_library_playlist_follows_catalog_date() -> None:
+    """A library playlist refetches when only its catalog playlist's date moved."""
+    cache_store: dict[str, Any] = {}
+    last_modified = {"value": "2026-10-13T10:00:00Z"}
+    manager, get_data = _create_playlist_tracks_manager(cache_store, last_modified)
+
+    await manager.get_playlist_tracks("p.1")
+    await asyncio.sleep(0)
+    del cache_store["_get_playlist_last_modified.p.1"]
+    last_modified["value"] = "2026-10-14T10:00:00Z"
+    await manager.get_playlist_tracks("p.1")
+
+    assert _tracks_requests(get_data) == 2
+    assert get_data.call_args_list[0].kwargs == {"include": "catalog"}
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_force_refresh_keeps_last_modified_cached() -> None:
+    """A forced refresh reads the pages fresh but looks the marker up once."""
+    cache_store: dict[str, Any] = {}
+    manager, get_data = _create_playlist_tracks_manager(
+        cache_store, {"value": "2026-10-01T10:00:00Z"}
+    )
+
+    token = BYPASS_CACHE.set(True)
+    try:
+        await manager.get_playlist_tracks("pl.1")
+        await asyncio.sleep(0)
+        await manager.get_playlist_tracks("pl.1", page=1)
+    finally:
+        BYPASS_CACHE.reset(token)
+
+    assert _tracks_requests(get_data) == 2
+    assert get_data.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_station_skips_last_modified_lookup() -> None:
+    """Station tracks never look up the playlist's lastModifiedDate."""
+    manager, get_data = _create_playlist_tracks_manager({}, {"value": "2026-10-01T10:00:00Z"})
+    manager._get_station_tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await manager.get_playlist_tracks("ra.123")
+
+    get_data.assert_not_called()
 
 
 @pytest.mark.asyncio

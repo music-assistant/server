@@ -106,11 +106,16 @@ def _normalize(name: str) -> str:
 
 def _matches(item: ListingItem, term: str) -> bool:
     """Return whether the name of the item, of its album or of one of its artists holds the term."""
-    names = [item.name]
+    names = [_name(item)]
     if album := getattr(item, "album", None):
         names.append(album.name)
     names.extend(artist.name for artist in getattr(item, "artists", ()))
     return any(term in _normalize(name) for name in names)
+
+
+def _name(item: ListingItem) -> str:
+    # a folder can go by its translation key alone, translated only when sent to a client
+    return item.name or getattr(item, "translation_key", None) or ""
 
 
 def _sort_name(item: ListingItem) -> str:
@@ -141,7 +146,7 @@ def _track_number(item: ListingItem) -> tuple[int, int]:
 
 # the sort key of every field an item carries itself; ORIGINAL and RANDOM need none
 _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
-    SortField.NAME: lambda item: _normalize(item.name),
+    SortField.NAME: lambda item: _normalize(_name(item)),
     SortField.SORT_NAME: _sort_name,
     SortField.TIMESTAMP_ADDED: _date_added,
     SortField.LAST_PLAYED: lambda item: getattr(item, "last_played", 0) or 0,

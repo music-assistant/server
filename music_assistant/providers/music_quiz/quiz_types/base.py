@@ -11,7 +11,13 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar, Final, cast
 
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType
+from music_assistant_models.enums import (
+    AlbumType,
+    ExternalID,
+    MediaType,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -361,6 +367,9 @@ class QuizType(ABC):
                     item_id=media_item.item_id,
                     limit=min(GENRE_TRACK_PAGE_SIZE, MAX_GENRE_TRACK_COUNT - offset),
                     offset=offset,
+                    # the oldest additions first: a spread of a large genre, not its first letters
+                    sort_field=SortField.TIMESTAMP_ADDED,
+                    sort_direction=SortDirection.ASC,
                 )
                 tracks.extend(page)
                 if len(page) < GENRE_TRACK_PAGE_SIZE:
