@@ -332,7 +332,7 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _counted_listing[T](
         self, media_type: MediaType, items: AsyncGenerator[T]
     ) -> AsyncGenerator[T]:
-        """Yield the items of a full library listing and keep its request counts for diagnostics."""
+        """Yield the items of a full library listing and keep the requests made meanwhile for diagnostics."""
         counter = self.api_client.request_counter
         before = counter.as_dict()
         started = time.monotonic()
