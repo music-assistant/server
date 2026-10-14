@@ -10,6 +10,8 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Track
 
+from music_assistant.controllers.cache import use_cache
+
 from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 
@@ -40,6 +42,9 @@ class AppleMusicLibraryManager:
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize library manager."""
         self.provider = provider
+        self.mass = provider.mass
+        self.domain = provider.domain
+        self.instance_id = provider.instance_id
         self.api = provider.api_client
         self.logger = provider.logger
 
@@ -440,43 +445,47 @@ class AppleMusicLibraryManager:
         album_catalog = item.get("relationships", {}).get("catalog", {}).get("data")
         if item.get("type") != "library-albums" or album_catalog:
             return item
-        has_songs = False
-        catalog_albums: dict[str, dict[str, Any]] = {}
         try:
-            # include[songs] nests each catalog song's album under its catalog relationship
-            params: dict[str, Any] = {"include": "catalog", "include[songs]": "albums"}
-            async for song in self.api.iter_all_items(
-                f"me/library/albums/{item['id']}/tracks", **params
-            ):
-                has_songs = True
-                # uploads never had a catalog version, so only a catalog id that no longer
-                # resolves marks a song as withdrawn
-                if not song.get("attributes", {}).get("playParams", {}).get("catalogId"):
-                    return item
-                song_catalog = song.get("relationships", {}).get("catalog", {}).get("data")
-                if not song_catalog:
-                    continue
-                song_albums = song_catalog[0].get("relationships", {}).get("albums", {}).get("data")
-                if not song_albums:
-                    return item
-                catalog_albums[song_albums[0]["id"]] = song_albums[0]
+            catalog_albums = await self._get_song_catalog_albums(item["id"])
         except MusicAssistantError as err:
             self.logger.debug("Unable to check the songs of library album %s: %s", item["id"], err)
             return item
-        if not has_songs:
-            return item
-        if not catalog_albums:
+        if catalog_albums is None:
             # Apple keeps listing these, but there is nothing left on them to play
             self.logger.debug(
                 "Skipping library album %s: all its songs point at withdrawn catalog ids",
                 item["id"],
             )
             return None
-        if len(catalog_albums) > 1:
+        if not catalog_albums:
             return item
         # without it the bare listing row duplicates the catalog album the songs sync onto
-        catalog = {"data": list(catalog_albums.values())}
+        catalog = {"data": catalog_albums}
         return {**item, "relationships": {**item.get("relationships", {}), "catalog": catalog}}
+
+    @use_cache(3600 * 24 * 7)
+    async def _get_song_catalog_albums(self, album_id: str) -> list[dict[str, Any]] | None:
+        """Return the catalog album its songs share, [] to keep the listing row, None to skip it."""
+        has_songs = False
+        catalog_albums: dict[str, dict[str, Any]] = {}
+        # include[songs] nests each catalog song's album under its catalog relationship
+        params: dict[str, Any] = {"include": "catalog", "include[songs]": "albums"}
+        async for song in self.api.iter_all_items(f"me/library/albums/{album_id}/tracks", **params):
+            has_songs = True
+            # uploads never had a catalog version, so only a catalog id that no longer
+            # resolves marks a song as withdrawn
+            if not song.get("attributes", {}).get("playParams", {}).get("catalogId"):
+                return []
+            song_catalog = song.get("relationships", {}).get("catalog", {}).get("data")
+            if not song_catalog:
+                continue
+            song_albums = song_catalog[0].get("relationships", {}).get("albums", {}).get("data")
+            if not song_albums:
+                return []
+            catalog_albums[song_albums[0]["id"]] = song_albums[0]
+        if has_songs and not catalog_albums:
+            return None
+        return list(catalog_albums.values()) if len(catalog_albums) == 1 else []
 
 
 def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
