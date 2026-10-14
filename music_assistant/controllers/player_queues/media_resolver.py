@@ -67,7 +67,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_media_type_from_item_id,
 )
 from music_assistant.helpers.compare import compare_album
-from music_assistant.helpers.provider_access import playback_sources_for
+from music_assistant.helpers.provider_access import playback_instance_for, playback_sources_for
 from music_assistant.helpers.util import is_disc_dir
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
@@ -1297,9 +1297,11 @@ class MediaResolver:
         Choose the one source an album plays from, with the copy it serves of each track.
 
         Only the sources the playback user may play from count, each with the copies of the
-        listed tracks it can serve. No source is chosen when the source selection settings
-        pick the best copy for every track on its own; a track that is not in the library
-        then plays the entry whose copy ranks best among the sources.
+        listed tracks it can serve. An account of a streaming service also serves what the
+        accounts of that service the user may not play from list. No source is chosen when
+        the source selection settings pick the best copy for every track on its own; a track
+        that is not in the library then plays the entry whose copy ranks best among the
+        sources.
 
         :param listing: The album's tracks, and the entry each source lists for them.
         :param tracks: The album's tracks to play.
@@ -1313,22 +1315,27 @@ class MediaResolver:
         allowed, preferred = playback_sources_for(self.mass, user)
         providers: dict[str, MusicProvider] = {}
         served_by: dict[str, dict[str, tuple[Track, ProviderMapping]]] = {}
-        listed: list[ContainerListing] = []
-        for instance_id, listed_ids in listing.listed_ids.items():
-            provider = self.mass.get_provider(instance_id, provider_type=MusicProvider)
+        # an account's own listing counts first, then the listings it plays in place of
+        # the accounts of its streaming service the user may not play from
+        for instance_id, listed_ids in sorted(
+            listing.listed_ids.items(),
+            key=lambda entry: (allowed is not None and entry[0] not in allowed, entry[0]),
+        ):
+            if (serving_id := playback_instance_for(self.mass, instance_id, allowed)) is None:
+                continue
+            provider = self.mass.get_provider(serving_id, provider_type=MusicProvider)
             if (
                 provider is None
                 # an instance that went away hands its lookups to another account
-                or provider.instance_id != instance_id
-                or (allowed is not None and instance_id not in allowed)
+                or provider.instance_id != serving_id
             ):
                 continue
-            providers[instance_id] = provider
+            providers[serving_id] = provider
             own_entries = listing.own_entries.get(instance_id, {})
-            served: dict[str, tuple[Track, ProviderMapping]] = {}
+            served = served_by.setdefault(serving_id, {})
             for track in tracks:
                 uri = cast("str", track.uri)
-                if (item_id := listed_ids.get(uri)) is None:
+                if uri in served or (item_id := listed_ids.get(uri)) is None:
                     continue
                 # a track listed as another source's entry plays as this source's own entry
                 for item in (track, own_entries.get(uri)):
@@ -1338,17 +1345,17 @@ class MediaResolver:
                     ):
                         served[uri] = (item, copy)
                         break
-            served_by[instance_id] = served
-            listed.append(
-                ContainerListing(
-                    instance_id=instance_id,
-                    is_streaming=provider.is_streaming_provider,
-                    copies=[copy for _, copy in served.values()],
-                    complete=all(
-                        track.uri in served for track in tracks if track.provider == "library"
-                    ),
-                )
+        listed = [
+            ContainerListing(
+                instance_id=instance_id,
+                is_streaming=providers[instance_id].is_streaming_provider,
+                copies=[copy for _, copy in served.values()],
+                complete=all(
+                    track.uri in served for track in tracks if track.provider == "library"
+                ),
             )
+            for instance_id, served in served_by.items()
+        ]
         policy = read_stream_source_policy(self.mass, queue_id)
         source = select_container_source(listed, preferred, policy)
         if source is None:
