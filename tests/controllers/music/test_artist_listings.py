@@ -9,7 +9,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import ArtistType, ProviderSharing, SortDirection, SortField
+from music_assistant_models.enums import (
+    ArtistType,
+    ProviderFeature,
+    ProviderSharing,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -318,6 +324,56 @@ async def test_library_artist_listing_missing_a_provider_is_assembled_again(
         for _ in range(2):
             assert _names(await mass.music.artists.top_tracks("1", "library")) == ["One"]
     assert fetch.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("method", "fetch", "kind", "feature"),
+    [
+        ("top_tracks", "get_provider_artist_toptracks", "track", ProviderFeature.ARTIST_TOPTRACKS),
+        ("top_albums", "get_provider_artist_topalbums", "album", ProviderFeature.ARTIST_TOPALBUMS),
+        (
+            "similar_artists",
+            "get_provider_artist_similar_artists",
+            "artist",
+            ProviderFeature.SIMILAR_ARTISTS,
+        ),
+    ],
+)
+async def test_library_artist_ranking_missing_a_source_that_is_not_loaded_is_assembled_again(
+    mass: MusicAssistant, method: str, fetch: str, kind: str, feature: ProviderFeature
+) -> None:
+    """A library artist's ranking that misses a source that is not loaded is not kept."""
+    artist = _artist()
+    artist.provider_mappings.add(
+        ProviderMapping(
+            item_id="artist1", provider_domain="tidal", provider_instance="tidal_1", in_library=True
+        )
+    )
+    library_artist = await mass.music.artists.add_item_to_library(artist)
+    # the first source of the artist is loaded, the second is not
+    provider = SimpleNamespace(
+        instance_id="qobuz_1",
+        domain="qobuz",
+        is_streaming_provider=True,
+        supported_features={feature},
+    )
+    provider_fetch = AsyncMock(return_value=_items(kind))
+    with (
+        patch.object(
+            mass,
+            "get_provider",
+            side_effect=lambda instance, *_args, **_kwargs: (
+                provider if instance == "qobuz_1" else None
+            ),
+        ),
+        patch.object(mass.music.artists, fetch, provider_fetch),
+    ):
+        for _ in range(2):
+            listing = await getattr(mass.music.artists, method)(
+                str(library_artist.item_id), "library"
+            )
+            assert _names(listing) == list(NAMES)
+    assert provider_fetch.await_count == 2
 
 
 async def test_provider_artist_tracks_missing_an_album_are_assembled_again(
