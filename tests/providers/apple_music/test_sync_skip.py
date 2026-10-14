@@ -32,7 +32,11 @@ def _provider(
     provider = object.__new__(AppleMusicProvider)
     provider.mass = MagicMock(cache=Mock(get=AsyncMock(return_value=state), set=cache_set))
     provider.logger = MagicMock()
-    provider.library_manager = Mock(get_sync_marker=get_marker)
+    provider.library_manager = Mock(
+        get_sync_marker=get_marker,
+        get_favourites_marker=AsyncMock(return_value=""),
+        refresh_favourites=AsyncMock(),
+    )
     return provider, cache_set, get_marker
 
 

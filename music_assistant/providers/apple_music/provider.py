@@ -283,8 +283,11 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
             # costs about as much as a marker, and a marker would miss playlist content changes
             await super().sync_library(media_type)
             return
+        favourites: str | None = None
         try:
             marker: str | None = await self.library_manager.get_sync_marker(media_type)
+            if media_type == MediaType.TRACK:
+                favourites = await self.library_manager.get_favourites_marker()
         except (MusicAssistantError, ClientError, KeyError) as err:
             # a failed check must never become a skip
             self.logger.warning(
@@ -303,12 +306,24 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 and state["marker"] == marker
                 and time.time() - state["full_sync_at"] < LIBRARY_FULL_SYNC_INTERVAL
             ):
+                # ratings made in the Apple Music app change no marker
+                if media_type == MediaType.ALBUM:
+                    await self.library_manager.refresh_favourites(MediaType.ALBUM)
+                elif media_type == MediaType.TRACK and state.get("favourites") != favourites:
+                    self.logger.debug("Song favourites changed, refreshing track ratings")
+                    await self.library_manager.refresh_favourites(MediaType.TRACK)
+                    await self.mass.cache.set(
+                        key=key,
+                        data={**state, "favourites": favourites},
+                        expiration=LIBRARY_FULL_SYNC_INTERVAL,
+                        provider=self.instance_id,
+                    )
                 raise NothingToSync
         await super().sync_library(media_type)
         if marker is not None:
             await self.mass.cache.set(
                 key=key,
-                data={"marker": marker, "full_sync_at": time.time()},
+                data={"marker": marker, "full_sync_at": time.time(), "favourites": favourites},
                 expiration=LIBRARY_FULL_SYNC_INTERVAL,
                 provider=self.instance_id,
             )
