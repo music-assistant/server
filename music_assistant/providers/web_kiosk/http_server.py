@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import secrets
 from html import escape as html_escape
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeGuard, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from aiohttp import ClientError, WSMsgType, web
@@ -35,6 +36,16 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 _KNOWN_EXTENSIONS = (".mp3", ".json", ".flac", ".aac")
+
+
+def _is_finite_position(value: object) -> TypeGuard[int | float]:
+    """Return whether a position can safely represent non-negative elapsed time."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _strip_known_extension(value: str) -> str:
@@ -70,6 +81,7 @@ class WebKioskHTTPServer:
         self.provider = provider
         self.port = port
         self.app = web.Application(middlewares=[self._cors_middleware])
+        self.app.on_response_prepare.append(self._deny_framing)
         self._runner: web.AppRunner | None = None
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
         self._ws_volume_support: dict[web.WebSocketResponse, bool] = {}
@@ -255,6 +267,11 @@ class WebKioskHTTPServer:
         # the MA API is on another, so a browser will not call MA directly.
         self.app.router.add_post("/api", self._handle_ma_api)
         self.app.router.add_get("/imageproxy/{image_id:.*}", self._handle_imageproxy)
+
+    async def _deny_framing(self, request: web.Request, response: web.StreamResponse) -> None:
+        """Prevent embedding credential and playback pages in another document."""
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
 
     @web.middleware
     async def _cors_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
@@ -685,7 +702,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 self._update_volume_support(player_id)
         elif msg_type == "position":
             position = msg.get("position")
-            if position is not None and isinstance(position, (int, float)):
+            if _is_finite_position(position):
                 player = self.provider.mass.players.get_player(player_id)
                 if player and isinstance(player, WebKioskPlayer):
                     player.update_position(float(position))
@@ -693,12 +710,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         elif msg_type == "seek":
             position = msg.get("position")
             player = self.provider.mass.players.get_player(player_id)
-            if (
-                player
-                and isinstance(player, WebKioskPlayer)
-                and position is not None
-                and isinstance(position, (int, float))
-            ):
+            if player and isinstance(player, WebKioskPlayer) and _is_finite_position(position):
                 player.note_seek(float(position))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "ended":

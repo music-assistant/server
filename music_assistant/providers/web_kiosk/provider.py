@@ -9,7 +9,7 @@ import hmac
 import logging
 import secrets
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry
@@ -35,9 +35,7 @@ from .constants import (
 from .http_server import WebKioskHTTPServer
 from .lyrics import parse_track_lyrics
 from .player import WebKioskPlayer
-
-if TYPE_CHECKING:
-    from .sendspin_bridge import WebKioskSendspinBridgeManager
+from .sendspin_bridge import WebKioskSendspinBridgeManager
 
 logger = logging.getLogger(__name__)
 
@@ -109,18 +107,7 @@ class WebKioskProvider(PlayerProvider):
         self.sendspin_bridge_enabled = bool(
             self.config.get_value(CONF_ENABLE_SENDSPIN_BRIDGE, DEFAULT_ENABLE_SENDSPIN_BRIDGE)
         )
-        # The Sendspin bridge rides on MA's Sendspin provider; an install that
-        # ships no Sendspin provider can't import the manager. That's a valid
-        # setup — degrade to "no bridge" rather than failing to load.
-        try:
-            self.bridge_manager = self._make_bridge_manager()
-        except ImportError:
-            self.bridge_manager = None
-            if self.sendspin_bridge_enabled:
-                self.logger.warning(
-                    "Sendspin bridge enabled but the Sendspin provider is not available; "
-                    "the bridge is disabled"
-                )
+        self.bridge_manager = WebKioskSendspinBridgeManager(self)
         self.http_server = WebKioskHTTPServer(self, port)
         await self.http_server.start()
         self.logger.info("Web Kiosk provider initialized, HTTP server on port %s", port)
@@ -633,9 +620,3 @@ class WebKioskProvider(PlayerProvider):
                     await self._handle_player_unregister(
                         player.player_id, only_if_disconnected=True
                     )
-
-    def _make_bridge_manager(self) -> WebKioskSendspinBridgeManager:
-        """Import and construct the Sendspin bridge manager (raises ImportError if absent)."""
-        from .sendspin_bridge import WebKioskSendspinBridgeManager  # noqa: PLC0415
-
-        return WebKioskSendspinBridgeManager(self)

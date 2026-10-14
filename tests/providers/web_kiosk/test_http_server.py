@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientError, WSServerHandshakeError
-from music_assistant_models.enums import MediaType, PlayerFeature
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
 from music_assistant_models.player import PlayerMedia
 
@@ -46,6 +46,96 @@ async def test_web_serves_spa(http_client: TestClient[Any, Any]) -> None:
 
     assert resp.status == 200
     assert "<html" in (await resp.text()).lower()
+
+
+@pytest.mark.parametrize(
+    ("path", "protected"),
+    [
+        ("/", False),
+        ("/", True),
+        ("/kiosk", False),
+        ("/web", False),
+        ("/web/index.html", False),
+        ("/web/builder-login.html", False),
+    ],
+)
+async def test_pages_deny_framing(
+    http_client: TestClient[Any, Any],
+    config_mock: Mock,
+    path: str,
+    protected: bool,
+) -> None:
+    """Credential and playback pages deny embedding in modern and legacy browsers."""
+    original = config_mock.get_value.side_effect
+    config_mock.get_value.side_effect = lambda key, default=None: (
+        protected if key == "url_builder_require_auth" else original(key, default)
+    )
+    response = await http_client.get(path)
+    assert response.status == (401 if protected else 200)
+    assert response.headers.get("X-Frame-Options") == "DENY"
+    assert response.headers.get("Content-Security-Policy") == "frame-ancestors 'none'"
+
+
+@pytest.mark.parametrize("message_type", ["position", "seek"])
+@pytest.mark.parametrize(
+    "position",
+    [
+        True,
+        False,
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        -1,
+        pytest.param(10**400, id="overflow"),
+    ],
+)
+async def test_ws_rejects_invalid_positions(
+    http_client: TestClient[Any, Any],
+    mass_mock: Mock,
+    player: WebKioskPlayer,
+    message_type: str,
+    position: object,
+) -> None:
+    """Invalid positions cannot corrupt durationless playback or break the connection."""
+    mass_mock.players.get_player.return_value = player
+    ws = await http_client.ws_connect("/ws?device_id=test")
+    await ws.receive_json()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player.update_position(12.0)
+    await ws.send_str(json.dumps({"type": message_type, "position": position}))
+    # A following valid capability message confirms the preceding frame was processed.
+    await ws.send_json({"type": "capabilities", "volume_control": True})
+    async with asyncio.timeout(1):
+        while PlayerFeature.VOLUME_SET not in player.supported_features:
+            await asyncio.sleep(0)
+    assert PlayerFeature.VOLUME_SET in player.supported_features
+    assert player.elapsed_time == 12.0
+    await ws.close()
+
+
+@pytest.mark.parametrize("message_type", ["position", "seek"])
+@pytest.mark.parametrize("position", [0, 15.5])
+async def test_ws_accepts_finite_positions(
+    http_client: TestClient[Any, Any],
+    mass_mock: Mock,
+    player: WebKioskPlayer,
+    message_type: str,
+    position: float,
+) -> None:
+    """Finite non-negative reports still update the durationless player clock."""
+    mass_mock.players.get_player.return_value = player
+    ws = await http_client.ws_connect("/ws?device_id=test")
+    await ws.receive_json()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player.update_position(12.0)
+    await ws.send_json({"type": message_type, "position": position})
+    await ws.send_json({"type": "capabilities", "volume_control": True})
+    async with asyncio.timeout(1):
+        while PlayerFeature.VOLUME_SET not in player.supported_features:
+            await asyncio.sleep(0)
+    assert PlayerFeature.VOLUME_SET in player.supported_features
+    assert player.elapsed_time == position
+    await ws.close()
 
 
 async def test_stream_requires_token(

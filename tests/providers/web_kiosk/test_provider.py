@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
+import importlib.util
 import time
-from typing import cast
-from unittest.mock import AsyncMock, Mock
+from typing import Any, cast
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
@@ -16,9 +18,49 @@ from music_assistant_models.player_queue import PlayerQueue
 
 import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.controllers.streams import StreamsController
+from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 from music_assistant.providers.web_kiosk.sendspin_bridge import WebKioskSendspinBridgeManager
+
+
+async def test_sendspin_import_failure_prevents_provider_startup(
+    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
+) -> None:
+    """A broken required Sendspin import fails setup instead of silently disabling it."""
+    original_import = builtins.__import__
+
+    def fail_sendspin_import(
+        name: str,
+        globals_dict: dict[str, Any] | None = None,
+        locals_dict: dict[str, Any] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> Any:
+        if name == "sendspin_bridge" and level == 1:
+            raise ImportError("Sendspin API regression")
+        return original_import(name, globals_dict, locals_dict, fromlist, level)
+
+    spec = importlib.util.spec_from_file_location(
+        provider_module.__name__, provider_module.__file__
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    loader = spec.loader
+    module = importlib.util.module_from_spec(spec)
+
+    async def load_provider() -> None:
+        loader.exec_module(module)
+        instance = module.WebKioskProvider(mass_mock, manifest_mock, config_mock, set())
+        await instance.handle_async_init()
+
+    with (
+        patch("builtins.__import__", side_effect=fail_sendspin_import),
+        patch.object(WebKioskHTTPServer, "start", new_callable=AsyncMock) as start,
+        pytest.raises(ImportError, match="Sendspin API regression"),
+    ):
+        await load_provider()
+    start.assert_not_awaited()
 
 
 def test_stream_token_is_deterministic_and_sized(provider: WebKioskProvider) -> None:
