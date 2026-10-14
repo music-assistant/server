@@ -1,0 +1,33 @@
+{
+  "config_entries": {
+    "label": {
+      "label": "Please provide the address of your BookOrbit server and your username and password."
+    },
+    "url": {
+      "label": "Server",
+      "description": "The URL of the BookOrbit server to connect to. For example https://bookorbit.domain.tld/ or http://192.168.1.4:3000/"
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "[%key:common::config_entries::username::description%]"
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "[%key:common::config_entries::password::description%]"
+    },
+    "api_token": {
+      "label": "API token (not used yet)",
+      "description": "Reserved for future use. Leave empty and use username and password."
+    },
+    "verify_ssl": {
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
+    }
+  },
+  "manifest": {
+    "description": "Stream audiobooks from your personal BookOrbit server."
+  },
+  "errors": {
+    "login_failed": "Login to the BookOrbit server at {0} failed."
+  }
+}
