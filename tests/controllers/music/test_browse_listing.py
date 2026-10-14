@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, ProviderFeature, SortDirection, SortField
+from music_assistant_models.enums import (
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     AudioSource,
@@ -23,7 +29,13 @@ from music_assistant.controllers.music.constants import BROWSE_CACHE_EXPIRATION
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
+from .helpers import create_track
+
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from music_assistant_models.media_items import Track
+
     from music_assistant.mass import MusicAssistant
 
 PATH = "qobuz_1://playlists"
@@ -69,6 +81,28 @@ def _provider(streaming: bool = True) -> MagicMock:
 
 def _names(items: Any) -> list[str]:
     return [item.name for item in items]
+
+
+class _LibraryProvider(MusicProvider):
+    """A streaming provider that lists its library folders the standard way."""
+
+
+class _OwnBrowseProvider(MusicProvider):
+    """A streaming provider that lists every folder its own way."""
+
+    async def browse(self, path: str) -> list[BrowseFolder]:
+        """Return the provider's own listing of the folder."""
+        return [_folder("Own")]
+
+
+def _real_provider[ProviderT: MusicProvider](
+    mass: MusicAssistant, provider_cls: type[ProviderT], *features: ProviderFeature
+) -> ProviderT:
+    """Return a provider of the given class that browses, with the given library features."""
+    manifest = MagicMock(type=ProviderType.MUSIC, domain="qobuz")
+    config = MagicMock(instance_id="qobuz_1")
+    config.get_value.return_value = "GLOBAL"
+    return provider_cls(mass, manifest, config, {ProviderFeature.BROWSE, *features})
 
 
 async def test_streaming_folder_is_browsed_once(mass: MusicAssistant) -> None:
@@ -185,6 +219,118 @@ async def test_local_folder_is_browsed_every_time(mass: MusicAssistant) -> None:
         for _ in range(2):
             assert _names(await mass.music.browse(PATH, search="zeb")) == ["..", "Zebra"]
     assert provider.browse.await_count == 2
+
+
+async def test_library_folder_is_read_a_page_at_a_time(mass: MusicAssistant) -> None:
+    """A library folder the provider lists the standard way is paged by the library."""
+    library_items = AsyncMock(return_value=[create_track("qobuz_1", "t1", name="One")])
+
+    async def _browse(**kwargs: Any) -> list[str]:
+        return _names(await mass.music.browse("qobuz_1://tracks", **kwargs))
+
+    with (
+        patch.object(mass, "get_provider", return_value=_real_provider(mass, _LibraryProvider)),
+        patch.object(mass.music.tracks, "library_items", library_items),
+    ):
+        # the way back up counts as the first entry of the first page
+        assert await _browse() == ["..", "One"]
+        # a page further down reads only its own rows
+        assert await _browse(
+            search="on",
+            sort_field=SortField.NAME,
+            sort_direction=SortDirection.DESC,
+            limit=500,
+            offset=1000,
+        ) == ["One"]
+        # playing the folder reads all of it
+        assert await _browse(limit=None) == ["..", "One"]
+    page = {"provider": "qobuz_1", "summary": False}
+    assert [call.kwargs for call in library_items.await_args_list] == [
+        {
+            **page,
+            "search": None,
+            "limit": 499,
+            "offset": 0,
+            "sort_field": None,
+            "sort_direction": None,
+        },
+        {
+            **page,
+            "search": "on",
+            "limit": 500,
+            "offset": 999,
+            "sort_field": SortField.NAME,
+            "sort_direction": SortDirection.DESC,
+        },
+        {
+            **page,
+            "search": None,
+            "limit": 0,
+            "offset": 0,
+            "sort_field": None,
+            "sort_direction": None,
+        },
+    ]
+
+
+async def test_library_folder_the_library_holds_nothing_of_is_listed_live(
+    mass: MusicAssistant,
+) -> None:
+    """Before the library holds any of the folder's items, the provider lists it itself."""
+    provider = _real_provider(mass, _LibraryProvider)
+
+    async def _live_tracks() -> AsyncGenerator[Track]:
+        yield create_track("qobuz_1", "live", name="Live")
+
+    with (
+        patch.object(mass, "get_provider", return_value=provider),
+        patch.object(mass.music.tracks, "library_items", AsyncMock(return_value=[])),
+        patch.object(provider, "get_library_tracks", _live_tracks),
+    ):
+        assert _names(await mass.music.browse("qobuz_1://tracks")) == ["..", "Live"]
+
+
+async def test_root_and_other_folders_of_a_provider_are_browsed_as_before(
+    mass: MusicAssistant,
+) -> None:
+    """The root and the other folders of a provider are listed by the provider itself."""
+    provider = _real_provider(
+        mass,
+        _LibraryProvider,
+        ProviderFeature.LIBRARY_ALBUMS,
+        ProviderFeature.LIBRARY_TRACKS,
+        ProviderFeature.RECOMMENDATIONS,
+    )
+    mix = RecommendationFolder(item_id="mix", provider="qobuz_1", name="Mix")
+    library_items = AsyncMock(return_value=[])
+    with (
+        patch.object(mass, "get_provider", return_value=provider),
+        patch.object(mass.music.tracks, "library_items", library_items),
+        patch.object(provider, "get_recommendations", AsyncMock(return_value=[mix])),
+    ):
+        root = await mass.music.browse("qobuz_1://")
+        recommendations = await mass.music.browse("qobuz_1://recommendations")
+    assert [getattr(item, "path", None) for item in root] == [
+        "root",
+        "qobuz_1://albums",
+        "qobuz_1://tracks",
+        "qobuz_1://recommendations",
+    ]
+    assert _names(recommendations) == ["..", "Mix"]
+    library_items.assert_not_awaited()
+
+
+async def test_library_folder_of_a_provider_with_its_own_browse_is_its_own(
+    mass: MusicAssistant,
+) -> None:
+    """A provider that browses its own way lists its library folders itself."""
+    library_items = AsyncMock(return_value=[])
+    with (
+        patch.object(mass, "get_provider", return_value=_real_provider(mass, _OwnBrowseProvider)),
+        patch.object(mass.music.playlists, "library_items", library_items),
+    ):
+        assert _names(await mass.music.browse("qobuz_1://playlists")) == ["..", "Own"]
+    library_items.assert_not_awaited()
 
 
 async def test_audio_source_folder_is_searched_sorted_and_paged(mass: MusicAssistant) -> None:

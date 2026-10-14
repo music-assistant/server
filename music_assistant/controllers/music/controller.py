@@ -9,7 +9,7 @@ from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
@@ -218,6 +218,18 @@ def _album_title_match(base: str, other: str) -> str:
             f"substr({base}.search_name, 1, length({base}.search_name) - {len(suffix)}))"
         )
     return " OR ".join(matches)
+
+
+# the library folders the default MusicProvider.browse lists, by their path
+_LIBRARY_FOLDERS: Final[dict[str, MediaType]] = {
+    "artists": MediaType.ARTIST,
+    "albums": MediaType.ALBUM,
+    "tracks": MediaType.TRACK,
+    "radios": MediaType.RADIO,
+    "playlists": MediaType.PLAYLIST,
+    "audiobooks": MediaType.AUDIOBOOK,
+    "podcasts": MediaType.PODCAST,
+}
 
 
 async def _browse_folder(provider: MusicProvider, path: str) -> Listing[Any]:
@@ -907,8 +919,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Browse Music providers, searched, sorted and paged.
 
-        A streaming provider's folder is browsed once and served from the cache for a while.
-        The entry that leads back up a level always comes first.
+        A provider's standard library folders are read a page at a time from the library, and
+        a streaming provider's other folders are browsed once and served from the cache for a
+        while. The entry that leads back up a level always comes first.
 
         :param path: The path to browse; None or "root" for the root level.
         :param player_id: Scope audio-source listings to the sources bound to this
@@ -1023,6 +1036,27 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if source.can_initiate
             ]
             return _listed(prepend_items, initiable_items)
+        if (
+            isinstance(browse_prov, MusicProvider)
+            and (media_type := _LIBRARY_FOLDERS.get(sub_path)) is not None
+            and ProviderFeature.BROWSE in browse_prov.supported_features
+            # a provider's own browse may list these folders its own way
+            and type(browse_prov).browse is MusicProvider.browse
+            and (
+                page := await self._library_folder_page(
+                    browse_prov,
+                    media_type,
+                    prepend_items,
+                    search=search,
+                    sort_field=sort_field,
+                    sort_direction=sort_direction,
+                    limit=limit or 0,
+                    offset=offset,
+                )
+            )
+            is not None
+        ):
+            return page
         if (
             isinstance(browse_prov, MusicProvider)
             and browse_prov.is_streaming_provider
@@ -2860,6 +2894,52 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return
         msg = f"{item.name} is not available on any music source of this user"
         raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
+
+    async def _library_folder_page(
+        self,
+        provider: MusicProvider,
+        media_type: MediaType,
+        back_items: list[BrowseFolder],
+        *,
+        search: str | None,
+        sort_field: SortField,
+        sort_direction: SortDirection | None,
+        limit: int,
+        offset: int,
+    ) -> list[MediaItemType | BrowseFolder] | None:
+        """
+        Return a page of one of a provider's standard library folders, read from the library.
+
+        :param provider: The provider the folder belongs to.
+        :param media_type: The media type the folder lists.
+        :param back_items: The entries leading back up a level, which come first.
+        :param search: Only list the items whose name contains this text.
+        :param sort_field: Sort field; the folder's own order (ORIGINAL) is the library's.
+        :param sort_direction: Sort direction.
+        :param limit: Maximum number of entries to return; 0 returns them all.
+        :param offset: Number of entries to skip.
+        :returns: None while the library holds none of the provider's items of this type,
+            so the provider lists the folder itself.
+        """
+        controller = self.get_controller(media_type)
+        # the entries back up a level count as the first ones of the listing
+        page: list[MediaItemType | BrowseFolder] = list(back_items[offset:])
+        if limit and len(page) >= limit:
+            return page[:limit]
+        typed_sort = sort_field != SortField.ORIGINAL
+        items = await controller.library_items(
+            search=search,
+            limit=limit - len(page) if limit else 0,
+            offset=max(offset - len(back_items), 0),
+            provider=provider.instance_id,
+            sort_field=sort_field if typed_sort else None,
+            sort_direction=sort_direction if typed_sort else None,
+            summary=False,
+        )
+        if not items and not await controller.library_items(provider=provider.instance_id, limit=1):
+            return None
+        page.extend(items)
+        return page
 
     async def _get_plugin_audio_sources(
         self, provider: PluginProvider, player_id: str | None

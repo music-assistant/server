@@ -798,12 +798,10 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         subpath = path_parts[0] if len(path_parts) > 0 else None
         sub_subpath = path_parts[1] if len(path_parts) > 1 else None
         # this reference implementation can be overridden with a provider specific approach
-        # a library folder holds all of the provider's library items, browse pages them
         if subpath == "artists":
             if artists := await self.mass.music.artists.library_items(
                 provider=self.instance_id,
                 summary=False,
-                limit=0,
             ):
                 return artists
             # library items not (yet) synced, fallback to direct retrieval
@@ -812,7 +810,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if albums := await self.mass.music.albums.library_items(
                 provider=self.instance_id,
                 summary=False,
-                limit=0,
             ):
                 return albums
             # library items not (yet) synced, fallback to direct retrieval
@@ -821,7 +818,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if tracks := await self.mass.music.tracks.library_items(
                 provider=self.instance_id,
                 summary=False,
-                limit=0,
             ):
                 return tracks
             # library items not (yet) synced, fallback to direct retrieval
@@ -830,7 +826,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if radios := await self.mass.music.radio.library_items(
                 provider=self.instance_id,
                 summary=False,
-                limit=0,
             ):
                 return radios
             # library items not (yet) synced, fallback to direct retrieval
@@ -839,7 +834,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if playlists := await self.mass.music.playlists.library_items(
                 provider=self.instance_id,
                 summary=False,
-                limit=0,
             ):
                 return playlists
             # library items not (yet) synced, fallback to direct retrieval
@@ -848,7 +842,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if audiobooks := await self.mass.music.audiobooks.library_items(
                 provider=self.instance_id,
                 summary=False,
-                limit=0,
             ):
                 return audiobooks
             # library items not (yet) synced, fallback to direct retrieval
@@ -857,7 +850,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             if podcasts := await self.mass.music.podcasts.library_items(
                 provider=self.instance_id,
                 summary=False,
-                limit=0,
             ):
                 return podcasts
             # library items not (yet) synced, fallback to direct retrieval
