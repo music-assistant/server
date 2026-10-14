@@ -32,6 +32,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRES,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -563,7 +564,10 @@ class StatisticsController(CoreController):
         timezone: str = "UTC",
     ) -> list[ListeningTimeItem]:
         """
-        Get total listening time grouped by artist or genre.
+        Sum stored durations for completed plays resolvable to library tracks.
+
+        Plays without a library mapping or known duration are omitted. Genre grouping also
+        requires library genre mappings.
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param group_by: Group by 'artist' or 'genre' (default 'artist').
@@ -583,19 +587,29 @@ class StatisticsController(CoreController):
 
         if group_by == "artist":
             query = f"""
+                WITH {_TRACK_HISTORY_CTE}, artist_plays AS (
+                    SELECT
+                        json_extract(artist_data.value, '$.item_id') as artist_item_id,
+                        json_extract(artist_data.value, '$.provider') as artist_provider,
+                        json_extract(artist_data.value, '$.name') as name,
+                        tracks.duration as duration
+                    FROM history_tracks
+                    INNER JOIN {DB_TABLE_PLAY_HISTORY} as play_history
+                        ON play_history.id = history_tracks.play_id
+                    INNER JOIN {DB_TABLE_TRACKS} as tracks
+                        ON tracks.item_id = history_tracks.track_id
+                    CROSS JOIN json_each(play_history.artists) as artist_data
+                    WHERE play_history.artists IS NOT NULL
+                        AND tracks.duration > 0
+                )
                 SELECT
-                    json_extract(artist_data.value, '$.item_id') as artist_item_id,
-                    json_extract(artist_data.value, '$.provider') as artist_provider,
-                    MAX(json_extract(artist_data.value, '$.name')) as name,
-                    COUNT(*) * 180 as estimated_seconds
-                FROM {DB_TABLE_PLAY_HISTORY} as play_history,
-                    json_each(play_history.artists) as artist_data
-                WHERE play_history.userid = :user_id
-                    AND play_history.media_type = :media_type
-                    AND play_history.timestamp >= :cutoff_timestamp
-                    AND play_history.artists IS NOT NULL
+                    artist_item_id,
+                    artist_provider,
+                    MAX(name) as name,
+                    SUM(duration) as total_seconds
+                FROM artist_plays
                 GROUP BY artist_item_id, artist_provider
-                ORDER BY estimated_seconds DESC
+                ORDER BY total_seconds DESC
             """
         else:
             query = f"""
@@ -603,18 +617,22 @@ class StatisticsController(CoreController):
                     SELECT DISTINCT
                         history_tracks.play_id,
                         genres.item_id AS genre_id,
-                        genres.name AS name
+                        genres.name AS name,
+                        tracks.duration AS duration
                     FROM history_tracks
+                    INNER JOIN {DB_TABLE_TRACKS} AS tracks
+                        ON tracks.item_id = history_tracks.track_id
                     INNER JOIN {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} AS genre_mappings
                         ON genre_mappings.media_id = history_tracks.track_id
                         AND genre_mappings.media_type = :media_type
                     INNER JOIN {DB_TABLE_GENRES} AS genres
                         ON genres.item_id = genre_mappings.genre_id
+                    WHERE tracks.duration > 0
                 )
-                SELECT name, COUNT(*) * 180 as estimated_seconds
+                SELECT name, SUM(duration) as total_seconds
                 FROM genre_plays
                 GROUP BY genre_id
-                ORDER BY estimated_seconds DESC, name
+                ORDER BY total_seconds DESC, name
             """
 
         params = {
@@ -626,9 +644,9 @@ class StatisticsController(CoreController):
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
 
         return [
-            ListeningTimeItem(name=row["name"], minutes=round(row["estimated_seconds"] / 60, 1))
+            ListeningTimeItem(name=row["name"], minutes=round(row["total_seconds"] / 60, 1))
             for row in rows
-            if row["estimated_seconds"] is not None and row["estimated_seconds"] > 0
+            if row["total_seconds"] is not None and row["total_seconds"] > 0
         ]
 
     @cache_statistics()
@@ -640,9 +658,10 @@ class StatisticsController(CoreController):
         timezone: str = "UTC",
     ) -> list[DistributionItem]:
         """
-        Get play counts grouped by decade.
+        Get play counts grouped by decade for library tracks with known album years.
 
-        Tracks linked to multiple albums use their earliest known album year.
+        Tracks linked to multiple albums use their earliest known album year; provider-only plays
+        without a library mapping are omitted.
 
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of decades to return.

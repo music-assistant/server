@@ -131,9 +131,31 @@ async def test_top_items_combines_provider_plays_with_library_identity(
 
 
 async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssistant) -> None:
-    """Artists with the same display name retain separate counts by provider identity."""
+    """Artist duration sums use mapped track lengths and keep provider identities separate."""
     user = await mass.webserver.auth.create_user("statistics-artists")
+    track_durations = {"track-a": 120, "track-b": 240}
     for artist_id, track_id in (("artist-a", "track-a"), ("artist-b", "track-b")):
+        library_track_id = await mass.music.database.insert(
+            DB_TABLE_TRACKS,
+            {
+                "name": track_id,
+                "sort_name": track_id,
+                "duration": track_durations[track_id],
+                "metadata": "{}",
+                "search_name": track_id,
+                "search_sort_name": track_id,
+            },
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": MediaType.TRACK.value,
+                "item_id": library_track_id,
+                "provider_domain": "test",
+                "provider_instance": "test-provider",
+                "provider_item_id": track_id,
+            },
+        )
         await mass.music.database.insert(
             DB_TABLE_PLAY_HISTORY,
             {
@@ -154,6 +176,20 @@ async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssis
                 ),
             },
         )
+    await mass.music.database.insert(
+        DB_TABLE_PLAY_HISTORY,
+        {
+            "item_id": "unmapped-track",
+            "provider": "test-provider",
+            "media_type": MediaType.TRACK.value,
+            "userid": user.user_id,
+            "name": "Unmapped Track",
+            "timestamp": 1_000,
+            "artists": serialize_to_json(
+                [{"item_id": "artist-unmapped", "provider": "test-provider", "name": "Other"}]
+            ),
+        },
+    )
 
     with patch(
         "music_assistant.controllers.statistics.controller.get_current_user",
@@ -161,8 +197,10 @@ async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssis
     ):
         results = await mass.statistics.get_listening_time(period="all_time")
 
-    assert len(results) == 2
-    assert all(result.name == "Same Name" and result.minutes == 3.0 for result in results)
+    assert [(result.name, result.minutes) for result in results] == [
+        ("Same Name", 4.0),
+        ("Same Name", 2.0),
+    ]
 
 
 async def test_genre_distribution_counts_play_history(mass: MusicAssistant) -> None:
@@ -178,11 +216,22 @@ async def test_genre_distribution_counts_play_history(mass: MusicAssistant) -> N
             "search_sort_name": "rock",
         },
     )
+    track_id = await mass.music.database.insert(
+        DB_TABLE_TRACKS,
+        {
+            "name": "Rock Track",
+            "sort_name": "rock track",
+            "duration": 240,
+            "metadata": "{}",
+            "search_name": "rock track",
+            "search_sort_name": "rock track",
+        },
+    )
     await mass.music.database.insert(
         DB_TABLE_PROVIDER_MAPPINGS,
         {
             "media_type": MediaType.TRACK.value,
-            "item_id": 1,
+            "item_id": track_id,
             "provider_domain": "test",
             "provider_instance": "test-provider",
             "provider_item_id": "track-1",
@@ -190,9 +239,9 @@ async def test_genre_distribution_counts_play_history(mass: MusicAssistant) -> N
     )
     await mass.music.database.insert(
         DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-        {"genre_id": genre_id, "media_id": 1, "media_type": MediaType.TRACK.value},
+        {"genre_id": genre_id, "media_id": track_id, "media_type": MediaType.TRACK.value},
     )
-    for item_id, provider in (("track-1", "test-provider"), ("1", "library")):
+    for item_id, provider in (("track-1", "test-provider"), (str(track_id), "library")):
         await mass.music.database.insert(
             DB_TABLE_PLAY_HISTORY,
             {
@@ -217,7 +266,7 @@ async def test_genre_distribution_counts_play_history(mass: MusicAssistant) -> N
             await mass.statistics.get_listening_time(group_by="mood")
 
     assert [(result.name, result.value) for result in results] == [("Rock", 2)]
-    assert [(result.name, result.minutes) for result in listening_time] == [("Rock", 6.0)]
+    assert [(result.name, result.minutes) for result in listening_time] == [("Rock", 8.0)]
 
 
 async def test_play_history_supports_stable_offset_pagination(mass: MusicAssistant) -> None:
