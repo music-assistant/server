@@ -162,7 +162,9 @@ class RaumfeldPlayer(Player):
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
         self._resync_task_id = f"raumfeld_resync_{player_id}"
-        self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
+        self._attr_device_info = DeviceInfo(
+            model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
+        )
         # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
         # source at its native quality (up to 24-bit/192kHz) without manual configuration
         self._attr_supported_sample_rates = SUPPORTED_SAMPLE_RATES

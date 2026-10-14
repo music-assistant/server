@@ -344,7 +344,7 @@ class SendspinPlaybackSession:
         Used during dynamic leader switching to keep the push stream alive
         while the old leader is removed from the sendspin group. The PushStream
         and all internal state (pipelines, history, join-catchup) stay intact;
-        only the owning player reference is updated.
+        only the owning player reference is updated and the new leader leaves the member set.
 
         Cleans up the old leader's pipeline/channel state so its FFmpeg
         processor is released.
@@ -360,6 +360,8 @@ class SendspinPlaybackSession:
             pipeline = self._member_pipelines.pop(old_leader_id, None)
             self._pipeline_config_cache.pop(old_leader_id, None)
             self._preassigned_channels.pop(old_leader_id, None)
+            # Members exclude the leader, so the new leader's next sync_members won't remove it.
+            self._members.discard(new_player.player_id)
             self._mapping_dirty = True
         if pipeline is not None and pipeline.processor is not None:
             await self._close_member_ffmpeg(pipeline.processor)
@@ -535,10 +537,12 @@ class SendspinPlaybackSession:
 
         async with self._state_lock:
             history_snapshot = list(self._history)
-        if not history_snapshot:
-            await processor.close()
-            return
-        history_end_us = history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+        # With no history yet, the commit fanout feeds the processor from the first chunk on.
+        history_end_us = (
+            history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+            if history_snapshot
+            else None
+        )
         writer_task: asyncio.Task[None] | None = None
         drainer_task: asyncio.Task[None] | None = None
         snapshot_task: asyncio.Task[None] | None = None
@@ -906,9 +910,10 @@ class SendspinPlaybackSession:
                 # internal buffers instead of blocking on the last read.
                 _, pipelines = await self._snapshot_active_pipelines()
                 for _, pipeline in pipelines:
-                    if pipeline.processor is not None and pipeline.config.requires_transform:
-                        with suppress(Exception):
-                            await pipeline.processor.write_eof()
+                    async with pipeline.push_lock:
+                        if pipeline.processor is not None and pipeline.config.requires_transform:
+                            with suppress(Exception):
+                                await pipeline.processor.write_eof()
                 # Producer finished normally; send a None sentinel so the
                 # consumer exits cleanly.  The queue may be full, so retry
                 # with a deadline before falling back to cancellation.
