@@ -319,6 +319,7 @@ class MetaDataController(
                 await self._update_artist_metadata(
                     cast("Artist", item), force_refresh=force_refresh
                 )
+                item = await self.mass.music.artists.get_merged_library_item(cast("Artist", item))
             if item.media_type == MediaType.ALBUM:
                 await self._update_album_metadata(cast("Album", item), force_refresh=force_refresh)
             if item.media_type == MediaType.TRACK:

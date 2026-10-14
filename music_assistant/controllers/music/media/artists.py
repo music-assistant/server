@@ -1151,6 +1151,21 @@ class ArtistsController(MediaControllerBase[Artist]):
                 await self.add_provider_mappings(db_artist.item_id, match)
                 cur_provider_domains.add(provider.domain)
 
+    async def get_merged_library_item(self, artist: Artist) -> Artist:
+        """
+        Return the library artist the given one was merged into, else the given artist.
+
+        :param artist: A library artist.
+        """
+        if not artist.provider_mappings:
+            return artist
+        # a merge moves the provider mappings to the surviving artist
+        mapping = next(iter(artist.provider_mappings))
+        return (
+            await self.get_library_item_by_prov_id(mapping.item_id, mapping.provider_instance)
+            or artist
+        )
+
     async def merge_library_artists_by_mbid(self, artist_id: int, mbid: str) -> int:
         """
         Merge the library artists carrying the given MusicBrainz artist id into the oldest.

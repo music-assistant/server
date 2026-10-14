@@ -324,6 +324,24 @@ async def test_adding_an_artist_merged_by_its_metadata_update_returns_the_surviv
     assert "spotify" in {mapping.provider_domain for mapping in added.provider_mappings}
 
 
+async def test_updating_metadata_of_an_artist_it_merges_returns_the_survivor(
+    mass: MusicAssistant,
+) -> None:
+    """Updating the metadata of an artist that the update merges away returns the older artist."""
+    older, newer = await _add_artists_sharing_an_mbid(mass)
+
+    with (
+        patch.object(MusicbrainzProvider, "get_mbid_by_url", AsyncMock(return_value=ARTIST_MBID)),
+        patch.object(
+            MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=_mb_artist())
+        ),
+        patch.object(MetaDataController, "providers", new_callable=PropertyMock, return_value=[]),
+    ):
+        updated = await mass.metadata.update_metadata(newer, force_refresh=True)
+
+    assert updated.item_id == older.item_id
+
+
 async def test_artist_identified_by_name_search_is_not_merged(mass: MusicAssistant) -> None:
     """An id only a name search found may belong to a namesake, so both artists stay."""
     older, newer = await _add_artists_sharing_an_mbid(mass)
