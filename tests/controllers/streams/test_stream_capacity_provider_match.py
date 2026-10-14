@@ -353,6 +353,33 @@ async def test_a_library_track_persists_the_discovered_mapping(
     )
 
 
+async def test_a_library_track_is_not_searched_on_a_service_without_a_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A service that recently had no match for a library track is not searched for it again."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, quality=ContentType.FLAC), provider="library", item_id="42"
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        MATCH_INSTANCE: _music_provider(MATCH_INSTANCE),
+    }
+    mass = _mass(providers)
+    mass.cache.get = AsyncMock(return_value=True)
+    audio = StreamsAudio(mass)
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    mass.music.tracks.match_provider.assert_not_awaited()
+    # without a service to search, the known source gets the blocking wait
+    assert get_buffer.await_args_list[1].kwargs["streamdetails"].provider == BUSY_INSTANCE
+
+
 async def test_one_failing_provider_does_not_end_the_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

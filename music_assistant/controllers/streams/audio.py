@@ -124,6 +124,7 @@ from music_assistant.controllers.streams.stream_sources import (
     SourceCandidate,
     StreamSourceMode,
     StreamSourcePolicy,
+    below_upgrade_quality,
     quality_tier,
     rank_provider_mappings,
     rank_stream_sources,
@@ -3732,14 +3733,12 @@ class StreamsAudio:
                     raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
             if (
                 policy.upgrade_below is not None
+                # a reselection around a source at its stream limit wants any copy that plays
+                and not excluded_provider_instances
                 and candidates
-                and quality_tier(candidates[0][0].audio_format) < policy.upgrade_below
+                and below_upgrade_quality(candidates[0][0].audio_format, policy)
                 and await self._search_better_copy(
-                    queue_item,
-                    policy.upgrade_below,
-                    excluded_provider_instances,
-                    allowed,
-                    preferred_providers,
+                    queue_item, policy.upgrade_below, allowed, preferred_providers
                 )
             ):
                 candidates = self._get_streamdetail_candidates(
@@ -4318,7 +4317,7 @@ class StreamsAudio:
                 self.mass.music.tracks.add_unclaimed_provider_mappings(media_item.item_id, matches)
             )
         self.logger.info(
-            "Found %s on %s (%s)",
+            "Found %s on %s (searched because %s)",
             media_item.name,
             ", ".join(dict.fromkeys(mapping.provider_domain for mapping in matches)),
             reason,
@@ -4333,19 +4332,17 @@ class StreamsAudio:
         self,
         queue_item: QueueItem,
         upgrade_below: QualityTier,
-        excluded: set[str],
         allowed: list[str] | None,
         preferred: list[str],
     ) -> bool:
         """
-        Search the other streaming providers once for a better copy of a library track.
+        Search the other streaming providers for a better copy of a library track.
 
-        A queue item is searched for once; a search that finds nothing or fails leaves the
+        Only the first search of a queue item runs; one that finds nothing or fails leaves the
         chosen copy to play.
 
         :param queue_item: Queue item whose chosen copy is below the upgrade quality.
         :param upgrade_below: The upgrade quality a better copy is searched for.
-        :param excluded: Provider instances not to search on.
         :param allowed: Music sources the playback user may use, or None for all of them.
         :param preferred: Music sources the playback user owns, searched ahead of the rest.
         :return: Whether a copy was found and added to the item's mappings.
@@ -4361,7 +4358,7 @@ class StreamsAudio:
         try:
             found = await self._discover_alternative_provider_mappings(
                 queue_item,
-                excluded,
+                set(),
                 STREAM_SLOT_MATCH_TIMEOUT,
                 allowed,
                 preferred,

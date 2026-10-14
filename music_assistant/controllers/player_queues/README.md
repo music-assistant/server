@@ -305,8 +305,9 @@ settings that change it).
 
 The origin is captured at enqueue time, as the container is expanded: `MediaResolver` returns a
 `ResolvedItem(item, origin)` for every item it resolves, and `build_queue_item` stores the origin
-on the queue item. `_load_item` keeps it when it swaps in the full library track. The pin rule
-lives in `helpers.origin_for`:
+on the queue item. `_load_item` keeps it when it swaps in the full library track. The pins follow
+these rules (`helpers.origin_for` for a container's entries, `MediaResolver` for folders, albums
+and items played on their own):
 
 - A playlist or podcast pins each entry to its own provider copy, and so does a dynamic source
   for the tracks it adds once the queue has run out. A library item names no copy and an entry of
@@ -327,8 +328,9 @@ mode, then the playback user's own accounts, then a source that lists every libr
 quality. Each track is pinned to the chosen source's entry; a track that source lacks plays as the
 album lists it. When every track is to be ranked on its own (the `best_quality_per_track` mode) no
 source is chosen and nothing is pinned, and a track outside the library plays the best entry any
-of the album's sources lists. As the choice is made at enqueue time, changing the setting leaves
-albums that are already queued alone.
+of the album's sources lists. The source is chosen at enqueue time, so a changed setting applies
+to the albums queued after it; only `best_quality_per_track` also reaches the albums already
+queued, as it ignores their pins at playback.
 
 Data flow: media item → `ResolvedItem`s with their origin → `QueueItem.origin` → the pinned copy
 first when the stream is selected.

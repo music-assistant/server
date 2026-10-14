@@ -440,6 +440,19 @@ def test_reasons_name_the_decisive_level_and_the_last_candidates_quality() -> No
             [f"{LOCAL}/1", f"{TIDAL}/1"],
             "pinned",
         ),
+        (
+            [
+                _candidate(TIDAL, audio_format=AudioFormat()),
+                _candidate(
+                    LOCAL,
+                    is_streaming=False,
+                    audio_format=_format(ContentType.MP3, bit_rate=128),
+                ),
+            ],
+            {"pinned": (TIDAL, ITEM_ID), "policy": UPGRADE_LOSSLESS},
+            [f"{TIDAL}/1", f"{LOCAL}/1"],
+            "pinned",
+        ),
     ],
     ids=[
         "a better copy jumps the pin",
@@ -448,6 +461,7 @@ def test_reasons_name_the_decisive_level_and_the_last_candidates_quality() -> No
         "no jump when the first copy meets the upgrade quality",
         "no jump for a copy of the same tier",
         "no jump without an upgrade quality",
+        "a copy of unknown quality is not taken to be below",
     ],
 )
 def test_rank_stream_sources_upgrade(

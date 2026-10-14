@@ -292,6 +292,60 @@ async def test_the_search_has_one_time_budget_for_all_services(
     mass.cache.set.assert_not_awaited()
 
 
+async def test_concurrent_selections_of_one_item_search_once() -> None:
+    """Two callers resolving the same queue item at once share its one search."""
+    mass = _mass([_provider(LOCAL, streaming=False), _provider(TIDAL)])
+    release = asyncio.Event()
+
+    async def _slow(*_args: Any, **_kwargs: Any) -> list[ProviderMapping]:
+        await release.wait()
+        return []
+
+    mass.music.tracks.match_provider = AsyncMock(side_effect=_slow)
+    audio = StreamsAudio(mass)
+    queue_item = _queue_item(_mapping(LOCAL, LOCAL_ID, MP3))
+
+    first = asyncio.create_task(audio.get_stream_details(queue_item))
+    second = asyncio.create_task(audio.get_stream_details(queue_item))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(first, second)
+
+    mass.music.tracks.match_provider.assert_awaited_once()
+
+
+async def test_a_reselection_around_a_stream_limit_does_not_search() -> None:
+    """A copy picked because a better one is at its stream limit is no reason to search."""
+    local = _provider(LOCAL, streaming=False)
+    mass = _mass([local, _provider(TIDAL), _provider(SPOTIFY)])
+    audio = StreamsAudio(mass)
+    queue_item = _queue_item(_mapping(LOCAL, LOCAL_ID, MP3), _mapping(TIDAL, TIDAL_ID, FLAC))
+
+    streamdetails = await audio.get_stream_details(queue_item, excluded_provider_instances={TIDAL})
+
+    assert streamdetails.provider == LOCAL
+    mass.music.tracks.match_provider.assert_not_awaited()
+
+
+async def test_a_copy_of_unknown_quality_is_not_upgraded() -> None:
+    """A copy whose format is not known yet, such as a linked one, plays and is not upgraded."""
+    tidal = _provider(TIDAL)
+    mass = _mass([_provider(LOCAL, streaming=False), tidal, _provider(SPOTIFY)])
+    audio = StreamsAudio(mass)
+    linked = _mapping(TIDAL, TIDAL_ID, AudioFormat())
+
+    streamdetails = await audio.get_stream_details(
+        _queue_item(
+            linked,
+            _mapping(LOCAL, LOCAL_ID, AudioFormat(content_type=ContentType.MP3, bit_rate=128)),
+            pinned=linked,
+        )
+    )
+
+    assert streamdetails.provider == TIDAL
+    mass.music.tracks.match_provider.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("upgrade", "audio_format"),
     [("off", MP3), ("lossy_high", MP3), ("lossless", FLAC)],

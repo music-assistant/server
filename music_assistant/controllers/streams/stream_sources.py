@@ -149,6 +149,21 @@ def quality_tier(audio_format: AudioFormat) -> QualityTier:
     return QualityTier.LOSSY_LOW
 
 
+def below_upgrade_quality(audio_format: AudioFormat, policy: StreamSourcePolicy) -> bool:
+    """
+    Return whether a copy of the given format is below the policy's upgrade quality.
+
+    A copy of unknown quality is not taken to be below it.
+
+    :param audio_format: The audio format of the copy.
+    :param policy: The source selection settings to judge by.
+    """
+    return (
+        policy.upgrade_below is not None
+        and QualityTier.UNKNOWN < quality_tier(audio_format) < policy.upgrade_below
+    )
+
+
 def rank_stream_sources(
     candidates: Iterable[SourceCandidate],
     *,
@@ -163,9 +178,9 @@ def rank_stream_sources(
     sources when the policy prefers them, then the playback user's own accounts, then the
     best quality by tier and by the mapping's quality score, which favours local and
     in-library copies. Ties fall to the candidate's own instance and item id, so equal copies
-    are tried in the same order at every selection. When the copy that comes first is below
-    the policy's upgrade quality, every copy of a better tier goes ahead of it, in the same
-    order among themselves.
+    are tried in the same order at every selection. When the copy that comes first is known
+    to be below the policy's upgrade quality, every copy of a better tier goes ahead of it, in
+    the same order among themselves.
 
     :param candidates: The copies that may serve the item, already narrowed to what the
         playback user may use.
@@ -190,11 +205,10 @@ def rank_stream_sources(
         ),
         key=itemgetter(0),
     )
-    if keyed and policy.upgrade_below is not None:
+    if keyed and below_upgrade_quality(keyed[0][1].mapping.audio_format, policy):
         winner_tier = quality_tier(keyed[0][1].mapping.audio_format)
-        if winner_tier < policy.upgrade_below:
-            # the sort is stable, so the better copies and the rest each keep their order
-            keyed.sort(key=lambda entry: quality_tier(entry[1].mapping.audio_format) <= winner_tier)
+        # the sort is stable, so the better copies and the rest each keep their order
+        keyed.sort(key=lambda entry: quality_tier(entry[1].mapping.audio_format) <= winner_tier)
     ranked: list[SourceCandidate] = []
     for index, (key, candidate) in enumerate(keyed):
         following = keyed[index + 1] if index + 1 < len(keyed) else None
@@ -212,8 +226,8 @@ def rank_provider_mappings(
     Return a media item's own mappings in the order the policy ranks them.
 
     For callers that look up data per copy outside a playback: there is no playback user to
-    steer to, only the copy actually streamed, when known, comes first. Whether a mapping's
-    instance is a streaming service is read off the loaded providers.
+    steer to and no copy to upgrade, only the copy actually streamed, when known, comes first.
+    Whether a mapping's instance is a streaming service is read off the loaded providers.
 
     :param mappings: The media item's provider mappings.
     :param pinned: The (provider instance, item id) the item is streamed from, if known.
