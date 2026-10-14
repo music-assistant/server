@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
+from music_assistant.providers.raumfeld.constants import RENDERER_QUERY_TIMEOUT
 from music_assistant.providers.raumfeld.helpers import (
     external_source,
     parse_control_url,
@@ -12,6 +15,7 @@ from music_assistant.providers.raumfeld.helpers import (
     parse_line_in,
     parse_model_name,
     parse_serial_number,
+    query_last_change,
     room_udn_to_player_id,
     serial_to_player_id,
 )
@@ -200,3 +204,16 @@ def test_parse_last_change_response() -> None:
         assert state["TransportState"] == "PLAYING"
     assert parse_last_change_response("<s:Envelope><unclosed>") == {}
     assert parse_last_change_response(None) == {}
+
+
+async def test_last_change_query_has_a_short_timeout() -> None:
+    """A renderer that stops answering cannot hold up polling for long."""
+    response = MagicMock(status=200)
+    response.text = AsyncMock(return_value="")
+    request = MagicMock()
+    request.__aenter__ = AsyncMock(return_value=response)
+    request.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.post.return_value = request
+    assert await query_last_change(session, "http://192.168.1.42:54730/AVTransport/ctrl") == {}
+    assert session.post.call_args.kwargs["timeout"].total == RENDERER_QUERY_TIMEOUT

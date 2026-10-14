@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
+import aiohttp
 import defusedxml.ElementTree as DefusedET
 
 from music_assistant.helpers.util import try_parse_duration
 
-from .constants import PLAYER_ID_PREFIX
-
-if TYPE_CHECKING:
-    import aiohttp
+from .constants import PLAYER_ID_PREFIX, RENDERER_QUERY_TIMEOUT
 
 # DIDL-Lite / metadata XML namespaces used in UPnP TrackMetaData.
 _DC = "{http://purl.org/dc/elements/1.1/}"
@@ -193,7 +190,10 @@ async def query_last_change(session: aiohttp.ClientSession, control_url: str) ->
     :param control_url: The AVTransport control URL of the renderer.
     """
     async with session.post(
-        control_url, data=_QUERY_LAST_CHANGE, headers=_QUERY_HEADERS
+        control_url,
+        data=_QUERY_LAST_CHANGE,
+        headers=_QUERY_HEADERS,
+        timeout=aiohttp.ClientTimeout(total=RENDERER_QUERY_TIMEOUT),
     ) as response:
         if response.status != 200:
             return {}
