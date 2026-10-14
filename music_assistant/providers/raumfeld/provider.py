@@ -70,8 +70,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _room_serials: dict[str, str]
     # room name -> renderer model name, read from the same device description
     _room_models: dict[str, str]
-    # room name -> AVTransport control URL of its renderer, from the same description
-    _room_transport_urls: dict[str, str]
+    # room name -> AVTransport control URL of its renderer as the description gives it,
+    # usually relative to the renderer's own address
+    _room_transport_paths: dict[str, str]
     # room name -> player_id, derived from _room_serials on every sync (see _assign_room_ids)
     _room_ids: dict[str, str]
     # rooms already warned about sharing a serial, so the warning goes out once per room
@@ -97,7 +98,13 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param room: The Raumfeld room name to look up.
         """
-        return self._room_transport_urls.get(room)
+        # joined to the renderer's current address: it gets a new port when it restarts,
+        # while the serial and this path are read only once
+        path = self._room_transport_paths.get(room)
+        location = self.room_renderer_location(room)
+        if path is None or location is None:
+            return None
+        return urljoin(location, path)
 
     def zone_location(self, zone: list[str]) -> str | None:
         """
@@ -123,7 +130,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._line_in = {}
         self._room_serials = {}
         self._room_models = {}
-        self._room_transport_urls = {}
+        self._room_transport_paths = {}
         self._room_ids = {}
         self._shared_serial_warned = set()
         # a background supervisor owns the connection so a missing or (temporarily)
@@ -405,7 +412,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if (model := parse_model_name(description)) is not None:
             self._room_models[room] = model
         if (control_url := parse_control_url(description, "AVTransport")) is not None:
-            self._room_transport_urls[room] = urljoin(location, control_url)
+            self._room_transport_paths[room] = control_url
         return serial
 
     def _ensure_icy_default(self, player_id: str) -> None:

@@ -778,3 +778,33 @@ async def test_stopping_spotify_connect_ends_the_source() -> None:
     action.assert_awaited_once_with(_RENDERER, "Stop")
     assert player._attr_active_source is None
     assert player._external_source is None
+
+
+def test_skipping_needs_both_next_and_previous() -> None:
+    """One capability covers both commands, so a host allowing only one gets neither."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause,Next", 315, via_room=True)
+    assert player._attr_source_list[0].can_next_previous is False
+    assert PlayerFeature.NEXT_PREVIOUS not in player.supported_features
+
+
+async def test_an_external_source_music_assistant_gave_up_on_is_dropped() -> None:
+    """After the core's idle timeout the source's controls and routing go too."""
+    player, host = _external_player()
+    host.async_zone_stop = AsyncMock()
+    player._set_external(_RADIO_META, "Play", None, via_room=False)
+    assert PlayerFeature.PAUSE in player.supported_features
+    # what the core's mark_external_source_ended leaves behind
+    player._attr_active_source = None
+    player._attr_playback_state = PlaybackState.IDLE
+    assert PlayerFeature.PAUSE not in player.supported_features
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
+    ):
+        await player.stop()
+    # a plain stop of the zone, not a pause of the expired source
+    action.assert_not_awaited()
+    assert player._external_source is None
+    assert player._attr_playback_state == PlaybackState.IDLE

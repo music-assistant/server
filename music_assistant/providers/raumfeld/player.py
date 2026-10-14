@@ -129,6 +129,8 @@ class RaumfeldPlayer(Player):
     # a source the host keeps loaded after a stop is reported as paused (see
     # _update_zone_source); give up on it when nobody resumes it
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
+    # set before the player is fully constructed, as the base class reads the features
+    _external_source: PlayerSource | None = None
 
     def __init__(
         self,
@@ -222,6 +224,15 @@ class RaumfeldPlayer(Player):
         """Return the owning provider (typed)."""
         return cast("RaumfeldPlayerProvider", self.provider)
 
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of the player."""
+        if self._presented_external() is None:
+            # the controls of an external source go with it, also when MA stopped presenting
+            # it on its own (its idle timeout)
+            return self._attr_supported_features - EXTERNAL_SOURCE_FEATURES
+        return self._attr_supported_features
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return the player-specific config entries (sample-rate / bit-depth options)."""
         return [*PLAYER_CONFIG_ENTRIES]
@@ -282,6 +293,7 @@ class RaumfeldPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY/resume command."""
+        self._drop_ended_external()
         if self._external_source is not None:
             # resume what the host or the speaker itself was playing, where it paused
             await self._external_command("Play", Speed="1")
@@ -303,6 +315,7 @@ class RaumfeldPlayer(Player):
         # paused progress bar stays where playback was, instead of snapping back to the
         # last (behind) poll anchor
         self._freeze_elapsed()
+        self._drop_ended_external()
         # a Raumfeld line-in keeps playing through a normal transport stop, so when we are
         # leaving the line-in hard-stop the room(s) by putting them into (manual) standby
         hard_stop = self._attr_active_source == SOURCE_LINE_IN
@@ -367,6 +380,7 @@ class RaumfeldPlayer(Player):
         restarts the flow (a seek, or a sample-rate change). With flow mode off it is one
         queue item, and the provider starts the next one itself when this one finishes.
         """
+        self._drop_ended_external()
         if media.uri.startswith(EXTERNAL_URI_SCHEME) and self._external_source is not None:
             # MA resumes "the current media", which here is what the host still has loaded
             await self.play()
@@ -768,7 +782,8 @@ class RaumfeldPlayer(Player):
             name=name,
             passive=True,
             can_play_pause=bool(allowed & {"Pause", "Play"}),
-            can_next_previous=bool(allowed & {"Next", "Previous"}),
+            # one capability covers both commands, so the host has to allow both
+            can_next_previous={"Next", "Previous"} <= allowed,
             can_seek="Seek" in allowed,
         )
         self._external_source = source
@@ -792,6 +807,20 @@ class RaumfeldPlayer(Player):
             image_url=meta["image_url"],
             duration=duration or None,
         )
+
+    def _presented_external(self) -> PlayerSource | None:
+        """Return the external source, unless Music Assistant no longer presents it."""
+        source = self._external_source
+        if source is None or self._attr_active_source != source.id:
+            return None
+        return source
+
+    def _drop_ended_external(self) -> None:
+        """Forget an external source Music Assistant gave up on (its idle timeout)."""
+        # the core then clears the active source, but not what this player keeps about it,
+        # which would otherwise still route play/stop to the renderer
+        if self._external_source is not None and self._presented_external() is None:
+            self._clear_external()
 
     def _clear_external(self) -> None:
         """Drop the external source, and the controls that only applied to it."""
