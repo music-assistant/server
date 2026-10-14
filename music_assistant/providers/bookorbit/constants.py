@@ -28,3 +28,21 @@ class BrowsePaths(StrEnum):
     NARRATORS = "n"
     SERIES = "s"
     AUDIOBOOKS = "b"
+
+
+class BrowseItemsTranslationKey(StrEnum):
+    """Translation keys of the folders inside a library in the browse view."""
+
+    AUTHORS = "authors"
+    NARRATORS = "narrators"
+    SERIES = "series_plural"
+    AUDIOBOOKS = "audiobooks"
+    AUDIOBOOKS_LIBRARY = "audiobooks_library"
+
+
+BROWSE_ITEMS_TO_PATH: dict[str, str] = {
+    BrowseItemsTranslationKey.AUTHORS: BrowsePaths.AUTHORS,
+    BrowseItemsTranslationKey.NARRATORS: BrowsePaths.NARRATORS,
+    BrowseItemsTranslationKey.SERIES: BrowsePaths.SERIES,
+    BrowseItemsTranslationKey.AUDIOBOOKS: BrowsePaths.AUDIOBOOKS,
+}

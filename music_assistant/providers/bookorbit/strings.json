@@ -24,6 +24,15 @@
       "description": "[%key:common::config_entries::verify_ssl::description%]"
     }
   },
+  "media": {
+    "folder": {
+      "authors": { "name": "Authors" },
+      "narrators": { "name": "Narrators" },
+      "series_plural": { "name": "Series" },
+      "audiobooks": { "name": "Audiobooks" },
+      "audiobooks_library": { "name": "{} (Audiobooks library)" }
+    }
+  },
   "manifest": {
     "description": "Stream audiobooks from your personal BookOrbit server."
   },

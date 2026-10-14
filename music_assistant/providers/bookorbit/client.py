@@ -136,6 +136,18 @@ class BookOrbitClient:
         """Return a single book."""
         return await self.request("GET", f"{API_PREFIX}/books/{book_id}")  # type: ignore[no-any-return]
 
+    async def search_books(self, query: str) -> list[dict[str, Any]]:
+        """Search books (``GET /books/search?q=``)."""
+        return await self._search("books/search", query)
+
+    async def search_authors(self, query: str) -> list[dict[str, Any]]:
+        """Search authors in the catalog (``GET /metadata/authors?q=``)."""
+        return await self._search("metadata/authors", query)
+
+    async def search_narrators(self, query: str) -> list[dict[str, Any]]:
+        """Search narrators in the catalog (``GET /metadata/narrators?q=``)."""
+        return await self._search("metadata/narrators", query)
+
     async def get_audio_progress(self, book_id: int) -> dict[str, Any] | None:
         """Return audio progress for a book, or None if there is none."""
         try:
@@ -168,6 +180,10 @@ class BookOrbitClient:
     def stream_url(self, file_id: int) -> str:
         """Return the absolute URL serving a book file."""
         return f"{self.base_url}{API_PREFIX}/books/files/{file_id}/serve"
+
+    async def _search(self, endpoint: str, query: str) -> list[dict[str, Any]]:
+        payload = await self.request("GET", f"{API_PREFIX}/{endpoint}", params={"q": query})
+        return self._extract_items(payload)
 
     def _url(self, path: str) -> str:
         if path.startswith(("http://", "https://")):
