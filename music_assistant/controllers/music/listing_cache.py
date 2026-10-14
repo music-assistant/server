@@ -26,6 +26,7 @@ from music_assistant.helpers.api import parse_value
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ListingType
+    from music_assistant_models.media_items import ItemMapping
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -87,7 +88,11 @@ async def cached_listing[ItemT: MediaItem](
     entry = f"{uri}|{key}"
     while (items := await _read(mass, uri, key, item_type)) is None:
         if (fill := _fills.get(entry)) is None:
-            return cast("list[ItemT]", await _assemble(mass, entry, uri, key, assemble, expiration))
+            assembled = await _assemble(mass, entry, uri, key, assemble, expiration)
+            # the request that assembles the listing sees the state a cached one would carry
+            return cast(
+                "list[ItemT]", await with_user_favorites(mass, get_current_user(), assembled)
+            )
         # a concurrent request is assembling the listing: what it keeps is read on the next
         # round, what it does not keep (or when it goes away) is assembled here, as the
         # calling user, and its failure is this request's failure too
@@ -102,16 +107,17 @@ async def cached_listing[ItemT: MediaItem](
     return cast("list[ItemT]", items)
 
 
-async def invalidate_listings(mass: MusicAssistant, item: MediaItem) -> None:
+async def invalidate_listings(mass: MusicAssistant, item: MediaItem | ItemMapping) -> None:
     """
     Drop the cached listings of a container whose contents changed, under every id it has.
 
     :param mass: The MusicAssistant instance.
-    :param item: The container (an album, a playlist, ...).
+    :param item: The container (an album, a playlist, ...), or a reference to it.
     """
+    mappings = item.provider_mappings if isinstance(item, MediaItem) else ()
     uris = {
         create_uri(item.media_type, mapping.provider_instance, mapping.item_id)
-        for mapping in item.provider_mappings
+        for mapping in mappings
     }
     if item.uri:
         uris.add(item.uri)

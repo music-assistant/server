@@ -1960,7 +1960,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played = media_item.duration
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        self._forward_play_report(
+        await self._forward_play_report(
             media_item,
             user,
             fully_played=fully_played,
@@ -2063,7 +2063,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        self._forward_play_report(media_item, user, fully_played=False, position=0)
+        await self._forward_play_report(media_item, user, fully_played=False, position=0)
 
     @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
@@ -3586,7 +3586,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise MediaNotFoundError(msg)
         return resolved
 
-    def _forward_play_report(
+    async def _forward_play_report(
         self,
         media_item: MediaItemType,
         user: User | None,
@@ -3598,14 +3598,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Report the play to the music sources that may serve this user, once per account.
 
+        A pause, stop or end of a podcast episode, or marking one (un)played, returns once the
+        music sources took the report in; any other report is made in the background.
+
         :param media_item: The played item, whose mappings name the accounts to report to.
         :param user: The user the playback is for; None for anonymous playback.
         :param fully_played: Whether the item was played to the end.
         :param position: The last known position of the item in seconds.
         :param is_playing: Whether the item is still playing.
         """
+        # the cached episode listing of a podcast holds the played state its music sources
+        # report, so it is assembled anew from what they took in
+        podcast = (
+            media_item.podcast
+            if not is_playing and isinstance(media_item, PodcastEpisode)
+            else None
+        )
         allowed = visible_playback_sources(self.mass, user) if user else None
         reported_to: set[str] = set()
+        reports: list[Coroutine[Any, Any, None]] = []
         for prov_mapping in media_item.provider_mappings:
             # a mapping on another account of a service the user has their own of is
             # reported on that own account, which is where the stream came from too
@@ -3617,18 +3628,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     continue
                 music_prov = cast("MusicProvider", music_prov)
                 reported_to.add(target)
+                report = music_prov.on_played(
+                    media_type=media_item.media_type,
+                    prov_item_id=prov_mapping.item_id,
+                    fully_played=fully_played,
+                    position=position,
+                    media_item=media_item,
+                    is_playing=is_playing,
+                )
+                if podcast:
+                    reports.append(report)
+                    continue
                 # a play report is background work
                 with request_priority(RequestPriority.LOW):
-                    self.mass.create_task(
-                        music_prov.on_played(
-                            media_type=media_item.media_type,
-                            prov_item_id=prov_mapping.item_id,
-                            fully_played=fully_played,
-                            position=position,
-                            media_item=media_item,
-                            is_playing=is_playing,
-                        )
-                    )
+                    self.mass.create_task(report)
+        if not podcast:
+            return
+        with request_priority(RequestPriority.LOW):
+            results = await asyncio.gather(*reports, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.warning("Unable to report the play of %s: %s", media_item.name, result)
+        await invalidate_listings(self.mass, podcast)
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """
