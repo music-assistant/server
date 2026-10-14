@@ -334,7 +334,7 @@ class QuizType(ABC):
             yield media_item
             return
         if isinstance(media_item, Playlist):
-            async for track in self.mass.music.playlists.tracks(
+            async for track in self.mass.music.playlists.iter_tracks(
                 item_id=media_item.item_id,
                 provider_instance_id_or_domain=media_item.provider,
             ):

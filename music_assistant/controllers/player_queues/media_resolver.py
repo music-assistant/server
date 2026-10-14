@@ -376,7 +376,7 @@ class MediaResolver:
         # starting near the end.
         if not needs_sort and not keep_preceding_items:
             start_item_found = False
-            async for playlist_track in self.mass.music.playlists.tracks(
+            async for playlist_track in self.mass.music.playlists.iter_tracks(
                 playlist.item_id,
                 playlist.provider,
                 force_refresh=force_refresh,
@@ -391,7 +391,7 @@ class MediaResolver:
                 result.append(playlist_track)
             return result
         # Sort/rotate path: must materialize all tracks before sorting or rotating, then slice.
-        async for playlist_track in self.mass.music.playlists.tracks(
+        async for playlist_track in self.mass.music.playlists.iter_tracks(
             playlist.item_id,
             playlist.provider,
             force_refresh=force_refresh,
@@ -479,7 +479,8 @@ class MediaResolver:
             podcast.name,
         )
         all_episodes = [
-            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+            x
+            async for x in self.mass.music.podcasts.iter_episodes(podcast.item_id, podcast.provider)
         ]
         all_episodes.sort(key=lambda x: x.position)
         # Require exact case and keyword match to minimise false positives.
@@ -559,7 +560,8 @@ class MediaResolver:
         """
         podcast = episode.podcast
         all_episodes = [
-            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+            x
+            async for x in self.mass.music.podcasts.iter_episodes(podcast.item_id, podcast.provider)
         ]
         all_episodes.sort(key=lambda x: x.position)
         current_index = next(

@@ -1883,7 +1883,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             # episodes does not make the podcast result set incomplete
             try:
                 # precache podcast episodes
-                async for _ in self.mass.music.podcasts.episodes(str(db_id), "library"):
+                async for _ in self.mass.music.podcasts.iter_episodes(str(db_id), "library"):
                     await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)

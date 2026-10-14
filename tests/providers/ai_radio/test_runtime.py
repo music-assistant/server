@@ -1306,7 +1306,7 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
         async def get(self, playlist_id: str, provider: str) -> Any:
             return DummyPlaylist()
 
-        async def tracks(self, playlist_id: str, provider: str) -> Any:
+        async def iter_tracks(self, playlist_id: str, provider: str) -> Any:
             for track in self._tracks:
                 yield track
 
@@ -1360,7 +1360,7 @@ async def test_fetch_source_tracks_refuses_a_source_its_user_may_not_play() -> N
         async def get(self, playlist_id: str, provider: str) -> Any:
             return DummyPlaylist()
 
-        async def tracks(self, playlist_id: str, provider: str) -> Any:
+        async def iter_tracks(self, playlist_id: str, provider: str) -> Any:
             read.append(playlist_id)
             yield None
 

@@ -1072,7 +1072,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         item_id = request.match_info["item_id"]
         try:
             tracks = [
-                t async for t in self.provider.mass.music.playlists.tracks(item_id, "library")
+                t async for t in self.provider.mass.music.playlists.iter_tracks(item_id, "library")
             ]
         except MusicAssistantError, TimeoutError:
             logger.exception("Failed to fetch tracks for playlist %s", item_id)
@@ -1137,7 +1137,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         start = _int_param(request.query, "start", 0)
         try:
             tracks = [
-                t async for t in self.provider.mass.music.playlists.tracks(item_id, "library")
+                t async for t in self.provider.mass.music.playlists.iter_tracks(item_id, "library")
             ]
         except MusicAssistantError, TimeoutError:
             logger.exception("Failed to fetch tracks for playlist playlist %s", item_id)
@@ -1593,7 +1593,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
     async def _handle_playlist_tracks(self, request: web.Request) -> web.Response:
         """List tracks for a playlist."""
         item_id = request.match_info["item_id"]
-        tracks = [t async for t in self.provider.mass.music.playlists.tracks(item_id, "library")]
+        tracks = [
+            t async for t in self.provider.mass.music.playlists.iter_tracks(item_id, "library")
+        ]
         return web.json_response(
             {
                 "items": [self._format_track(track) for track in tracks],

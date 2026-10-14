@@ -250,7 +250,7 @@ class PlaylistMetadataProvider(MetadataProvider):
         max_tracks = 500  # Analyze up to 500 tracks to avoid performance issues
 
         try:
-            async for track in self.mass.music.playlists.tracks(
+            async for track in self.mass.music.playlists.iter_tracks(
                 playlist.item_id,
                 playlist.provider,
             ):
@@ -570,7 +570,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                 smart_rules = None
 
         if not smart_rules or (len(artist_images) < 4 and len(album_image_map) < 4):
-            async for track in self.mass.music.playlists.tracks(
+            async for track in self.mass.music.playlists.iter_tracks(
                 playlist.item_id, playlist.provider
             ):
                 if not isinstance(track, Track):
