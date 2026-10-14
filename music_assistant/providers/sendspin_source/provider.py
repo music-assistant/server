@@ -464,6 +464,13 @@ class SendspinSourceProvider(PluginProvider):
             self.mass.create_task(self._attach_stream(session, event))
         elif isinstance(event, SourceStreamEndedEvent):
             self.logger.debug("Sendspin source %s ended its stream", client_id)
+            # A connected client without a source role sends no more audio, a dropped one may
+            # reconnect.
+            if client.is_connected and self._get_source_role(client) is None:
+                self.logger.info(
+                    "Sendspin source %s lost its source role, stopping playback", client_id
+                )
+                self.mass.create_task(self._release_source(session))
 
     def _on_signal_reported(self, client_id: str, signal: SignalState) -> None:
         """
