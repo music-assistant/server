@@ -6,6 +6,8 @@ from aiohttp.client import ClientTimeout
 
 AIOHTTP_TIMEOUT = ClientTimeout(total=10 * 60, sock_connect=60)
 
+DOMAIN = "bookorbit"
+
 CONF_URL = "url"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"  # noqa: S105
