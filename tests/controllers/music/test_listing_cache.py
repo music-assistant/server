@@ -72,7 +72,7 @@ async def test_a_listing_is_assembled_once(mass: MusicAssistant) -> None:
     second = await _album_tracks(mass, uri, assemble)
 
     assemble.assert_awaited_once()
-    assert first is tracks
+    assert all(item is track for item, track in zip(first, tracks, strict=True))
     assert second == tracks
     assert second[0] is not tracks[0]
     assert second[0].name == "One"

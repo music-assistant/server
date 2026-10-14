@@ -179,7 +179,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        favorite: bool | None = None,
         fully_played: bool | None = None,
         search: str | None = None,
         sort_field: SortField | None = None,
@@ -195,7 +194,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
         :param item_id: The podcast id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
-        :param favorite: Only list the liked (True) or disliked (False) episodes.
         :param fully_played: Only list the episodes the current user played to the end (True),
             or the ones not played to the end (False).
         :param search: Only list the episodes whose name contains this text.
@@ -225,12 +223,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         # the progress a user makes is filled in on every request, as it changes while
         # listening; the cached listing only holds what the provider itself reports
         await self._set_resume_positions(episodes, provider.instance_id)
-        episodes = [
-            episode
-            for episode in episodes
-            if (favorite is None or episode.favorite is favorite)
-            and (fully_played is None or bool(episode.fully_played) is fully_played)
-        ]
+        if fully_played is not None:
+            episodes = [x for x in episodes if bool(x.fully_played) is fully_played]
         return apply_listing(
             episodes,
             ListingType.PODCAST_EPISODES,

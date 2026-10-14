@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import ListingType, MediaType, SortDirection, SortField
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
 
 INSTANCE = "spotify_1"
 PLAYLIST_ID = "pl1"
+USER_A = User(user_id="user-a", username="user-a", role=UserRole.USER)
+USER_B = User(user_id="user-b", username="user-b", role=UserRole.USER)
 
 
 class _StubPlaylistProvider(MusicProvider):
@@ -160,10 +163,8 @@ def _ids(items: list[Any]) -> list[str]:
 
 
 async def test_playlist_tracks_follow_the_listing_contract(mass: MusicAssistant) -> None:
-    """The items are searched, filtered, sorted and paged on the server, from one walk."""
+    """The items are searched, sorted and paged on the server, from one walk."""
     provider = _StubPlaylistProvider(_playlist_tracks(6))
-    provider.tracks[1].favorite = True
-    provider.tracks[2].favorite = False
     db_playlist = await mass.music.playlists.add_item_to_library(_playlist(INSTANCE, PLAYLIST_ID))
 
     async def _tracks(**kwargs: Any) -> list[str]:
@@ -183,8 +184,6 @@ async def test_playlist_tracks_follow_the_listing_contract(mass: MusicAssistant)
         assert await _tracks(sort_field=SortField.DURATION, limit=2, offset=1) == ["t4", "t6"]
         assert await _tracks(search="song 01") == ["t1"]
         assert await _tracks(search="album 0") == ["t2", "t4", "t6"]
-        assert await _tracks(favorite=True) == ["t2"]
-        assert await _tracks(favorite=False) == ["t3"]
         assert await _tracks(limit=0) == ["t1", "t2", "t3", "t4", "t5", "t6"]
         with pytest.raises(InvalidDataError):
             await _tracks(sort_field=SortField.YEAR)
@@ -375,6 +374,42 @@ async def test_playlists_music_assistant_composes_are_never_cached(mass: MusicAs
                 tracks = await mass.music.playlists.tracks("composed", provider.instance_id)
                 assert _ids(tracks) == ["t1", "t2"]
     assert builtin.pages_fetched == plugin.pages_fetched == 4
+
+
+async def test_the_favorite_state_of_a_playlist_is_the_calling_users(
+    mass: MusicAssistant,
+) -> None:
+    """A provider track that is in the library carries the state of the user asking only."""
+    provider = _StubPlaylistProvider(_playlist_tracks(2))
+    library_track = await mass.music.tracks.add_item_to_library(create_track(INSTANCE, "t1"))
+    await mass.music.favorites.set(
+        MediaType.TRACK, int(library_track.item_id), True, [USER_A.user_id]
+    )
+    await mass.music.favorites.set(
+        MediaType.TRACK, int(library_track.item_id), False, [USER_B.user_id]
+    )
+
+    async def _states(user: User, **kwargs: Any) -> list[tuple[str, bool | None]]:
+        with patch(
+            "music_assistant.controllers.music.listing_cache.get_current_user", return_value=user
+        ):
+            items = await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE, **kwargs)
+        return [(item.item_id, item.favorite) for item in items]
+
+    with _with_provider(mass, provider):
+        assert await _states(USER_A) == [("t1", True), ("t2", None)]
+        assert await _states(USER_B) == [("t1", False), ("t2", None)]
+        assert await _states(USER_A, favorite=True) == [("t1", True)]
+        assert await _states(USER_B, favorite=True) == []
+        assert await _states(USER_B, favorite=False) == [("t1", False)]
+    cached = await mass.cache.get(
+        ListingType.PLAYLIST_TRACKS.value,
+        provider=create_uri(MediaType.PLAYLIST, INSTANCE, PLAYLIST_ID),
+        category=CACHE_CATEGORY_LISTINGS,
+    )
+    # the listing is kept as the provider lists it, without any user's state
+    assert [item["favorite"] for item in cached] == [None, None]
+    assert provider.pages_fetched == 2
 
 
 async def test_favorite_filter_on_a_composed_playlist_uses_the_users_likes(

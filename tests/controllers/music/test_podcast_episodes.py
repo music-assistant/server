@@ -167,8 +167,6 @@ def _ids(episodes: list[PodcastEpisode]) -> list[str]:
 async def test_podcast_episodes_follow_the_listing_contract(mass: MusicAssistant) -> None:
     """The episodes are searched, filtered, sorted and paged on the server, from one walk."""
     provider = _StubPodcastProvider(_episodes(6))
-    provider.episodes[1].favorite = True
-    provider.episodes[2].favorite = False
     db_podcast = await mass.music.podcasts.add_item_to_library(_podcast())
     await _add_progress(mass, "ep2", USER_A.user_id, seconds_played=60, fully_played=True)
     await _add_progress(mass, "ep3", USER_A.user_id, seconds_played=30, fully_played=False)
@@ -194,8 +192,6 @@ async def test_podcast_episodes_follow_the_listing_contract(mass: MusicAssistant
             "ep2",
         ]
         assert await _episodes_of(search="episode 01") == ["ep1"]
-        assert await _episodes_of(favorite=True) == ["ep5"]
-        assert await _episodes_of(favorite=False) == ["ep4"]
         assert await _episodes_of(fully_played=True) == ["ep2"]
         # a part-played episode is not played to the end
         assert await _episodes_of(fully_played=False) == ["ep6", "ep5", "ep4", "ep3", "ep1"]

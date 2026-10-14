@@ -86,7 +86,11 @@ async def cached_listing[ItemT: MediaItem](
     entry = f"{uri}|{key}"
     while (items := await _read(mass, uri, key, item_type)) is None:
         if (fill := _fills.get(entry)) is None:
-            return cast("list[ItemT]", await _assemble(mass, entry, uri, key, assemble))
+            assembled = await _assemble(mass, entry, uri, key, assemble)
+            # the request that assembles the listing sees the state a cached one would carry
+            return cast(
+                "list[ItemT]", await with_user_favorites(mass, get_current_user(), assembled)
+            )
         # a concurrent request is assembling the listing: what it keeps is read on the next
         # round, what it does not keep (or when it goes away) is assembled here, as the
         # calling user, and its failure is this request's failure too
