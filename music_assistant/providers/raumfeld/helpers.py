@@ -46,18 +46,18 @@ def parse_serial_number(description_xml: str | None) -> str | None:
 
     :param description_xml: The renderer's device description XML.
     """
-    if not description_xml or not description_xml.strip():
-        return None
-    try:
-        root = DefusedET.fromstring(description_xml)
-    except DefusedET.ParseError, ValueError:
-        return None
-    # the description is namespaced (urn:schemas-upnp-org:device-1-0); the root device's
-    # serial comes first, ahead of any embedded devices
-    for element in root.iter():
-        if element.tag.rsplit("}", 1)[-1] == "serialNumber":
-            return (element.text or "").strip() or None
-    return None
+    return _parse_description_field(description_xml, "serialNumber")
+
+
+def parse_model_name(description_xml: str | None) -> str | None:
+    """
+    Return the ``modelName`` from a UPnP device description, or ``None``.
+
+    Malformed or empty XML, or a description without a model name, yields ``None``.
+
+    :param description_xml: The renderer's device description XML.
+    """
+    return _parse_description_field(description_xml, "modelName")
 
 
 def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:
@@ -136,3 +136,24 @@ def parse_line_in(didl_xml: str | None) -> dict[str, tuple[str, str]]:
         name = title.text if title is not None and title.text else "Line-in"
         result[uuid] = (res.text.strip(), name)
     return result
+
+
+def _parse_description_field(description_xml: str | None, field: str) -> str | None:
+    """
+    Return the text of a root-device field in a UPnP device description, or ``None``.
+
+    :param description_xml: The device description XML.
+    :param field: The element name to look up, without namespace.
+    """
+    if not description_xml or not description_xml.strip():
+        return None
+    try:
+        root = DefusedET.fromstring(description_xml)
+    except DefusedET.ParseError, ValueError:
+        return None
+    # the description is namespaced (urn:schemas-upnp-org:device-1-0); the root device's
+    # own fields come first, ahead of any embedded devices
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] == field:
+            return (element.text or "").strip() or None
+    return None

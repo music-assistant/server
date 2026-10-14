@@ -57,6 +57,7 @@ from music_assistant.helpers.compare import (
     compare_track,
     compare_track_evidence,
     compare_track_title,
+    get_keep_remasters_apart,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
@@ -168,6 +169,7 @@ class TracksController(MediaControllerBase[Track]):
                 'item_id', albums.item_id,
                 'provider', 'library',
                     'name', albums.name,
+                    'version', COALESCE(albums.version, ''),
                     'sort_name', albums.sort_name,
                     'media_type', 'album',
                     'year', albums.year,
@@ -1619,6 +1621,19 @@ class TracksController(MediaControllerBase[Track]):
     async def _update_library_item_for_merge(self, item_id: int, update: Track) -> None:
         """Merge track model state without replacing existing album relations."""
         await self._update_library_item(item_id, update, set_album=False)
+
+    async def _verify_musicbrainz_mapping(self, db_item: Track, mapping: ProviderMapping) -> bool:
+        """Return True if a linked track may be added, checked while remasters are kept apart."""
+        if not get_keep_remasters_apart():
+            return True
+        # a MusicBrainz recording also covers its remasters, so its link names no version
+        try:
+            prov_track = await self.get_provider_item(
+                mapping.item_id, mapping.provider_instance, allow_fallback=False
+            )
+        except MusicAssistantError, ClientError, TimeoutError:
+            return False
+        return compare_track(db_item, prov_track, strict=True)
 
     async def _set_track_album(
         self,
