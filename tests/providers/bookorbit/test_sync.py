@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Audiobook, ProviderMapping
 
+from music_assistant.controllers.music.media.base import AudiobookSyncDetails
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.helpers import library_may_contain_audio
 
@@ -109,3 +114,69 @@ async def test_sync_library_reuses_catalog_within_ttl(provider: BookOrbitProvide
         await provider.sync_library(MediaType.ARTIST)
     assert calls_after_audiobook > 0
     assert get_book.call_count == calls_after_audiobook
+
+
+def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitProvider) -> None:
+    """Metadata edits bump updatedAt; that must trigger a library update."""
+    mapping_old = ProviderMapping(
+        item_id="1",
+        provider_domain="bookorbit",
+        provider_instance=provider.instance_id,
+        details="2026-01-01T00:00:00.000Z",
+        in_library=True,
+    )
+    mapping_new = ProviderMapping(
+        item_id="1",
+        provider_domain="bookorbit",
+        provider_instance=provider.instance_id,
+        details="2026-10-14T20:00:00.000Z",
+        in_library=True,
+    )
+    library = AudiobookSyncDetails(
+        item_id=1,
+        date_added=datetime(2026, 1, 1, tzinfo=UTC),
+        provider_mappings={mapping_old},
+        artist_links=frozenset(),
+        authors=(),
+        narrators=(),
+        fully_played=None,
+        resume_position_ms=None,
+    )
+    prov_item = Audiobook(
+        item_id="1",
+        provider=provider.instance_id,
+        name="Updated Title",
+        provider_mappings={mapping_new},
+        duration=100,
+    )
+    with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
+        assert provider._library_item_needs_update(library, prov_item) is True
+    mapping_same = ProviderMapping(
+        item_id="1",
+        provider_domain="bookorbit",
+        provider_instance=provider.instance_id,
+        details="2026-01-01T00:00:00.000Z",
+        in_library=True,
+    )
+    prov_same = Audiobook(
+        item_id="1",
+        provider=provider.instance_id,
+        name="Same",
+        provider_mappings={mapping_same},
+        duration=100,
+    )
+    with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
+        assert provider._library_item_needs_update(library, prov_same) is False
+
+
+@pytest.mark.asyncio
+async def test_sync_library_forces_catalog_refresh(provider: BookOrbitProvider) -> None:
+    """An audiobook library sync always re-fetches BookOrbit, ignoring the TTL."""
+    provider._catalog_refreshed_at = time.monotonic()
+    provider._catalog = {"1": {"id": 1}}
+    with (
+        patch.object(provider, "_fetch_catalog", new_callable=AsyncMock) as fetch,
+        patch.object(MusicProvider, "sync_library", new_callable=AsyncMock),
+    ):
+        await provider.sync_library(MediaType.AUDIOBOOK)
+    fetch.assert_awaited_once()

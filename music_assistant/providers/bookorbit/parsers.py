@@ -109,6 +109,8 @@ def parse_audiobook(
                 item_id=item_id,
                 provider_domain=DOMAIN,
                 provider_instance=provider_instance_id,
+                # MA only re-imports when mappings/date_added change; updatedAt forces a refresh
+                details=str(book.get("updatedAt") or ""),
             )
         },
         publisher=book.get("publisher"),

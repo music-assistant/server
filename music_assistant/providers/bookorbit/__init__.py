@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.controllers.music.media.base import LibraryItemSyncDetails
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
@@ -192,7 +193,11 @@ class BookOrbitProvider(MusicProvider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Refresh the catalog of audiobooks, then sync audiobooks / artists from it."""
-        if media_type in (MediaType.AUDIOBOOK, MediaType.ARTIST):
+        if media_type == MediaType.AUDIOBOOK:
+            # Always re-fetch BookOrbit on an explicit library sync so metadata edits land.
+            await self._refresh_catalog(force=True)
+        elif media_type == MediaType.ARTIST:
+            # Reuse the catalog just built by the audiobook sync when still fresh.
             await self._refresh_catalog()
         await super().sync_library(media_type)
 
@@ -382,6 +387,28 @@ class BookOrbitProvider(MusicProvider):
         if MediaType.ARTIST in media_types:
             results.artists = await self._search_artists(query, limit)
         return results
+
+    def _library_item_needs_update(
+        self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
+    ) -> bool:
+        """Also refresh when BookOrbit ``updatedAt`` (mapping details) changed."""
+        if super()._library_item_needs_update(library_item, prov_item):
+            return True
+        for prov_map in prov_item.provider_mappings:
+            if prov_map.provider_instance != self.instance_id:
+                continue
+            lib_map = next(
+                (
+                    x
+                    for x in library_item.provider_mappings
+                    if x.provider_instance == prov_map.provider_instance
+                    and x.item_id == prov_map.item_id
+                ),
+                None,
+            )
+            if lib_map is None or prov_map.details != lib_map.details:
+                return True
+        return False
 
     async def _get_book(self, item_id: str, *, fresh: bool = False) -> dict[str, Any]:
         """Return the BookDetail of a book (from the catalog unless fresh is requested)."""

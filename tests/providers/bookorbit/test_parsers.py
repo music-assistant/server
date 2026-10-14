@@ -31,6 +31,7 @@ def test_parse_audiobook_core_fields(book_audiobook: dict[str, Any]) -> None:
     assert mapping.item_id == "42"
     assert mapping.provider_domain == "bookorbit"
     assert mapping.provider_instance == INSTANCE
+    assert mapping.details == book_audiobook["updatedAt"]
 
 
 def test_parse_audiobook_metadata(book_audiobook: dict[str, Any]) -> None:
