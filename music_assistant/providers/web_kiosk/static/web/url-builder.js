@@ -5,7 +5,7 @@
         var target = new URL('/kiosk', output.dataset.base);
         var mode = document.querySelector('input[name="mode"]:checked').value;
         if (mode === 'html5') target.searchParams.set('sendspin', '0');
-        ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'remote', 'lite', 'wake_lock', 'fullscreen'].forEach(function (name) {
+        ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'show_group', 'remote', 'lite', 'wake_lock', 'fullscreen'].forEach(function (name) {
             var option = document.getElementById(name);
             if (option && option.checked) target.searchParams.set(name, '1');
         });

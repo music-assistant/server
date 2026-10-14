@@ -228,6 +228,24 @@ class WebKioskPlayer(Player):
                 start=stream_start,
             )
 
+    async def refresh_stream(self) -> bool:
+        """Rebuild a finite queued HTML5 stream at its current song position."""
+        media = self.current_media
+        if not media or not media.queue_item_id or not media.source_id:
+            return False
+        duration, start = media_timeline(media)
+        position = self.corrected_elapsed_time
+        if not duration or position is None or position < 1:
+            return False
+        paused = self.playback_state == PlaybackState.PAUSED
+        with self.suppress_ws_notify():
+            await self.mass.players.cmd_seek(
+                self.player_id, min(int(start + position), int(duration))
+            )
+            if paused:
+                await self.mass.players.cmd_pause(self.player_id)
+        return True
+
     async def play(self) -> None:
         """Handle PLAY (resume) command."""
         self.logger.info("play (resume) on %s", self.display_name)

@@ -107,9 +107,22 @@ class WebKioskProvider(PlayerProvider):
         self.sendspin_bridge_enabled = bool(
             self.config.get_value(CONF_ENABLE_SENDSPIN_BRIDGE, DEFAULT_ENABLE_SENDSPIN_BRIDGE)
         )
-        self.bridge_manager = WebKioskSendspinBridgeManager(self)
-        self.http_server = WebKioskHTTPServer(self, port)
-        await self.http_server.start()
+        try:
+            self.bridge_manager = WebKioskSendspinBridgeManager(self)
+            self.http_server = WebKioskHTTPServer(self, port)
+            await self.http_server.start()
+        except Exception, asyncio.CancelledError:
+            try:
+                if self.http_server:
+                    await self.http_server.stop()
+            finally:
+                self.http_server = None
+                try:
+                    if self.bridge_manager:
+                        await self.bridge_manager.close()
+                finally:
+                    self.bridge_manager = None
+            raise
         self.logger.info("Web Kiosk provider initialized, HTTP server on port %s", port)
 
     async def loaded_in_mass(self) -> None:

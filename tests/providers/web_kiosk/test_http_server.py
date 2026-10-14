@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -718,4 +718,101 @@ async def test_browser_device_info_describes_browser(
     assert player.device_info.manufacturer == "Google Inc."
     assert player.device_info.software_version == "129.0.0.0"
     assert welcome["device_info"]["model"] == player.device_info.model
+    await ws.close()
+
+
+async def test_same_origin_routes_do_not_expose_wildcard_cors(
+    http_client: TestClient[Any, Any],
+) -> None:
+    """Untrusted origins cannot read kiosk pages, Party credentials or API responses."""
+    for path in ("/", "/kiosk", "/api/party", "/health"):
+        response = await http_client.get(path, headers={"Origin": "https://untrusted.example"})
+        assert "Access-Control-Allow-Origin" not in response.headers
+    response = await http_client.options(
+        "/api",
+        headers={"Origin": "https://untrusted.example", "Access-Control-Request-Method": "POST"},
+    )
+    assert "Access-Control-Allow-Origin" not in response.headers
+
+
+@pytest.mark.parametrize("paused", [False, True])
+async def test_html5_reconnect_prepares_stream_at_current_song_position(
+    http_client: TestClient[Any, Any], provider: WebKioskProvider, mass_mock: Mock, paused: bool
+) -> None:
+    """A reconnect gets a freshly sought stream rather than seeking unbuffered bytes."""
+    registered = WebKioskPlayer(provider, "wk_resume", name="Resume")
+    registered.update_state = Mock()  # type: ignore[misc,method-assign]
+    await registered.play_media(
+        PlayerMedia(
+            uri="track",
+            duration=180,
+            stream_duration=160,
+            title="Track",
+            source_id="wk_resume",
+            queue_item_id="item",
+            queue_session_id="session",
+        )
+    )
+    registered.note_seek(30)
+    if paused:
+        await registered.pause()
+    mass_mock.players.get_player.return_value = registered
+
+    seek_positions: list[int] = []
+
+    async def seek_stream(player_id: str, position: int) -> None:
+        assert player_id == "wk_resume"
+        expected = 50 if not seek_positions else 70
+        assert expected <= position <= expected + 1
+        seek_positions.append(position)
+        await registered.play_media(
+            PlayerMedia(
+                uri="track",
+                duration=180,
+                stream_duration=180 - position,
+                title="Track",
+                source_id="wk_resume",
+                queue_item_id="item",
+                queue_session_id="resumed",
+            )
+        )
+
+    mass_mock.players.cmd_seek = AsyncMock(side_effect=seek_stream)
+
+    async def pause_stream(_player_id: str) -> None:
+        await registered.pause()
+
+    mass_mock.players.cmd_pause = AsyncMock(side_effect=pause_stream)
+    ws = await http_client.ws_connect("/ws?device_id=resume")
+    await ws.receive_json()
+    async with asyncio.timeout(1):
+        while True:
+            message = await ws.receive_json()
+            if message.get("type") == "play":
+                break
+    assert 50 <= message["start"] <= 51
+    assert message["duration"] == 180
+    mass_mock.players.cmd_seek.assert_awaited_once()
+    if paused:
+        assert (await ws.receive_json())["type"] == "pause"
+    if paused:
+        await registered.play()
+    registered.note_seek(20)
+    if paused:
+        await registered.pause()
+    second = await http_client.ws_connect("/ws?device_id=resume")
+    await second.receive_json()
+
+    async def next_play(socket: Any) -> dict[str, Any]:
+        async with asyncio.timeout(1):
+            while True:
+                payload = await socket.receive_json()
+                if payload.get("type") == "play":
+                    return cast("dict[str, Any]", payload)
+
+    new_play = await next_play(second)
+    existing_play = await next_play(ws)
+    assert 70 <= new_play["start"] <= 71
+    assert existing_play["playback_generation"] == new_play["playback_generation"]
+    await second.close()
     await ws.close()

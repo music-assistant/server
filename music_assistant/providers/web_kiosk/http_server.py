@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import secrets
+from collections.abc import Callable
 from html import escape as html_escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
@@ -29,6 +30,8 @@ from .party import PartyAdapter
 from .player import WebKioskPlayer, media_timeline
 
 if TYPE_CHECKING:
+    from music_assistant.models.player import Player, PlayerMedia
+
     from .provider import WebKioskProvider
 
 logger = logging.getLogger(__name__)
@@ -80,8 +83,13 @@ class WebKioskHTTPServer:
         """Initialize the HTTP server."""
         self.provider = provider
         self.port = port
-        self.app = web.Application(middlewares=[self._cors_middleware])
+        self.app = web.Application(middlewares=[self._cache_middleware])
         self.app.on_response_prepare.append(self._deny_framing)
+        self.app.on_startup.append(self._subscribe_player_updates)
+        self.app.on_cleanup.append(self._unsubscribe_player_updates)
+        self._unsubscribe_state_updates: Callable[[], None] | None = None
+        self._media_signatures: dict[str, tuple[Any, ...]] = {}
+        self._group_signatures: dict[str, tuple[str | None, str | None]] = {}
         self._runner: web.AppRunner | None = None
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
         self._ws_volume_support: dict[web.WebSocketResponse, bool] = {}
@@ -175,6 +183,22 @@ class WebKioskHTTPServer:
             return
         msg = json.dumps({"type": "lyrics", "seq": seq, "lines": lines})
         for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_media(self, player_id: str, seq: int, media: PlayerMedia | None) -> None:
+        """Send effective track metadata without opening an HTML5 audio stream."""
+        msg = json.dumps(
+            {
+                "type": "media",
+                "wave_seq": seq,
+                "title": media.title if media else "",
+                "artist": media.artist if media else "",
+                "image_url": media.image_url if media else None,
+                "duration": media.duration if media else None,
+            }
+        )
+        for ws in list(self._ws_clients.get(player_id, set())):
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
@@ -273,28 +297,96 @@ class WebKioskHTTPServer:
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
 
-    @web.middleware
-    async def _cors_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
-        """
-        Add CORS headers to all responses.
+    async def _subscribe_player_updates(self, app: web.Application) -> None:
+        """Observe effective MA player state while this HTTP server is running."""
+        self._unsubscribe_state_updates = self.provider.mass.players.subscribe_player_state_update(
+            self._on_player_state_updated
+        )
 
-        Wildcard CORS is intentional: this server runs on LAN. The kiosk SPA
-        (/web) is served from the same origin, so playback-control calls are
-        same-origin. The audio route gets no header at all: a media element
-        plays a cross-origin source without CORS, and withholding it keeps a
-        cross-origin fetch() from reading the audio.
-        """
-        if request.method == "OPTIONS":
-            return web.Response(
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "*",
-                }
+    async def _unsubscribe_player_updates(self, app: web.Application) -> None:
+        """Release state subscriptions and connection metadata."""
+        if self._unsubscribe_state_updates:
+            self._unsubscribe_state_updates()
+            self._unsubscribe_state_updates = None
+        self._media_signatures.clear()
+        self._group_signatures.clear()
+
+    def _on_player_state_updated(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Publish effective Sendspin track changes to this server's connected browsers."""
+        if isinstance(player, WebKioskPlayer) and player.player_id in self._ws_clients:
+            self._publish_effective_media(player)
+        for player_id in tuple(self._ws_clients):
+            kiosk = self.provider.mass.players.get_player(player_id)
+            if kiosk is not None:
+                self._publish_group(kiosk)
+
+    def _publish_group(self, player: Player, *, force: bool = False) -> None:
+        """Publish actual MA group membership, including changes to the leader name."""
+        state = player.state
+        group_id = state.active_group or state.synced_to
+        # A linked output can join a group before the native player's state is refreshed.
+        output = self.provider.mass.players.get_player(player.active_output_protocol or "")
+        if not group_id and output is not None:
+            group_id = output.state.active_group or output.state.synced_to
+            if not group_id and len(output.state.group_members) > 1:
+                group_id = player.player_id
+        if not group_id and len(state.group_members) > 1:
+            group_id = player.player_id
+        group = self.provider.mass.players.get_player(group_id) if group_id else None
+        signature = (group_id, group.state.name if group else None)
+        if not force and self._group_signatures.get(player.player_id) == signature:
+            return
+        self._group_signatures[player.player_id] = signature
+        message = json.dumps(
+            {"type": "group", "group_id": signature[0], "group_name": signature[1]}
+        )
+        for ws in self._ws_clients.get(player.player_id, set()):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, message))
+
+    def _publish_effective_media(self, player: WebKioskPlayer, *, force: bool = False) -> None:
+        """Publish a new metadata generation for an active linked Sendspin output."""
+        if (
+            not player.sendspin_client_id
+            or player.active_output_protocol != player.sendspin_client_id
+        ):
+            return
+        media = (
+            player.state.current_media
+            if player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            else None
+        )
+        signature = (
+            (
+                media.uri,
+                media.source_id,
+                media.queue_item_id,
+                media.title,
+                media.artist,
+                media.image_url,
+                media.duration,
             )
+            if media
+            else ()
+        )
+        if not force and self._media_signatures.get(player.player_id) == signature:
+            return
+        self._media_signatures[player.player_id] = signature
+        seq = self.provider.next_wave_seq(player.player_id)
+        self.broadcast_media(player.player_id, seq, media)
+        if media:
+            self.provider.spawn_wave(player.player_id, seq)
+            self.provider.spawn_lyrics(player.player_id, seq)
+        else:
+            self.broadcast_wave(player.player_id, seq, None)
+            self.broadcast_lyrics(player.player_id, seq, [])
+
+    @web.middleware
+    async def _cache_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
+        """Keep kiosk pages fresh without exposing responses to other origins."""
         response: web.StreamResponse = await handler(request)
-        if not _is_audio_path(request.path):
-            response.headers["Access-Control-Allow-Origin"] = "*"
         if request.path in ("/", "/kiosk", "/web", "/builder-auth") or request.path.startswith(
             "/web/"
         ):
@@ -361,6 +453,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <label><input type="checkbox" id="lyrics"> Lyrics</label>
 <label><input type="checkbox" id="queue"> Queue</label>
 <label><input type="checkbox" id="show_player_id"> Player ID</label>
+<label><input type="checkbox" id="show_group"> Group name</label>
 <label><input type="checkbox" id="remote"> TV remote navigation</label>
 <label><input type="checkbox" id="lite"> Lightweight visuals</label>
 <label><input type="checkbox" id="wake_lock"> Keep screen awake when supported</label>
@@ -512,6 +605,8 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             self._ws_volume_support.pop(ws, None)
             self._update_volume_support(player_id)
             if not self._ws_clients.get(player_id):
+                self._media_signatures.pop(player_id, None)
+                self._group_signatures.pop(player_id, None)
                 self._ws_clients.pop(player_id, None)
                 offline_player = self.provider.mass.players.get_player(player_id)
                 if offline_player and isinstance(offline_player, WebKioskPlayer):
@@ -526,9 +621,18 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         self, ws: web.WebSocketResponse, player: WebKioskPlayer | None
     ) -> None:
         """Push the current play state to a freshly connected kiosk."""
-        if player is None or player.current_media is None:
+        if player is None:
             return
-        media = player.current_media
+        self._publish_group(player, force=True)
+        if player.sendspin_client_id and player.active_output_protocol == player.sendspin_client_id:
+            self._publish_effective_media(player, force=True)
+            return
+        if player.current_media is None:
+            return
+        refreshed = await player.refresh_stream()
+        media = cast("PlayerMedia | None", player.current_media)
+        if media is None:
+            return
         play_path = (
             f"/stream/{player.player_id}?token={self.provider.get_stream_token(player.player_id)}"
         )
@@ -546,24 +650,29 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             "start": stream_start,
             "wave_seq": wave_seq,
         }
-        await self._ws_send(ws, json.dumps(payload))
+        recipients = self._ws_clients.get(player.player_id, {ws}) if refreshed else {ws}
+        for client in tuple(recipients):
+            await self._ws_send(client, json.dumps(payload))
         self.provider.spawn_wave(player.player_id, wave_seq)
         self.provider.spawn_lyrics(player.player_id, wave_seq)
         # Position inside the served audio, including while paused. The song
         # clock on screen is start + this value. A paused reconnect used to
         # skip it and open the track at 0:00.
-        if player.elapsed_time is not None:
-            await self._ws_send(
-                ws, json.dumps({"type": "seek", "position": int(player.elapsed_time)})
-            )
+        if player.elapsed_time is not None and player.elapsed_time >= 1:
+            for client in tuple(recipients):
+                await self._ws_send(
+                    client, json.dumps({"type": "seek", "position": int(player.elapsed_time)})
+                )
         if player.playback_state == PlaybackState.PAUSED:
-            await self._ws_send(ws, json.dumps({"type": "pause"}))
+            for client in tuple(recipients):
+                await self._ws_send(client, json.dumps({"type": "pause"}))
         # The slider starts at 100. Send the real level so a reconnect does
         # not jump the volume on the first drag.
         if player.volume_level is not None:
-            await self._ws_send(
-                ws, json.dumps({"type": "volume", "level": int(player.volume_level)})
-            )
+            for client in tuple(recipients):
+                await self._ws_send(
+                    client, json.dumps({"type": "volume", "level": int(player.volume_level)})
+                )
 
     async def _handle_stream(self, request: web.Request) -> web.StreamResponse:
         """Redirect the kiosk audio element to the MA Streamserver URL."""

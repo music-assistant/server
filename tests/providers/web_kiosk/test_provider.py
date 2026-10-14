@@ -557,3 +557,21 @@ async def test_sendspin_identity_has_one_kiosk_owner(
         (("hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",), {"permanent": True}),
         (("wk_second",), {"permanent": True}),
     ]
+
+
+@pytest.mark.parametrize("failure", [OSError("Address already in use"), asyncio.CancelledError()])
+async def test_failed_initialization_releases_resources(
+    provider: WebKioskProvider, failure: BaseException
+) -> None:
+    """Setup failure and cancellation leave no bridge subscriptions or HTTP runner."""
+    with (
+        patch.object(WebKioskHTTPServer, "start", new_callable=AsyncMock, side_effect=failure),
+        patch.object(WebKioskHTTPServer, "stop", new_callable=AsyncMock) as stop,
+        patch.object(WebKioskSendspinBridgeManager, "close", new_callable=AsyncMock) as close,
+        pytest.raises(type(failure)),
+    ):
+        await provider.handle_async_init()
+    close.assert_awaited_once()
+    stop.assert_awaited_once()
+    assert provider.bridge_manager is None
+    assert provider.http_server is None

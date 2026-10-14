@@ -18,7 +18,7 @@
     var LITE = FLAG('lite');
     var KEEP_AWAKE = FLAG('wake_lock');
     document.documentElement.classList.toggle('lite', LITE);
-    var SHOW = { controls: FLAG('controls'), party: FLAG('party'), viz: FLAG('viz'), lyrics: FLAG('lyrics'), queue: FLAG('queue'), playerId: FLAG('show_player_id') };
+    var SHOW = { controls: FLAG('controls'), party: FLAG('party'), viz: FLAG('viz'), lyrics: FLAG('lyrics'), queue: FLAG('queue'), playerId: FLAG('show_player_id'), group: FLAG('show_group') };
     document.documentElement.classList.toggle('controls', SHOW.controls);
     document.documentElement.classList.toggle('no-grid', !window.CSS || !CSS.supports || !CSS.supports('display', 'grid'));
 
@@ -321,6 +321,19 @@
                 if (SENDSPIN) initSendspin();
                 if (audio.ended) reportTrackEnded();
                 break;
+            case 'group':
+                var groupLabel = document.getElementById('kiosk-group');
+                groupLabel.textContent = msg.group_name || '';
+                groupLabel.classList.toggle('hidden', !SHOW.group || !msg.group_id || !msg.group_name);
+                break;
+            case 'media':
+                if (typeof msg.wave_seq === 'number') takeServerWave(msg.wave_seq);
+                hasTrack = !!msg.title;
+                current = {title:msg.title || '', artist:msg.artist || '', image:msg.image_url || '', duration:msg.duration || 0, start:0};
+                displayHold = null;
+                renderNow();
+                sync();
+                break;
             case 'play':
                 endReported = false;
                 // A new track retires the previous curve. The matching wave
@@ -402,7 +415,7 @@
             case 'sendspin':
                 if (msg.url) {
                     var target = new URL(msg.url, location.protocol + '//' + location.host);
-                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'remote', 'lite', 'wake_lock', 'fullscreen', 'device_id', 'sendspin_url'].forEach(function (name) {
+                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'show_group', 'remote', 'lite', 'wake_lock', 'fullscreen', 'device_id', 'sendspin_url'].forEach(function (name) {
                         if (params.has(name) && !target.searchParams.has(name)) target.searchParams.set(name, params.get(name));
                     });
                     location.href = target.toString();
