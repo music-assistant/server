@@ -1864,7 +1864,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played = media_item.duration
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        self._forward_play_report(
+        await self._forward_play_report(
             media_item,
             user,
             fully_played=fully_played,
@@ -1967,7 +1967,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        self._forward_play_report(media_item, user, fully_played=False, position=0)
+        await self._forward_play_report(media_item, user, fully_played=False, position=0)
 
     @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
@@ -3490,7 +3490,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise MediaNotFoundError(msg)
         return resolved
 
-    def _forward_play_report(
+    async def _forward_play_report(
         self,
         media_item: MediaItemType,
         user: User | None,
@@ -3508,6 +3508,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param position: The last known position of the item in seconds.
         :param is_playing: Whether the item is still playing.
         """
+        if not is_playing:
+            # a pause, stop or end of an episode, or marking it (un)played, changes the played
+            # state its music source lists: the podcast's episodes are fetched anew from here
+            # on, and once more when the source has taken the report in
+            await self._drop_episode_listing(media_item)
         allowed = visible_playback_sources(self.mass, user) if user else None
         reported_to: set[str] = set()
         for prov_mapping in media_item.provider_mappings:
@@ -3551,10 +3556,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         try:
             await report
         finally:
-            # the cached episode listing holds the played state the music source reports,
-            # which a pause, stop or end of the episode, or marking it (un)played, changes
-            if not is_playing and isinstance(media_item, PodcastEpisode) and media_item.podcast:
-                await invalidate_listings(self.mass, media_item.podcast)
+            if not is_playing:
+                await self._drop_episode_listing(media_item)
+
+    async def _drop_episode_listing(self, media_item: MediaItemType) -> None:
+        """Drop the cached episode listing of the podcast a played episode belongs to."""
+        if isinstance(media_item, PodcastEpisode) and media_item.podcast:
+            await invalidate_listings(self.mass, media_item.podcast)
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """

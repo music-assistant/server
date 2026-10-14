@@ -220,8 +220,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
             lambda: self._list_provider_podcast(item_id, provider),
             item_type=PodcastEpisode,
         )
-        # the progress a user makes is filled in on every request, as it changes while
-        # listening; the cached listing only holds what the provider itself reports
+        # the progress the user made, as Music Assistant recorded it, is filled in on every
+        # request over what the provider reports, as it changes while listening
         await self._set_resume_positions(episodes, provider.instance_id)
         if fully_played is not None:
             episodes = [x for x in episodes if bool(x.fully_played) is fully_played]
@@ -558,12 +558,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
     async def _set_resume_positions(
         self, episodes: Sequence[PodcastEpisode], provider_instance_id: str
     ) -> None:
-        """Fill in the current user's resume info on the episodes their provider reports none for."""
-        pending = [x for x in episodes if x.fully_played is None and not x.resume_position_ms]
-        if not pending:
+        """Fill in the current user's resume info, over what the provider reports."""
+        if not episodes:
             return
         resume_rows = await self._get_resume_rows(provider_instance_id)
-        for episode in pending:
+        for episode in episodes:
             self._apply_resume_row(episode, resume_rows.get(episode.item_id))
 
     async def _get_resume_rows(self, provider_instance_id: str) -> dict[str, Mapping[str, Any]]:

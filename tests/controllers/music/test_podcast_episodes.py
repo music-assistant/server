@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iter
 from contextlib import contextmanager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
@@ -246,40 +246,69 @@ async def test_progress_on_a_cached_listing_is_the_calling_users(mass: MusicAssi
     assert provider.listings == 1
 
 
-async def test_the_progress_a_provider_reports_is_kept_over_the_playlog(
+async def test_the_users_progress_wins_over_what_the_provider_reports(
     mass: MusicAssistant,
 ) -> None:
-    """An episode arriving with its provider's progress keeps it, from the cache as well."""
+    """The progress Music Assistant recorded for the user wins over the provider's own."""
     provider = _StubPodcastProvider(_episodes(1))
     provider.episodes[0].fully_played = False
     provider.episodes[0].resume_position_ms = 5000
     await _add_progress(mass, "ep1", USER_A.user_id, seconds_played=90, fully_played=True)
-    with _with_provider(mass, provider), _as_user(USER_A):
+    with _with_provider(mass, provider):
         for _ in range(2):
+            with _as_user(USER_A):
+                (episode,) = await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
+            assert episode.fully_played is True
+            assert episode.resume_position_ms == 90000
+        # a user without progress of their own sees what the provider reports
+        with _as_user(USER_B):
             (episode,) = await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
-            assert episode.fully_played is False
-            assert episode.resume_position_ms == 5000
+        assert episode.fully_played is False
+        assert episode.resume_position_ms == 5000
     assert provider.listings == 1
 
 
-async def test_a_play_report_drops_the_cached_listing_of_its_podcast(
-    mass: MusicAssistant,
-) -> None:
-    """Once its provider was told an episode was (un)played, the podcast is fetched anew."""
+async def test_a_played_episode_shows_as_played_at_once(mass: MusicAssistant) -> None:
+    """
+    An episode marked (un)played shows so on the very next request.
+
+    The podcast is fetched anew at once, and once more when its provider has taken the report in.
+    """
     provider = _StubPodcastProvider(_episodes(2))
-    with _with_provider(mass, provider), _held_play_reports(mass) as deliver_reports:
-        await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
-        await mass.music.mark_item_played(provider.episodes[0], fully_played=True)
-        # until the provider is told, what it lists is what the cache holds
-        await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
-        assert provider.listings == 1
+    # the provider keeps progress of its own, which it has not heard of yet
+    provider.episodes[0].fully_played = False
+    provider.episodes[0].resume_position_ms = 5000
+    episode = provider.episodes[0]
+
+    async def _listed_episode() -> PodcastEpisode:
+        return (await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE))[0]
+
+    with (
+        _with_provider(mass, provider),
+        _held_play_reports(mass) as deliver_reports,
+        _as_user(USER_A),
+        patch.object(mass.webserver.auth, "get_user", AsyncMock(return_value=USER_A)),
+        # the user may play from the provider, which is not configured here
+        patch(
+            "music_assistant.controllers.music.controller.visible_playback_sources",
+            return_value=None,
+        ),
+    ):
+        await _listed_episode()
+        await mass.music.mark_item_played(episode, fully_played=True, userid=USER_A.user_id)
+        assert (await _listed_episode()).fully_played is True
+        assert provider.listings == 2
         await deliver_reports()
-        await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
-        await mass.music.mark_item_unplayed(provider.episodes[0])
+        await _listed_episode()
+        assert provider.listings == 3
+        await mass.music.mark_item_unplayed(episode, userid=USER_A.user_id)
+        # without the user's progress, what the provider reports shows
+        assert (await _listed_episode()).fully_played is False
+        assert provider.listings == 4
         await deliver_reports()
-        await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
+        await _listed_episode()
     assert provider.played == [("ep2", True), ("ep2", False)]
-    assert provider.listings == 3
+    assert provider.listings == 5
 
 
 async def test_the_progress_of_a_playing_episode_keeps_the_cached_listing(
