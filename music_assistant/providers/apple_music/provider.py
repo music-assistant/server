@@ -332,8 +332,7 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 self.instance_id, CONF_SYNC_SCHEDULE_MIGRATED, []
             ),
         )
-        # tracked per media type, since a media type with sync turned off keeps its stored
-        # schedule and only registers again once the user turns it back on
+        # per media type: one with sync turned off keeps its stored schedule until turned back on
         pending = [
             task
             for task in self.mass.tasks.get_tasks_by_metadata(
