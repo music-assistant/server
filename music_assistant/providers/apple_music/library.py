@@ -26,8 +26,7 @@ _TRACK_PAGE_SIZE = 100
 # Detail lookups for weak-mapped library tracks go out in batches of this many ids.
 _DETAIL_BATCH_SIZE = 100
 
-# Catalog enrichment batch size: 300 (the documented max) returns a 504, so cap at 150. This also
-# bounds the in-flight window, keeping a ~100k library from being materialized at once.
+# Ratings batch and yield window of the track sync, so a ~100k library is never held at once.
 _TRACK_SYNC_WINDOW = 150
 
 # Limit search fallback attempts per window to avoid rate limits/latency when many IDs are deprecated.
@@ -93,11 +92,14 @@ class AppleMusicLibraryManager:
         # Enrich and yield in bounded windows so the full library is never held in memory at once.
         catalog_items: dict[str, dict[str, Any]] = {}
         library_only_items: list[dict[str, Any]] = []
+        # include[songs] nests each catalog song's artists and albums under its catalog relationship
+        params: dict[str, Any] = {
+            "include": "catalog,albums,artists",
+            "include[songs]": "artists,albums",
+            "extend": "dateAdded",
+        }
         async for item in self.api.iter_all_items(
-            "me/library/songs",
-            include="catalog,albums,artists",
-            extend="dateAdded",
-            page_size=_TRACK_PAGE_SIZE,
+            "me/library/songs", page_size=_TRACK_PAGE_SIZE, **params
         ):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
@@ -253,29 +255,28 @@ class AppleMusicLibraryManager:
     async def _flush_catalog_tracks(
         self, library_items_by_catalog_id: dict[str, dict[str, Any]]
     ) -> AsyncGenerator[Track]:
-        """Enrich one window of catalog-backed library tracks with catalog detail and yield them."""
+        """Parse one window of catalog-backed library tracks from their catalog song and yield them."""
         if not library_items_by_catalog_id:
             return
         catalog_ids = list(library_items_by_catalog_id)
-        catalog_endpoint = f"catalog/{self.provider._storefront}/songs"
-        response = await self.api.get_data(
-            catalog_endpoint, ids=",".join(catalog_ids), include="artists,albums"
-        )
         rating_response = await self.api.get_ratings(catalog_ids, MediaType.TRACK)
         returned_catalog_ids: set[str] = set()
-        for item in response.get("data", []):
-            returned_catalog_ids.add(item["id"])
-            is_favourite = rating_response.get(item["id"])
-            parsed_track = parse_track(self.provider, item, is_favourite)
-            if library_item := library_items_by_catalog_id.get(item["id"]):
-                # the catalog resource has no dateAdded, so carry it over from the library row
-                _set_date_added(parsed_track, library_item)
-                if self._track_has_weak_album_mapping(parsed_track):
-                    parsed_library_track = parse_track(self.provider, library_item, is_favourite)
-                    if parsed_library_track.album and not self._track_has_weak_album_mapping(
-                        parsed_library_track
-                    ):
-                        parsed_track.album = parsed_library_track.album
+        for catalog_id, listing_item in library_items_by_catalog_id.items():
+            catalog_songs = listing_item.get("relationships", {}).get("catalog", {}).get("data")
+            if not catalog_songs:
+                # Apple leaves the catalog relationship empty for a withdrawn catalog id
+                continue
+            returned_catalog_ids.add(catalog_id)
+            is_favourite = rating_response.get(catalog_id)
+            parsed_track = parse_track(self.provider, catalog_songs[0], is_favourite)
+            # the catalog resource has no dateAdded, so carry it over from the library row
+            _set_date_added(parsed_track, listing_item)
+            if self._track_has_weak_album_mapping(parsed_track):
+                parsed_library_track = parse_track(self.provider, listing_item, is_favourite)
+                if parsed_library_track.album and not self._track_has_weak_album_mapping(
+                    parsed_library_track
+                ):
+                    parsed_track.album = parsed_library_track.album
             yield parsed_track
         # Handle deprecated catalog IDs: search replacement with per-window limit
         search_attempts = 0
