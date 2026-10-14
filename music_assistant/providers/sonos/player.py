@@ -18,7 +18,13 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 from aiohttp import ClientError
-from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
+from aiosonos.api.models import (
+    Container,
+    ContainerType,
+    GroupStatus,
+    MusicService,
+    SonosCapability,
+)
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
@@ -61,7 +67,7 @@ from music_assistant.providers.sonos.const import (
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
-    from aiosonos.api.models import PlaybackError
+    from aiosonos.api.models import GroupCoordinatorChanged, PlaybackError
     from aiosonos.group import SonosGroup
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.queue_item import QueueItem
@@ -94,6 +100,8 @@ REPORTED_ERROR_HISTORY = 16
 # seconds for a woken speaker's radio to come up, and for a queue load to start it playing
 WAKE_TIMEOUT = 15
 WAKE_PLAY_KICK_TIMEOUT = 2
+# seconds the new coordinator of a group moved outside MA gets to report the role
+MOVED_GROUP_TIMEOUT = 5
 
 
 class SonosPlayer(Player):
@@ -245,6 +253,11 @@ class SonosPlayer(Player):
         )
         self._on_unload_callbacks.append(
             self.client.subscribe(self._on_playback_error, SonosEventType.PLAYBACK_ERROR)
+        )
+        self._on_unload_callbacks.append(
+            self.client.subscribe(
+                self._on_group_coordinator_changed, SonosEventType.GROUP_COORDINATOR_CHANGED
+            )
         )
 
     async def get_config_entries(self) -> list[ConfigEntry]:
@@ -1228,6 +1241,72 @@ class SonosPlayer(Player):
         )
         if item_id := error.get("itemId"):
             self.release_failed_item(item_id)
+
+    def _on_group_coordinator_changed(self, event: SonosEvent) -> None:
+        """Stop our queue where the speakers took it when they moved this player's group."""
+        # when the coordinator leaves its group outside Music Assistant (the Sonos app, an
+        # Arc switching to TV), Sonos elects a member that carries on with a copy of our
+        # cloud queue; as when the leader leaves a sync group in MA, playback stops instead
+        data = cast("GroupCoordinatorChanged", event.data)
+        if data["groupStatus"] != GroupStatus.MOVED or not (queue_id := self.cloud_queue_id):
+            # a group change Music Assistant made itself stops our queue first
+            return
+        new_coordinator_id = data.get("playerId")
+        if not new_coordinator_id or new_coordinator_id == self.player_id:
+            return
+        self.mass.create_task(
+            self._stop_moved_group(new_coordinator_id, queue_id),
+            task_id=f"sonos_stop_moved_group_{self.player_id}",
+        )
+
+    async def _stop_moved_group(self, new_coordinator_id: str, queue_id: str) -> None:
+        """
+        Stop the playback the new coordinator of this player's former group carries on.
+
+        :param new_coordinator_id: The player the speakers made the group's coordinator.
+        :param queue_id: The queue this player served when its group moved.
+        """
+        new_coordinator = self.mass.players.get_player(new_coordinator_id)
+        if not isinstance(new_coordinator, SonosPlayer) or not new_coordinator.connected:
+            self.logger.debug(
+                "The group of %s moved to %s, which Music Assistant does not control",
+                self.display_name,
+                new_coordinator_id,
+            )
+            return
+
+        def _coordinates() -> bool:
+            player = new_coordinator.client.player
+            return player is not None and player.is_coordinator
+
+        # its own connection reports the role a moment after this player hears of the move
+        try:
+            async with asyncio.timeout(MOVED_GROUP_TIMEOUT):
+                while not _coordinates():
+                    await asyncio.sleep(0.1)
+        except TimeoutError:
+            self.logger.debug(
+                "%s did not report coordinating the group of %s",
+                new_coordinator.display_name,
+                self.display_name,
+            )
+            return
+        if self.cloud_queue_id != queue_id:
+            # this player was given something else to play in the meantime
+            return
+        self.logger.info(
+            "The speakers moved the group of %s to %s outside Music Assistant, stopping playback",
+            self.display_name,
+            new_coordinator.display_name,
+        )
+        self.cloud_queue_id = None
+        self.update_state()
+        try:
+            await new_coordinator.stop()
+        except FailedCommand as err:
+            self.logger.warning(
+                "Could not stop playback on %s: %s", new_coordinator.display_name, err
+            )
 
     async def _player_media_for_speaker(self, queue_item: QueueItem) -> PlayerMedia:
         """Return the media for a queue item, with its stream URL resolved for this player."""
