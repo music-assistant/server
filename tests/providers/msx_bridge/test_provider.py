@@ -100,14 +100,14 @@ async def test_get_ma_stream_url_accepts_universal_group_flow_media(
     assert url == stream_url
 
 
-def test_legacy_shared_mode_fallback_does_not_write_settings(provider: MSXBridgeProvider) -> None:
-    """Older MA versions keep independent delivery; MA core owns persistent migration."""
+def test_unknown_stream_mode_falls_back_to_redirect(
+    provider: MSXBridgeProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stored value outside the offered modes plays as redirect and is logged."""
     cast("Any", provider.config).get_value = Mock(return_value="shared")
-    set_raw_value = Mock()
-    cast("Any", provider.mass.config).set_raw_provider_config_value = set_raw_value
 
-    assert provider._load_stream_mode() == "independent"
-    set_raw_value.assert_not_called()
+    assert provider._load_stream_mode() == "redirect"
+    assert "Unknown stream delivery mode 'shared'" in caplog.text
 
 
 async def test_get_ma_stream_url_returns_none_on_error(
