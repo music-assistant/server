@@ -72,6 +72,7 @@ class WebKioskHTTPServer:
         self.app = web.Application(middlewares=[self._cors_middleware])
         self._runner: web.AppRunner | None = None
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
+        self._ws_volume_support: dict[web.WebSocketResponse, bool] = {}
         self.party = PartyAdapter(provider)
         self._setup_routes()
 
@@ -97,6 +98,7 @@ class WebKioskHTTPServer:
                 if not ws.closed:
                     await ws.close()
         self._ws_clients.clear()
+        self._ws_volume_support.clear()
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -347,9 +349,6 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 <label><input type="checkbox" id="wake_lock"> Keep screen awake when supported</label>
 </div>
 <div class="row">
-<input type="text" id="ma_url" placeholder="MA server URL (e.g. http://{host_addr}:8095)">
-</div>
-<div class="row">
 <input type="password" id="token" placeholder="MA auth token (optional)">
 </div>
 <div class="row">
@@ -382,9 +381,6 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         """Validate MA sign-in and store its token in a private browser cookie."""
         if rejected := self._reject_cross_site(request):
             return rejected
-        origin = request.headers.get("Origin")
-        if origin and origin != f"{request.scheme}://{request.host}":
-            return web.json_response({"error": "Cross-site request rejected"}, status=403)
         try:
             credentials = await request.json()
         except ValueError, TypeError:
@@ -453,39 +449,43 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         if player_id not in self._ws_clients:
             self._ws_clients[player_id] = set()
         self._ws_clients[player_id].add(ws)
-        self.provider.cancel_player_close(player_id)
-        announced = normalize_sendspin_client_id(request.query.get("sendspin_client_id"))
-        if player is not None and announced:
-            await self.provider.note_sendspin_client_id(player, announced)
-        logger.info(
-            "WebSocket connected: player_id=%s, clients_for_player=%d",
-            player_id,
-            len(self._ws_clients[player_id]),
-        )
-        if player and isinstance(player, WebKioskPlayer):
-            player.on_ws_connected()
-        # Tell the kiosk its server-derived player_id so it can target MA
-        # JSON-RPC playback commands before the first "play" push arrives.
-        await self._ws_send(
-            ws,
-            json.dumps(
-                {
-                    "type": "welcome",
-                    "player_id": player_id,
-                    "server_version": self.provider.mass.version,
-                }
-            ),
-        )
-        # A reconnecting/reloaded kiosk needs the current play state, otherwise it
-        # stays silent until the next playback command.
-        await self._send_snapshot(ws, player)
-
         try:
+            self._ws_volume_support[ws] = request.query.get("volume_control") == "1"
+            self._update_volume_support(player_id)
+            self.provider.cancel_player_close(player_id)
+            announced = normalize_sendspin_client_id(request.query.get("sendspin_client_id"))
+            if player is not None and announced:
+                await self.provider.note_sendspin_client_id(player, announced)
+            logger.info(
+                "WebSocket connected: player_id=%s, clients_for_player=%d",
+                player_id,
+                len(self._ws_clients[player_id]),
+            )
+            if player and isinstance(player, WebKioskPlayer):
+                player.on_ws_connected()
+            # Tell the kiosk its server-derived player_id so it can target MA
+            # JSON-RPC playback commands before the first "play" push arrives.
+            await self._ws_send(
+                ws,
+                json.dumps(
+                    {
+                        "type": "welcome",
+                        "player_id": player_id,
+                        "server_version": self.provider.mass.version,
+                    }
+                ),
+            )
+            # A reconnecting/reloaded kiosk needs the current play state, otherwise it
+            # stays silent until the next playback command.
+            await self._send_snapshot(ws, player)
+
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
-                    self._handle_ws_message(player_id, msg.data)
+                    self._handle_ws_message(player_id, msg.data, ws)
         finally:
             self._ws_clients.get(player_id, set()).discard(ws)
+            self._ws_volume_support.pop(ws, None)
+            self._update_volume_support(player_id)
             if not self._ws_clients.get(player_id):
                 self._ws_clients.pop(player_id, None)
                 offline_player = self.provider.mass.players.get_player(player_id)
@@ -643,8 +643,20 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             logger.warning("WebSocket send failed (player=%s): %s", player_id, exc)
             if player_id:
                 self._ws_clients.get(player_id, set()).discard(ws)
+                self._ws_volume_support.pop(ws, None)
+                self._update_volume_support(player_id)
 
-    def _handle_ws_message(self, player_id: str, data: str) -> None:
+    def _update_volume_support(self, player_id: str) -> None:
+        """Require all connected outputs to support the shared volume command."""
+        clients = self._ws_clients.get(player_id, set())
+        if player := self._get_kiosk_player(player_id):
+            player.set_volume_control_supported(
+                bool(clients) and all(self._ws_volume_support.get(ws, False) for ws in clients)
+            )
+
+    def _handle_ws_message(
+        self, player_id: str, data: str, ws: web.WebSocketResponse | None = None
+    ) -> None:
         """Process an inbound WebSocket message from the kiosk."""
         try:
             msg = json.loads(data)
@@ -652,8 +664,19 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             logger.debug("Invalid WS message from %s: %s", player_id, data)
             return
 
+        if not isinstance(msg, dict):
+            return
         msg_type = msg.get("type")
-        if msg_type == "position":
+        if msg_type == "capabilities":
+            supported = msg.get("volume_control")
+            if (
+                ws is not None
+                and ws in self._ws_clients.get(player_id, set())
+                and isinstance(supported, bool)
+            ):
+                self._ws_volume_support[ws] = supported
+                self._update_volume_support(player_id)
+        elif msg_type == "position":
             position = msg.get("position")
             if position is not None and isinstance(position, (int, float)):
                 player = self.provider.mass.players.get_player(player_id)
@@ -702,6 +725,9 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         omit the header entirely — both pass.
         """
         if request.headers.get("Sec-Fetch-Site", "").lower() not in {"", "same-origin", "none"}:
+            return web.json_response({"error": "Cross-site request rejected"}, status=403)
+        origin = request.headers.get("Origin")
+        if origin is not None and origin != f"{request.scheme}://{request.host}":
             return web.json_response({"error": "Cross-site request rejected"}, status=403)
         return None
 

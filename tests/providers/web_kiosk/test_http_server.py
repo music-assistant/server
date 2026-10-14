@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import TYPE_CHECKING, Any, Self
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientError, WSServerHandshakeError
-from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.enums import MediaType, PlayerFeature
+from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
 from music_assistant_models.player import PlayerMedia
 
 import music_assistant.providers.web_kiosk.party as party_module
@@ -547,3 +547,70 @@ async def test_ws_ignores_ended_without_a_playback_generation(
     await processed.wait()
     provider.track_ended.assert_not_called()
     await ws.close()
+
+
+@pytest.mark.parametrize("origin", ["https://untrusted.example", "null", "http://127.0.0.1:1"])
+async def test_legacy_ws_rejects_foreign_origin_before_registration(
+    http_client: TestClient[Any, Any], mass_mock: Mock, origin: str
+) -> None:
+    """Old browsers without Fetch Metadata cannot open a cross-origin player socket."""
+    with pytest.raises(WSServerHandshakeError) as error:
+        await http_client.ws_connect("/ws", headers={"Origin": origin})
+    assert error.value.status == 403
+    mass_mock.players.register.assert_not_awaited()
+
+
+async def test_legacy_ws_accepts_matching_origin(http_client: TestClient[Any, Any]) -> None:
+    """A same-origin legacy browser can still register without Fetch Metadata."""
+    origin = str(http_client.make_url("/")).rstrip("/")
+    ws = await http_client.ws_connect("/ws", headers={"Origin": origin})
+    assert (await ws.receive_json())["type"] == "welcome"
+    await ws.close()
+
+
+@pytest.mark.parametrize("volume_control", [None, "0", "1"])
+async def test_ws_reports_browser_volume_capability(
+    http_client: TestClient[Any, Any],
+    mass_mock: Mock,
+    player: WebKioskPlayer,
+    volume_control: str | None,
+) -> None:
+    """MA exposes volume only after the connected browser reports it can apply commands."""
+    mass_mock.players.get_player.return_value = player
+    query = "" if volume_control is None else "?volume_control=" + volume_control
+    ws = await http_client.ws_connect("/ws" + query)
+    await ws.receive_json()
+    assert (PlayerFeature.VOLUME_SET in player.supported_features) is (volume_control == "1")
+    if volume_control != "1":
+        before = player.volume_level
+        with pytest.raises(UnsupportedFeaturedException):
+            await player.volume_set(42)
+        assert player.volume_level == before
+    else:
+        await player.volume_set(42)
+        assert player.volume_level == 42
+    await ws.close()
+
+
+async def test_ws_volume_capability_tracks_sendspin_and_html5_playback(
+    http_client: TestClient[Any, Any], mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """Sendspin gains software volume, and returning to hardware-only HTML5 removes it."""
+    mass_mock.players.get_player.return_value = player
+    ws = await http_client.ws_connect("/ws?volume_control=0")
+    await ws.receive_json()
+    changed = asyncio.Event()
+    with patch.object(player, "update_state", side_effect=changed.set):
+        for supported in (True, False):
+            changed.clear()
+            await ws.send_json({"type": "capabilities", "volume_control": supported})
+            await asyncio.wait_for(changed.wait(), 1)
+            assert (PlayerFeature.VOLUME_SET in player.supported_features) is supported
+    await ws.close()
+
+
+async def test_builder_omits_inactive_ma_url_option(http_client: TestClient[Any, Any]) -> None:
+    """The builder does not offer a remote MA base URL the runtime cannot use."""
+    response = await http_client.get("/")
+    assert response.status == 200
+    assert 'id="ma_url"' not in await response.text()

@@ -54,7 +54,6 @@
     var sendspinStreaming = false;
     var sendspinAudioAt = 0;
     var sendspinReceivedAudio = false;
-    var MA_URL = (params.get('ma_url') || LS.get('wk_ma_url') || '').replace(/\/$/, '');
     var fragment = new URLSearchParams(location.hash.slice(1));
     var TOKEN = fragment.get('token') || params.get('token') || LS.get('wk_token') || '';
     if (fragment.has('token') || params.has('token')) {
@@ -64,7 +63,6 @@
         var hash = fragment.toString();
         history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + (hash ? '#' + hash : ''));
     }
-    if (MA_URL) LS.set('wk_ma_url', MA_URL);
     if (TOKEN) LS.set('wk_token', TOKEN);
 
     var playerId = '';
@@ -201,6 +199,7 @@
         reconnectTimer = null;
         var proto = location.protocol === 'https:' ? 'wss' : 'ws';
         var qs = 'device_id=' + encodeURIComponent(deviceId);
+        qs += '&volume_control=' + (mediaVolumeWritable || sendspinStreaming ? '1' : '0');
         if (sendspinClientId) qs += '&sendspin_client_id=' + encodeURIComponent(sendspinClientId);
         var socket = new WebSocket(proto + '://' + location.host + '/ws?' + qs);
         ws = socket;
@@ -278,6 +277,10 @@
         }).catch(function () { wakePending = false; });
     }
     function sendWS(obj) { if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify(obj)); } catch (e) { /* noop */ } } }
+    function reportVolumeCapability() {
+        sendWS({ type:'capabilities', volume_control:mediaVolumeWritable || sendspinStreaming });
+        syncVolume(audio.volume * 100);
+    }
     function reportTrackEnded() {
         if (endReported || !playbackGeneration || !audio.ended || isPrimeSource() || sendspinStreaming) return;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -309,6 +312,7 @@
                 playerLabel.classList.toggle('hidden', !SHOW.playerId);
                 setStatus('');
                 sync();
+                reportVolumeCapability();
                 if (TOKEN) { fetchQueue(); fetchParty(); }
                 if (SENDSPIN) initSendspin();
                 if (audio.ended) reportTrackEnded();
@@ -392,7 +396,7 @@
             case 'sendspin':
                 if (msg.url) {
                     var target = new URL(msg.url, location.protocol + '//' + location.host);
-                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'remote', 'lite', 'wake_lock', 'ma_url', 'device_id', 'sendspin_url'].forEach(function (name) {
+                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'remote', 'lite', 'wake_lock', 'device_id', 'sendspin_url'].forEach(function (name) {
                         if (params.has(name) && !target.searchParams.has(name)) target.searchParams.set(name, params.get(name));
                     });
                     location.href = target.toString();
@@ -1223,6 +1227,7 @@
         SENDSPIN = false;
         sendspinClientId = '';
         sendspinStreaming = false;
+        reportVolumeCapability();
         sendspinUnlocked = true;
         var failed = window.__sendspinPlayer;
         window.__sendspinPlayer = null;
@@ -1363,6 +1368,7 @@
             waveAnchor = songTime();
             waveAnchorAt = performance.now();
             sendspinStreaming = true;
+            reportVolumeCapability();
             audio.pause();
             audio.removeAttribute('src');
             pendingSeek = null;
@@ -1372,10 +1378,12 @@
         });
         chain('onStreamEnd', function () {
             sendspinStreaming = false;
+            reportVolumeCapability();
             if (audio.paused) { playing = false; sync(); }
         });
         chain('onStreamClear', function () {
             sendspinStreaming = false;
+            reportVolumeCapability();
         });
         chain('onAudioData', function () { sendspinReceivedAudio = true; });
     }

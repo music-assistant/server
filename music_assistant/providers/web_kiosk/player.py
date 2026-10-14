@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.errors import PlayerUnavailableError, UnsupportedFeaturedException
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
@@ -77,7 +77,6 @@ class WebKioskPlayer(Player):
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.PAUSE,
             PlayerFeature.SEEK,
-            PlayerFeature.VOLUME_SET,
         }
         self._attr_device_info = DeviceInfo(
             model="Web Kiosk",
@@ -129,6 +128,16 @@ class WebKioskPlayer(Player):
     def on_ws_disconnected(self) -> None:
         """Mark the player unavailable when its last WebSocket client disconnects."""
         self._attr_available = False
+        self.update_state()
+
+    def set_volume_control_supported(self, supported: bool) -> None:
+        """Expose volume control only when the connected browser can apply it."""
+        if supported == (PlayerFeature.VOLUME_SET in self._attr_supported_features):
+            return
+        if supported:
+            self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.VOLUME_SET)
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -194,6 +203,8 @@ class WebKioskPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command."""
+        if PlayerFeature.VOLUME_SET not in self.supported_features:
+            raise UnsupportedFeaturedException("Use the device volume controls")
         self._attr_volume_level = volume_level
         self.update_state()
         if not self._skip_ws_notify:
