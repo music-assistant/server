@@ -11,7 +11,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import ItemMapping
@@ -27,7 +27,6 @@ from music_assistant_models.statistics import (
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
-    DB_TABLE_ARTISTS,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_PLAY_HISTORY,
@@ -74,6 +73,47 @@ _TRACK_HISTORY_CTE = f"""
         WHERE play_history.userid = :user_id
             AND play_history.media_type = :media_type
             AND play_history.provider = 'library'
+            AND play_history.timestamp >= :cutoff_timestamp
+    )
+"""
+_TRACK_ARTISTS_CTE = f"""
+    track_artists AS (
+        SELECT DISTINCT
+            play_history.id AS play_id,
+            CASE
+                WHEN play_history.provider = 'library'
+                    THEN CAST(play_history.item_id AS INTEGER)
+                ELSE track_mappings.item_id
+            END AS track_id,
+            CASE
+                WHEN json_extract(artist_data.value, '$.provider') = 'library'
+                    THEN CAST(json_extract(artist_data.value, '$.item_id') AS TEXT)
+                WHEN artist_mappings.item_id IS NOT NULL
+                    THEN CAST(artist_mappings.item_id AS TEXT)
+                ELSE json_extract(artist_data.value, '$.item_id')
+            END AS item_id,
+            CASE
+                WHEN json_extract(artist_data.value, '$.provider') = 'library'
+                    OR artist_mappings.item_id IS NOT NULL THEN 'library'
+                ELSE json_extract(artist_data.value, '$.provider')
+            END AS provider,
+            json_extract(artist_data.value, '$.name') AS name,
+            json_extract(artist_data.value, '$.image') AS image
+        FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+        CROSS JOIN json_each(play_history.artists) AS artist_data
+        LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS track_mappings
+            ON track_mappings.media_type = play_history.media_type
+            AND track_mappings.provider_instance = play_history.provider
+            AND track_mappings.provider_item_id = play_history.item_id
+        LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS artist_mappings
+            ON artist_mappings.media_type = '{MediaType.ARTIST.value}'
+            AND artist_mappings.provider_instance =
+                json_extract(artist_data.value, '$.provider')
+            AND artist_mappings.provider_item_id =
+                json_extract(artist_data.value, '$.item_id')
+        WHERE play_history.artists IS NOT NULL
+            AND play_history.media_type = '{MediaType.TRACK.value}'
+            AND play_history.userid = :user_id
             AND play_history.timestamp >= :cutoff_timestamp
     )
 """
@@ -193,50 +233,20 @@ class StatisticsController(CoreController):
 
         if media_type == MediaType.ARTIST:
             query = f"""
-                WITH artist_history AS (
-                    SELECT
-                        CASE
-                            WHEN json_extract(artist_data.value, '$.provider') = 'library'
-                                THEN json_extract(artist_data.value, '$.item_id')
-                            WHEN artist_mappings.item_id IS NOT NULL
-                                THEN CAST(artist_mappings.item_id AS TEXT)
-                            ELSE json_extract(artist_data.value, '$.item_id')
-                        END AS item_id,
-                        CASE
-                            WHEN json_extract(artist_data.value, '$.provider') = 'library'
-                                OR artist_mappings.item_id IS NOT NULL THEN 'library'
-                            ELSE json_extract(artist_data.value, '$.provider')
-                        END AS provider,
-                        json_extract(artist_data.value, '$.name') AS name,
-                        json_extract(artist_data.value, '$.image') AS image
-                    FROM {DB_TABLE_PLAY_HISTORY} AS play_history,
-                        json_each(play_history.artists) AS artist_data
-                    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS artist_mappings
-                        ON artist_mappings.media_type = :artist_media_type
-                        AND artist_mappings.provider_instance =
-                            json_extract(artist_data.value, '$.provider')
-                        AND artist_mappings.provider_item_id =
-                            json_extract(artist_data.value, '$.item_id')
-                    WHERE play_history.userid = :user_id
-                        AND play_history.media_type = :track_media_type
-                        AND play_history.timestamp >= :cutoff_timestamp
-                        AND play_history.artists IS NOT NULL
-                )
+                WITH {_TRACK_ARTISTS_CTE}
                 SELECT
                     item_id,
                     provider,
-                    :artist_media_type AS media_type,
+                    '{MediaType.ARTIST.value}' AS media_type,
                     MAX(name) AS name,
                     MAX(image) AS image,
                     COUNT(*) AS play_count
-                FROM artist_history
+                FROM track_artists
                 GROUP BY item_id, provider
-                ORDER BY play_count DESC
+                ORDER BY play_count DESC, provider, item_id
             """
             params = {
                 "user_id": user_id,
-                "artist_media_type": MediaType.ARTIST.value,
-                "track_media_type": MediaType.TRACK.value,
                 "cutoff_timestamp": cutoff_timestamp,
             }
         else:
@@ -275,7 +285,7 @@ class StatisticsController(CoreController):
                     COUNT(*) as play_count
                 FROM normalized_history
                 GROUP BY item_id, provider, media_type
-                ORDER BY play_count DESC
+                ORDER BY play_count DESC, provider, item_id
             """
             params = {
                 "user_id": user_id,
@@ -385,37 +395,21 @@ class StatisticsController(CoreController):
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
-        # Extract artists from track plays and join with artists table for images
-        # Each track can have multiple artists, so we use json_each to expand the array
         query = f"""
-            WITH artist_plays AS (
-                SELECT
-                    json_extract(artist_data.value, '$.item_id') as item_id,
-                    json_extract(artist_data.value, '$.provider') as provider,
-                    json_extract(artist_data.value, '$.name') as name
-                FROM {DB_TABLE_PLAY_HISTORY},
-                     json_each(artists) as artist_data
-                WHERE userid = :user_id
-                    AND media_type = :media_type
-                    AND timestamp >= :cutoff_timestamp
-                    AND artists IS NOT NULL
-            )
+            WITH {_TRACK_ARTISTS_CTE}
             SELECT
-                ap.item_id,
-                ap.provider,
-                ap.name,
-                a.item_id as library_item_id,
-                a.metadata as metadata,
+                track_artists.item_id,
+                track_artists.provider,
+                MAX(track_artists.name) as name,
+                MAX(track_artists.image) as image,
                 COUNT(*) as play_count
-            FROM artist_plays ap
-            LEFT JOIN {DB_TABLE_ARTISTS} a ON LOWER(a.name) = LOWER(ap.name)
-            GROUP BY ap.item_id, ap.provider
-            ORDER BY play_count DESC
+            FROM track_artists
+            GROUP BY track_artists.item_id, track_artists.provider
+            ORDER BY play_count DESC, track_artists.provider, track_artists.item_id
         """
 
         params = {
             "user_id": user_id,
-            "media_type": MediaType.TRACK.value,
             "cutoff_timestamp": cutoff_timestamp,
         }
 
@@ -427,27 +421,14 @@ class StatisticsController(CoreController):
 
         for row in rows:
             provider = row["provider"]
-
-            # If artist exists in library, use library ID and provider
-            if row["library_item_id"]:
-                item_id = str(row["library_item_id"])
-                provider = "library"
-            else:
-                item_id = row["item_id"]
-
-            # Extract image from artist metadata
             image = None
-            if row["metadata"]:
-                metadata_dict = json_loads(row["metadata"])
-                if metadata_dict and "images" in metadata_dict and metadata_dict["images"]:
-                    # Get first thumb image from metadata
-                    for img in metadata_dict["images"]:
-                        if img.get("type") == ImageType.THUMB.value:
-                            image = MediaItemImage.from_dict(img)
-                            break
+            if row["image"]:
+                image_dict = json_loads(row["image"])
+                if image_dict:
+                    image = MediaItemImage.from_dict(image_dict)
 
             item_mapping = ItemMapping(
-                item_id=item_id,
+                item_id=row["item_id"],
                 provider=provider,
                 media_type=MediaType.ARTIST,
                 name=row["name"],
@@ -635,20 +616,17 @@ class StatisticsController(CoreController):
 
         if group_by == "artist":
             query = f"""
-                WITH {_TRACK_HISTORY_CTE}, artist_plays AS (
+                WITH {_TRACK_ARTISTS_CTE}, artist_plays AS (
                     SELECT
-                        json_extract(artist_data.value, '$.item_id') as artist_item_id,
-                        json_extract(artist_data.value, '$.provider') as artist_provider,
-                        json_extract(artist_data.value, '$.name') as name,
+                        track_artists.play_id,
+                        track_artists.item_id AS artist_item_id,
+                        track_artists.provider AS artist_provider,
+                        track_artists.name AS name,
                         tracks.duration as duration
-                    FROM history_tracks
-                    INNER JOIN {DB_TABLE_PLAY_HISTORY} as play_history
-                        ON play_history.id = history_tracks.play_id
+                    FROM track_artists
                     INNER JOIN {DB_TABLE_TRACKS} as tracks
-                        ON tracks.item_id = history_tracks.track_id
-                    CROSS JOIN json_each(play_history.artists) as artist_data
-                    WHERE play_history.artists IS NOT NULL
-                        AND tracks.duration > 0
+                        ON tracks.item_id = track_artists.track_id
+                    WHERE tracks.duration > 0
                 )
                 SELECT
                     artist_item_id,
@@ -657,7 +635,7 @@ class StatisticsController(CoreController):
                     SUM(duration) as total_seconds
                 FROM artist_plays
                 GROUP BY artist_item_id, artist_provider
-                ORDER BY total_seconds DESC
+                ORDER BY total_seconds DESC, artist_provider, artist_item_id
             """
         else:
             query = f"""

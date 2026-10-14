@@ -183,6 +183,91 @@ async def test_top_items_artist_tab_counts_track_history(mass: MusicAssistant) -
     ] == [(str(library_artist_id), "library", 2), ("unmapped-artist", "test-provider", 1)]
 
 
+async def test_artist_aggregations_merge_provider_artist_mappings(
+    mass: MusicAssistant,
+) -> None:
+    """Artist distribution and listening time group all mapped artist identities together."""
+    user = await mass.webserver.auth.create_user("statistics-artist-mappings")
+    library_artist_id = 100
+    artist_mappings = (
+        ("apple_music--account", "apple-artist"),
+        ("tidal--account", "tidal-artist"),
+    )
+    for provider_instance, provider_artist_id in artist_mappings:
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": MediaType.ARTIST.value,
+                "item_id": library_artist_id,
+                "provider_domain": provider_instance.split("--", maxsplit=1)[0],
+                "provider_instance": provider_instance,
+                "provider_item_id": provider_artist_id,
+            },
+        )
+
+    plays = (
+        ("apple_music--account", "apple-track", "apple-artist", 120),
+        ("tidal--account", "tidal-track", "tidal-artist", 240),
+    )
+    for provider_instance, provider_track_id, provider_artist_id, duration in plays:
+        library_track_id = await mass.music.database.insert(
+            DB_TABLE_TRACKS,
+            {
+                "name": provider_track_id,
+                "sort_name": provider_track_id,
+                "duration": duration,
+                "metadata": "{}",
+                "search_name": provider_track_id,
+                "search_sort_name": provider_track_id,
+            },
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": MediaType.TRACK.value,
+                "item_id": library_track_id,
+                "provider_domain": provider_instance.split("--", maxsplit=1)[0],
+                "provider_instance": provider_instance,
+                "provider_item_id": provider_track_id,
+            },
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": provider_track_id,
+                "provider": provider_instance,
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": provider_track_id,
+                "timestamp": 1_000,
+                "artists": serialize_to_json(
+                    [
+                        {
+                            "item_id": provider_artist_id,
+                            "provider": provider_instance,
+                            "name": "Shared Artist",
+                        }
+                    ]
+                ),
+            },
+        )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        artist_distribution = await mass.statistics.get_artist_distribution(period="all_time")
+        listening_time = await mass.statistics.get_listening_time(
+            period="all_time", group_by="artist"
+        )
+
+    assert [
+        (result.item.item_id, result.item.provider, result.play_count)
+        for result in artist_distribution
+    ] == [(str(library_artist_id), "library", 2)]
+    assert [(result.name, result.minutes) for result in listening_time] == [("Shared Artist", 6.0)]
+
+
 async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssistant) -> None:
     """Artist duration sums use mapped track lengths and keep provider identities separate."""
     user = await mass.webserver.auth.create_user("statistics-artists")
