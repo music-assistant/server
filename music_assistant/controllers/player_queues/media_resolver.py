@@ -1236,8 +1236,8 @@ class MediaResolver:
         A track the album lists as another source's entry plays as the chosen source's own
         entry, when it has one. A track the chosen source does not have plays as the album
         lists it. When every track is ranked on its own, no source is chosen and nothing is
-        pinned; a track that is not in the library then plays the best entry listed by a
-        source the playback user may play from.
+        pinned; a track that is not in the library then plays the best entry a source the
+        playback user may play from serves.
 
         :param album: The album to play.
         :param start_item: Optional item_id/uri of the track to start from.
@@ -1297,8 +1297,8 @@ class MediaResolver:
         Choose the one source an album plays from, with the copy it serves of each track.
 
         Only the sources the playback user may play from count, each with the copies of the
-        listed tracks it can serve. An account of a streaming service also serves what the
-        accounts of that service the user may not play from list. No source is chosen when
+        listed tracks it can serve. An account of a streaming service also serves the listings
+        of that service's accounts the user may not play from. No source is chosen when
         the source selection settings pick the best copy for every track on its own; a track
         that is not in the library then plays the entry whose copy ranks best among the
         sources.
