@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 
 # Preferred artwork width; Tidal serves square art in a range of sizes.
 _PREFERRED_IMAGE_WIDTH = 750
+# Tidal serves artist pictures up to this width and album covers larger.
+_MAX_ARTIST_PICTURE_WIDTH = 750
 
 _ISO_DURATION_RE = re.compile(
     r"^P(?:\d+Y)?(?:\d+M)?(?:\d+W)?(?:\d+D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$"
@@ -106,7 +108,10 @@ def parse_artist(provider: TidalProvider, doc: JsonApiDocument, resource: dict[s
         artist.metadata.popularity = _scale_popularity(attributes["popularity"])
     if links := _parse_links(attributes):
         artist.metadata.links = links
-    if image := _resolve_image(provider, doc, resource, "profileArt"):
+    # An artist without a picture of their own gets one of their album covers as profile art
+    if not _is_album_cover(doc.related_one(resource, "profileArt")) and (
+        image := _resolve_image(provider, doc, resource, "profileArt")
+    ):
         artist.metadata.images = UniqueList([image])
     if biography := doc.related_one(resource, "biography"):
         if text := biography.get("attributes", {}).get("text"):
@@ -473,6 +478,12 @@ def _resolve_image(
         provider=provider.instance_id,
         remotely_accessible=True,
     )
+
+
+def _is_album_cover(artwork: dict[str, Any] | None) -> bool:
+    """Return whether an artwork is an album cover rather than an artist picture."""
+    files = (artwork or {}).get("attributes", {}).get("files") or []
+    return any(file.get("meta", {}).get("width", 0) > _MAX_ARTIST_PICTURE_WIDTH for file in files)
 
 
 def _select_image_url(files: list[dict[str, Any]]) -> str | None:

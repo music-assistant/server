@@ -105,6 +105,22 @@ def test_parse_artist(provider_mock: Mock) -> None:
     assert LinkType.TWITTER in link_types
 
 
+def test_parse_artist_skips_an_album_cover_as_profile_art(provider_mock: Mock) -> None:
+    """Test an artist whose profile art comes in album cover sizes gets no image."""
+    raw = json.loads((FIXTURES_DIR / "artist.json").read_text())
+    artwork = next(x for x in raw["included"] if x["type"] == "artworks")
+    href = artwork["attributes"]["files"][0]["href"]
+    artwork["attributes"]["files"] = [
+        {"href": href, "meta": {"width": width, "height": width}}
+        for width in (1280, 1080, 750, 640, 320, 160, 80)
+    ]
+    doc = JsonApiDocument(raw)
+
+    artist = parse_artist(provider_mock, doc, doc.data)
+
+    assert not artist.metadata.images
+
+
 def test_parse_artist_strips_wimplink_markup(provider_mock: Mock) -> None:
     """Test Tidal's internal [wimpLink] bio markup is stripped from the description."""
     doc = _load("artist_wimplink.json")
