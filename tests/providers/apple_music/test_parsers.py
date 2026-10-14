@@ -1,5 +1,6 @@
 """Regression tests for Apple Music parser and library fallbacks."""
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -258,6 +259,36 @@ def test_parse_album_regular_album_keeps_related_artists() -> None:
 
     assert isinstance(result, Album)
     assert [artist.name for artist in result.artists] == ["Paul McCartney"]
+
+
+def test_parse_album_full_release_date_sets_metadata_release_date() -> None:
+    """A full YYYY-MM-DD releaseDate is kept as a UTC datetime (needed for upcoming albums)."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Test Artist", "releaseDate": "2026-10-03"},
+        _artists_relationship("Test Artist"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert result.year == 2026
+    assert result.metadata.release_date == datetime(2026, 10, 3, tzinfo=UTC)
+
+
+def test_parse_album_year_only_release_date_keeps_year_without_date() -> None:
+    """A year-only releaseDate still sets the year but leaves release_date unset."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Test Artist", "releaseDate": "1998"},
+        _artists_relationship("Test Artist"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert result.year == 1998
+    assert result.metadata.release_date is None
 
 
 def test_parse_track_falls_back_to_album_name_when_relationship_missing() -> None:
@@ -814,21 +845,6 @@ async def test_get_album_tracks_uses_library_endpoint_for_library_id() -> None:
                     }
                 ]
             },
-            # Second call: get_album (called internally)
-            {
-                "data": [
-                    {
-                        "id": "l.PnamISl",
-                        "type": "library-albums",
-                        "attributes": {
-                            "name": "Uploaded Album",
-                            "artistName": "Uploaded Artist",
-                            "playParams": {"id": "l.PnamISl", "isLibrary": True},
-                        },
-                        "relationships": {},
-                    }
-                ]
-            },
         ]
     )
     provider.api_client.get_ratings = AsyncMock(return_value={})
@@ -836,10 +852,13 @@ async def test_get_album_tracks_uses_library_endpoint_for_library_id() -> None:
     manager = AppleMusicMediaManager(provider)
     tracks = await manager.get_album_tracks("l.PnamISl")
 
+    provider.api_client.get_data.assert_awaited_once()
     first_call_args = provider.api_client.get_data.call_args_list[0]
     assert first_call_args[0][0] == "me/library/albums/l.PnamISl/tracks"
     assert len(tracks) == 1
     assert tracks[0].name == "Track 1"
+    # no album name standing in as its id: the caller attaches the album it asked for
+    assert tracks[0].album is None
 
 
 @pytest.mark.asyncio

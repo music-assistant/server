@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 from typing import TYPE_CHECKING, Any, cast
@@ -40,12 +41,14 @@ if TYPE_CHECKING:
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
     from ya_passport_auth import Credentials
+    from ya_passport_auth.ma import ResolvedCredentials
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
 
 _LOGGER = logging.getLogger(__name__)
+_BORROW_SOURCE_LOAD_TIMEOUT = 10
 
 
 class YandexStationProvider(PlayerProvider):
@@ -440,22 +443,41 @@ class YandexStationProvider(PlayerProvider):
         if self._http_session is not None:
             await self._cleanup_session()
 
-        music_token = await self._borrow_source.resolve_music_token()
-        _, x_token = self._borrow_source.read_tokens()
+        creds = await self._resolve_borrowed_tokens()
 
         self._http_session = ClientSession(cookie_jar=CookieJar(quote_cookie=False))
         self._passport_client = PassportClient(session=self._http_session)
         self._session = YandexSession(
             self._http_session,
             self._passport_client,
-            x_token=x_token,
-            music_token=music_token,
+            x_token=creds.x_token,
+            music_token=creds.music_token,
             refresh_token=None,
         )
         if await self._refresh_session_cookies():
             return True
         await self._cleanup_session()
         return False
+
+    async def _resolve_borrowed_tokens(self) -> ResolvedCredentials:
+        """
+        Return the linked Yandex Music instance's credentials.
+
+        :raises ResourceTemporarilyUnavailable: The linked instance is not loaded
+            yet (MA retries the provider load) or Passport is unavailable.
+        :raises LoginFailed: The linked instance holds no usable credentials.
+        """
+        assert self._borrow_source is not None
+        source = self._borrow_source
+        if self.mass.get_provider(source.instance_id, return_unavailable=True) is None:
+            # Startup ordering: give Yandex Music one chance to finish loading.
+            # The event is domain-wide, so the selected instance is re-checked
+            # once by the read below; if it is still missing, the transient
+            # error is left to MA's provider-load retry instead of polling.
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(_BORROW_SOURCE_LOAD_TIMEOUT):
+                    await self.mass.get_provider_ready_event("yandex_music").wait()
+        return await source.resolve_credentials()
 
     async def _silent_reauth_borrowed(self) -> bool:
         """
@@ -469,11 +491,10 @@ class YandexStationProvider(PlayerProvider):
         assert self._borrow_source is not None
         if self._session is None:
             return False
-        music_token = await self._borrow_source.resolve_music_token()
-        _, x_token = self._borrow_source.read_tokens()
-        if x_token is not None:
-            self._session.x_token = x_token
-        self._session.music_token = music_token
+        creds = await self._borrow_source.resolve_credentials()
+        if creds.x_token is not None:
+            self._session.x_token = creds.x_token
+        self._session.music_token = creds.music_token
         return await self._refresh_session_cookies()
 
     async def _fast_path(self) -> bool:

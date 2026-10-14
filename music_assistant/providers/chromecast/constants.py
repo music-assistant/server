@@ -18,6 +18,7 @@ APP_MEDIA_RECEIVER = "CC1AD845"
 SENDSPIN_CAST_APP_ID = "DD107DDB"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
+CONF_DEFER_IDLE_VOLUME = "defer_idle_volume"
 DASHBOARD_NAMESPACE = "urn:x-cast:io.music-assistant.cast"
 
 # Seconds to wait for a Cast receiver to acknowledge an app launch.
@@ -76,6 +77,15 @@ CAST_PLAYER_CONFIG_ENTRIES = (
         default_value=True,
         advanced=True,
     ),
+)
+
+# some receivers accept a volume set while idle but keep playing at the old level,
+# so the user can opt in to have it sent at playback start instead
+CONF_ENTRY_DEFER_IDLE_VOLUME = ConfigEntry(
+    key=CONF_DEFER_IDLE_VOLUME,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    advanced=True,
 )
 
 # originally/officially cast supports 96k sample rate (even for groups)

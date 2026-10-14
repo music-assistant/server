@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Track
 
+from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_SOURCE_CAP,
@@ -237,7 +238,7 @@ class ManagedPool:
         for uri, media_item in items.items():
             if is_dynamic_source(media_item):
                 fill_mode = DynamicFillMode.DYNAMIC
-                candidates = await self._fetch_dynamic(media_item)
+                candidates = await self._fetch_dynamic(media_item, queue_data.userid)
             else:
                 # a finite source is materialized once, then its deque feeds (and is advanced by)
                 # every refill so it plays through instead of recycling tracks that age out
@@ -259,10 +260,13 @@ class ManagedPool:
             )
         return sources
 
-    async def _fetch_dynamic(self, media_item: MediaItemType) -> list[Track]:
+    async def _fetch_dynamic(self, media_item: MediaItemType, userid: str | None) -> list[Track]:
         """Fetch the next self-managed batch from a dynamic playlist or radio station."""
         with suppress(MusicAssistantError):
             tracks = await self.queues.get_dynamic_source_tracks(media_item)
+            # the batch is music picked for the user, so their dislikes stay out of it;
+            # the finite sources they added themselves are never filtered
+            tracks = await without_disliked_tracks(self.mass, userid, tracks)
             return [track for track in tracks if track.available]
         return []
 

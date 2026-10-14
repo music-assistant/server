@@ -27,6 +27,7 @@ USER_AGENT_HEADER = (
 
 GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
 MEDIA_GET_URL = "https://media.deezer.com/v1/get_url"
+GW_TIMEOUT = ClientTimeout(total=30)
 
 
 class DeezerGWError(Exception):
@@ -64,9 +65,12 @@ class GWClient:
     formats: list[dict[str, str]]
     user_country: str
 
-    def __init__(self, session: ClientSession, arl_token: str) -> None:
-        """Provide an aiohttp ClientSession and the deezer ARL token."""
+    def __init__(
+        self, session: ClientSession, arl_token: str, account_id: str | None = None
+    ) -> None:
+        """Provide an aiohttp ClientSession, the deezer ARL token and an optional Family profile."""
         self._arl_token = arl_token
+        self._account_id = account_id
         self.session = session
         # the session is shared server-wide, so this client keeps its cookies to itself
         self._cookies: dict[str, str] = {}
@@ -127,6 +131,7 @@ class GWClient:
         }
         url_response = await self.session.post(
             MEDIA_GET_URL,
+            timeout=GW_TIMEOUT,
             json=url_data,
             headers={"User-Agent": USER_AGENT_HEADER},
             cookies=self._request_cookies(MEDIA_GET_URL),
@@ -220,6 +225,12 @@ class GWClient:
     def _store_cookies(self, response: ClientResponse) -> None:
         """Store response cookies for this instance."""
         self._cookies.update({name: morsel.value for name, morsel in response.cookies.items()})
+        if "jwt" in response.cookies:
+            # user.loginMulti logs in like the web player. Pipe rejects every request with
+            # a jwt cookie, even a blanked one, so it must not stay in the shared jar.
+            self.session.cookie_jar.clear(
+                lambda morsel: morsel.key == "jwt" and morsel["domain"] == "deezer.com"
+            )
 
     async def _update_user_data(self) -> None:
         # Retry an anonymous response with the session cookies Deezer just returned.
@@ -231,6 +242,17 @@ class GWClient:
         else:
             msg = "The Deezer GW API returned no authenticated user after retrying."
             raise DeezerGWAuthError(msg)
+
+        if self._account_id and str(user_data["results"]["USER"]["USER_ID"]) != self._account_id:
+            # switch the session to the Family profile, the way Deezer's web player does
+            self._gw_csrf_token = user_data["results"]["checkForm"]
+            await self._gw_api_call(
+                "user.loginMulti", args={"account_id": int(self._account_id)}, retry=False
+            )
+            user_data = await self._gw_api_call("deezer.getUserData", False, retry=False)
+            if str(user_data["results"]["USER"]["USER_ID"]) != self._account_id:
+                msg = f"Deezer did not switch the session to Family profile {self._account_id}."
+                raise DeezerGWAuthError(msg)
 
         if not user_data["results"]["OFFER_ID"]:
             msg = "The Deezer account has no streaming subscription."
@@ -277,7 +299,7 @@ class GWClient:
             http_method,
             GW_LIGHT_URL,
             params=cast("Mapping[str, str]", parameters),
-            timeout=ClientTimeout(total=30),
+            timeout=GW_TIMEOUT,
             json=args,
             headers={"User-Agent": USER_AGENT_HEADER},
             cookies=self._request_cookies(GW_LIGHT_URL),

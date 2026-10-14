@@ -30,9 +30,15 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.camelot import camelot_key
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
-from .constants import SKIPPABLE_ITEM_ERRORS
+from .constants import (
+    BIT_DEPTH_HIRES,
+    BIT_DEPTH_LOSSLESS,
+    MEDIA_TAG_HIRES_LOSSLESS,
+    SKIPPABLE_ITEM_ERRORS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -82,6 +88,16 @@ _KEY_PITCH = {
     "A": "A",
     "Bb": "Bb",
     "B": "B",
+}
+# Tidal scales that sit on the major (B) or minor (A) side of the Camelot wheel.
+_CAMELOT_MODE = {
+    "MAJOR": "major",
+    "PENTATONIC_MAJOR": "major",
+    "MINOR": "minor",
+    "AEOLIAN": "minor",
+    "HARMONIC_MINOR": "minor",
+    "MELODIC_MINOR": "minor",
+    "PENTATONIC_MINOR": "minor",
 }
 
 
@@ -133,7 +149,9 @@ def parse_album(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
                 item_id=album_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                audio_format=AudioFormat(content_type=ContentType.FLAC),
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC, bit_depth=_bit_depth(attributes)
+                ),
                 url=f"https://tidal.com/album/{album_id}",
                 available=available,
             )
@@ -179,7 +197,6 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
     name, version = _split_title_version(
         attributes.get("title", "Unknown"), attributes.get("version") or None
     )
-    hi_res_lossless = "HIRES_LOSSLESS" in (attributes.get("mediaTags") or [])
     availability = attributes.get("availability")
     available = "STREAM" in availability if availability is not None else True
     track = Track(
@@ -195,7 +212,7 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
                     content_type=ContentType.FLAC,
-                    bit_depth=24 if hi_res_lossless else 16,
+                    bit_depth=_bit_depth(attributes),
                 ),
                 url=f"https://tidal.com/track/{track_id}",
                 available=available,
@@ -227,9 +244,14 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
         track.metadata.performers = performers
 
     bpm = attributes.get("bpm")
-    musical_key = _parse_musical_key(attributes.get("key"), attributes.get("keyScale"))
+    key, key_scale = attributes.get("key"), attributes.get("keyScale")
+    musical_key = _parse_musical_key(key, key_scale)
     if bpm is not None or musical_key:
-        track.audio_metadata = AudioMetadata(bpm=bpm, musical_key=musical_key)
+        track.audio_metadata = AudioMetadata(
+            bpm=bpm,
+            musical_key=musical_key,
+            camelot_key=_parse_camelot_key(key, key_scale),
+        )
 
     # The album relationship carries a minimal album resource; use an ItemMapping
     # (as with the unofficial API) and take the track image from the album cover.
@@ -438,6 +460,11 @@ def _parse_musical_key(key: str | None, scale: str | None) -> str | None:
     return pitch
 
 
+def _parse_camelot_key(key: str | None, scale: str | None) -> str | None:
+    """Build a Camelot wheel value (e.g. "11A") from Tidal's key and scale enums."""
+    return camelot_key(_KEY_PITCH.get(key or ""), _CAMELOT_MODE.get(scale or ""))
+
+
 def _map_album_type(
     album_type: str | None, name: str, version: str | None, various_artists: bool
 ) -> AlbumType:
@@ -490,3 +517,10 @@ def _select_image_url(files: list[dict[str, Any]]) -> str | None:
         return (below, distance)
 
     return str(min(usable, key=sort_key)["href"])
+
+
+def _bit_depth(attributes: Mapping[str, Any]) -> int:
+    """Return the bit depth implied by a resource's media tags."""
+    if MEDIA_TAG_HIRES_LOSSLESS in (attributes.get("mediaTags") or []):
+        return BIT_DEPTH_HIRES
+    return BIT_DEPTH_LOSSLESS

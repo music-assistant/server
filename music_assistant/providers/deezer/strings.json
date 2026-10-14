@@ -2,7 +2,20 @@
   "config_entries": {
     "arl_token": {
       "label": "ARL token",
-      "description": "Your Deezer ARL cookie token. See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+      "description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved. See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+    },
+    "family_profile": {
+      "label": "Deezer profile",
+      "description": "The profile of your Deezer Family whose library this source uses."
+    }
+  },
+  "setup_flow": {
+    "loading_profiles": {
+      "progress_text": "Loading your Deezer profiles..."
+    },
+    "profile": {
+      "title": "Choose a profile",
+      "description": "This ARL belongs to a Deezer Family. Pick the profile this source should use. To use several profiles, add Deezer once for each of them."
     }
   },
   "media": {

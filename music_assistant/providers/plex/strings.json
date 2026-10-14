@@ -132,7 +132,8 @@
     }
   },
   "errors": {
-    "no_libraries": "No compatible libraries were found on this Plex server."
+    "no_libraries": "No compatible libraries were found on this Plex server.",
+    "server_access_denied": "The Plex account you signed in with has no verified access to this Plex server. Check that the server is shared with this account, then sign in again."
   },
   "manifest": {
     "description": "Stream your personal music, podcasts, and radio via your Plex media server."

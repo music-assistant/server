@@ -38,6 +38,7 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
+from music_assistant.controllers.music.listing_cache import invalidate_listings
 from music_assistant.controllers.tasks.context import (
     get_current_task,
     report_current_task_failure,
@@ -60,11 +61,10 @@ from music_assistant.helpers.playlists import (
     media_item_to_playlist_item,
 )
 from music_assistant.helpers.provider_access import access_allows, visible_music_sources
-from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
+from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.plugin import PluginProvider
 
 from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
@@ -233,6 +233,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             if not tracks:
                 break
+            await self._add_audio_metadata(tracks)
             for track in tracks:
                 yield track
             page += 1
@@ -316,10 +317,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         if not supported_types:
             msg = f"Provider {provider.name} does not support creating playlists"
-            raise InvalidDataError(msg)
-
-        if not is_safe_name(name):
-            msg = f"{name} is not a valid Playlist name"
             raise InvalidDataError(msg)
 
         if len(media_types_set.difference(supported_types)) > 0:
@@ -576,8 +573,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if MediaType.TRACK not in provider.supported_media_types:
             raise InvalidDataError(f"Provider {provider.name} does not support track playlists")
         destination_name = name or source_playlist.name
-        if not is_safe_name(destination_name):
-            raise InvalidDataError(f"{destination_name} is not a valid Playlist name")
 
         user = get_current_user()
         source_provider, source_item_id = self._select_provider_id(source_playlist)
@@ -587,7 +582,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return_unavailable=True,
         )
         if (
-            not isinstance(source_provider_obj, MusicProvider | PluginProvider)
+            not isinstance(source_provider_obj, MediaCatalogMixin)
             or source_provider_obj.instance_id != source_provider
             or not source_provider_obj.available
         ):
@@ -789,7 +784,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
 
-    async def _handle_migrate_playlist(
+    async def _handle_migrate_playlist(  # noqa: C901, PLR0912
         self,
         source_playlist_id: str,
         source_playlist_item_id: str,
@@ -824,7 +819,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return_unavailable=True,
         )
         if (
-            not isinstance(source_provider_obj, MusicProvider | PluginProvider)
+            not isinstance(source_provider_obj, MediaCatalogMixin)
             or source_provider_obj.instance_id != source_provider
             or not source_provider_obj.available
         ):
@@ -1447,7 +1442,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 else None,
                 "owner": item.owner,
                 "is_editable": item.is_editable,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
@@ -1551,12 +1545,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise ProviderUnavailableError(
                 f"Provider {provider_instance_id_or_domain} is not available"
             )
-        if not isinstance(provider, MusicProvider | PluginProvider):
+        if not isinstance(provider, MediaCatalogMixin):
             return []
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
 
-    async def _handle_add_playlist_tracks(
+    async def _add_audio_metadata(self, items: Sequence[PlaylistPlayableItem]) -> None:
+        """
+        Fill in bpm and musical key from stored audio analysis on tracks that lack them.
+
+        :param items: One page of playlist items, updated in place.
+        """
+        tracks = [item for item in items if isinstance(item, Track) and item.audio_metadata is None]
+        if not tracks:
+            return
+        metadata = await self.mass.streams.audio_analysis.get_tracks_audio_metadata(tracks)
+        for track, track_metadata in zip(tracks, metadata, strict=True):
+            track.audio_metadata = track_metadata
+
+    async def _handle_add_playlist_tracks(  # noqa: C901, PLR0912
         self, db_playlist_id: str | int, uris: list[str], user_id: str | None
     ) -> None:
         """Handle adding playlist items inside a managed task."""
@@ -1634,7 +1641,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             media_type = MediaType(media_type_str)
             if media_type == MediaType.ALBUM:
                 album_tracks = await self.mass.music.albums.tracks(
-                    item_id, provider_instance_id_or_domain
+                    item_id, provider_instance_id_or_domain, limit=None
                 )
                 for track in album_tracks:
                     if track.uri is not None:
@@ -1833,6 +1840,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             {"item_id": int(playlist.item_id)},
             {"metadata": serialize_to_json(playlist.metadata)},
         )
+        await invalidate_listings(self.mass, playlist)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, playlist.uri, playlist)
 
     @staticmethod
@@ -1852,9 +1860,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 list(track_id_batch),
             )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PlaylistSummary:
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> PlaylistSummary:
         """Parse a raw summary db row into a PlaylistSummary object."""
-        item = cast("PlaylistSummary", super()._parse_summary_row(db_row))
+        item = cast("PlaylistSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.owner = db_row["owner"]
         item.is_editable = bool(db_row["is_editable"])
         item.is_dynamic = bool(db_row["is_dynamic"])

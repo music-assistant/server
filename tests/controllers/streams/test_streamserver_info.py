@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
 
 import aiohttp
 from music_assistant_models.auth import Scope
 
-from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, CONF_PUBLISH_IP, CONF_VALUE_AUTO
 from music_assistant.controllers.streams.controller import StreamsController, StreamServerInfo
+
+from .conftest import setup_streams
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -21,40 +21,19 @@ EXTERNAL_PUBLISH_IP = "203.0.113.9"
 PROBE_ORIGIN = "http://192.168.1.20:8095"
 
 
-async def _setup_streams(
-    controller: StreamsController, mass: MusicAssistant, publish_ip: str = CONF_VALUE_AUTO
-) -> int:
-    """
-    Run the streamserver's setup bound to loopback on an OS-assigned port, and return that port.
-
-    :param controller: The StreamsController to set up.
-    :param mass: The MusicAssistant instance owning the controller.
-    :param publish_ip: Address to configure as publish IP ("auto" to have it resolved).
-    """
-    config = await mass.config.get_core_config(controller.domain)
-    config.update({CONF_BIND_IP: LOOPBACK_IP, CONF_PUBLISH_IP: publish_ip, CONF_BIND_PORT: 0})
-    with (
-        patch(
-            "music_assistant.controllers.streams.controller.get_publish_ip_candidates",
-            AsyncMock(return_value=(LOOPBACK_IP,)),
-        ),
-        patch(
-            "music_assistant.controllers.streams.controller.check_ffmpeg_version",
-            AsyncMock(),
-        ),
-    ):
-        await controller.setup(config)
-    port = controller.publish_port
-    assert isinstance(port, int)
-    assert port != 0
-    return port
-
-
 async def test_info_reports_the_published_address(
     streams_controller: StreamsController, mass_minimal: MusicAssistant
 ) -> None:
     """The report carries the URL players are handed, on the port the server actually bound."""
-    port = await _setup_streams(streams_controller, mass_minimal, publish_ip=EXTERNAL_PUBLISH_IP)
+    # bind loopback and let the OS assign the port
+    port = await setup_streams(
+        streams_controller,
+        mass_minimal,
+        bind_ip=LOOPBACK_IP,
+        publish_ip=EXTERNAL_PUBLISH_IP,
+        all_ip_addresses=(LOOPBACK_IP,),
+        bind_port=0,
+    )
 
     info = streams_controller.get_streamserver_info()
 
@@ -78,7 +57,13 @@ async def test_info_route_answers_a_cross_origin_probe_with_the_server_id(
     streams_controller: StreamsController, mass_minimal: MusicAssistant
 ) -> None:
     """A probe from a page on another device gets the server id back."""
-    await _setup_streams(streams_controller, mass_minimal)
+    await setup_streams(
+        streams_controller,
+        mass_minimal,
+        bind_ip=LOOPBACK_IP,
+        all_ip_addresses=(LOOPBACK_IP,),
+        bind_port=0,
+    )
 
     async with (
         aiohttp.ClientSession() as session,
@@ -95,7 +80,13 @@ async def test_info_route_answers_the_cors_preflight(
     streams_controller: StreamsController, mass_minimal: MusicAssistant
 ) -> None:
     """A browser that asks first, before it probes, is allowed through."""
-    await _setup_streams(streams_controller, mass_minimal)
+    await setup_streams(
+        streams_controller,
+        mass_minimal,
+        bind_ip=LOOPBACK_IP,
+        all_ip_addresses=(LOOPBACK_IP,),
+        bind_port=0,
+    )
 
     async with (
         aiohttp.ClientSession() as session,

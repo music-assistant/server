@@ -1,6 +1,7 @@
 """Test Audible Provider."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -222,6 +223,21 @@ async def test_podcast_parent_fallback(helper: AudibleHelper) -> None:
 
     assert isinstance(episode, PodcastEpisode)
     assert episode.podcast.item_id == ""
+
+
+async def test_podcast_episode_release_date(helper: AudibleHelper) -> None:
+    """The publication timestamp of an episode becomes its release date."""
+    episode_data = {
+        "asin": "ep1",
+        "title": "Episode 1",
+        "relationships": [],
+        "release_date": "2022-08-21",
+        "publication_datetime": "2022-08-21T15:02:44Z",
+    }
+
+    episode = helper._parse_podcast_episode(episode_data, None, 0)
+
+    assert episode.metadata.release_date == datetime(2022, 8, 21, 15, 2, 44, tzinfo=UTC)
 
 
 def _mock_auth(locale: str) -> MagicMock:

@@ -78,7 +78,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Track
 
-from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENABLED
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -335,7 +335,10 @@ class MusicQuizPlugin(PluginProvider):
             self._quiz_type = None
             self._answer_type = None
         await self._close_playback_session()
-        if is_removed:
+        # the config is saved as disabled before unload, so this reads the new value
+        if is_removed or not self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_ENABLED, default=True
+        ):
             await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
         await super().unload(is_removed)
 

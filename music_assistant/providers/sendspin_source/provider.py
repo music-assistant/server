@@ -248,6 +248,7 @@ class SendspinSourceProvider(PluginProvider):
                     state.autostart_queue_session_id = None
                     self._cancel_pending_autostart(source_id, cancel_running=False)
                 else:
+                    autostart_session_id: str | None = None
                     if autostart_queue_id is not None:
                         autostart_session_id = (
                             state.autostart_queue_session_id

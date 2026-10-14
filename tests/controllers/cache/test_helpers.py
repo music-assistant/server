@@ -15,6 +15,11 @@ from music_assistant.constants import DB_TABLE_CACHE
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.cache.constants import BYPASS_CACHE
 from music_assistant.controllers.cache.helpers import use_cache
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.mass import MusicAssistant
 
 _PROVIDER = "test_cache_helpers"
@@ -46,6 +51,7 @@ class _FakeProvider:
         self.calls = 0
         self.result: str | None = None
         self.error: Exception | None = None
+        self.priorities: list[RequestPriority] = []
         # released by default, so tests that do not gate a call are unaffected
         self.gate = asyncio.Event()
         self.gate.set()
@@ -104,6 +110,7 @@ class _FakeProvider:
     async def _result(self) -> str | None:
         """Return the preset result once the gate is open, raising a preset error."""
         self.calls += 1
+        self.priorities.append(current_priority())
         await self.gate.wait()
         if self.error is not None:
             raise self.error
@@ -528,6 +535,24 @@ async def test_swr_refreshes_once_for_concurrent_callers(
 
     await _wait_for(_refreshed)
     assert provider.calls == 1
+
+
+async def test_swr_refresh_runs_with_low_priority(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that the background refresh of a stale entry is made as background work."""
+    await cache_controller.set(
+        "fetch_swr.a", "stale", provider=_PROVIDER, expiration=-1, allow_expired_cache=True
+    )
+    provider.result = "fresh"
+    with request_priority(RequestPriority.NORMAL):
+        assert await provider.fetch_swr("a") == "stale"
+
+    async def _refreshed() -> bool:
+        return bool(await cache_controller.get("fetch_swr.a", provider=_PROVIDER) == "fresh")
+
+    await _wait_for(_refreshed)
+    assert provider.priorities == [RequestPriority.LOW]
 
 
 async def test_completed_fetch_is_not_reused(

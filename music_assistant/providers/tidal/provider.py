@@ -102,6 +102,11 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self.streaming = TidalStreamingManager(self)
         self.play_reporting = TidalPlayReportingManager(self)
 
+    @property
+    def stream_format_supersedes_catalog(self) -> bool:
+        """Return True: Tidal's catalog carries a hi-res flag but no sample rate."""
+        return True
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
         Return the configuration (options) entries for the Tidal provider.

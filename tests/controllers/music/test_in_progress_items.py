@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import MediaType, ProviderSharing
 
-from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
-if TYPE_CHECKING:
-    import pytest
-
 GET_CURRENT_USER = "music_assistant.controllers.music.controller.get_current_user"
+
+
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
 
 
 async def _add_in_progress_row(
@@ -30,7 +33,7 @@ async def _add_in_progress_row(
 ) -> None:
     """Insert a single in-progress (partially played) playlog row."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": provider,

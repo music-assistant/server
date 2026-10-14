@@ -139,6 +139,18 @@ class SnapCastPlayer(Player):
         return []
 
     @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of the player."""
+        if self.active_output_protocol and self.active_output_protocol != "native":
+            # native volume only affects the snapclient's own stream, not whatever
+            # protocol is actually driving the output right now (support#6468)
+            return self._attr_supported_features - {
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+            }
+        return self._attr_supported_features
+
+    @property
     def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
         snap_stream = self._get_active_snapstream()
@@ -197,7 +209,7 @@ class SnapCastPlayer(Player):
         self._attr_needs_poll = True
         self._attr_poll_interval = SNAPCLIENT_LIVENESS_POLL_INTERVAL
         if not self._update_worker:
-            self._update_worker = self.mass.create_task(self._player_update_worker)
+            self._update_worker = self.mass.create_task(self._player_update_worker())
 
     async def poll(self) -> None:
         """Poll the snapserver so abruptly powered-off clients are detected."""

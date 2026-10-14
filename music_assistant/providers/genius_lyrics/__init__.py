@@ -10,6 +10,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.controllers.cache import use_cache
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 from lyricsgenius import Genius
+from requests.exceptions import RequestException
 
 from .helpers import clean_song_title, cleanup_lyrics
 
@@ -121,4 +123,12 @@ class GeniusProvider(MetadataProvider):
 
             return None
 
-        return await asyncio.to_thread(_fetch_lyrics, artist, title)
+        try:
+            return await asyncio.to_thread(_fetch_lyrics, artist, title)
+        except RequestException as err:
+            raise ResourceTemporarilyUnavailable("Genius request failed") from err
+        except AssertionError as err:
+            # lyricsgenius raises AssertionError on any non-200 API response
+            if not str(err).startswith("Unexpected response status code"):
+                raise
+            raise ResourceTemporarilyUnavailable("Genius request failed") from err

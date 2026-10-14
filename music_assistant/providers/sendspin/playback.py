@@ -31,6 +31,10 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from music_assistant_models.streamdetails import StreamDetails
+
     from music_assistant.helpers.dsp import ComplexFilter
 
     from .player import SendspinPlayer
@@ -100,7 +104,6 @@ class _BufferedFfmpegProcessor:
         # ~25ms worth of audio per read syscall.
         self._read_quantum_bytes = max(1, int(self._bytes_per_second * 0.025))
         self._produced_output_us = 0
-        self._pending_skip_bytes = 0
 
     async def start(self) -> None:
         await self._ffmpeg.start()
@@ -132,9 +135,7 @@ class _BufferedFfmpegProcessor:
             chunk = await self._ffmpeg.readexactly(read_size)
             if not chunk:
                 break
-            chunk = self._consume_pending_skip(chunk)
-            if chunk:
-                self._output_buffer.extend(chunk)
+            self._output_buffer.extend(chunk)
 
         out = bytes(self._output_buffer[:target_bytes])
         del self._output_buffer[:target_bytes]
@@ -158,9 +159,7 @@ class _BufferedFfmpegProcessor:
             if not chunk:
                 break
             self._produced_output_us += self._duration_us_for_bytes(len(chunk))
-            chunk = self._consume_pending_skip(chunk)
-            if chunk:
-                self._output_buffer.extend(chunk)
+            self._output_buffer.extend(chunk)
             if len(chunk) < self._read_quantum_bytes:
                 break
         return self._produced_output_us
@@ -172,9 +171,7 @@ class _BufferedFfmpegProcessor:
             if not chunk:
                 break
             self._produced_output_us += self._duration_us_for_bytes(len(chunk))
-            chunk = self._consume_pending_skip(chunk)
-            if chunk:
-                self._output_buffer.extend(chunk)
+            self._output_buffer.extend(chunk)
 
     def pop_duration_us(self, duration_us: int) -> bytes | None:
         """Pop exactly `duration_us` from already buffered output, or None if insufficient."""
@@ -190,44 +187,6 @@ class _BufferedFfmpegProcessor:
     def buffered_duration_us(self) -> int:
         """Return buffered output duration currently available for immediate pop."""
         return self._duration_us_for_bytes(len(self._output_buffer))
-
-    def pop_duration_us_or_pad(self, duration_us: int, pad_tolerance_us: int) -> bytes | None:
-        """Pop target duration; if short within tolerance, pad tail with silence."""
-        target_bytes = self._target_bytes_for_duration_us(duration_us)
-        if target_bytes == 0:
-            return b""
-        available = len(self._output_buffer)
-        if available >= target_bytes:
-            out = bytes(self._output_buffer[:target_bytes])
-            del self._output_buffer[:target_bytes]
-            return out
-        short_bytes = target_bytes - available
-        short_us = self._duration_us_for_bytes(short_bytes)
-        if short_us > max(0, pad_tolerance_us):
-            return None
-        out = bytes(self._output_buffer)
-        self._output_buffer.clear()
-        self._pending_skip_bytes += short_bytes
-        return out + (b"\x00" * short_bytes)
-
-    def pad_and_skip(self, duration_us: int) -> bytes:
-        """Return silence PCM and skip the equivalent from upcoming ffmpeg output."""
-        target_bytes = self._target_bytes_for_duration_us(duration_us)
-        if target_bytes <= 0:
-            return b""
-        # Drop buffered output with stale source positions.
-        leftover = len(self._output_buffer)
-        self._output_buffer.clear()
-        self._pending_skip_bytes += max(0, target_bytes - leftover)
-        return b"\x00" * target_bytes
-
-    def _consume_pending_skip(self, chunk: bytes) -> bytes:
-        # Drops bytes pop_duration_us_or_pad replaced with silence to keep timeline aligned.
-        if self._pending_skip_bytes <= 0 or not chunk:
-            return chunk
-        skip = min(self._pending_skip_bytes, len(chunk))
-        self._pending_skip_bytes -= skip
-        return chunk[skip:]
 
     def _duration_us_for_bytes(self, byte_count: int) -> int:
         if byte_count <= 0 or self._sample_rate <= 0 or self._frame_size <= 0:
@@ -305,6 +264,7 @@ class _MemberPipeline:
     config: _PipelineConfig
     processor: _BufferedFfmpegProcessor | None = None
     ready: bool = False
+    push_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class SendspinPlaybackSession:
@@ -359,6 +319,8 @@ class SendspinPlaybackSession:
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
         self._queue_id: str | None = None
         self._queue_session_id: str | None = None
+        # stream details of the session's first item, which the session sample rate follows
+        self._start_streamdetails: StreamDetails | None = None
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
         """
@@ -382,7 +344,7 @@ class SendspinPlaybackSession:
         Used during dynamic leader switching to keep the push stream alive
         while the old leader is removed from the sendspin group. The PushStream
         and all internal state (pipelines, history, join-catchup) stay intact;
-        only the owning player reference is updated.
+        only the owning player reference is updated and the new leader leaves the member set.
 
         Cleans up the old leader's pipeline/channel state so its FFmpeg
         processor is released.
@@ -398,6 +360,8 @@ class SendspinPlaybackSession:
             pipeline = self._member_pipelines.pop(old_leader_id, None)
             self._pipeline_config_cache.pop(old_leader_id, None)
             self._preassigned_channels.pop(old_leader_id, None)
+            # Members exclude the leader, so the new leader's next sync_members won't remove it.
+            self._members.discard(new_player.player_id)
             self._mapping_dirty = True
         if pipeline is not None and pipeline.processor is not None:
             await self._close_member_ffmpeg(pipeline.processor)
@@ -470,6 +434,7 @@ class SendspinPlaybackSession:
             # role requirements and prepared audio stay on the same channel.
             self._preassigned_channels.setdefault(player_id, uuid4())
         try:
+            await self._follow_session_sample_rate([player_id])
             await self._start_join_catchup(player_id)
         except Exception:
             async with self._state_lock:
@@ -572,10 +537,12 @@ class SendspinPlaybackSession:
 
         async with self._state_lock:
             history_snapshot = list(self._history)
-        if not history_snapshot:
-            await processor.close()
-            return
-        history_end_us = history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+        # With no history yet, the commit fanout feeds the processor from the first chunk on.
+        history_end_us = (
+            history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+            if history_snapshot
+            else None
+        )
         writer_task: asyncio.Task[None] | None = None
         drainer_task: asyncio.Task[None] | None = None
         snapshot_task: asyncio.Task[None] | None = None
@@ -607,8 +574,9 @@ class SendspinPlaybackSession:
                     history_end_us=history_end_us,
                 )
                 self._join_catchup[player_id] = state
+                # Start eagerly so the feed holds the write lock before any commit fanout.
                 snapshot_task = asyncio.create_task(
-                    self._feed_join_history(player_id, processor, history_snapshot)
+                    self._feed_join_history(player_id, state, history_snapshot), eager_start=True
                 )
                 self._attach_task_exception_logger(snapshot_task, f"join_snapshot_{player_id}")
                 state.snapshot_task = snapshot_task
@@ -633,14 +601,11 @@ class SendspinPlaybackSession:
     async def _feed_join_history(
         self,
         player_id: str,
-        processor: _BufferedFfmpegProcessor,
+        state: _JoinCatchupState,
         history_snapshot: list[_HistoryChunk],
     ) -> None:
         """Feed historical PCM into a join-catchup processor."""
-        async with self._state_lock:
-            state = self._join_catchup.get(player_id)
-        if state is None or state.processor is not processor:
-            return
+        processor = state.processor
         async with state.write_lock:
             first_history_start_us: int | None = None
             previous_end_us: int | None = None
@@ -691,26 +656,28 @@ class SendspinPlaybackSession:
     ) -> None:
         """Promote join catchup processor to the member's live DSP processor."""
         old_processor: _BufferedFfmpegProcessor | None = None
-        async with self._state_lock:
-            state = self._join_catchup.pop(player_id, None)
-            if state is None:
-                return
-            old_processor = pipeline.processor
-            pipeline.processor = state.processor
-        if state.snapshot_task is not None:
-            state.snapshot_task.cancel()
+        # Hold live pushes until the writer has flushed the PCM queued ahead of them.
+        async with pipeline.push_lock:
+            async with self._state_lock:
+                state = self._join_catchup.pop(player_id, None)
+                if state is None:
+                    return
+                old_processor = pipeline.processor
+                pipeline.processor = state.processor
+            if state.snapshot_task is not None:
+                state.snapshot_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await state.snapshot_task
+            # Let writer flush queued PCM before handoff; cancel if queue is full.
+            try:
+                state.input_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                state.writer_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
-                await state.snapshot_task
-        # Let writer flush queued PCM before handoff; cancel if queue is full.
-        try:
-            state.input_queue.put_nowait(None)
-        except asyncio.QueueFull:
-            state.writer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await state.writer_task
-        state.drainer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await state.drainer_task
+                await state.writer_task
+            state.drainer_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await state.drainer_task
         if self._producer_eof_sent and pipeline.config.requires_transform:
             with suppress(Exception):
                 await pipeline.processor.write_eof()
@@ -736,7 +703,7 @@ class SendspinPlaybackSession:
 
     # -- Playback pipeline -----------------------------------------------------
 
-    async def _run_playback(self, media: PlayerMedia) -> None:  # noqa: PLR0915
+    async def _run_playback(self, media: PlayerMedia) -> None:  # noqa: C901, PLR0915
         """
         Run the playback pipeline for a single media session.
 
@@ -751,9 +718,14 @@ class SendspinPlaybackSession:
         await import_module_in_thread("av")
         push_stream: PushStream | None = None
         try:
+            # let automatic Sendspin formats follow the first item's sample rate, then
             # refresh the session PCM format from the leader's preferred output before
             # building any pipelines; member ffmpeg pipelines and pre-computed filter
             # params depend on this rate so the cache must also be cleared
+            self._start_streamdetails = self._get_start_streamdetails(media)
+            await self._follow_session_sample_rate(
+                [client.client_id for client in self.player.api.group.clients]
+            )
             self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
             self._queue_id = media.source_id
             self._queue_session_id = get_media_session_id(media)
@@ -789,7 +761,7 @@ class SendspinPlaybackSession:
         # Shadow deque mirroring pending_chunks for join-catchup backlog peeking.
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
-        last_elapsed_update_s = 0.0
+        last_elapsed_update_s: float | None = None
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
@@ -914,7 +886,10 @@ class SendspinPlaybackSession:
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
                 if self._timeline_start_us is not None:
                     elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
-                    if elapsed_real_s - last_elapsed_update_s >= 1.0:
+                    if (
+                        last_elapsed_update_s is None
+                        or elapsed_real_s - last_elapsed_update_s >= 1.0
+                    ):
                         last_elapsed_update_s = elapsed_real_s
                         self.player._attr_elapsed_time = elapsed_real_s
                         self.player._attr_elapsed_time_last_updated = time.time()
@@ -935,9 +910,10 @@ class SendspinPlaybackSession:
                 # internal buffers instead of blocking on the last read.
                 _, pipelines = await self._snapshot_active_pipelines()
                 for _, pipeline in pipelines:
-                    if pipeline.processor is not None and pipeline.config.requires_transform:
-                        with suppress(Exception):
-                            await pipeline.processor.write_eof()
+                    async with pipeline.push_lock:
+                        if pipeline.processor is not None and pipeline.config.requires_transform:
+                            with suppress(Exception):
+                                await pipeline.processor.write_eof()
                 # Producer finished normally; send a None sentinel so the
                 # consumer exits cleanly.  The queue may be full, so retry
                 # with a deadline before falling back to cancellation.
@@ -971,7 +947,9 @@ class SendspinPlaybackSession:
                     producer_stopped_cleanly = False
             with suppress(Exception):
                 # Same condition as the group.stop() below, so we snapshot on exactly the
-                # paths where a group STOP - and therefore a freeze - is already emitted.
+                # paths where a group STOP is already emitted. That stop resets the reported
+                # position to 0 (spec: stop rewinds), so the snapshot only carries the
+                # position if the stop below raises.
                 self._stop_push_stream(
                     snapshot_progress=producer_stopped_cleanly and not self._cancel_requested,
                 )
@@ -1000,7 +978,8 @@ class SendspinPlaybackSession:
         2. Once the processor's output lag falls within _JOIN_PROMOTE_ARM_WINDOW_US
            of the history tail, promotion is "armed" and a target end timestamp is locked.
         3. Once output reaches the target (within _JOIN_PROMOTE_TOLERANCE_US), the
-           catchup processor is promoted to the member's live DSP pipeline.
+           catchup processor is promoted to the member's live DSP pipeline and its
+           output up to the live tail is injected as the member's history.
         4. If promotion doesn't complete within _JOIN_PROMOTION_TIMEOUT_S, it's aborted.
         """
         injected_any = False
@@ -1050,16 +1029,21 @@ class SendspinPlaybackSession:
                 continue
             if max_ready_end_us + _JOIN_PROMOTE_TOLERANCE_US < target_end_us:
                 continue
-            inject_duration_us = target_end_us - first_history_start_us
-            transformed_history = state.processor.pop_duration_us_or_pad(
-                inject_duration_us, _JOIN_PROMOTE_TOLERANCE_US
-            )
-            if transformed_history is None:
-                continue
-            transformed_history = await self._pad_history_to_live_tail(
-                state, target_end_us, transformed_history
-            )
             pipeline = await self._sync_member_pipeline(player_id)
+            async with self._state_lock:
+                live_tail_us = (
+                    self._history[-1].start_time_us + self._history[-1].duration_us
+                    if self._history
+                    else target_end_us
+                )
+            await self._prefeed_pending_backlog_for_join(state, current_pcm, pending_backlog)
+            await self._promote_join_catchup_processor(player_id, pipeline, target_end_us)
+            if pipeline.processor is not state.processor:
+                continue
+            # Read after promotion so its flush has written the newest committed PCM to ffmpeg.
+            transformed_history = await state.processor.read_duration_us(
+                live_tail_us - first_history_start_us
+            )
             # Split the blob into slices so push_stream can yield between encodes.
             frame_stride = (
                 self._sendspin_pcm_format.bit_depth // 8
@@ -1075,29 +1059,8 @@ class SendspinPlaybackSession:
                     channel_id=pipeline.channel_id,
                     start_time_us=first_history_start_us if offset == 0 else None,
                 )
-            await self._prefeed_pending_backlog_for_join(state, current_pcm, pending_backlog)
-            await self._promote_join_catchup_processor(player_id, pipeline, target_end_us)
             injected_any = True
         return injected_any
-
-    async def _pad_history_to_live_tail(
-        self,
-        state: _JoinCatchupState,
-        target_end_us: int,
-        transformed_history: bytes,
-    ) -> bytes:
-        """Append silence so joiner's channel_timing aligns with the live tail at promotion."""
-        # target_end_us is locked from earlier and may lag the live tail by seconds.
-        async with self._state_lock:
-            live_tail_us = (
-                self._history[-1].start_time_us + self._history[-1].duration_us
-                if self._history
-                else target_end_us
-            )
-        promotion_lag_us = max(0, live_tail_us - target_end_us)
-        if promotion_lag_us <= 0:
-            return transformed_history
-        return transformed_history + state.processor.pad_and_skip(promotion_lag_us)
 
     async def _prefeed_pending_backlog_for_join(
         self,
@@ -1292,6 +1255,22 @@ class SendspinPlaybackSession:
             filter_params=filter_params,
         )
 
+    def _get_start_streamdetails(self, media: PlayerMedia) -> StreamDetails | None:
+        """Return the resolved stream details of the queue item a session starts with."""
+        if not media.source_id or not media.queue_item_id:
+            return None
+        queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        return queue_item.streamdetails if queue_item else None
+
+    async def _follow_session_sample_rate(self, player_ids: Iterable[str]) -> None:
+        """Let the given players' Sendspin formats follow the sample rate of this session."""
+        from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
+
+        for player_id in player_ids:
+            player = self.player.mass.players.get_player(player_id)
+            if isinstance(player, SendspinPlayer):
+                await player.follow_session_sample_rate(self._start_streamdetails)
+
     def _select_session_pcm_formats(self) -> tuple[AudioFormat, SendspinAudioFormat]:
         """
         Pick the session PCM format (MA-side + wire) from the leader's preferred format.
@@ -1385,10 +1364,11 @@ class SendspinPlaybackSession:
 
     async def _transform_member_chunk(self, pipeline: _MemberPipeline, chunk: bytes) -> None:
         """Push one PCM chunk into a member DSP pipeline."""
-        processor = pipeline.processor
-        if processor is None:
-            return
-        await processor.push(chunk)
+        async with pipeline.push_lock:
+            processor = pipeline.processor
+            if processor is None:
+                return
+            await processor.push(chunk)
 
     async def _read_member_chunk(
         self,
@@ -1483,6 +1463,7 @@ class SendspinPlaybackSession:
             self._first_commit_monotonic_us = None
             self._produced_audio_us = 0
             self._history.clear()
+            self._start_streamdetails = None
             # Drop cached DSP decisions so next playback reflects latest config.
             self._pipeline_config_cache.clear()
 

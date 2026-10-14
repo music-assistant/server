@@ -44,7 +44,7 @@ async def run_setup(session: SetupSession) -> None:
         raise AbortFlow("no_players")
     setup_data = dict(session.context.setup_data)
     original_values = {**session.context.values, **setup_data}
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         # setup_data (reconfigure) wins over the instance's stored option values, which
         # still hold the selection on installs made before this flow existed
@@ -80,7 +80,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(submitted)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 def _plex_provider_options(mass: MusicAssistant) -> list[ConfigValueOption]:

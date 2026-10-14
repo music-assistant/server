@@ -46,7 +46,7 @@ _ENTRIES = (
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the connection details and create the provider."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     controllers = await _discover_controllers(session)
     claimed = claimed_controllers(session.mass, session.context.instance_id)
@@ -71,7 +71,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _discover_controllers(session: SetupSession) -> list[AsyncServiceInfo]:
