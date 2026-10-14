@@ -21,7 +21,7 @@ from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -105,6 +105,13 @@ class WebKioskSendspinBridge:
 
     async def start(self) -> None:
         """Register the kiosk as an external Sendspin client."""
+        claim = self.kiosk_player.sendspin_claim
+        if (
+            claim is None
+            or claim.player_id != self.kiosk_player.player_id
+            or claim.client_id != self.client_id
+        ):
+            raise InvalidDataError("Sendspin identity ownership has not been verified")
         if sendspin_prov := cast(
             "SendspinProvider | None", self.provider.mass.get_provider("sendspin")
         ):
@@ -191,16 +198,16 @@ class WebKioskSendspinBridge:
             return
         self.logger.warning(
             "Kiosk %s did not connect its Sendspin client within %.0fs — "
-            "transferring playback to the regular HTTP player",
+            "resuming playback through the regular HTTP player",
             self.kiosk_player.display_name,
             SENDSPIN_CONNECT_TIMEOUT,
         )
         try:
-            await self.provider.mass.player_queues.transfer_queue(
-                self.client_id, self.kiosk_player.player_id, auto_play=True
+            await self.provider.fallback_sendspin(
+                self.kiosk_player.player_id, expected_client_id=self.client_id
             )
         except MusicAssistantError, TimeoutError:
-            self.logger.warning("Fallback transfer to the HTTP player failed", exc_info=True)
+            self.logger.warning("Fallback to the HTTP player failed", exc_info=True)
 
     def _cancel_watchdog(self) -> None:
         if (
@@ -226,6 +233,9 @@ class WebKioskSendspinBridgeManager(SendspinBridgeManagerBase[WebKioskSendspinBr
             or self.sendspin_server is None
         ):
             return
+        claim = player.sendspin_claim
+        if claim is None or claim.player_id != player.player_id or claim.client_id != client_id:
+            raise InvalidDataError("Sendspin identity ownership has not been verified")
         identifiers = {IdentifierType.UUID: player.device_info.identifiers[IdentifierType.UUID]}
         sendspin.register_bridge_identifiers(client_id, identifiers)
         sendspin.register_bridge_underlying_player(client_id, player.player_id)

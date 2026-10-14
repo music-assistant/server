@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
@@ -151,3 +151,71 @@ def test_update_position_ignored_while_paused(player: WebKioskPlayer) -> None:
     player.update_position(99.0)
 
     assert player.elapsed_time == 5.0
+
+
+async def test_fast_stream_completion_uses_media_seconds(
+    player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """A 300-second track at 2x completes after 150 browser seconds."""
+    mass_mock.player_queues.get.return_value = Mock(
+        current_item=Mock(extra_attributes={"playback_speed": 2.0})
+    )
+    await player.play_media(
+        PlayerMedia(uri="podcast", duration=300, stream_duration=300, source_id="wk_test")
+    )
+    player.note_seek(150)
+    assert player.playback_reached_end()
+
+
+async def test_slow_stream_progress_is_not_capped_in_media_seconds(
+    player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """A 0.5x stream can progress past the original media duration."""
+    mass_mock.player_queues.get.return_value = Mock(
+        current_item=Mock(extra_attributes={"playback_speed": 0.5})
+    )
+    await player.play_media(
+        PlayerMedia(uri="podcast", duration=300, stream_duration=300, source_id="wk_test")
+    )
+    player.note_seek(400)
+    assert player.elapsed_time == 400
+    assert not player.playback_reached_end()
+
+
+async def test_fast_reconnect_seeks_in_media_seconds(
+    player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """The media seek origin is added after converting stream time at 2x."""
+    mass_mock.player_queues.get.return_value = Mock(
+        current_item=Mock(extra_attributes={"playback_speed": 2.0})
+    )
+    mass_mock.player_queues.get_item.return_value = Mock(extra_attributes={"playback_speed": 2.0})
+    await player.play_media(
+        PlayerMedia(
+            uri="podcast",
+            duration=300,
+            stream_duration=200,
+            source_id="wk_test",
+            queue_item_id="item",
+        )
+    )
+    player.note_seek(40)
+    mass_mock.players.cmd_seek = AsyncMock()
+    await player.pause()
+    await player.refresh_stream()
+    mass_mock.players.cmd_seek.assert_awaited_once_with("wk_test", 180)
+
+
+async def test_speed_is_read_from_the_dispatched_item_before_queue_advances(
+    player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """MA dispatches play_media before replacing the queue's previous current item."""
+    mass_mock.player_queues.get.return_value = Mock(
+        current_item=Mock(extra_attributes={"playback_speed": 0.5})
+    )
+    mass_mock.player_queues.get_item.return_value = Mock(extra_attributes={"playback_speed": 2.0})
+    await player.play_media(
+        PlayerMedia(uri="new-podcast", duration=300, source_id="wk_test", queue_item_id="next")
+    )
+    player.note_seek(150)
+    assert player.playback_reached_end()

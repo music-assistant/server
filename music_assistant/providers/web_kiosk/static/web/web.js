@@ -48,6 +48,7 @@
             + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
     }
     var sendspinClientId = '';
+    var pendingHtml5Fallback = false;
     var sendspinModule = null;
     var sendspinConnecting = false;
     // True only while the Sendspin server is actually streaming audio here.
@@ -68,6 +69,7 @@
     if (TOKEN) LS.set('wk_token', TOKEN);
 
     var playerId = '';
+    var customName = '';
     var serverVersion = '';
     var browserModel = 'Web browser';
     var hasTrack = false;
@@ -159,7 +161,7 @@
             if (progress && typeof progress.positionMs === 'number') return progress.positionMs / 1000;
             if (waveAnchorAt) return waveAnchor + (playing ? (performance.now() - waveAnchorAt) / 1000 : 0);
         }
-        return (current.start || 0) + (audio.currentTime || 0);
+        return (current.start || 0) + (audio.currentTime || 0) * (current.speed || 1);
     }
     function imageUrl(item) {
         var img = '';
@@ -206,7 +208,7 @@
         if (sendspinClientId) qs += '&sendspin_client_id=' + encodeURIComponent(sendspinClientId);
         var socket = new WebSocket(proto + '://' + location.host + '/ws?' + qs);
         ws = socket;
-        socket.onmessage = function (ev) { if (ws === socket) handleWS(JSON.parse(ev.data)); };
+        socket.onmessage = function (ev) { if (ws === socket) handleWS(JSON.parse(ev.data), socket); };
         socket.onclose = function () {
             if (ws !== socket) return;
             ws = null;
@@ -304,11 +306,18 @@
         paintClock();
     }
 
-    function handleWS(msg) {
+    function handleWS(msg, socket) {
         switch (msg.type) {
+            case 'sendspin_challenge':
+                loadSendspinModule().then(function (module) {
+                    if (ws !== socket) return;
+                    sendWS({type:'sendspin_proof', proof:module.createSendspinClaimProof(sdkStorage, msg)});
+                }).catch(function () { if (ws !== socket) return; useHtml5(); if (ws) ws.close(); });
+                break;
             case 'welcome':
                 if (msg.device_info && typeof msg.device_info.model === 'string') browserModel = msg.device_info.model;
                 playerId = msg.player_id;
+                customName = typeof msg.custom_name === 'string' ? msg.custom_name : '';
                 serverVersion = typeof msg.server_version === 'string' ? msg.server_version : '';
                 renderNow();
                 var playerLabel = document.getElementById('kiosk-player-id');
@@ -319,7 +328,12 @@
                 reportVolumeCapability();
                 if (TOKEN) { fetchQueue(); fetchParty(); }
                 if (SENDSPIN) initSendspin();
+                else if (pendingHtml5Fallback) sendWS({type:'sendspin_fallback'});
                 if (audio.ended) reportTrackEnded();
+                break;
+            case 'player':
+                customName = typeof msg.custom_name === 'string' ? msg.custom_name : '';
+                if (!hasTrack) renderNow();
                 break;
             case 'group':
                 var groupLabel = document.getElementById('kiosk-group');
@@ -344,6 +358,7 @@
                 if (sendspinStreaming) break;
                 if (msg.path) {
                     sendspinOwnsPlayback = false;
+                    pendingHtml5Fallback = false;
                     playbackGeneration = typeof msg.playback_generation === 'string' ? msg.playback_generation : '';
                     pendingSeek = null;
                     hasTrack = true;
@@ -352,7 +367,8 @@
                         artist: msg.artist || '',
                         image: msg.image_url || '',
                         duration: msg.duration || 0,
-                        start: typeof msg.start === 'number' ? msg.start : 0
+                        start: typeof msg.start === 'number' ? msg.start : 0,
+                        speed: typeof msg.playback_speed === 'number' && msg.playback_speed > 0 ? msg.playback_speed : 1
                     };
                     displayHold = null;
                     renderNow();
@@ -571,7 +587,7 @@
     function renderNow() {
         var src = current.image ? imageUrl({ image: current.image }) : '';
         var logo = SENDSPIN ? '/web/sendspin.svg' : '/web/html5.svg';
-        var title = hasTrack ? current.title || '—' : playerId || 'Connecting…';
+        var title = hasTrack ? current.title || '—' : customName || playerId || 'Connecting…';
         var artist = hasTrack ? current.artist || '—' : 'Music Assistant' + (serverVersion ? ' ' + serverVersion : '');
         var box = document.getElementById('kiosk-artbox');
         var art = document.getElementById('kiosk-art');
@@ -1280,8 +1296,11 @@
             && typeof crypto.getRandomValues === 'function';
     }
     function useHtml5() {
+        if (SENDSPIN && playerId) {
+            pendingHtml5Fallback = true;
+            sendWS({type:'sendspin_fallback'});
+        }
         SENDSPIN = false;
-        sendspinClientId = '';
         sendspinStreaming = false;
         sendspinOwnsPlayback = false;
         sendspinState = null;

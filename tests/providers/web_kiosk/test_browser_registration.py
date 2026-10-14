@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 from collections.abc import Coroutine
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -23,22 +26,48 @@ from aiosendspin.server import (
     GroupMemberRemovedEvent,
     GroupStateChangedEvent,
 )
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.media_items import Track
+from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.metadata import MetaDataController
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
+from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
-from music_assistant.providers.web_kiosk.sendspin_bridge import WebKioskSendspinBridgeManager
+from music_assistant.providers.web_kiosk.sendspin_bridge import (
+    WebKioskSendspinBridge,
+    WebKioskSendspinBridgeManager,
+)
 
-CLIENT_ID = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+CLIENT_KEY = X25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
+CLIENT_ID = (
+    base64.urlsafe_b64encode(CLIENT_KEY.public_key().public_bytes_raw()).decode().rstrip("=")
+)
+
+
+async def connect_owned_ws(http: TestClient[Any, Any], path: str) -> Any:
+    """Answer the connection-bound challenge with this test browser's private key."""
+    ws = await http.ws_connect(path)
+    challenge = await ws.receive_json()
+    assert challenge["type"] == "sendspin_challenge"
+    public = X25519PublicKey.from_public_bytes(
+        base64.urlsafe_b64decode(challenge["server_key"] + "=")
+    )
+    proof = hmac.new(
+        CLIENT_KEY.exchange(public), challenge["message"].encode(), hashlib.sha256
+    ).hexdigest()
+    await ws.send_json({"type": "sendspin_proof", "proof": proof})
+    return ws
 
 
 def _configure_registry(mass_mock: Mock) -> tuple[PlayerController, list[asyncio.Task[Any]]]:
@@ -200,7 +229,9 @@ async def test_connected_sendspin_is_adopted_by_kiosk(
     manager = WebKioskSendspinBridgeManager(provider)
     provider.sendspin_bridge_enabled = True
     provider.bridge_manager = manager
-    ws = await http_client.ws_connect("/ws?device_id=browser&sendspin_client_id=" + CLIENT_ID)
+    ws = await connect_owned_ws(
+        http_client, "/ws?device_id=browser&sendspin_client_id=" + CLIENT_ID
+    )
     welcome = await ws.receive_json()
     kiosk = registry.get_player(welcome["player_id"])
     assert kiosk is not None
@@ -273,7 +304,11 @@ async def test_kiosk_state_follows_incoming_sendspin_group(
     manager = WebKioskSendspinBridgeManager(provider)
     provider.sendspin_bridge_enabled = True
     provider.bridge_manager = manager
-    kiosk = await provider.get_or_register_player("wk_group", sendspin_client_id=CLIENT_ID)
+    kiosk = await provider.get_or_register_player(
+        "wk_group",
+        sendspin_client_id=CLIENT_ID,
+        sendspin_claim=VerifiedSendspinClaim("wk_group", CLIENT_ID),
+    )
     assert kiosk is not None
     leader_client.client_id = leader_id
     client.client_id = CLIENT_ID
@@ -322,7 +357,11 @@ async def test_dashboard_shows_effective_sendspin_playback_state(
     manager = WebKioskSendspinBridgeManager(provider)
     provider.sendspin_bridge_enabled = True
     provider.bridge_manager = manager
-    kiosk = await provider.get_or_register_player("wk_dashboard", sendspin_client_id=CLIENT_ID)
+    kiosk = await provider.get_or_register_player(
+        "wk_dashboard",
+        sendspin_client_id=CLIENT_ID,
+        sendspin_claim=VerifiedSendspinClaim("wk_dashboard", CLIENT_ID),
+    )
     assert kiosk is not None
     client.group.clients = [client]
     try:
@@ -379,7 +418,7 @@ async def test_sendspin_track_updates_deliver_ma_lyrics(  # noqa: PLR0915
     server = WebKioskHTTPServer(provider, 0)
     provider.http_server = server
     async with TestClient(TestServer(server.app)) as http:
-        ws = await http.ws_connect("/ws?device_id=lyrics&sendspin_client_id=" + CLIENT_ID)
+        ws = await connect_owned_ws(http, "/ws?device_id=lyrics&sendspin_client_id=" + CLIENT_ID)
         await ws.receive_json()
         kiosk = registry.get_player("wk_lyrics")
         assert kiosk is not None
@@ -413,7 +452,7 @@ async def test_sendspin_track_updates_deliver_ma_lyrics(  # noqa: PLR0915
                     break
         assert updated["lines"] == [{"t": 0.0, "text": "Next song lyrics"}]
         await ws.close()
-        ws = await http.ws_connect("/ws?device_id=lyrics&sendspin_client_id=" + CLIENT_ID)
+        ws = await connect_owned_ws(http, "/ws?device_id=lyrics&sendspin_client_id=" + CLIENT_ID)
         await ws.receive_json()
         async with asyncio.timeout(1):
             while True:
@@ -456,13 +495,17 @@ async def test_group_websocket_follows_membership_and_name(  # noqa: PLR0915
     manager = WebKioskSendspinBridgeManager(provider)
     provider.sendspin_bridge_enabled = True
     provider.bridge_manager = manager
-    kiosk = await provider.get_or_register_player("wk_group", sendspin_client_id=CLIENT_ID)
+    kiosk = await provider.get_or_register_player(
+        "wk_group",
+        sendspin_client_id=CLIENT_ID,
+        sendspin_claim=VerifiedSendspinClaim("wk_group", CLIENT_ID),
+    )
     assert kiosk is not None
     server = WebKioskHTTPServer(provider, 0)
     provider.http_server = server
     http = TestClient(TestServer(server.app))
     await http.start_server()
-    ws = await http.ws_connect("/ws?device_id=group&sendspin_client_id=" + CLIENT_ID)
+    ws = await connect_owned_ws(http, "/ws?device_id=group&sendspin_client_id=" + CLIENT_ID)
     await ws.receive_json()
 
     async def next_group() -> dict[str, Any]:
@@ -509,3 +552,189 @@ async def test_group_websocket_follows_membership_and_name(  # noqa: PLR0915
         await asyncio.gather(*tasks, return_exceptions=True)
         await native.on_unload()
         await leader.on_unload()
+
+
+async def test_custom_name_reaches_browser_on_connect_and_rename(
+    provider: WebKioskProvider,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """Configured names reach the kiosk while its technical Player ID stays stable."""
+    registry, _sendspin, _universal, _client, tasks = browser_registry
+    kiosk = await provider.get_or_register_player("wk_custom")
+    assert kiosk is not None
+    kiosk.set_config(replace(kiosk.config, name="Kitchen"))
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    async with TestClient(TestServer(server.app)) as http:
+        ws = await http.ws_connect("/ws?device_id=custom")
+        welcome = await ws.receive_json()
+        assert welcome["player_id"] == "wk_custom"
+        assert welcome["custom_name"] == "Kitchen"
+        for name in ("Bedroom", kiosk.name, None):
+            await registry.on_player_config_change(replace(kiosk.config, name=name), {"name"})
+            async with asyncio.timeout(1):
+                while True:
+                    message = await ws.receive_json()
+                    if message.get("type") == "player":
+                        break
+            assert message["custom_name"] == name
+        await ws.close()
+    provider.cancel_all_player_closes()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_socket_cannot_claim_an_unrelated_sendspin_client(
+    provider: WebKioskProvider,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """A public client ID alone cannot mutate or take ownership of its player."""
+    registry, sendspin, _universal, client, tasks = browser_registry
+    native = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+    await registry.register(native)
+    provider.sendspin_bridge_enabled = True
+    provider.bridge_manager = WebKioskSendspinBridgeManager(provider)
+    before = dict(native.device_info.identifiers)
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    try:
+        async with TestClient(TestServer(server.app)) as http:
+            ws = await http.ws_connect("/ws?device_id=attacker&sendspin_client_id=" + CLIENT_ID)
+            challenge = await ws.receive_json()
+            assert challenge["type"] == "sendspin_challenge"
+            await ws.send_json({"type": "sendspin_proof", "proof": "00" * 32})
+            async with asyncio.timeout(1):
+                await ws.receive()
+            assert registry.get_player("wk_attacker") is None
+            assert native.underlying_player_id is None
+            assert native.device_info.identifiers == before
+            await ws.close()
+    finally:
+        await provider.bridge_manager.close()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await native.on_unload()
+
+
+class QueueGroupFixture(Player):
+    """A captured group driver using MA's real state and queue contracts."""
+
+    def __init__(self, provider: WebKioskProvider, member: str) -> None:
+        """Capture one native member with a playing, static group."""
+        super().__init__(provider, "test_group")
+        self._attr_name = "Test group"
+        self._attr_type = PlayerType.GROUP
+        self._attr_available = True
+        self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
+        self._attr_group_members = [member]
+        self._attr_static_group_members = [member]
+
+    @property
+    def is_active_session(self) -> bool:
+        """Keep the configured member captured during this test."""
+        return True
+
+    async def stop(self) -> None:
+        """Fail if fallback accidentally stops the captured group."""
+        raise AssertionError("Fallback must not stop the group")
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("trigger", ["watchdog", "browser"])
+async def test_html5_fallback_resumes_real_parent_queue(  # noqa: PLR0915
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+    trigger: str,
+    grouped: bool,
+) -> None:
+    """An adopted protocol has no queue; fallback resumes its parent's native output."""
+    registry, sendspin, _universal, client, tasks = browser_registry
+    native = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+    await registry.register(native)
+    provider.sendspin_bridge_enabled = True
+    provider.bridge_manager = WebKioskSendspinBridgeManager(provider)
+    kiosk = await provider.get_or_register_player(
+        "wk_fallback",
+        sendspin_client_id=CLIENT_ID,
+        sendspin_claim=VerifiedSendspinClaim("wk_fallback", CLIENT_ID),
+    )
+    assert kiosk is not None
+    queues = PlayerQueuesController(mass_mock)
+    mass_mock.player_queues = queues
+    await queues.on_player_register(kiosk)
+    assert queues.get(CLIENT_ID) is None
+    group = QueueGroupFixture(provider, kiosk.player_id) if grouped else None
+    if group:
+        await registry.register(group)
+        kiosk.refresh_state()
+        assert kiosk.state.active_group == group.player_id
+    queue = queues.get(group.player_id if group else kiosk.player_id)
+    assert queue is not None
+    queue.active = True
+    queue.state = PlaybackState.PLAYING
+    native.group_event_cb(client.group, GroupStateChangedEvent(PlaybackStateType.PLAYING))
+    kiosk.refresh_state()
+    assert kiosk.active_output_protocol == CLIENT_ID
+
+    async def resume(queue_id: str) -> None:
+        assert queues.get(queue_id) is queue
+        assert kiosk.active_output_protocol == "native"
+        await kiosk.play_media(PlayerMedia(uri="native-stream", duration=180, source_id=queue_id))
+
+    queues.resume = AsyncMock(side_effect=resume)  # type: ignore[method-assign]
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    http = TestClient(TestServer(server.app))
+    await http.start_server()
+    ws = await connect_owned_ws(http, "/ws?device_id=fallback&sendspin_client_id=" + CLIENT_ID)
+    await ws.receive_json()
+    try:
+        cast("Mock", sendspin.server_api).get_client.return_value = None
+        cast("Mock", sendspin.server_api).get_client.side_effect = None
+        cast("Mock", sendspin.server_api).register_external_player.side_effect = None
+        cast("Mock", sendspin.server_api).register_external_player.return_value = Mock(
+            is_connected=False
+        )
+        cast(
+            "Mock", sendspin.server_api
+        ).register_external_player.return_value.roles_by_family.return_value = []
+        bridge = WebKioskSendspinBridge(provider, kiosk, sendspin.server_api, CLIENT_ID)
+        with patch(
+            "music_assistant.providers.web_kiosk.sendspin_bridge.SENDSPIN_CONNECT_TIMEOUT", 0
+        ):
+            await bridge.start()
+            if trigger == "watchdog":
+                cast("Mock", sendspin.server_api).register_external_player.call_args.kwargs[
+                    "on_stream_start"
+                ](Mock())
+            else:
+                await ws.send_json({"type": "sendspin_fallback"})
+            async with asyncio.timeout(1):
+                while True:
+                    message = await ws.receive_json()
+                    if message.get("type") == "play":
+                        break
+            assert message["path"].startswith("/stream/wk_fallback?token=")
+            await asyncio.gather(*tasks)
+        await bridge.stop()
+        assert kiosk.current_stream_url == "native-stream"
+        assert kiosk.playback_state == PlaybackState.PLAYING
+        assert queues.get(CLIENT_ID) is None
+        if group:
+            assert group.is_active_session
+            assert queue.state == PlaybackState.PLAYING
+    finally:
+        await ws.close()
+        await http.close()
+        provider.cancel_all_player_closes()
+        await provider.bridge_manager.close()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await native.on_unload()
+        if group:
+            await registry.unregister(group.player_id)

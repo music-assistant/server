@@ -14,6 +14,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from aiohttp import ClientError, WSMsgType, web
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, SENDSPIN_SERVER_PORT
 
@@ -26,6 +27,7 @@ from .constants import (
     WEB_KIOSK_PLAYER_ID_PREFIX,
     normalize_sendspin_client_id,
 )
+from .ownership import SendspinClaimChallenge, VerifiedSendspinClaim
 from .party import PartyAdapter
 from .player import WebKioskPlayer, media_timeline
 
@@ -89,10 +91,12 @@ class WebKioskHTTPServer:
         self.app.on_cleanup.append(self._unsubscribe_player_updates)
         self._unsubscribe_state_updates: Callable[[], None] | None = None
         self._media_signatures: dict[str, tuple[Any, ...]] = {}
+        self._player_names: dict[str, str | None] = {}
         self._group_signatures: dict[str, tuple[str | None, str | None]] = {}
         self._runner: web.AppRunner | None = None
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
         self._ws_volume_support: dict[web.WebSocketResponse, bool] = {}
+        self._ws_claims: dict[web.WebSocketResponse, VerifiedSendspinClaim] = {}
         self.party = PartyAdapter(provider)
         self._setup_routes()
 
@@ -119,6 +123,7 @@ class WebKioskHTTPServer:
                     await ws.close()
         self._ws_clients.clear()
         self._ws_volume_support.clear()
+        self._ws_claims.clear()
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -134,6 +139,7 @@ class WebKioskHTTPServer:
         image_url: str | None = None,
         duration: float | None = None,
         start: float = 0,
+        playback_speed: float = 1.0,
         wave_seq: int | None = None,
     ) -> None:
         """Notify subscribed WebSocket clients to start playback with metadata."""
@@ -185,6 +191,19 @@ class WebKioskHTTPServer:
         for ws in list(clients):
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_player_name(self, player: WebKioskPlayer) -> None:
+        """Send configured display-name changes to connected kiosk pages."""
+        if player.player_id not in self._ws_clients:
+            return
+        name = player.config.name
+        if player.player_id in self._player_names and self._player_names[player.player_id] == name:
+            return
+        self._player_names[player.player_id] = name
+        message = json.dumps({"type": "player", "custom_name": name})
+        for ws in tuple(self._ws_clients.get(player.player_id, set())):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, message, player.player_id))
 
     def broadcast_media(self, player_id: str, seq: int, media: PlayerMedia | None) -> None:
         """Send effective track metadata without opening an HTML5 audio stream."""
@@ -309,6 +328,7 @@ class WebKioskHTTPServer:
             self._unsubscribe_state_updates()
             self._unsubscribe_state_updates = None
         self._media_signatures.clear()
+        self._player_names.clear()
         self._group_signatures.clear()
 
     def _on_player_state_updated(
@@ -316,6 +336,7 @@ class WebKioskHTTPServer:
     ) -> None:
         """Publish effective Sendspin track changes to this server's connected browsers."""
         if isinstance(player, WebKioskPlayer) and player.player_id in self._ws_clients:
+            self.broadcast_player_name(player)
             self._publish_effective_media(player)
         for player_id in tuple(self._ws_clients):
             kiosk = self.provider.mass.players.get_player(player_id)
@@ -541,6 +562,34 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             }
         )
 
+    async def _verify_sendspin_claim(
+        self, request: web.Request, ws: web.WebSocketResponse
+    ) -> VerifiedSendspinClaim | None:
+        """Authenticate the announced SDK identity before touching any MA player."""
+        announced = normalize_sendspin_client_id(request.query.get("sendspin_client_id"))
+        if not announced:
+            return None
+        player_id, _ = self._get_player_id_and_device_param(request)
+        existing = self._get_kiosk_player(player_id)
+        if existing and existing.sendspin_client_id and existing.sendspin_client_id != announced:
+            await ws.close(code=1008, message=b"Use a new device ID for a new Sendspin identity")
+            return None
+        challenge = SendspinClaimChallenge(player_id, announced)
+        await ws.send_json(challenge.payload())
+        try:
+            response = await ws.receive_json(timeout=10)
+            proof = (
+                response.get("proof")
+                if isinstance(response, dict) and response.get("type") == "sendspin_proof"
+                else None
+            )
+            claim = challenge.verify(proof)
+        except ValueError, TypeError, TimeoutError:
+            claim = None
+        if claim is None:
+            await ws.close(code=1008, message=b"Sendspin ownership verification failed")
+        return claim
+
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         """
         WebSocket for push playback — clients subscribe by player_id.
@@ -554,19 +603,21 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
 
-        player_id, _, player = await self._ensure_player_for_request(request)
+        claim = await self._verify_sendspin_claim(request, ws)
+        if ws.closed:
+            return ws
+        player_id, _, player = await self._ensure_player_for_request(request, claim)
         # Count this socket before any await. A reload's old socket can close
         # during that await, and it must still see a live client.
         if player_id not in self._ws_clients:
             self._ws_clients[player_id] = set()
         self._ws_clients[player_id].add(ws)
+        if claim:
+            self._ws_claims[ws] = claim
         try:
             self._ws_volume_support[ws] = request.query.get("volume_control") == "1"
             self._update_volume_support(player_id)
             self.provider.cancel_player_close(player_id)
-            announced = normalize_sendspin_client_id(request.query.get("sendspin_client_id"))
-            if player is not None and announced:
-                await self.provider.note_sendspin_client_id(player, announced)
             logger.info(
                 "WebSocket connected: player_id=%s, clients_for_player=%d",
                 player_id,
@@ -576,12 +627,15 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 player.on_ws_connected()
             # Tell the kiosk its server-derived player_id so it can target MA
             # JSON-RPC playback commands before the first "play" push arrives.
+            custom_name = player.config.name if player else None
+            self._player_names[player_id] = custom_name
             await self._ws_send(
                 ws,
                 json.dumps(
                     {
                         "type": "welcome",
                         "player_id": player_id,
+                        "custom_name": custom_name,
                         "server_version": self.provider.mass.version,
                         "device_info": {
                             "model": player.device_info.model,
@@ -602,10 +656,12 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                     self._handle_ws_message(player_id, msg.data, ws)
         finally:
             self._ws_clients.get(player_id, set()).discard(ws)
+            self._ws_claims.pop(ws, None)
             self._ws_volume_support.pop(ws, None)
             self._update_volume_support(player_id)
             if not self._ws_clients.get(player_id):
                 self._media_signatures.pop(player_id, None)
+                self._player_names.pop(player_id, None)
                 self._group_signatures.pop(player_id, None)
                 self._ws_clients.pop(player_id, None)
                 offline_player = self.provider.mass.players.get_player(player_id)
@@ -648,6 +704,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             "image_url": media.image_url,
             "duration": song_length,
             "start": stream_start,
+            "playback_speed": player.playback_speed,
             "wave_seq": wave_seq,
         }
         recipients = self._ws_clients.get(player.player_id, {ws}) if refreshed else {ws}
@@ -823,6 +880,11 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             if player and isinstance(player, WebKioskPlayer) and _is_finite_position(position):
                 player.note_seek(float(position))
                 self.provider.on_player_activity(player_id)
+        elif msg_type == "sendspin_fallback":
+            claim = self._ws_claims.get(ws) if ws else None
+            player = self._get_kiosk_player(player_id)
+            if claim and player and player.sendspin_client_id == claim.client_id:
+                self.provider.mass.create_task(self._fallback_sendspin(player_id, claim.client_id))
         elif msg_type == "ended":
             generation = msg.get("playback_generation")
             if isinstance(generation, str) and generation:
@@ -830,6 +892,13 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             self.provider.on_player_activity(player_id)
         else:
             logger.debug("Unknown WS message type from %s: %s", player_id, msg_type)
+
+    async def _fallback_sendspin(self, player_id: str, client_id: str) -> None:
+        """Handle expected fallback failures without losing the kiosk socket."""
+        try:
+            await self.provider.fallback_sendspin(player_id, expected_client_id=client_id)
+        except MusicAssistantError, TimeoutError:
+            logger.warning("Native playback fallback failed for %s", player_id, exc_info=True)
 
     def _reject_invalid_stream_token(
         self, request: web.Request, player_id: str
@@ -903,7 +972,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         return player_id, param
 
     async def _ensure_player_for_request(
-        self, request: web.Request
+        self, request: web.Request, claim: VerifiedSendspinClaim | None = None
     ) -> tuple[str, str, WebKioskPlayer | None]:
         """
         Get or register player for this request.
@@ -918,9 +987,8 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             player_id,
             display_name=display_name,
             ip_address=remote_ip,
-            sendspin_client_id=normalize_sendspin_client_id(
-                request.query.get("sendspin_client_id")
-            ),
+            sendspin_client_id=claim.client_id if claim else None,
+            sendspin_claim=claim,
             user_agent=request.headers.get("User-Agent"),
         )
         return player_id, device_param, player

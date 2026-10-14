@@ -12,7 +12,7 @@
     "safari15",
     "firefox68"
   ],
-  "sha256": "e8be0eb25fb4dbbedecc1309b91607ecef6330676717af5489f5d6561df7aee8",
+  "sha256": "9f9f8ec36b9fc067c31e1b08c0bf0204640dcfc7ccbd03ed0ae57e379ad37806",
   "opusFallback": false,
   "licensePlacement": "bundle-header"
 }

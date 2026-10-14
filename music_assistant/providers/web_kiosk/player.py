@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import secrets
 import time
@@ -20,6 +21,7 @@ from music_assistant.models.player import Player, PlayerMedia
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
 
+    from .ownership import VerifiedSendspinClaim
     from .provider import WebKioskProvider
 
 
@@ -126,12 +128,20 @@ class WebKioskPlayer(Player):
         self._attr_available = True
         self._attr_powered = True
         self._attr_volume_level = 100
+        self._playback_speed = 1.0
         self.output_format = output_format
+        self.sendspin_fallback = False
         self.sendspin_client_id = None
+        self.sendspin_claim: VerifiedSendspinClaim | None = None
         self._skip_ws_depth = 0
         self._accepted_position = False
         self._track_end_handled = False
         self._playback_generation = secrets.token_hex(16)
+
+    @property
+    def playback_speed(self) -> float:
+        """Return the media-seconds per browser stream-second for this playback."""
+        return self._playback_speed
 
     @property
     def playback_generation(self) -> str:
@@ -162,7 +172,8 @@ class WebKioskPlayer(Player):
     ) -> None:
         """Adopt playback arriving on this browser's linked Sendspin output."""
         if (
-            self.sendspin_client_id == protocol_player.player_id
+            not self.sendspin_fallback
+            and self.sendspin_client_id == protocol_player.player_id
             and protocol_player.protocol_parent_id == self.player_id
             and protocol_player.state.playback_state
             in (PlaybackState.PLAYING, PlaybackState.PAUSED)
@@ -201,12 +212,34 @@ class WebKioskPlayer(Player):
         if self.initialized.is_set():
             self.update_state()
 
+    async def on_config_updated(self) -> None:
+        """Publish configured-name changes even when the effective name stays the same."""
+        await super().on_config_updated()
+        provider = cast("WebKioskProvider", self.provider)
+        if provider.http_server:
+            provider.http_server.broadcast_player_name(self)
+
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command — store media for the kiosk to fetch."""
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
         self._playback_generation = secrets.token_hex(16)
         self.current_stream_url = media.uri
         self._attr_current_media = media
+        item = None
+        if media.source_id:
+            if media.queue_item_id:
+                item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            elif queue := self.mass.player_queues.get(media.source_id):
+                item = queue.current_item
+        speed = item.extra_attributes.get("playback_speed", 1.0) if item else 1.0
+        self._playback_speed = (
+            float(speed)
+            if isinstance(speed, (int, float))
+            and not isinstance(speed, bool)
+            and math.isfinite(speed)
+            and speed > 0
+            else 1.0
+        )
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0.0
         self._attr_elapsed_time_last_updated = time.time()
@@ -226,6 +259,7 @@ class WebKioskPlayer(Player):
                 image_url=media.image_url,
                 duration=song_length,
                 start=stream_start,
+                playback_speed=self.playback_speed,
             )
 
     async def refresh_stream(self) -> bool:
@@ -240,7 +274,7 @@ class WebKioskPlayer(Player):
         paused = self.playback_state == PlaybackState.PAUSED
         with self.suppress_ws_notify():
             await self.mass.players.cmd_seek(
-                self.player_id, min(int(start + position), int(duration))
+                self.player_id, min(int(start + position * self._playback_speed), int(duration))
             )
             if paused:
                 await self.mass.players.cmd_pause(self.player_id)
@@ -396,7 +430,7 @@ class WebKioskPlayer(Player):
         if song is None:
             return True
         file_pos = float(self._attr_elapsed_time or 0)
-        return start + file_pos >= song - 8
+        return start + file_pos * self._playback_speed >= song - 8
 
     @property
     def _skip_ws_notify(self) -> bool:
@@ -415,7 +449,7 @@ class WebKioskPlayer(Player):
         duration = media.stream_duration or media.duration
         if not isinstance(duration, (int, float)) or duration <= 0:
             return None
-        return float(duration)
+        return float(duration) / self._playback_speed
 
     async def _resume_from_pause(self) -> None:
         """Resume playback after pause — tell the kiosk to unpause its audio element."""

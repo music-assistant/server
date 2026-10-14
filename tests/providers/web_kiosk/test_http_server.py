@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientError, WSServerHandshakeError
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
 from music_assistant_models.player import PlayerMedia
@@ -205,32 +209,24 @@ async def test_ws_ended_asks_the_provider_to_advance(
     await ws.close()
 
 
-async def test_ws_stores_announced_sendspin_client_id(
+async def test_ws_stores_verified_sendspin_client_id(
     http_client: TestClient[Any, Any], mass_mock: Mock
 ) -> None:
-    """The browser's Sendspin identity is stored on the player it registers."""
-    ws = await http_client.ws_connect(
-        "/ws?device_id=test-device&sendspin_client_id=hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+    """Only an identity proven by the browser's private key reaches registration."""
+    key = X25519PrivateKey.generate()
+    client_id = base64.urlsafe_b64encode(key.public_key().public_bytes_raw()).decode().rstrip("=")
+    ws = await http_client.ws_connect("/ws?device_id=proof&sendspin_client_id=" + client_id)
+    challenge = await ws.receive_json()
+    public = X25519PublicKey.from_public_bytes(
+        base64.urlsafe_b64decode(challenge["server_key"] + "=")
     )
-    await ws.receive()
-
+    proof = hmac.new(
+        key.exchange(public), challenge["message"].encode(), hashlib.sha256
+    ).hexdigest()
+    await ws.send_json({"type": "sendspin_proof", "proof": proof})
+    assert (await ws.receive_json())["type"] == "welcome"
     registered = mass_mock.players.register.await_args.args[0]
-    assert registered.sendspin_client_id == "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
-    await ws.close()
-
-
-@pytest.mark.parametrize(
-    "client_id", ["spb_wk_tablet", "AbCdEfGhIjKlMnOpQrStUv", "A" * 42, "A" * 44, "A" * 42 + "B"]
-)
-async def test_ws_ignores_malformed_sendspin_client_id(
-    http_client: TestClient[Any, Any], mass_mock: Mock, client_id: str
-) -> None:
-    """Legacy ids and malformed public-key encodings cannot register a bridge."""
-    ws = await http_client.ws_connect(f"/ws?device_id=test-device&sendspin_client_id={client_id}")
-    await ws.receive()
-
-    registered = mass_mock.players.register.await_args.args[0]
-    assert registered.sendspin_client_id is None
+    assert registered.sendspin_client_id == client_id
     await ws.close()
 
 
@@ -816,3 +812,44 @@ async def test_html5_reconnect_prepares_stream_at_current_song_position(
     assert existing_play["playback_generation"] == new_play["playback_generation"]
     await second.close()
     await ws.close()
+
+
+@pytest.mark.parametrize(
+    "client_id", ["spb_wk_tablet", "AbCdEfGhIjKlMnOpQrStUv", "A" * 42, "A" * 44, "A" * 42 + "B"]
+)
+async def test_ws_ignores_malformed_sendspin_client_id(
+    http_client: TestClient[Any, Any], mass_mock: Mock, client_id: str
+) -> None:
+    """Legacy ids and malformed public-key encodings cannot register a bridge."""
+    ws = await http_client.ws_connect(f"/ws?device_id=test-device&sendspin_client_id={client_id}")
+    await ws.receive()
+
+    registered = mass_mock.players.register.await_args.args[0]
+    assert registered.sendspin_client_id is None
+    await ws.close()
+
+
+async def test_sendspin_proof_cannot_be_replayed_on_another_socket(
+    http_client: TestClient[Any, Any], mass_mock: Mock
+) -> None:
+    """A valid MAC for one challenge cannot authorize a new connection."""
+    key = X25519PrivateKey.generate()
+    client_id = base64.urlsafe_b64encode(key.public_key().public_bytes_raw()).decode().rstrip("=")
+    path = "/ws?device_id=replay&sendspin_client_id=" + client_id
+    first = await http_client.ws_connect(path)
+    challenge = await first.receive_json()
+    public = X25519PublicKey.from_public_bytes(
+        base64.urlsafe_b64decode(challenge["server_key"] + "=")
+    )
+    proof = hmac.new(
+        key.exchange(public), challenge["message"].encode(), hashlib.sha256
+    ).hexdigest()
+    await first.close()
+    second = await http_client.ws_connect(path)
+    fresh = await second.receive_json()
+    assert fresh["message"] != challenge["message"]
+    await second.send_json({"type": "sendspin_proof", "proof": proof})
+    async with asyncio.timeout(1):
+        await second.receive()
+    mass_mock.players.register.assert_not_awaited()
+    await second.close()

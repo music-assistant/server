@@ -19,6 +19,7 @@ from music_assistant_models.player_queue import PlayerQueue
 import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
+from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 from music_assistant.providers.web_kiosk.sendspin_bridge import WebKioskSendspinBridgeManager
@@ -523,7 +524,13 @@ async def test_closing_kiosk_preserves_sendspin_settings(
     provider.bridge_manager = manager
     player = await provider.get_or_register_player("wk_test")
     assert player is not None
-    await provider.note_sendspin_client_id(player, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo")
+    await provider.note_sendspin_client_id(
+        player,
+        "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+        sendspin_claim=VerifiedSendspinClaim(
+            player.player_id, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+        ),
+    )
     mass_mock.players.get_player.side_effect = lambda pid, **_: (
         player if pid == "wk_test" else Mock()
     )
@@ -543,8 +550,20 @@ async def test_sendspin_identity_has_one_kiosk_owner(
     assert first is not None
     assert second is not None
     await asyncio.gather(
-        provider.note_sendspin_client_id(first, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"),
-        provider.note_sendspin_client_id(second, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"),
+        provider.note_sendspin_client_id(
+            first,
+            "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+            sendspin_claim=VerifiedSendspinClaim(
+                first.player_id, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+            ),
+        ),
+        provider.note_sendspin_client_id(
+            second,
+            "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+            sendspin_claim=VerifiedSendspinClaim(
+                second.player_id, "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+            ),
+        ),
     )
     assert first.sendspin_client_id is None
     assert second.sendspin_client_id == "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"

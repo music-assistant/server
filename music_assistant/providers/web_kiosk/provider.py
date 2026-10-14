@@ -14,7 +14,11 @@ from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, PlaybackState
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MusicAssistantError,
+    PlayerUnavailableError,
+)
 
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -34,6 +38,7 @@ from .constants import (
 )
 from .http_server import WebKioskHTTPServer
 from .lyrics import parse_track_lyrics
+from .ownership import VerifiedSendspinClaim
 from .player import WebKioskPlayer
 from .sendspin_bridge import WebKioskSendspinBridgeManager
 
@@ -179,6 +184,7 @@ class WebKioskProvider(PlayerProvider):
         display_name: str | None = None,
         ip_address: str | None = None,
         sendspin_client_id: str | None = None,
+        sendspin_claim: VerifiedSendspinClaim | None = None,
         user_agent: str | None = None,
     ) -> WebKioskPlayer | None:
         """
@@ -197,7 +203,7 @@ class WebKioskProvider(PlayerProvider):
                     existing.device_info.ip_address = ip_address
                 self.on_player_activity(player_id)
                 if sendspin_client_id:
-                    await self._set_sendspin_owner(existing, sendspin_client_id)
+                    await self._set_sendspin_owner(existing, sendspin_client_id, sendspin_claim)
                     if self.bridge_manager:
                         await self.bridge_manager.prepare_player(existing)
                         await self.bridge_manager.evaluate_bridge(existing)
@@ -212,7 +218,7 @@ class WebKioskProvider(PlayerProvider):
             if user_agent:
                 player.update_browser_info(user_agent)
             if sendspin_client_id:
-                await self._set_sendspin_owner(player, sendspin_client_id)
+                await self._set_sendspin_owner(player, sendspin_client_id, sendspin_claim)
                 if self.bridge_manager:
                     await self.bridge_manager.prepare_player(player)
             await self.mass.players.register(player)
@@ -222,7 +228,13 @@ class WebKioskProvider(PlayerProvider):
                 await self.bridge_manager.evaluate_bridge(player)
             return player
 
-    async def note_sendspin_client_id(self, player: WebKioskPlayer, client_id: str) -> None:
+    async def note_sendspin_client_id(
+        self,
+        player: WebKioskPlayer,
+        client_id: str,
+        *,
+        sendspin_claim: VerifiedSendspinClaim | None = None,
+    ) -> None:
         """
         Store the browser's Sendspin identity and reconcile the bridge.
 
@@ -234,7 +246,7 @@ class WebKioskProvider(PlayerProvider):
         async with self._player_lock:
             if self._unloading:
                 return
-            await self._set_sendspin_owner(player, client_id)
+            await self._set_sendspin_owner(player, client_id, sendspin_claim)
             if self.bridge_manager:
                 await self.bridge_manager.evaluate_bridge(player)
 
@@ -310,6 +322,7 @@ class WebKioskProvider(PlayerProvider):
         image_url: str | None = None,
         duration: float | None = None,
         start: float = 0,
+        playback_speed: float = 1.0,
     ) -> None:
         """Notify the kiosk WebSocket client that playback started."""
         if self.http_server:
@@ -322,6 +335,7 @@ class WebKioskProvider(PlayerProvider):
                 image_url=image_url,
                 duration=duration,
                 start=start,
+                playback_speed=playback_speed,
                 wave_seq=seq,
             )
             # The browser may have no Music Assistant token. The curve still
@@ -342,6 +356,53 @@ class WebKioskProvider(PlayerProvider):
     def spawn_lyrics(self, player_id: str, seq: int) -> None:
         """Look up the current track's lyrics and send them to the page."""
         self._spawn(self._publish_lyrics(player_id, seq))
+
+    async def fallback_sendspin(
+        self, player_id: str, *, expected_client_id: str | None = None
+    ) -> None:
+        """Resume the active MA queue through the kiosk's native HTML5 output."""
+        async with self._player_lock:
+            if self._unloading:
+                return
+            player = self.mass.players.get_player(player_id)
+            if not isinstance(player, WebKioskPlayer) or not player.sendspin_client_id:
+                return
+            client_id = player.sendspin_client_id
+            if expected_client_id is not None and client_id != expected_client_id:
+                return
+            if player.sendspin_fallback:
+                return
+            queue = self.mass.player_queues.get_active_queue(player_id)
+            if queue is None:
+                raise PlayerUnavailableError("No active queue for Sendspin fallback")
+            claim = player.sendspin_claim
+            player.sendspin_fallback = True
+            try:
+                # Controller commands resolve protocol IDs back to their native
+                # parent, which would release a captured static group. Detach only
+                # this owned transport through the protocol player's public API.
+                protocol = self.mass.players.get_player(client_id)
+                if protocol and (protocol.synced_to or len(protocol.group_members) > 1):
+                    leader = self.mass.players.get_player(
+                        protocol.synced_to or protocol.player_id, raise_unavailable=True
+                    )
+                    assert leader is not None
+                    await leader.set_members(player_ids_to_remove=[client_id])
+                await self.mass.players.unregister(client_id)
+                player.set_active_output_protocol("native")
+            except BaseException:
+                player.sendspin_fallback = False
+                raise
+        # Stream preparation can take time. Release the registration lock while
+        # resuming, and do not clear a newer connection's state on failure.
+        if player.sendspin_claim is not claim:
+            return
+        try:
+            await self.mass.player_queues.resume(queue.queue_id)
+        except BaseException:
+            if player.sendspin_claim is claim:
+                player.sendspin_fallback = False
+            raise
 
     def track_ended(self, player_id: str, playback_generation: str) -> None:
         """Advance the queue after the browser finishes its audio file."""
@@ -562,8 +623,14 @@ class WebKioskProvider(PlayerProvider):
             return f"http://{host}:{port}/kiosk"
         return f"http://<ma-host>:{port}/kiosk"
 
-    async def _set_sendspin_owner(self, player: WebKioskPlayer, client_id: str) -> None:
+    async def _set_sendspin_owner(
+        self, player: WebKioskPlayer, client_id: str, claim: VerifiedSendspinClaim | None
+    ) -> None:
         """Transfer identity ownership while the player lifecycle lock is held."""
+        if claim is None or claim.player_id != player.player_id or claim.client_id != client_id:
+            raise InvalidDataError("Sendspin identity ownership has not been verified")
+        player.sendspin_claim = claim
+        player.sendspin_fallback = False
         owner = self._sendspin_owners.get(client_id)
         if owner is not None and owner is not player:
             owner.sendspin_client_id = None

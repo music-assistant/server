@@ -11,6 +11,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 
 import music_assistant.providers.web_kiosk.sendspin_bridge as bridge_module
 from music_assistant.providers.web_kiosk.constants import normalize_sendspin_client_id
+from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 from music_assistant.providers.web_kiosk.sendspin_bridge import (
@@ -76,11 +77,9 @@ async def test_stream_start_opens_kiosk_in_sendspin_mode(
     await bridge.stop()
 
 
-async def test_connect_timeout_transfers_playback_back(
-    player: WebKioskPlayer, mass_mock: Mock
-) -> None:
+async def test_connect_timeout_transfers_playback_back(player: WebKioskPlayer) -> None:
     """A browser that never connects loses the stream back to the HTTP player."""
-    mass_mock.player_queues.transfer_queue = AsyncMock()
+    cast("WebKioskProvider", player.provider).fallback_sendspin = AsyncMock()  # type: ignore[method-assign]
     bridge = WebKioskSendspinBridge(
         cast("WebKioskProvider", player.provider), player, Mock(), BROWSER_CLIENT_ID
     )
@@ -92,16 +91,14 @@ async def test_connect_timeout_transfers_playback_back(
     ):
         await bridge._watch_connect()
 
-    mass_mock.player_queues.transfer_queue.assert_awaited_once_with(
-        BROWSER_CLIENT_ID, player.player_id, auto_play=True
-    )
+    cast(
+        "AsyncMock", cast("WebKioskProvider", player.provider).fallback_sendspin
+    ).assert_awaited_once_with(player.player_id, expected_client_id=BROWSER_CLIENT_ID)
 
 
-async def test_connect_timeout_keeps_playback_when_client_connects(
-    player: WebKioskPlayer, mass_mock: Mock
-) -> None:
+async def test_connect_timeout_keeps_playback_when_client_connects(player: WebKioskPlayer) -> None:
     """A browser that connected in time keeps the synchronized stream."""
-    mass_mock.player_queues.transfer_queue = AsyncMock()
+    cast("WebKioskProvider", player.provider).fallback_sendspin = AsyncMock()  # type: ignore[method-assign]
     bridge = WebKioskSendspinBridge(
         cast("WebKioskProvider", player.provider), player, Mock(), BROWSER_CLIENT_ID
     )
@@ -113,7 +110,9 @@ async def test_connect_timeout_keeps_playback_when_client_connects(
     ):
         await bridge._watch_connect()
 
-    mass_mock.player_queues.transfer_queue.assert_not_awaited()
+    cast(
+        "AsyncMock", cast("WebKioskProvider", player.provider).fallback_sendspin
+    ).assert_not_awaited()
 
 
 async def test_note_sendspin_client_id_replaces_previous_bridge(
@@ -127,14 +126,20 @@ async def test_note_sendspin_client_id_replaces_previous_bridge(
     ):
         provider.bridge_manager = manager
 
-        await provider.note_sendspin_client_id(player, BROWSER_CLIENT_ID)
+        await provider.note_sendspin_client_id(
+            player,
+            BROWSER_CLIENT_ID,
+            sendspin_claim=VerifiedSendspinClaim(player.player_id, BROWSER_CLIENT_ID),
+        )
 
         assert player.sendspin_client_id == BROWSER_CLIENT_ID
         remove_bridge.assert_not_awaited()
         evaluate_bridge.assert_awaited_once_with(player)
 
         replacement = "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"
-        await provider.note_sendspin_client_id(player, replacement)
+        await provider.note_sendspin_client_id(
+            player, replacement, sendspin_claim=VerifiedSendspinClaim(player.player_id, replacement)
+        )
 
         assert player.sendspin_client_id == replacement
         remove_bridge.assert_awaited_once_with(player.player_id, permanent=False)
@@ -156,7 +161,7 @@ async def test_fallback_reports_unexpected_transfer_failures(
         return task
 
     mass_mock.create_task.side_effect = spawn
-    mass_mock.player_queues.transfer_queue = AsyncMock(side_effect=error)
+    cast("WebKioskProvider", player.provider).fallback_sendspin = AsyncMock(side_effect=error)  # type: ignore[method-assign]
     server = Mock()
     server.remove_client = AsyncMock()
     server.register_external_player.return_value = Mock(is_connected=False)
@@ -165,6 +170,7 @@ async def test_fallback_reports_unexpected_transfer_failures(
     bridge = WebKioskSendspinBridge(
         cast("WebKioskProvider", player.provider), player, server, BROWSER_CLIENT_ID
     )
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, BROWSER_CLIENT_ID)
     await bridge.start()
     server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -200,7 +206,7 @@ async def test_stop_waits_for_fallback_cancellation_before_removing_client(
         assert transfer_finished.is_set()
 
     mass_mock.create_task.side_effect = asyncio.create_task
-    mass_mock.player_queues.transfer_queue = AsyncMock(side_effect=transfer)
+    cast("WebKioskProvider", player.provider).fallback_sendspin = AsyncMock(side_effect=transfer)  # type: ignore[method-assign]
     server = Mock()
     server.remove_client = AsyncMock(side_effect=remove_client)
     server.register_external_player.return_value = Mock(is_connected=False)
@@ -209,6 +215,7 @@ async def test_stop_waits_for_fallback_cancellation_before_removing_client(
     bridge = WebKioskSendspinBridge(
         cast("WebKioskProvider", player.provider), player, server, BROWSER_CLIENT_ID
     )
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, BROWSER_CLIENT_ID)
     await bridge.start()
     server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
     await asyncio.wait_for(transfer_started.wait(), 1)
