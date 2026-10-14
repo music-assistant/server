@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, SortDirection, SortField
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import ProviderMapping, Track
 
@@ -313,6 +314,43 @@ async def test_the_tracks_to_play_are_the_album_tracks_listing(mass: MusicAssist
     assert [track.uri for track in listing.tracks] == [track.uri for track in listed]
     assert [track.name for track in listing.tracks] == ["Song 1", "Song 2", "Song 3"]
     assert listing.listed_ids == {"qobuz_1": {track.uri: f"t{track.name[-1]}" for track in listed}}
+
+
+async def test_the_tracks_to_play_follow_the_sort_of_the_album_tracks_listing(
+    mass: MusicAssistant,
+) -> None:
+    """A sorted album plays in the order its tracks listing shows for that sort."""
+    album = await _library_album(mass, "qobuz_1", 2)
+    fetch = AsyncMock(side_effect=lambda *_: _listed_tracks("qobuz_1", 1, 3, 2))
+
+    with patch.object(mass.music.albums, "_get_provider_album_tracks", fetch):
+        listed = await mass.music.albums.tracks(
+            album.item_id, "library", sort_field=SortField.NAME, sort_direction=SortDirection.DESC
+        )
+        listing = await mass.music.albums.playback_listing(
+            album.item_id, "library", sort_field=SortField.NAME, sort_direction=SortDirection.DESC
+        )
+
+    assert [track.uri for track in listing.tracks] == [track.uri for track in listed]
+    assert [track.name for track in listing.tracks] == ["Song 3", "Song 2", "Song 1"]
+
+
+async def test_a_sort_album_tracks_do_not_offer_is_rejected_before_any_source_is_asked(
+    mass: MusicAssistant,
+) -> None:
+    """A field the album tracks listing does not offer fails before the album is assembled."""
+    album = await _library_album(mass, "qobuz_1", 1)
+    fetch = AsyncMock(side_effect=lambda *_: _listed_tracks("qobuz_1", 1))
+
+    with (
+        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+        pytest.raises(InvalidDataError),
+    ):
+        await mass.music.albums.playback_listing(
+            album.item_id, "library", sort_field=SortField.POSITION
+        )
+
+    fetch.assert_not_awaited()
 
 
 async def test_only_the_library_tracks_are_listed_under_their_own_copies(

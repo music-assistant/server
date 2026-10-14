@@ -236,10 +236,6 @@
                     pendingServerSeek = seekSecs;
                     pendingServerSeekUntil = Date.now() + 2000;
                     tvx.InteractionPlugin.executeAction("player:seek:" + seekSecs);
-                } else if (msg.type === "goto_index" && msg.index != null && typeof tvx.InteractionPlugin.executeAction === "function") {
-                    resetPlaybackClock();
-                    tvx.InteractionPlugin.executeAction("player:goto:index:" + msg.index);
-                    scanForMediaElements();
                 } else if (msg.type === "play_update" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     // Update metadata of the currently playing item without restarting audio.
                     // 'player:set-data' or 'player:update' is not supported on all MSX clients.
