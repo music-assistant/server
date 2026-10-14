@@ -7,7 +7,7 @@ import secrets
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
@@ -156,6 +156,19 @@ class WebKioskPlayer(Player):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return per-player config entries — codec is configurable per kiosk."""
         return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3]
+
+    def on_protocol_player_updated(
+        self, protocol_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Adopt playback arriving on this browser's linked Sendspin output."""
+        if (
+            self.sendspin_client_id == protocol_player.player_id
+            and protocol_player.protocol_parent_id == self.player_id
+            and protocol_player.state.playback_state
+            in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+        ):
+            self.set_active_output_protocol(protocol_player.player_id)
+        super().on_protocol_player_updated(protocol_player, changed_values)
 
     def on_ws_connected(self) -> None:
         """Mark player as available when a WebSocket client connects."""

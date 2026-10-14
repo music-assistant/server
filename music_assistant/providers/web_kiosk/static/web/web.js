@@ -52,6 +52,8 @@
     var sendspinConnecting = false;
     // True only while the Sendspin server is actually streaming audio here.
     var sendspinStreaming = false;
+    var sendspinState = null;
+    var sendspinOwnsPlayback = false;
     var sendspinAudioAt = 0;
     var sendspinReceivedAudio = false;
     var fragment = new URLSearchParams(location.hash.slice(1));
@@ -328,6 +330,7 @@
                 // uses that output unless a Sendspin stream is already playing here.
                 if (sendspinStreaming) break;
                 if (msg.path) {
+                    sendspinOwnsPlayback = false;
                     playbackGeneration = typeof msg.playback_generation === 'string' ? msg.playback_generation : '';
                     pendingSeek = null;
                     hasTrack = true;
@@ -347,6 +350,7 @@
                 }
                 break;
             case 'stop':
+                sendspinOwnsPlayback = false;
                 playbackGeneration = '';
                 endReported = true;
                 audio.pause(); audio.removeAttribute('src');
@@ -1229,6 +1233,8 @@
         SENDSPIN = false;
         sendspinClientId = '';
         sendspinStreaming = false;
+        sendspinOwnsPlayback = false;
+        sendspinState = null;
         reportVolumeCapability();
         sendspinUnlocked = true;
         var failed = window.__sendspinPlayer;
@@ -1328,7 +1334,8 @@
                 codecs: verified.codecs,
                 onStateChange: function (state) {
                     setSync('synced');
-                    if (sendspinStreaming) { playing = state.isPlaying; sync(); }
+                    sendspinState = state;
+                    if (sendspinStreaming || sendspinOwnsPlayback) applySendspinState(state);
                     if (sendspinStreaming && typeof state.volume === 'number') syncVolume(state.volume);
                 },
                 onPairingPin: function (pin) { showPairPin(pin); }
@@ -1354,6 +1361,32 @@
             document.getElementById('kiosk-sync').title = e.message || 'Sendspin unavailable';
         });
     }
+    function applySendspinState(state) {
+        var metadata = state.serverState && state.serverState.metadata || {};
+        if (state.serverState) {
+            var nextHasTrack = !!(metadata.title || metadata.artist || metadata.artwork_url);
+            var next = {
+                title: metadata.title || '',
+                artist: metadata.artist || '',
+                image: metadata.artwork_url || '',
+                duration: metadata.progress && metadata.progress.track_duration / 1000 || 0,
+                start: 0
+            };
+            var changed = hasTrack !== nextHasTrack || current.title !== next.title
+                || current.artist !== next.artist || current.image !== next.image
+                || current.duration !== next.duration;
+            hasTrack = nextHasTrack;
+            current = next;
+            if (changed) renderNow();
+        }
+        playing = state.isPlaying;
+        if (!hasTrack && !playing && !sendspinStreaming) {
+            sendspinOwnsPlayback = false;
+            lyricsLines = [];
+            applyLyrics([]);
+        }
+        sync();
+    }
     function wrapSendspinHooks(core) {
         // The core exposes these callbacks as setters only. Read the stored
         // handler, then chain ours in front so the scheduler still runs.
@@ -1364,17 +1397,20 @@
                 if (typeof previous === 'function') return previous.apply(core, arguments);
             };
         }
-        chain('onStreamStart', function () {
+        chain('onStreamStart', function (format, isFormatUpdate) {
+            if (isFormatUpdate) return;
             sendspinAudioAt = performance.now();
             sendspinReceivedAudio = false;
             waveAnchor = songTime();
             waveAnchorAt = performance.now();
             sendspinStreaming = true;
+            sendspinOwnsPlayback = true;
             reportVolumeCapability();
             audio.pause();
             audio.removeAttribute('src');
             pendingSeek = null;
             playing = true;
+            if (sendspinState) applySendspinState(sendspinState);
             sync();
             fetchQueue();
         });

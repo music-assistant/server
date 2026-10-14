@@ -5,17 +5,24 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Coroutine
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec
-from aiosendspin.server import ClientUpdatedEvent
+from aiosendspin.models.types import AudioCodec, PlaybackStateType
+from aiosendspin.server import (
+    ClientGroupChangedEvent,
+    ClientUpdatedEvent,
+    GroupMemberAddedEvent,
+    GroupMemberRemovedEvent,
+    GroupStateChangedEvent,
+)
 from music_assistant_models.config_entries import PlayerConfig
-from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -234,3 +241,65 @@ async def test_explicit_kiosk_removal_deletes_persisted_config(
     assert registry.get_player(kiosk.player_id) is None
     assert mass_mock.config.get("players/wk_delete") is None
     await asyncio.gather(*tasks)
+
+
+async def test_kiosk_state_follows_incoming_sendspin_group(
+    provider: WebKioskProvider,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """The MA-visible state follows an active linked output through group playback changes."""
+    registry, sendspin, _universal, client, tasks = browser_registry
+    leader_id = "A" * 43
+    leader_hello = replace(client.info, client_id=leader_id, name="Other speaker")
+    leader_client = Mock(
+        info=leader_hello,
+        info_or_none=leader_hello,
+        is_connected=True,
+        negotiated_role_ids=["player@v1"],
+        group=client.group,
+    )
+    leader_client.roles_by_family.return_value = []
+    clients = {CLIENT_ID: client, leader_id: leader_client}
+    cast("Mock", sendspin.server_api).get_client.side_effect = clients.get
+    leader = SendspinPlayer(sendspin, leader_id, initial_hello=leader_hello)
+    await registry.register(leader)
+    native = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+    await registry.register(native)
+    manager = WebKioskSendspinBridgeManager(provider)
+    provider.sendspin_bridge_enabled = True
+    provider.bridge_manager = manager
+    kiosk = await provider.get_or_register_player("wk_group", sendspin_client_id=CLIENT_ID)
+    assert kiosk is not None
+    leader_client.client_id = leader_id
+    client.client_id = CLIENT_ID
+    client.group.clients = [leader_client, client]
+    leader.group_event_cb(client.group, GroupMemberAddedEvent(CLIENT_ID))
+    await asyncio.gather(*tasks)
+    try:
+        for group_state, expected in (
+            (PlaybackStateType.PLAYING, PlaybackState.PLAYING),
+            (PlaybackStateType.PAUSED, PlaybackState.PAUSED),
+            (PlaybackStateType.STOPPED, PlaybackState.IDLE),
+        ):
+            leader.group_event_cb(client.group, GroupStateChangedEvent(group_state))
+            native.group_event_cb(client.group, GroupStateChangedEvent(group_state))
+            kiosk.refresh_state()
+            assert kiosk.state.playback_state == expected
+        leader.group_event_cb(client.group, GroupStateChangedEvent(PlaybackStateType.PLAYING))
+        previous_group = client.group
+        previous_group.clients = [leader_client]
+        leader.group_event_cb(previous_group, GroupMemberRemovedEvent(CLIENT_ID))
+        client.group = Mock(state=PlaybackStateType.STOPPED, clients=[client])
+        native.event_cb(client, ClientGroupChangedEvent(client.group))
+        await asyncio.gather(*tasks)
+        kiosk.refresh_state()
+        assert kiosk.state.playback_state == PlaybackState.IDLE
+        assert kiosk.state.synced_to is None
+        assert leader.state.playback_state == PlaybackState.PLAYING
+    finally:
+        await manager.close()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await native.on_unload()
+        await leader.on_unload()
