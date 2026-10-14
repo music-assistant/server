@@ -18,6 +18,9 @@ from datetime import datetime
 from typing import Any, Final
 
 from mashumaro import DataClassDictMixin
+from music_assistant_models.media_items import AudioMetadata
+
+from music_assistant.helpers.camelot import camelot_key
 
 # extra_data keys that earlier versions used for arrays that are typed fields now; __post_init__
 # lifts them so rows written before the fields existed decode into the same shape.
@@ -188,3 +191,16 @@ class AudioAnalysisData(DataClassDictMixin):
                 continue
             setattr(self, fld.name, new_val)
         return self
+
+    def as_audio_metadata(self) -> AudioMetadata | None:
+        """Return the bpm and musical key as track AudioMetadata, or None when it holds neither."""
+        if self.bpm is None and self.key is None:
+            return None
+        musical_key: str | None = None
+        if self.key is not None:
+            musical_key = f"{self.key} {self.mode}" if self.mode else self.key
+        return AudioMetadata(
+            bpm=self.bpm,
+            musical_key=musical_key,
+            camelot_key=camelot_key(self.key, self.mode),
+        )

@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.camelot import camelot_key
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 from .constants import (
@@ -53,6 +54,8 @@ if TYPE_CHECKING:
 
 # Preferred artwork width; Tidal serves square art in a range of sizes.
 _PREFERRED_IMAGE_WIDTH = 750
+# Tidal serves artist pictures up to this width and album covers larger.
+_MAX_ARTIST_PICTURE_WIDTH = 750
 
 _ISO_DURATION_RE = re.compile(
     r"^P(?:\d+Y)?(?:\d+M)?(?:\d+W)?(?:\d+D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$"
@@ -88,6 +91,16 @@ _KEY_PITCH = {
     "Bb": "Bb",
     "B": "B",
 }
+# Tidal scales that sit on the major (B) or minor (A) side of the Camelot wheel.
+_CAMELOT_MODE = {
+    "MAJOR": "major",
+    "PENTATONIC_MAJOR": "major",
+    "MINOR": "minor",
+    "AEOLIAN": "minor",
+    "HARMONIC_MINOR": "minor",
+    "MELODIC_MINOR": "minor",
+    "PENTATONIC_MINOR": "minor",
+}
 
 
 def parse_artist(provider: TidalProvider, doc: JsonApiDocument, resource: dict[str, Any]) -> Artist:
@@ -111,7 +124,10 @@ def parse_artist(provider: TidalProvider, doc: JsonApiDocument, resource: dict[s
         artist.metadata.popularity = _scale_popularity(attributes["popularity"])
     if links := _parse_links(attributes):
         artist.metadata.links = links
-    if image := _resolve_image(provider, doc, resource, "profileArt"):
+    # An artist without a picture of their own gets one of their album covers as profile art
+    if not _is_album_cover(doc.related_one(resource, "profileArt")) and (
+        image := _resolve_image(provider, doc, resource, "profileArt")
+    ):
         artist.metadata.images = UniqueList([image])
     if biography := doc.related_one(resource, "biography"):
         if text := biography.get("attributes", {}).get("text"):
@@ -233,9 +249,14 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
         track.metadata.performers = performers
 
     bpm = attributes.get("bpm")
-    musical_key = _parse_musical_key(attributes.get("key"), attributes.get("keyScale"))
+    key, key_scale = attributes.get("key"), attributes.get("keyScale")
+    musical_key = _parse_musical_key(key, key_scale)
     if bpm is not None or musical_key:
-        track.audio_metadata = AudioMetadata(bpm=bpm, musical_key=musical_key)
+        track.audio_metadata = AudioMetadata(
+            bpm=bpm,
+            musical_key=musical_key,
+            camelot_key=_parse_camelot_key(key, key_scale),
+        )
 
     # The album relationship carries a minimal album resource; use an ItemMapping
     # (as with the unofficial API) and take the track image from the album cover.
@@ -444,6 +465,11 @@ def _parse_musical_key(key: str | None, scale: str | None) -> str | None:
     return pitch
 
 
+def _parse_camelot_key(key: str | None, scale: str | None) -> str | None:
+    """Build a Camelot wheel value (e.g. "11A") from Tidal's key and scale enums."""
+    return camelot_key(_KEY_PITCH.get(key or ""), _CAMELOT_MODE.get(scale or ""))
+
+
 def _map_album_type(
     album_type: str | None, name: str, version: str | None, various_artists: bool
 ) -> AlbumType:
@@ -479,6 +505,12 @@ def _resolve_image(
         provider=provider.instance_id,
         remotely_accessible=True,
     )
+
+
+def _is_album_cover(artwork: dict[str, Any] | None) -> bool:
+    """Return whether an artwork is an album cover rather than an artist picture."""
+    files = (artwork or {}).get("attributes", {}).get("files") or []
+    return any(file.get("meta", {}).get("width", 0) > _MAX_ARTIST_PICTURE_WIDTH for file in files)
 
 
 def _select_image_url(files: list[dict[str, Any]]) -> str | None:

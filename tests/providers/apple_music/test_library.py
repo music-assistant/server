@@ -26,15 +26,17 @@ from music_assistant.providers.apple_music.library import (
 
 
 def _library_song(idx: int, *, catalog_id: str | None) -> dict[str, Any]:
-    """Build a minimal me/library/songs listing item, optionally catalog-backed."""
+    """Build a minimal me/library/songs listing item, optionally with its nested catalog song."""
     play_params: dict[str, Any] = {"id": f"i.{idx}"}
-    if catalog_id is not None:
-        play_params["catalogId"] = catalog_id
-    return {
+    item: dict[str, Any] = {
         "id": f"i.{idx}",
         "type": "library-songs",
         "attributes": {"name": f"Track {idx}", "playParams": play_params},
     }
+    if catalog_id is not None:
+        play_params["catalogId"] = catalog_id
+        item["relationships"] = {"catalog": {"data": [_catalog_song(catalog_id)]}}
+    return item
 
 
 def _library_song_with_metadata(
@@ -141,10 +143,10 @@ def _make_manager(
     stream_items: list[dict[str, Any]],
 ) -> tuple[AppleMusicLibraryManager, MagicMock, dict[str, Any]]:
     """
-    Build a library manager whose api streams ``stream_items`` and echoes catalog enrichment.
+    Build a library manager whose api streams ``stream_items`` and answers the ratings batches.
 
     The returned ``state`` dict tracks how many listing items have been streamed and at what
-    point the first enrichment request fired, so tests can assert streaming/windowing behaviour.
+    point the first ratings request fired, so tests can assert streaming/windowing behaviour.
     """
     provider = MagicMock()
     provider.domain = "apple_music"
@@ -158,29 +160,29 @@ def _make_manager(
             state["streamed"] += 1
             yield item
 
-    async def _get_data(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    async def _get_ratings(ids: list[str], _media_type: MediaType) -> dict[str, bool]:
         if state["first_enrich_at"] is None:
             state["first_enrich_at"] = state["streamed"]
-        ids = kwargs["ids"].split(",")
-        assert len(ids) <= _TRACK_SYNC_WINDOW  # never exceed the documented catalog batch limit
-        return {"data": [_catalog_song(cid) for cid in ids]}
+        assert len(ids) <= _TRACK_SYNC_WINDOW
+        return {}
 
     api.iter_all_items = _iter
-    api.get_data = AsyncMock(side_effect=_get_data)
-    api.get_ratings = AsyncMock(return_value={})
+    api.get_data = AsyncMock()
+    api.get_ratings = AsyncMock(side_effect=_get_ratings)
     return AppleMusicLibraryManager(provider), api, state
 
 
 @pytest.mark.asyncio
 async def test_catalog_enrichment_is_windowed() -> None:
-    """Catalog enrichment runs in batches capped at the window size, never one giant request."""
+    """Catalog tracks are rated per window, without a separate catalog request."""
     count = _TRACK_SYNC_WINDOW * 2 + 20
     items = [_library_song(i, catalog_id=f"c{i}") for i in range(count)]
     manager, api, _ = _make_manager(items)
     tracks = [track async for track in manager.get_library_tracks()]
     assert len(tracks) == count
-    # 320 catalog ids -> ceil(320 / 150) = 3 enrichment requests.
-    assert api.get_data.call_count == 3
+    # 320 catalog ids -> ceil(320 / 150) = 3 ratings requests.
+    assert api.get_ratings.call_count == 3
+    api.get_data.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -977,3 +979,103 @@ async def test_library_only_track_keeps_date_added_after_detail_album_swap() -> 
     assert tracks[0].album is not None
     assert tracks[0].album.name == "Album i.1"
     assert tracks[0].date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)
+
+
+def _listing_song_with_nested_catalog(
+    idx: int, *, catalog_id: str, withdrawn: bool
+) -> dict[str, Any]:
+    """Build a me/library/songs row as returned with include[songs]=artists,albums."""
+    catalog: list[dict[str, Any]] = []
+    if not withdrawn:
+        catalog = [
+            {
+                "id": catalog_id,
+                "type": "songs",
+                "attributes": {
+                    "name": f"Catalog {catalog_id}",
+                    "artistName": "Catalog Artist",
+                    "albumName": "Catalog Album",
+                    "playParams": {"id": catalog_id},
+                },
+                "relationships": {
+                    "artists": {
+                        "data": [
+                            {
+                                "id": "58773161",
+                                "type": "artists",
+                                "attributes": {"name": "Catalog Artist"},
+                            }
+                        ]
+                    },
+                    "albums": {
+                        "data": [
+                            {
+                                "id": "6769475033",
+                                "type": "albums",
+                                "attributes": {
+                                    "name": "Catalog Album",
+                                    "artistName": "Catalog Artist",
+                                },
+                            }
+                        ]
+                    },
+                },
+            }
+        ]
+    return {
+        "id": f"i.{idx}",
+        "type": "library-songs",
+        "attributes": {
+            "name": f"Track {idx}",
+            "artistName": "Catalog Artist",
+            "albumName": "Catalog Album",
+            "playParams": {"id": f"i.{idx}", "catalogId": catalog_id},
+            "dateAdded": "2024-02-25T15:01:08Z",
+        },
+        "relationships": {
+            "catalog": {"data": catalog},
+            "albums": {"data": []},
+            "artists": {"data": []},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_track_sync_reads_catalog_relationships_from_listing() -> None:
+    """Catalog artist and album come from the nested listing include, without a catalog batch."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+    api = provider.api_client
+    items = [
+        _listing_song_with_nested_catalog(1, catalog_id="6769475071", withdrawn=False),
+        _listing_song_with_nested_catalog(2, catalog_id="1111111111", withdrawn=True),
+    ]
+
+    async def _iter(*_args: Any, **_kwargs: Any) -> Any:
+        for item in items:
+            yield item
+
+    api.iter_all_items = _iter
+    api.get_data = AsyncMock()
+    api.get_ratings = AsyncMock(return_value={"6769475071": True})
+    search_results = MagicMock()
+    search_results.tracks = []
+    provider.media_manager.search = AsyncMock(return_value=search_results)
+
+    manager = AppleMusicLibraryManager(provider)
+    tracks = {track.name: track async for track in manager.get_library_tracks()}
+
+    api.get_data.assert_not_called()
+    api.get_ratings.assert_awaited_once_with(["6769475071", "1111111111"], MediaType.TRACK)
+    catalog_track = tracks["Catalog 6769475071"]
+    assert catalog_track.item_id == "6769475071"
+    assert catalog_track.album is not None
+    assert catalog_track.album.item_id == "6769475033"
+    assert [artist.item_id for artist in catalog_track.artists] == ["58773161"]
+    assert catalog_track.favorite is True
+    assert catalog_track.date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)
+    # the withdrawn id still goes through the search fallback, then is marked unavailable
+    provider.media_manager.search.assert_awaited_once()
+    withdrawn_track = tracks["Track 2"]
+    assert all(not mapping.available for mapping in withdrawn_track.provider_mappings)

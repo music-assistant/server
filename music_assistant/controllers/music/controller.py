@@ -77,6 +77,7 @@ from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
     CONF_DELETED_PROVIDERS,
+    CONF_KEEP_REMASTERS_APART,
     CONF_RESET_DB,
     CONF_TRACK_RECONCILIATION_CURSOR,
     CONF_TRACK_RECONCILIATION_RESCAN_DUE,
@@ -145,6 +146,7 @@ from music_assistant.helpers.compare import (
     compare_strings,
     compare_track,
     compare_version,
+    set_keep_remasters_apart,
 )
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
@@ -379,6 +381,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Return all Config Entries for this core module (if any)."""
         return (
             ConfigEntry(
+                key=CONF_KEEP_REMASTERS_APART,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+                immediate_apply=True,
+            ),
+            ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
                 category="generic",
@@ -425,6 +434,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self.config = config
+        set_keep_remasters_apart(bool(config.get_value(CONF_KEEP_REMASTERS_APART)))
         # setup library database
         await self._setup_database()
 
@@ -446,6 +456,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Cleanup on exit."""
         if self._database:
             await self._database.close()
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        set_keep_remasters_apart(bool(config.get_value(CONF_KEEP_REMASTERS_APART)))
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this controller to include in diagnostics reports."""
@@ -2132,7 +2147,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return None
 
     async def get_resume_position(
-        self, media_item: Audiobook | PodcastEpisode, userid: str | None = None
+        self,
+        media_item: Audiobook | PodcastEpisode,
+        userid: str | None = None,
+        pinned: tuple[str, str] | None = None,
     ) -> tuple[bool, int]:
         """
         Get progress (resume point) details for the given audiobook or episode.
@@ -2144,6 +2162,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         Returns a boolean with the fully_played status
         and an integer with the resume position in ms.
+
+        :param media_item: The audiobook or episode to get the resume point of.
+        :param userid: The user to get the resume point for, by default the session user.
+        :param pinned: The (provider instance, item id) of the copy the item plays from, whose
+            resume point is asked for first.
         """
         provider_fully_played = False
         provider_position_ms = 0
@@ -2169,11 +2192,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             preferred_provider_instances = provider_instances
 
-        preferred_providers = [
-            x
-            for x in media_item.provider_mappings
-            if x.provider_instance in preferred_provider_instances
-        ]
+        preferred_providers = sorted(
+            (
+                x
+                for x in media_item.provider_mappings
+                if x.provider_instance in preferred_provider_instances
+            ),
+            # the copy the item plays from first, then the others in a fixed order
+            key=lambda x: (
+                (x.provider_instance, x.item_id) != pinned,
+                x.provider_instance,
+                x.item_id,
+            ),
+        )
 
         # Try to get position from providers
         for prov_mapping in preferred_providers:
@@ -2597,6 +2628,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Add provider mapping to the given library item."""
         ctrl = self.get_controller(media_type)
+        # only a mapping the provider itself returns as this media type is accepted
+        await ctrl.get_provider_item(
+            mapping.item_id,
+            mapping.provider_instance,
+            allow_fallback=False,
+            strict_provider_instance=True,
+        )
+        provider = self.mass.get_provider(mapping.provider_instance)
+        if provider is None or provider.domain != mapping.provider_domain:
+            msg = f"Provider domain {mapping.provider_domain} does not match {mapping.provider_instance}"
+            raise InvalidDataError(msg)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
     @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import ProviderFeature, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
-from music_assistant_models.media_items import SearchResults
+from music_assistant_models.media_items import ProviderMapping, SearchResults
 
 from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.models.music_provider import MusicProvider
@@ -108,8 +108,8 @@ async def test_similar_tracks_follow_the_listing_contract(mass: MusicAssistant) 
     ]
     fetch = AsyncMock(return_value=(similar, None))
 
-    async def _similar(**kwargs: Any) -> list[str]:
-        return _names(await mass.music.tracks.similar_tracks("ref", "qobuz_1", **kwargs))
+    async def _similar(provider: str = "qobuz_1", **kwargs: Any) -> list[str]:
+        return _names(await mass.music.tracks.similar_tracks("ref", provider, **kwargs))
 
     with (
         patch.object(mass, "get_provider", return_value=_similar_tracks_provider()),
@@ -119,6 +119,8 @@ async def test_similar_tracks_follow_the_listing_contract(mass: MusicAssistant) 
         patch.object(mass.music.tracks, "_get_similar_tracks_from_provider", fetch),
     ):
         assert await _similar() == ["Zebra", "Apple", "Mango"]
+        # the domain and the instance it resolves to share one listing
+        assert await _similar("qobuz") == ["Zebra", "Apple", "Mango"]
         assert await _similar(sort_field=SortField.DURATION, sort_direction=SortDirection.DESC) == [
             "Apple",
             "Mango",
@@ -181,3 +183,25 @@ async def test_similar_tracks_after_a_failing_provider_are_assembled_again(
             assert _names(await mass.music.tracks.similar_tracks("ref", "qobuz_1")) == ["One"]
     # the failing provider and the fallback, on both calls
     assert fetch.await_count == 4
+
+
+async def test_similar_tracks_missing_a_source_that_is_not_loaded_are_assembled_again(
+    mass: MusicAssistant,
+) -> None:
+    """Similar tracks a mapped source that is not loaded might have answered first are not kept."""
+    library_track = create_track("library", "1")
+    library_track.provider_mappings = {
+        ProviderMapping(item_id="ref", provider_domain="qobuz", provider_instance="qobuz_1")
+    }
+    metadata_provider = SimpleNamespace(name="metadata")
+    fetch = AsyncMock(return_value=([create_track("qobuz_1", "t1", name="One")], None))
+    with (
+        # the track's own source is not loaded, so the fallback answers
+        patch.object(mass, "get_provider", return_value=None),
+        patch.object(mass, "get_providers_supporting_feature", return_value=[metadata_provider]),
+        patch.object(mass.music.tracks, "get", AsyncMock(return_value=library_track)),
+        patch.object(mass.music.tracks, "_get_similar_tracks_from_provider", fetch),
+    ):
+        for _ in range(2):
+            assert _names(await mass.music.tracks.similar_tracks("1", "library")) == ["One"]
+    assert fetch.await_count == 2

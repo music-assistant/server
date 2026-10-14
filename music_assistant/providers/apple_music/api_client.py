@@ -13,11 +13,13 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     RateLimited,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 
+from .helpers.request_counter import RequestCounter, endpoint_family
 from .helpers.utils import is_library_id, translate_media_type_to_apple_type
 
 if TYPE_CHECKING:
@@ -50,6 +52,44 @@ def _retry_transient_transport_errors[ClientT, **P, R](
             raise ResourceTemporarilyUnavailable(
                 f"Transient transport error calling Apple Music: {type(err).__name__}: {err}"
             ) from err
+
+    return wrapper
+
+
+def _count_attempts[**P, R](
+    func: Callable[Concatenate[AppleMusicAPIClient, str, P], Awaitable[R]],
+) -> Callable[Concatenate[AppleMusicAPIClient, str, P], Awaitable[R]]:
+    """Count every request attempt and every 429 against its endpoint family."""
+
+    @functools.wraps(func)
+    async def wrapper(
+        self: AppleMusicAPIClient, endpoint: str, /, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        family = endpoint_family(endpoint, kwargs)
+        self.request_counter.record(family, "attempts")
+        try:
+            return await func(self, endpoint, *args, **kwargs)
+        except RateLimited:
+            self.request_counter.record(family, "rate_limited")
+            raise
+
+    return wrapper
+
+
+def _count_retries_exhausted[**P, R](
+    func: Callable[Concatenate[AppleMusicAPIClient, str, P], Awaitable[R]],
+) -> Callable[Concatenate[AppleMusicAPIClient, str, P], Awaitable[R]]:
+    """Count every request that ended in RetriesExhausted, including one skipped by a cooldown."""
+
+    @functools.wraps(func)
+    async def wrapper(
+        self: AppleMusicAPIClient, endpoint: str, /, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        try:
+            return await func(self, endpoint, *args, **kwargs)
+        except RetriesExhausted:
+            self.request_counter.record(endpoint_family(endpoint, kwargs), "retries_exhausted")
+            raise
 
     return wrapper
 
@@ -96,6 +136,7 @@ class AppleMusicAPIClient:
         """Initialize the API client."""
         self.provider = provider
         self.logger = provider.logger
+        self.request_counter = RequestCounter()
         self._language: str | None = None
 
     @property
@@ -106,9 +147,11 @@ class AppleMusicAPIClient:
             "Music-User-Token": cast("str", self.provider._music_user_token),
         }
 
+    @_count_retries_exhausted
     @throttle_with_retries
     @_retry_transient_transport_errors
-    async def get_data(self, /, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    @_count_attempts
+    async def get_data(self, endpoint: str, /, **kwargs: Any) -> dict[str, Any]:
         """GET data from the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         if self._language and "l" not in kwargs:
@@ -148,8 +191,10 @@ class AppleMusicAPIClient:
             response.raise_for_status()
             return cast("dict[str, Any]", await response.json(loads=json_loads))
 
+    @_count_retries_exhausted
     @throttle_with_retries
-    async def delete_data(self, /, endpoint: str, data: Any = None, **kwargs: Any) -> None:
+    @_count_attempts
+    async def delete_data(self, endpoint: str, /, data: Any = None, **kwargs: Any) -> None:
         """DELETE data from the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
@@ -172,8 +217,10 @@ class AppleMusicAPIClient:
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
 
+    @_count_retries_exhausted
     @throttle_with_retries
-    async def put_data(self, /, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
+    @_count_attempts
+    async def put_data(self, endpoint: str, /, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """PUT data to the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
@@ -199,8 +246,10 @@ class AppleMusicAPIClient:
                 return cast("dict[str, Any]", await response.json(loads=json_loads))
             return {}
 
+    @_count_retries_exhausted
     @throttle_with_retries
-    async def post_data(self, /, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
+    @_count_attempts
+    async def post_data(self, endpoint: str, /, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """POST data to the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (

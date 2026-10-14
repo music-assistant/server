@@ -61,6 +61,7 @@ from music_assistant.helpers.compare import (
     compare_track,
     compare_track_evidence,
     compare_track_title,
+    get_keep_remasters_apart,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
@@ -172,6 +173,7 @@ class TracksController(MediaControllerBase[Track]):
                 'item_id', albums.item_id,
                 'provider', 'library',
                     'name', albums.name,
+                    'version', COALESCE(albums.version, ''),
                     'sort_name', albums.sort_name,
                     'media_type', 'album',
                     'year', albums.year,
@@ -565,7 +567,7 @@ class TracksController(MediaControllerBase[Track]):
         """
         Return the tracks similar to a track, searched, sorted and paged.
 
-        The listing holds at most the 25 most similar tracks of the first provider to answer.
+        The listing holds at most SIMILAR_ITEMS_LIMIT tracks, from the first provider to answer.
         Asked without a lookup or preferred providers, it is assembled once and served from
         the cache for a while.
 
@@ -1628,6 +1630,19 @@ class TracksController(MediaControllerBase[Track]):
         """Merge track model state without replacing existing album relations."""
         await self._update_library_item(item_id, update, set_album=False)
 
+    async def _verify_musicbrainz_mapping(self, db_item: Track, mapping: ProviderMapping) -> bool:
+        """Return True if a linked track may be added, checked while remasters are kept apart."""
+        if not get_keep_remasters_apart():
+            return True
+        # a MusicBrainz recording also covers its remasters, so its link names no version
+        try:
+            prov_track = await self.get_provider_item(
+                mapping.item_id, mapping.provider_instance, allow_fallback=False
+            )
+        except MusicAssistantError, ClientError, TimeoutError:
+            return False
+        return compare_track(db_item, prov_track, strict=True)
+
     async def _set_track_album(
         self,
         db_id: int,
@@ -1832,8 +1847,8 @@ class TracksController(MediaControllerBase[Track]):
         """
         Return the similar tracks of the first provider that has any for the given track.
 
-        A provider that failed before the answer might have answered first, so a listing
-        with such a failure is incomplete.
+        A provider that failed before the answer, or a mapped source that is not loaded,
+        might have answered first, which leaves the listing incomplete.
 
         :param item_id: The item ID of the track.
         :param provider_instance_id_or_domain: The provider instance ID or domain.
@@ -1862,10 +1877,14 @@ class TracksController(MediaControllerBase[Track]):
             None
         )
         provider_responded = False
+        unanswered = False
 
         # Try preferred providers first, then fall back to others
         for prov_mapping in sorted_mappings:
             prov = self.mass.get_provider(prov_mapping.provider_instance)
+            if prov is None:
+                unanswered = True
+                continue
             if (
                 not isinstance(prov, MusicProvider)
                 or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features
@@ -1881,7 +1900,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             provider_responded = True
             if result:
-                return Listing(result, complete=last_provider_error is None)
+                return Listing(result, complete=last_provider_error is None and not unanswered)
 
         # Fallback: consult metadata/plugin providers that claim SIMILAR_TRACKS
         for prov in self.mass.get_providers_supporting_feature(
@@ -1899,12 +1918,12 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             provider_responded = True
             if result:
-                return Listing(result, complete=last_provider_error is None)
+                return Listing(result, complete=last_provider_error is None and not unanswered)
 
         if not allow_lookup:
             if not provider_responded and last_provider_error is not None:
                 self._raise_similar_tracks_provider_error(ref_item, last_provider_error)
-            return Listing([], complete=last_provider_error is None)
+            return Listing([], complete=last_provider_error is None and not unanswered)
 
         try:
             result, error = await self._lookup_similar_tracks_provider(
@@ -1912,7 +1931,7 @@ class TracksController(MediaControllerBase[Track]):
             )
         except UnsupportedFeaturedException:
             if provider_responded:
-                return Listing([], complete=last_provider_error is None)
+                return Listing([], complete=last_provider_error is None and not unanswered)
             if last_provider_error is not None:
                 self._raise_similar_tracks_provider_error(ref_item, last_provider_error)
             raise
@@ -1921,11 +1940,11 @@ class TracksController(MediaControllerBase[Track]):
         if result is not None:
             provider_responded = True
             if result:
-                return Listing(result, complete=last_provider_error is None)
+                return Listing(result, complete=last_provider_error is None and not unanswered)
 
         if not provider_responded and last_provider_error is not None:
             self._raise_similar_tracks_provider_error(ref_item, last_provider_error)
-        return Listing([], complete=last_provider_error is None)
+        return Listing([], complete=last_provider_error is None and not unanswered)
 
     async def _get_similar_tracks_from_provider(
         self,

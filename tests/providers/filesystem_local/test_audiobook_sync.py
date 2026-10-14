@@ -46,7 +46,7 @@ def _change_file(file: Path) -> None:
     os.utime(file, (2_000_000_000, 2_000_000_000))
 
 
-async def _parse(path: str, _size: int | None = None) -> AudioTags:
+async def _parse(path: str, _size: int | None = None, **_kwargs: Any) -> AudioTags:
     """
     Return the tags of a dummy file, derived from its name.
 
