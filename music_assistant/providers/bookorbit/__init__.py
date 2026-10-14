@@ -139,8 +139,8 @@ class BookOrbitProvider(MusicProvider):
         self._catalog: dict[str, dict[str, Any]] = {}
         self._catalog_refreshed_at: float = 0.0
         self._catalog_lock = asyncio.Lock()
-        # book id -> audio file ids handed out by get_stream_details (the proxy serves only these)
-        self._stream_files: dict[str, set[int]] = {}
+        # book id -> asset ids handed out by get_stream_details (the proxy serves only these)
+        self._stream_assets: dict[str, set[str]] = {}
         # library id -> name / ids of the catalog's audiobooks in that library (for browse)
         self._library_names: dict[int, str] = {}
         self._library_books: dict[int, list[str]] = {}
@@ -240,31 +240,55 @@ class BookOrbitProvider(MusicProvider):
         return parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get the stream of an audiobook: one HTTP part per audio file, proxied by MA."""
+        """Get the stream of an audiobook: one HTTP part per audio asset, proxied by MA."""
         if media_type != MediaType.AUDIOBOOK:
             raise MediaNotFoundError("Stream unknown")
-        book = await self._get_book(item_id, fresh=True)
-        files = _audio_files(book)
-        if not files:
-            raise MediaNotFoundError(f"BookOrbit book {item_id} has no audio files")
-        self._stream_files[str(book["id"])] = {int(file["id"]) for file in files}
+        try:
+            book_id = int(item_id)
+        except ValueError as err:
+            raise MediaNotFoundError(f"Invalid BookOrbit book id {item_id}") from err
+        try:
+            manifest = await self._client.get_audiobook_manifest(book_id)
+        except ClientResponseError as err:
+            if err.status == 404:
+                raise MediaNotFoundError(f"BookOrbit audiobook {item_id} not found") from err
+            raise
+        assets = sorted(
+            (a for a in (manifest.get("assets") or []) if a.get("assetId")),
+            key=lambda asset: int(asset.get("sequence") or 0),
+        )
+        if not assets:
+            raise MediaNotFoundError(f"BookOrbit book {item_id} has no audio assets")
+        self._stream_assets[str(book_id)] = {str(asset["assetId"]) for asset in assets}
         parts = [
             MultiPartPath(
                 path=(
                     f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
-                    f"book_id={book['id']}&file_id={file['id']}"
+                    f"book_id={book_id}&asset_id={asset['assetId']}"
                 ),
-                duration=file.get("durationSeconds"),
+                duration=(
+                    float(asset["durationMs"]) / 1000.0
+                    if asset.get("durationMs") is not None
+                    else None
+                ),
             )
-            for file in files
+            for asset in assets
         ]
-        duration = parse_audiobook(
-            book, provider_instance_id=self.instance_id, base_url=self.base_url
-        ).duration
+        total_ms = manifest.get("totalDurationMs")
+        duration: int | None
+        if total_ms is not None:
+            duration = round(float(total_ms) / 1000.0)
+        else:
+            # Fall back to BookDetail when the manifest omits totalDurationMs.
+            book = await self._get_book(item_id, fresh=True)
+            parsed_duration = parse_audiobook(
+                book, provider_instance_id=self.instance_id, base_url=self.base_url
+            ).duration
+            duration = round(parsed_duration) if parsed_duration is not None else None
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            audio_format=AudioFormat(content_type=ContentType.try_parse(files[0]["format"])),
+            audio_format=AudioFormat(content_type=ContentType.try_parse(assets[0]["format"])),
             media_type=media_type,
             stream_type=StreamType.HTTP,
             duration=duration,
@@ -424,22 +448,28 @@ class BookOrbitProvider(MusicProvider):
             raise
 
     async def _handle_part_request(self, request: web.Request) -> web.StreamResponse:
-        """Proxy one audio file of a book, with a fresh token and range support."""
+        """Proxy one audiobook asset, with a fresh token and range support."""
         try:
             book_id = str(int(request.query["book_id"]))
-            file_id = int(request.query["file_id"])
+            asset_id = str(request.query["asset_id"])
         except KeyError, ValueError:
-            return web.Response(status=400, text="Missing or invalid book_id/file_id")
-        if file_id not in self._book_file_ids(book_id):
-            return web.Response(status=404, text="Unknown file")
+            return web.Response(status=400, text="Missing or invalid book_id/asset_id")
+        if not asset_id or asset_id not in self._book_asset_ids(book_id):
+            return web.Response(status=404, text="Unknown asset")
         try:
             upstream = await self._client.open_file(
-                file_id,
+                int(book_id),
+                asset_id,
                 range_header=request.headers.get("Range"),
                 timeout=PART_STREAM_TIMEOUT,
             )
         except (ClientError, BookOrbitAuthError, TimeoutError) as err:
-            self.logger.warning("Requesting file %s from BookOrbit failed: %s", file_id, err)
+            self.logger.warning(
+                "Requesting asset %s of book %s from BookOrbit failed: %s",
+                asset_id,
+                book_id,
+                err,
+            )
             raise web.HTTPBadGateway(text="BookOrbit unreachable") from err
         async with upstream:
             response = web.StreamResponse(
@@ -457,20 +487,16 @@ class BookOrbitProvider(MusicProvider):
                 await response.write_eof()
             except ConnectionError:
                 # ffmpeg hangs up e.g. when it seeks or has probed enough
-                self.logger.debug("Client disconnected from file %s", file_id)
+                self.logger.debug("Client disconnected from asset %s", asset_id)
             except TimeoutError as err:
-                self.logger.warning("BookOrbit interrupted file %s: %s", file_id, err)
+                self.logger.warning("BookOrbit interrupted asset %s: %s", asset_id, err)
             except ClientError as err:
-                self.logger.warning("BookOrbit interrupted file %s: %s", file_id, err)
+                self.logger.warning("BookOrbit interrupted asset %s: %s", asset_id, err)
         return response
 
-    def _book_file_ids(self, book_id: str) -> set[int]:
-        """Return the audio file ids of a resolved stream or catalog book."""
-        if (file_ids := self._stream_files.get(book_id)) is not None:
-            return file_ids
-        if book := self._catalog.get(book_id):
-            return {int(file["id"]) for file in _audio_files(book)}
-        return set()
+    def _book_asset_ids(self, book_id: str) -> set[str]:
+        """Return the asset ids handed out by a prior get_stream_details for this book."""
+        return self._stream_assets.get(book_id, set())
 
     async def _ensure_catalog(self) -> None:
         """Make sure a catalog is loaded; a loaded catalog is only refreshed by syncs."""

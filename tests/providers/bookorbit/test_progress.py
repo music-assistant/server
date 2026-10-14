@@ -19,6 +19,7 @@ from music_assistant.providers.bookorbit.progress import (
     build_progress_update,
     parse_resume_position,
 )
+from tests.providers.bookorbit.conftest import manifest_from_book
 
 
 def _client(provider: BookOrbitProvider) -> Any:
@@ -43,7 +44,9 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     prov.base_url = "http://bo"
     prov._client = Mock()
     details = {book_audiobook["id"]: book_audiobook, book_multifile["id"]: book_multifile}
+    manifests = {book_id: manifest_from_book(book) for book_id, book in details.items()}
     prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
+    prov._client.get_audiobook_manifest = AsyncMock(side_effect=lambda book_id: manifests[book_id])
     prov._client.get_audio_progress = AsyncMock(return_value=None)
     prov._client.upsert_audio_progress = AsyncMock()
     return prov
@@ -147,17 +150,17 @@ def test_resume_unknown_file_falls_back_to_percentage(book_multifile: dict[str, 
 async def test_stream_details_single_file(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:
-    """A single file is proxied through the MA stream route."""
+    """A single asset is proxied through the MA stream route."""
     details = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
-    file = _audio_files(book_audiobook)[0]
+    asset = manifest_from_book(book_audiobook)["assets"][0]
     assert details.stream_type == StreamType.HTTP
-    assert details.audio_format.content_type == ContentType.try_parse(file["format"])
+    assert details.audio_format.content_type == ContentType.try_parse(asset["format"])
     assert details.can_seek is True
     assert details.allow_seek is True
     assert isinstance(details.path, str)
     assert details.path.startswith("http://ma:8097/bookorbit--test_part_stream?")
     assert f"book_id={book_audiobook['id']}" in details.path
-    assert f"file_id={file['id']}" in details.path
+    assert f"asset_id={asset['assetId']}" in details.path
     # no credentials in the url
     assert "token" not in details.path.lower()
 
@@ -166,12 +169,13 @@ async def test_stream_details_single_file(
 async def test_stream_details_multi_file(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
-    """Multiple files give ordered multi-part paths with durations (epub excluded)."""
+    """Multiple assets give ordered multi-part paths with durations (epub excluded)."""
     details = await provider.get_stream_details(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+    assets = manifest_from_book(book_multifile)["assets"]
     assert isinstance(details.path, list)
     assert [p.duration for p in details.path] == [100.5, 200.5]
-    assert "file_id=771" in details.path[0].path
-    assert "file_id=772" in details.path[1].path
+    assert f"asset_id={assets[0]['assetId']}" in details.path[0].path
+    assert f"asset_id={assets[1]['assetId']}" in details.path[1].path
     assert details.duration == 301
 
 
@@ -266,13 +270,15 @@ async def test_on_played_ignores_other_media(provider: BookOrbitProvider) -> Non
 
 
 @pytest.mark.asyncio
-async def test_part_request_only_serves_files_of_the_book(
+async def test_part_request_only_serves_assets_of_the_book(
     provider: BookOrbitProvider, book_multifile: dict[str, Any], book_audiobook: dict[str, Any]
 ) -> None:
-    """The stream proxy refuses file ids that do not belong to a resolved book."""
+    """The stream proxy refuses asset ids that do not belong to a resolved book."""
     client = _client(provider)
     client.open_file = AsyncMock(side_effect=ClientError("unreachable"))
     book_id = book_multifile["id"]
+    assets = manifest_from_book(book_multifile)["assets"]
+    other_asset = manifest_from_book(book_audiobook)["assets"][0]["assetId"]
 
     async def status(query: str) -> int:
         request = make_mocked_request("GET", f"/bookorbit--test_part_stream?{query}")
@@ -282,12 +288,11 @@ async def test_part_request_only_serves_files_of_the_book(
             return err.status
         return response.status
 
-    assert await status(f"book_id={book_id}&file_id=771") == 404  # not resolved yet
-    assert await status("file_id=771") == 400
+    assert await status(f"book_id={book_id}&asset_id={assets[0]['assetId']}") == 404  # not yet
+    assert await status(f"asset_id={assets[0]['assetId']}") == 400
     await provider.get_stream_details(str(book_id), MediaType.AUDIOBOOK)
-    other_file = _audio_files(book_audiobook)[0]["id"]
-    assert await status(f"book_id={book_id}&file_id={other_file}") == 404
-    assert await status(f"book_id={book_id}&file_id=773") == 404  # the epub
+    assert await status(f"book_id={book_id}&asset_id={other_asset}") == 404
+    assert await status(f"book_id={book_id}&asset_id=aud_not-a-real-asset") == 404
     client.open_file.assert_not_awaited()
-    assert await status(f"book_id={book_id}&file_id=771") == 502  # passed validation
+    assert await status(f"book_id={book_id}&asset_id={assets[0]['assetId']}") == 502
     client.open_file.assert_awaited_once()

@@ -187,19 +187,27 @@ class BookOrbitClient:
             raise
         return data if isinstance(data, bytes) and data else None
 
-    def stream_url(self, file_id: int) -> str:
-        """Return the absolute URL serving a book file."""
-        return f"{self.base_url}{API_PREFIX}/books/files/{file_id}/serve"
+    async def get_audiobook_manifest(self, book_id: int) -> dict[str, Any]:
+        """Return the audiobook playback manifest (assets + chapters) for a book."""
+        return await self.request(  # type: ignore[no-any-return]
+            "GET", f"{API_PREFIX}/audiobooks/{book_id}/manifest"
+        )
+
+    def stream_url(self, book_id: int, asset_id: str) -> str:
+        """Return the absolute URL serving one audiobook asset (BookOrbit 3.4+)."""
+        # Audio must use the audiobook content route; /books/files/{id}/serve rejects audio.
+        return f"{self.base_url}{API_PREFIX}/audiobooks/{book_id}/assets/{asset_id}/content"
 
     async def open_file(
         self,
-        file_id: int,
+        book_id: int,
+        asset_id: str,
         *,
         range_header: str | None = None,
         timeout: ClientTimeout | None = None,
     ) -> ClientResponse:
         """
-        Open a book file for streaming; the caller must release the response.
+        Open an audiobook asset for streaming; the caller must release the response.
 
         On 401 the token is refreshed (or the client logs in again) and the request retried once.
         """
@@ -210,13 +218,15 @@ class BookOrbitClient:
             kwargs: dict[str, Any] = {"headers": self._headers(extra), "ssl": self.verify_ssl}
             if timeout is not None:
                 kwargs["timeout"] = timeout
-            resp = await self.session.get(self.stream_url(file_id), **kwargs)
+            resp = await self.session.get(self.stream_url(book_id, asset_id), **kwargs)
             if resp.status != 401:
                 return resp
             resp.release()
             if attempt == 0:
                 await self._reauthenticate(token)
-        raise BookOrbitAuthError(f"file {file_id}: HTTP 401 after re-authentication")
+        raise BookOrbitAuthError(
+            f"audiobook {book_id} asset {asset_id}: HTTP 401 after re-authentication"
+        )
 
     async def _ensure_token(self) -> None:
         """Log in unless an access token is held (once, for concurrent callers)."""

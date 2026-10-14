@@ -231,7 +231,10 @@ def test_stream_url_and_helpers() -> None:
         password="p",
         verify_ssl=True,
     )
-    assert bo.stream_url(42) == "http://host:3000/api/v1/books/files/42/serve"
+    assert bo.stream_url(42, "aud_11111111-1111-4111-8111-111111111111") == (
+        "http://host:3000/api/v1/audiobooks/42/assets/"
+        "aud_11111111-1111-4111-8111-111111111111/content"
+    )
     assert normalize_base_url("http://x/") == "http://x"
     assert is_audio_format("M4B")
     assert not is_audio_format("epub")
@@ -240,8 +243,9 @@ def test_stream_url_and_helpers() -> None:
 
 @pytest.mark.asyncio
 async def test_open_file_sends_bearer_and_range_and_retries_on_401(aiohttp_client: Any) -> None:
-    """Files are fetched with the bearer token; a 401 refreshes the token and retries."""
+    """Assets are fetched with the bearer token; a 401 refreshes the token and retries."""
     seen: list[tuple[str | None, str | None]] = []
+    asset_id = "aud_11111111-1111-4111-8111-111111111111"
 
     async def login(_request: web.Request) -> web.Response:
         resp = web.json_response({"accessToken": "stale"})
@@ -261,11 +265,11 @@ async def test_open_file_sends_bearer_and_range_and_retries_on_401(aiohttp_clien
     app = web.Application()
     app.router.add_post("/api/v1/auth/login", login)
     app.router.add_post("/api/v1/auth/refresh", refresh)
-    app.router.add_get("/api/v1/books/files/{file_id}/serve", serve)
+    app.router.add_get("/api/v1/audiobooks/{book_id}/assets/{asset_id}/content", serve)
     client = await aiohttp_client(app)
 
     bo = _make(client)
-    resp = await bo.open_file(7, range_header="bytes=0-2")
+    resp = await bo.open_file(7, asset_id, range_header="bytes=0-2")
     async with resp:
         assert resp.status == 206
         assert await resp.read() == b"abc"
