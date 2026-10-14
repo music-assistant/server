@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
+    AudioSource,
     BrowseFolder,
     ItemMapping,
     Playlist,
@@ -20,6 +21,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.music.constants import BROWSE_CACHE_EXPIRATION
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -183,6 +185,41 @@ async def test_local_folder_is_browsed_every_time(mass: MusicAssistant) -> None:
         for _ in range(2):
             assert _names(await mass.music.browse(PATH, search="zeb")) == ["..", "Zebra"]
     assert provider.browse.await_count == 2
+
+
+async def test_audio_source_folder_is_searched_sorted_and_paged(mass: MusicAssistant) -> None:
+    """The sources a plugin offers to start are listed like the items of any folder."""
+    plugin = MagicMock(spec=PluginProvider)
+    plugin.instance_id = "vban"
+    plugin.name = "VBAN"
+    plugin.supported_features = {ProviderFeature.AUDIO_SOURCE}
+    # not bound to a player, so all of its sources are listed
+    plugin.get_player_audio_sources = MagicMock(return_value=None)
+    plugin.get_audio_sources = AsyncMock(
+        return_value=[
+            AudioSource(
+                item_id=name.lower(),
+                provider="vban",
+                name=name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=name.lower(), provider_domain="vban", provider_instance="vban"
+                    )
+                },
+                can_initiate=True,
+            )
+            for name in ("Zebra", "Apple", "Mango")
+        ]
+    )
+
+    async def _browse(**kwargs: Any) -> list[str]:
+        return _names(await mass.music.browse("vban://", **kwargs))
+
+    with patch.object(mass, "get_provider", return_value=plugin):
+        assert await _browse() == ["..", "Zebra", "Apple", "Mango"]
+        assert await _browse(sort_field=SortField.NAME) == ["..", "Apple", "Mango", "Zebra"]
+        assert await _browse(search="ango") == ["..", "Mango"]
+        assert await _browse(limit=2, offset=2) == ["Apple", "Mango"]
 
 
 async def test_browse_rejects_an_unsupported_sort_before_browsing(mass: MusicAssistant) -> None:

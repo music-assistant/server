@@ -92,6 +92,26 @@ async def test_versions_are_searched_for_once(
 
 
 @pytest.mark.parametrize(("controller", "item_cls"), CONTROLLERS)
+async def test_versions_of_a_library_item_are_searched_for_once(
+    mass: MusicAssistant, controller: str, item_cls: type[Any]
+) -> None:
+    """The versions of a library item are kept apart from those of a provider item."""
+    ctrl = getattr(mass.music, controller)
+    assemble = AsyncMock(return_value=_versions(item_cls))
+    with patch.object(ctrl, "_assemble_versions", assemble):
+        for _ in range(2):
+            assert _names(await ctrl.versions("1", "library")) == ["Zebra", "Apple", "Mango"]
+        with patch.object(
+            mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")
+        ):
+            await ctrl.versions("1", "qobuz_1")
+    assert [call.args for call in assemble.await_args_list] == [
+        ("1", "library"),
+        ("1", "qobuz_1"),
+    ]
+
+
+@pytest.mark.parametrize(("controller", "item_cls"), CONTROLLERS)
 async def test_versions_reject_an_unsupported_sort_before_searching(
     mass: MusicAssistant, controller: str, item_cls: type[Any]
 ) -> None:

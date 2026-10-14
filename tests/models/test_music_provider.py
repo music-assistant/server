@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
-from unittest.mock import MagicMock
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
@@ -135,3 +135,26 @@ async def test_cancelled_stream_slot_wait_does_not_consume_capacity() -> None:
         assert not provider.has_available_stream_slot
 
     assert provider.has_available_stream_slot
+
+
+@pytest.mark.parametrize(
+    ("folder", "controller"),
+    [
+        ("artists", "artists"),
+        ("albums", "albums"),
+        ("tracks", "tracks"),
+        ("radios", "radio"),
+        ("playlists", "playlists"),
+        ("audiobooks", "audiobooks"),
+        ("podcasts", "podcasts"),
+    ],
+)
+async def test_library_folder_holds_every_library_item(folder: str, controller: str) -> None:
+    """A library folder of the default browse holds all of the provider's library items."""
+    provider = _make_provider(_StreamingProvider, supported_features={ProviderFeature.BROWSE})
+    listed: list[Any] = ["item"]
+    library_items = AsyncMock(return_value=listed)
+    getattr(provider.mass.music, controller).library_items = library_items
+
+    assert await provider.browse(f"test_provider--1://{folder}") == listed
+    library_items.assert_awaited_once_with(provider="test_provider--1", summary=False, limit=0)

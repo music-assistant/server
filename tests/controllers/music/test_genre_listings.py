@@ -78,6 +78,8 @@ async def test_genre_albums_follow_the_listing_contract(mass: MusicAssistant) ->
     assert await _albums() == ["Apple", "Mango", "Zebra"]
     # the newest first
     assert await _albums(sort_field=SortField.YEAR) == ["Mango", "Apple", "Zebra"]
+    # an outdated client's sort key still maps to the same sort, in its own direction
+    assert await _albums(order_by="year") == ["Zebra", "Apple", "Mango"]
     assert await _albums(search="zeb") == ["Zebra"]
     assert await _albums(limit=2, offset=2) == ["Zebra"]
     with pytest.raises(InvalidDataError):
