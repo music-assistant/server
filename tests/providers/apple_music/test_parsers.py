@@ -429,6 +429,7 @@ async def test_library_tracks_request_includes_album_relations() -> None:
         include="catalog,albums,artists",
         extend="dateAdded",
         page_size=_TRACK_PAGE_SIZE,
+        **{"include[songs]": "artists,albums"},
     )
 
 
@@ -449,21 +450,7 @@ async def test_library_tracks_falls_back_to_library_item_when_catalog_missing() 
                     "playParams": {"catalogId": "999999"},
                     "durationInMillis": 180000,
                 },
-                "relationships": {
-                    "catalog": {
-                        "data": [
-                            {
-                                "id": "999999",
-                                "attributes": {
-                                    "name": "Missing Catalog Track",
-                                    "artistName": "Artist 2",
-                                    "durationInMillis": 180000,
-                                    "playParams": {"id": "999999"},
-                                },
-                            }
-                        ]
-                    }
-                },
+                "relationships": {"catalog": {"data": []}},
             }
         ]
     )
