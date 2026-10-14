@@ -18,7 +18,7 @@ from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
 from mashumaro import DataClassDictMixin, field_options
 from music_assistant_models.auth import AuthProviderType, User, UserRole
-from music_assistant_models.errors import AuthenticationFailed
+from music_assistant_models.errors import AuthenticationFailed, RateLimited
 from music_assistant_models.translations import resolve_translation
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
@@ -374,9 +374,8 @@ class AuthResult:
     success: bool
     user: User | None = None
     error: str | None = None
-    # the key of the error in the common errors strings, with the args for its placeholders
+    # the key of the error in the common errors strings
     translation_key: str | None = None
-    translation_args: list[Any] = field(default_factory=list)
     access_token: str | None = None
     return_url: str | None = None
 
@@ -526,7 +525,7 @@ class BuiltinLoginProvider(LoginProvider):
             return AuthResult(
                 success=False,
                 error=f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
-                translation_key="rate_limited",
+                translation_key=RateLimited.translation_key,
             )
 
         # First, look up user by username to get user_id

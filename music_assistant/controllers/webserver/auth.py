@@ -1049,9 +1049,7 @@ class AuthenticationManager:
                 provider_id,
             )
             return AuthFailure(
-                auth_result.error or "Authentication failed",
-                auth_result.translation_key,
-                auth_result.translation_args,
+                auth_result.error or "Authentication failed", auth_result.translation_key
             )
 
         if not auth_result.user:
