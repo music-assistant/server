@@ -191,49 +191,97 @@ class StatisticsController(CoreController):
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
-        query = f"""
-            WITH normalized_history AS (
+        if media_type == MediaType.ARTIST:
+            query = f"""
+                WITH artist_history AS (
+                    SELECT
+                        CASE
+                            WHEN json_extract(artist_data.value, '$.provider') = 'library'
+                                THEN json_extract(artist_data.value, '$.item_id')
+                            WHEN artist_mappings.item_id IS NOT NULL
+                                THEN CAST(artist_mappings.item_id AS TEXT)
+                            ELSE json_extract(artist_data.value, '$.item_id')
+                        END AS item_id,
+                        CASE
+                            WHEN json_extract(artist_data.value, '$.provider') = 'library'
+                                OR artist_mappings.item_id IS NOT NULL THEN 'library'
+                            ELSE json_extract(artist_data.value, '$.provider')
+                        END AS provider,
+                        json_extract(artist_data.value, '$.name') AS name,
+                        json_extract(artist_data.value, '$.image') AS image
+                    FROM {DB_TABLE_PLAY_HISTORY} AS play_history,
+                        json_each(play_history.artists) AS artist_data
+                    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS artist_mappings
+                        ON artist_mappings.media_type = :artist_media_type
+                        AND artist_mappings.provider_instance =
+                            json_extract(artist_data.value, '$.provider')
+                        AND artist_mappings.provider_item_id =
+                            json_extract(artist_data.value, '$.item_id')
+                    WHERE play_history.userid = :user_id
+                        AND play_history.media_type = :track_media_type
+                        AND play_history.timestamp >= :cutoff_timestamp
+                        AND play_history.artists IS NOT NULL
+                )
                 SELECT
-                    CASE
-                        WHEN play_history.provider = 'library' THEN play_history.item_id
-                        WHEN provider_mappings.item_id IS NOT NULL
-                            THEN CAST(provider_mappings.item_id AS TEXT)
-                        ELSE play_history.item_id
-                    END AS item_id,
-                    CASE
-                        WHEN play_history.provider = 'library'
-                            OR provider_mappings.item_id IS NOT NULL THEN 'library'
-                        ELSE play_history.provider
-                    END AS provider,
-                    play_history.media_type,
-                    play_history.name,
-                    play_history.image
-                FROM {DB_TABLE_PLAY_HISTORY} AS play_history
-                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
-                    ON provider_mappings.media_type = play_history.media_type
-                    AND provider_mappings.provider_instance = play_history.provider
-                    AND provider_mappings.provider_item_id = play_history.item_id
-                WHERE play_history.userid = :user_id
-                    AND play_history.media_type = :media_type
-                    AND play_history.timestamp >= :cutoff_timestamp
-            )
-            SELECT
-                item_id,
-                provider,
-                media_type,
-                MAX(name) as name,
-                MAX(image) as image,
-                COUNT(*) as play_count
-            FROM normalized_history
-            GROUP BY item_id, provider, media_type
-            ORDER BY play_count DESC
-        """
-
-        params = {
-            "user_id": user_id,
-            "media_type": media_type.value,
-            "cutoff_timestamp": cutoff_timestamp,
-        }
+                    item_id,
+                    provider,
+                    :artist_media_type AS media_type,
+                    MAX(name) AS name,
+                    MAX(image) AS image,
+                    COUNT(*) AS play_count
+                FROM artist_history
+                GROUP BY item_id, provider
+                ORDER BY play_count DESC
+            """
+            params = {
+                "user_id": user_id,
+                "artist_media_type": MediaType.ARTIST.value,
+                "track_media_type": MediaType.TRACK.value,
+                "cutoff_timestamp": cutoff_timestamp,
+            }
+        else:
+            query = f"""
+                WITH normalized_history AS (
+                    SELECT
+                        CASE
+                            WHEN play_history.provider = 'library' THEN play_history.item_id
+                            WHEN provider_mappings.item_id IS NOT NULL
+                                THEN CAST(provider_mappings.item_id AS TEXT)
+                            ELSE play_history.item_id
+                        END AS item_id,
+                        CASE
+                            WHEN play_history.provider = 'library'
+                                OR provider_mappings.item_id IS NOT NULL THEN 'library'
+                            ELSE play_history.provider
+                        END AS provider,
+                        play_history.media_type,
+                        play_history.name,
+                        play_history.image
+                    FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+                    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
+                        ON provider_mappings.media_type = play_history.media_type
+                        AND provider_mappings.provider_instance = play_history.provider
+                        AND provider_mappings.provider_item_id = play_history.item_id
+                    WHERE play_history.userid = :user_id
+                        AND play_history.media_type = :media_type
+                        AND play_history.timestamp >= :cutoff_timestamp
+                )
+                SELECT
+                    item_id,
+                    provider,
+                    media_type,
+                    MAX(name) as name,
+                    MAX(image) as image,
+                    COUNT(*) as play_count
+                FROM normalized_history
+                GROUP BY item_id, provider, media_type
+                ORDER BY play_count DESC
+            """
+            params = {
+                "user_id": user_id,
+                "media_type": media_type.value,
+                "cutoff_timestamp": cutoff_timestamp,
+            }
 
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
 

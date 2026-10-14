@@ -130,6 +130,59 @@ async def test_top_items_combines_provider_plays_with_library_identity(
     ]
 
 
+async def test_top_items_artist_tab_counts_track_history(mass: MusicAssistant) -> None:
+    """The artist tab groups track history by mapped artist identity."""
+    user = await mass.webserver.auth.create_user("statistics-top-artists")
+    library_artist_id = 42
+    await mass.music.database.insert(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "media_type": MediaType.ARTIST.value,
+            "item_id": library_artist_id,
+            "provider_domain": "test",
+            "provider_instance": "test-provider",
+            "provider_item_id": "provider-artist",
+        },
+    )
+    plays = (
+        (
+            "track-one",
+            [{"item_id": "provider-artist", "provider": "test-provider", "name": "Mapped"}],
+        ),
+        (
+            "track-two",
+            [{"item_id": str(library_artist_id), "provider": "library", "name": "Mapped"}],
+        ),
+        (
+            "track-three",
+            [{"item_id": "unmapped-artist", "provider": "test-provider", "name": "Unmapped"}],
+        ),
+    )
+    for track_id, artists in plays:
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": track_id,
+                "provider": "test-provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": track_id,
+                "timestamp": 1_000,
+                "artists": serialize_to_json(artists),
+            },
+        )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        results = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")
+
+    assert [
+        (result.item.item_id, result.item.provider, result.play_count) for result in results
+    ] == [(str(library_artist_id), "library", 2), ("unmapped-artist", "test-provider", 1)]
+
+
 async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssistant) -> None:
     """Artist duration sums use mapped track lengths and keep provider identities separate."""
     user = await mass.webserver.auth.create_user("statistics-artists")
