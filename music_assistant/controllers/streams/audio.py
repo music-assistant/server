@@ -118,10 +118,12 @@ from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.stream_sources import (
-    DEFAULT_POLICY,
     SourceCandidate,
+    StreamSourceMode,
+    StreamSourcePolicy,
     rank_provider_mappings,
     rank_stream_sources,
+    read_stream_source_policy,
 )
 from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
@@ -3689,11 +3691,20 @@ class StreamsAudio:
                 if origin and origin.provider_instance and origin.item_id
                 else None
             )
+            policy = read_stream_source_policy(mass, queue_item.queue_id)
+            if policy.mode == StreamSourceMode.BEST_QUALITY_PER_TRACK and media_item.media_type in (
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST_EPISODE,
+            ):
+                # ranking every track on its own is about music: the pin keeps an audiobook or
+                # episode, and its progress, on the account it was started from
+                policy = replace(policy, mode=StreamSourceMode.BEST_QUALITY)
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
                 excluded_provider_instances,
                 allowed,
+                policy,
                 pinned=pinned,
             )
             if not candidates and allowed is not None:
@@ -3704,6 +3715,7 @@ class StreamsAudio:
                     preferred_providers,
                     excluded_provider_instances,
                     None,
+                    policy,
                     pinned=pinned,
                 )
                 if blocked:
@@ -4027,6 +4039,7 @@ class StreamsAudio:
         preferred_providers: list[str],
         excluded_provider_instances: set[str],
         allowed: list[str] | None,
+        policy: StreamSourcePolicy,
         pinned: tuple[str, str] | None = None,
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
@@ -4039,6 +4052,7 @@ class StreamsAudio:
         :param preferred_providers: Provider instances the playback user owns, tried first.
         :param excluded_provider_instances: Provider instances unavailable to this attempt.
         :param allowed: Music sources the playback user may use, or None for all of them.
+        :param policy: The source selection settings to rank under.
         :param pinned: The (provider instance, item id) the item is to be played from, if any.
         :return: Ordered provider mapping candidates.
         """
@@ -4073,7 +4087,7 @@ class StreamsAudio:
                     and provider.is_streaming_provider,
                 )
         ranked = rank_stream_sources(
-            candidates.values(), pinned=pinned, preferred=preferred_providers, policy=DEFAULT_POLICY
+            candidates.values(), pinned=pinned, preferred=preferred_providers, policy=policy
         )
         if ranked and self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
