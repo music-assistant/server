@@ -285,6 +285,21 @@ async def test_get_data_auth_error_raises_login_failed(status: int) -> None:
 
 @pytest.mark.parametrize("status", [401, 403])
 @pytest.mark.asyncio
+async def test_get_data_catalog_auth_error_blames_app_token(status: int) -> None:
+    """Catalog requests carry only the app token, so a rejection there does not ask to sign in."""
+    client, provider = _make_client()
+    provider.mass.http_session.get = MagicMock(
+        return_value=_FakeRequestCtx(_make_response(status=status))
+    )
+    with (
+        patch(_SLEEP_TARGET, new=AsyncMock()),
+        pytest.raises(LoginFailed, match="app token is invalid or expired"),
+    ):
+        await client.get_data("catalog/us/songs/1")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.asyncio
 async def test_write_requests_auth_error_raises_login_failed(status: int) -> None:
     """Library mutations report a rejected user token as LoginFailed too."""
     client, provider = _make_client()
