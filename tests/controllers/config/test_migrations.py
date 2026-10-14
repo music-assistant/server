@@ -10,6 +10,7 @@ from uuid import uuid4
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_NFS_SUBFOLDER_MIGRATED,
     CONF_SERVER_ID,
     ENCRYPT_SUFFIX,
@@ -20,6 +21,7 @@ from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
+    _migrate_apple_music_sync_schedule,
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
     _migrate_orphaned_disabled_protocol_configs,
@@ -1662,3 +1664,57 @@ def test_migrate_unrenamed_player_names() -> None:
     assert data["players"]["without_default_name"]["name"] == "Kitchen"
     # the cleared name must not be picked up again on the next start
     assert _migrate_unrenamed_player_names(data) is False
+
+
+def _sync_state(every: int) -> dict[str, Any]:
+    return {"status": "idle", "schedule": {"type": "hourly", "enabled": True, "every": every}}
+
+
+def test_migrate_apple_music_sync_schedule_moves_former_default() -> None:
+    """Apple Music sync tasks on the former 12 hour default move to 24 hours, once."""
+    data: dict[str, Any] = {
+        "providers": {
+            "apple_music--a": {"domain": "apple_music"},
+            "spotify--s": {"domain": "spotify"},
+        },
+        "core": {
+            "tasks": {
+                "scheduled_task_states": {
+                    "music_sync_apple_music--a_track": _sync_state(12),
+                    "music_sync_apple_music--a_album": _sync_state(6),
+                    "music_sync_spotify--s_track": _sync_state(12),
+                }
+            }
+        },
+    }
+    states = data["core"]["tasks"]["scheduled_task_states"]
+
+    assert _migrate_apple_music_sync_schedule(data) is True
+    assert states["music_sync_apple_music--a_track"]["schedule"]["every"] == 24
+    assert states["music_sync_apple_music--a_album"]["schedule"]["every"] == 6
+    assert states["music_sync_spotify--s_track"]["schedule"]["every"] == 12
+    assert data[CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED] is True
+
+    states["music_sync_apple_music--a_track"] = _sync_state(12)
+    assert _migrate_apple_music_sync_schedule(data) is False
+    assert states["music_sync_apple_music--a_track"]["schedule"]["every"] == 12
+
+
+def test_migrate_apple_music_sync_schedule_noop_without_apple_music() -> None:
+    """Installs without an Apple Music provider are left untouched."""
+    data: dict[str, Any] = {
+        "providers": {"spotify--s": {"domain": "spotify"}},
+        "core": {"tasks": {"scheduled_task_states": {"music_sync_spotify--s_track": {}}}},
+    }
+    assert _migrate_apple_music_sync_schedule(data) is False
+    assert CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED not in data
+
+
+def test_migrate_apple_music_sync_schedule_survives_malformed_state() -> None:
+    """Malformed task state is skipped without raising."""
+    data: dict[str, Any] = {
+        "providers": {"apple_music--a": {"domain": "apple_music"}},
+        "core": {"tasks": "broken"},
+    }
+    assert _migrate_apple_music_sync_schedule(data) is True
+    assert data["core"] == {"tasks": "broken"}
