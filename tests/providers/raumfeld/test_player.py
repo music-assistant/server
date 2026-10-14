@@ -850,3 +850,35 @@ def test_a_follower_taken_by_spotify_connect_leaves_its_group() -> None:
         synced_to.return_value = "raumfeld_leader"
         player._leave_group()
     assert leader._attr_group_members == []
+
+
+async def test_a_leader_taken_by_spotify_connect_dissolves_its_group() -> None:
+    """A leader Spotify Connect took out of its zone no longer leads the other rooms."""
+    player = _follower(PlaybackState.PLAYING)
+    player._player_id = "raumfeld_leader"
+    player._attr_group_members = ["raumfeld_leader", "raumfeld_follower"]
+    provider = MagicMock()
+    provider.host.room_is_spotify_single_room.return_value = True
+    provider.host.async_get_room_volume = AsyncMock(return_value=30)
+    provider.get_zone_for_room.return_value = None
+    provider.room_renderer_location.return_value = None
+    player._provider = provider
+    player._external_source = None
+    player._static_sources = []
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+        patch.object(player, "_poll_room_playback", AsyncMock()),
+    ):
+        synced_to.return_value = None
+        await player.poll()
+    assert player._attr_group_members == []
+
+
+def test_adopting_an_external_source_drops_the_queued_next_item() -> None:
+    """With flow mode off, the next MA item must not start when the external track ends."""
+    player, _ = _external_player()
+    with patch.object(player, "_clear_next") as clear_next:
+        player._advance_armed = True
+        player._set_external(_SPOTIFY_META, "Pause", 315, via_room=True)
+    clear_next.assert_called_once()

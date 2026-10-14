@@ -520,8 +520,7 @@ class RaumfeldPlayer(Player):
         """Poll the Raumfeld host for this room's current state."""
         host = self.raumfeld.host
         self._update_power()
-        if self.synced_to and self.synced_to != self.player_id and self._plays_spotify_connect():
-            # Spotify Connect takes the room out of its zone, so it is no longer synced
+        if self._plays_spotify_connect():
             self._leave_group()
         # a grouped follower shares the zone's transport/position with its leader, so it
         # polls only its own (per-room) volume and mirrors the leader's state: without that a
@@ -779,6 +778,9 @@ class RaumfeldPlayer(Player):
         :param duration: The duration of the playing item in seconds, if it has one.
         :param via_room: Whether the room's own renderer plays it rather than its zone.
         """
+        if self._advance_armed or self._next_media is not None:
+            # a queue item MA handed over must not start when this source's track ends
+            self._clear_next()
         allowed = {action.strip() for action in (actions or "").split(",")}
         source_id, name = external_source(meta["section"])
         source = PlayerSource(
@@ -827,8 +829,14 @@ class RaumfeldPlayer(Player):
             self._clear_external()
 
     def _leave_group(self) -> None:
-        """Drop this follower from its leader's member list, after the host detached it."""
-        leader = self.mass.players.get_player(self.synced_to) if self.synced_to else None
+        """Leave the sync group, after the host took this room out of its zone."""
+        # Spotify Connect does that, and the room then no longer shares the group's session,
+        # whether it followed or led it
+        if not self.synced_to or self.synced_to == self.player_id:
+            if self._attr_group_members:
+                self.set_group_members([])
+            return
+        leader = self.mass.players.get_player(self.synced_to)
         if not isinstance(leader, RaumfeldPlayer):
             return
         remaining = [pid for pid in leader.group_members if pid != self.player_id]
