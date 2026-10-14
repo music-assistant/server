@@ -303,3 +303,37 @@ async def test_kiosk_state_follows_incoming_sendspin_group(
         await asyncio.gather(*tasks, return_exceptions=True)
         await native.on_unload()
         await leader.on_unload()
+
+
+async def test_dashboard_shows_effective_sendspin_playback_state(
+    provider: WebKioskProvider,
+    http_client: TestClient[Any, Any],
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """The dashboard reports the active output rather than the idle native HTML5 output."""
+    registry, sendspin, _universal, client, tasks = browser_registry
+    native = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+    await registry.register(native)
+    manager = WebKioskSendspinBridgeManager(provider)
+    provider.sendspin_bridge_enabled = True
+    provider.bridge_manager = manager
+    kiosk = await provider.get_or_register_player("wk_dashboard", sendspin_client_id=CLIENT_ID)
+    assert kiosk is not None
+    client.group.clients = [client]
+    try:
+        for group_state, expected in (
+            (PlaybackStateType.PLAYING, "playing"),
+            (PlaybackStateType.PAUSED, "paused"),
+            (PlaybackStateType.STOPPED, "idle"),
+        ):
+            native.group_event_cb(client.group, GroupStateChangedEvent(group_state))
+            kiosk.refresh_state()
+            response = await http_client.get("/")
+            assert response.status == 200
+            assert f"Web Kiosk (dashboard) — {expected}</li>" in await response.text()
+    finally:
+        await manager.close()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await native.on_unload()

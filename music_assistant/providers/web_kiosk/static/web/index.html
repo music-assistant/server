@@ -41,6 +41,8 @@ html.controls #kiosk-center { bottom:calc(var(--kiosk-bar-height) + 16px); }
 #kiosk-sync { position:absolute; top:16px; left:50%; transform:translateX(-50%); z-index:6; font-size:12px; letter-spacing:1px; color:#9a9aa6; padding:6px 12px; border-radius:20px; background:rgba(10,10,14,.5); }
 #kiosk-sync.synced { color:#7ce38b; }
 #kiosk-sync.error { color:#ff8a8a; }
+#k-fullscreen { position:absolute; top:16px; top:max(16px,env(safe-area-inset-top,0px)); right:16px; right:max(16px,env(safe-area-inset-right,0px)); z-index:9; width:40px; height:40px; border-radius:20px; background:rgba(10,10,14,.5); }
+html.fullscreen-button #kiosk-queue { top:64px; top:max(64px,calc(env(safe-area-inset-top,0px) + 48px)); }
 #kiosk-pair { position:absolute; left:50%; top:64px; transform:translateX(-50%); z-index:7; padding:14px 22px; border-radius:12px; background:rgba(10,10,14,.82); font-size:22px; letter-spacing:2px; text-align:center; }
 #kiosk-status { position:absolute; top:48px; left:50%; transform:translateX(-50%); z-index:8; max-width:calc(100vw - 32px); max-width:min(420px,calc(100vw - 32px)); font-size:13px; color:#ffd2d2; background:rgba(10,10,14,.72); padding:8px 12px; border-radius:8px; text-align:center; }
 #kiosk-status.audio-prompt { top:50%; transform:translate(-50%,-50%); font-size:22px; font-size:clamp(16px,2.4vw,22px); padding:16px 22px; cursor:pointer; }
@@ -108,10 +110,13 @@ SOFTWARE.</desc>
   <symbol id="k-icon-volume-x" viewBox="0 0 24 24"><path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z"></path><path d="m16.5 14.5 5-5"></path><path d="m16.5 9.5 5 5"></path></symbol>
   <symbol id="k-icon-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></symbol>
   <symbol id="k-icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></symbol>
+  <symbol id="k-icon-maximize" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"></path></symbol>
+  <symbol id="k-icon-minimize" viewBox="0 0 24 24"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3m8 0v-3a2 2 0 0 1 2-2h3"></path></symbol>
   </defs>
 </svg>
 
 <div id="kiosk">
+  <button type="button" id="k-fullscreen" class="kiosk-control hidden" aria-label="Enter fullscreen" title="Enter fullscreen" aria-pressed="false"><svg class="kiosk-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="k-fullscreen-icon" href="#k-icon-maximize" xlink:href="#k-icon-maximize"></use></svg></button>
   <canvas id="kiosk-viz"></canvas>
   <div id="kiosk-bg"><img id="kiosk-bg-img" alt=""></div>
   <div id="kiosk-center">

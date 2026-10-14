@@ -402,7 +402,7 @@
             case 'sendspin':
                 if (msg.url) {
                     var target = new URL(msg.url, location.protocol + '//' + location.host);
-                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'remote', 'lite', 'wake_lock', 'device_id', 'sendspin_url'].forEach(function (name) {
+                    ['controls', 'party', 'viz', 'lyrics', 'queue', 'show_player_id', 'remote', 'lite', 'wake_lock', 'fullscreen', 'device_id', 'sendspin_url'].forEach(function (name) {
                         if (params.has(name) && !target.searchParams.has(name)) target.searchParams.set(name, params.get(name));
                     });
                     location.href = target.toString();
@@ -1192,7 +1192,7 @@
         }
         if (!/^Arrow/.test(key)) return false;
         if (e.target && e.target.tagName === 'INPUT' && (key === 'ArrowLeft' || key === 'ArrowRight')) return false;
-        var ids = ['kiosk-party', 'k-prev', 'k-play', 'k-next', 'k-volume-button', 'kiosk-seek', 'kiosk-volume', 'k-volume-close'];
+        var ids = ['k-fullscreen', 'kiosk-party', 'k-prev', 'k-play', 'k-next', 'k-volume-button', 'kiosk-seek', 'kiosk-volume', 'k-volume-close'];
         var candidates = ids.map(function (id) { return document.getElementById(id); }).filter(function (el) {
             return el && !el.disabled && !el.classList.contains('hidden') && el.getClientRects().length;
         });
@@ -1218,6 +1218,43 @@
         e.preventDefault();
         if (selected) selected.focus();
         return true;
+    }
+
+    function bindFullscreen() {
+        var root = document.documentElement;
+        var button = document.getElementById('k-fullscreen');
+        var apis = [
+            ['requestFullscreen', 'exitFullscreen', 'fullscreenEnabled', 'fullscreenElement', 'fullscreenchange'],
+            ['webkitRequestFullscreen', 'webkitExitFullscreen', 'webkitFullscreenEnabled', 'webkitFullscreenElement', 'webkitfullscreenchange'],
+            ['mozRequestFullScreen', 'mozCancelFullScreen', 'mozFullScreenEnabled', 'mozFullScreenElement', 'mozfullscreenchange'],
+            ['msRequestFullscreen', 'msExitFullscreen', 'msFullscreenEnabled', 'msFullscreenElement', 'MSFullscreenChange']
+        ];
+        var api = null;
+        if (FLAG('fullscreen')) apis.some(function (candidate) {
+            if (typeof root[candidate[0]] !== 'function' || typeof document[candidate[1]] !== 'function'
+                || document[candidate[2]] === false) return false;
+            api = candidate;
+            return true;
+        });
+        button.classList.toggle('hidden', !api);
+        root.classList.toggle('fullscreen-button', !!api);
+        if (!api) return;
+        function refresh() {
+            var active = !!document[api[3]];
+            var label = active ? 'Exit fullscreen' : 'Enter fullscreen';
+            button.setAttribute('aria-label', label);
+            button.setAttribute('aria-pressed', String(active));
+            button.title = label;
+            setIconHref(document.getElementById('k-fullscreen-icon'), active ? '#k-icon-minimize' : '#k-icon-maximize');
+        }
+        button.onclick = function () {
+            try {
+                var result = document[api[3]] ? document[api[1]]() : root[api[0]]();
+                Promise.resolve(result).then(refresh, function () { setStatus('Fullscreen unavailable'); refresh(); });
+            } catch (e) { setStatus('Fullscreen unavailable'); refresh(); }
+        };
+        document.addEventListener(api[4], refresh);
+        refresh();
     }
 
     function getDefaultSendspinUrl() {
@@ -1434,6 +1471,7 @@
     function boot() {
         document.body.classList.add('kiosk');
         bindControls();
+        bindFullscreen();
         renderNow();
         if (REQUESTED_SENDSPIN && !SENDSPIN) setSync('fallback');
         sync();
