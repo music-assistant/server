@@ -1045,7 +1045,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         item_id = request.match_info["item_id"]
         provider = request.query.get("provider", "library")
         try:
-            albums = await self.provider.mass.music.artists.albums(item_id, provider)
+            albums = await self.provider.mass.music.artists.albums(item_id, provider, limit=None)
         except MusicAssistantError, TimeoutError:
             logger.exception("Failed to fetch albums for artist %s", item_id)
             albums = []
@@ -1552,7 +1552,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
     async def _handle_artist_albums(self, request: web.Request) -> web.Response:
         """List albums for an artist."""
         item_id = request.match_info["item_id"]
-        albums = await self.provider.mass.music.artists.albums(item_id, "library")
+        albums = await self.provider.mass.music.artists.albums(item_id, "library", limit=None)
         return web.json_response(
             {
                 "items": [

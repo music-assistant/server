@@ -1127,7 +1127,9 @@ async def test_msx_artist_albums(provider: MSXBridgeProvider, mass_mock: Mock) -
     try:
         resp = await client.get("/msx/artists/5531642/albums.json?provider=yandex_music--test")
         assert resp.status == 200
-        mass_mock.music.artists.albums.assert_awaited_once_with("5531642", "yandex_music--test")
+        mass_mock.music.artists.albums.assert_awaited_once_with(
+            "5531642", "yandex_music--test", limit=None
+        )
         data = await resp.json()
         assert data["headline"] == "Artist Albums"
         assert len(data["items"]) == 1

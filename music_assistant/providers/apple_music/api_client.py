@@ -98,16 +98,22 @@ def _raise_on_auth_error(status: int, endpoint: str) -> None:
     """
     Raise LoginFailed when Apple rejected our credentials.
 
-    Apple answers a revoked or expired music user token with 401/403 on every endpoint,
-    so this surfaces as an auth error the user can act on instead of a bare HTTP error.
+    On catalog endpoints the message blames the app token, since those requests carry no
+    user token. Elsewhere it names both tokens.
 
     :param status: The HTTP status code returned by Apple.
     :param endpoint: The endpoint that was called, used in the error message.
     """
-    if status in (401, 403):
+    if status not in (401, 403):
+        return
+    if endpoint.startswith("catalog/"):
         raise LoginFailed(
-            f"Apple Music denied access to {endpoint}: the account needs to be signed in again"
+            f"Apple Music denied access to {endpoint}: the app token is invalid or expired"
         )
+    raise LoginFailed(
+        f"Apple Music denied access to {endpoint}: the account needs to be signed in again, "
+        "or the app token is invalid"
+    )
 
 
 def _match_language_tag(locale: str, supported_tags: list[str]) -> str | None:
@@ -130,7 +136,15 @@ class AppleMusicAPIClient:
     # fleet-wide load on the bundled token, not our rate - and they clear within a second.
     # 8 attempts keep the 1/2/4/8/16/32/64s ladder spanning ~2 minutes, so a sustained
     # throttle (or outage) is still ridden out instead of failing the request in ~15s.
-    throttler = ThrottlerManager(rate_limit=1, period=0.25, retry_attempts=8, initial_backoff=1)
+    # Background work fails fast instead: a failed sync just waits for its next run, while
+    # each of its retries re-arms the cooldown that holds back user requests.
+    throttler = ThrottlerManager(
+        rate_limit=1,
+        period=0.25,
+        retry_attempts=8,
+        initial_backoff=1,
+        low_priority_retry_attempts=3,
+    )
 
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize the API client."""
@@ -138,14 +152,6 @@ class AppleMusicAPIClient:
         self.logger = provider.logger
         self.request_counter = RequestCounter()
         self._language: str | None = None
-
-    @property
-    def _headers(self) -> dict[str, str]:
-        """Return standard auth headers."""
-        return {
-            "Authorization": f"Bearer {self.provider._music_app_token}",
-            "Music-User-Token": cast("str", self.provider._music_user_token),
-        }
 
     @_count_retries_exhausted
     @throttle_with_retries
@@ -159,7 +165,7 @@ class AppleMusicAPIClient:
         async with (
             self.provider.mass.http_session.get(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 ssl=True,
                 timeout=ClientTimeout(total=120),
@@ -200,7 +206,7 @@ class AppleMusicAPIClient:
         async with (
             self.provider.mass.http_session.delete(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
@@ -226,7 +232,7 @@ class AppleMusicAPIClient:
         async with (
             self.provider.mass.http_session.put(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
@@ -255,7 +261,7 @@ class AppleMusicAPIClient:
         async with (
             self.provider.mass.http_session.post(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
@@ -369,3 +375,11 @@ class AppleMusicAPIClient:
         raise ResourceTemporarilyUnavailable(
             f"Incomplete paged listing for {endpoint} at offset {offset}"
         )
+
+    def _headers_for(self, endpoint: str) -> dict[str, str]:
+        """Return the auth headers for a request to the given endpoint."""
+        headers = {"Authorization": f"Bearer {self.provider._music_app_token}"}
+        # Without the user token, all installs share one Akamai cache variant per catalog URL
+        if not endpoint.startswith("catalog/"):
+            headers["Music-User-Token"] = cast("str", self.provider._music_user_token)
+        return headers

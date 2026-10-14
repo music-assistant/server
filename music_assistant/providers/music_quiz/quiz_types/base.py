@@ -351,6 +351,7 @@ class QuizType(ABC):
             tracks = await self.mass.music.artists.tracks(
                 item_id=media_item.item_id,
                 provider_instance_id_or_domain=media_item.provider,
+                limit=None,
             )
         else:
             tracks = []
