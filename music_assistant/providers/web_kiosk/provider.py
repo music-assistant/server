@@ -22,7 +22,6 @@ from .constants import (
     CONF_ENABLE_SENDSPIN_BRIDGE,
     CONF_HTTP_PORT,
     CONF_KIOSK_URL,
-    CONF_PLAYER_IDLE_TIMEOUT,
     CONF_SHOW_STOP_NOTIFICATION,
     CONF_URL_BUILDER_REQUIRE_AUTH,
     DEFAULT_ENABLE_SENDSPIN_BRIDGE,
@@ -75,12 +74,6 @@ class WebKioskProvider(PlayerProvider):
                 type=ConfigEntryType.INTEGER,
                 required=True,
                 default_value=str(DEFAULT_HTTP_PORT),
-            ),
-            ConfigEntry(
-                key=CONF_PLAYER_IDLE_TIMEOUT,
-                type=ConfigEntryType.INTEGER,
-                required=False,
-                default_value=str(DEFAULT_PLAYER_IDLE_TIMEOUT),
             ),
             ConfigEntry(
                 key=CONF_SHOW_STOP_NOTIFICATION,
@@ -593,21 +586,8 @@ class WebKioskProvider(PlayerProvider):
                 self._player_last_activity.pop(player_id, None)
 
     async def _run_idle_timeout_loop(self) -> None:
-        """Background task: unregister players idle longer than configured timeout."""
-        timeout_minutes = max(
-            1,
-            min(
-                1440,
-                int(
-                    cast(
-                        "int",
-                        self.config.get_value(
-                            CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT
-                        ),
-                    )
-                ),
-            ),
-        )
+        """Background task: clean up idle players registered without a browser socket."""
+        timeout_minutes = DEFAULT_PLAYER_IDLE_TIMEOUT
         interval_seconds = 60
         while not self.mass.closing:
             try:

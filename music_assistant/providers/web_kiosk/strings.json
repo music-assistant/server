@@ -4,10 +4,6 @@
       "label": "HTTP Server Port",
       "description": "Port for the Web Kiosk HTTP server."
     },
-    "player_idle_timeout": {
-      "label": "Player Idle Timeout (minutes)",
-      "description": "Unregister kiosk players after this many minutes without activity."
-    },
     "show_stop_notification": {
       "label": "Show notification when playback stops",
       "description": "Show an informational notification in the kiosk after playback is stopped from MA."

@@ -7,7 +7,6 @@ import re
 CONF_HTTP_PORT = "http_port"
 CONF_KIOSK_URL = "kiosk_url"
 CONF_URL_BUILDER_REQUIRE_AUTH = "url_builder_require_auth"
-CONF_PLAYER_IDLE_TIMEOUT = "player_idle_timeout"
 CONF_SHOW_STOP_NOTIFICATION = "show_stop_notification"
 CONF_ENABLE_SENDSPIN_BRIDGE = "enable_sendspin_bridge"
 
