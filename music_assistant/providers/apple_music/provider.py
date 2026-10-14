@@ -31,6 +31,7 @@ from .constants import (
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
+    LIBRARY_SYNC_INTERVAL_HOURS,
     MUSIC_APP_TOKEN,
     SUPPORTED_FEATURES,
 )
@@ -44,6 +45,7 @@ from .streaming import AppleMusicStreamingManager
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from music_assistant_models.background_task import TaskSchedule
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -232,6 +234,12 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     # ------------------------------------------------------------------
     # Library generators
     # ------------------------------------------------------------------
+
+    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
+        """Return the default recurring schedule for library sync tasks of this provider."""
+        schedule = super().get_default_library_sync_schedule(media_type)
+        schedule.every = LIBRARY_SYNC_INTERVAL_HOURS
+        return schedule
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
