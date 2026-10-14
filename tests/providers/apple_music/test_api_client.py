@@ -392,3 +392,24 @@ async def test_get_data_requests_supported_user_language(
         await client.get_data("catalog/jp/artists/159260351")
     params = provider.mass.http_session.get.call_args.kwargs["params"]
     assert params.get("l") == expected_language
+
+
+@pytest.mark.asyncio
+async def test_get_data_counts_attempts_429s_and_retries_exhausted() -> None:
+    """Every attempt, every 429 and the final give-up are counted against the endpoint family."""
+    client, provider = _make_client()
+    # an own throttler, so this test's cooldown does not leak into the class-level one
+    client.throttler = ThrottlerManager(rate_limit=1, period=0.25, retry_attempts=3)
+    provider.mass.http_session.get = MagicMock(
+        return_value=_FakeRequestCtx(_make_response(status=429))
+    )
+    with patch(_SLEEP_TARGET, new=AsyncMock()), pytest.raises(RetriesExhausted):
+        await client.get_data("catalog/us/songs/1440857781")
+    attempts = 3
+    assert client.request_counter.as_dict() == {
+        "catalog/songs/{id}": {
+            "attempts": attempts,
+            "rate_limited": attempts,
+            "retries_exhausted": 1,
+        }
+    }

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from music_assistant_models.enums import ExternalID
 
@@ -15,6 +15,18 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
 _Key = TypeVar("_Key")
+
+
+@dataclass(frozen=True, slots=True)
+class AlbumListing:
+    """The tracks of an album, and the entry each provider instance lists for them."""
+
+    tracks: list[Track]
+    # by the instance that lists them: the provider item id it lists, by the track's uri
+    listed_ids: dict[str, dict[str, str]]
+    # by instance: its own entry of a track that is listed as another source's entry, by the
+    # track's uri
+    own_entries: dict[str, dict[str, Track]] = field(default_factory=dict)
 
 
 def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]]) -> list[Track]:
@@ -29,60 +41,59 @@ def select_album_tracks(library: list[Track], listings: Sequence[Sequence[Track]
     :param library: The album's library rows.
     :param listings: The album's tracklists, one per provider album it is fetched as.
     """
-    entries = _entries(library, listings)
-    slots = _Slots()
-    # the slot an identifier names is the one of the first entry carrying it, so the
-    # entries are taken in a fixed order rather than the order the providers answered in:
-    # the placed ones first, so the slots exist by the time the others look for theirs
-    for track in sorted(entries.providers, key=lambda track: _matching_order(track, entries)):
-        isrcs = entries.usable_isrcs[id(track)]
-        if isrcs.intersection(entries.library_isrcs):
-            # the library row is this recording's slot, wherever the provider lists it
-            continue
-        ids = entries.usable_ids[id(track)]
-        if entries.library_ids.intersection(ids):
-            continue
-        source = entries.source_of[id(track)]
-        title = entries.title_of[id(track)]
-        position = _position(track) if track.track_number else None
-        slot = next((slots.by_id[key] for key in ids if key in slots.by_id), None)
-        if slot is None:
-            slot = next((slots.by_isrc[isrc] for isrc in isrcs if isrc in slots.by_isrc), None)
-        if slot is None and position is not None:
-            if position in entries.occupied:
-                continue
-            slot = slots.by_position.get(position)
-        elif slot is None and title in entries.unique_titles:
-            # a title names an entry only as far as the ISRCs do not say otherwise
-            library_isrcs = entries.library_isrcs_by_title.get(title)
-            if library_isrcs is not None and not _contradict(isrcs, library_isrcs):
-                # the library row is this title's slot
-                continue
-            slot = slots.by_title.get(title)
-            if slot is not None and _contradict(isrcs, slots.isrcs[slot]):
-                slot = None
-        if slot is not None and source in slots.sources[slot]:
-            # a listing is authoritative about itself: two of its entries stay two
-            slot = None
-        order = entries.order_of[id(track)]
-        if slot is None:
-            slot = slots.add(track, order)
-        elif _preference(track) < _preference(slots.tracks[slot]):
-            if position is None:
-                # the playable copy takes the slot's position along with the slot
-                track.disc_number = slots.tracks[slot].disc_number
-                track.track_number = slots.tracks[slot].track_number
-            slots.tracks[slot] = track
-        slots.index(
-            slot,
-            source,
-            order,
-            ids,
-            isrcs,
-            position,
-            title if title in entries.unique_titles else None,
-        )
-    return slots.listed()
+    return _place(_entries(library, listings)).listed()
+
+
+def album_listing(
+    library: list[Track], listings: Sequence[tuple[str, Sequence[Track]]]
+) -> AlbumListing:
+    """
+    Return the tracks of an album, and the entry each of its listings has for them.
+
+    The tracks are the library rows followed by the entries `select_album_tracks` lists next
+    to them. An entry counts for the library row its provider id, ISRC, position or unique
+    title names, otherwise for the listed entry it was merged with, which then keeps it as
+    that instance's own entry of the track; a library row a listing hands back counts under
+    its own copies on that listing's instance. An instance that lists a track more than once
+    lists it under an id the track is mapped under on that instance, else under the lowest.
+
+    :param library: The album's library rows.
+    :param listings: The album's tracklists, each with the provider instance that served it.
+    """
+    entries = _entries(library, [tracks for _, tracks in listings])
+    slots = _place(entries)
+    listed_ids: dict[str, dict[str, str]] = {}
+    own_entries: dict[str, dict[str, Track]] = {}
+    for instance, tracks in listings:
+        for track in tracks:
+            if track.provider == "library":
+                for mapping in track.provider_mappings:
+                    if mapping.provider_instance == instance:
+                        _list(listed_ids, instance, track, mapping.item_id)
+            elif (slot := slots.joined.get(id(track))) is not None:
+                listed = slots.tracks[slot]
+                _list(listed_ids, instance, listed, track.item_id)
+                if track is not listed and _same_track(track, listed, entries):
+                    _keep_own_entry(own_entries, instance, listed, track)
+            elif (row := _library_row(track, entries)) is not None:
+                _list(listed_ids, instance, row, track.item_id)
+    return AlbumListing([*library, *slots.listed()], listed_ids, own_entries)
+
+
+def mapped_album_listing(tracks: list[Track]) -> AlbumListing:
+    """
+    Return the tracks of an album, each listed by every instance it has a copy on.
+
+    For an album whose listings are not at hand: an instance lists a track under the lowest
+    id it has a copy of it under.
+
+    :param tracks: The album's tracks.
+    """
+    listed_ids: dict[str, dict[str, str]] = {}
+    for track in tracks:
+        for mapping in track.provider_mappings:
+            _list(listed_ids, mapping.provider_instance, track, mapping.item_id)
+    return AlbumListing(tracks, listed_ids)
 
 
 def album_track_backfills(
@@ -195,6 +206,13 @@ class _Entries:
     library_isrcs: set[str]
     library_isrcs_by_title: dict[tuple[int, str, str], set[str]]
     occupied: set[tuple[int, int]]
+    # the library row a provider id, ISRC, position or title names on its own
+    row_of_id: dict[tuple[str, str], Track]
+    row_of_isrc: dict[str, Track]
+    row_of_position: dict[tuple[int, int], Track]
+    row_of_title: dict[tuple[int, str, str], Track]
+    # the usable ISRCs of each library row, by its id
+    row_isrcs: dict[int, set[str]]
 
 
 def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entries:
@@ -218,16 +236,18 @@ def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entr
     # The library is one listing, so an ISRC two of its rows end up with identifies nothing
     library_row_by_id = Counter(key for track in library for key in _ids(track))
     row_of_id = {
-        key: id(track) for track in library for key in _ids(track) if library_row_by_id[key] == 1
+        key: track for track in library for key in _ids(track) if library_row_by_id[key] == 1
     }
     row_isrcs = {id(track): _isrcs(track) for track in library}
     for track in providers:
         for key in usable_ids[id(track)]:
             if (row := row_of_id.get(key)) is not None:
-                row_isrcs[row].update(usable_isrcs[id(track)])
+                row_isrcs[id(row)].update(usable_isrcs[id(track)])
+    usable_row_isrcs = _listed_once(row_isrcs, dict.fromkeys(row_isrcs, -1))
     library_isrcs_by_title: dict[tuple[int, str, str], set[str]] = defaultdict(set)
-    for row, isrcs in _listed_once(row_isrcs, dict.fromkeys(row_isrcs, -1)).items():
-        library_isrcs_by_title[title_of[row]].update(isrcs)
+    for row_id, isrcs in usable_row_isrcs.items():
+        library_isrcs_by_title[title_of[row_id]].update(isrcs)
+    rows_at = Counter(_position(track) for track in library if track.track_number)
     return _Entries(
         providers=providers,
         source_of=source_of,
@@ -244,6 +264,16 @@ def _entries(library: list[Track], listings: Sequence[Sequence[Track]]) -> _Entr
         library_isrcs={isrc for isrcs in library_isrcs_by_title.values() for isrc in isrcs},
         library_isrcs_by_title=dict(library_isrcs_by_title),
         occupied={_position(track) for track in library if track.track_number},
+        row_of_id=row_of_id,
+        row_of_isrc={isrc: track for track in library for isrc in usable_row_isrcs[id(track)]},
+        row_of_position={
+            _position(track): track
+            for track in library
+            if track.track_number and rows_at[_position(track)] == 1
+        },
+        # a title two rows share is no unique title, so it is never looked up
+        row_of_title={title_of[id(track)]: track for track in library},
+        row_isrcs=usable_row_isrcs,
     )
 
 
@@ -259,6 +289,8 @@ class _Slots:
     by_isrc: dict[str, int] = field(default_factory=dict)
     by_position: dict[tuple[int, int], int] = field(default_factory=dict)
     by_title: dict[tuple[int, str, str], int] = field(default_factory=dict)
+    # the slot each entry joined, by the entry's id
+    joined: dict[int, int] = field(default_factory=dict)
 
     def add(self, track: Track, order: tuple[int, int]) -> int:
         """
@@ -315,6 +347,155 @@ class _Slots:
             self.by_position.setdefault(position, slot)
         if title is not None:
             self.by_title.setdefault(title, slot)
+
+
+def _place(entries: _Entries) -> _Slots:
+    """
+    Place the provider entries of an album in the slots they are listed in.
+
+    An entry the library has a row for gets no slot, the row is its slot.
+
+    :param entries: The album's entries, with their identifiers judged.
+    """
+    slots = _Slots()
+    # the slot an identifier names is the one of the first entry carrying it, so the
+    # entries are taken in a fixed order rather than the order the providers answered in:
+    # the placed ones first, so the slots exist by the time the others look for theirs
+    for track in sorted(entries.providers, key=lambda track: _matching_order(track, entries)):
+        isrcs = entries.usable_isrcs[id(track)]
+        if isrcs.intersection(entries.library_isrcs):
+            # the library row is this recording's slot, wherever the provider lists it
+            continue
+        ids = entries.usable_ids[id(track)]
+        if entries.library_ids.intersection(ids):
+            continue
+        source = entries.source_of[id(track)]
+        title = entries.title_of[id(track)]
+        position = _position(track) if track.track_number else None
+        slot = next((slots.by_id[key] for key in ids if key in slots.by_id), None)
+        if slot is None:
+            slot = next((slots.by_isrc[isrc] for isrc in isrcs if isrc in slots.by_isrc), None)
+        if slot is None and position is not None:
+            if position in entries.occupied:
+                continue
+            slot = slots.by_position.get(position)
+        elif slot is None and title in entries.unique_titles:
+            # a title names an entry only as far as the ISRCs do not say otherwise
+            library_isrcs = entries.library_isrcs_by_title.get(title)
+            if library_isrcs is not None and not _contradict(isrcs, library_isrcs):
+                # the library row is this title's slot
+                continue
+            slot = slots.by_title.get(title)
+            if slot is not None and _contradict(isrcs, slots.isrcs[slot]):
+                slot = None
+        if slot is not None and source in slots.sources[slot]:
+            # a listing is authoritative about itself: two of its entries stay two
+            slot = None
+        order = entries.order_of[id(track)]
+        if slot is None:
+            slot = slots.add(track, order)
+        elif _preference(track) < _preference(slots.tracks[slot]):
+            if position is None:
+                # the playable copy takes the slot's position along with the slot
+                track.disc_number = slots.tracks[slot].disc_number
+                track.track_number = slots.tracks[slot].track_number
+            slots.tracks[slot] = track
+        slots.index(
+            slot,
+            source,
+            order,
+            ids,
+            isrcs,
+            position,
+            title if title in entries.unique_titles else None,
+        )
+        slots.joined[id(track)] = slot
+    return slots
+
+
+def _library_row(track: Track, entries: _Entries) -> Track | None:
+    """
+    Return the library row a provider entry is a copy of, when its evidence names exactly one.
+
+    :param track: A provider entry that got no slot of its own.
+    :param entries: The album's entries, with their identifiers judged.
+    """
+    isrcs = entries.usable_isrcs[id(track)]
+    for named in (
+        {
+            entries.row_of_id[key]
+            for key in entries.usable_ids[id(track)]
+            if key in entries.row_of_id
+        },
+        {entries.row_of_isrc[isrc] for isrc in isrcs if isrc in entries.row_of_isrc},
+    ):
+        if named:
+            return named.pop() if len(named) == 1 else None
+    title = entries.title_of[id(track)]
+    if track.track_number:
+        row = entries.row_of_position.get(_position(track))
+    elif title in entries.unique_titles:
+        row = entries.row_of_title.get(title)
+    else:
+        return None
+    # another recording at the row's position is no copy of it
+    if row is None or _contradict(isrcs, entries.row_isrcs[id(row)]):
+        return None
+    return row
+
+
+def _same_track(entry: Track, track: Track, entries: _Entries) -> bool:
+    """
+    Return whether an entry that shares a track's slot is a copy of that same track.
+
+    :param entry: An entry merged into the track's slot.
+    :param track: The track as the album lists it.
+    :param entries: The album's entries, with their identifiers judged.
+    """
+    # a position is shared by the editions of one track, but also by two sources' different
+    # bonus tracks: those differ in title and in ISRC
+    return entries.title_of[id(entry)] == entries.title_of[id(track)] or not _contradict(
+        entries.usable_isrcs[id(entry)], entries.usable_isrcs[id(track)]
+    )
+
+
+def _list(listed_ids: dict[str, dict[str, str]], instance: str, track: Track, item_id: str) -> None:
+    """
+    Record that an instance lists a track under an item id.
+
+    Of several ids, one the track is mapped under on that instance counts before the others,
+    then the lowest.
+
+    :param listed_ids: The item id each instance lists, by the track's uri.
+    :param instance: The provider instance that lists the track.
+    :param track: The track as the album lists it.
+    :param item_id: The provider item id the instance lists it under.
+    """
+    listed = listed_ids.setdefault(instance, {})
+    uri = cast("str", track.uri)
+    mapped = {
+        mapping.item_id
+        for mapping in track.provider_mappings
+        if mapping.provider_instance == instance
+    }
+    listed[uri] = min(item_id, listed.get(uri, item_id), key=lambda x: (x not in mapped, x))
+
+
+def _keep_own_entry(
+    own_entries: dict[str, dict[str, Track]], instance: str, track: Track, entry: Track
+) -> None:
+    """
+    Keep an instance's own entry of a track listed as another entry; its lowest id counts.
+
+    :param own_entries: The own entry of each instance, by the listed track's uri.
+    :param instance: The provider instance the entry belongs to.
+    :param track: The track as the album lists it.
+    :param entry: The instance's own entry of that track.
+    """
+    entries = own_entries.setdefault(instance, {})
+    uri = cast("str", track.uri)
+    if (kept := entries.get(uri)) is None or entry.item_id < kept.item_id:
+        entries[uri] = entry
 
 
 def _matching_order(
