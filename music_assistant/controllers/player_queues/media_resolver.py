@@ -53,12 +53,18 @@ from music_assistant.controllers.player_queues.helpers import (
     origin_for,
     sort_tracks,
 )
+from music_assistant.controllers.streams.stream_sources import (
+    DEFAULT_POLICY,
+    ContainerListing,
+    select_container_source,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
 from music_assistant.helpers.compare import compare_album
+from music_assistant.helpers.provider_access import playback_sources_for
 from music_assistant.helpers.util import is_disc_dir
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
@@ -69,6 +75,9 @@ from music_assistant.models.music_provider import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from music_assistant_models.media_items import ProviderMapping
+
+    from music_assistant.controllers.music.media.album_tracks import AlbumListing
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 
 _LATEST_EPISODE_KEYWORDS = frozenset({"latest", "newest"})
@@ -242,15 +251,9 @@ class MediaResolver:
             "Fetching tracks to play for album %s",
             album.name,
         )
-        result = await self._album_tracks(album)
-        if sort_by and sort_by != "track_number":
-            result = sort_tracks(result, sort_by)
-        if start_item is not None:
-            for idx, track in enumerate(result):
-                if start_item in (track.item_id, track.uri):
-                    return result[idx:] + (result[:idx] if keep_preceding_items else [])
-            return []
-        return result
+        return self._album_order(
+            await self._album_tracks(album), start_item, sort_by, keep_preceding_items
+        )
 
     async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
         """
@@ -793,21 +796,27 @@ class MediaResolver:
 
         :param album: The album to fetch the tracks for.
         """
-        album_items_conf = self.mass.config.get_raw_core_config_value(
-            self.queues.domain,
-            CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
-            ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
-        )
         return [
             album_track
             for album_track in await self.mass.music.albums.tracks(
                 item_id=album.item_id,
                 provider_instance_id_or_domain=album.provider,
-                in_library_only=album_items_conf == "library_tracks",
+                in_library_only=self._album_library_tracks_only(),
                 limit=None,
             )
             if album_track.available
         ]
+
+    def _album_library_tracks_only(self) -> bool:
+        """Return whether an album plays only its tracks that are in the library."""
+        return (
+            self.mass.config.get_raw_core_config_value(
+                self.queues.domain,
+                CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+                ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
+            )
+            == "library_tracks"
+        )
 
     async def _shuffled_artist_tracks(self, artist: Artist, artist_items_conf: str) -> list[Track]:
         """
@@ -892,14 +901,7 @@ class MediaResolver:
 
         :param copies: The album's copies, in the order to try them.
         """
-        library_tracks = (
-            self.mass.config.get_raw_core_config_value(
-                self.queues.domain,
-                CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
-                ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
-            )
-            == "library_tracks"
-        )
+        library_tracks = self._album_library_tracks_only()
         for album in copies[:-1]:
             # with the library tracks album setting, a copy in the library plays only its saved
             # tracks; another copy outside the library would play the album in full
@@ -1044,9 +1046,10 @@ class MediaResolver:
         Resolve/unwrap media items to enqueue, each with the origin it was played from.
 
         An item played from a container records that container; one listed by a playlist,
-        podcast or folder is also pinned to the copy that listing had for it. An audiobook or
-        podcast episode played on its own keeps the provider copy it was started from, a single
-        track or radio played on its own has no origin.
+        podcast or folder is also pinned to the copy that listing had for it, an album track to
+        its copy on the one source the album plays from. An audiobook or podcast episode played
+        on its own keeps the provider copy it was started from, a single track or radio played
+        on its own has no origin.
 
         :param media_item: The media item to resolve into playable items.
         :param start_item: Optional item to start a playlist/album/genre from, or the chapter
@@ -1094,15 +1097,8 @@ class MediaResolver:
             return self._played_from(media_item, artist_items, pin=False)
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
-            return self._played_from(
-                media_item,
-                await self.get_album_tracks(
-                    media_item,
-                    start_item,
-                    sort_by=sort_by,
-                    keep_preceding_items=keep_preceding_items,
-                ),
-                pin=False,
+            return await self._resolve_album(
+                media_item, start_item, userid, sort_by, keep_preceding_items
             )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
@@ -1222,6 +1218,123 @@ class MediaResolver:
                 )
         return items
 
+    async def _resolve_album(
+        self,
+        album: Album,
+        start_item: str | None,
+        userid: str | None,
+        sort_by: str | None,
+        keep_preceding_items: bool,
+    ) -> list[ResolvedItem]:
+        """
+        Resolve an album to its tracks, each pinned to its copy on the one source it plays from.
+
+        A track the album lists as another source's entry plays as the chosen source's own
+        entry, when it has one. A track the chosen source does not have plays as the album
+        lists it.
+
+        :param album: The album to play.
+        :param start_item: Optional item_id/uri of the track to start from.
+        :param userid: Optional user the playback is for.
+        :param sort_by: Optional sort key to order the tracks by before applying start_item.
+        :param keep_preceding_items: Move the tracks before start_item behind the rest instead
+            of dropping them, so the full album is returned with start_item first.
+        """
+        self.logger.info(
+            "Fetching tracks to play for album %s",
+            album.name,
+        )
+        listing = await self.mass.music.albums.playback_listing(
+            album.item_id, album.provider, in_library_only=self._album_library_tracks_only()
+        )
+        tracks = [track for track in listing.tracks if track.available]
+        source, served = await self._album_source(listing, tracks, userid)
+        if source is not None:
+            self.logger.debug("Playing album %s from %s", album.name, source)
+        container = ItemMapping.from_item(album)
+        resolved: list[ResolvedItem] = []
+        for track in self._album_order(tracks, start_item, sort_by, keep_preceding_items):
+            if (played := served.get(cast("str", track.uri))) is not None:
+                item, copy = played
+                resolved.append(
+                    ResolvedItem(
+                        item,
+                        QueueItemOrigin(
+                            container=container, provider_instance=source, item_id=copy.item_id
+                        ),
+                    )
+                )
+                continue
+            if source is not None:
+                self.logger.debug(
+                    "%s has no copy on %s, the source of album %s; it plays as the album lists it",
+                    track.name,
+                    source,
+                    album.name,
+                )
+            # nothing is pinned without a source
+            resolved.append(ResolvedItem(track, origin_for(album, track, pin=source is not None)))
+        return resolved
+
+    async def _album_source(
+        self, listing: AlbumListing, tracks: list[Track], userid: str | None
+    ) -> tuple[str | None, dict[str, tuple[Track, ProviderMapping]]]:
+        """
+        Choose the one source an album plays from, with the copy it serves of each track.
+
+        Only the sources the playback user may play from count, each with the copies of the
+        listed tracks it can serve.
+
+        :param listing: The album's tracks, and the entry each source lists for them.
+        :param tracks: The album's tracks to play.
+        :param userid: Optional user the playback is for.
+        :return: The provider instance chosen, if any, and per track uri the item to queue for
+            the track with the copy it plays.
+        """
+        # not the queue's user: the queue takes on the playback user once the play is resolved
+        user = await self.mass.webserver.auth.get_user(userid) if userid else None
+        allowed, preferred = playback_sources_for(self.mass, user)
+        served_by: dict[str, dict[str, tuple[Track, ProviderMapping]]] = {}
+        listed: list[ContainerListing] = []
+        for instance_id, listed_ids in listing.listed_ids.items():
+            provider = self.mass.get_provider(instance_id, provider_type=MusicProvider)
+            if (
+                provider is None
+                # an instance that went away hands its lookups to another account
+                or provider.instance_id != instance_id
+                or (allowed is not None and instance_id not in allowed)
+            ):
+                continue
+            own_entries = listing.own_entries.get(instance_id, {})
+            served: dict[str, tuple[Track, ProviderMapping]] = {}
+            for track in tracks:
+                uri = cast("str", track.uri)
+                if (item_id := listed_ids.get(uri)) is None:
+                    continue
+                # a track listed as another source's entry plays as this source's own entry
+                for item in (track, own_entries.get(uri)):
+                    if (
+                        item is not None
+                        and (copy := self._served_copy(item, provider, item_id)) is not None
+                    ):
+                        served[uri] = (item, copy)
+                        break
+            served_by[instance_id] = served
+            listed.append(
+                ContainerListing(
+                    instance_id=instance_id,
+                    is_streaming=provider.is_streaming_provider,
+                    copies=[copy for _, copy in served.values()],
+                    complete=all(
+                        track.uri in served for track in tracks if track.provider == "library"
+                    ),
+                )
+            )
+        source = select_container_source(listed, preferred, DEFAULT_POLICY)
+        if source is None:
+            return None, {}
+        return source, served_by[source]
+
     def _mark_container_played(
         self,
         container: MediaItemType,
@@ -1254,8 +1367,8 @@ class MediaResolver:
         """
         Wrap the items a container resolved to with the origin that records it.
 
-        :param container: The album, playlist, artist, genre, podcast or radio station that
-            listed the items.
+        :param container: The playlist, artist, genre, podcast or radio station that listed
+            the items.
         :param items: The playable items the container resolved to.
         :param pin: Whether to pin each item to the copy the container listed for it.
         """
@@ -1361,3 +1474,64 @@ class MediaResolver:
         if copy is None:
             return None
         return QueueItemOrigin(provider_instance=copy[0], item_id=copy[1])
+
+    @staticmethod
+    def _album_order(
+        tracks: list[Track],
+        start_item: str | None,
+        sort_by: str | None,
+        keep_preceding_items: bool,
+    ) -> list[Track]:
+        """
+        Return the tracks of an album in the order to play them, from the start item on.
+
+        :param tracks: The album's tracks, in album order.
+        :param start_item: Optional item_id/uri of the track to start from; nothing plays
+            when the album does not have it.
+        :param sort_by: Optional sort key to order the tracks by before applying start_item.
+        :param keep_preceding_items: Move the tracks before start_item behind the rest instead
+            of dropping them.
+        """
+        if sort_by and sort_by != "track_number":
+            tracks = sort_tracks(tracks, sort_by)
+        if start_item is None:
+            return tracks
+        for idx, track in enumerate(tracks):
+            if start_item in (track.item_id, track.uri):
+                return tracks[idx:] + (tracks[:idx] if keep_preceding_items else [])
+        return []
+
+    @staticmethod
+    def _served_copy(track: Track, provider: MusicProvider, item_id: str) -> ProviderMapping | None:
+        """
+        Return the mapping of a track that a provider instance plays under the given item id.
+
+        :param track: The track to play.
+        :param provider: The instance to play it from.
+        :param item_id: The item id the instance lists the track under.
+        """
+        copies = [mapping for mapping in track.provider_mappings if mapping.item_id == item_id]
+        if any(
+            not mapping.available and mapping.provider_instance == provider.instance_id
+            for mapping in copies
+        ):
+            # the instance no longer finds this id, so no other account stands in for it either
+            return None
+        served = [
+            mapping
+            for mapping in copies
+            if mapping.available
+            and (
+                mapping.provider_instance == provider.instance_id
+                # another account of a streaming service plays the very same item ids
+                or (provider.is_streaming_provider and mapping.provider_domain == provider.domain)
+            )
+        ]
+        return min(
+            served,
+            key=lambda mapping: (
+                mapping.provider_instance != provider.instance_id,
+                mapping.provider_instance,
+            ),
+            default=None,
+        )

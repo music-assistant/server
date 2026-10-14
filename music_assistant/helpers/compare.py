@@ -105,6 +105,10 @@ _FALLBACK_DURATION_TOLERANCE = 2
 _TRACK_DURATION_TOLERANCE = 3
 _LOOSE_TRACK_DURATION_TOLERANCE = 5
 
+# library matching option, set by the music controller from its config: a remaster shares
+# its MusicBrainz recording id with the original, so only its version can keep the two apart
+_keep_remasters_apart = False
+
 
 class AlbumMatchEvidence(Enum):
     """Confidence level for an album identity comparison."""
@@ -134,6 +138,17 @@ _MATCH_POLICY_MINIMUM_CONFIDENCE: Final[dict[PlaylistMatchPolicy, TrackMatchConf
 def match_policy_minimum_confidence(match_policy: PlaylistMatchPolicy) -> TrackMatchConfidence:
     """Return the minimum track-match confidence accepted by a match policy."""
     return _MATCH_POLICY_MINIMUM_CONFIDENCE[match_policy]
+
+
+def set_keep_remasters_apart(enabled: bool) -> None:
+    """Set whether matching keeps a remaster apart from the original and other remasters."""
+    global _keep_remasters_apart  # noqa: PLW0603
+    _keep_remasters_apart = enabled
+
+
+def get_keep_remasters_apart() -> bool:
+    """Return whether matching keeps a remaster apart from the original and other remasters."""
+    return _keep_remasters_apart
 
 
 def compare_media_item(
@@ -403,6 +418,12 @@ def compare_track(
         and compare_album(base_item.album, compare_item.album, False)
     ):
         return False
+    # a remaster shares the original's recording id, so its version is checked first; a loose
+    # compare (e.g. one corroborating an artist) still takes it for the same recording
+    if strict and _remasters_kept_apart(
+        base_item, compare_item, base_item.album, compare_item.album
+    ):
+        return False
     # return early on (un)matched primary/unique external id
     for ext_id in (
         ExternalID.MB_RECORDING,
@@ -614,7 +635,9 @@ def compare_track_evidence(
 
     base_version = _track_version(base_item)
     compare_version_value = _track_version(compare_item)
-    if _track_versions_conflict(base_version, compare_version_value):
+    if _track_versions_conflict(base_version, compare_version_value) or _remasters_kept_apart(
+        base_item, compare_item, base_album, compare_album_item
+    ):
         return TrackMatchConfidence.NO_MATCH
     base_explicit = _track_explicit(base_item, base_album)
     compare_explicit_value = _track_explicit(compare_item, compare_album_item)
@@ -1087,6 +1110,9 @@ def _compare_album_version(base_version: str, compare_version: str) -> AlbumMatc
     # when the other side omits version metadata entirely
     if (base_tokens | compare_tokens) & _RECORDING_CONFLICT_VERSION_TOKENS:
         return AlbumMatchEvidence.NO_MATCH
+    if _keep_remasters_apart and _remaster_versions_conflict(base_version, compare_version):
+        # a remaster kept apart is a recording of its own, which no tracklist may overrule
+        return AlbumMatchEvidence.NO_MATCH
     if not base_tokens or not compare_tokens:
         # a provider commonly omits edition metadata entirely (e.g. a remaster tagged
         # without a version string), so a blank version next to a real one is
@@ -1375,6 +1401,41 @@ def _is_missing_remaster_version(base_version: str, compare_version_value: str) 
     return "remaster" in version_tokens and all(
         word == "remaster" or word.isdigit() for word in version_tokens
     )
+
+
+def _remasters_kept_apart(
+    base_item: Track,
+    compare_item: Track,
+    base_album: Album | ItemMapping | None,
+    compare_album_item: Album | ItemMapping | None,
+) -> bool:
+    """Return whether the matching option keeps two tracks apart as different remasters."""
+    if not _keep_remasters_apart:
+        return False
+    if compare_external_ids(base_item.external_ids, compare_item.external_ids, ExternalID.MB_TRACK):
+        # the same track of the same release, whatever its version says
+        return False
+    # a provider may mark only the album as remastered, so a track without a version takes
+    # the album's
+    return _remaster_versions_conflict(
+        _track_version(base_item) or (base_album.version if base_album else ""),
+        _track_version(compare_item) or (compare_album_item.version if compare_album_item else ""),
+    )
+
+
+def _remaster_versions_conflict(base_version: str, compare_version_value: str) -> bool:
+    """Return whether only one version names a remaster, or both name different years."""
+    base_tokens = set(_normalize_version_tokens(base_version))
+    compare_tokens = set(_normalize_version_tokens(compare_version_value))
+    base_is_remaster = "remaster" in base_tokens
+    if base_is_remaster != ("remaster" in compare_tokens):
+        return True
+    if not base_is_remaster:
+        return False
+    # a remaster without a year may be either one, so only two stated years can disagree
+    base_years = {token for token in base_tokens if len(token) == 4 and token.isdigit()}
+    compare_years = {token for token in compare_tokens if len(token) == 4 and token.isdigit()}
+    return bool(base_years and compare_years) and base_years.isdisjoint(compare_years)
 
 
 def _album_years_match(

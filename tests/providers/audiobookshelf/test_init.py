@@ -1,5 +1,7 @@
 """Tests for Audiobookshelf provider initialization."""
 
+import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -7,10 +9,19 @@ import socketio
 import socketio.exceptions
 from aioaudiobookshelf.client import SocketClient
 from aioaudiobookshelf.client.session_configuration import SessionConfiguration
+from aioaudiobookshelf.exceptions import ApiError as AbsApiError
+from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
+from aioaudiobookshelf.exceptions import NotFoundError as AbsNotFoundError
+from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import ServiceUnavailableError as AbsServiceUnavailableError
 from aiohttp import ClientConnectionError, web
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+)
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf import Audiobookshelf
@@ -44,6 +55,26 @@ async def test_sync_library_clears_stale_library_ids(provider: Audiobookshelf) -
     assert len(provider.libraries.audiobooks) == 0
     # Only audiobooks are cleared — podcasts dict is untouched by an AUDIOBOOK sync
     assert "pod_stale" in provider.libraries.podcasts
+
+
+async def test_failed_sync_keeps_library_ids(provider: Audiobookshelf) -> None:
+    """A sync failing part way leaves the ids of the previous sync in place."""
+    provider.libraries.audiobooks["lib1"].item_ids.update({"book1", "book2"})
+    book_library = Mock(id_="lib1", media_type="book")
+    book_library.name = "Audiobooks"
+    provider._client.get_all_libraries = AsyncMock(return_value=[book_library])  # type: ignore[method-assign]
+
+    async def _fail_while_paging(*_args: Any) -> None:
+        provider.libraries.audiobooks["lib1"].item_ids.add("book1")
+        raise AbsServiceUnavailableError
+
+    with (
+        patch.object(MusicProvider, "sync_library", _fail_while_paging),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await provider.sync_library(MediaType.AUDIOBOOK)
+
+    assert provider.libraries.audiobooks["lib1"].item_ids == {"book1", "book2"}
 
 
 @pytest.mark.asyncio
@@ -145,3 +176,43 @@ async def test_failed_socket_connect_leaves_nothing_to_shut_down(server_running:
     # the two states SocketClient.shutdown() would stop
     assert not socket_client.client.connected
     assert socket_client.client._reconnect_task is None
+
+
+async def test_unload_shuts_down_socket_on_failing_logout(provider: Audiobookshelf) -> None:
+    """A failing logout does not leave the socket reconnecting."""
+    provider._close_sessions_task = asyncio.create_task(asyncio.sleep(3600))
+    provider._on_unload_callbacks = []
+    provider._user_update_task = None
+    provider.sessions = {}
+    provider._client.logout = AsyncMock(side_effect=AbsServiceUnavailableError)  # type: ignore[method-assign]
+    socket_logout = AsyncMock()
+    provider._client_socket = Mock(logout=socket_logout)
+
+    with patch.object(MusicProvider, "unload", AsyncMock()):
+        await provider.unload()
+
+    socket_logout.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("abs_error", "mass_error"),
+    [
+        (AbsNotFoundError, MediaNotFoundError),
+        (AbsServiceUnavailableError, ProviderUnavailableError),
+        (AbsApiError, MusicAssistantError),
+        # the relogin after an expired refresh token fails
+        (RefreshTokenExpiredError, LoginFailed),
+    ],
+)
+async def test_abs_errors_raised_as_mass_errors(
+    provider: Audiobookshelf, abs_error: type[Exception], mass_error: type[Exception]
+) -> None:
+    """Mass only handles its own errors, e.g. to fall back to another provider."""
+    provider._client.get_my_media_progress = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    provider._client.get_library_item_book = AsyncMock(side_effect=abs_error)  # type: ignore[method-assign]
+
+    with (
+        patch.object(provider, "reauthenticate", AsyncMock(side_effect=AbsLoginError)),
+        pytest.raises(mass_error),
+    ):
+        await provider.get_audiobook("book1")

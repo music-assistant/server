@@ -33,12 +33,6 @@ Read the demo provider alongside the new one, then flag deviations from its requ
 
 Reviews are requested only once `lint` and `test` have passed on the commit under review, so formatting, lint, test failures and missing dependencies are already settled — don't flag them. `.pre-commit-config.yaml` and `.github/workflows/test.yml` are the authority on that class of problem. Spend the review on what CI can't see.
 
-## Reachability
-
-A finding that the code can crash, lose data or misbehave has to be reachable in the code as it stands. Before posting one, follow the value or state that triggers it back to where it comes from: the caller that passes it, whatever validates or normalizes it on the way, and whatever must already have succeeded earlier on the same path. Name that source in the comment.
-
-If the code upstream rules the trigger out, or nothing in the repository produces it, the finding is a `[SUGGESTION]` at most, however severe the failure would be. Data from outside the process — third-party API and device responses, arguments to our own API commands, files, network input — counts as reachable, because nothing here controls its shape. Standards deviations need no trigger; this is about claims that something breaks.
-
 ## PR title
 
 A functional description of the change, with no conventional-commit prefix (`feat:`, `fix:`, `refactor:`, `chore:`, ...) — labels do the categorizing. A prefixed title is a `[PROBLEM]`.
