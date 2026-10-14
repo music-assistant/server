@@ -1787,7 +1787,6 @@ async def test_queue_playlist_duplicate_uri_selects_exact_item(
         ]
 
         player, _media = _make_audio_player(mass_mock, provider)
-        player.mark_queue_playback("msx_test")
         player._attr_current_media = PlayerMedia(
             uri=radio_uri,
             source_id="msx_test",

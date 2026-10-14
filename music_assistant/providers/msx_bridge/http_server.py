@@ -1903,7 +1903,6 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         queue = self.provider.mass.player_queues.get_active_queue(player_id)
         if queue is None:
             return
-        player.mark_queue_playback(queue.queue_id)
         items = list(self.provider.mass.player_queues.items(queue.queue_id, limit=queue.items))
         target_id: str | None = None
         if track_uri and 0 <= start < len(items):
