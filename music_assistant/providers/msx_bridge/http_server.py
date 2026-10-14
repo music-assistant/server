@@ -270,23 +270,6 @@ class MSXHTTPServer:
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
-    def broadcast_goto_index(self, player_id: str, index: int) -> None:
-        """Notify subscribed WebSocket clients to jump to a playlist index."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            return
-        logger.info(
-            "broadcast_goto_index: player_id=%s, index=%d, sending to %d client(s)",
-            player_id,
-            index,
-            len(clients),
-        )
-        payload: dict[str, Any] = {"type": "goto_index", "index": index}
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
     def cancel_streams_for_player(self, player_id: str) -> None:
         """Cancel stream tasks and abort connections for the given player."""
         self.audio.cancel_streams_for_player(player_id)
