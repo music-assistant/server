@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientResponse, ClientResponseError, ClientSession, ClientTimeout
+from aiohttp import (
+    ClientResponse,
+    ClientResponseError,
+    ClientSession,
+    ClientTimeout,
+    DummyCookieJar,
+)
 
-from music_assistant.providers.bookorbit.constants import API_PREFIX, AUDIO_FORMATS
+from music_assistant.providers.bookorbit.constants import (
+    AIOHTTP_TIMEOUT,
+    API_PREFIX,
+    AUDIO_FORMATS,
+)
 from music_assistant.providers.bookorbit.helpers import normalize_base_url
 
 if TYPE_CHECKING:
@@ -31,72 +42,61 @@ class BookOrbitClient:
 
     Tokens are held on the instance only (not persisted); the client re-logins
     with the configured credentials when refresh is no longer possible.
+
+    Without a ``session`` the client owns a session with a dummy cookie jar, so the
+    refresh cookie never leaks into (or is overwritten by) a shared cookie jar;
+    call :meth:`close` when done.
     """
 
     def __init__(
         self,
-        session: ClientSession,
         base_url: str,
         username: str,
         password: str,
         verify_ssl: bool = True,
+        session: ClientSession | None = None,
     ) -> None:
         """Initialize the client."""
-        self.session = session
+        self._session = session
+        self._owns_session = session is None
         self.base_url = normalize_base_url(base_url)
         self.username = username
         self.password = password
         self.verify_ssl = verify_ssl
         self.access_token: str | None = None
         self.refresh_token: str | None = None
+        self._auth_lock = asyncio.Lock()
+
+    @property
+    def session(self) -> ClientSession:
+        """Return the HTTP session (created on first use when owned)."""
+        if self._session is None or (self._owns_session and self._session.closed):
+            self._session = ClientSession(cookie_jar=DummyCookieJar(), timeout=AIOHTTP_TIMEOUT)
+        return self._session
+
+    async def close(self) -> None:
+        """Close the session if it is owned by this client."""
+        if self._owns_session and self._session is not None and not self._session.closed:
+            await self._session.close()
 
     async def login(self) -> None:
         """Log in with username/password; store access token and refresh cookie."""
-        async with self.session.post(
-            self._url(f"{API_PREFIX}/auth/login"),
-            json={"username": self.username, "password": self.password},
-            ssl=self.verify_ssl,
-        ) as resp:
-            if resp.status >= 400:
-                raise BookOrbitAuthError(f"BookOrbit login failed: HTTP {resp.status}")
-            data = await resp.json()
-            token = data.get("accessToken") if isinstance(data, dict) else None
-            if not token:
-                raise BookOrbitAuthError("BookOrbit login response has no accessToken")
-            self.access_token = token
-            self._capture_refresh_cookie(resp)
+        async with self._auth_lock:
+            await self._login()
 
     async def refresh(self) -> bool:
         """Refresh the access token using the refresh cookie. Returns success."""
-        if not self.refresh_token:
-            return False
-        try:
-            async with self.session.post(
-                self._url(f"{API_PREFIX}/auth/refresh"),
-                headers={"Cookie": f"{REFRESH_COOKIE}={self.refresh_token}"},
-                ssl=self.verify_ssl,
-            ) as resp:
-                if resp.status >= 400:
-                    return False
-                data = await resp.json()
-                token = data.get("accessToken") if isinstance(data, dict) else None
-                if not token:
-                    return False
-                self.access_token = token
-                self._capture_refresh_cookie(resp)  # cookie may be rotated
-                return True
-        except ClientResponseError:
-            return False
+        async with self._auth_lock:
+            return await self._refresh()
 
     async def request(self, method: str, path: str, **kwargs: Any) -> Any:
         """Make an authenticated request; on 401 refresh (then login) once and retry."""
-        if not self.access_token:
-            await self.login()
+        await self._ensure_token()
+        token = self.access_token
         status, data = await self._send(method, path, **kwargs)
         if status != 401:
             return data
-        if not await self.refresh():
-            await self.login()
+        await self._reauthenticate(token)
         status, data = await self._send(method, path, **kwargs)
         if status == 401:
             raise BookOrbitAuthError(f"{method} {path}: HTTP 401 after re-authentication")
@@ -177,6 +177,16 @@ class BookOrbitClient:
             },
         )
 
+    async def get_cover(self, url: str) -> bytes | None:
+        """Return the bytes of a (BookOrbit) cover image, or None if there is none."""
+        try:
+            data = await self.request("GET", url)
+        except ClientResponseError as err:
+            if err.status == 404:
+                return None
+            raise
+        return data if isinstance(data, bytes) and data else None
+
     def stream_url(self, file_id: int) -> str:
         """Return the absolute URL serving a book file."""
         return f"{self.base_url}{API_PREFIX}/books/files/{file_id}/serve"
@@ -193,10 +203,10 @@ class BookOrbitClient:
 
         On 401 the token is refreshed (or the client logs in again) and the request retried once.
         """
-        if not self.access_token:
-            await self.login()
+        await self._ensure_token()
         extra = {"Range": range_header} if range_header else None
         for attempt in range(2):
+            token = self.access_token
             kwargs: dict[str, Any] = {"headers": self._headers(extra), "ssl": self.verify_ssl}
             if timeout is not None:
                 kwargs["timeout"] = timeout
@@ -204,9 +214,65 @@ class BookOrbitClient:
             if resp.status != 401:
                 return resp
             resp.release()
-            if attempt == 0 and not await self.refresh():
-                await self.login()
+            if attempt == 0:
+                await self._reauthenticate(token)
         raise BookOrbitAuthError(f"file {file_id}: HTTP 401 after re-authentication")
+
+    async def _ensure_token(self) -> None:
+        """Log in unless an access token is held (once, for concurrent callers)."""
+        if self.access_token:
+            return
+        async with self._auth_lock:
+            if not self.access_token:
+                await self._login()
+
+    async def _reauthenticate(self, rejected_token: str | None) -> None:
+        """
+        Replace a rejected access token: refresh, else log in again.
+
+        Concurrent callers rejected with the same token share one refresh.
+        """
+        async with self._auth_lock:
+            if self.access_token and self.access_token != rejected_token:
+                return
+            if not await self._refresh():
+                await self._login()
+
+    async def _login(self) -> None:
+        async with self.session.post(
+            self._url(f"{API_PREFIX}/auth/login"),
+            json={"username": self.username, "password": self.password},
+            ssl=self.verify_ssl,
+        ) as resp:
+            if resp.status >= 400:
+                raise BookOrbitAuthError(f"BookOrbit login failed: HTTP {resp.status}")
+            data = await resp.json()
+            token = data.get("accessToken") if isinstance(data, dict) else None
+            if not token:
+                raise BookOrbitAuthError("BookOrbit login response has no accessToken")
+            self.access_token = token
+            self._capture_refresh_cookie(resp)
+
+    async def _refresh(self) -> bool:
+        if not self.refresh_token:
+            return False
+        try:
+            async with self.session.post(
+                self._url(f"{API_PREFIX}/auth/refresh"),
+                headers={"Cookie": f"{REFRESH_COOKIE}={self.refresh_token}"},
+                ssl=self.verify_ssl,
+            ) as resp:
+                if resp.status >= 400:
+                    return False
+                data = await resp.json()
+                token = data.get("accessToken") if isinstance(data, dict) else None
+                if not token:
+                    return False
+                self.access_token = token
+                self._capture_refresh_cookie(resp)  # cookie may be rotated
+                return True
+        except ClientResponseError:
+            return False
 
     async def _search(self, endpoint: str, query: str) -> list[dict[str, Any]]:
         payload = await self.request("GET", f"{API_PREFIX}/{endpoint}", params={"q": query})
@@ -226,8 +292,6 @@ class BookOrbitClient:
         headers: dict[str, str] = dict(extra or {})
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
-        if self.refresh_token:
-            headers["Cookie"] = f"{REFRESH_COOKIE}={self.refresh_token}"
         return headers
 
     async def _send(self, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:

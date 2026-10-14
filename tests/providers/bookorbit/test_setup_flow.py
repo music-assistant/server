@@ -79,19 +79,14 @@ async def test_validate_connection_login_and_libraries(aiohttp_server: Any) -> N
     server = await aiohttp_server(app)
     base = str(server.make_url("/")).rstrip("/")
 
-    mass = mock.Mock()
-    async with aiohttp.ClientSession() as http:
-        mass.http_session = http
-        session = _make_session(mock.AsyncMock(), mass)
-        await _validate_connection(
-            session,
-            {
-                CONF_URL: base,
-                CONF_USERNAME: "u",
-                CONF_PASSWORD: "p",
-                CONF_VERIFY_SSL: True,
-            },
-        )
+    await _validate_connection(
+        {
+            CONF_URL: base,
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_VERIFY_SSL: True,
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -186,40 +181,30 @@ async def test_run_setup_shows_login_error_and_retries(aiohttp_server: Any) -> N
 @pytest.mark.asyncio
 async def test_validate_connection_raises_setup_flow_error_on_unreachable_host() -> None:
     """Unreachable hosts surface as connection_failed."""
-    mass = mock.Mock()
-    async with aiohttp.ClientSession() as http:
-        mass.http_session = http
-        session = _make_session(mock.AsyncMock(), mass)
-        with pytest.raises(SetupFlowError) as exc:
-            await _validate_connection(
-                session,
-                {
-                    CONF_URL: "http://127.0.0.1:1",
-                    CONF_USERNAME: "u",
-                    CONF_PASSWORD: "p",
-                    CONF_VERIFY_SSL: True,
-                },
-            )
-        assert exc.value.translation_key == "connection_failed"
+    with pytest.raises(SetupFlowError) as exc:
+        await _validate_connection(
+            {
+                CONF_URL: "http://127.0.0.1:1",
+                CONF_USERNAME: "u",
+                CONF_PASSWORD: "p",
+                CONF_VERIFY_SSL: True,
+            },
+        )
+    assert exc.value.translation_key == "connection_failed"
 
 
 @pytest.mark.asyncio
 async def test_validate_connection_raises_setup_flow_error_on_empty_password() -> None:
     """First setup without a password surfaces password_required, not KeyError."""
-    mass = mock.Mock()
-    async with aiohttp.ClientSession() as http:
-        mass.http_session = http
-        session = _make_session(mock.AsyncMock(), mass)
-        with pytest.raises(SetupFlowError) as exc:
-            await _validate_connection(
-                session,
-                {
-                    CONF_URL: "http://127.0.0.1:9",
-                    CONF_USERNAME: "u",
-                    CONF_VERIFY_SSL: True,
-                },
-            )
-        assert exc.value.translation_key == "password_required"
+    with pytest.raises(SetupFlowError) as exc:
+        await _validate_connection(
+            {
+                CONF_URL: "http://127.0.0.1:9",
+                CONF_USERNAME: "u",
+                CONF_VERIFY_SSL: True,
+            },
+        )
+    assert exc.value.translation_key == "password_required"
 
 
 @pytest.mark.asyncio

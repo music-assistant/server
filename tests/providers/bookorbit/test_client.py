@@ -1,5 +1,6 @@
 """Tests for the BookOrbit HTTP client."""
 
+import asyncio
 import json
 from typing import Any
 
@@ -12,11 +13,11 @@ from music_assistant.providers.bookorbit.helpers import is_audio_format, normali
 
 def _make(client: Any) -> BookOrbitClient:
     return BookOrbitClient(
-        session=client.session,
         base_url=str(client.make_url("/")).rstrip("/"),
         username="u",
         password="p",
         verify_ssl=True,
+        session=client.session,
     )
 
 
@@ -225,7 +226,6 @@ async def test_get_book_and_progress(aiohttp_client: Any) -> None:
 def test_stream_url_and_helpers() -> None:
     """Stream url and helpers."""
     bo = BookOrbitClient(
-        session=None,  # type: ignore[arg-type]
         base_url="http://host:3000/",
         username="u",
         password="p",
@@ -270,3 +270,99 @@ async def test_open_file_sends_bearer_and_range_and_retries_on_401(aiohttp_clien
         assert resp.status == 206
         assert await resp.read() == b"abc"
     assert seen == [("Bearer stale", "bytes=0-2"), ("Bearer fresh", "bytes=0-2")]
+
+
+@pytest.mark.asyncio
+async def test_clients_on_same_host_keep_separate_tokens(aiohttp_server: Any) -> None:
+    """Two clients of one server never share or overwrite each other's refresh cookie."""
+    refresh_cookies: list[str] = []
+    library_cookies: list[str | None] = []
+
+    async def login(request: web.Request) -> web.Response:
+        user = (await request.json())["username"]
+        resp = web.json_response({"accessToken": f"access-{user}"})
+        resp.set_cookie("refresh_token", f"refresh-{user}", path="/")
+        return resp
+
+    async def refresh(request: web.Request) -> web.Response:
+        refresh_cookies.append(request.headers.get("Cookie", ""))
+        user = request.cookies["refresh_token"].removeprefix("refresh-")
+        return web.json_response({"accessToken": f"fresh-{user}"})
+
+    async def libraries(request: web.Request) -> web.Response:
+        library_cookies.append(request.headers.get("Cookie"))
+        if not request.headers.get("Authorization", "").startswith("Bearer fresh-"):
+            return web.Response(status=401)
+        return web.json_response([])
+
+    app = web.Application()
+    app.router.add_post("/api/v1/auth/login", login)
+    app.router.add_post("/api/v1/auth/refresh", refresh)
+    app.router.add_get("/api/v1/libraries", libraries)
+    server = await aiohttp_server(app)
+    base = str(server.make_url("/")).rstrip("/")
+
+    alice = BookOrbitClient(base_url=base, username="alice", password="p")
+    bob = BookOrbitClient(base_url=base, username="bob", password="p")
+    try:
+        await alice.login()
+        await bob.login()
+        await alice.list_libraries()
+        await bob.list_libraries()
+    finally:
+        await alice.close()
+        await bob.close()
+    assert refresh_cookies == ["refresh_token=refresh-alice", "refresh_token=refresh-bob"]
+    assert (alice.refresh_token, bob.refresh_token) == ("refresh-alice", "refresh-bob")
+    assert (alice.access_token, bob.access_token) == ("fresh-alice", "fresh-bob")
+    # the refresh cookie is only sent to the refresh endpoint
+    assert library_cookies == [None, None, None, None]
+    assert alice.session.closed is False  # a new session is created on demand
+    await alice.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_401s_share_one_refresh(aiohttp_client: Any) -> None:
+    """Requests rejected with the same token wait for a single refresh."""
+    state = {"refreshes": 0}
+
+    async def libraries(request: web.Request) -> web.Response:
+        if request.headers.get("Authorization") != "Bearer fresh":
+            return web.Response(status=401)
+        return web.json_response([])
+
+    async def refresh(_request: web.Request) -> web.Response:
+        state["refreshes"] += 1
+        await asyncio.sleep(0.05)
+        return web.json_response({"accessToken": "fresh"})
+
+    app = web.Application()
+    app.router.add_get("/api/v1/libraries", libraries)
+    app.router.add_post("/api/v1/auth/refresh", refresh)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "stale"
+    bo.refresh_token = "refresh-1"
+    assert await asyncio.gather(*(bo.list_libraries() for _ in range(5))) == [[]] * 5
+    assert state["refreshes"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_cover_returns_bytes_or_none(aiohttp_client: Any) -> None:
+    """Covers are fetched with the bearer token; a missing cover is None."""
+
+    async def cover(request: web.Request) -> web.Response:
+        if request.match_info["id"] == "404":
+            return web.Response(status=404)
+        assert request.headers.get("Authorization") == "Bearer t"
+        return web.Response(body=b"\x89PNG", content_type="image/png")
+
+    app = web.Application()
+    app.router.add_get("/api/v1/books/{id}/cover", cover)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    assert await bo.get_cover(f"{bo.base_url}/api/v1/books/5/cover?t=1") == b"\x89PNG"
+    assert await bo.get_cover(f"{bo.base_url}/api/v1/books/404/cover") is None

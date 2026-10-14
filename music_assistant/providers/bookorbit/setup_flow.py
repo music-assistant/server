@@ -71,19 +71,26 @@ def _require_password(setup_data: dict[str, Any]) -> str:
     return str(password)
 
 
-async def _validate_connection(session: SetupSession, setup_data: dict[str, Any]) -> None:
+async def _validate_connection(setup_data: dict[str, Any]) -> None:
     """Log in to BookOrbit and list libraries before the provider is saved."""
     base_url = normalize_base_url(str(setup_data[CONF_URL]))
     username = str(setup_data[CONF_USERNAME])
     password = _require_password(setup_data)
     verify_ssl = bool(setup_data.get(CONF_VERIFY_SSL, True))
     client = BookOrbitClient(
-        session=session.mass.http_session,
         base_url=base_url,
         username=username,
         password=password,
         verify_ssl=verify_ssl,
     )
+    try:
+        await _check_login(client, base_url)
+    finally:
+        await client.close()
+
+
+async def _check_login(client: BookOrbitClient, base_url: str) -> None:
+    """Log in and list libraries, raising SetupFlowError on failure."""
     try:
         await client.login()
     except BookOrbitAuthError as err:
@@ -155,7 +162,7 @@ async def run_setup(session: SetupSession) -> None:
         if not submitted.get(CONF_PASSWORD) and prior_username != setup_data.get(CONF_USERNAME):
             setup_data[CONF_PASSWORD] = None
         try:
-            await _validate_connection(session, setup_data)
+            await _validate_connection(setup_data)
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
