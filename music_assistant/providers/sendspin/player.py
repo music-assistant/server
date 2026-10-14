@@ -415,8 +415,8 @@ class SendspinBasePlayer(Player):
         A device that offers neither guest access nor a completed pairing still connects,
         but the server activates no roles for it. Reporting needs_setup keeps it out of the
         ready-to-play targets while its settings (and the pairing actions) stay reachable.
-        A device with an undecided audio input reports it too: guest access never carries a
-        line-in, so the choice between keeping guest access and pairing has to be made once.
+        A device with an undecided audio input reports it too: guest access carries a line-in
+        only once approved, so the choice between approving and pairing has to be made once.
         Legacy unencrypted devices, the built-in web player, and any other device already
         playing through guest access can play as-is.
         """
@@ -500,7 +500,7 @@ class SendspinBasePlayer(Player):
             and (not self.api.active_roles or self._source_input_pending)
         ):
             # Guest access already carries playback, so the only thing left to consent to is
-            # the audio input: finishing keeps guest access and leaves the input off.
+            # the audio input: finishing keeps guest access and turns the input on.
             wants_pairing = await self._run_consent_step(
                 session, provider, offer_pairing=bool(options)
             )
@@ -643,13 +643,10 @@ class SendspinBasePlayer(Player):
         values = await session.form(entries, step_id=step_id, last_step=True)
         if offer_pairing and values.get(CONF_CONNECT_METHOD) == CONNECT_METHOD_PAIR:
             return True
-        # Connecting unpaired settles the audio input as well, so the device stops asking.
-        input_settled = self._source_input_pending
-        await provider.set_trusted_unpaired(self.player_id, enabled=True)
-        if input_settled:
-            self.mass.config.set_raw_player_config_value(
-                self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, True
-            )
+        # The input-specific wording asked for the input as well, so connecting approves it.
+        await provider.set_trusted_unpaired(
+            self.player_id, enabled=True, allow_input=step_id == "approve_device_source"
+        )
         return False
 
     async def _run_source_input_step(self, session: SetupSession, *, offer_pair: bool) -> bool:

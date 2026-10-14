@@ -75,7 +75,7 @@ async def test_a_guest_capable_player_is_approved_on_connect() -> None:
 
 
 async def test_a_combo_with_an_audio_input_is_approved_too() -> None:
-    """Its playback roles still benefit, even though the input itself needs pairing."""
+    """Its playback roles still benefit, even though the input itself needs pairing or approval."""
     api = _ApprovalServerApi()
     provider = _make_provider(api)
 

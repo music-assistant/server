@@ -22,7 +22,7 @@ from aiosendspin.noise.pairing import (
     PairingError,
     RemotePairingAbortError,
 )
-from aiosendspin.noise.trust_store import PskCategory
+from aiosendspin.noise.trust_store import PskCategory, TrustedUnpairedClient
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
 
 from music_assistant.helpers.util import join_task
@@ -199,6 +199,7 @@ class _FakeProvider:
         self.cancel_calls = 0
         self.clear_calls = 0
         self.trust_calls: list[bool] = []
+        self.allow_input_calls: list[bool] = []
         self._gesture = gesture
         self._submit_outcomes = deque(submit_outcomes or [])
         self._token_errors = deque(token_errors or [])
@@ -262,10 +263,15 @@ class _FakeProvider:
         self.cancel_calls += 1
         self.session = None
 
-    async def set_trusted_unpaired(self, client_id: str, enabled: bool) -> None:
+    async def set_trusted_unpaired(
+        self, client_id: str, enabled: bool, *, allow_input: bool = False
+    ) -> None:
         self.trust_calls.append(enabled)
+        self.allow_input_calls.append(allow_input)
         if enabled:
-            self.server_api.pairing_store.trusted = object()
+            self.server_api.pairing_store.trusted = TrustedUnpairedClient(
+                client_id=client_id, approved_roles=frozenset({"source"} if allow_input else ())
+            )
 
     async def pair_with_token(self, client_id: str, token: str) -> None:
         self.tokens.append(token)
@@ -545,6 +551,7 @@ async def test_consent_step_grants_trust() -> None:
     await _wait_for(lambda: session.finished)
     await task
     assert provider.trust_calls == [True]
+    assert provider.allow_input_calls == [False]
     assert provider.start_calls == 0
     assert provider.tokens == []
     # a one-click allow closes the dialog without a success screen
@@ -585,8 +592,8 @@ async def test_consent_without_pair_methods_still_asks() -> None:
     assert provider.trust_calls == [True]
 
 
-async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
-    """A plain allow on a combo also declines the pending audio input, one submit total."""
+async def test_consent_on_combo_approves_the_input_in_one_click() -> None:
+    """A plain allow on a combo also approves the pending audio input, one submit total."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
     api.negotiated_role_ids = ["player@v1", "source@v1"]
     provider = _FakeProvider(api)
@@ -603,9 +610,8 @@ async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
     await _wait_for(lambda: session.finished)
     await task
     assert provider.trust_calls == [True]
-    mass.config.set_raw_player_config_value.assert_called_once_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
-    )
+    assert provider.allow_input_calls == [True]
+    mass.config.set_raw_player_config_value.assert_not_called()
 
 
 async def test_consent_opting_into_pairing_pairs_instead() -> None:
@@ -657,7 +663,7 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
     A guest device with a pending input consents on the approval step, not the input picker.
 
     Guest access already carries playback, so the only choice left is the optional upgrade
-    to a pairing; finishing keeps guest access and leaves the input off.
+    to a pairing; finishing keeps guest access and turns the input on.
     """
     api = _combo_api_with_pending_source()
     provider = _FakeProvider(api)
@@ -673,10 +679,9 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
 
     await _wait_for(lambda: session.finished)
     await task
-    mass.config.set_raw_player_config_value.assert_called_once_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
-    )
+    mass.config.set_raw_player_config_value.assert_not_called()
     assert provider.trust_calls == [True]
+    assert provider.allow_input_calls == [True]
     assert provider.start_calls == 0
     assert session.finish_step_id == FINISH_STEP_SILENT
 

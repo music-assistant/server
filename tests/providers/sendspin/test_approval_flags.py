@@ -72,8 +72,8 @@ def test_undecided_audio_input_prompts_even_while_the_device_plays() -> None:
     """
     A combo with an active player role still prompts while its input is undecided.
 
-    Guest access can never carry a line-in, so the choice between keeping it and
-    pairing has to be made once. The setup state cannot be split per role, so the
+    Guest access carries a line-in only once approved, so the choice between approving
+    and pairing has to be made once. The setup state cannot be split per role, so the
     device is held out of playback until that one choice is answered.
     """
     api = _make_api(
