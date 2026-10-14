@@ -725,10 +725,10 @@ class MetadataEnrichmentMixin:
         # the library's own albums and tracks carry the MusicBrainz ids, barcodes and ISRCs
         # the lookup keys on, so those come before anything a provider has to be asked for
         ref_albums = _identifying_first(
-            await self.mass.music.artists.albums(artist.item_id, artist.provider)
+            await self.mass.music.artists.albums(artist.item_id, artist.provider, limit=None)
         )
         ref_tracks = _identifying_first(
-            await self.mass.music.artists.tracks(artist.item_id, artist.provider)
+            await self.mass.music.artists.tracks(artist.item_id, artist.provider, limit=None)
         )
         if mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, ref_tracks):
             return mb_artist.id
@@ -738,7 +738,7 @@ class MetadataEnrichmentMixin:
             [
                 track
                 for track in await self.mass.music.artists.top_tracks(
-                    artist.item_id, artist.provider
+                    artist.item_id, artist.provider, limit=None
                 )
                 if track.uri not in tried
             ]

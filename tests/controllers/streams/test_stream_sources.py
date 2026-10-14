@@ -3,7 +3,8 @@ Tests for the stream source ranking.
 
 The ranking orders the copies of a media item for playback. Every level of its sort key is
 exercised on its own, with the levels above it held equal, and one set of candidates is
-ranked from shuffled input to show the order does not depend on how they come in.
+ranked from shuffled input to show the order does not depend on how they come in. The
+settings the ranking runs under are read from the streams settings.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import AudioFormat, ProviderMapping
 
+from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
 from music_assistant.controllers.streams.stream_sources import (
+    DEFAULT_POLICY,
     ContainerListing,
     QualityTier,
     SourceCandidate,
@@ -26,10 +29,13 @@ from music_assistant.controllers.streams.stream_sources import (
     quality_tier,
     rank_provider_mappings,
     rank_stream_sources,
+    read_stream_source_policy,
     select_container_source,
 )
 
 if TYPE_CHECKING:
+    from music_assistant.controllers.streams.controller import StreamsController
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models.provider import Provider
 
 LOCAL = "filesystem_local--a"
@@ -465,3 +471,53 @@ def test_no_container_source_without_a_listed_copy() -> None:
     assert select_container_source([]) is None
     empty = ContainerListing(instance_id=TIDAL, is_streaming=True, copies=[], complete=True)
     assert select_container_source([empty, _listing(SPOTIFY, MP3, complete=False)]) == SPOTIFY
+
+
+@pytest.mark.parametrize(
+    ("stored", "mode"),
+    [
+        ({CONF_STREAM_SOURCE_MODE: "best_quality"}, StreamSourceMode.BEST_QUALITY),
+        ({CONF_STREAM_SOURCE_MODE: "prefer_local"}, StreamSourceMode.PREFER_LOCAL),
+        (
+            {CONF_STREAM_SOURCE_MODE: "best_quality_per_track"},
+            StreamSourceMode.BEST_QUALITY_PER_TRACK,
+        ),
+        ({CONF_STREAM_SOURCE_MODE: "local_first"}, StreamSourceMode.BEST_QUALITY),
+        ({}, StreamSourceMode.BEST_QUALITY),
+    ],
+    ids=["best quality", "prefer local", "best quality for every track", "unknown", "missing"],
+)
+def test_read_stream_source_policy(stored: dict[str, str], mode: StreamSourceMode) -> None:
+    """Each mode the setting offers is read as such, an unknown or missing one as the default."""
+    streams = SimpleNamespace(
+        get_config_value=lambda key, default=None, **_kwargs: stored.get(key, default)
+    )
+    mass = cast("MusicAssistant", SimpleNamespace(streams=streams))
+
+    assert read_stream_source_policy(mass, "q1") == StreamSourcePolicy(mode=mode)
+
+
+async def test_the_setting_offers_every_mode_and_defaults_to_best_quality(
+    streams_controller: StreamsController,
+) -> None:
+    """The streams settings offer the three modes: best quality until another one is saved."""
+    mass = streams_controller.mass
+    entry = next(
+        entry
+        for entry in await streams_controller.get_config_entries()
+        if entry.key == CONF_STREAM_SOURCE_MODE
+    )
+
+    assert entry.category == "source_selection"
+    assert entry.default_value == StreamSourceMode.BEST_QUALITY
+    assert [option.value for option in entry.options] == [
+        "best_quality",
+        "prefer_local",
+        "best_quality_per_track",
+    ]
+    streams_controller.config = await mass.config.get_core_config(streams_controller.domain)
+    assert read_stream_source_policy(mass) == DEFAULT_POLICY
+    await mass.config.save_core_config(
+        streams_controller.domain, {CONF_STREAM_SOURCE_MODE: "prefer_local"}
+    )
+    assert read_stream_source_policy(mass) == PREFER_LOCAL
