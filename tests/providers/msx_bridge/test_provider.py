@@ -100,6 +100,14 @@ async def test_get_ma_stream_url_accepts_universal_group_flow_media(
     assert url == stream_url
 
 
+@pytest.mark.parametrize("stored", ["redirect", "independent"])
+def test_offered_stream_mode_is_kept(provider: MSXBridgeProvider, stored: str) -> None:
+    """A stored value that is one of the offered modes is used as is."""
+    cast("Any", provider.config).get_value = Mock(return_value=stored)
+
+    assert provider._load_stream_mode() == stored
+
+
 def test_unknown_stream_mode_falls_back_to_redirect(
     provider: MSXBridgeProvider, caplog: pytest.LogCaptureFixture
 ) -> None:
