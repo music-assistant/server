@@ -5,7 +5,6 @@ music_assistant/models/music_provider.py	5
 music_assistant/models/player.py	10
 music_assistant/providers/_demo_audio_analysis_provider/__init__.py	3
 music_assistant/providers/alexa/__init__.py	1
-music_assistant/providers/apple_music/api_client.py	8
 music_assistant/providers/apple_music/library.py	6
 music_assistant/providers/apple_music/media.py	4
 music_assistant/providers/ard_audiothek/__init__.py	14
