@@ -41,6 +41,7 @@ class _FakeClient:
         *,
         name: str | None = None,
         has_source_role: bool = True,
+        has_player_role: bool = False,
         connected: bool = True,
     ) -> None:
         self.client_id = client_id
@@ -48,7 +49,10 @@ class _FakeClient:
         if name is not None:
             self.info_or_none = type("Info", (), {"name": name})()
         self.is_connected = connected
+        self.connection: object | None = object() if connected else None
         self.negotiated_role_ids = ["source@v1"] if has_source_role else ["player@v1"]
+        if has_player_role:
+            self.negotiated_role_ids.append("player@v1")
         self.source_role = _FakeSourceRole() if has_source_role else None
         self.listeners: list[Callable[[Any, Any], None]] = []
 
@@ -134,6 +138,7 @@ class _FakePlayers:
         # live source sessions, keyed on the player playing one
         self.source_sessions: dict[str, Any] = {}
         self.deselected: list[str] = []
+        self.updated: list[str] = []
 
     def get_player(self, player_id: str, *args: Any, **kwargs: Any) -> _FakePlayer | None:
         return self.players.get(player_id)
@@ -143,6 +148,9 @@ class _FakePlayers:
 
     def get_audio_source_session(self, player_id: str) -> Any:
         return self.source_sessions.get(player_id)
+
+    def trigger_player_update(self, player_id: str, **_: Any) -> None:
+        self.updated.append(player_id)
 
     async def deselect_source(
         self,

@@ -175,6 +175,20 @@ class SendspinSourceProvider(PluginProvider):
             if self._get_source_role(client) is not None
         ]
 
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the line-in of a connected client that is also a player, on that player."""
+        client = self._get_client(player_id)
+        # Checks the connection, not is_connected: that only turns True on the first
+        # client/state, which can arrive after the reconnect refresh reads this.
+        if (
+            client is None
+            or client.connection is None
+            or self._get_source_role(client) is None
+            or "player" not in {role_family(role_id) for role_id in client.negotiated_role_ids}
+        ):
+            return []
+        return [self._audio_source(client)]
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for streaming the given source to a queue.
@@ -427,6 +441,9 @@ class SendspinSourceProvider(PluginProvider):
         if client is None:
             return
         self._watch_client(client)
+        # The player's source list depends on the source role, which only attached now.
+        if (player := self.mass.players.get_player(client_id)) is not None:
+            self.mass.players.trigger_player_update(player.protocol_parent_id or client_id)
         # A reconnect clears the client's start request, so ask again.
         if self._get_session(client_id) is None:
             return
