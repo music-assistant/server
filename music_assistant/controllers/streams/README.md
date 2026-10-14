@@ -58,9 +58,14 @@ controllers/streams/
   __init__.py          - Package init, exports StreamsController
   controller.py        - StreamsController: HTTP endpoints, public streaming API
   audio.py             - StreamsAudio: audio processing, stream acquisition, DSP/filters
+  audio_processing.py  - AudioProcessingManager: processing details (normalization, DSP, output quality) reported to clients
+  stream_sources.py    - Ranking of the copies of a media item (local file, streaming accounts) in the order they are tried
   audio_buffer.py      - AudioBuffer: in-memory PCM audio buffering with seek support
   audio_analysis.py    - AudioAnalysisController: analysis storage (audio_analysis.db) and scheduling
+  audio_analysis_codec.py - Packed on-disk format of an analysis record (JSON header plus binary array payload)
   audio_analysis_database.py - AudioAnalysisDatabaseMixin: connection, schema version and quarantine of audio_analysis.db
+  announcements.py     - AnnouncementRenderer: renders an announcement (chime + clip) once in memory for all its readers
+  live_announcements.py - LiveAnnouncementManager: inbound WebSocket for spoken audio, played as an announcement
   constants.py         - Shared constants (buffer sizes, config keys)
   ogg_handler.py       - Chained OGG stream stitching for radio
   smart_fades/         - Smart crossfade planning and mixing
@@ -258,7 +263,7 @@ audio stream:
 |------|-------------|-------------|
 | Queue tracks | Yes (SEEKABLE) | Regular track playback with full buffering |
 | Radio streams | Yes (ROLLING) | Short rolling buffer, non-seekable |
-| Announcements | Yes (SEEKABLE) | Short one-off audio (TTS), rendered once and shared by all consumers |
+| Announcements | No (own in-memory render) | Short one-off audio (TTS), rendered once and shared by all consumers |
 | Plugin sources | No | Real-time audio (microphone, aux), streamed directly |
 
 ## Configuration
