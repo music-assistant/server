@@ -174,6 +174,43 @@ class AppleMusicLibraryManager:
         album_tracks = self.provider.library_sync_album_tracks_enabled()
         return f"{marker}|{await self._get_recently_added_marker()}|{album_tracks}"
 
+    async def get_favourites_marker(self) -> str:
+        """Return a marker that changes when a song is rated in any Apple Music app."""
+        playlists = await self.api.get_all_items("me/library/playlists")
+        # the favourites playlist has a localised name and no fixed id, so take every playlist
+        # like it; the purchased music playlist also matches but rarely moves
+        return ",".join(
+            sorted(
+                f"{item['id']}={item['attributes'].get('lastModifiedDate', '')}"
+                for item in playlists
+                if not item["attributes"].get("canEdit")
+                and not item["attributes"].get("hasCatalog")
+            )
+        )
+
+    async def refresh_favourites(self, media_type: MediaType) -> None:
+        """
+        Record the current Apple Music ratings of the library tracks or albums of this provider.
+
+        :param media_type: MediaType.TRACK or MediaType.ALBUM.
+        """
+        controller = (
+            self.mass.music.tracks if media_type == MediaType.TRACK else self.mass.music.albums
+        )
+        db_ids: dict[str, int] = {}
+        async for item in controller.iter_library_items_by_prov_id(self.instance_id):
+            for mapping in item.provider_mappings:
+                if mapping.provider_instance == self.instance_id and mapping.in_library:
+                    db_ids[mapping.item_id] = int(item.item_id)
+        library_ids = [item_id for item_id in db_ids if is_library_id(item_id)]
+        catalog_ids = [item_id for item_id in db_ids if not is_library_id(item_id)]
+        ratings = await self.api.get_ratings(catalog_ids, media_type)
+        ratings.update(await self.api.get_ratings(library_ids, media_type))
+        for prov_item_id, favorite in ratings.items():
+            await self.mass.music.favorites.record_from_provider(
+                self.instance_id, media_type, db_ids[prov_item_id], favorite
+            )
+
     async def library_add(self, item: MediaItemType) -> None:
         """Add item to library."""
         if item.media_type == MediaType.ARTIST:
