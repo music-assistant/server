@@ -1143,6 +1143,8 @@ class GenreController(MediaControllerBase[Genre]):
         media_id_int = int(media_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
         content_type = genre_content_type_for(media_type)
+        # a genre the user excluded from the item is never mapped to it again
+        excluded_ids = await self._get_excluded_genre_ids(media_type, media_id_int)
 
         # fast path for the (very common) unchanged case: resolve the incoming names
         # against a short-lived cached snapshot of this taxonomy — the same resolution
@@ -1152,7 +1154,7 @@ class GenreController(MediaControllerBase[Genre]):
         target_ids = await self._resolve_genre_names_cached(genre_names, content_type)
         if target_ids is not None:
             stored_ids, removable_ids = await self._get_synced_genre_ids(media_type, media_id_int)
-            if removable_ids <= target_ids <= stored_ids:
+            if removable_ids <= target_ids - excluded_ids <= stored_ids:
                 return
 
         # batch the (possible) genre creations and mapping changes into a single commit
@@ -1167,7 +1169,7 @@ class GenreController(MediaControllerBase[Genre]):
                     continue
                 genre_ids = await self._find_genres_for_alias(normalized[0], content_type)
                 for gid in genre_ids:
-                    if gid not in target_mappings:
+                    if gid not in target_mappings and gid not in excluded_ids:
                         target_mappings[gid] = normalized[0]
 
             existing_genre_ids, removable_genre_ids = await self._get_synced_genre_ids(
@@ -2049,6 +2051,16 @@ class GenreController(MediaControllerBase[Genre]):
             alias_to_genre=alias_to_genre,
             excluded_names={row["search_name"] for row in excluded_rows},
         )
+
+    async def _get_excluded_genre_ids(self, media_type: MediaType, media_id: int) -> set[int]:
+        """Return the ids of the genres the user excluded from an item."""
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION} "
+            "WHERE media_type = :media_type AND media_id = :media_id",
+            {"media_type": media_type.value, "media_id": media_id},
+            limit=0,
+        )
+        return {int(row["genre_id"]) for row in rows}
 
     async def _get_synced_genre_ids(
         self, media_type: MediaType, media_id: int
