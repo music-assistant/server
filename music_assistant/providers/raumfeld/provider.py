@@ -42,6 +42,7 @@ from .constants import (
 )
 from .helpers import (
     parse_line_in,
+    parse_model_name,
     parse_serial_number,
     room_udn_to_player_id,
     serial_to_player_id,
@@ -66,6 +67,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
+    # room name -> renderer model name, read from the same device description
+    _room_models: dict[str, str]
     # room name -> player_id, derived from _room_serials on every sync (see _assign_room_ids)
     _room_ids: dict[str, str]
     # rooms already warned about sharing a serial, so the warning goes out once per room
@@ -77,6 +80,14 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return None
         return self._line_in.get(renderer_uuid.lower())
 
+    def room_model(self, room: str) -> str | None:
+        """
+        Return the model name of a room's renderer, or ``None`` if it is unknown.
+
+        :param room: The Raumfeld room name to look up.
+        """
+        return self._room_models.get(room)
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider (setup input is in setup_flow)."""
         return ()
@@ -87,6 +98,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
         self._line_in = {}
         self._room_serials = {}
+        self._room_models = {}
         self._room_ids = {}
         self._shared_serial_warned = set()
         # a background supervisor owns the connection so a missing or (temporarily)
@@ -365,6 +377,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
             self.logger.debug("Renderer of room %s reports no serial number", room)
             return None
         self._room_serials[room] = serial
+        if (model := parse_model_name(description)) is not None:
+            self._room_models[room] = model
         return serial
 
     def _ensure_icy_default(self, player_id: str) -> None:
