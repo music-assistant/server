@@ -89,7 +89,7 @@ async def test_get_sound_effects_enumerates_files(tmp_path: pathlib.Path) -> Non
     with patch(
         "music_assistant.providers.filesystem_local.async_parse_tags",
         new_callable=AsyncMock,
-        side_effect=lambda path, _size: _mock_tags(pathlib.Path(path).stem),
+        side_effect=lambda path, _size, **_kwargs: _mock_tags(pathlib.Path(path).stem),
     ):
         result = [x async for x in provider.get_sound_effects()]
 

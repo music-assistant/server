@@ -99,9 +99,9 @@ class _StubPlaylistPlugin(PluginProvider):
 
 
 @pytest.fixture(name="mass")
-def mass_fixture(music_mass_with_cache: MusicAssistant) -> MusicAssistant:
-    """Run on a library-only instance with a cache store: playlist listings are cached."""
-    return music_mass_with_cache
+def mass_fixture(music_mass_with_audio_analysis: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance with a cache store and the stored audio analysis."""
+    return music_mass_with_audio_analysis
 
 
 def _playlist(provider: str, item_id: str, is_dynamic: bool = False) -> Playlist:

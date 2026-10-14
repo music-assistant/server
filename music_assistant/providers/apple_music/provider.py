@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -20,6 +22,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.external_ids import normalize_external_id
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -43,11 +46,12 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.enums import ExternalID, MediaType
+    from music_assistant_models.enums import ExternalID
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.json import SerializableType
 
 
 class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
@@ -70,6 +74,7 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self.media_manager = AppleMusicMediaManager(self)
         self.recommendation_manager = AppleMusicRecommendationManager(self)
         self.streaming_manager = AppleMusicStreamingManager(self)
+        self._last_library_listings: dict[str, dict[str, Any]] = {}
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -84,6 +89,14 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         informational note is surfaced here.
         """
         return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "requests_since": self.api_client.request_counter.started_at,
+            "requests": self.api_client.request_counter.as_dict(),
+            "last_library_listings": self._last_library_listings,
+        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -248,22 +261,30 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
-        async for item in self.library_manager.get_library_artists():
+        async for item in self._counted_listing(
+            MediaType.ARTIST, self.library_manager.get_library_artists()
+        ):
             yield item
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
-        async for item in self.library_manager.get_library_albums():
+        async for item in self._counted_listing(
+            MediaType.ALBUM, self.library_manager.get_library_albums()
+        ):
             yield item
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
-        async for item in self.library_manager.get_library_tracks():
+        async for item in self._counted_listing(
+            MediaType.TRACK, self.library_manager.get_library_tracks()
+        ):
             yield item
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider."""
-        async for item in self.library_manager.get_library_playlists():
+        async for item in self._counted_listing(
+            MediaType.PLAYLIST, self.library_manager.get_library_playlists()
+        ):
             yield item
 
     # ------------------------------------------------------------------
@@ -307,6 +328,29 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders with items)."""
         return await self.recommendation_manager.get_personal_recommendations()
+
+    async def _counted_listing[T](
+        self, media_type: MediaType, items: AsyncGenerator[T]
+    ) -> AsyncGenerator[T]:
+        """Yield the items of a full library listing and keep the requests made meanwhile for diagnostics."""
+        counter = self.api_client.request_counter
+        before = counter.as_dict()
+        started = time.monotonic()
+        count = 0
+        completed = False
+        try:
+            async for item in items:
+                count += 1
+                yield item
+            completed = True
+        finally:
+            self._last_library_listings[media_type.value] = {
+                "finished_at": utc().isoformat(timespec="seconds"),
+                "duration_sec": round(time.monotonic() - started, 1),
+                "items": count,
+                "completed": completed,
+                "requests": counter.since(before),
+            }
 
 
 def _require_apple_id(item_id: str) -> None:
