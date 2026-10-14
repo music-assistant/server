@@ -52,6 +52,7 @@ def test_parse_audiobook_cover_url(book_audiobook: dict[str, Any]) -> None:
     (image,) = ab.metadata.images
     assert image.type == ImageType.THUMB
     assert image.provider == INSTANCE
+    assert image.remotely_accessible is False
     assert image.path.startswith(f"{BASE_URL}/api/v1/books/42/cover?t=")
 
 

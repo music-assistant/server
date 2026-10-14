@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -124,27 +125,41 @@ class BookOrbitProvider(MusicProvider):
     _client: BookOrbitClient
     _unregister_route: Callable[[], None] | None = None
 
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the provider state."""
+        super().__init__(mass, manifest, config, supported_features)
+        # BookOrbit book details (id -> BookDetail) of the audiobooks found by the last sync
+        self._catalog: dict[str, dict[str, Any]] = {}
+        self._catalog_refreshed_at: float = 0.0
+        self._catalog_lock = asyncio.Lock()
+        # book id -> audio file ids handed out by get_stream_details (the proxy serves only these)
+        self._stream_files: dict[str, set[int]] = {}
+        # library id -> name / ids of the catalog's audiobooks in that library (for browse)
+        self._library_names: dict[int, str] = {}
+        self._library_books: dict[int, list[str]] = {}
+
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from the config and log in."""
         self.base_url = normalize_base_url(str(self.get_setup_value(CONF_URL)))
         self._client = BookOrbitClient(
-            session=self.mass.http_session,
             base_url=self.base_url,
             username=str(self.get_setup_value(CONF_USERNAME)),
             password=str(self.get_setup_value(CONF_PASSWORD)),
             verify_ssl=bool(self.get_setup_value(CONF_VERIFY_SSL, True)),
         )
-        # BookOrbit book details (id -> BookDetail) of the audiobooks found by the last sync
-        self._catalog: dict[str, dict[str, Any]] = {}
-        self._catalog_refreshed_at: float = 0.0
-        # library id -> name / ids of the catalog's audiobooks in that library (for browse)
-        self._library_names: dict[int, str] = {}
-        self._library_books: dict[int, list[str]] = {}
         try:
             await self._client.login()
         except BookOrbitAuthError as err:
+            await self._client.close()
             raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
         except ClientError as err:
+            await self._client.close()
             raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
         # audio files are proxied by MA, so no token ends up in a stream url
         self._unregister_route = self.mass.streams.register_dynamic_route(
@@ -157,6 +172,18 @@ class BookOrbitProvider(MusicProvider):
         if unregister := self._unregister_route:
             self._unregister_route = None
             unregister()
+        if client := getattr(self, "_client", None):
+            await client.close()
+
+    async def resolve_image(self, path: str) -> str | bytes | None:
+        """Fetch BookOrbit covers with the provider's credentials."""
+        if not path.startswith(f"{self.base_url}/"):
+            return path
+        try:
+            return await self._client.get_cover(path)
+        except (ClientError, BookOrbitAuthError) as err:
+            self.logger.debug("Fetching BookOrbit cover %s failed: %s", path, err)
+            return None
 
     @property
     def supported_artist_types(self) -> set[ArtistType]:
@@ -215,6 +242,7 @@ class BookOrbitProvider(MusicProvider):
         files = _audio_files(book)
         if not files:
             raise MediaNotFoundError(f"BookOrbit book {item_id} has no audio files")
+        self._stream_files[str(book["id"])] = {int(file["id"]) for file in files}
         parts = [
             MultiPartPath(
                 path=(
@@ -312,7 +340,7 @@ class BookOrbitProvider(MusicProvider):
             library_id, sub_path = parse_browse_path(path)
         except ValueError:
             return []
-        await self._refresh_catalog()
+        await self._ensure_catalog()
         if library_id is None:
             return self._browse_root()
         if library_id not in self._library_books:
@@ -348,7 +376,7 @@ class BookOrbitProvider(MusicProvider):
         query = search_query.strip()
         if not query:
             return results
-        await self._refresh_catalog()
+        await self._ensure_catalog()
         if MediaType.AUDIOBOOK in media_types:
             results.audiobooks = await self._search_audiobooks(query, limit)
         if MediaType.ARTIST in media_types:
@@ -371,9 +399,12 @@ class BookOrbitProvider(MusicProvider):
     async def _handle_part_request(self, request: web.Request) -> web.StreamResponse:
         """Proxy one audio file of a book, with a fresh token and range support."""
         try:
+            book_id = str(int(request.query["book_id"]))
             file_id = int(request.query["file_id"])
         except KeyError, ValueError:
-            return web.Response(status=400, text="Missing or invalid file_id")
+            return web.Response(status=400, text="Missing or invalid book_id/file_id")
+        if file_id not in self._book_file_ids(book_id):
+            return web.Response(status=404, text="Unknown file")
         try:
             upstream = await self._client.open_file(
                 file_id,
@@ -406,14 +437,31 @@ class BookOrbitProvider(MusicProvider):
                 self.logger.warning("BookOrbit interrupted file %s: %s", file_id, err)
         return response
 
+    def _book_file_ids(self, book_id: str) -> set[int]:
+        """Return the audio file ids of a resolved stream or catalog book."""
+        if (file_ids := self._stream_files.get(book_id)) is not None:
+            return file_ids
+        if book := self._catalog.get(book_id):
+            return {int(file["id"]) for file in _audio_files(book)}
+        return set()
+
+    async def _ensure_catalog(self) -> None:
+        """Make sure a catalog is loaded; a loaded catalog is only refreshed by syncs."""
+        if not self._catalog:
+            await self._refresh_catalog()
+
     async def _refresh_catalog(self, *, force: bool = False) -> None:
-        """Fetch all audiobooks (with details) from accessible libraries."""
-        if (
-            not force
-            and self._catalog
-            and (time.monotonic() - self._catalog_refreshed_at) < CATALOG_TTL_SEC
-        ):
-            return
+        """Fetch all audiobooks (with details) from accessible libraries (single-flight)."""
+        requested_at = time.monotonic()
+        async with self._catalog_lock:
+            if self._catalog_refreshed_at and (
+                self._catalog_refreshed_at >= requested_at
+                or (not force and (time.monotonic() - self._catalog_refreshed_at) < CATALOG_TTL_SEC)
+            ):
+                return  # refreshed while waiting, or still fresh
+            await self._fetch_catalog()
+
+    async def _fetch_catalog(self) -> None:
         try:
             libraries = await self._client.list_libraries()
             catalog: dict[str, dict[str, Any]] = {}

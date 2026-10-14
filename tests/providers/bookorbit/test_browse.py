@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
@@ -11,6 +12,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import BrowseFolder
 
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
+from music_assistant.providers.bookorbit.constants import CATALOG_TTL_SEC
 from music_assistant.providers.bookorbit.helpers import parse_browse_path
 
 INSTANCE = "bookorbit--test"
@@ -32,9 +34,6 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     )
     prov = BookOrbitProvider(mass, manifest, config, SUPPORTED_FEATURES)
     prov.base_url = "http://bo"
-    prov._catalog = {}
-    prov._library_names = {}
-    prov._library_books = {}
     prov._client = Mock()
     prov._client.list_libraries = AsyncMock(
         return_value=[{"id": 1, "name": "Audio"}, {"id": 2, "name": "Ebooks"}]
@@ -142,3 +141,48 @@ async def test_search_falls_back_to_catalog(
     other = await provider.search(name[:5], [MediaType.ARTIST])
     assert f"author:{book_audiobook['authors'][0]['id']}" in {a.item_id for a in other.artists}
     assert (await provider.search("  ", [MediaType.AUDIOBOOK])).audiobooks == []
+
+
+@pytest.mark.asyncio
+async def test_browse_and_search_reuse_loaded_catalog(provider: BookOrbitProvider) -> None:
+    """Once loaded, browse/search keep using the catalog, however old it is."""
+    client = cast("Mock", provider._client)
+    client.search_books = AsyncMock(return_value=[])
+    client.search_authors = AsyncMock(return_value=[])
+    client.search_narrators = AsyncMock(return_value=[])
+    await _browse(provider, f"{INSTANCE}://")
+    provider._catalog_refreshed_at -= 10 * CATALOG_TTL_SEC
+    await _browse(provider, f"{INSTANCE}://lb 1/b")
+    await provider.search("dune", [MediaType.AUDIOBOOK, MediaType.ARTIST])
+    client.list_libraries.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_catalog_loads_are_single_flight(provider: BookOrbitProvider) -> None:
+    """Concurrent browses on an empty catalog trigger one catalog refresh."""
+    client = cast("Mock", provider._client)
+    libraries = client.list_libraries.return_value
+
+    async def slow_libraries() -> list[dict[str, Any]]:
+        await asyncio.sleep(0.02)
+        return cast("list[dict[str, Any]]", libraries)
+
+    client.list_libraries = AsyncMock(side_effect=slow_libraries)
+    results = await asyncio.gather(*(_browse(provider, f"{INSTANCE}://") for _ in range(3)))
+    assert all(len(root) == 1 for root in results)
+    client.list_libraries.assert_awaited_once()
+    await provider._refresh_catalog(force=True)
+    assert client.list_libraries.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_resolve_image_fetches_bookorbit_covers(provider: BookOrbitProvider) -> None:
+    """BookOrbit cover urls are fetched through the authenticated client."""
+    client = cast("Mock", provider._client)
+    client.get_cover = AsyncMock(return_value=b"img")
+    cover = "http://bo/api/v1/books/42/cover?t=1"
+    assert await provider.resolve_image(cover) == b"img"
+    client.get_cover.assert_awaited_once_with(cover)
+    assert await provider.resolve_image("https://elsewhere/x.png") == "https://elsewhere/x.png"
+    client.get_cover = AsyncMock(side_effect=ClientResponseError(Mock(), (), status=500))
+    assert await provider.resolve_image(cover) is None

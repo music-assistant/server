@@ -145,7 +145,14 @@ def parse_audiobook(
             base_url=base_url, book_id=book_id, version=book.get("updatedAt")
         )
         metadata.images = UniqueList(
-            [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=provider_instance_id)]
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=cover_url,
+                    provider=provider_instance_id,
+                    remotely_accessible=False,
+                )
+            ]
         )
     else:
         metadata.images = UniqueList([])

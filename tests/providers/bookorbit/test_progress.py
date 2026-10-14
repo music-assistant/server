@@ -8,7 +8,8 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from aiohttp import ClientError
+from aiohttp import ClientError, web
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 
@@ -40,7 +41,6 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     )
     prov = BookOrbitProvider(mass, manifest, config, SUPPORTED_FEATURES)
     prov.base_url = "http://bo"
-    prov._catalog = {}
     prov._client = Mock()
     details = {book_audiobook["id"]: book_audiobook, book_multifile["id"]: book_multifile}
     prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
@@ -263,3 +263,31 @@ async def test_on_played_ignores_other_media(provider: BookOrbitProvider) -> Non
     """Non-audiobook callbacks are ignored."""
     await provider.on_played(MediaType.TRACK, "1", False, 5, Mock())
     _client(provider).upsert_audio_progress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_part_request_only_serves_files_of_the_book(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any], book_audiobook: dict[str, Any]
+) -> None:
+    """The stream proxy refuses file ids that do not belong to a resolved book."""
+    client = _client(provider)
+    client.open_file = AsyncMock(side_effect=ClientError("unreachable"))
+    book_id = book_multifile["id"]
+
+    async def status(query: str) -> int:
+        request = make_mocked_request("GET", f"/bookorbit--test_part_stream?{query}")
+        try:
+            response = await provider._handle_part_request(request)
+        except web.HTTPException as err:
+            return err.status
+        return response.status
+
+    assert await status(f"book_id={book_id}&file_id=771") == 404  # not resolved yet
+    assert await status("file_id=771") == 400
+    await provider.get_stream_details(str(book_id), MediaType.AUDIOBOOK)
+    other_file = _audio_files(book_audiobook)[0]["id"]
+    assert await status(f"book_id={book_id}&file_id={other_file}") == 404
+    assert await status(f"book_id={book_id}&file_id=773") == 404  # the epub
+    client.open_file.assert_not_awaited()
+    assert await status(f"book_id={book_id}&file_id=771") == 502  # passed validation
+    client.open_file.assert_awaited_once()
