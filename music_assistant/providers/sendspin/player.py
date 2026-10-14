@@ -2430,7 +2430,9 @@ class SendspinPlayer(SendspinBasePlayer):
         if not log or log[-1].queue_item_id != queue_item.queue_item_id:
             return None
         track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:-1])
-        file_seek_s = float(queue_item.streamdetails.seek_position or 0)
+        file_seek_s = log[-1].seek_position
+        if file_seek_s is None:
+            file_seek_s = float(queue_item.streamdetails.seek_position or 0)
         return int((track_flow_start_s - file_seek_s) * 1_000_000)
 
     async def _send_beat_schedule(
