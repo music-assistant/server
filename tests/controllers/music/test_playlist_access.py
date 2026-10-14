@@ -209,13 +209,15 @@ async def test_get_and_tracks_hide_a_playlist_the_caller_may_not_see(
 
     with _as_user(OWNER):
         assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
-        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+        assert await playlists.tracks(builtin_id, "builtin") == []
+        assert [x async for x in playlists.iter_tracks(builtin_id, "builtin")] == []
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await playlists.get(added.item_id, "library")
-    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
-        _ = [x async for x in playlists.tracks(added.item_id, "library")]
-    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
-        _ = [x async for x in playlists.tracks(builtin_id, "builtin")]
+    for item_id, provider in ((added.item_id, "library"), (builtin_id, "builtin")):
+        with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+            await playlists.tracks(item_id, provider)
+        with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+            _ = [x async for x in playlists.iter_tracks(item_id, provider)]
 
 
 async def test_internal_callers_see_every_playlist(playlists: PlaylistController) -> None:
@@ -225,7 +227,7 @@ async def test_internal_callers_see_every_playlist(playlists: PlaylistController
 
     with _as_user(None):
         assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
-        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+        assert await playlists.tracks(builtin_id, "builtin") == []
         playlists.check_removal_allowed(added)
 
 

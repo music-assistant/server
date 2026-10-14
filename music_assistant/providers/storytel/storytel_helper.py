@@ -132,6 +132,8 @@ class StorytelHelper:
         self.provider_domain = provider_domain
         self._kids_mode = kids_mode
         self._languages = languages or {}
+        self._available_languages: dict[str, str] = {}
+        self._default_languages: dict[str, str] = {}
         self._resource_version: str | None = None
         self._revalidate_lock = Lock()
         self.logger = logger or logging.getLogger("storytel_helper")
@@ -147,12 +149,31 @@ class StorytelHelper:
         return self._session
 
     @property
+    def languages(self) -> dict[str, str]:
+        """Return the currently selected content languages, mapping name to ISO value."""
+        return self._languages
+
+    @languages.setter
+    def languages(self, value: dict[str, str]) -> None:
+        self._languages = value
+
+    @property
     def languages_query(self) -> str:
         """Return comma-separated ISO language codes for API queries."""
         if not self._languages:
             return "en"
         iso_values = sorted(self._languages.values())
         return ",".join(iso_values)
+
+    @property
+    def available_languages(self) -> dict[str, str]:
+        """Return the account's available content languages, mapping name to ISO value."""
+        return self._available_languages
+
+    @property
+    def default_languages(self) -> dict[str, str]:
+        """Return the account's own default-checked content languages, mapping name to ISO value."""
+        return self._default_languages
 
     @property
     def kids_mode_query(self) -> str:
@@ -216,6 +237,7 @@ class StorytelHelper:
             msg = data.get("message") or "Invalid credentials"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
+        self._available_languages, self._default_languages = self._parse_languages(acc)
         return self._auth
 
     async def revalidate_account(self) -> StorytelAuth:
@@ -242,6 +264,8 @@ class StorytelHelper:
             msg = data.get("message") or "Revalidation failed"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
+        self._available_languages, self._default_languages = self._parse_languages(acc)
+        self._reconcile_languages()
         return self._auth
 
     async def get_library(self) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1053,6 +1077,58 @@ class StorytelHelper:
         cipher = AES.new(self._KEY, AES.MODE_CBC, self._IV)
         enc: bytes = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
         return enc.hex()
+
+    @staticmethod
+    def _parse_languages(acc: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
+        """
+        Parse the account's language lists from a login/revalidation response.
+
+        Returns a ``(available, default)`` pair, each mapping name to ISO value: every
+        language the account has access to, and the subset it checks by default (mirroring
+        the official app's own defaults).
+
+        :param acc: the ``accountInfo`` dict from a login or revalidation response.
+        """
+        available: dict[str, str] = {}
+        default: dict[str, str] = {}
+        for entry in acc.get("allLanguageObjects") or []:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            iso_value = entry.get("isoValue")
+            if not (isinstance(name, str) and name and isinstance(iso_value, str) and iso_value):
+                continue
+            available[name] = iso_value
+            if entry.get("checkedByDefault"):
+                default[name] = iso_value
+        return available, default
+
+    def _reconcile_languages(self) -> None:
+        """
+        Drop any selected languages no longer available to the account.
+
+        Falls back to the account's own default-checked languages, or else any available
+        language.
+        """
+        if not self._available_languages:
+            return
+        valid_selection = {
+            name: iso_value
+            for name, iso_value in self._languages.items()
+            if self._available_languages.get(name) == iso_value
+        }
+        if valid_selection:
+            self._languages = valid_selection
+            return
+        fallback = {
+            name: iso_value
+            for name, iso_value in self._default_languages.items()
+            if self._available_languages.get(name) == iso_value
+        }
+        if not fallback:
+            first_name, first_iso = next(iter(self._available_languages.items()))
+            fallback = {first_name: first_iso}
+        self._languages = fallback
 
     def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
         for format_data in formats_data:

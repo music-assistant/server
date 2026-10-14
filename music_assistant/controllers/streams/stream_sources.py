@@ -3,24 +3,30 @@ Ranking of the sources a media item can be streamed from.
 
 A library item often has several copies: a local file, the same track on one or more
 streaming services, another account of the same service. This module decides the order those
-copies are tried in. The caller expands the mappings to the provider instances that may serve
-them and applies the access rules, this module only sorts.
+copies are tried in, and the one source the tracks of an album are all played from. The
+caller expands the mappings to the provider instances that may serve them and applies the
+access rules, this module only sorts. The source selection settings it sorts under are read
+from the streams settings.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import IntEnum, StrEnum
 from operator import itemgetter
+from statistics import median
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.helpers import get_global_cache_value
 
+from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
+
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat, ProviderMapping
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models.provider import Provider
 
 # a lossy copy counts as high quality from this bit rate (kbps) on
@@ -64,6 +70,19 @@ class SourceCandidate:
     is_streaming: bool
     # why the candidate ranks where it does, filled in by the ranking
     reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ContainerListing:
+    """What one provider instance lists of a container, such as an album."""
+
+    instance_id: str
+    # an account of a streaming service, as opposed to a library of its own
+    is_streaming: bool
+    # the copy the instance serves of each track it lists
+    copies: Sequence[ProviderMapping]
+    # whether it lists every track of the container that is in the library
+    complete: bool
 
 
 DEFAULT_POLICY = StreamSourcePolicy()
@@ -184,6 +203,55 @@ def rank_provider_mappings(
     )
 
 
+def select_container_source(
+    listed: Iterable[ContainerListing],
+    preferred: Collection[str] = (),
+    policy: StreamSourcePolicy = DEFAULT_POLICY,
+) -> str | None:
+    """
+    Return the provider instance every track of a container is to be played from, if any.
+
+    Local sources come first when the policy prefers them, then the playback user's own
+    accounts, then an instance that lists every track the container has in the library, then
+    the best quality: the lowest tier among its copies, then their median score. Ties fall to
+    a local source, then to the instance id. Nothing is chosen when the policy ranks every
+    track on its own.
+
+    :param listed: What each instance the playback user may play from lists of the container.
+    :param preferred: The provider instances the playback user owns.
+    :param policy: The source selection settings to choose under.
+    """
+    if policy.mode == StreamSourceMode.BEST_QUALITY_PER_TRACK:
+        return None
+    best = min(
+        (listing for listing in listed if listing.copies),
+        key=lambda listing: _container_key(listing, preferred, policy),
+        default=None,
+    )
+    return best.instance_id if best else None
+
+
+def read_stream_source_policy(
+    mass: MusicAssistant,
+    queue_id: str | None = None,  # noqa: ARG001 - the hook for a per-queue override
+) -> StreamSourcePolicy:
+    """
+    Return the source selection settings a playback runs under.
+
+    A mode the settings do not know falls back to the default.
+
+    :param mass: The MusicAssistant instance.
+    :param queue_id: The queue the playback is for; the settings apply to every queue for now.
+    """
+    try:
+        mode = StreamSourceMode(
+            mass.streams.get_config_value(CONF_STREAM_SOURCE_MODE, return_type=str)
+        )
+    except ValueError:
+        return DEFAULT_POLICY
+    return StreamSourcePolicy(mode=mode)
+
+
 def _sort_key(
     instance_id: str,
     mapping: ProviderMapping,
@@ -205,6 +273,22 @@ def _sort_key(
         instance_id != mapping.provider_instance,
         instance_id,
         mapping.item_id,
+    )
+
+
+def _container_key(
+    listing: ContainerListing, preferred: Collection[str], policy: StreamSourcePolicy
+) -> tuple[bool, bool, bool, int, float, bool, str]:
+    """Return the ranking key of one instance's listing of a container; the lowest is chosen."""
+    return (
+        policy.mode == StreamSourceMode.PREFER_LOCAL and listing.is_streaming,
+        listing.instance_id not in preferred,
+        not listing.complete,
+        # a container plays as well as its poorest copy, then as its typical one
+        -min(quality_tier(copy.audio_format) for copy in listing.copies),
+        -median(copy.quality for copy in listing.copies),
+        listing.is_streaming,
+        listing.instance_id,
     )
 
 

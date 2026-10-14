@@ -48,6 +48,7 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
+    CLI_CLOCK_OFFSET_NS,
     default_buffer_depth,
     generate_active_remote_id,
     get_cli_binary,
@@ -1066,6 +1067,8 @@ class AirPlayStream:
             str(self.pcm_format.sample_rate),
             "--bitdepth",
             str(self.pcm_format.bit_depth),
+            "--clock-offset-ns",
+            str(CLI_CLOCK_OFFSET_NS),
         ]
         if timing_arg:
             args += ["--timing", timing_arg]

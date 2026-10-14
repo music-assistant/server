@@ -5100,7 +5100,7 @@ async def test_similar_music_pool_cache_follows_game_strategy_lifecycle() -> Non
     async def _playlist_tracks(**_kwargs: object) -> AsyncGenerator[Track]:
         yield exact
 
-    cast("MagicMock", plugin.mass.music.playlists.tracks).side_effect = _playlist_tracks
+    cast("MagicMock", plugin.mass.music.playlists.iter_tracks).side_effect = _playlist_tracks
     expansion_contexts: list[object | None] = []
 
     async def _dynamic_tracks(

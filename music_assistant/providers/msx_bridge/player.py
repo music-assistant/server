@@ -31,8 +31,6 @@ class MSXPlayer(Player):
     output_format: str = "mp3"
     _skip_ws_depth: int = 0
     _accepted_position: bool = False
-    _playing_from_queue: bool = False
-    _queue_source_id: str | None = None
     _media_ready: asyncio.Event
     prepare_lock: asyncio.Lock
     _attr_elapsed_time: float | None = None
@@ -173,8 +171,6 @@ class MSXPlayer(Player):
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
         self._last_ws_position = None
-        self._playing_from_queue = False
-        self._queue_source_id = None
         self.update_state()
 
     def clock_context(self) -> dict[str, Any]:
@@ -336,11 +332,6 @@ class MSXPlayer(Player):
         finally:
             self._skip_ws_depth = max(0, self._skip_ws_depth - 1)
 
-    def mark_queue_playback(self, queue_id: str) -> None:
-        """Remember that MSX is rendering this MA queue as a native playlist."""
-        self._playing_from_queue = True
-        self._queue_source_id = queue_id
-
     @property
     def _skip_ws_notify(self) -> bool:
         """True while at least one suppress_ws_notify() context is active."""
@@ -348,43 +339,24 @@ class MSXPlayer(Player):
 
     def _notify_msx_playback(self, media: PlayerMedia) -> None:
         """Send WS notification to MSX about the new playback state."""
-        source_id = media.source_id
-        is_queue_backed = bool(source_id and media.queue_item_id)
-        is_same_queue = self._playing_from_queue and self._queue_source_id == source_id
         provider = cast("MSXBridgeProvider", self.provider)
-
-        if is_queue_backed and is_same_queue and source_id:
-            self._notify_same_queue(provider, source_id)
-        elif is_queue_backed and source_id:
-            self._notify_new_queue(provider, source_id)
-        else:
-            # Queue-backed playback renders from the MSX native playlist, which carries
-            # its own per-track metadata; only standalone media needs it pushed here.
-            next_action = f"execute:/api/next/{self.player_id}"
-            prev_action = f"execute:/api/previous/{self.player_id}"
-            provider.notify_play_started(
-                self.player_id,
-                title=media.title,
-                artist=media.artist,
-                image_url=media.image_url,
-                duration=media.stream_duration or media.duration,
-                next_action=next_action,
-                prev_action=prev_action,
-            )
-
-    def _notify_same_queue(self, provider: MSXBridgeProvider, source_id: str) -> None:
-        """Handle same-queue playback: goto index or re-send if queue changed."""
-        queue = self.mass.player_queues.get(source_id)
-        ma_index = queue.current_index if queue and queue.current_index is not None else 0
-        provider.notify_play_playlist(self.player_id, ma_index, queue_id=source_id)
-
-    def _notify_new_queue(self, provider: MSXBridgeProvider, source_id: str) -> None:
-        """Send full MSX native playlist for a new queue."""
-        queue = self.mass.player_queues.get(source_id)
-        start_index = queue.current_index if queue and queue.current_index is not None else 0
-        self._queue_source_id = source_id
-        provider.notify_play_playlist(self.player_id, start_index, queue_id=source_id)
-        self._playing_from_queue = True
+        source_id = media.source_id
+        # Queue-backed playback renders from the MSX native playlist, which carries
+        # its own per-track metadata; only standalone media needs it pushed here.
+        if source_id and media.queue_item_id:
+            queue = self.mass.player_queues.get(source_id)
+            start_index = queue.current_index if queue and queue.current_index is not None else 0
+            provider.notify_play_playlist(self.player_id, start_index, queue_id=source_id)
+            return
+        provider.notify_play_started(
+            self.player_id,
+            title=media.title,
+            artist=media.artist,
+            image_url=media.image_url,
+            duration=media.stream_duration or media.duration,
+            next_action=f"execute:/api/next/{self.player_id}",
+            prev_action=f"execute:/api/previous/{self.player_id}",
+        )
 
     def _served_duration(self) -> float | None:
         """Return the length in seconds of the audio served to the TV, if known."""

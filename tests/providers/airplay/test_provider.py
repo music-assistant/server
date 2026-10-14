@@ -19,6 +19,7 @@ from music_assistant.providers.airplay.constants import (
     ClockReadiness,
     StreamingProtocol,
 )
+from music_assistant.providers.airplay.helpers import CLI_CLOCK_OFFSET_NS
 from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.provider import ENV_PYATV_DEBUG, AirPlayProvider
 from music_assistant.providers.airplay.sendspin_bridge import (
@@ -189,6 +190,8 @@ async def test_ptp_daemon_spawn_advertises_dacp_identity() -> None:
         "--ptp-daemon",
         "--dacp",
         "AABBCCDD11223344",
+        "--clock-offset-ns",
+        str(CLI_CLOCK_OFFSET_NS),
     ]
 
 
@@ -721,7 +724,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
     with (
         patch.object(session, "_resolve_shared_ptp", new=_resolve_shared_ptp),
         patch(
-            "music_assistant.providers.airplay.stream_session.time.time",
+            "music_assistant.providers.airplay.stream_session.cli_clock_time",
             side_effect=lambda: now,
         ),
         patch.object(session, "_start_client", new_callable=AsyncMock),

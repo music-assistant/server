@@ -32,7 +32,7 @@ from .constants import (
     ClockReadiness,
     StreamingProtocol,
 )
-from .helpers import get_final_output_format
+from .helpers import cli_clock_time, get_final_output_format
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
@@ -148,7 +148,7 @@ class AirPlayStreamSession:
         """
         Return the session anchor adjusted for the reference member's clock shift.
 
-        ``start_time`` is the wall-clock anchor set at the last group (re)start.
+        ``start_time`` is the cliairplay timeline anchor set at the last group (re)start.
         A member's cliairplay can re-anchor its playout LATER after recovering
         from a PCM starvation, shifting the group's real timeline; that shift is
         tracked per member. The first sync client is taken as the reference and
@@ -542,7 +542,7 @@ class AirPlayStreamSession:
                     # the real content on the instant the group plays it, which
                     # dropping the missing head would not.
                     missing = keep_bytes - len(servable)
-                    lead = self.seconds_streamed - (time.time() - effective_start_time)
+                    lead = self.seconds_streamed - (cli_clock_time() - effective_start_time)
                     if committed:
                         # One ring's worth is already far past any real
                         # shortfall, so it bounds what an implausible ack (one
@@ -594,7 +594,7 @@ class AirPlayStreamSession:
                 skip += (frame_size - first_abs % frame_size) % frame_size
             return anchor_at, due, prime_slice, skip
 
-        now = time.time()
+        now = cli_clock_time()
         clock_out = ready_at_unix_ms / 1000 - now
         if readiness is ClockReadiness.PROJECTED and clock_out <= 0:
             clock_note = _CLOCK_LOCKED_NOTE.format(ago=abs(clock_out))
@@ -687,11 +687,11 @@ class AirPlayStreamSession:
                     skip_bytes / pcm_sample_size,
                     self.seconds_streamed,
                     fed_pos_due,
-                    start_at - time.time(),
+                    start_at - cli_clock_time(),
                     int(acked_at * 1000) - start_unix_ms,
                     min_headroom,
                     self.effective_start_time - self.start_time,
-                    self.seconds_streamed - (time.time() - self.effective_start_time),
+                    self.seconds_streamed - (cli_clock_time() - self.effective_start_time),
                     self._peak_lead_seconds,
                     self._pcm_buffer_max / pcm_sample_size,
                 )
@@ -731,7 +731,7 @@ class AirPlayStreamSession:
         self.prov.logger.debug(
             "Late joiner %s: started after %.2fs",
             airplay_player.player_id,
-            time.time() - now,
+            cli_clock_time() - now,
         )
 
     def _ring_bytes_for(self, lead_seconds: float) -> int:
@@ -762,7 +762,7 @@ class AirPlayStreamSession:
         """
         if self.start_time <= 0:
             return  # not anchored yet, so there is no audible position to measure against
-        now = time.time()
+        now = cli_clock_time()
         if now < self.effective_start_time:
             # Still inside the start lead: everything fed is ahead of an anchor
             # that has not arrived, which would read as a lead seconds larger
@@ -1178,7 +1178,7 @@ class AirPlayStreamSession:
             # Cold group start: cover the members' receiver-side clock
             # acquisition (see AIRPLAY_COLD_GROUP_START_LEAD_MS).
             lead_ms = AIRPLAY_COLD_GROUP_START_LEAD_MS
-        anchor = int(time.time() * 1000) + lead_ms
+        anchor = int(cli_clock_time() * 1000) + lead_ms
         if ready_at_unix_ms:
             anchor = max(anchor, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         if not warm:
@@ -1200,7 +1200,7 @@ class AirPlayStreamSession:
         if member_requirement > 0:
             anchor = max(
                 anchor,
-                int(time.time() * 1000) + member_requirement + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+                int(cli_clock_time() * 1000) + member_requirement + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
             )
         for player in self.sync_clients:
             stream = player.stream
