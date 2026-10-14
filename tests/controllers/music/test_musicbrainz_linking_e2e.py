@@ -31,7 +31,7 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzTrack,
     MusicBrainzUrl,
 )
-from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
+from music_assistant.providers.musicbrainz.provider import IdentifiedArtist, MusicbrainzProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -303,13 +303,36 @@ async def test_artist_identified_by_streaming_link_merges_into_the_oldest(
     }
 
 
+async def test_adding_an_artist_merged_by_its_metadata_update_returns_the_survivor(
+    mass: MusicAssistant,
+) -> None:
+    """Adding an artist that its metadata update merges away returns the older artist."""
+    older, newer = await _add_artists_sharing_an_mbid(mass)
+
+    with (
+        patch.object(MusicbrainzProvider, "get_mbid_by_url", AsyncMock(return_value=ARTIST_MBID)),
+        patch.object(
+            MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=_mb_artist())
+        ),
+        patch.object(MetaDataController, "providers", new_callable=PropertyMock, return_value=[]),
+        # only the metadata update of the add itself is under test
+        patch.object(mass.metadata, "schedule_update_metadata"),
+    ):
+        added = await mass.music.add_item_to_library(newer)
+
+    assert added.item_id == older.item_id
+    assert "spotify" in {mapping.provider_domain for mapping in added.provider_mappings}
+
+
 async def test_artist_identified_by_name_search_is_not_merged(mass: MusicAssistant) -> None:
     """An id only a name search found may belong to a namesake, so both artists stay."""
     older, newer = await _add_artists_sharing_an_mbid(mass)
 
     with (
         patch.object(
-            MusicbrainzProvider, "identify_artist", AsyncMock(return_value=(_mb_artist(), True))
+            MusicbrainzProvider,
+            "identify_artist",
+            AsyncMock(return_value=IdentifiedArtist(_mb_artist(), True)),
         ),
         patch.object(
             MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=_mb_artist())

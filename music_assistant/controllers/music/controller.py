@@ -1625,7 +1625,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self._import_album_tracks_if_enabled(cast("Album", library_item))
         # perform full metadata scan
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
-        return library_item
+        return await self._merged_library_item(library_item)
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
     async def refresh_item(  # noqa: C901, PLR0912, PLR0915
@@ -1736,6 +1736,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        library_item = await self._merged_library_item(library_item)
         # the item's listings (album tracks, ...) are assembled anew from here on, after
         # every change the refresh made
         await invalidate_listings(self.mass, library_item)
@@ -3081,6 +3082,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if not provider.library_sync_album_tracks_enabled():
                 continue
             self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album))
+
+    async def _merged_library_item(self, library_item: MediaItemType) -> MediaItemType:
+        """Return the library artist a metadata update merged the given one into, else the item."""
+        if not isinstance(library_item, Artist) or not library_item.provider_mappings:
+            return library_item
+        # a merge moves the provider mappings to the surviving artist
+        mapping = next(iter(library_item.provider_mappings))
+        return (
+            await self.artists.get_library_item_by_prov_id(
+                mapping.item_id, mapping.provider_instance
+            )
+            or library_item
+        )
 
     async def _shortcut_library_uri(
         self, media_type: MediaType, item_id: str, provider_instance: str

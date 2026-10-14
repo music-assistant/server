@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlsplit
 
 from mashumaro.exceptions import InvalidFieldValue, MissingField
@@ -91,6 +91,13 @@ if TYPE_CHECKING:
 CONF_RECOMMENDATION_DAYS = "recommendation_days"
 
 
+class IdentifiedArtist(NamedTuple):
+    """An artist identified on MusicBrainz and whether only its name identified it."""
+
+    artist: MusicBrainzArtist
+    by_name: bool
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -149,6 +156,20 @@ class MusicbrainzProvider(MetadataProvider):
         self, artist: Artist, ref_albums: Sequence[Album], ref_tracks: Sequence[Track]
     ) -> MusicBrainzArtist | None:
         """
+        Identify an artist on MusicBrainz, see :meth:`identify_artist`.
+
+        :param artist: The artist to identify.
+        :param ref_albums: Albums of the artist to identify it through.
+        :param ref_tracks: Tracks of the artist to identify it through.
+        :return: The artist with aliases, tags, genres and URL relations, or None if not found.
+        """
+        identified = await self.identify_artist(artist, ref_albums, ref_tracks)
+        return identified.artist if identified else None
+
+    async def identify_artist(
+        self, artist: Artist, ref_albums: Sequence[Album], ref_tracks: Sequence[Track]
+    ) -> IdentifiedArtist | None:
+        """
         Identify an artist on MusicBrainz.
 
         The artist's own MusicBrainz id wins outright. Otherwise its streaming service
@@ -158,27 +179,14 @@ class MusicbrainzProvider(MetadataProvider):
         :param artist: The artist to identify.
         :param ref_albums: Albums of the artist to identify it through.
         :param ref_tracks: Tracks of the artist to identify it through.
-        :return: The artist with aliases, tags, genres and URL relations, or None if not found.
-        """
-        identified = await self.identify_artist(artist, ref_albums, ref_tracks)
-        return identified[0] if identified else None
-
-    async def identify_artist(
-        self, artist: Artist, ref_albums: Sequence[Album], ref_tracks: Sequence[Track]
-    ) -> tuple[MusicBrainzArtist, bool] | None:
-        """
-        Identify an artist on MusicBrainz like :meth:`resolve_artist`, telling how it was found.
-
-        :param artist: The artist to identify.
-        :param ref_albums: Albums of the artist to identify it through.
-        :param ref_tracks: Tracks of the artist to identify it through.
-        :return: The artist and whether only its name identified it, or None if not found.
+        :return: The artist with aliases, tags, genres and URL relations, and whether only
+            its name identified it, or None if not found.
         """
         if not (found := await self._find_artist_mbid(artist, ref_albums, ref_tracks)):
             return None
         mbid, by_name = found
         with suppress(InvalidDataError):
-            return await self.get_artist_details(mbid), by_name
+            return IdentifiedArtist(await self.get_artist_details(mbid), by_name)
         return None
 
     async def resolve_release(

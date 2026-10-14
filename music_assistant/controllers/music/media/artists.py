@@ -1155,26 +1155,26 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         Merge the library artists carrying the given MusicBrainz artist id into the oldest.
 
-        Artists that cannot be merged, such as an author and a singer, are left apart.
+        Only artists of the same type merge, so an author and a singer are left apart.
 
         :param artist_id: Library id of an artist carrying the MusicBrainz id.
         :param mbid: The MusicBrainz artist id.
         :return: The library id the given artist is found under after the merge.
         """
-        same_mbid = await self.get_library_items_by_external_id(
-            mbid, ExternalID.MB_ARTIST, limit=None
+        artist_types = {
+            int(item.item_id): item.artist_type
+            for item in await self.get_library_items_by_external_id(
+                mbid, ExternalID.MB_ARTIST, limit=None
+            )
+        }
+        artist_type = artist_types.get(artist_id)
+        # the oldest library artist survives and keeps its name
+        target_id, *source_ids = sorted(
+            {artist_id, *(item_id for item_id, t in artist_types.items() if t == artist_type)}
         )
-        # the oldest library artist keeps its name and absorbs the other spellings
-        target_id, *source_ids = sorted({artist_id, *(int(x.item_id) for x in same_mbid)})
         for source_id in source_ids:
-            try:
+            with contextlib.suppress(MediaNotFoundError):  # already merged by a concurrent add
                 await self.merge_library_items(target_id, source_id)
-            except MediaNotFoundError:
-                continue  # already merged by a concurrent add
-            except InvalidDataError as err:
-                self.logger.debug("Not merging artists with MusicBrainz ID %s: %s", mbid, err)
-                if source_id == artist_id:
-                    return artist_id
         return target_id
 
     def artist_from_item_mapping(self, item: ItemMapping) -> Artist:

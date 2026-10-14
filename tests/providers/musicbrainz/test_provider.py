@@ -1904,9 +1904,9 @@ async def test_identify_artist_tells_a_name_search_apart() -> None:
     searched = await provider.identify_artist(_artist_item(), [], [_track_item()])
 
     assert linked is not None
-    assert (linked[0].id, linked[1]) == (RADIOHEAD_MBID, False)
+    assert (linked.artist.id, linked.by_name) == (RADIOHEAD_MBID, False)
     assert searched is not None
-    assert (searched[0].id, searched[1]) == (RADIOHEAD_MBID, True)
+    assert (searched.artist.id, searched.by_name) == (RADIOHEAD_MBID, True)
 
 
 def test_reverse_lookup_urls_take_one_canonical_url_per_provider_first() -> None:

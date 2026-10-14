@@ -33,6 +33,7 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzReleaseGroup,
     MusicBrainzUrl,
 )
+from music_assistant.providers.musicbrainz.provider import IdentifiedArtist
 
 _ENRICHMENT_TIME = "music_assistant.controllers.metadata.enrichment.time"
 NOW = 1_700_000_000
@@ -354,7 +355,9 @@ def _enrichment_with_musicbrainz(
     enrichment.mass.music.artists.albums = AsyncMock(return_value=albums)
     enrichment.mass.music.artists.tracks = AsyncMock(return_value=tracks)
     enrichment.mass.music.artists.top_tracks = AsyncMock(return_value=top_tracks)
-    identify_artist = AsyncMock(side_effect=[(r, False) if r else None for r in resolutions])
+    identify_artist = AsyncMock(
+        side_effect=[IdentifiedArtist(r, False) if r else None for r in resolutions]
+    )
     enrichment.mass.get_provider.return_value.identify_artist = identify_artist
     return enrichment, identify_artist
 
