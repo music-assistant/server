@@ -541,14 +541,17 @@ class SendspinSourceProvider(PluginProvider):
         state = self._clients.get(client_id)
         if state is None or state.signal != SignalState.ABSENT or state.session is None:
             return
-        session = state.session
         self.logger.info("Line-in signal gone on %s, stopping playback", client_id)
+        await self._release_source(state.session)
+
+    async def _release_source(self, session: _SourceSession) -> None:
+        """Give the source up on the player that owns it, stopping that player."""
         try:
             # Queue stop also cancels pending preload and enqueue timers.
             await self.mass.players.deselect_source(
                 session.owner_player_id,
                 provider_instance_id=self.instance_id,
-                source_id=client_id,
+                source_id=session.client_id,
                 playback_session_id=session.playback_session_id,
             )
         except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
