@@ -54,8 +54,11 @@ from music_assistant.controllers.player_queues.helpers import (
     sort_tracks,
 )
 from music_assistant.controllers.streams.stream_sources import (
-    DEFAULT_POLICY,
     ContainerListing,
+    SourceCandidate,
+    StreamSourcePolicy,
+    rank_stream_sources,
+    read_stream_source_policy,
     select_container_source,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
@@ -1098,7 +1101,7 @@ class MediaResolver:
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
             return await self._resolve_album(
-                media_item, start_item, userid, sort_by, keep_preceding_items
+                media_item, start_item, userid, queue_id, sort_by, keep_preceding_items
             )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
@@ -1223,6 +1226,7 @@ class MediaResolver:
         album: Album,
         start_item: str | None,
         userid: str | None,
+        queue_id: str | None,
         sort_by: str | None,
         keep_preceding_items: bool,
     ) -> list[ResolvedItem]:
@@ -1231,11 +1235,14 @@ class MediaResolver:
 
         A track the album lists as another source's entry plays as the chosen source's own
         entry, when it has one. A track the chosen source does not have plays as the album
-        lists it.
+        lists it. When every track is ranked on its own, no source is chosen and nothing is
+        pinned; a track that is not in the library then plays the best entry listed by a
+        source the playback user may play from.
 
         :param album: The album to play.
         :param start_item: Optional item_id/uri of the track to start from.
         :param userid: Optional user the playback is for.
+        :param queue_id: Optional queue the playback is requested for.
         :param sort_by: Optional sort key to order the tracks by before applying start_item.
         :param keep_preceding_items: Move the tracks before start_item behind the rest instead
             of dropping them, so the full album is returned with start_item first.
@@ -1248,7 +1255,7 @@ class MediaResolver:
             album.item_id, album.provider, in_library_only=self._album_library_tracks_only()
         )
         tracks = [track for track in listing.tracks if track.available]
-        source, served = await self._album_source(listing, tracks, userid)
+        source, served = await self._album_source(listing, tracks, userid, queue_id)
         if source is not None:
             self.logger.debug("Playing album %s from %s", album.name, source)
         container = ItemMapping.from_item(album)
@@ -1259,8 +1266,11 @@ class MediaResolver:
                 resolved.append(
                     ResolvedItem(
                         item,
+                        # nothing is pinned without a source
                         QueueItemOrigin(
-                            container=container, provider_instance=source, item_id=copy.item_id
+                            container=container,
+                            provider_instance=source,
+                            item_id=copy.item_id if source is not None else None,
                         ),
                     )
                 )
@@ -1277,23 +1287,31 @@ class MediaResolver:
         return resolved
 
     async def _album_source(
-        self, listing: AlbumListing, tracks: list[Track], userid: str | None
+        self,
+        listing: AlbumListing,
+        tracks: list[Track],
+        userid: str | None,
+        queue_id: str | None,
     ) -> tuple[str | None, dict[str, tuple[Track, ProviderMapping]]]:
         """
         Choose the one source an album plays from, with the copy it serves of each track.
 
         Only the sources the playback user may play from count, each with the copies of the
-        listed tracks it can serve.
+        listed tracks it can serve. No source is chosen when the source selection settings
+        pick the best copy for every track on its own; a track that is not in the library
+        then plays the entry whose copy ranks best among the sources.
 
         :param listing: The album's tracks, and the entry each source lists for them.
         :param tracks: The album's tracks to play.
         :param userid: Optional user the playback is for.
+        :param queue_id: Optional queue the playback is requested for.
         :return: The provider instance chosen, if any, and per track uri the item to queue for
-            the track with the copy it plays.
+            the track with the copy chosen for it.
         """
         # not the queue's user: the queue takes on the playback user once the play is resolved
         user = await self.mass.webserver.auth.get_user(userid) if userid else None
         allowed, preferred = playback_sources_for(self.mass, user)
+        providers: dict[str, MusicProvider] = {}
         served_by: dict[str, dict[str, tuple[Track, ProviderMapping]]] = {}
         listed: list[ContainerListing] = []
         for instance_id, listed_ids in listing.listed_ids.items():
@@ -1305,6 +1323,7 @@ class MediaResolver:
                 or (allowed is not None and instance_id not in allowed)
             ):
                 continue
+            providers[instance_id] = provider
             own_entries = listing.own_entries.get(instance_id, {})
             served: dict[str, tuple[Track, ProviderMapping]] = {}
             for track in tracks:
@@ -1330,9 +1349,10 @@ class MediaResolver:
                     ),
                 )
             )
-        source = select_container_source(listed, preferred, DEFAULT_POLICY)
+        policy = read_stream_source_policy(self.mass, queue_id)
+        source = select_container_source(listed, preferred, policy)
         if source is None:
-            return None, {}
+            return None, self._best_entries(tracks, served_by, providers, preferred, policy)
         return source, served_by[source]
 
     def _mark_container_played(
@@ -1535,3 +1555,45 @@ class MediaResolver:
             ),
             default=None,
         )
+
+    @staticmethod
+    def _best_entries(
+        tracks: list[Track],
+        served_by: dict[str, dict[str, tuple[Track, ProviderMapping]]],
+        providers: dict[str, MusicProvider],
+        preferred: list[str],
+        policy: StreamSourcePolicy,
+    ) -> dict[str, tuple[Track, ProviderMapping]]:
+        """
+        Return the entry to play, with its copy, of each album track outside the library.
+
+        Keyed by track uri. That is the entry whose copy would rank first at playback among
+        the sources serving the track; a track no source serves is left out.
+
+        :param tracks: The album's tracks to play.
+        :param served_by: Per source, the item and copy it serves of each track uri.
+        :param providers: The sources, by instance id.
+        :param preferred: The provider instances the playback user owns.
+        :param policy: The source selection settings to rank under.
+        """
+        best: dict[str, tuple[Track, ProviderMapping]] = {}
+        for track in tracks:
+            uri = cast("str", track.uri)
+            if track.provider == "library":
+                continue
+            ranked = rank_stream_sources(
+                [
+                    SourceCandidate(
+                        mapping=served[uri][1],
+                        provider=providers[instance_id],
+                        is_streaming=providers[instance_id].is_streaming_provider,
+                    )
+                    for instance_id, served in served_by.items()
+                    if uri in served
+                ],
+                preferred=preferred,
+                policy=policy,
+            )
+            if ranked:
+                best[uri] = served_by[ranked[0].provider.instance_id][uri]
+        return best

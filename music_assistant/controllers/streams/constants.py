@@ -166,6 +166,7 @@ def _get_default_buffer_size() -> str:
 CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
+CONF_STREAM_SOURCE_MODE: Final[str] = "stream_source_mode"
 
 # Shortest declared tail overlap (voice over) worth mixing; below this the boundary
 # is a plain cut.

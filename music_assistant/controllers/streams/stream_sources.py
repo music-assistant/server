@@ -5,7 +5,8 @@ A library item often has several copies: a local file, the same track on one or 
 streaming services, another account of the same service. This module decides the order those
 copies are tried in, and the one source the tracks of an album are all played from. The
 caller expands the mappings to the provider instances that may serve them and applies the
-access rules, this module only sorts.
+access rules, this module only sorts. The source selection settings it sorts under are read
+from the streams settings.
 """
 
 from __future__ import annotations
@@ -20,9 +21,12 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import ContentType
 from music_assistant_models.helpers import get_global_cache_value
 
+from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
+
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat, ProviderMapping
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models.provider import Provider
 
 # a lossy copy counts as high quality from this bit rate (kbps) on
@@ -225,6 +229,27 @@ def select_container_source(
         default=None,
     )
     return best.instance_id if best else None
+
+
+def read_stream_source_policy(
+    mass: MusicAssistant,
+    queue_id: str | None = None,  # noqa: ARG001 - the hook for a per-queue override
+) -> StreamSourcePolicy:
+    """
+    Return the source selection settings a playback runs under.
+
+    A mode the settings do not know falls back to the default.
+
+    :param mass: The MusicAssistant instance.
+    :param queue_id: The queue the playback is for; the settings apply to every queue for now.
+    """
+    try:
+        mode = StreamSourceMode(
+            mass.streams.get_config_value(CONF_STREAM_SOURCE_MODE, return_type=str)
+        )
+    except ValueError:
+        return DEFAULT_POLICY
+    return StreamSourcePolicy(mode=mode)
 
 
 def _sort_key(
