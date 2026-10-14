@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.background_task import TaskSchedule
+from music_assistant_models.enums import TaskScheduleType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -29,6 +31,9 @@ from .constants import (
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
+    CONF_SYNC_SCHEDULE_MIGRATED,
+    LEGACY_LIBRARY_SYNC_INTERVAL_HOURS,
+    LIBRARY_SYNC_INTERVAL_HOURS,
     MUSIC_APP_TOKEN,
     SUPPORTED_FEATURES,
 )
@@ -99,6 +104,11 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         )
         self._storefront = await self.api_client.get_user_storefront()
         await self.streaming_manager.initialize()
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        self._migrate_legacy_sync_schedules()
 
     # ------------------------------------------------------------------
     # Browse / search / recommendations
@@ -246,6 +256,12 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     # Library generators
     # ------------------------------------------------------------------
 
+    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
+        """Return the default recurring schedule for library sync tasks of this provider."""
+        schedule = super().get_default_library_sync_schedule(media_type)
+        schedule.every = LIBRARY_SYNC_INTERVAL_HOURS
+        return schedule
+
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         async for item in self.library_manager.get_library_artists():
@@ -307,6 +323,40 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders with items)."""
         return await self.recommendation_manager.get_personal_recommendations()
+
+    def _migrate_legacy_sync_schedules(self) -> None:
+        """Move each sync task still on the former 12 hour default to the daily default, once."""
+        migrated = cast(
+            "list[str]",
+            self.mass.config.get_raw_provider_config_value(
+                self.instance_id, CONF_SYNC_SCHEDULE_MIGRATED, []
+            ),
+        )
+        # tracked per media type, since a media type with sync turned off keeps its stored
+        # schedule and only registers again once the user turns it back on
+        pending = [
+            task
+            for task in self.mass.tasks.get_tasks_by_metadata(
+                task_domain="music_sync", provider_instance=self.instance_id
+            )
+            if task.schedule and task.metadata.get("media_type") not in migrated
+        ]
+        if not pending:
+            return
+        for task in pending:
+            if (
+                task.schedule
+                and task.schedule.type == TaskScheduleType.HOURLY
+                and task.schedule.every == LEGACY_LIBRARY_SYNC_INTERVAL_HOURS
+            ):
+                self.mass.tasks.update_task_schedule(
+                    task.id, TaskSchedule.hourly(every=LIBRARY_SYNC_INTERVAL_HOURS)
+                )
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id,
+            CONF_SYNC_SCHEDULE_MIGRATED,
+            [*migrated, *(str(task.metadata["media_type"]) for task in pending)],
+        )
 
 
 def _require_apple_id(item_id: str) -> None:
