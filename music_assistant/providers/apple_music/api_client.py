@@ -139,14 +139,6 @@ class AppleMusicAPIClient:
         self.request_counter = RequestCounter()
         self._language: str | None = None
 
-    @property
-    def _headers(self) -> dict[str, str]:
-        """Return standard auth headers."""
-        return {
-            "Authorization": f"Bearer {self.provider._music_app_token}",
-            "Music-User-Token": cast("str", self.provider._music_user_token),
-        }
-
     @_count_retries_exhausted
     @throttle_with_retries
     @_retry_transient_transport_errors
@@ -159,7 +151,7 @@ class AppleMusicAPIClient:
         async with (
             self.provider.mass.http_session.get(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 ssl=True,
                 timeout=ClientTimeout(total=120),
@@ -200,7 +192,7 @@ class AppleMusicAPIClient:
         async with (
             self.provider.mass.http_session.delete(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
@@ -226,7 +218,7 @@ class AppleMusicAPIClient:
         async with (
             self.provider.mass.http_session.put(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
@@ -255,7 +247,7 @@ class AppleMusicAPIClient:
         async with (
             self.provider.mass.http_session.post(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
@@ -369,3 +361,11 @@ class AppleMusicAPIClient:
         raise ResourceTemporarilyUnavailable(
             f"Incomplete paged listing for {endpoint} at offset {offset}"
         )
+
+    def _headers_for(self, endpoint: str) -> dict[str, str]:
+        """Return the auth headers for a request to the given endpoint."""
+        headers = {"Authorization": f"Bearer {self.provider._music_app_token}"}
+        # Without the user token, all installs share one Akamai cache variant per catalog URL
+        if not endpoint.startswith("catalog/"):
+            headers["Music-User-Token"] = cast("str", self.provider._music_user_token)
+        return headers

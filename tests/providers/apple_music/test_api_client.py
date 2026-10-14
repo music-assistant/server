@@ -413,3 +413,22 @@ async def test_get_data_counts_attempts_429s_and_retries_exhausted() -> None:
             "retries_exhausted": 1,
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_catalog_requests_omit_music_user_token() -> None:
+    """Catalog requests carry only the developer token, user requests carry both tokens."""
+    client, provider = _make_client()
+    client.throttler = ThrottlerManager(rate_limit=1, period=0.25)
+    provider.mass.http_session.get = MagicMock(
+        side_effect=lambda *_a, **_kw: _FakeRequestCtx(_make_response(json_data={}))
+    )
+    with patch(_SLEEP_TARGET, new=AsyncMock()):
+        await client.get_data("catalog/us/songs/1")
+        await client.get_data("me/storefront")
+    catalog_call, me_call = provider.mass.http_session.get.call_args_list
+    assert catalog_call.kwargs["headers"] == {"Authorization": "Bearer app-token"}
+    assert me_call.kwargs["headers"] == {
+        "Authorization": "Bearer app-token",
+        "Music-User-Token": "user-token",
+    }
