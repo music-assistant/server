@@ -500,6 +500,8 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> AlbumListing:
         """
         Return the tracks to play for an album, and the entry each of its sources lists for them.
@@ -511,7 +513,14 @@ class AlbumsController(MediaControllerBase[Album]):
         :param item_id: The album id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         :param in_library_only: Only list the tracks that are in the library.
+        :param sort_field: Sort field, the disc and track order (TRACK_NUMBER) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :raises InvalidDataError: When the sort field is not offered for album tracks.
         """
+        # an unsupported sort is rejected before the album is assembled
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ALBUM_TRACKS, sort_field, sort_direction
+        )
         if not in_library_only and (
             library_album := await self.get_library_item_by_prov_id(
                 item_id, provider_instance_id_or_domain
@@ -519,10 +528,23 @@ class AlbumsController(MediaControllerBase[Album]):
         ):
             assembled, _ = await self._assemble(library_album, self._ensure_provider_filter(None))
             return replace(
-                assembled, tracks=apply_listing(assembled.tracks, ListingType.ALBUM_TRACKS)
+                assembled,
+                tracks=apply_listing(
+                    assembled.tracks,
+                    ListingType.ALBUM_TRACKS,
+                    sort_field=sort_field,
+                    sort_direction=sort_direction,
+                ),
             )
         return mapped_album_listing(
-            await self.tracks(item_id, provider_instance_id_or_domain, in_library_only, limit=None)
+            await self.tracks(
+                item_id,
+                provider_instance_id_or_domain,
+                in_library_only,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+                limit=None,
+            )
         )
 
     async def versions(

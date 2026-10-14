@@ -26,6 +26,19 @@ from music_assistant.controllers.music.sorting import LISTING_SORT_OPTIONS
 type ListingItem = MediaItem | ItemMapping | BrowseFolder
 
 
+def legacy_sort(sort_key: str) -> tuple[SortField, SortDirection | None]:
+    """
+    Return the sort field and direction a deprecated sort key stands for.
+
+    :param sort_key: The deprecated sort key an outdated client sends.
+    :return: The sort field and its direction, None for a field without a direction.
+    :raises InvalidDataError: When the key is unknown.
+    """
+    if (sort := LEGACY_SORT_KEYS.get(sort_key)) is None:
+        raise InvalidDataError(f"Unknown sort key: {sort_key}")
+    return sort
+
+
 def resolve_listing_sort(
     listing: ListingType,
     sort_field: SortField | None = None,
@@ -46,9 +59,7 @@ def resolve_listing_sort(
     :raises InvalidDataError: When the listing does not offer the field or the key is unknown.
     """
     if sort_field is None and order_by:
-        if (legacy_sort := LEGACY_SORT_KEYS.get(order_by)) is None:
-            raise InvalidDataError(f"Unknown sort key: {order_by}")
-        sort_field, sort_direction = legacy_sort
+        sort_field, sort_direction = legacy_sort(order_by)
     # without a requested field the first option, the listing's default, matches
     options = LISTING_SORT_OPTIONS[listing]
     option = next((x for x in options if sort_field in (None, x.field)), None)
