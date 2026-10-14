@@ -3682,11 +3682,19 @@ class StreamsAudio:
 
             media_item = queue_item.media_item
             assert media_item is not None  # for type checking
+            origin = queue_item.origin
+            # the copy the item's listing had for it is tried first
+            pinned = (
+                (origin.provider_instance, origin.item_id)
+                if origin and origin.provider_instance and origin.item_id
+                else None
+            )
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
                 excluded_provider_instances,
                 allowed,
+                pinned=pinned,
             )
             if not candidates and allowed is not None:
                 # tell an item blocked by the user's music sources apart from one whose
@@ -3696,6 +3704,7 @@ class StreamsAudio:
                     preferred_providers,
                     excluded_provider_instances,
                     None,
+                    pinned=pinned,
                 )
                 if blocked:
                     msg = f"{queue_item.name} is not available on any music source of this user"
@@ -3733,6 +3742,10 @@ class StreamsAudio:
                 streamdetails.duration = queue_item.media_item.duration
             elif queue_item.duration:
                 streamdetails.duration = queue_item.duration
+        elif not queue_item.duration:
+            # the next track is only handed to the player for items with a known duration
+            queue_item.duration = streamdetails.duration
+            mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
         if seek_position and not streamdetails.allow_seek:
             self.logger.warning("seeking is not possible on this stream!")
             seek_position = 0
@@ -4014,6 +4027,7 @@ class StreamsAudio:
         preferred_providers: list[str],
         excluded_provider_instances: set[str],
         allowed: list[str] | None,
+        pinned: tuple[str, str] | None = None,
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
         Return the mapping candidates that may serve a stream, in the order to try them.
@@ -4025,6 +4039,7 @@ class StreamsAudio:
         :param preferred_providers: Provider instances the playback user owns, tried first.
         :param excluded_provider_instances: Provider instances unavailable to this attempt.
         :param allowed: Music sources the playback user may use, or None for all of them.
+        :param pinned: The (provider instance, item id) the item is to be played from, if any.
         :return: Ordered provider mapping candidates.
         """
         mappings = list(provider_mappings)
@@ -4058,7 +4073,7 @@ class StreamsAudio:
                     and provider.is_streaming_provider,
                 )
         ranked = rank_stream_sources(
-            candidates.values(), pinned=None, preferred=preferred_providers, policy=DEFAULT_POLICY
+            candidates.values(), pinned=pinned, preferred=preferred_providers, policy=DEFAULT_POLICY
         )
         if ranked and self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(

@@ -52,6 +52,9 @@ DEFAULT_LANGUAGES = {
     "English": "en",
 }
 
+# Fallback language list, used only until the account's actual available languages are known
+# Once authenticated, the account's own `allLanguageObjects` (from the login/revalidation response) take precedence, since
+# which languages are available depends on the account's region/subscription.
 ALL_LANGUAGES = {
     "Danish": "da",
     "English": "en",
@@ -63,6 +66,7 @@ ALL_LANGUAGES = {
     "Italian": "it",
     "Spanish": "es",
     "Dutch": "nl",
+    "Norwegian": "nn",
 }
 
 # Provider cache keys

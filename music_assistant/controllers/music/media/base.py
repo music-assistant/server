@@ -1404,7 +1404,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         verified = [
             candidate
             for candidate in candidates
-            if await self._verify_musicbrainz_mapping(candidate)
+            if await self._verify_musicbrainz_mapping(db_item, candidate)
         ]
         added = await self.add_unclaimed_provider_mappings(db_item.item_id, verified)
         db_item.provider_mappings.update(added)
@@ -2007,13 +2007,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         return bool(compare_media_item(db_item, item, True))
 
-    async def _verify_musicbrainz_mapping(self, mapping: ProviderMapping) -> bool:
+    async def _verify_musicbrainz_mapping(self, db_item: ItemCls, mapping: ProviderMapping) -> bool:
         """
         Return True if a provider mapping MusicBrainz links to may be added to a library item.
 
         Override in a subclass when a provider's links need checking against the provider
         before they are trusted.
 
+        :param db_item: The library item the mapping would be added to.
         :param mapping: The candidate mapping, built from a MusicBrainz URL relation.
         """
         return True
