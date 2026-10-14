@@ -2807,7 +2807,10 @@ class StreamsAudio:
                     overlay_enabled=overlay_active(queue),
                 )
                 # append to play log so the queue controller can work out which track is playing
-                play_log_entry = PlayLogEntry(queue_track.queue_item_id)
+                play_log_entry = PlayLogEntry(
+                    queue_track.queue_item_id,
+                    seek_position=queue_track.streamdetails.seek_position,
+                )
                 flow_log.append(play_log_entry)
 
                 bytes_written = 0
@@ -2986,6 +2989,7 @@ class StreamsAudio:
                                 remaining_bytes = b""
                                 # mix failed — undo the eager seek_position
                                 queue_track.streamdetails.seek_position = raw_seek_position
+                                play_log_entry.seek_position = raw_seek_position
                                 # The mixer teardown cancels its feeder, which was
                                 # likely parked reading item_stream - that ends the
                                 # stream itself. Play the track from a fresh stream
@@ -3031,11 +3035,13 @@ class StreamsAudio:
                             blended = max(
                                 0, mix_start_collected + overlap_pulled - len(overlap_overshoot)
                             )
+                            assert play_log_entry.seek_position is not None
                             queue_track.streamdetails.seek_position = min(
-                                queue_track.streamdetails.seek_position,
+                                play_log_entry.seek_position,
                                 raw_seek_position
                                 + blended / pcm_sample_size * track_playback_speed,
                             )
+                            play_log_entry.seek_position = queue_track.streamdetails.seek_position
                             last_fadeout_part = b""
                             last_streamdetails = None
                             last_queue_track = None
@@ -3071,6 +3077,7 @@ class StreamsAudio:
                     if last_fadeout_part:
                         # crossfade into this item never happened — undo the eager seek_position
                         queue_track.streamdetails.seek_position = raw_seek_position
+                        play_log_entry.seek_position = raw_seek_position
                     continue
 
                 #### HANDLE END OF TRACK
@@ -3085,6 +3092,7 @@ class StreamsAudio:
                     play_log_entry.seconds_streamed = 0
                     if last_fadeout_part:
                         queue_track.streamdetails.seek_position = raw_seek_position
+                        play_log_entry.seek_position = raw_seek_position
                     continue
                 if last_fadeout_part:
                     # edge case: we did not get enough data to make the crossfade
@@ -3094,6 +3102,7 @@ class StreamsAudio:
                         await asyncio.sleep(0)
                     # no crossfade happened — undo the eager seek_position
                     queue_track.streamdetails.seek_position = raw_seek_position
+                    play_log_entry.seek_position = raw_seek_position
                     # full tail was pre-counted and is now yielded as-is
                     last_fadeout_part = b""
                 # a fade needs enough of the outgoing track to overlap with; a holdback that
@@ -3144,8 +3153,9 @@ class StreamsAudio:
                     tail_seconds = len(last_fadeout_part) / pcm_sample_size
                     # streamdetails.duration is in media-time; seconds_streamed is stream-time
                     # (post-atempo), so we scale by the track's playback_speed to recover media-time.
+                    assert play_log_entry.seek_position is not None
                     queue_track.streamdetails.duration = int(
-                        queue_track.streamdetails.seek_position
+                        play_log_entry.seek_position
                         + (seconds_streamed + tail_seconds) * track_playback_speed
                     )
                     # propagate accurate duration to queue_item so UI displays it
