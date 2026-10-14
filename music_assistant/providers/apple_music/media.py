@@ -381,10 +381,21 @@ class AppleMusicMediaManager:
     # costing one request per page
     @use_cache(PLAYLIST_LAST_MODIFIED_CACHE_EXPIRATION, allow_bypass=False)
     async def _get_playlist_last_modified(self, prov_playlist_id: str) -> str | None:
-        """Return the playlist's lastModifiedDate, which Apple moves on every edit."""
-        response = await self.api.get_data(self._playlist_endpoint(prov_playlist_id))
-        last_modified: str | None = response["data"][0]["attributes"].get("lastModifiedDate")
-        return last_modified
+        """Return a marker that moves whenever the playlist's contents change."""
+        endpoint = self._playlist_endpoint(prov_playlist_id)
+        if is_catalog_id(prov_playlist_id):
+            response = await self.api.get_data(endpoint)
+            last_modified: str | None = response["data"][0]["attributes"].get("lastModifiedDate")
+            return last_modified
+        # a library playlist that follows a catalog playlist keeps its own date when Apple
+        # updates the catalog contents, so the catalog playlist's date joins the marker
+        response = await self.api.get_data(endpoint, include="catalog")
+        playlist = response["data"][0]
+        catalog = playlist.get("relationships", {}).get("catalog", {}).get("data") or []
+        dates = [
+            item.get("attributes", {}).get("lastModifiedDate") for item in (playlist, *catalog)
+        ]
+        return "|".join(filter(None, dates)) or None
 
     def _playlist_endpoint(self, prov_playlist_id: str) -> str:
         """Return the catalog or library endpoint for a playlist."""

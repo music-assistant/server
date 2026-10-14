@@ -432,6 +432,26 @@ def _create_playlist_tracks_manager(
     provider.mass.cache.set = AsyncMock(side_effect=_cache_set)
 
     async def _get_data(endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        if endpoint.startswith("me/library/playlists/"):
+            # a library row that follows a catalog playlist, with both dates
+            return {
+                "data": [
+                    {
+                        "id": "p.1",
+                        "attributes": {"lastModifiedDate": "2025-11-02T13:24:04Z"},
+                        "relationships": {
+                            "catalog": {
+                                "data": [
+                                    {
+                                        "id": "pl.1",
+                                        "attributes": {"lastModifiedDate": last_modified["value"]},
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ]
+            }
         if endpoint.endswith("/tracks"):
             song = {
                 "id": "1",
@@ -487,6 +507,23 @@ async def test_get_playlist_tracks_refetches_when_last_modified_changes() -> Non
     await manager.get_playlist_tracks("pl.1")
 
     assert _tracks_requests(get_data) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_library_playlist_follows_catalog_date() -> None:
+    """A library playlist refetches when only its catalog playlist's date moved."""
+    cache_store: dict[str, Any] = {}
+    last_modified = {"value": "2026-10-13T10:00:00Z"}
+    manager, get_data = _create_playlist_tracks_manager(cache_store, last_modified)
+
+    await manager.get_playlist_tracks("p.1")
+    await asyncio.sleep(0)
+    del cache_store["_get_playlist_last_modified.p.1"]
+    last_modified["value"] = "2026-10-14T10:00:00Z"
+    await manager.get_playlist_tracks("p.1")
+
+    assert _tracks_requests(get_data) == 2
+    assert get_data.call_args_list[0].kwargs == {"include": "catalog"}
 
 
 @pytest.mark.asyncio
