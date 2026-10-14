@@ -1,5 +1,6 @@
 """Unit tests for Apple Music library track streaming and windowed enrichment."""
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -599,6 +600,19 @@ def _make_albums_manager(
     provider = MagicMock()
     provider.domain = "apple_music"
     provider.instance_id = "apple_music--test"
+    cache_store: dict[str, Any] = {}
+
+    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        return cache_store.get(key), True, key in cache_store
+
+    async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
+        cache_store[key] = data
+
+    provider.mass.cache.get_with_freshness = AsyncMock(side_effect=_cache_get)
+    provider.mass.cache.set = AsyncMock(side_effect=_cache_set)
+    provider.mass.create_task = MagicMock(
+        side_effect=lambda coro, *_args, **_kwargs: asyncio.ensure_future(coro)
+    )
     api = provider.api_client
     api.get_all_items = AsyncMock(return_value=items)
     api.get_ratings = AsyncMock(return_value={})
@@ -781,6 +795,42 @@ async def test_get_library_albums_keeps_catalog_less_album_spread_over_catalog_a
     albums = [album async for album in manager.get_library_albums()]
 
     assert [album.item_id for album in albums] == ["l.album1"]
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_reuses_song_check_of_catalog_less_album() -> None:
+    """A second sync takes the catalog album from the cache instead of fetching the songs again."""
+    manager, api = _make_albums_manager([_library_album(1)])
+    _stream_album_songs(
+        api, {"l.album1": [_album_song_on(1, catalog_id="100", catalog_album_id="200")]}
+    )
+    api.iter_all_items = MagicMock(side_effect=api.iter_all_items)
+
+    first = [album async for album in manager.get_library_albums()]
+    await asyncio.sleep(0)  # let the background cache write land
+    second = [album async for album in manager.get_library_albums()]
+
+    assert [album.item_id for album in first] == ["200"]
+    assert [album.item_id for album in second] == ["200"]
+    assert api.iter_all_items.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_retries_failed_song_check() -> None:
+    """A failed song lookup is not cached, so the next sync checks the songs again."""
+    manager, api = _make_albums_manager([_library_album(1)])
+    _stream_album_songs(
+        api, {"l.album1": [_album_song_on(1, catalog_id="100", catalog_album_id="200")]}
+    )
+    songs = api.iter_all_items("me/library/albums/l.album1/tracks")
+    api.iter_all_items = MagicMock(side_effect=[MusicAssistantError("boom"), songs])
+
+    first = [album async for album in manager.get_library_albums()]
+    await asyncio.sleep(0)
+    second = [album async for album in manager.get_library_albums()]
+
+    assert [album.item_id for album in first] == ["l.album1"]
+    assert [album.item_id for album in second] == ["200"]
 
 
 @pytest.mark.asyncio
