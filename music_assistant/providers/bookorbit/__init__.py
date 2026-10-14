@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientResponseError, web
@@ -27,6 +28,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .client import BookOrbitAuthError, BookOrbitClient
@@ -53,7 +55,12 @@ from .parsers import (
     parse_author,
     parse_narrator,
 )
-from .progress import build_progress_update, parse_resume_position
+from .progress import (
+    build_playback_state_update,
+    build_progress_update,
+    parse_resume_position,
+    parse_resume_position_from_playback_state,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
@@ -301,13 +308,19 @@ class BookOrbitProvider(MusicProvider):
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
-        """Return (fully played, position in ms, timestamp) from BookOrbit's audio progress."""
+        """Return (fully played, position in ms, timestamp) from BookOrbit playback state."""
         if media_type != MediaType.AUDIOBOOK:
             raise NotImplementedError
-        book = await self._get_book(item_id)
         try:
-            progress = await self._client.get_audio_progress(book["id"])
-        except (ClientError, MediaNotFoundError) as err:
+            book_id = int(item_id)
+            manifest = await self._client.get_audiobook_manifest(book_id)
+            state = await self._client.get_playback_state(book_id)
+            if state:
+                return parse_resume_position_from_playback_state(manifest, state)
+            # Legacy fallback when only /audio-progress has been written.
+            book = await self._get_book(item_id)
+            progress = await self._client.get_audio_progress(book_id)
+        except (ClientError, MediaNotFoundError, ValueError) as err:
             raise NotImplementedError from err
         if not progress:
             raise NotImplementedError  # fall back to MA's own position
@@ -322,27 +335,15 @@ class BookOrbitProvider(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Report progress of an audiobook to BookOrbit."""
+        """Report progress of an audiobook to BookOrbit's playback-state API."""
         if media_type != MediaType.AUDIOBOOK:
             return
         try:
-            book = await self._get_book(prov_item_id)
-            files = _audio_files(book)
-            if len(files) > 1 and any(f.get("durationSeconds") is None for f in files):
-                self.logger.debug(
-                    "Skipping BookOrbit progress for %s: missing durationSeconds on a file",
-                    prov_item_id,
-                )
-                return
-            update = build_progress_update(files, position=position, fully_played=fully_played)
-            if update is None:
-                return
-            await self._client.upsert_audio_progress(
-                book["id"],
-                percentage=update.percentage,
-                current_file_id=update.current_file_id,
-                position_seconds=update.position_seconds,
-            )
+            book_id = int(prov_item_id)
+        except ValueError:
+            return
+        try:
+            await self._sync_playback_state(book_id, position=position, fully_played=fully_played)
         except (ClientError, BookOrbitAuthError, MediaNotFoundError) as err:
             self.logger.warning("Updating BookOrbit progress of %s failed: %s", prov_item_id, err)
 
@@ -433,6 +434,73 @@ class BookOrbitProvider(MusicProvider):
             if lib_map is None or prov_map.details != lib_map.details:
                 return True
         return False
+
+    async def _sync_playback_state(
+        self, book_id: int, *, position: int, fully_played: bool
+    ) -> None:
+        """Write absolute MA position to BookOrbit playback-state, with legacy fallback."""
+        manifest = await self._client.get_audiobook_manifest(book_id)
+        update = build_playback_state_update(manifest, position=position, fully_played=fully_played)
+        if update is None:
+            # Manifest missing assets/revision — fall back to legacy audio-progress.
+            await self._sync_audio_progress_legacy(
+                book_id, position=position, fully_played=fully_played
+            )
+            return
+        captured_at = utc().isoformat().replace("+00:00", "Z")
+        operation_id = str(uuid.uuid4())
+        last_err: ClientResponseError | None = None
+        for _attempt in range(3):
+            state = await self._client.get_playback_state(book_id)
+            base_revision = (
+                int(state["revision"]) if state and state.get("revision") is not None else 0
+            )
+            try:
+                await self._client.put_playback_state(
+                    book_id,
+                    asset_id=update.asset_id,
+                    position_ms=update.position_ms,
+                    captured_at=captured_at,
+                    operation_id=operation_id,
+                    base_revision=base_revision,
+                    manifest_revision=update.manifest_revision,
+                )
+            except ClientResponseError as err:
+                last_err = err
+                if err.status in {409, 412}:
+                    continue  # concurrent writer; reload revision and retry
+                raise
+            self.logger.debug(
+                "Synced BookOrbit playback state for %s at %ss (asset %s)",
+                book_id,
+                position,
+                update.asset_id,
+            )
+            return
+        if last_err is not None:
+            raise last_err
+
+    async def _sync_audio_progress_legacy(
+        self, book_id: int, *, position: int, fully_played: bool
+    ) -> None:
+        """Write progress via legacy ``/books/{id}/audio-progress``."""
+        book = await self._get_book(str(book_id), fresh=True)
+        files = _audio_files(book)
+        if len(files) > 1 and any(f.get("durationSeconds") is None for f in files):
+            self.logger.debug(
+                "Skipping BookOrbit progress for %s: missing durationSeconds on a file",
+                book_id,
+            )
+            return
+        legacy = build_progress_update(files, position=position, fully_played=fully_played)
+        if legacy is None:
+            return
+        await self._client.upsert_audio_progress(
+            book_id,
+            percentage=legacy.percentage,
+            current_file_id=legacy.current_file_id,
+            position_seconds=legacy.position_seconds,
+        )
 
     async def _get_book(self, item_id: str, *, fresh: bool = False) -> dict[str, Any]:
         """Return the BookDetail of a book (from the catalog unless fresh is requested)."""

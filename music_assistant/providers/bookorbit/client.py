@@ -166,7 +166,7 @@ class BookOrbitClient:
         current_file_id: int,
         position_seconds: float,
     ) -> None:
-        """Create/update audio progress for a book."""
+        """Create/update audio progress for a book (legacy endpoint)."""
         await self.request(
             "PATCH",
             f"{API_PREFIX}/books/{book_id}/audio-progress",
@@ -174,6 +174,41 @@ class BookOrbitClient:
                 "percentage": percentage,
                 "currentFileId": current_file_id,
                 "positionSeconds": position_seconds,
+            },
+        )
+
+    async def get_playback_state(self, book_id: int) -> dict[str, Any] | None:
+        """Return audiobook playback state, or None if there is none."""
+        try:
+            data = await self.request("GET", f"{API_PREFIX}/audiobooks/{book_id}/playback-state")
+        except ClientResponseError as err:
+            if err.status == 404:
+                return None
+            raise
+        return data or None
+
+    async def put_playback_state(
+        self,
+        book_id: int,
+        *,
+        asset_id: str,
+        position_ms: int,
+        captured_at: str,
+        operation_id: str,
+        base_revision: int,
+        manifest_revision: str,
+    ) -> dict[str, Any]:
+        """Create/update audiobook playback state (BookOrbit 3.4 player API)."""
+        return await self.request(  # type: ignore[no-any-return]
+            "PUT",
+            f"{API_PREFIX}/audiobooks/{book_id}/playback-state",
+            json={
+                "assetId": asset_id,
+                "positionMs": position_ms,
+                "capturedAt": captured_at,
+                "operationId": operation_id,
+                "baseRevision": base_revision,
+                "manifestRevision": manifest_revision,
             },
         )
 

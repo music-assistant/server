@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from datetime import UTC
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from aiohttp import ClientError, web
+from aiohttp import ClientError, ClientResponseError, web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
+from yarl import URL
 
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.parsers import _audio_files
 from music_assistant.providers.bookorbit.progress import (
+    build_playback_state_update,
     build_progress_update,
     parse_resume_position,
+    parse_resume_position_from_playback_state,
 )
 from tests.providers.bookorbit.conftest import manifest_from_book
 
@@ -49,6 +51,8 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     prov._client.get_audiobook_manifest = AsyncMock(side_effect=lambda book_id: manifests[book_id])
     prov._client.get_audio_progress = AsyncMock(return_value=None)
     prov._client.upsert_audio_progress = AsyncMock()
+    prov._client.get_playback_state = AsyncMock(return_value=None)
+    prov._client.put_playback_state = AsyncMock(return_value={"revision": 1})
     return prov
 
 
@@ -186,19 +190,53 @@ async def test_stream_details_rejects_other_media(provider: BookOrbitProvider) -
         await provider.get_stream_details("1", MediaType.TRACK)
 
 
+def test_playback_state_update_maps_absolute_position(book_multifile: dict[str, Any]) -> None:
+    """Absolute seconds become assetId + in-asset positionMs."""
+    manifest = manifest_from_book(book_multifile)
+    update = build_playback_state_update(manifest, position=150.5, fully_played=False)
+    assert update is not None
+    assert update.asset_id == manifest["assets"][1]["assetId"]
+    assert update.position_ms == 50_000
+    assert update.percentage == pytest.approx(150.5 / 301.0 * 100)
+
+
+def test_parse_resume_from_playback_state(book_multifile: dict[str, Any]) -> None:
+    """Playback-state resume reconstructs the absolute position."""
+    manifest = manifest_from_book(book_multifile)
+    state = {
+        "assetId": manifest["assets"][1]["assetId"],
+        "positionMs": 10_000,
+        "percentage": 40.0,
+        "completed": False,
+        "capturedAt": "2026-10-14T20:00:00.000Z",
+        "revision": 3,
+    }
+    fully_played, position_ms, timestamp = parse_resume_position_from_playback_state(
+        manifest, state
+    )
+    assert fully_played is False
+    assert position_ms == 110_500
+    assert timestamp is not None
+
+
 @pytest.mark.asyncio
-async def test_get_resume_position_reads_progress(
+async def test_get_resume_position_reads_playback_state(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
-    """Resume comes from GET audio-progress."""
-    _client(provider).get_audio_progress.return_value = {
-        "currentFileId": 772,
-        "positionSeconds": 10.0,
+    """Resume prefers GET playback-state over legacy audio-progress."""
+    manifest = manifest_from_book(book_multifile)
+    _client(provider).get_playback_state.return_value = {
+        "assetId": manifest["assets"][1]["assetId"],
+        "positionMs": 10_000,
         "percentage": 40.0,
+        "completed": False,
+        "revision": 2,
     }
     result = await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
-    assert result == (False, 110_500, None)
-    _client(provider).get_audio_progress.assert_awaited_once_with(book_multifile["id"])
+    assert result[0] is False
+    assert result[1] == 110_500
+    _client(provider).get_playback_state.assert_awaited_once_with(book_multifile["id"])
+    _client(provider).get_audio_progress.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -206,7 +244,7 @@ async def test_get_resume_position_client_error_falls_back(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
     """Progress fetch errors defer to MA's own position."""
-    _client(provider).get_audio_progress.side_effect = ClientError("connection reset")
+    _client(provider).get_audiobook_manifest.side_effect = ClientError("connection reset")
     with pytest.raises(NotImplementedError):
         await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
 
@@ -221,10 +259,10 @@ async def test_get_resume_position_without_progress_falls_back(
 
 
 @pytest.mark.asyncio
-async def test_on_played_patches_progress(
+async def test_on_played_puts_playback_state(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
-    """Playing reports percentage, file and in-file position."""
+    """Playing reports via PUT playback-state with asset id and in-asset ms."""
     media_item = Mock()
     media_item.duration = 301
     await provider.on_played(
@@ -235,37 +273,47 @@ async def test_on_played_patches_progress(
         media_item=media_item,
         is_playing=True,
     )
-    _client(provider).upsert_audio_progress.assert_awaited_once()
-    args, kwargs = _client(provider).upsert_audio_progress.await_args
-    assert args == (book_multifile["id"],)
-    assert kwargs["current_file_id"] == 772
-    assert kwargs["position_seconds"] == pytest.approx(49.5)
-    assert kwargs["percentage"] == pytest.approx(150 / 301.0 * 100)
+    _client(provider).put_playback_state.assert_awaited_once()
+    kwargs = _client(provider).put_playback_state.await_args.kwargs
+    manifest = manifest_from_book(book_multifile)
+    assert kwargs["asset_id"] == manifest["assets"][1]["assetId"]
+    assert kwargs["position_ms"] == 49_500
+    assert kwargs["base_revision"] == 0
+    assert kwargs["manifest_revision"] == manifest["revision"]
+    _client(provider).upsert_audio_progress.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_on_played_skips_multi_file_without_durations(
+async def test_on_played_retries_playback_state_conflict(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
-    """Multi-file books with unknown file durations must not PATCH bogus percentages."""
-    book = deepcopy(book_multifile)
-    book["files"][0]["durationSeconds"] = None
-    _client(provider).get_book = AsyncMock(return_value=book)
+    """A 409 revision conflict reloads baseRevision and retries."""
+    conflict = ClientResponseError(
+        request_info=Mock(real_url=URL("http://bo/x")),
+        history=(),
+        status=409,
+        message="conflict",
+    )
+    client = _client(provider)
+    client.get_playback_state = AsyncMock(side_effect=[None, {"revision": 4}, {"revision": 5}])
+    client.put_playback_state = AsyncMock(side_effect=[conflict, {"revision": 5}])
     await provider.on_played(
         MediaType.AUDIOBOOK,
-        str(book["id"]),
+        str(book_multifile["id"]),
         fully_played=False,
-        position=150,
+        position=10,
         media_item=Mock(),
-        is_playing=True,
+        is_playing=False,
     )
-    _client(provider).upsert_audio_progress.assert_not_awaited()
+    assert client.put_playback_state.await_count == 2
+    assert client.put_playback_state.await_args.kwargs["base_revision"] == 4
 
 
 @pytest.mark.asyncio
 async def test_on_played_ignores_other_media(provider: BookOrbitProvider) -> None:
     """Non-audiobook callbacks are ignored."""
     await provider.on_played(MediaType.TRACK, "1", False, 5, Mock())
+    _client(provider).put_playback_state.assert_not_awaited()
     _client(provider).upsert_audio_progress.assert_not_awaited()
 
 
