@@ -6,8 +6,9 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -22,9 +23,10 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.controllers.tasks.context import get_current_task
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.external_ids import normalize_external_id
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, NothingToSync
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .api_client import AppleMusicAPIClient
@@ -32,6 +34,7 @@ from .constants import (
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
+    LIBRARY_FULL_SYNC_INTERVAL,
     LIBRARY_SYNC_INTERVAL_HOURS,
     MUSIC_APP_TOKEN,
     SUPPORTED_FEATURES,
@@ -266,6 +269,49 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         schedule = super().get_default_library_sync_schedule(media_type)
         schedule.every = LIBRARY_SYNC_INTERVAL_HOURS
         return schedule
+
+    async def sync_library(self, media_type: MediaType) -> None:
+        """
+        Run library sync for this provider.
+
+        A scheduled artist, album or track run is skipped by raising NothingToSync when the
+        library did not change since the last full sync. A manual run always syncs.
+
+        :param media_type: The media type to sync.
+        """
+        if media_type == MediaType.PLAYLIST:
+            # costs about as much as a marker, and a marker would miss playlist content changes
+            await super().sync_library(media_type)
+            return
+        try:
+            marker: str | None = await self.library_manager.get_sync_marker(media_type)
+        except (MusicAssistantError, ClientError, KeyError) as err:
+            # a failed check must never become a skip
+            self.logger.warning(
+                "Could not check %s library for changes, running a full sync: %s",
+                media_type.value,
+                err,
+            )
+            marker = None
+        key = f"library_sync_state.{media_type.value}"
+        task = get_current_task()
+        manual_run = task is not None and task.last_run_user_id is not None
+        if marker is not None and not manual_run:
+            state = await self.mass.cache.get(key, provider=self.instance_id)
+            if (
+                state
+                and state["marker"] == marker
+                and time.time() - state["full_sync_at"] < LIBRARY_FULL_SYNC_INTERVAL
+            ):
+                raise NothingToSync
+        await super().sync_library(media_type)
+        if marker is not None:
+            await self.mass.cache.set(
+                key=key,
+                data={"marker": marker, "full_sync_at": time.time()},
+                expiration=LIBRARY_FULL_SYNC_INTERVAL,
+                provider=self.instance_id,
+            )
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
