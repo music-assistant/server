@@ -520,6 +520,9 @@ class RaumfeldPlayer(Player):
         """Poll the Raumfeld host for this room's current state."""
         host = self.raumfeld.host
         self._update_power()
+        if self.synced_to and self.synced_to != self.player_id and self._plays_spotify_connect():
+            # Spotify Connect takes the room out of its zone, so it is no longer synced
+            self._leave_group()
         # a grouped follower shares the zone's transport/position with its leader, so it
         # polls only its own (per-room) volume and mirrors the leader's state: without that a
         # stopped group would leave the follower reading as playing until it is ungrouped
@@ -698,16 +701,17 @@ class RaumfeldPlayer(Player):
         """Follow what the zone plays when Music Assistant did not start it."""
         device_uri = pos.get("TrackURI", "") or ""
         active = self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-        if (
-            not device_uri
-            or device_uri.startswith(self.mass.streams.base_url)
-            or (self._line_in is not None and device_uri == self._line_in[0])
-        ):
-            # nothing loaded, our own stream (owned by MA's queue controller, which holds
-            # the queue_item_id progress tracking needs) or this room's Line-In, which is
-            # a source of its own
-            if self._attr_active_source != SOURCE_LINE_IN or not active:
-                self._clear_external()
+        if self._line_in is not None and device_uri == self._line_in[0]:
+            # this room's Line-In, a source of its own, also when the Raumfeld app started it
+            self._clear_external()
+            if active:
+                self._attr_active_source = SOURCE_LINE_IN
+                self.set_current_media(uri=device_uri, clear_all=True, title="Line-in")
+            return
+        if not device_uri or device_uri.startswith(self.mass.streams.base_url):
+            # nothing loaded, or our own stream (owned by MA's queue controller, which holds
+            # the queue_item_id progress tracking needs)
+            self._clear_external()
             return
         # also while stopped: the zone keeps the item loaded and can start it again
         self._set_external(
@@ -822,10 +826,22 @@ class RaumfeldPlayer(Player):
         if self._external_source is not None and self._presented_external() is None:
             self._clear_external()
 
+    def _leave_group(self) -> None:
+        """Drop this follower from its leader's member list, after the host detached it."""
+        leader = self.mass.players.get_player(self.synced_to) if self.synced_to else None
+        if not isinstance(leader, RaumfeldPlayer):
+            return
+        remaining = [pid for pid in leader.group_members if pid != self.player_id]
+        leader.set_group_members(remaining if len(remaining) > 1 else [])
+
     def _clear_external(self) -> None:
         """Drop the external source, and the controls that only applied to it."""
         if self._external_source is None:
             return
+        media = self._attr_current_media
+        if media is not None and media.uri.startswith(EXTERNAL_URI_SCHEME):
+            # it names an item the host had loaded, which MA cannot play itself
+            self._attr_current_media = None
         if self._attr_active_source == self._external_source.id:
             self._attr_active_source = None
         self._external_source = None

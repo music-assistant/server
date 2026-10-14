@@ -229,6 +229,7 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     provider = MagicMock()
     provider.host.async_get_room_volume = AsyncMock(return_value=30)
     provider.host.get_room_power_state.return_value = "ACTIVE"
+    provider.host.room_is_spotify_single_room.return_value = False
     provider.room_renderer_location.return_value = None
     player._provider = provider
     player._power_changed_at = 0.0
@@ -808,3 +809,44 @@ async def test_an_external_source_music_assistant_gave_up_on_is_dropped() -> Non
     action.assert_not_awaited()
     assert player._external_source is None
     assert player._attr_playback_state == PlaybackState.IDLE
+
+
+def test_ending_an_external_source_drops_its_media() -> None:
+    """The item reference of an ended source cannot be handed to MA as something to play."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause", 315, via_room=True)
+    player._clear_external()
+    assert player._attr_current_media is None
+
+
+async def test_line_in_started_from_the_raumfeld_app_is_shown() -> None:
+    """This room's Line-In playing is reported as the Line-In source, with its media."""
+    player, _ = _external_player()
+    player._line_in = ("http://192.168.1.42:8888/stream.flac", "Speaker Bar")
+    player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    await player._update_zone_source(
+        {"TrackURI": "http://192.168.1.42:8888/stream.flac", "TrackMetaData": ""}, ["Bar"]
+    )
+    assert player._external_source is None
+    assert player._attr_active_source == "line_in"
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "Line-in"
+
+
+def test_a_follower_taken_by_spotify_connect_leaves_its_group() -> None:
+    """Spotify Connect takes a room out of its zone, so it leaves the leader's group too."""
+    player = _flow_player()
+    player._player_id = "raumfeld_follower"
+    leader = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    leader._player_id = "raumfeld_leader"
+    leader._attr_group_members = ["raumfeld_leader", "raumfeld_follower"]
+    mass = MagicMock()
+    mass.players.get_player.return_value = leader
+    player.mass = mass
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        synced_to.return_value = "raumfeld_leader"
+        player._leave_group()
+    assert leader._attr_group_members == []

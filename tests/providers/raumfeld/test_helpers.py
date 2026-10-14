@@ -8,6 +8,7 @@ from music_assistant.providers.raumfeld.helpers import (
     parse_didl_metadata,
     parse_duration,
     parse_last_change,
+    parse_last_change_response,
     parse_line_in,
     parse_model_name,
     parse_serial_number,
@@ -181,3 +182,21 @@ def test_parse_control_url() -> None:
     assert parse_control_url(description, "ContentDirectory") is None
     assert parse_control_url("<root><unclosed>", "AVTransport") is None
     assert parse_control_url(None, "AVTransport") is None
+
+
+def test_parse_last_change_response() -> None:
+    """The value is read from a standard <return> element and from Raumfeld's own naming."""
+    event = '&lt;Event&gt;&lt;InstanceID val="0"&gt;&lt;TransportState val="PLAYING"/&gt;'
+    event += "&lt;/InstanceID&gt;&lt;/Event&gt;"
+    envelope = (
+        '<?xml version="1.0"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+        '<u:QueryStateVariableResponse xmlns:u="urn:schemas-upnp-org:control-1-0">'
+        "<{tag}>{event}</{tag}>"
+        "</u:QueryStateVariableResponse></s:Body></s:Envelope>"
+    )
+    for tag in ("return", "LastChange"):
+        state = parse_last_change_response(envelope.format(tag=tag, event=event))
+        assert state["TransportState"] == "PLAYING"
+    assert parse_last_change_response("<s:Envelope><unclosed>") == {}
+    assert parse_last_change_response(None) == {}

@@ -198,12 +198,27 @@ async def query_last_change(session: aiohttp.ClientSession, control_url: str) ->
         if response.status != 200:
             return {}
         body = await response.text()
+    return parse_last_change_response(body)
+
+
+def parse_last_change_response(soap_xml: str | None) -> dict[str, str]:
+    """
+    Parse the SOAP response to a ``LastChange`` query into ``{state variable: value}``.
+
+    Malformed or empty XML yields an empty dict (never raises).
+
+    :param soap_xml: The QueryStateVariable response body.
+    """
+    if not soap_xml or not soap_xml.strip():
+        return {}
     try:
-        root = DefusedET.fromstring(body)
+        root = DefusedET.fromstring(soap_xml)
     except DefusedET.ParseError, ValueError:
         return {}
+    # The UPnP specification puts the value in a <return> element; Raumfeld renderers name
+    # it after the variable instead (measured), so accept either.
     for element in root.iter():
-        if element.tag.rsplit("}", 1)[-1] == "LastChange":
+        if element.tag.rsplit("}", 1)[-1] in ("return", "LastChange"):
             return parse_last_change(element.text)
     return {}
 
