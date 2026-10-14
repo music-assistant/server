@@ -442,26 +442,36 @@ class TracksController(MediaControllerBase[Track]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> UniqueList[Track]:
-        """Return all versions of a track we can find on all providers."""
-        track = await self.get(item_id, provider_instance_id_or_domain)
-        search_query = f"{track.artist_str} - {track.name}"
-        result: UniqueList[Track] = UniqueList()
-        for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
-            if not isinstance(provider, MusicProvider):
-                continue
-            if MediaType.TRACK not in provider.supported_media_types:
-                continue
-            result.extend(
-                prov_item
-                for prov_item in await self.search(search_query, provider_id)
-                if loose_compare_strings(track.name, prov_item.name)
-                and compare_artists(prov_item.artists, track.artists, any_match=True)
-                # make sure that the 'base' version is NOT included
-                and not track.provider_mappings.intersection(prov_item.provider_mappings)
-            )
-        return result
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+    ) -> list[Track]:
+        """
+        Return the versions of a track on all providers, searched, sorted and paged.
+
+        :param item_id: The track id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param search: Only list the versions whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; 0 returns them all.
+        :param offset: Number of versions to skip.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        return await self._versions_listing(
+            item_id,
+            provider_instance_id_or_domain,
+            lambda provider_id: self._assemble_versions(item_id, provider_id),
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     async def albums(
         self,
@@ -1802,6 +1812,29 @@ class TracksController(MediaControllerBase[Track]):
             item.disc_number = album["disc_number"] or 0
             item.track_number = album["track_number"] or 0
         return item
+
+    async def _assemble_versions(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> UniqueList[Track]:
+        """Return all versions of a track we can find on all providers."""
+        track = await self.get(item_id, provider_instance_id_or_domain)
+        search_query = f"{track.artist_str} - {track.name}"
+        result: UniqueList[Track] = UniqueList()
+        for provider_id in self.mass.music.get_unique_providers():
+            provider = self.mass.get_provider(provider_id)
+            if not isinstance(provider, MusicProvider):
+                continue
+            if MediaType.TRACK not in provider.supported_media_types:
+                continue
+            result.extend(
+                prov_item
+                for prov_item in await self.search(search_query, provider_id)
+                if loose_compare_strings(track.name, prov_item.name)
+                and compare_artists(prov_item.artists, track.artists, any_match=True)
+                # make sure that the 'base' version is NOT included
+                and not track.provider_mappings.intersection(prov_item.provider_mappings)
+            )
+        return result
 
     async def _assemble_similar_tracks(
         self,

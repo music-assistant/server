@@ -302,6 +302,19 @@ def test_apply_listing_searches_names_without_case_and_accents(
     assert _ids(result) == expected
 
 
+def test_apply_listing_finds_a_folder_by_its_translation_key() -> None:
+    """A folder that only has a translation key is searched and sorted by that key."""
+    folders = [
+        BrowseFolder(item_id="tracks", provider="qobuz_1", name="", translation_key="tracks"),
+        BrowseFolder(item_id="mixes", provider="qobuz_1", name="Mixes"),
+        BrowseFolder(item_id="albums", provider="qobuz_1", name="", translation_key="albums"),
+    ]
+    found = apply_listing(folders, ListingType.BROWSE, search="trac")
+    by_name = apply_listing(folders, ListingType.BROWSE, sort_field=SortField.NAME)
+    assert [folder.item_id for folder in found] == ["tracks"]
+    assert [folder.item_id for folder in by_name] == ["albums", "mixes", "tracks"]
+
+
 def test_apply_listing_pages(tracks: list[Track]) -> None:
     """Without a limit, or with 0, everything is returned; an offset past the end nothing."""
     listing = ListingType.PLAYLIST_TRACKS

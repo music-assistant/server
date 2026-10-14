@@ -6,10 +6,11 @@ import logging
 from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -265,7 +266,7 @@ async def test_genre_source_uses_exact_genre_tracks_with_bounded_pages() -> None
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
 
-    async def _genre_tracks(*, item_id: str, limit: int, offset: int) -> list[Track]:
+    async def _genre_tracks(*, item_id: str, limit: int, offset: int, **_sort: Any) -> list[Track]:
         assert item_id == source.item_id
         return tracks[offset : offset + limit]
 
@@ -274,12 +275,15 @@ async def test_genre_source_uses_exact_genre_tracks_with_bounded_pages() -> None
     pool = await _guess_quiz(mass, [source_uri])._get_source_track_pool()
 
     assert list(pool.values()) == tracks
+    # paged in the order the tracks were added, so the pages never overlap
+    sort = {"sort_field": SortField.TIMESTAMP_ADDED, "sort_direction": SortDirection.ASC}
     assert mass.music.genres.tracks.await_args_list == [
-        call(item_id=source.item_id, limit=GENRE_TRACK_PAGE_SIZE, offset=0),
+        call(item_id=source.item_id, limit=GENRE_TRACK_PAGE_SIZE, offset=0, **sort),
         call(
             item_id=source.item_id,
             limit=GENRE_TRACK_PAGE_SIZE,
             offset=GENRE_TRACK_PAGE_SIZE,
+            **sort,
         ),
     ]
 
@@ -292,7 +296,7 @@ async def test_genre_source_stops_at_controller_default_bound() -> None:
     source_uri = _uri(source)
     mass = _mass({source_uri: source})
 
-    async def _genre_tracks(*, item_id: str, limit: int, offset: int) -> list[Track]:
+    async def _genre_tracks(*, item_id: str, limit: int, offset: int, **_sort: Any) -> list[Track]:
         assert item_id == source.item_id
         return tracks[offset : offset + limit]
 
@@ -306,6 +310,8 @@ async def test_genre_source_stops_at_controller_default_bound() -> None:
         item_id=source.item_id,
         limit=GENRE_TRACK_PAGE_SIZE,
         offset=MAX_GENRE_TRACK_COUNT - GENRE_TRACK_PAGE_SIZE,
+        sort_field=SortField.TIMESTAMP_ADDED,
+        sort_direction=SortDirection.ASC,
     )
 
 

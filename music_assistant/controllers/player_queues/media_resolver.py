@@ -1198,7 +1198,7 @@ class MediaResolver:
             folder.name,
         )
         try:
-            folder_items = await self.mass.music.browse(folder.path)
+            folder_items = await self.mass.music.browse(folder.path, limit=None)
         except OSError as err:
             # e.g. the (top-level) folder URI points at a path that no longer exists
             raise MediaNotFoundError(f"Folder '{folder.path}' could not be found") from err

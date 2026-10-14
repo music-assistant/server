@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature, SortDirection, SortField
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
@@ -190,31 +190,35 @@ class RadioController(MediaControllerBase[Radio]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
     ) -> list[Radio]:
-        """Return all versions of a radio station we can find on all providers."""
-        radio = await self.get(item_id, provider_instance_id_or_domain)
-        if radio.is_dynamic or not radio.is_endless:
-            # a tracklisted station (dynamic or finite) is its provider's own, so a
-            # same-named station is a different one
-            return []
-        # perform a search on all provider(types) to collect all versions/variants
-        all_versions = {
-            prov_item.item_id: prov_item
-            for prov_items in await asyncio.gather(
-                *[
-                    self.search(radio.name, provider_domain)
-                    for provider_domain in self.mass.music.get_unique_providers()
-                ]
-            )
-            for prov_item in prov_items
-            if loose_compare_strings(radio.name, prov_item.name)
-        }
-        # make sure that the 'base' version is NOT included
-        for prov_version in radio.provider_mappings:
-            all_versions.pop(prov_version.item_id, None)
+        """
+        Return the versions of a radio station on all providers, searched, sorted and paged.
 
-        # return the aggregated result
-        return list(all_versions.values())
+        :param item_id: The station id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param search: Only list the versions whose name contains this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; 0 returns them all.
+        :param offset: Number of versions to skip.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        return await self._versions_listing(
+            item_id,
+            provider_instance_id_or_domain,
+            lambda provider_id: self._assemble_versions(item_id, provider_id),
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     async def match_provider(
         self, db_radio: Radio, provider: MusicProvider, strict: bool = True
@@ -282,6 +286,34 @@ class RadioController(MediaControllerBase[Radio]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_radio.item_id, match)
                 cur_provider_domains.add(provider.domain)
+
+    async def _assemble_versions(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> list[Radio]:
+        """Return all versions of a radio station we can find on all providers."""
+        radio = await self.get(item_id, provider_instance_id_or_domain)
+        if radio.is_dynamic or not radio.is_endless:
+            # a tracklisted station (dynamic or finite) is its provider's own, so a
+            # same-named station is a different one
+            return []
+        # perform a search on all provider(types) to collect all versions/variants
+        all_versions = {
+            prov_item.item_id: prov_item
+            for prov_items in await asyncio.gather(
+                *[
+                    self.search(radio.name, provider_domain)
+                    for provider_domain in self.mass.music.get_unique_providers()
+                ]
+            )
+            for prov_item in prov_items
+            if loose_compare_strings(radio.name, prov_item.name)
+        }
+        # make sure that the 'base' version is NOT included
+        for prov_version in radio.provider_mappings:
+            all_versions.pop(prov_version.item_id, None)
+
+        # return the aggregated result
+        return list(all_versions.values())
 
     async def _add_library_item(self, item: Radio, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""
