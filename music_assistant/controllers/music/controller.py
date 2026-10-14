@@ -1822,14 +1822,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             user = provider_user
 
         play_history_written = False
-        user_ids: list[str] = []
+        history_user_ids: list[str] = []
+        user_ids = await self._get_playlog_user_ids(user) if not is_playing else []
         # update generic playlog table (when not playing)
         if not is_playing:
-            if user:
-                user_ids = [user.user_id]
-            else:
-                # NOTE: if no user was found, we will alter the playlog for all users
-                user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
             # Leaving the speed out keeps whatever is already stored for this item/user
             # (a provider sync reporting progress has no speed to offer), and falls back to
             # the column default of 1.0 for a brand new row.
@@ -1842,7 +1838,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
                 await self._upsert_playlog(params)
                 play_history_written = recorded_play or play_history_written
-            await self.database.commit()
+                if recorded_play:
+                    history_user_ids.append(user_id)
+            await self._commit_playlog_updates(
+                play_history_written=play_history_written, user_ids=history_user_ids
+            )
             self._signal_playlog_updated(
                 reference,
                 fully_played=fully_played,
@@ -3599,6 +3599,20 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             progress,
         )
         return True
+
+    async def _commit_playlog_updates(
+        self, *, play_history_written: bool, user_ids: list[str]
+    ) -> None:
+        await self.database.commit()
+        self.mass.statistics.invalidate_statistics_cache(
+            play_history_written=play_history_written, user_ids=user_ids
+        )
+
+    async def _get_playlog_user_ids(self, user: User | None) -> list[str]:
+        """Return users whose playlog rows are updated by this report."""
+        if user:
+            return [user.user_id]
+        return [user.user_id for user in await self.mass.webserver.auth.list_users()]
 
     def _signal_playlog_updated(
         self,
