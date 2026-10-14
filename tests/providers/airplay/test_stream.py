@@ -36,6 +36,7 @@ from music_assistant.providers.airplay.constants import (
     ClockReadiness,
     StreamingProtocol,
 )
+from music_assistant.providers.airplay.helpers import CLI_CLOCK_OFFSET_NS
 from music_assistant.providers.airplay.stream import AirPlayStream, CliError
 
 START_UNIX_MS = 1_750_000_000_000
@@ -183,6 +184,7 @@ async def test_cli_args_default_auto() -> None:
     # default format
     assert _arg_value(args, "--samplerate") == "44100"
     assert _arg_value(args, "--bitdepth") == "16"
+    assert _arg_value(args, "--clock-offset-ns") == str(CLI_CLOCK_OFFSET_NS)
     # no explicit latency override configured
     assert "--latency" not in args
     # PTP daemon is running: stream attaches to the shared clock
