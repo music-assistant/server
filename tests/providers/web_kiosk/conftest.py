@@ -80,6 +80,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
 
     # Other providers (Sendspin, Party) are absent by default
     mass.get_provider = Mock(return_value=None)
+    mass.command_handlers = {}
 
     return mass
 

@@ -24,8 +24,8 @@ WEB_KIOSK_PLAYER_ID_PREFIX = "wk_"
 PLAYER_ID_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_]+")
 
 # sendspin-js 5 identity: base64url X25519 public key (43 chars, no padding).
-# Music Assistant 2.11 registers the bridge under this id, not a synthetic prefix.
-SENDSPIN_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+# The last base64 sextet has two zero padding bits for a 32-byte key.
+SENDSPIN_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
 # Seconds the bridge waits for the kiosk's JS client to connect after a stream
 # start before transferring playback back to the regular HTTP player.
 SENDSPIN_CONNECT_TIMEOUT = 15.0

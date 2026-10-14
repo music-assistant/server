@@ -10,8 +10,11 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from aiohttp import ClientError, WSServerHandshakeError
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.player import PlayerMedia
 
+import music_assistant.providers.web_kiosk.party as party_module
+from music_assistant.helpers.api import APICommandHandler
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
@@ -117,20 +120,23 @@ async def test_ws_stores_announced_sendspin_client_id(
 ) -> None:
     """The browser's Sendspin identity is stored on the player it registers."""
     ws = await http_client.ws_connect(
-        "/ws?device_id=test-device&sendspin_client_id=AbCdEfGhIjKlMnOpQrStUv"
+        "/ws?device_id=test-device&sendspin_client_id=hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
     )
     await ws.receive()
 
     registered = mass_mock.players.register.await_args.args[0]
-    assert registered.sendspin_client_id == "AbCdEfGhIjKlMnOpQrStUv"
+    assert registered.sendspin_client_id == "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
     await ws.close()
 
 
-async def test_ws_ignores_synthetic_sendspin_client_id(
-    http_client: TestClient[Any, Any], mass_mock: Mock
+@pytest.mark.parametrize(
+    "client_id", ["spb_wk_tablet", "AbCdEfGhIjKlMnOpQrStUv", "A" * 42, "A" * 44, "A" * 42 + "B"]
+)
+async def test_ws_ignores_malformed_sendspin_client_id(
+    http_client: TestClient[Any, Any], mass_mock: Mock, client_id: str
 ) -> None:
-    """A legacy spb_wk_ id is not a sendspin-js 5 identity and is ignored."""
-    ws = await http_client.ws_connect("/ws?device_id=test-device&sendspin_client_id=spb_wk_tablet")
+    """Legacy ids and malformed public-key encodings cannot register a bridge."""
+    ws = await http_client.ws_connect(f"/ws?device_id=test-device&sendspin_client_id={client_id}")
     await ws.receive()
 
     registered = mass_mock.players.register.await_args.args[0]
@@ -191,7 +197,10 @@ async def test_party_info_hides_the_join_url(
     plugin = Mock()
     plugin.get_party_url = AsyncMock(return_value="http://join.example/secret-code")
     plugin.get_party_config = AsyncMock(return_value=Mock(party_name="Room", qr_text="Scan"))
-    mass_mock.get_provider.return_value = plugin
+    mass_mock.command_handlers = {
+        "party/url": APICommandHandler.parse("party/url", plugin.get_party_url),
+        "party/config": APICommandHandler.parse("party/config", plugin.get_party_config),
+    }
 
     resp = await http_client.get("/api/party")
     body = await resp.json()
@@ -204,6 +213,45 @@ async def test_party_info_hides_the_join_url(
         "version": body["version"],
     }
     assert "secret-code" not in str(body)
+
+    qr = await http_client.get("/api/party/qr.svg")
+    assert qr.status == 200
+    assert qr.content_type == "image/svg+xml"
+    assert "<svg" in await qr.text()
+    mass_mock.get_provider.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["party/url", "party/config"])
+@pytest.mark.parametrize("failure", ["absent", "error", "timeout"])
+async def test_party_commands_unavailable_keep_kiosk_working(
+    http_client: TestClient[Any, Any],
+    mass_mock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    failure: str,
+) -> None:
+    """Unavailable Party API commands disable QR without breaking the kiosk."""
+
+    async def delayed() -> None:
+        await asyncio.Event().wait()
+
+    mass_mock.command_handlers = {
+        "party/url": Mock(target=AsyncMock(return_value="http://join.example/code")),
+        "party/config": Mock(target=AsyncMock(return_value=Mock(party_name="Room"))),
+    }
+    if failure == "absent":
+        del mass_mock.command_handlers[command]
+    elif failure == "error":
+        mass_mock.command_handlers[command].target.side_effect = InvalidDataError("No party")
+    else:
+        monkeypatch.setattr(party_module, "PARTY_CALL_TIMEOUT", 0.01)
+        mass_mock.command_handlers[command].target = delayed
+
+    response = await http_client.get("/api/party")
+    assert response.status == 200
+    assert await response.json() == {"active": False}
+    qr = await http_client.get("/api/party/qr.svg")
+    assert qr.status == 404
 
 
 class _Upstream:

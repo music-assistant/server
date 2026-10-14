@@ -2688,7 +2688,7 @@
   "provider.vrt_max.config_entries.username.label": "VRT username (email)",
   "provider.vrt_max.manifest.description": "Stream live radio from VRT MAX, the Flemish public broadcaster (Radio 1, Radio 2, Klara, Studio Brussel, MNM and more).",
   "provider.vrt_max.media.folder.radio_programs.name": "Radio programs",
-  "provider.web_kiosk.config_entries.enable_sendspin_bridge.description": "Register each kiosk under its browser Sendspin identity so it can join sample-synchronized playback groups on Music Assistant 2.11. When a synchronized stream starts, the kiosk opens in Sendspin mode. Playback falls back to the regular HTTP player when the kiosk cannot connect.",
+  "provider.web_kiosk.config_entries.enable_sendspin_bridge.description": "Register each kiosk under its browser Sendspin identity so it can join sample-synchronized playback groups. When a synchronized stream starts, the kiosk opens in Sendspin mode. Playback falls back to the regular HTTP player when the kiosk cannot connect.",
   "provider.web_kiosk.config_entries.enable_sendspin_bridge.label": "Sendspin bridge (experimental)",
   "provider.web_kiosk.config_entries.http_port.description": "Port for the Web Kiosk HTTP server.",
   "provider.web_kiosk.config_entries.http_port.label": "HTTP Server Port",

@@ -51,11 +51,17 @@ class PartyAdapter:
             return self.cache[1]
         info: PartyInfo | None = None
         try:
-            party = cast("Any", self.provider.mass.get_provider("party"))
-            if party is not None:
-                join_url = await asyncio.wait_for(party.get_party_url(), PARTY_CALL_TIMEOUT)
+            commands = self.provider.mass.command_handlers
+            url_command = commands.get("party/url")
+            config_command = commands.get("party/config")
+            if url_command is not None and config_command is not None:
+                join_url = await asyncio.wait_for(
+                    cast("Any", url_command.target)(), PARTY_CALL_TIMEOUT
+                )
                 if join_url:
-                    config = await asyncio.wait_for(party.get_party_config(), PARTY_CALL_TIMEOUT)
+                    config = await asyncio.wait_for(
+                        cast("Any", config_command.target)(), PARTY_CALL_TIMEOUT
+                    )
                     info = PartyInfo(
                         join_url=join_url,
                         name=getattr(config, "party_name", None),

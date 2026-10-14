@@ -170,7 +170,7 @@ class WebKioskProvider(PlayerProvider):
                 try:
                     self.logger.debug("Unloading player %s", player.display_name)
                     await self.mass.players.unregister(player.player_id)
-                except Exception:
+                except MusicAssistantError:
                     self.logger.exception("Error unregistering player %s", player.player_id)
         self._player_last_activity.clear()
         self.logger.info("Web Kiosk provider unloaded")
@@ -216,7 +216,7 @@ class WebKioskProvider(PlayerProvider):
         """
         Store the browser's Sendspin identity and reconcile the bridge.
 
-        sendspin-js 5 mints a cryptographic client id. Music Assistant 2.11
+        sendspin-js 5 mints a cryptographic client id. Music Assistant
         (aiosendspin 10) only lets that browser take over the bridge when the
         external player was registered under the same id. A changed identity
         drops the previous bridge player so a stale Sendspin player does not

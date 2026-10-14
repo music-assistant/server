@@ -18,7 +18,7 @@ from music_assistant.providers.web_kiosk.sendspin_bridge import (
     WebKioskSendspinBridgeManager,
 )
 
-BROWSER_CLIENT_ID = "AbCdEfGhIjKlMnOpQrStUv"
+BROWSER_CLIENT_ID = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
 
 
 def test_normalize_sendspin_client_id_accepts_browser_identity() -> None:
@@ -55,10 +55,13 @@ def test_should_have_bridge_only_for_enabled_kiosk_with_identity(
     assert manager._should_have_bridge(player) is False
 
 
-def test_stream_start_opens_kiosk_in_sendspin_mode(player: WebKioskPlayer) -> None:
+async def test_stream_start_opens_kiosk_in_sendspin_mode(
+    player: WebKioskPlayer, mass_mock: Mock
+) -> None:
     """A synchronized stream tells this browser to open Sendspin mode under its own id."""
     http = Mock()
     player.provider.http_server = http  # type: ignore[attr-defined]
+    mass_mock.create_task.side_effect = asyncio.create_task
     bridge = WebKioskSendspinBridge(
         cast("WebKioskProvider", player.provider), player, Mock(), BROWSER_CLIENT_ID
     )
@@ -70,6 +73,7 @@ def test_stream_start_opens_kiosk_in_sendspin_mode(player: WebKioskPlayer) -> No
     assert player_id == player.player_id
     assert "sendspin=1" in url
     assert BROWSER_CLIENT_ID in url
+    await bridge.stop()
 
 
 async def test_connect_timeout_transfers_playback_back(
@@ -127,7 +131,7 @@ async def test_note_sendspin_client_id_replaces_previous_bridge(
     manager.remove_bridge.assert_not_awaited()
     manager.evaluate_bridge.assert_awaited_once_with(player)
 
-    replacement = "ZyXwVuTsRqPoNmLkJiHgFe"
+    replacement = "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"
     await provider.note_sendspin_client_id(player, replacement)
 
     assert player.sendspin_client_id == replacement
@@ -165,3 +169,56 @@ async def test_fallback_reports_unexpected_transfer_failures(
     await bridge.stop()
 
     assert results == ([error] if isinstance(error, RuntimeError) else [None])
+
+
+@pytest.mark.parametrize("replaced_watchdog", [False, True])
+async def test_stop_waits_for_fallback_cancellation_before_removing_client(
+    player: WebKioskPlayer,
+    mass_mock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    replaced_watchdog: bool,
+) -> None:
+    """Client removal cannot overlap a fallback transfer still cleaning up."""
+    monkeypatch.setattr(bridge_module, "SENDSPIN_CONNECT_TIMEOUT", 0)
+    transfer_started = asyncio.Event()
+    cancellation_started = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+    transfer_finished = asyncio.Event()
+
+    async def transfer(*_args: object, **_kwargs: object) -> None:
+        transfer_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancellation_started.set()
+            await finish_cleanup.wait()
+            transfer_finished.set()
+
+    async def remove_client(_: str) -> None:
+        assert transfer_finished.is_set()
+
+    mass_mock.create_task.side_effect = asyncio.create_task
+    mass_mock.player_queues.transfer_queue = AsyncMock(side_effect=transfer)
+    server = Mock()
+    server.remove_client = AsyncMock(side_effect=remove_client)
+    server.register_external_player.return_value = Mock(is_connected=False)
+    server.register_external_player.return_value.roles_by_family.return_value = []
+    player.provider.http_server = Mock()  # type: ignore[attr-defined]
+    bridge = WebKioskSendspinBridge(
+        cast("WebKioskProvider", player.provider), player, server, BROWSER_CLIENT_ID
+    )
+    await bridge.start()
+    server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
+    await asyncio.wait_for(transfer_started.wait(), 1)
+    if replaced_watchdog:
+        server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
+        await asyncio.wait_for(cancellation_started.wait(), 1)
+    stopping = asyncio.create_task(bridge.stop())
+    try:
+        await asyncio.wait_for(cancellation_started.wait(), 1)
+        assert not stopping.done()
+        server.remove_client.assert_not_awaited()
+    finally:
+        finish_cleanup.set()
+        await stopping
+    assert not bridge.is_registered

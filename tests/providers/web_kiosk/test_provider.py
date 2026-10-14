@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
@@ -273,6 +273,22 @@ async def test_unload_unregisters_disabled_players(
     await provider.unload()
 
     mass_mock.players.unregister.assert_awaited_once_with("wk_test")
+
+
+@pytest.mark.parametrize(
+    "error", [PlayerUnavailableError("Missing player"), RuntimeError("Broken teardown")]
+)
+async def test_unload_reports_unexpected_unregister_failures(
+    provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock, error: Exception
+) -> None:
+    """Expected player failures are tolerated; programming failures reach the caller."""
+    mass_mock.players.iter_players.return_value = [player]
+    mass_mock.players.unregister.side_effect = error
+    if isinstance(error, RuntimeError):
+        with pytest.raises(RuntimeError, match="Broken teardown"):
+            await provider.unload()
+    else:
+        await provider.unload()
 
 
 async def test_idle_timeout_keeps_a_connected_browser(

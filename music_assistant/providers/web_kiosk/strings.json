@@ -14,7 +14,7 @@
     },
     "enable_sendspin_bridge": {
       "label": "Sendspin bridge (experimental)",
-      "description": "Register each kiosk under its browser Sendspin identity so it can join sample-synchronized playback groups on Music Assistant 2.11. When a synchronized stream starts, the kiosk opens in Sendspin mode. Playback falls back to the regular HTTP player when the kiosk cannot connect."
+      "description": "Register each kiosk under its browser Sendspin identity so it can join sample-synchronized playback groups. When a synchronized stream starts, the kiosk opens in Sendspin mode. Playback falls back to the regular HTTP player when the kiosk cannot connect."
     },
     "kiosk_url": {
       "label": "Kiosk URL",

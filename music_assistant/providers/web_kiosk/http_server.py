@@ -72,7 +72,6 @@ class WebKioskHTTPServer:
         self.app = web.Application(middlewares=[self._cors_middleware])
         self._runner: web.AppRunner | None = None
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
-        self._client_prefixes: dict[str, str] = {}
         self.party = PartyAdapter(provider)
         self._setup_routes()
 
@@ -752,8 +751,6 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         Player may be None if registration failed.
         """
         player_id, device_param = self._get_player_id_and_device_param(request)
-        # Remember how this client reaches us — WS pushes have no request context
-        self._client_prefixes[player_id] = self._get_prefix(request)
         remote_ip = request.remote
         display_name = self.provider.player_display_name(player_id, remote_ip=remote_ip)
         player = await self.provider.get_or_register_player(

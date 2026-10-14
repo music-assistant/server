@@ -1,9 +1,8 @@
 """
 Sendspin bridge: expose web kiosk players as external Sendspin clients.
 
-Follows the Chromecast receiver model against Music Assistant 2.11
-(aiosendspin 10, Sendspin 1.0.0-rc1). The bridge registers the kiosk as an
-external Sendspin client under the cryptographic client id that sendspin-js 5
+Follows the Music Assistant Chromecast receiver model. The bridge registers
+the kiosk as an external Sendspin client under the cryptographic client id that sendspin-js 5
 minted in the browser. When a synchronized stream starts, the kiosk opens
 itself in Sendspin mode and connects with that same identity, and the server
 upgrades the client from the bridge role to a real player. Audio never flows
@@ -69,6 +68,7 @@ class WebKioskSendspinBridge:
         self.logger = provider.logger.getChild("sendspin_bridge")
         self._client: SendspinClient | None = None
         self._connect_watchdog: asyncio.Task[None] | None = None
+        self._watchdog_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def is_registered(self) -> bool:
@@ -123,6 +123,12 @@ class WebKioskSendspinBridge:
     async def stop(self) -> None:
         """Stop and unregister the bridge."""
         self._cancel_watchdog()
+        tasks = tuple(self._watchdog_tasks)
+        for task in tasks:
+            if not task.cancelling():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if self._client is not None:
             await self.sendspin_server.remove_client(self.client_id)
             self._client = None
@@ -145,6 +151,8 @@ class WebKioskSendspinBridge:
         http_server.broadcast_sendspin(self.kiosk_player.player_id, kiosk_url)
         self._cancel_watchdog()
         self._connect_watchdog = self.provider.mass.create_task(self._watch_connect())
+        self._watchdog_tasks.add(self._connect_watchdog)
+        self._connect_watchdog.add_done_callback(self._watchdog_tasks.discard)
 
     async def _watch_connect(self) -> None:
         """Fall back to the regular HTTP player when the kiosk never connects."""
@@ -166,7 +174,11 @@ class WebKioskSendspinBridge:
             self.logger.warning("Fallback transfer to the HTTP player failed", exc_info=True)
 
     def _cancel_watchdog(self) -> None:
-        if self._connect_watchdog and not self._connect_watchdog.done():
+        if (
+            self._connect_watchdog
+            and not self._connect_watchdog.done()
+            and not self._connect_watchdog.cancelling()
+        ):
             self._connect_watchdog.cancel()
         self._connect_watchdog = None
 
