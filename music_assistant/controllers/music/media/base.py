@@ -68,7 +68,6 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_SEARCH_RESULTS,
-    LEGACY_SORT_KEYS,
     RANDOM_SORT_FIELDS,
 )
 from music_assistant.controllers.music.helpers import (
@@ -77,7 +76,11 @@ from music_assistant.controllers.music.helpers import (
     search_name_match_clause,
     sibling_instance_mappings,
 )
-from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
+from music_assistant.controllers.music.listing import (
+    apply_listing,
+    legacy_sort,
+    resolve_listing_sort,
+)
 from music_assistant.controllers.music.listing_cache import Listing, cached_listing
 from music_assistant.controllers.music.sorting import (
     MEDIA_TYPE_SORT_FIELDS,
@@ -692,9 +695,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             is unknown.
         """
         if sort_field is None and order_by:
-            if (legacy_sort := LEGACY_SORT_KEYS.get(order_by)) is None:
-                raise InvalidDataError(f"Unknown sort key: {order_by}")
-            sort_field, sort_direction = legacy_sort
+            sort_field, sort_direction = legacy_sort(order_by)
         offered_fields = MEDIA_TYPE_SORT_FIELDS[self.media_type]
         if sort_field is None:
             return (offered_fields[0], sort_direction) if default else (None, None)
