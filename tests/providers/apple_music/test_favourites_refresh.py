@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import RetriesExhausted
 
 from music_assistant.models.music_provider import MusicProvider, NothingToSync
 from music_assistant.providers.apple_music.constants import LIBRARY_FULL_SYNC_INTERVAL
@@ -88,6 +89,24 @@ async def test_unchanged_favourites_skip_without_refresh() -> None:
     with _patched(), pytest.raises(NothingToSync):
         await provider.sync_library(MediaType.TRACK)
     refresh.assert_not_awaited()
+    cache_set.assert_not_awaited()
+
+
+async def test_skipped_album_check_refreshes_ratings() -> None:
+    """A skipped album check refreshes the album ratings."""
+    provider, _, refresh = _provider({"marker": MARKER, "full_sync_at": time.time()}, "")
+    with _patched(), pytest.raises(NothingToSync):
+        await provider.sync_library(MediaType.ALBUM)
+    refresh.assert_awaited_once_with(MediaType.ALBUM)
+
+
+async def test_failed_refresh_still_skips() -> None:
+    """A failed refresh keeps the skip and stores nothing, so the next check retries."""
+    state = {"marker": MARKER, "full_sync_at": time.time(), "favourites": "old"}
+    provider, cache_set, refresh = _provider(state, "new")
+    refresh.side_effect = RetriesExhausted("throttled")
+    with _patched(), pytest.raises(NothingToSync):
+        await provider.sync_library(MediaType.TRACK)
     cache_set.assert_not_awaited()
 
 
