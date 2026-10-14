@@ -259,7 +259,7 @@ def _ids(items: list[Any]) -> list[str]:
 async def test_a_playlist_plays_in_the_order_its_listing_shows(
     mass: MusicAssistant, sort_key: str, expected: list[str]
 ) -> None:
-    """Every key the playlist page sends plays the playlist as the page lists it."""
+    """Every key the playlist page sends plays the playlist as its tracks listing shows it."""
     sort_field, sort_direction = PLAYLIST_SORTS[sort_key]
 
     played = await _resolver(mass).get_playlist_tracks(
@@ -276,7 +276,7 @@ async def test_a_playlist_plays_in_the_order_its_listing_shows(
 async def test_an_album_plays_in_the_order_its_listing_shows(
     mass: MusicAssistant, sort_key: str, expected: list[str]
 ) -> None:
-    """Every key the album page sends plays the album as the page lists it."""
+    """Every key the album page sends plays the album as its tracks listing shows it."""
     sort_field, sort_direction = ALBUM_SORTS[sort_key]
 
     played = await _resolver(mass)._resolve_media_items(
