@@ -278,9 +278,10 @@ def test_player_id_to_room_ignores_other_providers() -> None:
     assert player._player_id_to_room("dlna_kitchen") is None
 
 
-async def test_unload_cancels_both_timers() -> None:
-    """Unloading cancels the end watch and the group resync, which mass would otherwise run."""
+async def test_unload_cancels_its_timers() -> None:
+    """Unloading cancels the timers mass holds for this player, which would otherwise run."""
     player, mass = _advancing_player()
+    player._player_id = "raumfeld_test"
     player._resync_task_id = "raumfeld_resync_test"
     player._on_unload_callbacks = []
 
@@ -289,6 +290,7 @@ async def test_unload_cancels_both_timers() -> None:
     assert {call.args[0] for call in mass.cancel_timer.call_args_list} == {
         "raumfeld_advance_test",
         "raumfeld_resync_test",
+        "external_pause_raumfeld_test",
     }
     assert player._advance_armed is False
     assert player._next_media is None
@@ -541,6 +543,10 @@ def _external_player() -> tuple[RaumfeldPlayer, MagicMock]:
     player._attr_playback_state = PlaybackState.PLAYING
     player._external_via_room = False
     player._play_started_at = 0.0
+    player._line_in = None
+    player._next_media = None
+    player._advance_armed = False
+    player._advance_task_id = "raumfeld_advance_test"
     player.logger = MagicMock()
     host = MagicMock()
     for command in (
@@ -710,3 +716,61 @@ def test_paused_external_source_shows_where_it_stopped() -> None:
     player._set_external(_SPOTIFY_META, "Play", 315, via_room=True)
     player._apply_position({"RelTime": "0:01:10"}, playing=False)
     assert player._attr_elapsed_time == 70.0
+
+
+async def test_a_stopped_zone_source_stays_loaded() -> None:
+    """A source the host still has loaded stays the active source while it is stopped."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+    with patch.object(player, "_read_zone_actions", AsyncMock(return_value="Play")):
+        await player._update_zone_source(
+            {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""}, ["Bar"]
+        )
+    assert player._attr_active_source == "raumfeld"
+    assert player._attr_source_list[0].can_play_pause is True
+    # MA only offers to resume a source that is paused
+    assert player._attr_playback_state == PlaybackState.PAUSED
+
+
+async def test_this_rooms_line_in_is_not_an_external_source() -> None:
+    """The room's own Line-In is a source of its own, not something the host started."""
+    player, _ = _external_player()
+    player._line_in = ("http://192.168.1.42:8888/stream.flac", "Line-in")
+    await player._update_zone_source(
+        {"TrackURI": "http://192.168.1.42:8888/stream.flac", "TrackMetaData": ""}, ["Bar"]
+    )
+    assert player._external_source is None
+
+
+async def test_stopping_a_zone_source_keeps_it_for_resume() -> None:
+    """Stop leaves a zone source loaded, and playing its media again resumes it."""
+    player, host = _external_player()
+    host.async_zone_stop = AsyncMock()
+    player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    media = player._attr_current_media
+    assert media is not None
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
+    ):
+        await player.stop()
+        stopped = (player._attr_active_source, player._attr_playback_state)
+        await player.play_media(media)
+    assert stopped == ("tunein", PlaybackState.PAUSED)
+    action.assert_awaited_once_with(_ZONE, "Play", Speed="1")
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+async def test_stopping_spotify_connect_ends_the_source() -> None:
+    """Spotify Connect ends its session on a stop, so nothing stays loaded."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause", 315, via_room=True)
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
+    ):
+        await player.stop()
+    action.assert_awaited_once_with(_RENDERER, "Stop")
+    assert player._attr_active_source is None
+    assert player._external_source is None

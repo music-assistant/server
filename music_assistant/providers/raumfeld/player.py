@@ -13,6 +13,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
+from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
@@ -87,6 +88,10 @@ POWER_SETTLE_TIME = 5.0
 
 # Features that only apply while something other than Music Assistant is playing, and then
 # only as far as the host lists the matching transport action for that source.
+# The scheme of the uri reported for an external source's current media. It names the item
+# the host has loaded, never the address the host streams it from.
+EXTERNAL_URI_SCHEME = "raumfeld://"
+
 EXTERNAL_SOURCE_FEATURES = {
     PlayerFeature.PAUSE,
     PlayerFeature.NEXT_PREVIOUS,
@@ -121,6 +126,9 @@ class RaumfeldPlayer(Player):
     # the host reports what is playing accurately, so a source Music Assistant has no name
     # of its own for counts as a takeover too
     _attr_trusts_reported_source = True
+    # a source the host keeps loaded after a stop is reported as paused (see
+    # _update_zone_source); give up on it when nobody resumes it
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     def __init__(
         self,
@@ -310,9 +318,18 @@ class RaumfeldPlayer(Player):
             except HOST_ERRORS as err:
                 # do not report IDLE while the renderer may still be playing
                 raise PlayerCommandFailed(f"Failed to stop {self.room}: {err!r}") from err
-        self._clear_external()
-        self._attr_active_source = None
-        self._attr_playback_state = PlaybackState.IDLE
+        # Spotify Connect ends its session on a stop
+        if self._external_via_room:
+            self._clear_external()
+        if self._external_source is None:
+            self._attr_active_source = None
+            self._attr_playback_state = PlaybackState.IDLE
+        else:
+            # A stopped zone keeps what it was playing loaded, and can start it again. MA
+            # only offers to resume a source that is paused, so that is what it is here.
+            self._external_source.can_play_pause = True
+            self._attr_supported_features.add(PlayerFeature.PAUSE)
+            self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
     async def pause(self) -> None:
@@ -348,6 +365,10 @@ class RaumfeldPlayer(Player):
         restarts the flow (a seek, or a sample-rate change). With flow mode off it is one
         queue item, and the provider starts the next one itself when this one finishes.
         """
+        if media.uri.startswith(EXTERNAL_URI_SCHEME) and self._external_source is not None:
+            # MA resumes "the current media", which here is what the host still has loaded
+            await self.play()
+            return
         self._mark_play_started()
         # a new item supersedes the queued next one; MA enqueues the next after it again
         self._clear_next()
@@ -526,7 +547,10 @@ class RaumfeldPlayer(Player):
         ended = False
         if transport is not None:
             raw_state = (transport.get("CurrentTransportState") or "").upper()
-            self._attr_playback_state = _map_transport_state(raw_state)
+            # the zone passes through TRANSITIONING for about half a second when it starts
+            # and when it stops (measured), so that says nothing about where it is heading
+            if raw_state != "TRANSITIONING":
+                self._attr_playback_state = _map_transport_state(raw_state)
             playing = self._attr_playback_state == PlaybackState.PLAYING
             ended = raw_state in ("STOPPED", "NO_MEDIA_PRESENT")
 
@@ -659,22 +683,27 @@ class RaumfeldPlayer(Player):
         device_uri = pos.get("TrackURI", "") or ""
         active = self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         if (
-            not active
-            or not device_uri
+            not device_uri
             or device_uri.startswith(self.mass.streams.base_url)
-            or self._attr_active_source == SOURCE_LINE_IN
+            or (self._line_in is not None and device_uri == self._line_in[0])
         ):
-            # idle, our own stream (owned by MA's queue controller, which holds the
-            # queue_item_id progress tracking needs) or the Line-In started from here
+            # nothing loaded, our own stream (owned by MA's queue controller, which holds
+            # the queue_item_id progress tracking needs) or this room's Line-In, which is
+            # a source of its own
             if self._attr_active_source != SOURCE_LINE_IN or not active:
                 self._clear_external()
             return
+        # also while stopped: the zone keeps the item loaded and can start it again
         self._set_external(
             parse_didl_metadata(pos.get("TrackMetaData")),
             await self._read_zone_actions(zone),
             parse_duration(pos.get("TrackDuration")),
             via_room=False,
         )
+        source = self._external_source
+        if source and source.can_play_pause and self._attr_playback_state == PlaybackState.IDLE:
+            # MA only offers to resume a source that is paused
+            self._attr_playback_state = PlaybackState.PAUSED
 
     async def _read_zone_actions(self, zone: list[str]) -> str | None:
         """Read the transport actions the zone allows right now, or ``None``."""
@@ -753,7 +782,7 @@ class RaumfeldPlayer(Player):
             self._attr_supported_features.add(PlayerFeature.SEEK)
         # the uri names the item, never the address the host streams it from
         self.set_current_media(
-            uri=f"raumfeld://{meta['item_id'] or source.id}",
+            uri=f"{EXTERNAL_URI_SCHEME}{meta['item_id'] or source.id}",
             clear_all=True,
             title=meta["title"],
             artist=meta["artist"],
