@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
     EventType,
     ExternalID,
     ImageType,
+    ListingType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -33,7 +34,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.favorite_update import FavoriteUpdate
-from music_assistant_models.helpers import create_safe_string, get_global_cache_value
+from music_assistant_models.helpers import create_safe_string, create_uri, get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
@@ -41,6 +42,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     ItemMappingSummary,
     MediaCollection,
+    MediaItem,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemMetadataSummary,
@@ -75,6 +77,7 @@ from music_assistant.controllers.music.helpers import (
     search_name_match_clause,
     sibling_instance_mappings,
 )
+from music_assistant.controllers.music.listing_cache import Listing, cached_listing
 from music_assistant.controllers.music.sorting import (
     MEDIA_TYPE_SORT_FIELDS,
     SORT_FIELD_DEFINITIONS,
@@ -104,7 +107,7 @@ from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MediaCatalogMixin
@@ -2632,6 +2635,53 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if resolved_reachable_via is not None and provider is None:
             return None
         return self._ensure_provider_filter(provider)
+
+    @final
+    async def _cached_item_listing[T: MediaItem](
+        self,
+        listing: ListingType,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        assemble: Callable[[str], Awaitable[Listing[T] | Sequence[T]]],
+        *,
+        item_type: Any,
+        narrowed_to: Sequence[str] | None = None,
+    ) -> list[T]:
+        """
+        Return a listing of one of this type's items, assembled once and served from the cache.
+
+        The listing is assembled from, and kept under, the provider instance the selector
+        resolves to; when no instance answers for it, it is assembled for the selector as
+        given and not kept.
+
+        :param listing: The listing being served.
+        :param item_id: The item id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param assemble: Assembles the whole listing from the given provider instance (or
+            "library"): a Listing, or just its items when the assembly is always complete.
+        :param item_type: The type of the items, to rebuild them from the cache.
+        :param narrowed_to: The provider instances the calling user's music sources narrow
+            the assembly to, when they do.
+        """
+
+        async def _assemble(provider_id: str) -> Listing[T]:
+            assembled = await assemble(provider_id)
+            return assembled if isinstance(assembled, Listing) else Listing(list(assembled))
+
+        if provider_instance_id_or_domain == "library":
+            instance_id = "library"
+        elif provider := self.mass.get_provider(provider_instance_id_or_domain):
+            instance_id = provider.instance_id
+        else:
+            return (await _assemble(provider_instance_id_or_domain)).items
+        return await cached_listing(
+            self.mass,
+            listing,
+            create_uri(self.media_type, instance_id, item_id),
+            lambda: _assemble(instance_id),
+            item_type=item_type,
+            narrowed_to=narrowed_to,
+        )
 
     @final
     def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:
