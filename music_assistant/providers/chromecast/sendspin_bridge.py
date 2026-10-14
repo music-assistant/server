@@ -739,11 +739,6 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         await super().evaluate_bridge(player)
         if not client_id or not self._has_bridge(player.player_id):
             return
-        claimed_id = self._claimed_clients.get(player.player_id)
-        if claimed_id is not None and claimed_id != client_id:
-            # A client claimed under the other MAC variant belongs to the device's AirPlay
-            # bridge, not to its Cast output, so its warning and opt-out are not ours.
-            return
         if self.mass.config.get_raw_player_config_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE):
             # the note is written last, so its presence means this output is settled
             return
@@ -836,7 +831,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         if cast_player.cast_info.is_audio_group and not cast_player.cast_info.is_multichannel_group:
             return False
 
-        if not get_bridge_client_id(cast_player):
+        if not (bridge_client_id := get_bridge_client_id(cast_player)):
             return False
 
         if self.mass.config.get_raw_player_config_value(
@@ -870,8 +865,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             parent_player = self.mass.players.get_player(cast_player.protocol_parent_id)
             if parent_player and parent_player.get_output_protocol_by_domain("airplay"):
                 return False
-
-        return True
+        # Same deny before the AirPlay link exists: another bridge (AirPlay) already
+        # registered a client for this device.
+        return not self._has_foreign_bridge_client(cast_player.player_id, bridge_client_id)
 
     async def _try_claim_existing(self, player: Player) -> bool:
         """
@@ -889,26 +885,23 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         sendspin_provider = self.sendspin_provider
         if bridge_client_id is None or sendspin_server is None or sendspin_provider is None:
             return False
-        existing_client_id = self._find_existing_sendspin_client(
-            sendspin_server, bridge_client_id, cast_player
-        )
-        if not existing_client_id:
+        if not sendspin_server.get_client(bridge_client_id):
             return False
 
         self.logger.info(
             "Sendspin client %s already registered — claiming existing player for %s",
-            existing_client_id,
+            bridge_client_id,
             cast_player.display_name,
         )
         manufacturer = cast_player.device_info.manufacturer or ""
         model = cast_player.device_info.model or ""
-        bridge_hello = _build_bridge_hello(cast_player, existing_client_id)
+        bridge_hello = _build_bridge_hello(cast_player, bridge_client_id)
         identifiers = {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)}
         sendspin_provider.register_bridge_static_delay_default(
-            existing_client_id, get_cast_model_static_delay(manufacturer, model)
+            bridge_client_id, get_cast_model_static_delay(manufacturer, model)
         )
         if not await sendspin_provider.apply_bridge_claim(
-            existing_client_id,
+            bridge_client_id,
             identifiers,
             bridge_hello,
             underlying_player_id=cast_player.player_id,
@@ -917,39 +910,30 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             # (`_handle_client_added` waits up to 5 s for hello).
             # Pre-register identifiers so `_create_player` attaches
             # CAST_UUID when it runs.
-            sendspin_provider.register_bridge_identifiers(existing_client_id, identifiers)
+            sendspin_provider.register_bridge_identifiers(bridge_client_id, identifiers)
             sendspin_provider.register_bridge_underlying_player(
-                existing_client_id, cast_player.player_id
+                bridge_client_id, cast_player.player_id
             )
-        self._claimed_clients[cast_player.player_id] = existing_client_id
-        self._subscribe_rebridge_on_disconnect(cast_player, existing_client_id)
+        self._claimed_clients[cast_player.player_id] = bridge_client_id
+        self._subscribe_rebridge_on_disconnect(cast_player, bridge_client_id)
         return True
 
-    def _find_existing_sendspin_client(
-        self,
-        sendspin_server: SendspinServer,
-        bridge_client_id: str,
-        cast_player: ChromecastPlayer,
-    ) -> str | None:
+    def _has_foreign_bridge_client(self, player_id: str, bridge_client_id: str) -> bool:
         """
-        Return a matching already-registered Sendspin client_id, if any.
+        Return whether another bridge registered a Sendspin client for this device.
 
-        Happens on MA restart when the JS Cast receiver reconnects to the
-        Sendspin server before Chromecast discovery fires. Also checks the
-        LA-bit MAC variant (AirPlay uses locally-administered MAC, Chromecast
-        uses the real one).
+        :param player_id: The Chromecast player being evaluated.
+        :param bridge_client_id: The Sendspin client_id the Cast bridge would use.
         """
-        if sendspin_server.get_client(bridge_client_id):
-            return bridge_client_id
-        if cast_player.cast_info.is_audio_group:
-            return None
-        la_variant_mac = _toggle_locally_administered_bit(bridge_client_id[len(BRIDGE_PREFIX) :])
-        if not la_variant_mac:
-            return None
-        la_variant_id = f"{BRIDGE_PREFIX}{la_variant_mac}"
-        if sendspin_server.get_client(la_variant_id):
-            return la_variant_id
-        return None
+        if player_id in self._bridges or not (sendspin_server := self.sendspin_server):
+            return False
+        client_ids = [bridge_client_id]
+        # AirPlay usually registers under the locally-administered form of the MAC
+        if la_variant_mac := _toggle_locally_administered_bit(
+            bridge_client_id[len(BRIDGE_PREFIX) :]
+        ):
+            client_ids.append(f"{BRIDGE_PREFIX}{la_variant_mac}")
+        return any(sendspin_server.is_external_player(client_id) for client_id in client_ids)
 
     def _subscribe_rebridge_on_disconnect(
         self, cast_player: ChromecastPlayer, client_id: str
@@ -1052,8 +1036,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             ):
                 self._pending_bridge_evaluations.add(cast_player.player_id)
                 self.mass.create_task(
-                    self._process_pending_bridge_evaluations,
-                    cast_player.player_id,
+                    self._process_pending_bridge_evaluations(cast_player.player_id),
                     task_id=f"evaluate_chromecast_sendspin_bridge_{cast_player.player_id}",
                 )
 
@@ -1090,7 +1073,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             return
 
         self.mass.create_task(
-            bridge.push_runtime_config_update,
+            bridge.push_runtime_config_update(),
             task_id=f"chromecast_sendspin_config_update_{bridge.cast_player.player_id}",
             abort_existing=True,
         )

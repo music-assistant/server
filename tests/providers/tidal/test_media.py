@@ -560,7 +560,8 @@ async def test_get_artist_albums(media_manager: TidalMediaManager, provider_mock
 
     albums = await media_manager.get_artist_albums("4184211")
 
-    assert len(albums) == 20
+    # 20 resources, 8 real albums; the rest are quality-tier duplicates
+    assert len(albums) == 8
     assert all(album.item_id for album in albums)
 
 
@@ -570,7 +571,8 @@ async def test_get_artist_toptracks(media_manager: TidalMediaManager, provider_m
 
     tracks = await media_manager.get_artist_toptracks("4184211")
 
-    assert len(tracks) == 20
+    # one isrc collision in the fixture
+    assert len(tracks) == 19
     provider_mock.api.get_jsonapi.assert_called_with(
         "artists/4184211/relationships/tracks",
         params={"collapseBy": "FINGERPRINT"},
@@ -593,7 +595,8 @@ async def test_get_artist_tracks(media_manager: TidalMediaManager, provider_mock
 
     tracks = await media_manager.get_artist_tracks("4184211")
 
-    assert len(tracks) == 40
+    # same page twice: cross-page duplicates collapse too
+    assert len(tracks) == 19
     assert all(track.item_id for track in tracks)
     assert calls == [
         (
@@ -610,8 +613,12 @@ async def test_get_artist_tracks(media_manager: TidalMediaManager, provider_mock
 async def test_get_artist_albums_skips_unparsable_album(
     media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
-    """Test one unusable album does not empty the artist's discography."""
-    doc = JsonApiDocument(_break_resource(_load_raw("artist_albums.json"), "541774424"))
+    """
+    Test one unusable album does not empty the artist's discography.
+
+    Album 402225791 has no quality variants, so the collapse cannot swap in a sibling.
+    """
+    doc = JsonApiDocument(_break_resource(_load_raw("artist_albums.json"), "402225791"))
 
     async def _pages(*_a: Any, **_k: Any) -> Any:
         yield doc
@@ -620,22 +627,63 @@ async def test_get_artist_albums_skips_unparsable_album(
 
     albums = await media_manager.get_artist_albums("4184211")
 
-    assert len(albums) == 19
-    assert all(album.item_id != "541774424" for album in albums)
+    assert len(albums) == 7
+    assert all(album.item_id != "402225791" for album in albums)
 
 
 async def test_get_artist_toptracks_skips_unparsable_track(
     media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
-    """Test one unusable track does not empty the artist's top tracks."""
+    """
+    Test one unusable track does not empty the artist's top tracks.
+
+    Track 58503071 has a unique isrc, so the collapse cannot swap in a sibling.
+    """
     provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
         _break_resource(_load_raw("artist_toptracks.json"), "58503071")
     )
 
     tracks = await media_manager.get_artist_toptracks("4184211")
 
-    assert len(tracks) == 19
+    assert len(tracks) == 18
     assert all(track.item_id != "58503071" for track in tracks)
+
+
+async def test_get_artist_albums_skips_resource_with_null_attributes(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a resource with null attributes cannot abort the whole listing."""
+    raw = _load_raw("artist_albums.json")
+    broken = {"type": "albums", "id": "999999999", "attributes": None}
+    raw["data"].append({"type": "albums", "id": "999999999"})
+    raw["included"].append(broken)
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    albums = await media_manager.get_artist_albums("4184211")
+
+    assert len(albums) == 8
+    provider_mock.logger.warning.assert_called_once()
+
+
+async def test_get_artist_toptracks_falls_back_to_sibling_variant(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a broken winner falls back to its sibling (title is not part of the isrc key)."""
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
+        _break_resource(_load_raw("artist_toptracks.json"), "242149003")
+    )
+
+    tracks = await media_manager.get_artist_toptracks("4184211")
+
+    assert len(tracks) == 19
+    ids = {track.item_id for track in tracks}
+    assert "242744824" in ids
+    assert "242149003" not in ids
 
 
 async def test_get_artist_toptracks_fetch_failure_propagates(

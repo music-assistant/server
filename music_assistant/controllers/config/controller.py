@@ -218,7 +218,7 @@ class ConfigController(
 
         self._save_requested += 1
         if immediate:
-            self.mass.create_task(self.async_save)
+            self.mass.create_task(self.async_save())
         else:
             # schedule the save for later
             self._timer_handle = self.mass.loop.call_later(DEFAULT_SAVE_DELAY, self._start_save)
@@ -332,7 +332,7 @@ class ConfigController(
     def _start_save(self) -> None:
         """Start the save task, called by the save timer."""
         self._timer_handle = None
-        self.mass.create_task(self.async_save)
+        self.mass.create_task(self.async_save())
 
     def _save_to_disk(self, json_data: str) -> None:
         """Atomically write the settings file to disk, rotating the previous one to backup."""

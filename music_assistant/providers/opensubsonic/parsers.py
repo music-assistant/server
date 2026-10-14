@@ -24,7 +24,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_ARTIST
 from music_assistant.helpers.tags import clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 
@@ -69,7 +69,7 @@ def get_item_mapping(instance_id: str, media_type: MediaType, key: str, name: st
     )
 
 
-def parse_track(  # noqa: PLR0915
+def parse_track(  # noqa: C901, PLR0912, PLR0915
     logger: logging.Logger,
     instance_id: str,
     sonic_song: SonicSong,
@@ -146,7 +146,7 @@ def parse_track(  # noqa: PLR0915
         album=album,
         duration=sonic_song.duration or 0,
         disc_number=sonic_song.disc_number or 0,
-        favorite=bool(sonic_song.starred),
+        favorite=True if sonic_song.starred else None,
         metadata=metadata,
         provider_mappings={
             ProviderMapping(
@@ -285,7 +285,7 @@ def parse_artist(
         name=sonic_artist.name,
         metadata=metadata,
         provider=SUBSONIC_DOMAIN,
-        favorite=bool(sonic_artist.starred),
+        favorite=True if sonic_artist.starred else None,
         provider_mappings={
             ProviderMapping(
                 item_id=sonic_artist.id,
@@ -360,7 +360,7 @@ def parse_album(
         metadata=metadata,
         name=name,
         version=version,
-        favorite=bool(sonic_album.starred),
+        favorite=True if sonic_album.starred else None,
         provider_mappings={
             ProviderMapping(
                 item_id=sonic_album.id,
@@ -472,6 +472,9 @@ def parse_playlist(instance_id: str, sonic_playlist: SonicPlaylist) -> Playlist:
         },
     )
 
+    if sonic_playlist.comment:
+        playlist.metadata.description = sonic_playlist.comment
+
     if sonic_playlist.cover_art:
         playlist.metadata.add_image(
             MediaItemImage(
@@ -507,6 +510,7 @@ def parse_podcast(instance_id: str, sonic_podcast: SonicPodcast) -> Podcast:
     )
 
     podcast.metadata.description = sonic_podcast.description
+    podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
     if sonic_podcast.cover_art:
         podcast.metadata.add_image(

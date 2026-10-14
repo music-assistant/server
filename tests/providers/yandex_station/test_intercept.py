@@ -1193,28 +1193,40 @@ async def test_target_dropdown_lists_all_players_except_self() -> None:
     no_play_media.display_name = "No Play Media"
     no_play_media.type = PlayerType.PLAYER
     no_play_media.supported_features = {PlayerFeature.PAUSE, PlayerFeature.VOLUME_SET}
+    group_player = MagicMock()
+    group_player.player_id = "group"
+    group_player.display_name = "Group"
+    group_player.type = PlayerType.GROUP
+    group_player.supported_features = set()
     self_player = MagicMock()
     self_player.player_id = player.player_id
     self_player.display_name = "Self"
     self_player.type = PlayerType.PLAYER
     self_player.supported_features = {PlayerFeature.PLAY_MEDIA}
-    source_player = MagicMock()
-    source_player.player_id = "turntable"
-    source_player.display_name = "Turntable"
-    source_player.type = PlayerType.SOURCE
-    source_player.supported_features = set()
+    display_player = MagicMock()
+    display_player.player_id = "display"
+    display_player.display_name = "Display"
+    display_player.type = PlayerType.DISPLAY
+    display_player.supported_features = set()
     player.mass.players.all_players = MagicMock(
-        return_value=[full, play_media_only, no_play_media, self_player, source_player]
+        return_value=[
+            full,
+            play_media_only,
+            no_play_media,
+            group_player,
+            self_player,
+            display_player,
+        ]
     )
 
     entries = await YandexStationPlayer.get_config_entries(player)
     target_entry = next(e for e in entries if getattr(e, "key", None) == CONF_INTERCEPT_TARGET)
     listed_ids = [opt.value for opt in target_entry.options]
 
-    # Every non-self player appears, regardless of supported_features,
-    # sorted alphabetically by display name (Full, Minimal, No Play Media).
-    # The capture-only source player is excluded by type.
-    assert listed_ids == ["full", "minimal", "no_play_media"]
+    # Every audio-capable non-self player appears, regardless of supported_features,
+    # sorted alphabetically by display name (Full, Group, Minimal, No Play Media).
+    # The non-playback display player is excluded by type.
+    assert listed_ids == ["full", "group", "minimal", "no_play_media"]
 
 
 async def test_concurrent_mirror_volume_serialised() -> None:

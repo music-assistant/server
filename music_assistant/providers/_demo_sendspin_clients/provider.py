@@ -41,8 +41,8 @@ class DemoSendspinClientsProvider(PlayerProvider):
     Runs fake Sendspin clients, one per pairing scenario.
 
     Each device connects to this server's own Sendspin endpoint, so the Sendspin provider
-    picks it up as an ordinary client and renders the real approval, pairing and device
-    management screens against it. The players themselves belong to the Sendspin provider,
+    picks it up as an ordinary client and renders the real approval and pairing
+    screens against it. The players themselves belong to the Sendspin provider,
     so this one registers none of its own.
     """
 
@@ -162,7 +162,7 @@ class DemoSendspinClientsProvider(PlayerProvider):
     def _server_url(self) -> str:
         """Return the WebSocket URL of this server's own Sendspin endpoint."""
         bind_ip = self.mass.streams.bind_ip
-        if not bind_ip or bind_ip == "0.0.0.0":
+        if not bind_ip or bind_ip == "0.0.0.0":  # noqa: S104 - comparison, not a bind
             host = "127.0.0.1"
         elif bind_ip == "::":
             # an IPv6 wildcard bind may not accept IPv4-mapped connections at all

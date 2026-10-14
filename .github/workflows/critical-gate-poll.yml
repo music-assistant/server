@@ -1,14 +1,16 @@
 name: Critical review gate (poll)
 
-# Scheduled gate: every ~10 minutes, scan open PRs and convert to a draft any with an unresolved,
-# non-outdated Copilot [CRITICAL] thread from a review posted in the last ~30 minutes (a draft PR
-# cannot be merged), with one explanatory comment.
+# Scheduled gate: on a 10-minute cron, scan open PRs and convert to a draft any with an unresolved,
+# non-outdated Copilot [CRITICAL] thread from a review posted in the last 2 hours (a draft PR cannot
+# be merged), with one explanatory comment.
 #
 # The gate is RECENCY-based, not "latest review": a scheduled poller should act on FRESH criticals
 # and then back off — gating on the latest review regardless of age would re-draft a PR with an old,
-# ignored critical on every run, forever. The 30-minute window (> a few poll cycles) means no fresh
-# critical is missed; and dev's ruleset already blocks merging any PR with an unresolved thread, so a
-# critical that ages out of the window still can't be merged — the draft is only the visible signal.
+# ignored critical on every run, forever. The window is 2 hours because GitHub does not honour the
+# cron: runs land a median 22 minutes apart with gaps of over an hour, and at 30 minutes about one
+# fresh critical in five aged out before any run saw it. dev's ruleset already blocks merging any PR
+# with an unresolved thread, so a critical that ages out of the window still can't be merged — the
+# draft is only the visible signal.
 #
 # Why a poller and not a `pull_request_review` trigger: GitHub holds workflow runs triggered by the
 # Copilot bot for manual approval (they sit at `action_required` and never run), so an event-reactive
@@ -18,10 +20,18 @@ name: Critical review gate (poll)
 on:  # yamllint disable-line rule:truthy
   schedule:
     - cron: "*/10 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Only consider this PR number (for testing)"
+        required: false
+        type: string
 
 permissions:
-  contents: read
+  # `convertPullRequestToDraft` needs contents: write as well as pull-requests: write. With
+  # pull-requests alone GitHub answers "Resource not accessible by integration" (to this job token
+  # and to an App token alike), which is why this gate never drafted a PR until this was added.
+  contents: write
   pull-requests: write
 
 concurrency:
@@ -34,13 +44,16 @@ jobs:
     steps:
       - name: Draft open PRs with a recent unresolved [CRITICAL] Copilot finding
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ONLY_PR: ${{ inputs.pr }}
         with:
           script: |
             const { owner, repo } = context.repo;
+            const ONLY_PR = (process.env.ONLY_PR || '').trim();
             const BASES = ['dev', 'stable'];
             const COPILOT = 'copilot-pull-request-reviewer';  // exact GraphQL reviewer login
             const GATE_BOT = 'github-actions[bot]';            // author of this gate's comments
-            const WINDOW_MS = 30 * 60 * 1000;                  // act only on criticals this recent
+            const WINDOW_MS = 120 * 60 * 1000;                 // act only on criticals this recent
             const MARKER = '<!-- critical-gate -->';
             const BODY = [
               MARKER,
@@ -88,6 +101,7 @@ jobs:
             let failed = false, drafted = 0;
             for (const pr of prs) {
               try {
+                if (ONLY_PR && String(pr.number) !== ONLY_PR) continue;
                 if (!BASES.includes(pr.base.ref)) continue;
                 if (pr.labels.some(l => l.name === 'override-critical')) continue;
                 if (!(await activeCritical(pr.number))) continue;

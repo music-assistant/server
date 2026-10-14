@@ -153,6 +153,36 @@ async def test_providers_updated_announced_even_when_post_load_fails() -> None:
     )
 
 
+async def test_post_load_of_a_removed_provider_stores_no_name(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """
+    A provider removed while its post load step runs does not come back through its name.
+
+    Removing a provider drops its config before the unload cancels the post load task, so
+    that task can still reach the step that stores the default name.
+    """
+    mass = mass_minimal
+    mass.signal_event = MagicMock()  # type: ignore[method-assign]
+    mass._update_available_providers_cache = AsyncMock()  # type: ignore[method-assign]
+    discovery = AsyncMock()
+    mass.run_provider_discovery = discovery  # type: ignore[method-assign]
+    conf_key = f"{CONF_PROVIDERS}/test--1"
+    mass.config.set(conf_key, {"domain": "test", "type": "plugin", "instance_id": "test--1"})
+    provider = _provider(mass)
+    provider.load_gate = asyncio.Event()
+
+    await mass._register_loaded_provider(provider, provider.config)
+    post_load = mass._tracked_tasks["post_load_provider_test--1"]
+    await asyncio.sleep(0)  # let the post load task reach the gate
+    mass.config.remove(conf_key)
+    provider.load_gate.set()
+    await post_load
+
+    discovery.assert_awaited_once_with("test--1")
+    assert mass.config.get(conf_key) is None
+
+
 async def test_provider_withheld_from_clients_until_initialized() -> None:
     """A provider is not offered to clients until its post load registered its commands."""
     mass = _mass()

@@ -1,0 +1,15 @@
+26 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw
+27 26 0:5 / /dev rw,nosuid,relatime shared:2 - devtmpfs udev rw,size=16303452k,nr_inodes=4075863,mode=755,inode64
+28 27 0:26 / /dev/pts rw,nosuid,noexec,relatime shared:3 - devpts devpts rw,gid=5,mode=620,ptmxmode=000
+29 26 0:27 / /run rw,nosuid,nodev,noexec,relatime shared:5 - tmpfs tmpfs rw,size=3268364k,mode=755,inode64
+30 26 0:24 / /sys rw,nosuid,nodev,noexec,relatime shared:7 - sysfs sysfs rw
+31 26 0:25 / /proc rw,nosuid,nodev,noexec,relatime shared:13 - proc proc rw
+32 30 0:28 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:9 - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot
+40 26 7:0 / /snap/core22/1380 ro,nodev,relatime shared:21 - squashfs /dev/loop0 ro,errors=continue,threads=single
+41 26 7:1 / /snap/firefox/4173 ro,nodev,relatime shared:22 - squashfs /dev/loop1 ro,errors=continue,threads=single
+50 26 259:1 / /boot/efi rw,relatime shared:30 - vfat /dev/nvme0n1p1 rw,fmask=0077,dmask=0077,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro
+51 26 259:3 / /home rw,relatime shared:31 - ext4 /dev/nvme0n1p3 rw
+60 29 0:48 / /run/user/1000 rw,nosuid,nodev,relatime shared:500 - tmpfs tmpfs rw,size=3268360k,nr_inodes=817090,mode=700,uid=1000,gid=1000,inode64
+61 60 0:49 / /run/user/1000/gvfs rw,nosuid,nodev,relatime shared:510 - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000,group_id=1000
+70 26 0:60 / /var/lib/docker/overlay2/5b0e7f/merged rw,relatime shared:600 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/XYZXYZ:/var/lib/docker/overlay2/l/ABCABC,upperdir=/var/lib/docker/overlay2/5b0e7f/diff,workdir=/var/lib/docker/overlay2/5b0e7f/work
+80 26 0:70 / /mnt/nas\040music rw,relatime shared:700 - cifs //nas/music rw,vers=3.0,cache=strict,username=marcel,uid=1000,noforceuid,gid=1000,noforcegid,addr=192.168.1.10,file_mode=0755,dir_mode=0755,soft,nounix,serverino,mapposix,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=1,closetimeo=1

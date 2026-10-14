@@ -62,8 +62,10 @@ from music_assistant.helpers.external_ids import (
 )
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
     ThrottlerManager,
     parse_retry_after,
+    request_priority,
     throttle_with_retries,
 )
 from music_assistant.helpers.util import (
@@ -540,7 +542,6 @@ class QobuzProvider(MusicProvider):
         else:
             msg = f"Unsupported mime type for {item_id}"
             raise MediaNotFoundError(msg)
-        self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
             provider=self.instance_id,
@@ -557,6 +558,13 @@ class QobuzProvider(MusicProvider):
             allow_seek=True,
         )
 
+    async def on_stream_started(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """Handle callback when an item started streaming."""
+        await self._report_playback_started(streamdetails.data)
+
     async def on_streamed(
         self,
         streamdetails: StreamDetails,
@@ -566,13 +574,12 @@ class QobuzProvider(MusicProvider):
             msg = "User auth info not available"
             raise LoginFailed(msg)
         user_id = self._user_auth_info["user"]["id"]
-        async with self.throttler.bypass():
-            await self._get_data(
-                "track/reportStreamingEnd",
-                user_id=user_id,
-                track_id=str(streamdetails.item_id),
-                duration=try_parse_int(streamdetails.seconds_streamed),
-            )
+        await self._get_data(
+            "track/reportStreamingEnd",
+            user_id=user_id,
+            track_id=str(streamdetails.item_id),
+            duration=try_parse_int(streamdetails.seconds_streamed),
+        )
 
     async def _report_playback_started(self, streamdata: dict[str, Any]) -> None:
         """Report playback start to qobuz."""
@@ -601,7 +608,7 @@ class QobuzProvider(MusicProvider):
                 "format_id": format_id,
             }
         ]
-        async with self.throttler.bypass():
+        with request_priority(RequestPriority.LOW):
             await self._post_data("track/reportStreamingStart", data=events)
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
@@ -946,7 +953,7 @@ class QobuzProvider(MusicProvider):
 
     @throttle_with_retries
     async def _get_data(
-        self, endpoint: str, sign_request: bool = False, **kwargs: Any
+        self, /, endpoint: str, sign_request: bool = False, **kwargs: Any
     ) -> dict[str, Any] | None:
         """Get data from api."""
         self.logger.debug("Handling GET request to %s", endpoint)

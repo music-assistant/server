@@ -21,7 +21,9 @@ if TYPE_CHECKING:
     from bandcamp_async_api.models import BCArtist as APIArtist
     from bandcamp_async_api.models import BCTrack as APITrack
     from bandcamp_async_api.models import (
+        CollectionItem,
         FeedTrack,
+        FollowingItem,
         SearchResultAlbum,
         SearchResultArtist,
         SearchResultTrack,
@@ -157,14 +159,15 @@ class BandcampConverters:
                 )
             },
         )
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=item.image_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        if item.image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=item.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
-        )
         return output
 
     def artist_from_search(self, item: SearchResultArtist) -> MAArtist:
@@ -186,14 +189,98 @@ class BandcampConverters:
         output.metadata.genres = item.tags
         if item.url:
             output.metadata.description = item.url
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=item.image_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        if item.image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=item.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
+        return output
+
+    def artist_from_following(self, item: FollowingItem) -> MAArtist:
+        """Create an Artist from an entry of a following list, without a band request."""
+        output = MAArtist(
+            item_id=str(item.band_id),
+            provider=self.instance_id,
+            name=item.name,
+            uri=item.url,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(item.band_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=item.url,
+                )
+            },
         )
+        if item.url:
+            output.metadata.description = item.url
+        if item.image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=item.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            )
+        return output
+
+    def album_from_collection(self, item: CollectionItem, album_id: str) -> MAAlbum:
+        """Create the Album with this ID from a collection or wishlist entry, without a request."""
+        output = MAAlbum(
+            item_id=album_id,
+            provider=self.instance_id,
+            name=item.item_title,
+            artists=UniqueList([self._collection_artist(item)]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=album_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=item.item_url,
+                )
+            },
+        )
+        self._add_collection_image(output, item)
+        return output
+
+    def track_from_collection(self, item: CollectionItem) -> MATrack:
+        """Create a Track from an entry of a collection or a wishlist, without a track request."""
+        track_id = f"{item.band_id}-{item.album_id or 0}-{item.item_id}"
+        output = MATrack(
+            item_id=track_id,
+            provider=self.instance_id,
+            name=item.item_title,
+            artists=UniqueList([self._collection_artist(item)]),
+            # The featured track of a track entry is the track itself
+            duration=int(item.featured_track_duration)
+            if item.featured_track == item.item_id and item.featured_track_duration
+            else 0,
+            album=ItemMapping(
+                media_type=MediaType.ALBUM,
+                item_id=f"{item.band_id}-{item.album_id}",
+                provider=self.instance_id,
+                name=item.album_title or "",
+            )
+            if item.album_id
+            else None,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=item.item_url,
+                    # Bandcamp counts the tracks that stream, so a hidden or a preorder track
+                    # has 0. An entry without the count stays available.
+                    available=item.num_streamable_tracks != 0,
+                )
+            },
+        )
+        self._add_collection_image(output, item)
         return output
 
     def track_from_api(
@@ -234,7 +321,8 @@ class BandcampConverters:
                 ]
             ),
             disc_number=0,
-            duration=track.duration,
+            # Bandcamp sends seconds as a float, and None for a track with no audio
+            duration=int(track.duration) if track.duration else 0,
             provider_mappings={
                 ProviderMapping(
                     item_id=f"{track.artist.id}-{album_id}-{track.id}",
@@ -245,6 +333,8 @@ class BandcampConverters:
                         content_type=content_type,
                         bit_rate=bitrate,
                     ),
+                    # A hidden or a preorder track has no streaming URL
+                    available=bool(track.streaming_url),
                 )
             },
         )
@@ -345,14 +435,15 @@ class BandcampConverters:
             },
         )
         output.metadata.description = f"{artist.url}\n{artist.bio or ''}".strip()
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=artist.image_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        if artist.image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=artist.image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
-        )
         return output
 
     def album_from_discography_item(
@@ -455,7 +546,9 @@ class BandcampConverters:
                             type=ImageType.THUMB,
                             provider=self.instance_id,
                             remotely_accessible=True,
-                        ),
+                        )
+                        if album.art_url
+                        else None,
                     )
                 ]
             ),
@@ -471,14 +564,15 @@ class BandcampConverters:
             if album.release_date
             else None,
         )
-        output.metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=album.art_url,
-                provider=self.instance_id,
-                remotely_accessible=True,
+        if album.art_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=album.art_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
-        )
         output.metadata.description = f"{album.url}\n{album.about or ''}".strip()
         return output
 
@@ -524,6 +618,47 @@ class BandcampConverters:
                 )
             )
         return output
+
+    def _collection_artist(self, item: CollectionItem) -> ItemMapping:
+        """
+        Return the artist of a collection entry.
+
+        band_name holds the artist credit of the release, which can differ from the owner of
+        the page, so the ID is the synthetic one, as for a search result. A credit that
+        matches the owner of the page opens that page.
+        """
+        return ItemMapping(
+            media_type=MediaType.ARTIST,
+            item_id=make_artist_id(item.band_id, item.band_name),
+            provider=self.instance_id,
+            name=item.band_name,
+        )
+
+    def _add_collection_image(self, output: MAAlbum | MATrack, item: CollectionItem) -> None:
+        """Add the cover of a collection entry, if it has one."""
+        if item.art_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=item.art_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            )
+
+
+def collection_album_id(item: CollectionItem) -> str | None:
+    """
+    Return the provider ID of the album of a collection or wishlist entry, or None.
+
+    A package, for example a record, names its digital album in tralbum_id. A package
+    without a digital album, a track and a band give None.
+    """
+    if item.item_type == "album":
+        return f"{item.band_id}-{item.item_id}"
+    if item.item_type == "package" and item.tralbum_type == "a" and item.tralbum_id:
+        return f"{item.band_id}-{item.tralbum_id}"
+    return None
 
 
 def _resolve_artist_id(

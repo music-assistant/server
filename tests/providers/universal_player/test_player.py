@@ -278,3 +278,20 @@ def test_no_setup_needed_while_another_protocol_is_usable() -> None:
     assert universal.available is True
     assert universal.needs_setup is False
     assert universal.setup_reason is None
+
+
+async def test_remove_player_unregisters_before_deleting_stale_protocol_configs() -> None:
+    """The universal player is removed before the configs of its offline protocols."""
+    mass = _make_mock_mass()
+    universal = _make_universal_player(mass, ["airplay_1"])
+    _register_players(mass, universal)  # type: ignore[arg-type]
+    calls = MagicMock()
+    mass.players.unregister = AsyncMock(side_effect=lambda *_a, **_kw: calls.unregister())
+    mass.players.delete_player_config = MagicMock(side_effect=lambda *_a: calls.delete())
+    provider = _make_universal_provider(mass)
+
+    await provider.remove_player("up_test")
+
+    mass.players.unregister.assert_awaited_once_with("up_test", permanent=True)
+    mass.players.delete_player_config.assert_called_once_with("airplay_1")
+    assert [c[0] for c in calls.mock_calls] == ["unregister", "delete"]

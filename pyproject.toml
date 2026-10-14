@@ -14,7 +14,7 @@ dependencies = [
   "Brotli>=1.0.9",
   "aiohttp==3.14.3",
   "aiohttp-fast-zlib==0.3.0",
-  "aiohttp-socks==0.11.0",
+  "aiohttp-socks==0.12.0",
   "aiofiles==24.1.0",
   "aiosqlite==0.22.1",
   "awesomeversion>=24.6.0",
@@ -24,22 +24,23 @@ dependencies = [
   "cryptography==50.0.0",
   "chardet==7.6.0",
   "ifaddr==0.2.0",
-  "getmac==0.9.5",
-  "mashumaro==3.20",
-  "music-assistant-models==1.1.212",
-  "music-assistant-frontend==2.17.313",
+  "getmac==0.9.6",
+  "mashumaro==3.22",
+  "music-assistant-models==1.1.223",
+  "music-assistant-frontend==2.17.341",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
-  "python-slugify==8.0.4",
+  "python-slugify==9.1.1",
   "xmltodict==1.0.4",
+  "defusedxml==0.7.1",
   "markdownify==1.2.3",
   "shortuuid==1.0.13",
-  "zeroconf==0.149.16",
+  "zeroconf==0.151.5",
   "uv>=0.8.0",
-  "librosa==0.11.0",
+  "librosa==1.0.0",
   "numpy==2.3.5", # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
   "torch==2.13.0",
   "torchaudio==2.11.0",
@@ -67,7 +68,7 @@ test = [
   "pytest-cov==7.0.0",
   "pytest-timeout==2.4.0",
   "pytest-xdist==3.8.0",
-  "syrupy==6.0.0",
+  "syrupy==6.1.1",
   "tomli==2.4.1",
   "ruff==0.16.5",
   # v1.7.7 fixes a coroutine reference leak while profiling; its PyPI upload failed upstream
@@ -131,8 +132,7 @@ max-statements = 50
 platform = "linux"
 python_version = "3.14"
 
-# set this to normal when we have fixed all exclusions
-follow_imports = "silent"
+follow_imports = "normal"
 
 # suppress errors about unsatisfied imports
 ignore_missing_imports = true
@@ -152,13 +152,14 @@ disallow_untyped_decorators = true
 disallow_untyped_defs = true
 enable_error_code = [
   "ignore-without-code",
+  "possibly-undefined",
   "redundant-self",
   "truthy-iterable",
 ]
 exclude = [
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
 ]
-extra_checks = false
+extra_checks = true
 local_partial_types = true
 no_implicit_optional = true
 no_implicit_reexport = true
@@ -183,6 +184,11 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 follow_imports = "skip"
 module = ["plexapi", "plexapi.*"]
+
+# Vendored third-party code, kept as-is.
+[[tool.mypy.overrides]]
+follow_imports = "skip"
+module = ["music_assistant.providers.sonic_analysis.vendored_clap.*"]
 
 [tool.ruff.format]
 # Force Linux/macOS line endings
@@ -238,20 +244,13 @@ ignore = [
   "PTH120",
   "PTH123",
   "G004",
-  "S104",
-  "S105",
   "S106",
   "SLF001",
   "SIM102",
   "PERF401",
   "ARG002",
-  "S311",
-  "TRY301",
-  "PLR0912",
   "B904",
   "S324",
-  "ERA001",
-  "C901",
   "S304",
   "TRY300",
   "S608",
@@ -264,6 +263,12 @@ select = ["ALL"]
 # Enforce the multi-line docstring summary on the second line (the pep257 convention disables both
 # D212 and D213; we re-enable D213 so our "summary starts on the next line" style is checked).
 extend-select = ["D213"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests use wildcard addresses, made-up tokens and passwords as fixtures
+"tests/**" = ["S104", "S105"]
+# the provider templates show example code in comments
+"music_assistant/providers/_demo_*/**" = ["ERA001"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false

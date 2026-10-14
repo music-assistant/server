@@ -11,13 +11,25 @@ wiping the credentials and forcing re-auth.
 from __future__ import annotations
 
 import time
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import (
+    LoginFailed,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 
-from music_assistant.providers.spotify.constants import CONF_ACCOUNT_ID, CONF_REFRESH_TOKEN_GLOBAL
+from music_assistant.providers.spotify.constants import (
+    CONF_ACCOUNT_COUNTRY,
+    CONF_ACCOUNT_ID,
+    CONF_ACCOUNT_NAME,
+    CONF_AUDIOBOOKS_SUPPORTED,
+    CONF_REFRESH_TOKEN_GLOBAL,
+)
+from music_assistant.providers.spotify.helpers import get_spotify_token
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 USED_TOKEN = "token_a"
@@ -46,6 +58,34 @@ def _make_provider(stored_token: str | None) -> SpotifyProvider:
     mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
     prov.mass = mass
     return prov
+
+
+def _stub_token_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer the token refresh of the provider with a fresh access token."""
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.provider.get_spotify_token",
+        AsyncMock(
+            return_value={
+                "access_token": "access",
+                "refresh_token": "fresh_token",
+                "expires_at": 9999999999,
+            }
+        ),
+    )
+
+
+def _token_endpoint(status: int, text: str = "", headers: dict[str, str] | None = None) -> Any:
+    """Return an http session whose token endpoint answers with the given response."""
+    response = MagicMock(status=status, headers=headers or {})
+    response.text = AsyncMock(return_value=text)
+    response.json = AsyncMock(return_value={"access_token": "access", "expires_in": 3600})
+    http_session = MagicMock()
+    http_session.post = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=response), __aexit__=AsyncMock(return_value=None)
+        )
+    )
+    return http_session
 
 
 def test_refresh_token_superseded_no_stored_token() -> None:
@@ -259,3 +299,152 @@ async def test_login_leaves_a_recorded_account_alone(monkeypatch: pytest.MonkeyP
     await prov.login()
 
     assert CONF_ACCOUNT_ID not in [call.args[0] for call in update.call_args_list]
+
+
+async def test_login_stores_the_account_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful account lookup stores the details a later load can fall back on."""
+    prov = _make_provider(stored_token="fresh_token")
+    _stub_token_refresh(monkeypatch)
+    monkeypatch.setattr(
+        prov,
+        "_get_data",
+        AsyncMock(return_value={"id": "u1", "display_name": "tester", "country": "NL"}),
+    )
+    update = MagicMock()
+    monkeypatch.setattr(prov, "_update_setup_data", update)
+    prov.mass.metadata = MagicMock()
+
+    await prov.login()
+
+    stored = [call.args[:2] for call in update.call_args_list]
+    assert (CONF_ACCOUNT_NAME, "tester") in stored
+    assert (CONF_ACCOUNT_COUNTRY, "NL") in stored
+
+
+@pytest.mark.parametrize("error", [RetriesExhausted, ResourceTemporarilyUnavailable])
+async def test_login_falls_back_to_the_stored_account(
+    monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    """An account lookup Spotify does not answer is served from the stored account details."""
+    prov = _make_provider(stored_token="fresh_token")
+    prov.mass.config.get = MagicMock(  # type: ignore[method-assign]
+        return_value={
+            CONF_REFRESH_TOKEN_GLOBAL: "fresh_token",
+            CONF_ACCOUNT_ID: "u1",
+            CONF_ACCOUNT_NAME: "tester",
+            CONF_ACCOUNT_COUNTRY: "NL",
+        }
+    )
+    _stub_token_refresh(monkeypatch)
+    monkeypatch.setattr(prov, "_get_data", AsyncMock(side_effect=error("limited")))
+    update = MagicMock()
+    monkeypatch.setattr(prov, "_update_setup_data", update)
+    prov.mass.metadata = MagicMock()
+
+    await prov.login()
+
+    assert prov.account_id == "u1"
+    assert prov.instance_name_postfix == "tester"
+    prov.mass.metadata.set_default_preferred_language.assert_called_once_with("NL")
+    # the stored details are used as they are, not written back
+    assert CONF_ACCOUNT_ID not in [call.args[0] for call in update.call_args_list]
+
+
+async def test_login_without_a_stored_account_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without stored account details an unanswered account lookup fails the login."""
+    prov = _make_provider(stored_token="fresh_token")
+    _stub_token_refresh(monkeypatch)
+    monkeypatch.setattr(prov, "_get_data", AsyncMock(side_effect=RetriesExhausted("limited")))
+    monkeypatch.setattr(prov, "_update_setup_data", MagicMock())
+
+    with pytest.raises(RetriesExhausted):
+        await prov.login()
+    assert prov._sp_user is None
+
+
+@pytest.mark.parametrize("error", [RateLimited, ResourceTemporarilyUnavailable])
+async def test_login_keeps_the_provider_on_a_temporary_token_error(
+    monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    """A token refresh Spotify cannot serve right now neither unloads nor clears credentials."""
+    prov = _make_provider(stored_token=USED_TOKEN)
+    update_setup_data = MagicMock()
+    unload = MagicMock()
+    monkeypatch.setattr(prov, "_update_setup_data", update_setup_data)
+    monkeypatch.setattr(prov, "unload_with_error", unload)
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.provider.get_spotify_token",
+        AsyncMock(side_effect=error("limited")),
+    )
+
+    with pytest.raises(error):
+        await prov.login()
+    update_setup_data.assert_not_called()
+    unload.assert_not_called()
+    prov.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("answer", "stored", "expected"),
+    [
+        (RetriesExhausted("limited"), True, True),
+        (RetriesExhausted("limited"), None, False),
+        (ResourceTemporarilyUnavailable("down"), True, True),
+    ],
+)
+async def test_audiobook_support_falls_back_to_the_stored_answer(
+    monkeypatch: pytest.MonkeyPatch, answer: Exception, stored: bool | None, expected: bool
+) -> None:
+    """An audiobook check Spotify does not answer uses the stored answer, False without one."""
+    prov = _make_provider(stored_token=USED_TOKEN)
+    setup_data: dict[str, Any] = {CONF_REFRESH_TOKEN_GLOBAL: USED_TOKEN}
+    if stored is not None:
+        setup_data[CONF_AUDIOBOOKS_SUPPORTED] = stored
+    prov.mass.config.get = MagicMock(return_value=setup_data)  # type: ignore[method-assign]
+    monkeypatch.setattr(prov, "_get_data", AsyncMock(side_effect=answer))
+    update = MagicMock()
+    monkeypatch.setattr(prov, "_update_setup_data", update)
+
+    assert await prov._test_audiobook_support() is expected
+    update.assert_not_called()
+
+
+async def test_audiobook_support_stores_the_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An answered audiobook check is stored for a later load."""
+    prov = _make_provider(stored_token=USED_TOKEN)
+    monkeypatch.setattr(prov, "_get_data", AsyncMock(return_value={"items": []}))
+    update = MagicMock()
+    monkeypatch.setattr(prov, "_update_setup_data", update)
+
+    assert await prov._test_audiobook_support() is True
+    update.assert_called_once_with(CONF_AUDIOBOOKS_SUPPORTED, True, immediate=False)
+
+
+async def test_token_endpoint_rate_limit_is_temporary() -> None:
+    """A rate limited token refresh raises RateLimited with the wait Spotify asked for."""
+    http_session = _token_endpoint(429, headers={"Retry-After": "120"})
+
+    with pytest.raises(RateLimited) as err:
+        await get_spotify_token(http_session, "client", USED_TOKEN)
+    assert err.value.backoff_time == 120
+
+
+async def test_token_endpoint_server_error_is_temporary() -> None:
+    """A token refresh that fails on Spotify's side raises ResourceTemporarilyUnavailable."""
+    http_session = _token_endpoint(503)
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as err:
+        await get_spotify_token(http_session, "client", USED_TOKEN)
+    assert not isinstance(err.value, RateLimited)
+    http_session.post.assert_called_once()
+
+
+async def test_token_endpoint_revoked_token_fails_the_login() -> None:
+    """A revoked refresh token still raises LoginFailed."""
+    http_session = _token_endpoint(400, text='{"error": "invalid_grant"}')
+
+    with pytest.raises(LoginFailed):
+        await get_spotify_token(http_session, "client", USED_TOKEN)
+    http_session.post.assert_called_once()

@@ -45,7 +45,7 @@ class FailingAlbumProvider(MusicProvider):
             album.item_id = item_id
             album.name = f"Album {item_id}"
             album.uri = f"test://album/{item_id}"
-            album.favorite = self.mark_favorite
+            album.favorite = True if self.mark_favorite else None
             album.metadata.genres = None
             album.provider_mappings = [MagicMock()]
             yield album
@@ -96,11 +96,11 @@ def _build_mass(prev_library_ids: list[int] | None = None) -> MagicMock:
     async def add_item_to_library(prov_item: Any) -> Any:
         library_item = MagicMock()
         library_item.item_id = DB_IDS[prov_item.item_id]
-        library_item.favorite = False
         return library_item
 
     albums.add_item_to_library = AsyncMock(side_effect=add_item_to_library)
     mass.music.genres.sync_media_item_genres = AsyncMock()
+    mass.music.favorites = AsyncMock()
     mass.music.library_supported = MagicMock(return_value=True)
 
     # controller used by the deletion pass
@@ -357,11 +357,11 @@ async def test_item_stays_tracked_when_ancillary_work_fails() -> None:
     mass = _build_mass()
     provider = _build_provider(mass)
     provider.mark_favorite = True
-    mass.music.albums.set_favorite = AsyncMock(side_effect=TypeError("bad favorite"))
+    mass.music.favorites.record_from_provider = AsyncMock(side_effect=TypeError("bad favorite"))
 
     await provider.sync_library(MediaType.ALBUM)
 
-    assert mass.music.albums.set_favorite.await_count == len(ALBUM_IDS)
+    assert mass.music.favorites.record_from_provider.await_count == len(ALBUM_IDS)
     assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
 
 

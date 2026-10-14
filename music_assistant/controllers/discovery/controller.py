@@ -12,7 +12,6 @@ from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, EventType
 from zeroconf import (
@@ -28,6 +27,7 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.helpers.hassio import supervisor_request
 from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
 
@@ -83,15 +83,19 @@ class DiscoveryController(CoreController):
 
     @property
     def aiozc(self) -> AsyncZeroconf:
-        """Return the shared AsyncZeroconf instance for discovery consumers."""
+        """Return the shared AsyncZeroconf instance, which lives for the whole server run."""
         assert self._aiozc is not None, "DiscoveryController is not initialized"
         return self._aiozc
+
+    async def start_zeroconf(self) -> None:
+        """Create the shared zeroconf instance (aiozc), once per server run and ahead of setup."""
+        if self._aiozc is None:
+            config = await self.mass.config.get_core_config(self.domain)
+            self._aiozc = self._create_aiozc(config)
 
     async def setup(self, config: CoreConfig) -> None:
         """Initialize discovery controller."""
         self.config = config
-        if self._aiozc is None:
-            self._aiozc = self._create_aiozc(config)
         self._configure_library_loggers()
         await self._setup_mdns_browser()
         await self._register_mass_service()
@@ -336,7 +340,10 @@ class DiscoveryController(CoreController):
             if not provider.available or not provider.manifest.mdns_discovery:
                 continue
             if service_type in provider.manifest.mdns_discovery:
-                self.mass.create_task(process_mdns_state_change(provider))
+                self.mass.create_task(
+                    process_mdns_state_change(provider),
+                    task_name=f"mdns_state_change_{provider.instance_id}",
+                )
 
     async def _replay_mdns_discovery(self, provider: ProviderInstanceType) -> None:
         """Replay cached mDNS results for a provider after it loads."""
@@ -474,7 +481,6 @@ class DiscoveryController(CoreController):
 
     async def _announce_to_homeassistant(self) -> None:
         """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
         addon_hostname = os.environ["HOSTNAME"]
         ha_integration_token = await self.mass.webserver.auth.get_homeassistant_system_user_token()
         discovery_payload = {
@@ -486,18 +492,13 @@ class DiscoveryController(CoreController):
             },
         }
         try:
-            async with self.mass.http_session_no_ssl.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json=discovery_payload,
-                timeout=ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
-                self.logger.debug(
-                    "Successfully announced to Home Assistant. Discovery UUID: %s",
-                    result.get("uuid"),
-                )
+            result = await supervisor_request(
+                self.mass, "post", "/discovery", json_data=discovery_payload
+            )
+            self.logger.debug(
+                "Successfully announced to Home Assistant. Discovery UUID: %s",
+                result.get("uuid") if isinstance(result, dict) else None,
+            )
         except Exception as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
 

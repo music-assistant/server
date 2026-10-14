@@ -226,6 +226,11 @@ class DigitallyImportedProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Premium subscriptions allow one stream at a time (DI.FM Terms of Use, section 4)."""
+        return 1
+
     async def search(
         self,
         search_query: str,
@@ -808,7 +813,7 @@ class DigitallyImportedProvider(MusicProvider):
 
             if not playlist or not isinstance(playlist, list):
                 msg = f"{self.domain}: No stream URLs returned from Digitally Imported API"
-                raise MediaNotFoundError(msg)
+                raise MediaNotFoundError(msg)  # noqa: TRY301 - re-raised by except below
 
             stream_list: list[str] = [url for url in playlist if url and isinstance(url, str)]
             self.logger.debug(
@@ -820,7 +825,7 @@ class DigitallyImportedProvider(MusicProvider):
 
             if not stream_list:
                 msg = f"{self.domain}: No valid stream URLs found in the playlist"
-                raise MediaNotFoundError(msg)
+                raise MediaNotFoundError(msg)  # noqa: TRY301 - re-raised by except below
 
             # Log all available URLs
             for i, url in enumerate(stream_list):

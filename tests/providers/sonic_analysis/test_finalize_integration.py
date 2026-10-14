@@ -320,5 +320,4 @@ async def test_finalize_flush_completes_short_window_and_persists() -> None:
     set_aa.assert_called_once()
     analysis_arg = set_aa.call_args.kwargs["analysis"]
     assert analysis_arg.danceability is not None
-    assert analysis_arg.extra_data is not None
-    assert "clap_embedding" in analysis_arg.extra_data
+    assert analysis_arg.clap_embedding is not None

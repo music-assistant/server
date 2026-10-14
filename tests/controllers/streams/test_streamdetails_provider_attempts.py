@@ -13,6 +13,7 @@ candidates are reached in is fixed rather than left to the iteration order of a 
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,8 +22,14 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ContentType, MediaType, ProviderSharing, StreamType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioFormat,
+    ItemMapping,
+    ProviderMapping,
+    SoundEffect,
+)
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -69,6 +76,18 @@ def _queue_item(*mappings: ProviderMapping) -> QueueItem:
         duration=None,
         media_item=media_item,
     )
+
+
+def _pinned_to(queue_item: QueueItem, instance: str) -> QueueItem:
+    """Pin the queue item to its copy on the given instance, as a container's listing would."""
+    queue_item.origin = QueueItemOrigin(
+        container=ItemMapping(
+            media_type=MediaType.PLAYLIST, item_id="pl1", provider=instance, name="Playlist"
+        ),
+        provider_instance=instance,
+        item_id=ITEM_ID,
+    )
+    return queue_item
 
 
 def _streamdetails(item_id: str, media_type: MediaType, provider: str) -> StreamDetails:
@@ -275,6 +294,79 @@ async def test_excluded_instance_is_skipped_including_its_cached_details() -> No
     excluded.get_stream_details.assert_not_awaited()
 
 
+async def test_the_pinned_copy_is_tried_before_a_better_one() -> None:
+    """The copy a container listed plays first, ahead of a better and an own-account copy."""
+    pinned_instance = "tidal--lofi"
+    other_instance = "qobuz--hifi"
+    pinned = _music_provider(pinned_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({pinned_instance: pinned, other_instance: other}, owned=[other_instance])
+    queue_item = _pinned_to(
+        _queue_item(
+            _mapping(pinned_instance),
+            _mapping(other_instance, content_type=ContentType.FLAC),
+        ),
+        pinned_instance,
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    assert streamdetails.provider == pinned_instance
+    other.get_stream_details.assert_not_awaited()
+
+
+async def test_an_excluded_pinned_instance_is_passed_over() -> None:
+    """The pin does not revive an excluded instance; the next copy in line plays instead."""
+    pinned_instance = "tidal--lofi"
+    other_instance = "qobuz--hifi"
+    pinned = _music_provider(pinned_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({pinned_instance: pinned, other_instance: other})
+    queue_item = _pinned_to(
+        _queue_item(
+            _mapping(pinned_instance),
+            _mapping(other_instance, content_type=ContentType.FLAC),
+        ),
+        pinned_instance,
+    )
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=queue_item, excluded_provider_instances={pinned_instance}
+    )
+
+    assert streamdetails.provider == other_instance
+    pinned.get_stream_details.assert_not_awaited()
+
+
+async def test_an_audiobook_plays_from_the_account_it_was_started_from() -> None:
+    """Of two equal accounts of one service, the one the audiobook was started from plays."""
+    first_instance = "spotify--first"
+    second_instance = "spotify--second"
+    first = _music_provider(first_instance)
+    second = _music_provider(second_instance)
+    audio = _audio({first_instance: first, second_instance: second})
+    audiobook = Audiobook(
+        item_id="7",
+        provider="library",
+        name="Dune",
+        provider_mappings={_mapping(first_instance), _mapping(second_instance)},
+    )
+    queue_item = QueueItem(
+        queue_id="q1",
+        queue_item_id="qi1",
+        name="Dune",
+        duration=None,
+        media_item=audiobook,
+        origin=QueueItemOrigin(provider_instance=second_instance, item_id=ITEM_ID),
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    # without the pin the first account would win the tie-break on its instance id
+    assert streamdetails.provider == second_instance
+    first.get_stream_details.assert_not_awaited()
+
+
 async def test_mapping_falls_back_to_compatible_streaming_provider_instance() -> None:
     """The same mapping item ID is retried on another loaded instance of its streaming domain."""
     primary_instance = "tidal--primary"
@@ -314,6 +406,119 @@ async def test_playback_user_steers_compatible_instance_within_mapping() -> None
     primary.get_stream_details.assert_not_awaited()
 
 
+async def test_a_sibling_account_with_a_mapping_of_its_own_is_ranked_on_that_mapping() -> None:
+    """
+    An account that maps the item itself is ranked on its own mapping, not on its sibling's.
+
+    Every account of a streaming catalog resolves the same item id, so such an account turns
+    up both as the mapped instance of its own mapping and as a stand-in for the sibling's;
+    the own mapping backs the candidate, so the account's own quality decides its place.
+    """
+    hifi_instance = "tidal--hifi"
+    lofi_instance = "tidal--lofi"
+    other_instance = "spotify--other"
+    hifi = _music_provider(hifi_instance)
+    hifi.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    lofi = _music_provider(lofi_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({hifi_instance: hifi, lofi_instance: lofi, other_instance: other})
+    cast("MagicMock", audio.mass).providers = [hifi, lofi, other]
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(hifi_instance, content_type=ContentType.FLAC),
+            _mapping(lofi_instance),
+            _mapping(other_instance, content_type=ContentType.OGG),
+        )
+    )
+
+    # the lossy account is ranked on its own mapping, behind the other service's better copy
+    assert streamdetails.provider == other_instance
+    lofi.get_stream_details.assert_not_awaited()
+
+
+async def test_an_account_without_a_mapping_stands_in_on_the_siblings_best_mapping() -> None:
+    """An account that lacks a mapping of its own is credited with its siblings' best copy."""
+    lofi_instance = "tidal--a"
+    hifi_instance = "tidal--b"
+    standin_instance = "tidal--c"
+    other_instance = "spotify--other"
+    lofi = _music_provider(lofi_instance)
+    hifi = _music_provider(hifi_instance)
+    standin = _music_provider(standin_instance)
+    other = _music_provider(other_instance)
+    audio = _audio(
+        {
+            lofi_instance: lofi,
+            hifi_instance: hifi,
+            standin_instance: standin,
+            other_instance: other,
+        }
+    )
+    cast("MagicMock", audio.mass).providers = [lofi, hifi, standin, other]
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(lofi_instance),
+            _mapping(hifi_instance, content_type=ContentType.FLAC),
+            _mapping(other_instance, content_type=ContentType.OGG),
+        ),
+        excluded_provider_instances={lofi_instance, hifi_instance},
+    )
+
+    # backed by the lossless sibling mapping, the stand-in ranks ahead of the other
+    # service's lossy copy
+    assert streamdetails.provider == standin_instance
+    other.get_stream_details.assert_not_awaited()
+
+
+async def test_an_account_that_no_longer_finds_the_item_is_no_stand_in_for_it() -> None:
+    """An account whose own mapping of the item is unavailable is not retried as a stand-in."""
+    hifi_instance = "tidal--hifi"
+    gone_instance = "tidal--gone"
+    other_instance = "spotify--other"
+    hifi = _music_provider(hifi_instance)
+    gone = _music_provider(gone_instance)
+    other = _music_provider(other_instance)
+    audio = _audio({hifi_instance: hifi, gone_instance: gone, other_instance: other})
+    cast("MagicMock", audio.mass).providers = [hifi, gone, other]
+    gone_mapping = _mapping(gone_instance, content_type=ContentType.FLAC)
+    gone_mapping.available = False
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(hifi_instance, content_type=ContentType.FLAC),
+            gone_mapping,
+            _mapping(other_instance),
+        ),
+        excluded_provider_instances={hifi_instance},
+    )
+
+    assert streamdetails.provider == other_instance
+    gone.get_stream_details.assert_not_awaited()
+
+
+async def test_a_sibling_account_with_a_mapping_of_its_own_is_marked_on_that_mapping() -> None:
+    """An account that maps the item itself marks its own mapping when it no longer finds it."""
+    hifi_instance = "tidal--hifi"
+    lofi_instance = "tidal--lofi"
+    hifi = _music_provider(hifi_instance)
+    lofi = _music_provider(lofi_instance)
+    lofi.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    audio = _audio({hifi_instance: hifi, lofi_instance: lofi})
+    cast("MagicMock", audio.mass).providers = [hifi, lofi]
+    lofi_mapping = _mapping(lofi_instance)
+    queue_item = _queue_item(_mapping(hifi_instance, content_type=ContentType.FLAC), lofi_mapping)
+
+    with pytest.raises(MediaNotFoundError):
+        await audio.get_stream_details(
+            queue_item=queue_item, excluded_provider_instances={hifi_instance}
+        )
+
+    mark = cast("MagicMock", audio.mass).music.mark_provider_mapping_unavailable
+    mark.assert_called_once_with(queue_item.media_item, lofi_mapping)
+
+
 async def test_playback_user_steering_precedes_cross_domain_quality() -> None:
     """A lower-quality steered mapping is tried before widening to a higher-quality one."""
     high_quality_instance = "tidal--high"
@@ -335,3 +540,29 @@ async def test_playback_user_steering_precedes_cross_domain_quality() -> None:
     assert streamdetails.provider == preferred_instance
     preferred.get_stream_details.assert_awaited_once()
     high_quality.get_stream_details.assert_not_awaited()
+
+
+async def test_concurrent_callers_for_one_queue_item_share_one_resolution() -> None:
+    """Two callers resolving the same queue item at once ask the provider only once."""
+    calls: list[str] = []
+    release = asyncio.Event()
+
+    async def _slow(item_id: str, media_type: MediaType) -> StreamDetails:
+        calls.append(item_id)
+        await release.wait()
+        return _streamdetails(item_id, media_type, INSTANCE)
+
+    provider = MagicMock()
+    provider.get_stream_details = _slow
+    audio = _audio({INSTANCE: provider})
+    queue_item = _queue_item(_mapping(INSTANCE))
+
+    first = asyncio.create_task(audio.get_stream_details(queue_item=queue_item))
+    second = asyncio.create_task(audio.get_stream_details(queue_item=queue_item))
+    await asyncio.sleep(0)
+    release.set()
+    first_details, second_details = await asyncio.gather(first, second)
+
+    assert calls == [ITEM_ID]
+    assert first_details is second_details
+    assert queue_item.streamdetails is first_details

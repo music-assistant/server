@@ -42,6 +42,7 @@ from yoto_api import Chapter as YotoChapter
 from yoto_api import Token as YotoToken
 from yoto_api import YotoAPIError, YotoClient, YotoError
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.models.music_provider import MusicProvider
 
 from .setup_flow import CONF_CLIENT_ID, CONF_REFRESH_TOKEN
@@ -565,6 +566,7 @@ class YotoProvider(MusicProvider):
                 )
                 if card.cover_image_large
                 else None,
+                genres={DEFAULT_AUDIOBOOK_PODCAST_GENRE},
             ),
         )
 

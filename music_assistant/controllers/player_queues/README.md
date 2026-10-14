@@ -59,8 +59,9 @@ and the targets for playback, and coordinates with several sibling controllers:
   reconciles itself against real player state. The `queue_id` is the `player_id`.
 - **Streams Controller (`mass.streams`)** — resolves a `QueueItem`'s stream details when loading
   and pre-loading items, and provides the audio-buffer primitive. It also drives next-track buffer
-  warming: from inside the active-track streaming pipeline, near the end of the current track, it
-  calls back into the queue controller to prepare the next item's audio buffer.
+  warming: near the end of the item being streamed, or once a realtime source has delivered all
+  of its audio, it calls back into the queue controller to prepare the audio buffer of the item
+  that follows the streamed one.
 - **Config Controller (`mass.config`)** — supplies this controller's own core config values
   (default enqueue options and selection modes), read back at enqueue time.
 - **Cache Controller (`mass.cache`)** — persists and restores each queue's `PlayerQueueData` (its
@@ -116,7 +117,8 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   user left it across everything they play, except when the media carries an order of its own:
   starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
   with *play* or *replace* switches shuffle off, because those are sequenced content rather than a
-  pool of tracks. An explicit `shuffle` argument on `play_media` always wins, and the first item of
+  pool of tracks. An artist counts as sequenced too when it plays its albums under an album
+  order. Top tracks, an artist without albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
   a batch decides for the whole batch — it is the only media type known before the items are
   resolved. Switching shuffle off goes through `set_shuffle`, so the items that stay in the queue
   are restored to their original order rather than left shuffled behind a queue that now reads
@@ -155,15 +157,25 @@ are dropped.
 
 Transport and playback actions on a given queue are serialized through the player's shared playback
 lock, obtained from the Player Controller. That lock is re-entrant, so nested actions on the same
-queue do not deadlock. While an action is in progress an "action in progress" flag is surfaced on
-the queue and reported to subscribers.
+queue do not deadlock. Play actions take it strictly: a request waits for the running one to finish,
+up to 120 seconds per lock, and then fails with a busy error rather than run alongside it (the player
+controller's own commands fall back to running without the lock after 30 seconds, to survive a hung
+provider call). The next-track handover takes the same strict lock and only checks the queue once it
+holds it, so a track handed to the player after a wait is still the one that follows the playing one.
+Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
+the player has the track, and hands over the real next track when an edit changed it meanwhile.
+While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
+subscribers.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
-player-update callbacks are skipped while a queue is mid-transition. Background and delayed work —
-preloading the next item, buffer preparation, radio fill, resume-on-idle, delayed clear/resume — is
-dispatched as tasks or timers rather than run inline, and the relevant tasks/timers are cancelled on
-player removal and on stop so stale work cannot enqueue after a queue has stopped. Long passes (such
-as a full shuffle) yield to the event loop while running.
+player-update callbacks are skipped while a queue is mid-transition. A load that shuffles prepares
+its new items from the list it started with, so `update_items` keeps the queue on its current item:
+when the player moved on in the meantime, the index follows that item to where it now sits.
+Background and delayed work — preloading the next item, buffer preparation, radio fill,
+resume-on-idle, delayed clear/resume — is dispatched as tasks or timers rather than run inline, and
+the relevant tasks/timers are cancelled on player removal and on stop so stale work cannot enqueue
+after a queue has stopped. Long passes (such as a full shuffle) yield to the event loop while
+running.
 
 ## Player-to-Queue State Reconciliation
 
@@ -185,17 +197,25 @@ signalled events + cache write.
 To make playback gapless and to support crossfades, the controller anticipates the upcoming item:
 it computes the next index, pre-resolves that item's stream details via the Streams Controller, and
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
-of this enqueue path — it is triggered by the Streams Controller near the end of the current track,
-via a callback into the queue controller. Stale buffers and crossfade data are cleaned up when the
-queue stops, is cleared, or advances. Every buffer records the session that claimed it, and a stop
-leaves alone only what the session playing *now* claimed, so playback that restarted before the
-stop got that far keeps its audio. Everything else goes, including what sessions that ended
-earlier left behind: sessions rotate without a stop, so a claim that is no longer current marks
-audio nobody will come back for. A clear or a replace drops the items themselves, so all of their
-audio goes with them.
+of this enqueue path — it is triggered by the Streams Controller near the end of the streamed track,
+via a callback into the queue controller, and always targets the item after the streamed one.
+Stale buffers and crossfade data are cleaned up when the queue stops, is cleared, or advances. Every
+buffer records the session that claimed it, and a stop leaves alone only what the session playing
+*now* claimed, so playback that restarted before the stop got that far keeps its audio. Everything
+else goes, including what sessions that ended earlier left behind: sessions rotate without a stop,
+so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
+drops the items themselves, so all of their audio goes with them.
+
+A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
+When playback on another queue finds no free provider stream slot and one of those buffers holds
+one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
+source stream. Preparing the next track ahead of time never stops a paused queue. A player that
+could not be told to stop still shows paused on a stream its queue has ended, so play starts the
+queue again there rather than unpausing the player.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
-(Next-track audio-buffer warming is driven separately by the streams pipeline near track end.)
+(Next-track audio-buffer warming is driven separately by the streams pipeline, relative to the
+streamed item.)
 
 ## Radio and Dynamic Continuation
 
@@ -240,12 +260,20 @@ Fades already has to improve the order of upcoming tracks. Recency stays in char
 are selected.
 
 In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
-part it already considers safe to move. Within each recency tier, the full movable population can
-be considered when choosing the next track. The last fixed track is used as the starting point.
+part it already considers safe to move, one batch of `SMART_FADE_ORDERING_BATCH` tracks at a time
+(the size of a dynamic refill batch). A shuffle orders the first batch inside its recency tiers.
+When playback gets close to the last ordered track, the next batch is ordered in the background:
+only its transitions change, items that are not tracks (such as DJ clips) keep their place, and the
+result is written back only if the queue did not change meanwhile. Tracks only move inside their
+batch, so Smart Shuffle keeps deciding which tracks play next: ordering a whole queue at once
+favours tracks that already have analysis, which for streaming providers are the tracks played
+before. The batch end is only kept in memory; after a restart, or once playback has passed it, the
+rest of the queue keeps the regular Smart Shuffle order until the next shuffle. The last fixed track
+is used as the starting point.
 
 In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
-accepted batch from the existing queue tail. Both modes consider every remaining track in the run
-being ordered; Dynamic Mode simply orders one refill batch at a time.
+accepted batch from the existing queue tail. Both modes order one batch at a time and consider every
+track in it.
 
 No analysis is started for this. Unknown data stays neutral. The score uses tempo, graded Camelot
 key affinity and end-to-start RMS energy. These are ranking signals, not filters. A silent outgoing
@@ -267,9 +295,12 @@ Data flow: media item → Music/Metadata controller lookups → `Track`/`QueueIt
 
 ## Play Counting and Resume
 
-The controller decides when a track counts as played and reports it to the Music Controller. Plays
-are de-duplicated using a last-counted-play marker (with album-level handling) so a track is not
-double-counted on the end-of-queue idle transition. It also computes and applies resume positions
+The controller decides when a track counts as played and reports it to the Music Controller. Only
+an item whose audio actually reached the player (recorded when its first chunk is served) is ever
+reported as played or taken as the item the queue ended on, so an item a player merely names from
+its own cached copy of the queue is never credited and never ends the queue.
+Plays are de-duplicated using a last-counted-play marker (with album-level handling) so a track is
+not double-counted on the end-of-queue idle transition. It also computes and applies resume positions
 for audiobooks and podcast episodes, and restores a previously playing queue from the play log.
 
 Data flow: playback-progress reports / idle transitions → should-count decision → record play count;
@@ -335,7 +366,11 @@ mechanism) that configure default enqueue behaviour, in three groups:
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
 - **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
-  prefer library, all tracks).
+  prefer library, all tracks), and the order an artist plays in: shuffled tracks, or its albums
+  in random or release order. The artist selection picks the artist's own albums, and each album
+  plays as it does on its own, following the album selection. The album orders leave out singles,
+  and the compilations found only on a provider. They fall back to shuffled tracks for the top
+  tracks selection or an artist without albums.
 - **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
   clicked (*browse* or *play*), and what the play button on a track row inside an album
   or playlist starts (*play from here* or *play track*).

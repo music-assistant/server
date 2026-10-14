@@ -130,7 +130,7 @@ async def test_report_shape(profiler: ProfilerProvider) -> None:
 async def test_diagnostics_dump_carries_report(profiler: ProfilerProvider) -> None:
     """Test that the diagnostics dump embeds the full report while the provider is loaded."""
     dump = await profiler.mass.diagnostics.get_report()
-    section = dump["sections"]["provider.profiler"]
+    section = dump["sections"]["provider.profiler.profiler"]
     assert section["report_format_version"] == 2
     assert "object_census_top" in section["memory"]
     assert section["asyncio_tasks"]["total"] > 0
@@ -139,7 +139,7 @@ async def test_diagnostics_dump_carries_report(profiler: ProfilerProvider) -> No
     assert recorder["sample_interval_s"] == 300
     await profiler.mass.unload_provider(profiler.instance_id)
     dump = await profiler.mass.diagnostics.get_report()
-    assert "provider.profiler" not in dump["sections"]
+    assert "provider.profiler.profiler" not in dump["sections"]
 
 
 async def test_report_markdown(profiler: ProfilerProvider) -> None:
