@@ -118,9 +118,11 @@ from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.stream_sources import (
+    QualityTier,
     SourceCandidate,
     StreamSourceMode,
     StreamSourcePolicy,
+    quality_tier,
     rank_provider_mappings,
     rank_stream_sources,
     read_stream_source_policy,
@@ -631,6 +633,11 @@ class StreamsAudio:
         # serializes streamdetails resolution per queue item, so concurrent callers share
         # one result instead of each fetching details the others then overwrite
         self._stream_details_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+            WeakValueDictionary()
+        )
+        # queue items whose track was searched for a better copy, so it is searched only once
+        # per item; an entry goes with its queue item
+        self._better_copy_searched: WeakValueDictionary[tuple[str, str], QueueItem] = (
             WeakValueDictionary()
         )
 
@@ -3692,13 +3699,13 @@ class StreamsAudio:
                 else None
             )
             policy = read_stream_source_policy(mass, queue_item.queue_id)
-            if policy.mode == StreamSourceMode.BEST_QUALITY_PER_TRACK and media_item.media_type in (
-                MediaType.AUDIOBOOK,
-                MediaType.PODCAST_EPISODE,
-            ):
-                # ranking every track on its own is about music: the pin keeps an audiobook or
-                # episode, and its progress, on the account it was started from
-                policy = replace(policy, mode=StreamSourceMode.BEST_QUALITY)
+            if media_item.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE):
+                # ranking every track on its own and upgrading a copy are about music: the pin
+                # keeps an audiobook or episode, and its progress, on the account it was
+                # started from
+                policy = replace(policy, upgrade_below=None)
+                if policy.mode == StreamSourceMode.BEST_QUALITY_PER_TRACK:
+                    policy = replace(policy, mode=StreamSourceMode.BEST_QUALITY)
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
@@ -3721,6 +3728,26 @@ class StreamsAudio:
                 if blocked:
                     msg = f"{queue_item.name} is not available on any music source of this user"
                     raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
+            if (
+                policy.upgrade_below is not None
+                and candidates
+                and quality_tier(candidates[0][0].audio_format) < policy.upgrade_below
+                and await self._search_better_copy(
+                    queue_item,
+                    policy.upgrade_below,
+                    excluded_provider_instances,
+                    allowed,
+                    preferred_providers,
+                )
+            ):
+                candidates = self._get_streamdetail_candidates(
+                    media_item.provider_mappings,
+                    preferred_providers,
+                    excluded_provider_instances,
+                    allowed,
+                    policy,
+                    pinned=pinned,
+                )
             streamdetails = await self._request_streamdetails(candidates, media_item)
 
             if not streamdetails:
@@ -3985,6 +4012,7 @@ class StreamsAudio:
                                 max(deadline - loop.time(), 0),
                                 allowed,
                                 preferred,
+                                "all known sources are at their stream limit",
                             )
                         except Exception as err:
                             # discovery is best-effort: any failure falls back to the
@@ -4197,22 +4225,30 @@ class StreamsAudio:
     async def _discover_alternative_provider_mappings(
         self,
         queue_item: QueueItem,
-        busy_instances: set[str],
+        excluded: set[str],
         remaining: float,
         allowed: list[str] | None,
         preferred: list[str],
+        reason: str,
+        min_tier: QualityTier | None = None,
     ) -> set[str]:
         """
         Search other streaming providers for the queue item's track and widen its mappings.
 
-        A found mapping is added to the media item (and persisted for library items) so the
-        capacity reselection can continue on the discovered provider.
+        Without a quality to reach, only providers that can start a stream right now are
+        searched, up to the first match. With one, the search goes on past a poorer match
+        until a match of that quality is found. A found mapping is added to the media item,
+        and stored for a library item without merging another library item into it, so the
+        selection can continue on the discovered provider.
 
         :param queue_item: Queue item whose track should be matched on another provider.
-        :param busy_instances: Provider instances already known to be saturated.
-        :param remaining: Seconds left of the caller's capacity budget.
+        :param excluded: Provider instances not to search on.
+        :param remaining: Seconds the caller can spare for the search.
         :param allowed: Music sources the playback user may use, or None for all of them.
         :param preferred: Music sources the playback user owns, searched ahead of the rest.
+        :param reason: Why the search runs, for the log.
+        :param min_tier: The quality a match is searched for, or None for any match a
+            provider can stream right now.
         :return: Provider instances able to serve the discovered mappings.
         """
         media_item = queue_item.media_item
@@ -4223,8 +4259,10 @@ class StreamsAudio:
             provider
             for provider in self.mass.music.providers
             if self._is_match_candidate_provider(provider, known_domains, allowed)
-            and provider.instance_id not in busy_instances
-            and provider.has_available_stream_slot
+            and provider.instance_id not in excluded
+            # a copy that rescues this playback has to stream right now, while a better copy
+            # waits for a free slot like any other copy
+            and (min_tier is not None or provider.has_available_stream_slot)
         ]
         if not eligible:
             return set()
@@ -4247,13 +4285,17 @@ class StreamsAudio:
                 for provider in candidates:
                     # one failing provider must not end the search on the others
                     try:
-                        matches = await self.mass.music.tracks.match_provider(
+                        found = await self.mass.music.tracks.match_provider(
                             media_item, provider, strict=True, ref_albums=ref_albums
                         )
                     except Exception as err:
                         self.logger.debug("Searching a match on %s failed: %s", provider.name, err)
                         continue
-                    if matches:
+                    matches += found
+                    if found and (
+                        min_tier is None
+                        or max(quality_tier(mapping.audio_format) for mapping in found) >= min_tier
+                    ):
                         break
         except TimeoutError:
             self.logger.debug("Searching an alternative provider for %s timed out", media_item.name)
@@ -4264,19 +4306,67 @@ class StreamsAudio:
             # persist in the background so future plays have the mapping ahead of time;
             # cancellation of this playback must never interrupt the library write
             self.mass.create_task(
-                self.mass.music.tracks.add_provider_mappings(media_item.item_id, matches)
+                self.mass.music.tracks.add_unclaimed_provider_mappings(media_item.item_id, matches)
             )
         self.logger.info(
-            "All known sources for %s are at their stream limit, "
-            "using a matching track found on %s",
+            "Found %s on %s (%s)",
             media_item.name,
-            matches[0].provider_domain,
+            ", ".join(dict.fromkeys(mapping.provider_domain for mapping in matches)),
+            reason,
         )
         return {
             provider.instance_id
             for mapping in matches
             for provider in self._get_mapping_providers(mapping, allowed)
         }
+
+    async def _search_better_copy(
+        self,
+        queue_item: QueueItem,
+        upgrade_below: QualityTier,
+        excluded: set[str],
+        allowed: list[str] | None,
+        preferred: list[str],
+    ) -> bool:
+        """
+        Search the other streaming providers once for a better copy of a library track.
+
+        A queue item is searched for once; a search that finds nothing or fails leaves the
+        chosen copy to play.
+
+        :param queue_item: Queue item whose chosen copy is below the upgrade quality.
+        :param upgrade_below: The upgrade quality a better copy is searched for.
+        :param excluded: Provider instances not to search on.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        :param preferred: Music sources the playback user owns, searched ahead of the rest.
+        :return: Whether a copy was found and added to the item's mappings.
+        """
+        media_item = queue_item.media_item
+        key = (queue_item.queue_id, queue_item.queue_item_id)
+        if (
+            not isinstance(media_item, Track)
+            or media_item.provider != "library"
+            or key in self._better_copy_searched
+        ):
+            return False
+        try:
+            found = await self._discover_alternative_provider_mappings(
+                queue_item,
+                excluded,
+                STREAM_SLOT_MATCH_TIMEOUT,
+                allowed,
+                preferred,
+                "the chosen copy is below the upgrade quality",
+                min_tier=upgrade_below,
+            )
+        except Exception as err:
+            self.logger.warning("Searching a better copy of %s failed: %s", queue_item.name, err)
+            found = set()
+        # marked only once done, so a search cut short by a cancellation runs again
+        self._better_copy_searched[key] = queue_item
+        if not found:
+            self.logger.debug("No better copy of %s found, it plays as chosen", queue_item.name)
+        return bool(found)
 
     async def _request_streamdetails(
         self,

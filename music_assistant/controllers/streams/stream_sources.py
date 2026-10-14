@@ -21,7 +21,10 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import ContentType
 from music_assistant_models.helpers import get_global_cache_value
 
-from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
+from music_assistant.controllers.streams.constants import (
+    CONF_STREAM_SOURCE_MODE,
+    CONF_UPGRADE_BELOW_QUALITY,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat, ProviderMapping
@@ -53,11 +56,23 @@ class StreamSourceMode(StrEnum):
     BEST_QUALITY_PER_TRACK = "best_quality_per_track"
 
 
+class UpgradeQuality(StrEnum):
+    """The quality below which the chosen copy of a media item gives way to a better one."""
+
+    OFF = "off"
+    LOSSY_HIGH = "lossy_high"
+    LOSSLESS = "lossless"
+    HIRES = "hires"
+
+
 @dataclass(frozen=True, slots=True)
 class StreamSourcePolicy:
     """The source selection settings a ranking runs under."""
 
     mode: StreamSourceMode = StreamSourceMode.BEST_QUALITY
+    # a chosen copy below this tier gives way to a better one, even a pinned or local copy;
+    # None upgrades nothing
+    upgrade_below: QualityTier | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +101,14 @@ class ContainerListing:
 
 
 DEFAULT_POLICY = StreamSourcePolicy()
+
+# the tier each upgrade setting stands for; off, or a setting this version does not know,
+# upgrades nothing
+_UPGRADE_TIERS: dict[str, QualityTier] = {
+    UpgradeQuality.LOSSY_HIGH: QualityTier.LOSSY_HIGH,
+    UpgradeQuality.LOSSLESS: QualityTier.LOSSLESS,
+    UpgradeQuality.HIRES: QualityTier.HIRES,
+}
 
 _SortKey = tuple[bool, bool, bool, int, int, bool, str, str]
 
@@ -140,7 +163,9 @@ def rank_stream_sources(
     sources when the policy prefers them, then the playback user's own accounts, then the
     best quality by tier and by the mapping's quality score, which favours local and
     in-library copies. Ties fall to the candidate's own instance and item id, so equal copies
-    are tried in the same order at every selection.
+    are tried in the same order at every selection. When the copy that comes first is below
+    the policy's upgrade quality, every copy of a better tier goes ahead of it, in the same
+    order among themselves.
 
     :param candidates: The copies that may serve the item, already narrowed to what the
         playback user may use.
@@ -165,6 +190,11 @@ def rank_stream_sources(
         ),
         key=itemgetter(0),
     )
+    if keyed and policy.upgrade_below is not None:
+        winner_tier = quality_tier(keyed[0][1].mapping.audio_format)
+        if winner_tier < policy.upgrade_below:
+            # the sort is stable, so the better copies and the rest each keep their order
+            keyed.sort(key=lambda entry: quality_tier(entry[1].mapping.audio_format) <= winner_tier)
     ranked: list[SourceCandidate] = []
     for index, (key, candidate) in enumerate(keyed):
         following = keyed[index + 1] if index + 1 < len(keyed) else None
@@ -238,7 +268,8 @@ def read_stream_source_policy(
     """
     Return the source selection settings a playback runs under.
 
-    A mode the settings do not know falls back to the default.
+    A mode the settings do not know falls back to the default, an upgrade quality they do not
+    know to no upgrade.
 
     :param mass: The MusicAssistant instance.
     :param queue_id: The queue the playback is for; the settings apply to every queue for now.
@@ -248,8 +279,11 @@ def read_stream_source_policy(
             mass.streams.get_config_value(CONF_STREAM_SOURCE_MODE, return_type=str)
         )
     except ValueError:
-        return DEFAULT_POLICY
-    return StreamSourcePolicy(mode=mode)
+        mode = DEFAULT_POLICY.mode
+    upgrade_below = _UPGRADE_TIERS.get(
+        mass.streams.get_config_value(CONF_UPGRADE_BELOW_QUALITY, return_type=str)
+    )
+    return StreamSourcePolicy(mode=mode, upgrade_below=upgrade_below)
 
 
 def _sort_key(
@@ -302,6 +336,12 @@ def _reason(
     if following is None:
         return _quality_label(audio_format)
     next_key, next_candidate = following
+    if key > next_key:
+        # the keys ascend everywhere except where the upgrade moved the better copies ahead
+        return (
+            f"upgrade: {_quality_label(audio_format)} over "
+            f"{_quality_label(next_candidate.mapping.audio_format)}"
+        )
     for level, (own, other) in enumerate(zip(key, next_key, strict=True)):
         if own == other:
             continue

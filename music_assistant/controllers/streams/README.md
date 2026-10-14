@@ -10,6 +10,7 @@ This document provides an overview of the Music Assistant Streams Controller arc
 - [Core Components](#core-components)
 - [AudioBuffer](#audiobuffer)
 - [StreamsAudio](#streamsaudio)
+- [Stream Source Selection](#stream-source-selection)
 - [Streaming Pipeline](#streaming-pipeline)
 - [Audio Analysis](#audio-analysis)
 - [Smart Fades](#smart-fades)
@@ -149,6 +150,21 @@ Supporting modules in `helpers/`:
 StreamsController, combines queue processing and per-player output plans into complete
 `AudioProcessingChain` snapshots attached to `StreamDetails`.
 
+## Stream Source Selection
+
+A library track often has several copies: a local file, the same track on one or more streaming services, another account of the same service. `_get_stream_details` builds the candidates in `_get_streamdetail_candidates`: each available mapping is expanded to the instances that can serve it (the mapped instance, then the other accounts of the same streaming catalog) and narrowed to the music sources the playback user may use. `rank_stream_sources` (`stream_sources.py`, pure, no provider calls) then orders them, and `_request_streamdetails` tries them in that order:
+
+1. **The pin**: the copy the queue item's listing had for it (`QueueItem.origin`, see the player queues README) comes first, except in the `best_quality_per_track` mode. Audiobooks and podcast episodes keep their pin in every mode, so their progress stays on the account they were started from.
+2. **Local first**: in the `prefer_local` mode, a non-streaming source (files, Plex, Subsonic, ...) before a streaming service.
+3. **Own accounts**: the playback user's own music sources before shared ones.
+4. **Quality**: the quality tier (unknown, low and high bit rate lossy, lossless, hi-res), then the mapping's quality score, which carries a small bonus for local and in-library copies.
+5. **Mapped instance**: the instance a copy is mapped on before another account standing in for it.
+6. **Ids**: the instance id, then the item id, so equal copies are tried in the same order at every selection and across restarts.
+
+**Upgrade pass.** With `upgrade_below_quality` set, a first copy below that tier gives way to every copy of a better tier, ordered among themselves by the same key. This is the only relaxation of the pin and of local first; audiobooks and podcast episodes are left out. When the first copy of a library track is still below the threshold after that pass, the other streaming services are searched once per queue item for a match, bounded by `STREAM_SLOT_MATCH_TIMEOUT`, and the candidates are ranked again. The search runs where an item's stream details are first resolved, which for every item but the one playback starts on is the next-track preparation, while the item before it plays. A match is stored as an unclaimed mapping, so a playback-time match never merges library items. A track no service has keeps the chosen copy.
+
+Every candidate carries a short reason ("pinned", "own account", "hi-res 96/24", "upgrade: lossless 44.1/16 over lossy 320 kbps", ...), logged at debug level as the stream source order. An album picks its one source at enqueue time with `select_container_source`, which ranks whole listings in a similar way (local first, own accounts, a listing with every track, then quality); see the player queues README.
+
 ## Streaming Pipeline
 
 ```
@@ -276,3 +292,5 @@ Key configuration entries (in streams controller config):
 | `volume_normalization_radio` | String | `fallback_dynamic` | Normalization mode for radio |
 | `volume_normalization_tracks` | String | `fallback_dynamic` | Normalization mode for tracks |
 | `allow_crossfade_same_album` | Boolean | `false` | Whether to crossfade consecutive album tracks |
+| `stream_source_mode` | String | `best_quality` | Which copy plays when a track has several: `best_quality`, `prefer_local` or `best_quality_per_track` |
+| `upgrade_below_quality` | String | `off` | A chosen copy below this quality (`lossy_high`, `lossless`, `hires`) gives way to a better one |
