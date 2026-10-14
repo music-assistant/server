@@ -58,16 +58,22 @@ def _raise_on_auth_error(status: int, endpoint: str) -> None:
     """
     Raise LoginFailed when Apple rejected our credentials.
 
-    Apple answers a revoked or expired music user token with 401/403 on every endpoint,
-    so this surfaces as an auth error the user can act on instead of a bare HTTP error.
+    On catalog endpoints the message blames the app token, since those requests carry no
+    user token. Elsewhere it names both tokens.
 
     :param status: The HTTP status code returned by Apple.
     :param endpoint: The endpoint that was called, used in the error message.
     """
-    if status in (401, 403):
+    if status not in (401, 403):
+        return
+    if endpoint.startswith("catalog/"):
         raise LoginFailed(
-            f"Apple Music denied access to {endpoint}: the account needs to be signed in again"
+            f"Apple Music denied access to {endpoint}: the app token is invalid or expired"
         )
+    raise LoginFailed(
+        f"Apple Music denied access to {endpoint}: the account needs to be signed in again, "
+        "or the app token is invalid"
+    )
 
 
 def _match_language_tag(locale: str, supported_tags: list[str]) -> str | None:
