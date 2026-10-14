@@ -14,10 +14,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
     ContentType,
     MediaType,
     ProviderFeature,
+    ProviderSharing,
     ProviderType,
     StreamType,
 )
@@ -38,6 +41,7 @@ from music_assistant.controllers.streams.constants import (
     NO_TRACK_MATCH_EXPIRATION,
 )
 from music_assistant.models.music_provider import MusicProvider
+from tests.common import set_music_source_access
 
 LOCAL = "filesystem_local--files"
 SPOTIFY = "spotify--ogg"
@@ -46,6 +50,7 @@ LIBRARY_ID = "42"
 LOCAL_ID = "Artist/Album/01.mp3"
 SPOTIFY_ID = "spotify-1"
 TIDAL_ID = "tidal-1"
+USER_ID = "listener"
 
 MP3 = AudioFormat(content_type=ContentType.MP3, bit_rate=320)
 OGG = AudioFormat(content_type=ContentType.OGG, bit_rate=320)
@@ -90,18 +95,36 @@ def _provider(instance: str, *, streaming: bool = True) -> MagicMock:
     return provider
 
 
-def _mass(providers: list[MagicMock], upgrade: str = "lossless") -> MagicMock:
+def _mass(
+    providers: list[MagicMock], upgrade: str = "lossless", owned: tuple[str, ...] = ()
+) -> MagicMock:
     """
-    Build a mass double without a playback user, so every source may serve the playback.
+    Build a mass double whose sources may all serve the playback.
 
     :param providers: The loaded provider instances.
     :param upgrade: The upgrade quality of the streams settings.
+    :param owned: The sources the playback user owns, the others being household sources.
+        Leave empty for a queue without a playback user.
     """
     by_instance = {provider.instance_id: provider for provider in providers}
     mass = MagicMock()
     mass.providers = providers
     mass.get_provider.side_effect = lambda instance, **_kwargs: by_instance.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
+    if owned:
+        mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
+        mass.webserver.auth.get_user = AsyncMock(
+            return_value=User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
+        )
+        set_music_source_access(
+            mass,
+            {
+                provider.instance_id: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.PRIVATE)
+                if provider.instance_id in owned
+                else None
+                for provider in providers
+            },
+        )
     mass.streams.get_config_value.side_effect = lambda key, *_args, **_kwargs: (
         upgrade if key == CONF_UPGRADE_BELOW_QUALITY else -17
     )
@@ -273,7 +296,7 @@ async def test_a_service_whose_search_failed_is_searched_again() -> None:
 async def test_the_search_has_one_time_budget_for_all_services(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A service that takes the whole budget ends the search, and its cut short search is no miss."""
+    """A service that uses up the time budget ends the search, and is not taken as a miss."""
     monkeypatch.setattr("music_assistant.controllers.streams.audio.STREAM_SLOT_MATCH_TIMEOUT", 0.05)
     mass = _mass([_provider(LOCAL, streaming=False), _provider(SPOTIFY), _provider(TIDAL)])
 
@@ -392,6 +415,29 @@ async def test_a_better_copy_the_track_has_plays_without_a_search() -> None:
 
     assert streamdetails.provider == TIDAL
     local.get_stream_details.assert_not_awaited()
+    mass.music.tracks.match_provider.assert_not_awaited()
+
+
+async def test_a_copy_reaching_the_upgrade_quality_plays_without_a_search() -> None:
+    """A linked copy at the upgrade quality goes before an own poorer one, and no search runs."""
+    local = _provider(LOCAL, streaming=False)
+    spotify = _provider(SPOTIFY)
+    tidal = _provider(TIDAL)
+    mass = _mass([local, spotify, tidal], owned=(SPOTIFY,))
+    audio = StreamsAudio(mass)
+    mp3 = _mapping(LOCAL, LOCAL_ID, AudioFormat(content_type=ContentType.MP3, bit_rate=128))
+
+    streamdetails = await audio.get_stream_details(
+        _queue_item(
+            mp3,
+            _mapping(SPOTIFY, SPOTIFY_ID, OGG),
+            _mapping(TIDAL, TIDAL_ID, FLAC),
+            pinned=mp3,
+        )
+    )
+
+    assert streamdetails.provider == TIDAL
+    spotify.get_stream_details.assert_not_awaited()
     mass.music.tracks.match_provider.assert_not_awaited()
 
 

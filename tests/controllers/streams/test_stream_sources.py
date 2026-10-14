@@ -477,8 +477,8 @@ def test_rank_stream_sources_upgrade(
     assert ranked[0].reason == reason
 
 
-def test_the_better_copies_keep_the_ranking_order_among_themselves() -> None:
-    """The copies moved ahead are ranked by the usual key, the rest keep their order behind."""
+def test_the_copies_reaching_the_upgrade_quality_go_first() -> None:
+    """Better copies that reach the upgrade quality go first, alike ones in the usual order."""
     ranked = rank_stream_sources(
         [
             _candidate(LOCAL, is_streaming=False, audio_format=MP3),
@@ -492,16 +492,51 @@ def test_the_better_copies_keep_the_ranking_order_among_themselves() -> None:
         policy=StreamSourcePolicy(upgrade_below=QualityTier.HIRES),
     )
 
-    # the own lossless account still comes before the better hi-res copy elsewhere, and the
-    # own lossy account, no better than the pinned copy, stays behind it
-    assert _ids(ranked) == [f"{DEEZER}/1", f"{QOBUZ}/1", f"{TIDAL}/1", f"{LOCAL}/1", f"{SPOTIFY}/1"]
+    # the hi-res copy before the own lossless account, the own account before the other
+    # lossless copy, and the own lossy account, no better than the pinned copy, behind it
+    assert _ids(ranked) == [f"{QOBUZ}/1", f"{DEEZER}/1", f"{TIDAL}/1", f"{LOCAL}/1", f"{SPOTIFY}/1"]
     assert [candidate.reason for candidate in ranked] == [
+        "upgrade: hi-res 96/24 over lossless 44.1/16",
         "own account",
-        "hi-res 96/24",
         "upgrade: lossless 44.1/16 over lossy 320 kbps",
         "pinned",
         "lossy 320 kbps",
     ]
+
+
+@pytest.mark.parametrize("pinned_mp3", [False, True], ids=["no pinned copy", "a pinned mp3"])
+def test_a_poorer_pinned_copy_does_not_change_the_upgrade(pinned_mp3: bool) -> None:
+    """The copy that reaches the upgrade quality plays, whether or not a poorer one is pinned."""
+    candidates = [_candidate(DEEZER), _candidate(QOBUZ, audio_format=HIRES)]
+    if pinned_mp3:
+        candidates.append(_candidate(LOCAL, is_streaming=False, audio_format=MP3))
+
+    ranked = rank_stream_sources(
+        candidates,
+        pinned=(LOCAL, ITEM_ID) if pinned_mp3 else None,
+        preferred=[DEEZER],
+        policy=StreamSourcePolicy(upgrade_below=QualityTier.HIRES),
+    )
+
+    assert _ids(ranked)[:2] == [f"{QOBUZ}/1", f"{DEEZER}/1"]
+
+
+def test_without_a_copy_reaching_the_upgrade_quality_the_closest_goes_first() -> None:
+    """Better copies that all fall short go first the closer they come to the upgrade quality."""
+    ranked = rank_stream_sources(
+        [
+            _candidate(
+                LOCAL, is_streaming=False, audio_format=_format(ContentType.MP3, bit_rate=128)
+            ),
+            _candidate(SPOTIFY, audio_format=_format(ContentType.OGG, bit_rate=320)),
+            _candidate(TIDAL),
+        ],
+        pinned=(LOCAL, ITEM_ID),
+        preferred=[SPOTIFY],
+        policy=StreamSourcePolicy(upgrade_below=QualityTier.HIRES),
+    )
+
+    assert _ids(ranked) == [f"{TIDAL}/1", f"{SPOTIFY}/1", f"{LOCAL}/1"]
 
 
 async def test_rank_provider_mappings_pins_the_streamed_copy_and_knows_local_sources() -> None:

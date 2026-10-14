@@ -179,8 +179,9 @@ def rank_stream_sources(
     best quality by tier and by the mapping's quality score, which favours local and
     in-library copies. Ties fall to the candidate's own instance and item id, so equal copies
     are tried in the same order at every selection. When the copy that comes first is known
-    to be below the policy's upgrade quality, every copy of a better tier goes ahead of it, in
-    the same order among themselves.
+    to be below the policy's upgrade quality, every copy of a better tier goes ahead of it:
+    first those that reach the upgrade quality, then the others, the closer to it the sooner.
+    Copies alike keep the order above among themselves.
 
     :param candidates: The copies that may serve the item, already narrowed to what the
         playback user may use.
@@ -205,10 +206,19 @@ def rank_stream_sources(
         ),
         key=itemgetter(0),
     )
-    if keyed and below_upgrade_quality(keyed[0][1].mapping.audio_format, policy):
+    if (
+        keyed
+        and policy.upgrade_below is not None
+        and below_upgrade_quality(keyed[0][1].mapping.audio_format, policy)
+    ):
         winner_tier = quality_tier(keyed[0][1].mapping.audio_format)
-        # the sort is stable, so the better copies and the rest each keep their order
-        keyed.sort(key=lambda entry: quality_tier(entry[1].mapping.audio_format) <= winner_tier)
+        upgrade_below = policy.upgrade_below
+        # the sort is stable, so copies that fall short alike keep the order of their keys
+        keyed.sort(
+            key=lambda entry: _upgrade_shortfall(
+                entry[1].mapping.audio_format, winner_tier, upgrade_below
+            )
+        )
     ranked: list[SourceCandidate] = []
     for index, (key, candidate) in enumerate(keyed):
         following = keyed[index + 1] if index + 1 < len(keyed) else None
@@ -340,6 +350,18 @@ def _container_key(
     )
 
 
+def _upgrade_shortfall(
+    audio_format: AudioFormat, winner_tier: QualityTier, upgrade_below: QualityTier
+) -> int:
+    """
+    Return how far a copy falls short of the upgrade quality, none when it reaches it.
+
+    A copy no better than the copy that came first falls short as far as that one, so it stays
+    behind every better copy.
+    """
+    return max(upgrade_below - max(quality_tier(audio_format), winner_tier), 0)
+
+
 def _reason(
     candidate: SourceCandidate,
     key: _SortKey,
@@ -351,7 +373,7 @@ def _reason(
         return _quality_label(audio_format)
     next_key, next_candidate = following
     if key > next_key:
-        # the keys ascend everywhere except where the upgrade moved the better copies ahead
+        # the keys ascend everywhere except where the upgrade moved a better copy ahead
         return (
             f"upgrade: {_quality_label(audio_format)} over "
             f"{_quality_label(next_candidate.mapping.audio_format)}"
