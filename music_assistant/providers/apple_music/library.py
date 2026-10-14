@@ -178,8 +178,8 @@ class AppleMusicLibraryManager:
     async def get_favourites_marker(self) -> str:
         """Return a marker that changes when a song is rated in any Apple Music app."""
         playlists = await self.api.get_all_items("me/library/playlists")
-        # The automatic favourites playlist has a localised name and no fixed id, so take
-        # every playlist matching its traits (the purchased playlist matches but rarely moves).
+        # the favourites playlist has a localised name and no fixed id, so take every playlist
+        # like it; the purchased music playlist also matches but rarely moves
         return ",".join(
             sorted(
                 f"{item['id']}={item['attributes'].get('lastModifiedDate', '')}"
