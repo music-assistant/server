@@ -394,6 +394,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     track_sec_skipped = queue_item.streamdetails.seek_position
                 else:
                     track_sec_skipped = 0
+                # Each repeat shares a QueueItem, but buffered audio from the previous
+                # playback still needs the offset captured before the repeat was loaded.
+                if play_log_entry.seek_position is not None:
+                    track_sec_skipped = play_log_entry.seek_position
                 # stream-time within this entry, scaled to media-time using the
                 # speed of the entry we broke on (queue.current_item may still be
                 # the previous entry during a transition)

@@ -26,6 +26,7 @@ from music_assistant.helpers.api import parse_value
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ListingType
+    from music_assistant_models.media_items import ItemMapping
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -60,6 +61,7 @@ async def cached_listing[ItemT: MediaItem](
     *,
     item_type: Any,
     narrowed_to: Sequence[str] | None = None,
+    expiration: int = LISTING_CACHE_EXPIRATION,
 ) -> list[ItemT]:
     """
     Return a container's listing, assembled once and served from the cache for a while.
@@ -78,6 +80,7 @@ async def cached_listing[ItemT: MediaItem](
         them from the cache.
     :param narrowed_to: The provider instances the calling user's music sources narrow
         the assembly to, when they do.
+    :param expiration: How many seconds the assembled listing is served from the cache.
     """
     key = listing.value
     if narrowed_to is not None:
@@ -85,7 +88,9 @@ async def cached_listing[ItemT: MediaItem](
     entry = f"{uri}|{key}"
     while (items := await _read(mass, uri, key, item_type)) is None:
         if (fill := _fills.get(entry)) is None:
-            return cast("list[ItemT]", await _assemble(mass, entry, uri, key, assemble))
+            assembled = await _assemble(mass, entry, uri, key, assemble, expiration)
+            # the request that assembles the listing sees the state a cached one would carry
+            return cast("list[ItemT]", await _with_favorites(mass, assembled))
         # a concurrent request is assembling the listing: what it keeps is read on the next
         # round, what it does not keep (or when it goes away) is assembled here, as the
         # calling user, and its failure is this request's failure too
@@ -100,16 +105,17 @@ async def cached_listing[ItemT: MediaItem](
     return cast("list[ItemT]", items)
 
 
-async def invalidate_listings(mass: MusicAssistant, item: MediaItem) -> None:
+async def invalidate_listings(mass: MusicAssistant, item: MediaItem | ItemMapping) -> None:
     """
     Drop the cached listings of a container whose contents changed, under every id it has.
 
     :param mass: The MusicAssistant instance.
-    :param item: The container (an album, a playlist, ...).
+    :param item: The container (an album, a playlist, ...), or a reference to it.
     """
+    mappings = item.provider_mappings if isinstance(item, MediaItem) else ()
     uris = {
         create_uri(item.media_type, mapping.provider_instance, mapping.item_id)
-        for mapping in item.provider_mappings
+        for mapping in mappings
     }
     if item.uri:
         uris.add(item.uri)
@@ -127,7 +133,16 @@ async def _read(mass: MusicAssistant, uri: str, key: str, item_type: Any) -> lis
         return None
     # rebuilt off the event loop, a listing can hold thousands of items
     items = await asyncio.to_thread(_rebuild, cached, item_type)
-    return await with_user_favorites(mass, get_current_user(), items)
+    return await _with_favorites(mass, items)
+
+
+async def _with_favorites(mass: MusicAssistant, items: list[Any]) -> list[Any]:
+    """Return the items, the media items among them carrying the calling user's favorites."""
+    # a browse folder also lists folders and item mappings, which carry no favorite state
+    await with_user_favorites(
+        mass, get_current_user(), [item for item in items if isinstance(item, MediaItem)]
+    )
+    return items
 
 
 async def _assemble(
@@ -136,11 +151,12 @@ async def _assemble(
     uri: str,
     key: str,
     assemble: Callable[[], Awaitable[Listing[Any]]],
+    expiration: int,
 ) -> list[Any]:
     """Assemble a listing in the calling task and keep it, for the requests waiting on it too."""
     fill = _fills[entry] = asyncio.get_running_loop().create_future()
     try:
-        assembled = await _fill(mass, uri, key, assemble)
+        assembled = await _fill(mass, uri, key, assemble, expiration)
     except asyncio.CancelledError:
         fill.cancel()
         raise
@@ -160,6 +176,7 @@ async def _fill(
     uri: str,
     key: str,
     assemble: Callable[[], Awaitable[Listing[Any]]],
+    expiration: int,
 ) -> Listing[Any]:
     """Assemble a listing and keep it, unless it is incomplete or an invalidation overtook it."""
     generation = _generations.get(uri, 0)
@@ -169,7 +186,7 @@ async def _fill(
         await mass.cache.set(
             key,
             cast("SerializableType", assembled.items),
-            expiration=LISTING_CACHE_EXPIRATION,
+            expiration=expiration,
             provider=uri,
             category=CACHE_CATEGORY_LISTINGS,
         )

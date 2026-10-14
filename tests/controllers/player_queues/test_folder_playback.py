@@ -74,11 +74,13 @@ async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
 
     with patch.object(
         mass.music, "browse", AsyncMock(return_value=[subfolder, station, episode, radio, track])
-    ):
+    ) as browse:
         resolved = await mass.player_queues._media_resolver._resolve_media_items(
             folder, userid=user.user_id
         )
 
+    # the whole folder, not the first page of its listing
+    browse.assert_awaited_once_with(folder.path, limit=None)
     items = [x.item for x in resolved]
     assert [x.media_type for x in items] == [
         MediaType.PODCAST_EPISODE,

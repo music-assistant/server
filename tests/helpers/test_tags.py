@@ -4,6 +4,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -465,6 +466,7 @@ def test_parse_vorbis_tags_musicbrainz_ids() -> None:
             "MUSICBRAINZ_ARTISTID": ["mb-id-1", "mb-id-2"],
             "MUSICBRAINZ_ALBUMID": ["mb-album-id"],
             "MUSICBRAINZ_TRACKID": ["mb-track-id"],
+            "MUSICBRAINZ_RELEASETRACKID": ["mb-release-track-id"],
         }
     )
 
@@ -473,6 +475,9 @@ def test_parse_vorbis_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzartistid") == ["mb-id-1", "mb-id-2"]
     assert result.get("musicbrainzalbumid") == "mb-album-id"
     assert result.get("musicbrainzrecordingid") == "mb-track-id"
+    assert result.get("musicbrainzreleasetrackid") == "mb-release-track-id"
+    # ffprobe keeps the recording id under this name, which must not be overwritten
+    assert "musicbrainztrackid" not in result
 
 
 def test_parse_vorbis_multi_value_releasetype() -> None:
@@ -521,6 +526,7 @@ def test_parse_apev2_tags_musicbrainz_ids() -> None:
             "MUSICBRAINZ_ARTISTID": "mb-id-1\x00mb-id-2",  # Multi-value
             "MUSICBRAINZ_ALBUMID": "mb-album-id",
             "MUSICBRAINZ_TRACKID": "mb-track-id",  # Recording ID in APEv2
+            "MUSICBRAINZ_RELEASETRACKID": "mb-release-track-id",
             "MUSICBRAINZ_RELEASEGROUPID": "mb-rg-id",
         }
     )
@@ -530,6 +536,7 @@ def test_parse_apev2_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzartistid") == ["mb-id-1", "mb-id-2"]
     assert result.get("musicbrainzalbumid") == "mb-album-id"
     assert result.get("musicbrainzrecordingid") == "mb-track-id"
+    assert result.get("musicbrainzreleasetrackid") == "mb-release-track-id"
     assert result.get("musicbrainzreleasegroupid") == "mb-rg-id"
 
 
@@ -944,6 +951,86 @@ async def test_parse_ufid_frame_with_dirty_payload(tmp_path: pathlib.Path) -> No
 
     _tags = await tags.async_parse_tags(str(dest))
     assert clean_mbid(_tags.musicbrainz_recordingid) == VALID_MBID
+
+
+RELEASE_TRACK_MBID = "0a2a7b1e-5c9d-4f6e-8b3a-1d4c7e9f2b5a"
+
+
+def _tag_flac_musicbrainz_ids(path: str, release_track: bool) -> None:
+    """Write the recording id, and optionally the release-track id, as Picard does in FLAC."""
+    flac = FLAC(path)  # type: ignore[no-untyped-call]
+    flac["MUSICBRAINZ_TRACKID"] = VALID_MBID
+    if release_track:
+        flac["MUSICBRAINZ_RELEASETRACKID"] = RELEASE_TRACK_MBID
+    flac.save()
+
+
+def _tag_mp3_musicbrainz_ids(path: str, release_track: bool) -> None:
+    """Write the recording id, and optionally the release-track id, as Picard does in ID3."""
+    id3 = ID3(path)  # type: ignore[no-untyped-call]
+    id3.add(UFID(owner="http://musicbrainz.org", data=VALID_MBID.encode()))  # type: ignore[no-untyped-call]
+    id3.delall("TXXX:MusicBrainz Release Track Id")  # type: ignore[no-untyped-call]
+    if release_track:
+        id3.add(  # type: ignore[no-untyped-call]
+            TXXX(encoding=3, desc="MusicBrainz Release Track Id", text=[RELEASE_TRACK_MBID])  # type: ignore[no-untyped-call]
+        )
+    id3.save()
+
+
+def _tag_m4a_musicbrainz_ids(path: str, release_track: bool) -> None:
+    """Write the recording id, and optionally the release-track id, as Picard does in MP4."""
+    mp4 = MP4(path)  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:MusicBrainz Track Id"] = [MP4FreeForm(VALID_MBID.encode())]  # type: ignore[no-untyped-call]
+    if release_track:
+        mp4["----:com.apple.iTunes:MusicBrainz Release Track Id"] = [
+            MP4FreeForm(RELEASE_TRACK_MBID.encode())  # type: ignore[no-untyped-call]
+        ]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+
+@pytest.mark.parametrize("release_track", [True, False], ids=["release_track", "recording_only"])
+@pytest.mark.parametrize(
+    ("source", "write_ids"),
+    [
+        (FILE_FLAC, _tag_flac_musicbrainz_ids),
+        (FILE_MP3, _tag_mp3_musicbrainz_ids),
+        (FILE_M4A, _tag_m4a_musicbrainz_ids),
+    ],
+    ids=["flac", "mp3", "m4a"],
+)
+async def test_release_track_id_is_told_apart_from_the_recording_id(
+    tmp_path: pathlib.Path, source: str, write_ids: Callable[[str, bool], None], release_track: bool
+) -> None:
+    """Each tag format names the two ids differently; neither is ever taken for the other."""
+    dest = tmp_path / pathlib.Path(source).name
+    shutil.copy(source, dest)
+    write_ids(str(dest), release_track)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.musicbrainz_recordingid == VALID_MBID
+    assert _tags.musicbrainz_releasetrackid == (RELEASE_TRACK_MBID if release_track else None)
+
+
+def test_release_track_id_is_read_from_a_wavpack_file(tmp_path: pathlib.Path) -> None:
+    """
+    APEv2 names the recording id MUSICBRAINZ_TRACKID, like Vorbis comments.
+
+    Uses parse_tags_mutagen directly since the minimal WavPack fixture
+    does not contain valid audio data for ffprobe to parse.
+    """
+    dest = tmp_path / "track.wv"
+    shutil.copy(FILE_WV, dest)
+    ape = APEv2(str(dest))  # type: ignore[no-untyped-call]
+    ape["MUSICBRAINZ_TRACKID"] = VALID_MBID
+    ape["MUSICBRAINZ_RELEASETRACKID"] = RELEASE_TRACK_MBID
+    ape.save(str(dest))
+
+    result = parse_tags_mutagen(str(dest))
+
+    assert result.get("musicbrainzrecordingid") == VALID_MBID
+    assert result.get("musicbrainzreleasetrackid") == RELEASE_TRACK_MBID
+    assert "musicbrainztrackid" not in result
 
 
 def _tags_with(raw_tags: dict[str, str]) -> tags.AudioTags:

@@ -1,259 +1,534 @@
-"""Tests for player queue sort functionality."""
+"""
+Tests for the order a play request plays an album or playlist in.
 
+The queue plays a container in the order its tracks listing shows for the sort the request
+names, with the typed sort fields or the deprecated sort key an outdated client sends.
+"""
+
+from __future__ import annotations
+
+import inspect
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import cast
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.media_items import Album, Artist, Track
-from music_assistant_models.media_items.provider_mapping import ProviderMapping
-from music_assistant_models.unique_list import UniqueList
+import pytest
+from music_assistant_models.enums import MediaType, SortDirection, SortField
+from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import (
+    Album,
+    ItemMapping,
+    MediaItemType,
+    Playlist,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
-from music_assistant.constants import PlaylistPlayableItem
-from music_assistant.controllers.player_queues.helpers import sort_tracks
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.models.music_provider import MusicProvider
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
+
+INSTANCE = "spotify_1"
+ALBUM_ID = "al1"
+PLAYLIST_ID = "pl1"
+BATCH = datetime(2024, 3, 1, tzinfo=UTC)
+
+# the keys the playlist page sends with a play request and the sort each one stands for
+PLAYLIST_SORTS = {
+    "position": (SortField.POSITION, SortDirection.ASC),
+    "position_desc": (SortField.POSITION, SortDirection.DESC),
+    "timestamp_added": (SortField.TIMESTAMP_ADDED, SortDirection.ASC),
+    "timestamp_added_desc": (SortField.TIMESTAMP_ADDED, SortDirection.DESC),
+    "name": (SortField.NAME, SortDirection.ASC),
+    "artist": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "album": (SortField.ALBUM_NAME, SortDirection.ASC),
+    "duration": (SortField.DURATION, SortDirection.ASC),
+    "duration_desc": (SortField.DURATION, SortDirection.DESC),
+}
+
+# the order each of those keys plays the playlist of _playlist_tracks in
+PLAYLIST_ORDERS = {
+    "position": ["p1", "p2", "p3", "p4"],
+    "position_desc": ["p4", "p3", "p2", "p1"],
+    # undated tracks count as the oldest, tracks added together keep the playlist order
+    "timestamp_added": ["p2", "p1", "p4", "p3"],
+    "timestamp_added_desc": ["p3", "p1", "p4", "p2"],
+    # the displayed name, a leading article included
+    "name": ["p3", "p4", "p1", "p2"],
+    "artist": ["p2", "p4", "p1", "p3"],
+    # each album in disc and track order
+    "album": ["p4", "p2", "p3", "p1"],
+    "duration": ["p2", "p4", "p1", "p3"],
+    "duration_desc": ["p3", "p1", "p4", "p2"],
+}
+
+# the keys the album page sends with a play request and the sort each one stands for
+ALBUM_SORTS = {
+    "track_number": (SortField.TRACK_NUMBER, SortDirection.ASC),
+    "name": (SortField.NAME, SortDirection.ASC),
+    "sort_name": (SortField.SORT_NAME, SortDirection.ASC),
+    "duration": (SortField.DURATION, SortDirection.ASC),
+    "duration_desc": (SortField.DURATION, SortDirection.DESC),
+}
+
+# the order each of those keys plays the album of _album_tracks in
+ALBUM_ORDERS = {
+    "track_number": ["a1", "a2", "a4", "a3"],
+    "name": ["a3", "a4", "a1", "a2"],
+    # a leading article moves to the end
+    "sort_name": ["a3", "a4", "a2", "a1"],
+    "duration": ["a2", "a4", "a1", "a3"],
+    "duration_desc": ["a3", "a1", "a4", "a2"],
+}
 
 
-def _make_provider_mappings(provider: str = "test") -> set[ProviderMapping]:
-    return {ProviderMapping(item_id="x", provider_domain=provider, provider_instance=provider)}
+class _StubProvider(MusicProvider):
+    """Music provider listing one album and one playlist, as the test hands them over."""
+
+    def __init__(self, album_tracks: list[Track], playlist_tracks: list[Track]) -> None:
+        """
+        Initialize the stub provider.
+
+        :param album_tracks: The tracks of the album, in the order the provider lists them.
+        :param playlist_tracks: The tracks of the playlist, in playlist order.
+        """
+        self.album_tracks = album_tracks
+        self.playlist_tracks = playlist_tracks
+        self.config = MagicMock()
+        self.config.instance_id = INSTANCE
+        self.manifest = MagicMock()
+        self.manifest.domain = "spotify"
+        self.logger = MagicMock()
+        self.available = True
+
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Return the tracks of the album."""
+        return self.album_tracks
+
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Return the playlist."""
+        return _playlist()
+
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """Return the playlist on its first page."""
+        return [] if page else self.playlist_tracks
 
 
-def _make_artist(name: str) -> Artist:
-    return Artist(
-        item_id=name.lower(),
-        provider="test",
-        name=name,
-        provider_mappings=_make_provider_mappings(),
+@pytest.fixture(name="mass")
+async def mass_fixture(music_mass: MusicAssistant) -> AsyncIterator[MusicAssistant]:
+    """Run on a library-only instance with a cache store and a stub provider."""
+    await music_mass.cache._setup_database()
+    music_mass.streams = MagicMock()
+    music_mass.streams.audio_analysis.get_tracks_audio_metadata = AsyncMock(
+        side_effect=lambda tracks: [None] * len(tracks)
     )
+    provider = _StubProvider(_album_tracks(), _playlist_tracks())
+    with (
+        patch.object(
+            music_mass,
+            "get_provider",
+            side_effect=lambda provider_id, *_args, **_kwargs: (
+                provider if provider_id in (INSTANCE, "spotify") else None
+            ),
+        ),
+        # the stub album tracks carry their album already
+        patch.object(music_mass.music.albums, "_backfill_album_on_tracks", AsyncMock()),
+    ):
+        yield music_mass
 
 
-def _make_album(name: str) -> Album:
-    return Album(
-        item_id=name.lower(),
-        provider="test",
-        name=name,
-        provider_mappings=_make_provider_mappings(),
-    )
+def _mapping(item_id: str) -> set[ProviderMapping]:
+    return {ProviderMapping(item_id=item_id, provider_domain="spotify", provider_instance=INSTANCE)}
 
 
-def _make_track(
+def _reference(item_id: str, name: str, media_type: MediaType) -> ItemMapping:
+    return ItemMapping(item_id=item_id, provider=INSTANCE, name=name, media_type=media_type)
+
+
+def _track(
+    item_id: str,
     name: str,
     *,
+    disc_number: int = 1,
+    track_number: int = 1,
     duration: int = 200,
     position: int | None = None,
-    artist_name: str = "Artist",
-    album_name: str = "Album",
-    track_number: int = 1,
-    disc_number: int = 1,
-    item_id: str | None = None,
+    artist: str = "Artist",
+    album: tuple[str, str] = (ALBUM_ID, "Album"),
     date_added: datetime | None = None,
 ) -> Track:
-    artist = _make_artist(artist_name)
-    album = _make_album(album_name)
     return Track(
-        item_id=item_id or name.lower().replace(" ", "_"),
-        provider="test",
+        item_id=item_id,
+        provider=INSTANCE,
         name=name,
         duration=duration,
         position=position,
-        artists=UniqueList([artist]),
-        album=album,
-        track_number=track_number,
         disc_number=disc_number,
-        provider_mappings=_make_provider_mappings(),
+        track_number=track_number,
         date_added=date_added,
+        artists=UniqueList([_reference(artist.lower(), artist, MediaType.ARTIST)]),
+        album=_reference(*album, MediaType.ALBUM),
+        provider_mappings=_mapping(item_id),
     )
 
 
-# --- _sort_tracks tests ---
+def _album_tracks() -> list[Track]:
+    """Return the tracks of the album, listed out of their disc and track order."""
+    return [
+        _track("a3", "Alpha Song", disc_number=2, track_number=1, duration=500),
+        _track("a1", "The Zebra", track_number=1, duration=300),
+        _track("a4", "Middle", track_number=3, duration=200),
+        _track("a2", "Umbrella", track_number=2, duration=100),
+    ]
 
 
-class TestSortTracks:
-    """Tests for the _sort_tracks static method."""
+def _playlist_tracks() -> list[Track]:
+    """Return the tracks of the playlist, in playlist order."""
+    alpha, beta = ("alpha", "Alpha"), ("beta", "Beta")
+    return [
+        _track(
+            "p1",
+            "The Zebra",
+            position=1,
+            artist="Metallica",
+            album=beta,
+            track_number=2,
+            duration=300,
+            date_added=BATCH,
+        ),
+        _track(
+            "p2", "Umbrella", position=2, artist="ABBA", album=alpha, disc_number=2, duration=100
+        ),
+        _track(
+            "p3",
+            "Alpha Song",
+            position=3,
+            artist="Zeppelin",
+            album=beta,
+            duration=500,
+            date_added=datetime(2024, 5, 10, tzinfo=UTC),
+        ),
+        _track(
+            "p4",
+            "Middle",
+            position=4,
+            artist="Coldplay",
+            album=alpha,
+            track_number=5,
+            duration=200,
+            date_added=BATCH,
+        ),
+    ]
 
-    def test_sort_by_name(self) -> None:
-        """Tracks are sorted alphabetically by name."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Charlie"),
-            _make_track("Alpha"),
-            _make_track("Bravo"),
-        ]
-        result = sort_tracks(tracks, "name")
-        assert [t.name for t in result] == ["Alpha", "Bravo", "Charlie"]
 
-    def test_sort_by_name_keeps_articles(self) -> None:
-        """Sort by name uses the displayed name, leading articles included."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("The Zebra"),
-            _make_track("Umbrella"),
-        ]
-        result = sort_tracks(tracks, "name")
-        assert [t.name for t in result] == ["The Zebra", "Umbrella"]
+def _album() -> Album:
+    return Album(
+        item_id=ALBUM_ID, provider=INSTANCE, name="Album", provider_mappings=_mapping(ALBUM_ID)
+    )
 
-    def test_sort_by_sort_name_ignores_articles(self) -> None:
-        """Sort by sort_name moves leading articles to the end."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("The Zebra"),
-            _make_track("Umbrella"),
-        ]
-        # sort_name for "The Zebra" becomes "zebra, the" so it sorts after "umbrella"
-        result = sort_tracks(tracks, "sort_name")
-        assert [t.name for t in result] == ["Umbrella", "The Zebra"]
 
-    def test_sort_by_album_keeps_album_track_order(self) -> None:
-        """Sort by album groups by album name, then disc and track number."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("B2", album_name="Beta", disc_number=1, track_number=2),
-            _make_track("A1", album_name="Alpha", disc_number=2, track_number=1),
-            _make_track("B1", album_name="Beta", disc_number=1, track_number=1),
-            _make_track("A0", album_name="Alpha", disc_number=1, track_number=5),
-        ]
-        result = sort_tracks(tracks, "album")
-        assert [t.name for t in result] == ["A0", "A1", "B1", "B2"]
+def _playlist() -> Playlist:
+    return Playlist(
+        item_id=PLAYLIST_ID,
+        provider=INSTANCE,
+        name="Playlist",
+        provider_mappings=_mapping(PLAYLIST_ID),
+    )
 
-    def test_sort_by_artist(self) -> None:
-        """Tracks are sorted by the first artist's name."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Song1", artist_name="Zeppelin"),
-            _make_track("Song2", artist_name="ABBA"),
-            _make_track("Song3", artist_name="Metallica"),
-        ]
-        result = sort_tracks(tracks, "artist")
-        assert [cast("Track", t).artists[0].name for t in result] == [
-            "ABBA",
-            "Metallica",
-            "Zeppelin",
-        ]
 
-    def test_sort_by_album(self) -> None:
-        """Tracks are sorted by album name."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Song1", album_name="Thriller"),
-            _make_track("Song2", album_name="Abbey Road"),
-            _make_track("Song3", album_name="Nevermind"),
-        ]
-        result = sort_tracks(tracks, "album")
-        albums = [cast("Track", t).album for t in result]
-        assert all(a is not None for a in albums)
-        assert [a.name for a in albums if a is not None] == [
-            "Abbey Road",
-            "Nevermind",
-            "Thriller",
-        ]
+def _resolver(mass: MusicAssistant | MagicMock) -> MediaResolver:
+    """Create a resolver on the given instance, whose albums play without choosing a source."""
+    resolver = MediaResolver.__new__(MediaResolver)
+    resolver.mass = mass
+    resolver.queues = MagicMock(domain="player_queues")
+    resolver.logger = MagicMock()
+    resolver._album_source = AsyncMock(return_value=(None, {}))  # type: ignore[method-assign]
+    return resolver
 
-    def test_sort_by_duration_ascending(self) -> None:
-        """Tracks are sorted by duration, shortest first."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Long", duration=500),
-            _make_track("Short", duration=100),
-            _make_track("Medium", duration=300),
-        ]
-        result = sort_tracks(tracks, "duration")
-        assert [t.duration for t in result] == [100, 300, 500]
 
-    def test_sort_by_duration_descending(self) -> None:
-        """Tracks are sorted by duration, longest first."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Long", duration=500),
-            _make_track("Short", duration=100),
-            _make_track("Medium", duration=300),
-        ]
-        result = sort_tracks(tracks, "duration_desc")
-        assert [t.duration for t in result] == [500, 300, 100]
+def _ids(items: list[Any]) -> list[str]:
+    return [getattr(item, "item", item).item_id for item in items]
 
-    def test_sort_by_position_desc(self) -> None:
-        """Tracks are sorted by position in reverse."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("First", position=1),
-            _make_track("Third", position=3),
-            _make_track("Second", position=2),
-        ]
-        result = sort_tracks(tracks, "position_desc")
-        assert [t.position for t in result] == [3, 2, 1]
 
-    def test_sort_by_date_added(self) -> None:
-        """Tracks are sorted by when they were added, oldest or newest first."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Middle", date_added=datetime(2024, 3, 1, tzinfo=UTC)),
-            _make_track("Newest", date_added=datetime(2024, 5, 10, tzinfo=UTC)),
-            _make_track("Oldest", date_added=datetime(2024, 1, 15, tzinfo=UTC)),
-        ]
-        result = sort_tracks(tracks, "timestamp_added")
-        assert [t.name for t in result] == ["Oldest", "Middle", "Newest"]
-        result = sort_tracks(tracks, "timestamp_added_desc")
-        assert [t.name for t in result] == ["Newest", "Middle", "Oldest"]
+@pytest.mark.parametrize(("sort_key", "expected"), PLAYLIST_ORDERS.items())
+async def test_a_playlist_plays_in_the_order_its_listing_shows(
+    mass: MusicAssistant, sort_key: str, expected: list[str]
+) -> None:
+    """Every key the playlist page sends plays the playlist as its tracks listing shows it."""
+    sort_field, sort_direction = PLAYLIST_SORTS[sort_key]
 
-    def test_sort_by_date_added_desc_keeps_batches_in_order(self) -> None:
-        """Tracks added together keep their playlist order, and undated ones go last."""
-        batch = datetime(2024, 3, 1, 12, 0, 0, tzinfo=UTC)
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Batch1", date_added=batch),
-            _make_track("Undated"),
-            _make_track("Batch2", date_added=batch),
-            _make_track("Newer", date_added=datetime(2024, 5, 10, tzinfo=UTC)),
-            _make_track("Batch3", date_added=batch),
-        ]
-        result = sort_tracks(tracks, "timestamp_added_desc")
-        assert [t.name for t in result] == ["Newer", "Batch1", "Batch2", "Batch3", "Undated"]
+    played = await _resolver(mass).get_playlist_tracks(
+        _playlist(), None, sort_field, sort_direction
+    )
+    listed = await mass.music.playlists.tracks(
+        PLAYLIST_ID, INSTANCE, sort_field=sort_field, sort_direction=sort_direction, limit=0
+    )
 
-    def test_sort_by_track_number(self) -> None:
-        """Tracks are sorted by disc then track number."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("D2T1", disc_number=2, track_number=1),
-            _make_track("D1T3", disc_number=1, track_number=3),
-            _make_track("D1T1", disc_number=1, track_number=1),
-        ]
-        result = sort_tracks(tracks, "track_number")
-        assert [t.name for t in result] == ["D1T1", "D1T3", "D2T1"]
+    assert _ids(played) == _ids(listed) == expected
 
-    def test_unknown_sort_key_returns_original_order(self) -> None:
-        """An unrecognized sort key returns the tracks unchanged."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("C"),
-            _make_track("A"),
-            _make_track("B"),
-        ]
-        result = sort_tracks(tracks, "nonexistent")
-        assert [t.name for t in result] == ["C", "A", "B"]
 
-    def test_sort_is_stable(self) -> None:
-        """Tracks with equal sort keys preserve their relative order."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Song1", duration=200),
-            _make_track("Song2", duration=200),
-            _make_track("Song3", duration=200),
-        ]
-        result = sort_tracks(tracks, "duration")
-        assert [t.name for t in result] == ["Song1", "Song2", "Song3"]
+@pytest.mark.parametrize(("sort_key", "expected"), ALBUM_ORDERS.items())
+async def test_an_album_plays_in_the_order_its_listing_shows(
+    mass: MusicAssistant, sort_key: str, expected: list[str]
+) -> None:
+    """Every key the album page sends plays the album as its tracks listing shows it."""
+    sort_field, sort_direction = ALBUM_SORTS[sort_key]
 
-    def test_sort_with_missing_album(self) -> None:
-        """Tracks without an album sort to the beginning (empty string)."""
-        track_no_album = _make_track("NoAlbum", album_name="Zoo")
-        track_no_album.album = None
-        track_with_album = _make_track("WithAlbum", album_name="Abc")
-        tracks: list[PlaylistPlayableItem] = [track_with_album, track_no_album]
-        result = sort_tracks(tracks, "album")
-        # empty string sorts before "abc"
-        assert [t.name for t in result] == ["NoAlbum", "WithAlbum"]
+    played = await _resolver(mass)._resolve_media_items(
+        _album(), sort_field=sort_field, sort_direction=sort_direction
+    )
+    listed = await mass.music.albums.tracks(
+        ALBUM_ID, INSTANCE, sort_field=sort_field, sort_direction=sort_direction, limit=0
+    )
 
-    def test_sort_with_empty_artists(self) -> None:
-        """Tracks without artists sort to the beginning (empty string)."""
-        track_no_artist = _make_track("NoArtist")
-        track_no_artist.artists = UniqueList()
-        track_with_artist = _make_track("WithArtist", artist_name="Beta")
-        tracks: list[PlaylistPlayableItem] = [track_with_artist, track_no_artist]
-        result = sort_tracks(tracks, "artist")
-        assert [t.name for t in result] == ["NoArtist", "WithArtist"]
+    assert _ids(played) == _ids(listed) == expected
 
-    def test_sort_does_not_mutate_input(self) -> None:
-        """Sorting returns a new list without modifying the original."""
-        tracks: list[PlaylistPlayableItem] = [
-            _make_track("Charlie"),
-            _make_track("Alpha"),
-        ]
-        original_order = [t.name for t in tracks]
-        sort_tracks(tracks, "name")
-        assert [t.name for t in tracks] == original_order
 
-    def test_empty_list(self) -> None:
-        """Sorting an empty list returns an empty list."""
-        tracks: list[PlaylistPlayableItem] = []
-        result = sort_tracks(tracks, "name")
-        assert result == []
+@pytest.mark.parametrize(
+    ("keep_preceding_items", "expected"),
+    [(False, ["p4", "p1", "p3"]), (True, ["p4", "p1", "p3", "p2"])],
+)
+async def test_a_sorted_playlist_starts_at_the_chosen_track(
+    mass: MusicAssistant, keep_preceding_items: bool, expected: list[str]
+) -> None:
+    """The chosen track is looked up in the sorted playlist, the tracks before it dropped or last."""
+    played = await _resolver(mass).get_playlist_tracks(
+        _playlist(),
+        "p4",
+        SortField.DURATION,
+        keep_preceding_items=keep_preceding_items,
+    )
+
+    assert _ids(played) == expected
+
+
+@pytest.mark.parametrize(
+    ("keep_preceding_items", "expected"),
+    [(False, ["a4", "a2", "a1"]), (True, ["a4", "a2", "a1", "a3"])],
+)
+async def test_a_sorted_album_starts_at_the_chosen_track(
+    mass: MusicAssistant, keep_preceding_items: bool, expected: list[str]
+) -> None:
+    """The chosen track is looked up in the sorted album, the tracks before it dropped or last."""
+    played = await _resolver(mass)._resolve_media_items(
+        _album(),
+        start_item="a4",
+        sort_field=SortField.TRACK_NUMBER,
+        sort_direction=SortDirection.DESC,
+        keep_preceding_items=keep_preceding_items,
+    )
+
+    assert _ids(played) == expected
+
+
+def _streaming_resolver(tracks: list[Track]) -> tuple[MediaResolver, list[str], AsyncMock]:
+    """
+    Create a resolver whose playlist streams the given tracks.
+
+    :return: The resolver, the ids of the tracks streamed so far and the playlist's tracks listing.
+    """
+    mass = MagicMock()
+    streamed: list[str] = []
+
+    async def _iter_tracks(*_args: Any, **_kwargs: Any) -> AsyncIterator[Track]:
+        for track in tracks:
+            streamed.append(track.item_id)
+            yield track
+
+    mass.music.playlists.iter_tracks = _iter_tracks
+    mass.music.playlists.tracks = listing = AsyncMock(return_value=tracks)
+    return _resolver(mass), streamed, listing
+
+
+@pytest.mark.parametrize(
+    ("sort_field", "sort_direction"),
+    [(None, None), (SortField.POSITION, None), PLAYLIST_SORTS["position"]],
+)
+async def test_a_playlist_in_its_own_order_is_streamed(
+    sort_field: SortField | None, sort_direction: SortDirection | None
+) -> None:
+    """The playlist order is walked as the provider lists it, never as a whole listing."""
+    resolver, streamed, listing = _streaming_resolver(_playlist_tracks())
+
+    played = await resolver.get_playlist_tracks(_playlist(), "p3", sort_field, sort_direction)
+
+    assert _ids(played) == ["p3", "p4"]
+    assert streamed == ["p1", "p2", "p3", "p4"]
+    listing.assert_not_awaited()
+
+
+async def test_a_sorted_playlist_is_played_from_its_listing() -> None:
+    """Any other order is asked of the playlist's tracks listing, which serves it whole."""
+    resolver, streamed, listing = _streaming_resolver(_playlist_tracks())
+
+    await resolver.get_playlist_tracks(_playlist(), None, SortField.POSITION, SortDirection.DESC)
+
+    assert streamed == []
+    listing.assert_awaited_once_with(
+        PLAYLIST_ID,
+        INSTANCE,
+        force_refresh=False,
+        allow_dynamic_tracks=False,
+        sort_field=SortField.POSITION,
+        sort_direction=SortDirection.DESC,
+        limit=None,
+    )
+
+
+async def test_a_sort_the_playlist_does_not_offer_is_rejected_before_it_is_fetched() -> None:
+    """A field the playlist tracks listing does not offer fails before any track is fetched."""
+    resolver, streamed, listing = _streaming_resolver(_playlist_tracks())
+
+    with pytest.raises(InvalidDataError):
+        await resolver.get_playlist_tracks(_playlist(), None, SortField.TRACK_NUMBER)
+
+    assert streamed == []
+    listing.assert_not_awaited()
+
+
+async def test_a_sort_the_album_does_not_offer_is_rejected_before_it_is_fetched(
+    mass: MusicAssistant,
+) -> None:
+    """A field the album tracks listing does not offer fails before any track is fetched."""
+    with (
+        patch.object(mass.music.albums, "_get_provider_album_tracks", AsyncMock()) as fetch,
+        pytest.raises(InvalidDataError),
+    ):
+        await _resolver(mass)._resolve_media_items(_album(), sort_field=SortField.ALBUM_NAME)
+
+    fetch.assert_not_awaited()
+
+
+def _controller() -> Any:
+    """Build a bare controller with a queue, whose play requests stop at the queue loader."""
+    ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
+    ctrl.mass = MagicMock()
+    ctrl.logger = MagicMock()
+    ctrl._check_player_permission = MagicMock()  # type: ignore[method-assign]
+    ctrl.get = MagicMock()  # type: ignore[method-assign]
+    ctrl._handle_play_media = AsyncMock()  # type: ignore[method-assign]
+    return ctrl
+
+
+def _requested_sort(ctrl: Any) -> tuple[SortField | None, SortDirection | None]:
+    """Return the sort the controller handed on to the queue loader."""
+    call = ctrl._handle_play_media.await_args
+    handed_on = inspect.signature(PlayerQueuesController._handle_play_media).bind(
+        ctrl, *call.args, **call.kwargs
+    )
+    return handed_on.arguments["sort_field"], handed_on.arguments["sort_direction"]
+
+
+@pytest.fixture(name="media")
+def media_fixture() -> dict[str, MediaItemType | str]:
+    """Return the media to play by name, as uris and as items."""
+    return {
+        "album_uri": "library://album/1",
+        "playlist_uri": f"{INSTANCE}://playlist/{PLAYLIST_ID}",
+        "track_uri": "library://track/1",
+        "artist_uri": "library://artist/1",
+        "album": _album(),
+        "playlist": _playlist(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("media_name", "sort_key", "expected"),
+    [
+        *(("album_uri", key, sort) for key, sort in ALBUM_SORTS.items()),
+        *(("playlist_uri", key, sort) for key, sort in PLAYLIST_SORTS.items()),
+    ],
+)
+async def test_a_legacy_sort_key_is_played_as_its_typed_sort(
+    media: dict[str, MediaItemType | str],
+    media_name: str,
+    sort_key: str,
+    expected: tuple[SortField, SortDirection],
+) -> None:
+    """The keys the album and playlist pages send map to the sort fields of their listings."""
+    ctrl = _controller()
+
+    await ctrl.play_media("q1", media[media_name], sort_by=sort_key)
+
+    assert _requested_sort(ctrl) == expected
+
+
+@pytest.mark.parametrize(
+    ("media_name", "sort_field", "sort_direction"),
+    [
+        ("album", SortField.DURATION, SortDirection.DESC),
+        ("playlist", SortField.ALBUM_NAME, None),
+        ("playlist", None, SortDirection.DESC),
+    ],
+)
+async def test_a_typed_sort_is_played(
+    media: dict[str, MediaItemType | str],
+    media_name: str,
+    sort_field: SortField | None,
+    sort_direction: SortDirection | None,
+) -> None:
+    """The typed sort goes to the queue loader as it is requested."""
+    ctrl = _controller()
+
+    await ctrl.play_media(
+        "q1", media[media_name], sort_field=sort_field, sort_direction=sort_direction
+    )
+
+    assert _requested_sort(ctrl) == (sort_field, sort_direction)
+
+
+async def test_a_typed_sort_field_wins_over_the_legacy_key(
+    media: dict[str, MediaItemType | str],
+) -> None:
+    """The deprecated key only counts when no sort field is requested."""
+    ctrl = _controller()
+
+    await ctrl.play_media(
+        "q1", media["playlist"], sort_by="duration_desc", sort_field=SortField.NAME
+    )
+
+    assert _requested_sort(ctrl) == (SortField.NAME, None)
+
+
+@pytest.mark.parametrize(
+    ("media_names", "sort_by", "sort_field"),
+    [
+        (["album_uri"], "nonexistent", None),
+        (["album_uri"], None, SortField.ALBUM_NAME),
+        (["album"], "position_desc", None),
+        (["playlist_uri"], "track_number", None),
+        (["track_uri", "playlist"], None, SortField.SORT_NAME),
+    ],
+)
+async def test_a_sort_that_is_not_offered_is_rejected_before_anything_plays(
+    media: dict[str, MediaItemType | str],
+    media_names: list[str],
+    sort_by: str | None,
+    sort_field: SortField | None,
+) -> None:
+    """An unknown key, or a field an album or playlist does not offer, fails the whole request."""
+    ctrl = _controller()
+
+    with pytest.raises(InvalidDataError):
+        await ctrl.play_media(
+            "q1", [media[name] for name in media_names], sort_by=sort_by, sort_field=sort_field
+        )
+
+    ctrl._handle_play_media.assert_not_awaited()
+
+
+@pytest.mark.parametrize("media_name", ["track_uri", "artist_uri"])
+async def test_media_without_a_tracks_listing_ignores_the_sort(
+    media: dict[str, MediaItemType | str], media_name: str
+) -> None:
+    """A sort for media that plays in an order of its own is handed on unchecked."""
+    ctrl = _controller()
+
+    await ctrl.play_media("q1", media[media_name], sort_field=SortField.ALBUM_NAME)
+
+    assert _requested_sort(ctrl) == (SortField.ALBUM_NAME, None)

@@ -143,10 +143,6 @@ def _artist(provider_instance: str, item_id: str) -> Artist:
     )
 
 
-async def _drain(items: AsyncGenerator[object]) -> list[object]:
-    return [item async for item in items]
-
-
 def _as_user(user: User | None) -> ExitStack:
     """Run the enclosed block as the given user (None for an internal caller)."""
     stack = ExitStack()
@@ -340,12 +336,12 @@ async def test_get_collection_needs_a_visible_source(music: MusicController) -> 
 async def test_playlist_tracks_are_served_by_one_visible_provider(music: MusicController) -> None:
     """Playlist pages come from the resolved visible account; a hidden one is refused."""
     with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
-        _ = [track async for track in music.playlists.tracks("p1", THEIRS)]
+        await music.playlists.tracks("p1", THEIRS)
 
     my_spotify = _add_my_spotify(music)
     my_spotify.get_playlist_tracks.side_effect = [[create_track(MY_SPOTIFY, "t1")], []]
     with _as_user(MEMBER):
-        tracks = [track async for track in music.playlists.tracks("p1", THEIRS)]
+        tracks = await music.playlists.tracks("p1", THEIRS)
     assert [track.item_id for track in tracks] == ["t1"]
     assert my_spotify.get_playlist_tracks.await_count == 2
     _mock(music, THEIRS).get_playlist_tracks.assert_not_awaited()
@@ -414,9 +410,7 @@ async def test_search_does_not_ask_a_hidden_account_for_an_unavailable_one(
             lambda music: music.artists.audiobooks("ar1", THEIRS, ArtistType.AUTHOR),
             id="artist_audiobooks",
         ),
-        pytest.param(
-            lambda music: _drain(music.podcasts.episodes("p1", THEIRS)), id="podcast_episodes"
-        ),
+        pytest.param(lambda music: music.podcasts.episodes("p1", THEIRS), id="podcast_episodes"),
         pytest.param(lambda music: music.podcasts.episode("e1", THEIRS), id="podcast_episode"),
         pytest.param(
             lambda music: music.podcasts.episode_transcript("e1", THEIRS),
@@ -596,10 +590,10 @@ async def test_episodes_of_a_hidden_library_podcast_are_not_found(
     _mock(music, THEIRS).get_podcast_episodes = _episodes
 
     with _as_user(OWNER):
-        episodes = await _drain(music.podcasts.episodes(library_podcast.item_id, "library"))
-    assert [cast("PodcastEpisode", episode).item_id for episode in episodes] == ["e1"]
+        episodes = await music.podcasts.episodes(library_podcast.item_id, "library")
+    assert [episode.item_id for episode in episodes] == ["e1"]
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError) as excinfo:
-        await _drain(music.podcasts.episodes(library_podcast.item_id, "library"))
+        await music.podcasts.episodes(library_podcast.item_id, "library")
     # the miss names neither the podcast nor its sources
     assert "Hidden Feed" not in str(excinfo.value)
 

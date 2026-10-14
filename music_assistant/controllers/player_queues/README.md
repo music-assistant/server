@@ -341,7 +341,7 @@ player_queues/
 │                   #   snapshot + items, source/enqueued media, user, stream-session + runtime fields)
 │                   #   and the cache (de)serialization the wire model no longer carries
 ├── helpers.py      # stateless utility layer: the previous-state snapshot type, the playback-lock /
-│                   #   in-progress-flag decorator, and pure helpers (sort, dynamic-source detection,
+│                   #   in-progress-flag decorator, and pure helpers (album order, dynamic-source detection,
 │                   #   current playback speed). Never imports the controller; the play-action
 │                   #   decorator types it via a local Protocol (_PlayActionHost) to avoid a cycle
 ├── strings.json    # localization manifest: translatable name + description of the core module

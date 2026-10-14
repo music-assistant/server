@@ -270,23 +270,6 @@ class MSXHTTPServer:
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
-    def broadcast_goto_index(self, player_id: str, index: int) -> None:
-        """Notify subscribed WebSocket clients to jump to a playlist index."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            return
-        logger.info(
-            "broadcast_goto_index: player_id=%s, index=%d, sending to %d client(s)",
-            player_id,
-            index,
-            len(clients),
-        )
-        payload: dict[str, Any] = {"type": "goto_index", "index": index}
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
     def cancel_streams_for_player(self, player_id: str) -> None:
         """Cancel stream tasks and abort connections for the given player."""
         self.audio.cancel_streams_for_player(player_id)
@@ -1045,7 +1028,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         item_id = request.match_info["item_id"]
         provider = request.query.get("provider", "library")
         try:
-            albums = await self.provider.mass.music.artists.albums(item_id, provider)
+            albums = await self.provider.mass.music.artists.albums(item_id, provider, limit=None)
         except MusicAssistantError, TimeoutError:
             logger.exception("Failed to fetch albums for artist %s", item_id)
             albums = []
@@ -1072,7 +1055,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         item_id = request.match_info["item_id"]
         try:
             tracks = [
-                t async for t in self.provider.mass.music.playlists.tracks(item_id, "library")
+                t async for t in self.provider.mass.music.playlists.iter_tracks(item_id, "library")
             ]
         except MusicAssistantError, TimeoutError:
             logger.exception("Failed to fetch tracks for playlist %s", item_id)
@@ -1137,7 +1120,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         start = _int_param(request.query, "start", 0)
         try:
             tracks = [
-                t async for t in self.provider.mass.music.playlists.tracks(item_id, "library")
+                t async for t in self.provider.mass.music.playlists.iter_tracks(item_id, "library")
             ]
         except MusicAssistantError, TimeoutError:
             logger.exception("Failed to fetch tracks for playlist playlist %s", item_id)
@@ -1552,7 +1535,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
     async def _handle_artist_albums(self, request: web.Request) -> web.Response:
         """List albums for an artist."""
         item_id = request.match_info["item_id"]
-        albums = await self.provider.mass.music.artists.albums(item_id, "library")
+        albums = await self.provider.mass.music.artists.albums(item_id, "library", limit=None)
         return web.json_response(
             {
                 "items": [
@@ -1593,7 +1576,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
     async def _handle_playlist_tracks(self, request: web.Request) -> web.Response:
         """List tracks for a playlist."""
         item_id = request.match_info["item_id"]
-        tracks = [t async for t in self.provider.mass.music.playlists.tracks(item_id, "library")]
+        tracks = [
+            t async for t in self.provider.mass.music.playlists.iter_tracks(item_id, "library")
+        ]
         return web.json_response(
             {
                 "items": [self._format_track(track) for track in tracks],
@@ -1903,7 +1888,6 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         queue = self.provider.mass.player_queues.get_active_queue(player_id)
         if queue is None:
             return
-        player.mark_queue_playback(queue.queue_id)
         items = list(self.provider.mass.player_queues.items(queue.queue_id, limit=queue.items))
         target_id: str | None = None
         if track_uri and 0 <= start < len(items):

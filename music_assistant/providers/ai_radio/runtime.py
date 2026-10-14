@@ -136,7 +136,9 @@ class AIRadioRuntimeMixin:
         # the run plays as the user who started it, so its source must be one they may play
         self.mass.music.check_item_playable_for_user(playlist, get_current_user())
         playlist_name = playlist.name
-        tracks = [track async for track in self.mass.music.playlists.tracks(playlist_id, provider)]
+        tracks = [
+            track async for track in self.mass.music.playlists.iter_tracks(playlist_id, provider)
+        ]
         normalized: list[dict[str, Any]] = []
         for track in tracks:
             artist = ""

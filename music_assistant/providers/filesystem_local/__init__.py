@@ -14,6 +14,7 @@ import stat
 import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path, PurePosixPath
@@ -2235,11 +2236,14 @@ class LocalFileSystemProvider(MusicProvider):
         """
         Yield an album's tracks, lazily, so a caller needing only the first can stop early.
 
-        Served from the database when this id is already mapped; otherwise (the second,
-        id-changed fetch of a manual "Refresh item" that has just resolved a previously
-        synthetic album onto its real folder, before that mapping is persisted) the folder's
-        own tracks are parsed directly, so the refresh still succeeds instead of raising on a
-        mapping that is only about to exist.
+        Served from the database when this id is already mapped: the library tracks with a
+        file in the album's folder, each carrying only those files, so a recording's file in
+        another album's folder is left out; under an album id that is no folder, the tracks
+        keep all of their files on this provider. Otherwise (the second, id-changed fetch of a
+        manual "Refresh item" that has just resolved a previously synthetic album onto its real
+        folder, before that mapping is persisted) the folder's own tracks are parsed directly,
+        so the refresh still succeeds instead of raising on a mapping that is only about to
+        exist.
 
         :param prov_album_id: This provider's album id (a path, once resolved).
         """
@@ -2248,9 +2252,29 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if db_album is not None:
             album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
+            files = {
+                id(track): {
+                    x for x in track.provider_mappings if x.provider_instance == self.instance_id
+                }
+                for track in album_tracks
+            }
+            # the album's files sit in its folder or in a disc folder below it, as
+            # _scan_folder_tracks finds them
+            in_folder = {
+                track_id: {
+                    x
+                    for x in own
+                    if prov_album_id
+                    in (os.path.dirname(x.item_id), os.path.dirname(os.path.dirname(x.item_id)))
+                }
+                for track_id, own in files.items()
+            }
+            # an album id made up of the artist and album name holds no files
+            if any(in_folder.values()):
+                files = in_folder
             for track in album_tracks:
-                if any(x.provider_instance == self.instance_id for x in track.provider_mappings):
-                    yield track
+                if own := files[id(track)]:
+                    yield replace(track, provider_mappings=own)
             return
         if not await self.exists(prov_album_id):
             msg = f"Album not found: {prov_album_id}"
@@ -2701,8 +2725,8 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.music.albums.remove_item_from_library(album_id)
         # check if any artists need to be cleaned up
         for artist_id in artist_ids:
-            artist_albums = await self.mass.music.artists.albums(artist_id, "library")
-            artist_tracks = await self.mass.music.artists.tracks(artist_id, "library")
+            artist_albums = await self.mass.music.artists.albums(artist_id, "library", limit=1)
+            artist_tracks = await self.mass.music.artists.tracks(artist_id, "library", limit=1)
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
 
@@ -2935,6 +2959,8 @@ class LocalFileSystemProvider(MusicProvider):
             track.metadata.explicit = explicit_tag == "1"
         if recording_mbid := clean_mbid(tags.musicbrainz_recordingid, tags.filename):
             track.mbid = recording_mbid
+        if release_track_mbid := clean_mbid(tags.musicbrainz_releasetrackid, tags.filename):
+            track.external_ids.add((ExternalID.MB_TRACK, release_track_mbid))
 
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:

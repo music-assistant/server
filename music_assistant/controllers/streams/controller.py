@@ -91,6 +91,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE,
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
+    CONF_STREAM_SOURCE_MODE,
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
@@ -104,6 +105,7 @@ from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
     LiveAnnouncementManager,
 )
+from music_assistant.controllers.streams.stream_sources import StreamSourceMode
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
     calculate_content_length,
@@ -532,6 +534,13 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
                 category="playback",
+            ),
+            ConfigEntry(
+                key=CONF_STREAM_SOURCE_MODE,
+                type=ConfigEntryType.STRING,
+                default_value=StreamSourceMode.BEST_QUALITY,
+                options=[ConfigValueOption(mode.value) for mode in StreamSourceMode],
+                category="source_selection",
             ),
             ConfigEntry(
                 key=CONF_PUBLISH_IP,

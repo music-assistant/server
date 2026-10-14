@@ -229,7 +229,10 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     player._attr_poll_interval = PLAYING_POLL_INTERVAL
     provider = MagicMock()
     provider.host.async_get_room_volume = AsyncMock(return_value=30)
+    provider.host.get_room_power_state.return_value = "ACTIVE"
+    provider.room_renderer_location.return_value = None
     player._provider = provider
+    player._power_changed_at = 0.0
     leader = MagicMock()
     leader.playback_state = leader_state
     mass = MagicMock()
@@ -299,12 +302,198 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
         return_value=("5065835a-d69f-4a1b-8c2d-5065835ad69f", "192.168.1.41")
     )
     provider.line_in = MagicMock(return_value=None)  # type: ignore[attr-defined]
+    provider.room_model = MagicMock(  # type: ignore[attr-defined]
+        return_value="Raumfeld Soundbar"
+    )
+    host = MagicMock()
+    host.get_room_power_state.return_value = "MANUAL_STANDBY"
+    provider.host = host  # type: ignore[attr-defined]
     player = RaumfeldPlayer(
         provider,  # type: ignore[arg-type]
         "raumfeld_5065835ad69f",
         "TV",
     )
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
+    assert player.device_info.model == "Raumfeld Soundbar"
+    assert player.powered is False
+
+
+_RENDERER = "http://192.168.1.42:54730/renderer.xml"
+
+
+def _room_player(location: str | None = _RENDERER) -> RaumfeldPlayer:
+    """Build a RaumfeldPlayer for a room whose own renderer is at the given location."""
+    player = _flow_player()
+    player.room = "Bar"
+    provider = MagicMock()
+    provider.room_renderer_location.return_value = location
+    player._provider = provider
+    return player
+
+
+async def test_mute_goes_to_the_rooms_own_renderer() -> None:
+    """Muting addresses the room's renderer, so it works without a zone and for one room."""
+    player = _room_player()
+    with (
+        patch("music_assistant.providers.raumfeld.player.hassfeld_upnp") as upnp,
+        patch.object(player, "update_state"),
+    ):
+        upnp.async_set_mute = AsyncMock()
+        await player.volume_mute(True)
+    upnp.async_set_mute.assert_awaited_once_with(player.mass.http_session, _RENDERER, True)
+    assert player._attr_volume_muted is True
+
+
+async def test_mute_fails_without_a_known_renderer() -> None:
+    """A room whose renderer is unknown reports the failure instead of pretending to mute."""
+    player = _room_player(location=None)
+    player._attr_volume_muted = False
+    with pytest.raises(PlayerCommandFailed):
+        await player.volume_mute(True)
+    assert player._attr_volume_muted is False
+
+
+async def test_volume_update_reads_mute_and_keeps_unread_values() -> None:
+    """A poll picks up a mute set elsewhere, and a failed read leaves the last value."""
+    player = _room_player()
+    player._attr_volume_level = 30
+    player._attr_volume_muted = False
+    host = MagicMock()
+    host.async_get_room_volume = AsyncMock(return_value=42)
+    with patch("music_assistant.providers.raumfeld.player.hassfeld_upnp") as upnp:
+        upnp.async_get_mute = AsyncMock(return_value=True)
+        await player._update_volume(host)
+        assert (player._attr_volume_level, player._attr_volume_muted) == (42, True)
+        host.async_get_room_volume = AsyncMock(return_value=None)
+        upnp.async_get_mute = AsyncMock(return_value=None)
+        await player._update_volume(host)
+    assert (player._attr_volume_level, player._attr_volume_muted) == (42, True)
+
+
+def _powered_player(power_state: str | None) -> tuple[RaumfeldPlayer, MagicMock]:
+    """Build a RaumfeldPlayer whose host reports the given power state for its room."""
+    player = _room_player()
+    host = MagicMock()
+    host.get_room_power_state.return_value = power_state
+    host.async_enter_manual_standby = AsyncMock()
+    host.async_leave_standby = AsyncMock()
+    provider = MagicMock()
+    provider.host = host
+    player._provider = provider
+    player._power_changed_at = 0.0
+    player._attr_powered = None
+    player.logger = MagicMock()
+    return player, host
+
+
+def test_only_a_switched_off_room_counts_as_powered_off() -> None:
+    """A room that merely went idle stays on, so MA does not ungroup idle rooms."""
+    for power_state, expected in (
+        ("ACTIVE", True),
+        ("AUTOMATIC_STANDBY", True),
+        ("MANUAL_STANDBY", False),
+    ):
+        player, _ = _powered_player(power_state)
+        player._update_power()
+        assert player._attr_powered is expected
+
+
+def test_unknown_power_state_keeps_the_last_value() -> None:
+    """A room the host reports no power state for keeps what was known."""
+    player, host = _powered_player(None)
+    player._attr_powered = True
+    player._update_power()
+    assert player._attr_powered is True
+    host.get_room_power_state.side_effect = KeyError("Bar")
+    player._update_power()
+    assert player._attr_powered is True
+
+
+async def test_power_off_puts_the_room_in_manual_standby() -> None:
+    """Powering off switches the room off, and the lagging host state does not undo it."""
+    player, host = _powered_player("ACTIVE")
+    with patch.object(player, "update_state"):
+        await player.power(False)
+    host.async_enter_manual_standby.assert_awaited_once_with("Bar")
+    assert player._attr_powered is False
+    # the host still reports the old state right after the command
+    player._update_power()
+    assert player._attr_powered is False
+
+
+async def test_power_on_wakes_the_room() -> None:
+    """Powering on takes the room out of standby."""
+    player, host = _powered_player("MANUAL_STANDBY")
+
+    async def leave_standby(_room: str) -> None:
+        host.get_room_power_state.return_value = "ACTIVE"
+
+    host.async_leave_standby.side_effect = leave_standby
+    with patch.object(player, "update_state"):
+        await player.power(True)
+    host.async_leave_standby.assert_awaited_once_with("Bar")
+    assert player._attr_powered is True
+
+
+async def test_power_on_fails_when_the_room_stays_in_standby() -> None:
+    """A room that does not wake up is not reported as powered on."""
+    player, _ = _powered_player("MANUAL_STANDBY")
+    player._attr_powered = False
+    with (
+        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
+        patch("music_assistant.providers.raumfeld.player.WAKE_TIMEOUT", 0),
+        pytest.raises(PlayerCommandFailed, match="did not leave standby"),
+    ):
+        await player.power(True)
+    assert player._attr_powered is False
+
+
+async def test_power_on_fails_when_the_wake_command_fails() -> None:
+    """A host error on the wake command surfaces instead of reporting the room as on."""
+    player, host = _powered_player("MANUAL_STANDBY")
+    player._attr_powered = False
+    host.async_leave_standby.side_effect = TimeoutError
+    with pytest.raises(PlayerCommandFailed, match="Failed to wake Bar"):
+        await player.power(True)
+    assert player._attr_powered is False
+
+
+async def test_power_on_fails_for_a_room_the_host_does_not_know() -> None:
+    """A room without a power state is not reported as on, and gets no wake command."""
+    player, host = _powered_player(None)
+    player._attr_powered = False
+    with pytest.raises(PlayerCommandFailed, match="no power state"):
+        await player.power(True)
+    host.async_leave_standby.assert_not_awaited()
+    assert player._attr_powered is False
+
+
+async def test_power_on_fails_when_the_room_vanishes_while_waking() -> None:
+    """A room the host stops reporting during the wake is not taken for awake."""
+    player, host = _powered_player("MANUAL_STANDBY")
+    player._attr_powered = False
+
+    async def leave_standby(_room: str) -> None:
+        host.get_room_power_state.return_value = None
+
+    host.async_leave_standby.side_effect = leave_standby
+    with (
+        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
+        patch("music_assistant.providers.raumfeld.player.WAKE_TIMEOUT", 0.05),
+        pytest.raises(PlayerCommandFailed, match="did not leave standby"),
+    ):
+        await player.power(True)
+    assert player._attr_powered is False
+
+
+async def test_power_off_failure_is_reported() -> None:
+    """A host error while powering off surfaces and leaves the power state untouched."""
+    player, host = _powered_player("ACTIVE")
+    player._attr_powered = True
+    host.async_enter_manual_standby.side_effect = TimeoutError
+    with pytest.raises(PlayerCommandFailed):
+        await player.power(False)
+    assert player._attr_powered is True
 
 
 async def test_no_zone_for_the_room_is_reported() -> None:
