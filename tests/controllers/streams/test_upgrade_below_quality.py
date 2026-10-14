@@ -4,7 +4,7 @@ Tests for upgrading a copy below the upgrade quality when its stream is selected
 When the copy a selection would play is below the upgrade quality of the streams settings, a
 better copy the track has plays instead. A library track without one is searched for on the
 other streaming services once per queue item, and what is found is stored without merging
-library items.
+library items. A service that found no match is not searched again for a while.
 """
 
 from __future__ import annotations
@@ -33,7 +33,10 @@ from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
-from music_assistant.controllers.streams.constants import CONF_UPGRADE_BELOW_QUALITY
+from music_assistant.controllers.streams.constants import (
+    CONF_UPGRADE_BELOW_QUALITY,
+    NO_TRACK_MATCH_EXPIRATION,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 LOCAL = "filesystem_local--files"
@@ -105,6 +108,16 @@ def _mass(providers: list[MagicMock], upgrade: str = "lossless") -> MagicMock:
     mass.music.providers = providers
     mass.music.tracks.match_provider = AsyncMock(return_value=[])
     mass.music.tracks.add_unclaimed_provider_mappings = AsyncMock()
+    cache: dict[tuple[str, int, str], Any] = {}
+
+    async def _cache_get(key: str, provider: str, category: int, **_kwargs: Any) -> Any:
+        return cache.get((provider, category, key))
+
+    async def _cache_set(key: str, data: Any, provider: str, category: int, **_kwargs: Any) -> None:
+        cache[(provider, category, key)] = data
+
+    mass.cache.get = AsyncMock(side_effect=_cache_get)
+    mass.cache.set = AsyncMock(side_effect=_cache_set)
 
     def _schedule(coro: Any, *_args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
         task = asyncio.get_running_loop().create_task(coro)
@@ -179,9 +192,11 @@ async def test_a_copy_below_the_upgrade_quality_plays_a_better_match() -> None:
 
 
 async def test_the_search_runs_once_per_queue_item() -> None:
-    """A copy the search does not find stays as chosen, and is not searched for again."""
+    """A copy the search does not find stays as chosen, and the item is not searched again."""
     local = _provider(LOCAL, streaming=False)
     mass = _mass([local, _provider(TIDAL)])
+    # a failed search is no miss to remember, so only the item's own search holds it back
+    mass.music.tracks.match_provider = AsyncMock(side_effect=KeyError("unexpected response"))
     audio = StreamsAudio(mass)
     queue_item = _queue_item(_mapping(LOCAL, LOCAL_ID, MP3))
 
@@ -192,9 +207,6 @@ async def test_the_search_runs_once_per_queue_item() -> None:
 
     assert first.provider == second.provider == LOCAL
     mass.music.tracks.match_provider.assert_awaited_once()
-    # another queue item of the track gets a search of its own
-    await audio.get_stream_details(_queue_item(_mapping(LOCAL, LOCAL_ID, MP3), queue_item_id="qi2"))
-    assert mass.music.tracks.match_provider.await_count == 2
 
 
 async def test_a_search_cut_short_runs_again() -> None:
@@ -222,6 +234,62 @@ async def test_a_search_cut_short_runs_again() -> None:
 
     assert streamdetails.provider == LOCAL
     mass.music.tracks.match_provider.assert_awaited_once()
+
+
+async def test_a_service_without_a_match_is_not_searched_again_for_a_while() -> None:
+    """A service that found no match for the track is skipped by the next plays for a day."""
+    mass = _mass([_provider(LOCAL, streaming=False), _provider(TIDAL)])
+    audio = StreamsAudio(mass)
+
+    await audio.get_stream_details(_queue_item(_mapping(LOCAL, LOCAL_ID, MP3)))
+    # the miss is stored in the background
+    await asyncio.sleep(0)
+    streamdetails = await audio.get_stream_details(
+        _queue_item(_mapping(LOCAL, LOCAL_ID, MP3), queue_item_id="qi2")
+    )
+
+    assert streamdetails.provider == LOCAL
+    mass.music.tracks.match_provider.assert_awaited_once()
+    assert mass.cache.set.await_args.kwargs["expiration"] == NO_TRACK_MATCH_EXPIRATION
+
+
+async def test_a_service_whose_search_failed_is_searched_again() -> None:
+    """A search that failed says nothing about the track, so the next play searches again."""
+    mass = _mass([_provider(LOCAL, streaming=False), _provider(TIDAL)])
+    mass.music.tracks.match_provider = AsyncMock(side_effect=KeyError("unexpected response"))
+    audio = StreamsAudio(mass)
+
+    await audio.get_stream_details(_queue_item(_mapping(LOCAL, LOCAL_ID, MP3)))
+    await asyncio.sleep(0)
+    streamdetails = await audio.get_stream_details(
+        _queue_item(_mapping(LOCAL, LOCAL_ID, MP3), queue_item_id="qi2")
+    )
+
+    assert streamdetails.provider == LOCAL
+    assert mass.music.tracks.match_provider.await_count == 2
+    mass.cache.set.assert_not_awaited()
+
+
+async def test_the_search_has_one_time_budget_for_all_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A service that takes the whole budget ends the search, and its cut short search is no miss."""
+    monkeypatch.setattr("music_assistant.controllers.streams.audio.STREAM_SLOT_MATCH_TIMEOUT", 0.05)
+    mass = _mass([_provider(LOCAL, streaming=False), _provider(SPOTIFY), _provider(TIDAL)])
+
+    async def _never_done(*_args: Any, **_kwargs: Any) -> list[ProviderMapping]:
+        await asyncio.Event().wait()
+        return []
+
+    mass.music.tracks.match_provider = AsyncMock(side_effect=_never_done)
+    audio = StreamsAudio(mass)
+
+    streamdetails = await audio.get_stream_details(_queue_item(_mapping(LOCAL, LOCAL_ID, MP3)))
+
+    assert streamdetails.provider == LOCAL
+    mass.music.tracks.match_provider.assert_awaited_once()
+    await asyncio.sleep(0)
+    mass.cache.set.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

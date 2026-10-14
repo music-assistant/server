@@ -100,11 +100,13 @@ from music_assistant.controllers.streams.audio_processing import (
     get_normalization_details,
 )
 from music_assistant.controllers.streams.constants import (
+    CACHE_CATEGORY_NO_TRACK_MATCH,
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     MIN_VOICE_OVER_DURATION,
+    NO_TRACK_MATCH_EXPIRATION,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
@@ -4239,7 +4241,8 @@ class StreamsAudio:
         searched, up to the first match. With one, the search goes on past a poorer match
         until a match of that quality is found. A found mapping is added to the media item,
         and stored for a library item without merging another library item into it, so the
-        selection can continue on the discovered provider.
+        selection can continue on the discovered provider. A provider that recently found no
+        match for a library track is not searched for it again.
 
         :param queue_item: Queue item whose track should be matched on another provider.
         :param excluded: Provider instances not to search on.
@@ -4279,10 +4282,14 @@ class StreamsAudio:
         # the track's own album is free, sufficient evidence for the strict compare and
         # avoids match_provider's multi-provider album lookup on every call
         ref_albums = [media_item.album] if isinstance(media_item.album, Album) else []
+        library_track = media_item.provider == "library"
         matches: list[ProviderMapping] = []
         try:
+            # one time budget for the whole search, whatever the number of providers
             async with asyncio.timeout(min(STREAM_SLOT_MATCH_TIMEOUT, remaining)):
                 for provider in candidates:
+                    if library_track and await self._had_no_match(media_item, provider):
+                        continue
                     # one failing provider must not end the search on the others
                     try:
                         found = await self.mass.music.tracks.match_provider(
@@ -4291,6 +4298,8 @@ class StreamsAudio:
                     except Exception as err:
                         self.logger.debug("Searching a match on %s failed: %s", provider.name, err)
                         continue
+                    if not found and library_track:
+                        self._remember_no_match(media_item, provider)
                     matches += found
                     if found and (
                         min_tier is None
@@ -4367,6 +4376,44 @@ class StreamsAudio:
         if not found:
             self.logger.debug("No better copy of %s found, it plays as chosen", queue_item.name)
         return bool(found)
+
+    async def _had_no_match(self, track: Track, provider: MusicProvider) -> bool:
+        """
+        Return whether the provider recently found no match for the library track.
+
+        :param track: The library track to match.
+        :param provider: The provider to search the match on.
+        """
+        return bool(
+            await self.mass.cache.get(
+                self._no_match_key(track, provider),
+                provider=CACHE_PROVIDER,
+                category=CACHE_CATEGORY_NO_TRACK_MATCH,
+            )
+        )
+
+    def _remember_no_match(self, track: Track, provider: MusicProvider) -> None:
+        """
+        Remember for a while that the provider found no match for the library track.
+
+        :param track: The library track that was matched.
+        :param provider: The provider the match was searched on.
+        """
+        # stored in the background, so a cut short playback never interrupts the write
+        self.mass.create_task(
+            self.mass.cache.set(
+                self._no_match_key(track, provider),
+                True,
+                expiration=NO_TRACK_MATCH_EXPIRATION,
+                provider=CACHE_PROVIDER,
+                category=CACHE_CATEGORY_NO_TRACK_MATCH,
+            )
+        )
+
+    @staticmethod
+    def _no_match_key(track: Track, provider: MusicProvider) -> str:
+        """Return the cache key that records a provider without a match for a library track."""
+        return f"{track.item_id}/{provider.instance_id}"
 
     async def _request_streamdetails(
         self,

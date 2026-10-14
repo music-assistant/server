@@ -130,6 +130,8 @@ def _mass(
     mass.music.providers = list(providers.values())
     mass.music.tracks.match_provider = AsyncMock(return_value=[])
     mass.music.tracks.add_unclaimed_provider_mappings = AsyncMock()
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
 
     def _schedule(coro: Any, *_args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
         task = asyncio.get_running_loop().create_task(coro)
@@ -264,6 +266,8 @@ async def test_a_matchless_search_falls_back_to_the_blocking_wait(
     assert waits[0] == 0
     assert waits[1] > 0
     assert get_buffer.await_args_list[1].kwargs["streamdetails"].provider == BUSY_INSTANCE
+    # only a library track has an id to remember the miss on
+    mass.cache.set.assert_not_awaited()
 
 
 async def test_a_matchless_search_still_raises_when_the_slot_never_frees(
