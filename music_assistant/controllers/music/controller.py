@@ -230,6 +230,34 @@ _LIBRARY_FOLDERS: Final[dict[str, MediaType]] = {
     "audiobooks": MediaType.AUDIOBOOK,
     "podcasts": MediaType.PODCAST,
 }
+# the folders the default MusicProvider.browse lists at the root, by the feature behind each
+_ROOT_FOLDERS: Final[dict[ProviderFeature, str]] = {
+    ProviderFeature.LIBRARY_ARTISTS: "artists",
+    ProviderFeature.LIBRARY_ALBUMS: "albums",
+    ProviderFeature.LIBRARY_TRACKS: "tracks",
+    ProviderFeature.LIBRARY_PLAYLISTS: "playlists",
+    ProviderFeature.LIBRARY_RADIOS: "radios",
+    ProviderFeature.LIBRARY_AUDIOBOOKS: "audiobooks",
+    ProviderFeature.LIBRARY_PODCASTS: "podcasts",
+    ProviderFeature.SOUND_EFFECTS: "sound_effects",
+    ProviderFeature.RECOMMENDATIONS: "recommendations",
+}
+
+
+def _library_folder(provider: MusicProvider, sub_path: str) -> MediaType | None:
+    """
+    Return the media type of the standard library folder a path of the provider lists, if any.
+
+    A root that holds a single folder lists the items of that folder, as the default browse does.
+    """
+    if not sub_path:
+        folders = [
+            folder
+            for feature, folder in _ROOT_FOLDERS.items()
+            if feature in provider.supported_features
+        ]
+        sub_path = folders[0] if len(folders) == 1 else ""
+    return _LIBRARY_FOLDERS.get(sub_path)
 
 
 async def _browse_folder(provider: MusicProvider, path: str) -> Listing[Any]:
@@ -1038,8 +1066,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return _listed(prepend_items, initiable_items)
         if (
             isinstance(browse_prov, MusicProvider)
-            and (media_type := _LIBRARY_FOLDERS.get(sub_path)) is not None
             and ProviderFeature.BROWSE in browse_prov.supported_features
+            and (media_type := _library_folder(browse_prov, sub_path)) is not None
             # a provider's own browse may list these folders its own way
             and type(browse_prov).browse is MusicProvider.browse
             and (

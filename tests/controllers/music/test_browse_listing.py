@@ -221,15 +221,26 @@ async def test_local_folder_is_browsed_every_time(mass: MusicAssistant) -> None:
     assert provider.browse.await_count == 2
 
 
-async def test_library_folder_is_read_a_page_at_a_time(mass: MusicAssistant) -> None:
+# a library folder, and the root of a provider whose only folder it is, which lists its items
+LIBRARY_FOLDER_PATHS = pytest.mark.parametrize(
+    ("path", "features"),
+    [("qobuz_1://tracks", ()), ("qobuz_1://", (ProviderFeature.LIBRARY_TRACKS,))],
+)
+
+
+@LIBRARY_FOLDER_PATHS
+async def test_library_folder_is_read_a_page_at_a_time(
+    mass: MusicAssistant, path: str, features: tuple[ProviderFeature, ...]
+) -> None:
     """A library folder the provider lists the standard way is paged by the library."""
+    provider = _real_provider(mass, _LibraryProvider, *features)
     library_items = AsyncMock(return_value=[create_track("qobuz_1", "t1", name="One")])
 
     async def _browse(**kwargs: Any) -> list[str]:
-        return _names(await mass.music.browse("qobuz_1://tracks", **kwargs))
+        return _names(await mass.music.browse(path, **kwargs))
 
     with (
-        patch.object(mass, "get_provider", return_value=_real_provider(mass, _LibraryProvider)),
+        patch.object(mass, "get_provider", return_value=provider),
         patch.object(mass.music.tracks, "library_items", library_items),
     ):
         # the way back up counts as the first entry of the first page
@@ -273,11 +284,12 @@ async def test_library_folder_is_read_a_page_at_a_time(mass: MusicAssistant) -> 
     ]
 
 
+@LIBRARY_FOLDER_PATHS
 async def test_library_folder_the_library_holds_nothing_of_is_listed_live(
-    mass: MusicAssistant,
+    mass: MusicAssistant, path: str, features: tuple[ProviderFeature, ...]
 ) -> None:
     """Before the library holds any of the folder's items, the provider lists it itself."""
-    provider = _real_provider(mass, _LibraryProvider)
+    provider = _real_provider(mass, _LibraryProvider, *features)
 
     async def _live_tracks() -> AsyncGenerator[Track]:
         yield create_track("qobuz_1", "live", name="Live")
@@ -287,7 +299,7 @@ async def test_library_folder_the_library_holds_nothing_of_is_listed_live(
         patch.object(mass.music.tracks, "library_items", AsyncMock(return_value=[])),
         patch.object(provider, "get_library_tracks", _live_tracks),
     ):
-        assert _names(await mass.music.browse("qobuz_1://tracks")) == ["..", "Live"]
+        assert _names(await mass.music.browse(path)) == ["..", "Live"]
 
 
 async def test_root_and_other_folders_of_a_provider_are_browsed_as_before(
@@ -295,11 +307,7 @@ async def test_root_and_other_folders_of_a_provider_are_browsed_as_before(
 ) -> None:
     """The root and the other folders of a provider are listed by the provider itself."""
     provider = _real_provider(
-        mass,
-        _LibraryProvider,
-        ProviderFeature.LIBRARY_ALBUMS,
-        ProviderFeature.LIBRARY_TRACKS,
-        ProviderFeature.RECOMMENDATIONS,
+        mass, _LibraryProvider, ProviderFeature.LIBRARY_TRACKS, ProviderFeature.RECOMMENDATIONS
     )
     mix = RecommendationFolder(item_id="mix", provider="qobuz_1", name="Mix")
     library_items = AsyncMock(return_value=[])
@@ -312,7 +320,6 @@ async def test_root_and_other_folders_of_a_provider_are_browsed_as_before(
         recommendations = await mass.music.browse("qobuz_1://recommendations")
     assert [getattr(item, "path", None) for item in root] == [
         "root",
-        "qobuz_1://albums",
         "qobuz_1://tracks",
         "qobuz_1://recommendations",
     ]
