@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, PropertyMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ from music_assistant_models.errors import RetriesExhausted
 from music_assistant.controllers.music.controller import MusicController
 from music_assistant.models.music_provider import MusicProvider, NothingToSync
 from music_assistant.providers.apple_music.constants import LIBRARY_FULL_SYNC_INTERVAL
+from music_assistant.providers.apple_music.library import AppleMusicLibraryManager
 from music_assistant.providers.apple_music.provider import AppleMusicProvider
 
 MARKER = "10|abc"
@@ -102,6 +104,46 @@ async def test_failed_marker_fetch_runs_full_sync_without_storing() -> None:
         await provider.sync_library(MediaType.TRACK)
     super_sync.assert_awaited_once_with(MediaType.TRACK)
     cache_set.assert_not_awaited()
+
+
+_MARKER_RESPONSES: dict[str, dict[str, Any]] = {
+    "me/library/songs": {"meta": {"total": 845}, "data": [{"id": "i.new"}]},
+    "me/library/artists": {"meta": {"total": 49}, "data": [{"id": "r.1"}]},
+    "me/library/albums": {"meta": {"total": 106}, "data": [{"id": "l.1"}]},
+    "me/library/recently-added": {
+        "data": [{"id": "l.new", "attributes": {"dateAdded": "2026-10-12T16:53:07Z"}}]
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("media_type", "expected"),
+    [
+        (MediaType.TRACK, "845|i.new"),
+        (MediaType.ARTIST, "49"),
+        (MediaType.ALBUM, "106|l.new|2026-10-12T16:53:07Z|False"),
+    ],
+)
+async def test_sync_marker(media_type: MediaType, expected: str) -> None:
+    """The marker combines the library total with the newest addition where Apple has one."""
+    provider = MagicMock()
+    provider.library_sync_album_tracks_enabled = Mock(return_value=False)
+    provider.api_client.get_data = AsyncMock(
+        side_effect=lambda endpoint, **_kwargs: _MARKER_RESPONSES[endpoint]
+    )
+    manager = AppleMusicLibraryManager(provider)
+
+    assert await manager.get_sync_marker(media_type) == expected
+
+
+async def test_sync_marker_without_total_raises() -> None:
+    """A listing without a total fails the check instead of producing a marker."""
+    provider = MagicMock()
+    provider.api_client.get_data = AsyncMock(return_value={})
+    manager = AppleMusicLibraryManager(provider)
+
+    with pytest.raises(KeyError):
+        await manager.get_sync_marker(MediaType.ARTIST)
 
 
 def _controller(events: list[EventType]) -> MusicController:
