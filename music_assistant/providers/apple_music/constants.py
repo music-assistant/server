@@ -41,6 +41,9 @@ CACHE_CATEGORY_DECRYPT_KEY = 1
 # Apple rate limits per developer team and all installs share the bundled token,
 # so the library syncs daily instead of every 12 hours
 LIBRARY_SYNC_INTERVAL_HOURS = 24
+# A full sync still runs this often to catch changes the sync marker misses, such as
+# favourites set in the Apple Music app and an equal number of additions and removals.
+LIBRARY_FULL_SYNC_INTERVAL = 7 * 24 * 3600
 MAX_ARTWORK_DIMENSION = 1000
 BLOBSTORE_DOMAIN = "blobstore.apple.com"
 # blobstore artwork URLs are presigned with a ~24h expiry, so resolved artwork

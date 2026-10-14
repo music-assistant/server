@@ -162,7 +162,11 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.media_capabilities import MediaCatalogMixin
-from music_assistant.models.music_provider import LIBRARY_FEATURE_BY_MEDIA_TYPE, MusicProvider
+from music_assistant.models.music_provider import (
+    LIBRARY_FEATURE_BY_MEDIA_TYPE,
+    MusicProvider,
+    NothingToSync,
+)
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -324,6 +328,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.favorites = FavoritesStore(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
+        # a sync ran that MUSIC_SYNC_COMPLETED has not announced yet
+        self._sync_completion_pending = False
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
@@ -3123,6 +3129,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Create the coroutine used for a managed provider sync task."""
 
         async def run_sync() -> None:
+            skipped = False
             try:
                 async with self._sync_lock:
                     # suppress per-item events during sync; a large library would otherwise
@@ -3131,14 +3138,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
                     try:
                         await provider.sync_library(media_type)
+                    except NothingToSync:
+                        skipped = True
+                        self.logger.info(
+                            "%s %ss unchanged, sync skipped", provider.name, media_type.value
+                        )
+                        update_current_task_progress_text("Library unchanged, sync skipped")
                     finally:
                         SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
             finally:
-                self.mass.call_later(
-                    0,
-                    self._handle_sync_completion_check,
-                    task_id=MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
-                )
+                if not skipped:
+                    self._sync_completion_pending = True
+                # a skipped sync only announces completion when a real one is still unannounced
+                if self._sync_completion_pending:
+                    self.mass.call_later(
+                        0,
+                        self._handle_sync_completion_check,
+                        task_id=MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
+                    )
 
         return run_sync
 
@@ -3187,6 +3204,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Run follow-up maintenance when no provider sync tasks remain active."""
         if self.active_sync_tasks:
             return
+        self._sync_completion_pending = False
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
         # cached search results carry the favorite state of the moment they were filled
         self.mass.create_task(
