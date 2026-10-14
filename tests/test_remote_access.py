@@ -22,9 +22,15 @@ from aiolibdatachannel import (
     RTCError,
 )
 from cryptography.hazmat.primitives import serialization
+from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
+from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_CORE, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.webserver.remote_access import (
+    CONF_CUSTOM_TURN_CREDENTIAL,
+    CONF_CUSTOM_TURN_URL,
+    CONF_CUSTOM_TURN_USERNAME,
+    CONF_KEY_MAIN,
     STARTUP_DELAY,
     TASK_ID_START_GATEWAY,
     RemoteAccessInfo,
@@ -67,7 +73,11 @@ async def test_remote_access_info_dataclass() -> None:
         connected=False,
         remote_id="VVPN3TLP34YMGIZDINCEKQKSIR",
         using_ha_cloud=False,
+        using_custom_turn=False,
         signaling_url="wss://signaling.music-assistant.io/ws",
+        custom_turn_url="",
+        custom_turn_username="",
+        custom_turn_credential="",
     )
 
     assert info.enabled is True
@@ -75,16 +85,40 @@ async def test_remote_access_info_dataclass() -> None:
     assert info.connected is False
     assert info.remote_id == "VVPN3TLP34YMGIZDINCEKQKSIR"
     assert info.using_ha_cloud is False
+    assert info.using_custom_turn is False
     assert info.signaling_url == "wss://signaling.music-assistant.io/ws"
+
+
+class _FakeConfig:
+    """Minimal stand-in for ConfigController: a flat store with fake encryption."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, Any] = {}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+    def set(self, key: str, value: Any, immediate: bool = False) -> None:
+        self._data[key] = value
+
+    def encrypt_string(self, value: str) -> str:
+        return f"_encrypted_{value}"
+
+    def decrypt_string(self, value: str) -> str:
+        return value.removeprefix("_encrypted_")
 
 
 def _create_remote_access_manager() -> RemoteAccessManager:
     """Create an enabled remote access manager with mocked dependencies."""
     webserver = Mock()
     webserver.mass = Mock()
+    # a real (if minimal) config store: no custom TURN server configured by default,
+    # matching a fresh ConfigController's absent-key default
+    webserver.mass.config = _FakeConfig()
     webserver.logger = Mock()
     manager = RemoteAccessManager(webserver)
     manager._enabled = True
+    manager._remote_id = "TEST-REMOTE-ID"
     return manager
 
 
@@ -165,7 +199,7 @@ async def test_remote_access_provider_update_storm_schedules_one_restart() -> No
         await asyncio.gather(*(manager._on_providers_updated(Mock()) for _ in range(10)))
 
     schedule_start.assert_called_once_with()
-    assert manager._target_using_ha_cloud is True
+    assert manager._target_ice_strategy == "ha_cloud"
 
 
 async def test_remote_access_skips_restart_after_mode_flap_settles() -> None:
@@ -174,7 +208,9 @@ async def test_remote_access_skips_restart_after_mode_flap_settles() -> None:
     gateway = Mock()
     gateway.is_running = True
     manager.gateway = gateway
-    manager._target_using_ha_cloud = True
+    # the gateway is currently running in "stun" mode (the default); the stale target
+    # below must get overwritten by a fresh check, not compared against as-is
+    manager._target_ice_strategy = "ha_cloud"
 
     with (
         patch.object(
@@ -197,7 +233,120 @@ async def test_remote_access_skips_restart_after_mode_flap_settles() -> None:
 
     stop_gateway.assert_not_awaited()
     start_gateway.assert_not_awaited()
-    assert manager._target_using_ha_cloud is False
+    assert manager._target_ice_strategy == "stun"
+
+
+async def test_custom_turn_server_takes_priority_over_ha_cloud() -> None:
+    """A configured custom TURN server wins over HA Cloud, with STUN as extra candidates."""
+    manager = _create_remote_access_manager()
+    manager.mass.config.set(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_URL}", "turn:t.example")
+    manager.mass.config.set(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_USERNAME}", "bob")
+    manager.mass.config.set(
+        f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_CREDENTIAL}",
+        manager.mass.config.encrypt_string("secret"),
+    )
+
+    with patch.object(
+        manager,
+        "_get_ha_cloud_status",
+        new=AsyncMock(return_value=(True, [{"urls": "turn:ha-cloud.example"}])),
+    ) as ha_cloud_status:
+        strategy, ice_servers = await manager._get_active_ice_strategy()
+
+    # HA Cloud is never even queried once a custom TURN server is configured
+    ha_cloud_status.assert_not_awaited()
+    assert strategy == "custom_turn"
+    assert ice_servers[0] == {
+        "urls": "turn:t.example",
+        "username": "bob",
+        "credential": "secret",
+    }
+    # public STUN servers are still appended as extra candidates
+    assert len(ice_servers) > 1
+    assert all("stun:" in s["urls"] for s in ice_servers[1:])
+
+
+async def test_get_ice_servers_falls_back_through_ha_cloud_to_stun() -> None:
+    """Without a custom TURN server, behavior is unchanged: HA Cloud, then STUN."""
+    manager = _create_remote_access_manager()
+
+    with patch.object(manager, "_get_ha_cloud_status", new=AsyncMock(return_value=(False, None))):
+        strategy, ice_servers = await manager._get_active_ice_strategy()
+
+    assert strategy == "stun"
+    assert all("stun:" in s["urls"] for s in ice_servers)
+
+
+async def test_configure_remote_access_encrypts_and_masks_turn_credential() -> None:
+    """The credential is stored encrypted and never echoed back in the clear."""
+    manager = _create_remote_access_manager()
+    manager._register_api_commands()
+    configure = manager.mass.register_api_command.call_args_list[-1].args[1]
+
+    with patch.object(manager, "_start_gateway", new=AsyncMock()):
+        info = await configure(
+            enabled=True,
+            custom_turn_url="turn:t.example",
+            custom_turn_username="bob",
+            custom_turn_credential="super-secret",
+        )
+
+    assert info.custom_turn_url == "turn:t.example"
+    assert info.custom_turn_username == "bob"
+    # never the real value...
+    assert info.custom_turn_credential == SECURE_STRING_SUBSTITUTE
+    # ...and encrypted, not plaintext, in the underlying store
+    stored = manager.mass.config.get(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_CREDENTIAL}")
+    assert stored.startswith("_encrypted_")
+    assert manager.mass.config.decrypt_string(stored) == "super-secret"
+
+
+async def test_configure_remote_access_resubmitted_placeholder_leaves_credential_untouched() -> (
+    None
+):
+    """Echoing the masked placeholder back must not overwrite the stored credential."""
+    manager = _create_remote_access_manager()
+    manager.mass.config.set(
+        f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_CREDENTIAL}",
+        manager.mass.config.encrypt_string("original-secret"),
+    )
+    manager._register_api_commands()
+    configure = manager.mass.register_api_command.call_args_list[-1].args[1]
+
+    with patch.object(manager, "_start_gateway", new=AsyncMock()):
+        await configure(enabled=True, custom_turn_credential=SECURE_STRING_SUBSTITUTE)
+
+    stored = manager.mass.config.get(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_CREDENTIAL}")
+    assert manager.mass.config.decrypt_string(stored) == "original-secret"
+
+
+async def test_configure_remote_access_rejects_a_resubmitted_encrypted_blob() -> None:
+    """A client submitting an already-encrypted string is rejected, not double-encrypted."""
+    manager = _create_remote_access_manager()
+    manager._register_api_commands()
+    configure = manager.mass.register_api_command.call_args_list[-1].args[1]
+
+    with (
+        patch.object(manager, "_start_gateway", new=AsyncMock()),
+        pytest.raises(InvalidDataError),
+    ):
+        await configure(
+            enabled=True,
+            custom_turn_credential=manager.mass.config.encrypt_string("whatever"),
+        )
+
+
+async def test_configure_remote_access_clears_turn_fields_on_empty_string() -> None:
+    """An explicit empty string removes a previously configured TURN field."""
+    manager = _create_remote_access_manager()
+    manager.mass.config.set(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_URL}", "turn:t.example")
+    manager._register_api_commands()
+    configure = manager.mass.register_api_command.call_args_list[-1].args[1]
+
+    with patch.object(manager, "_start_gateway", new=AsyncMock()):
+        info = await configure(enabled=True, custom_turn_url="")
+
+    assert info.custom_turn_url == ""
 
 
 async def test_remote_access_gateway_uses_internal_sendspin_url(

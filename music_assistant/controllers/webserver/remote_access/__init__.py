@@ -18,9 +18,12 @@ from urllib.parse import urlparse
 from awesomeversion import AwesomeVersion
 from mashumaro import DataClassDictMixin
 from music_assistant_models.auth import Scope
+from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import EventType
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import CONF_CORE
+from music_assistant.helpers.security import contains_encrypted_value
 from music_assistant.helpers.webrtc_certificate import (
     get_or_create_remote_id,
     get_or_create_webrtc_certificate_pems,
@@ -38,6 +41,9 @@ SIGNALING_SERVER_URL = "wss://signaling.music-assistant.io/ws"
 
 CONF_KEY_MAIN = "remote_access"
 CONF_ENABLED = "enabled"
+CONF_CUSTOM_TURN_URL = "custom_turn_url"
+CONF_CUSTOM_TURN_USERNAME = "custom_turn_username"
+CONF_CUSTOM_TURN_CREDENTIAL = "custom_turn_credential"
 
 TASK_ID_START_GATEWAY = "remote_access_start_gateway"
 STARTUP_DELAY = 5
@@ -52,7 +58,12 @@ class RemoteAccessInfo(DataClassDictMixin):
     connected: bool
     remote_id: str
     using_ha_cloud: bool
+    using_custom_turn: bool
     signaling_url: str
+    custom_turn_url: str
+    custom_turn_username: str
+    # masked with SECURE_STRING_SUBSTITUTE when set, never the real credential
+    custom_turn_credential: str
 
 
 class RemoteAccessManager:
@@ -69,8 +80,9 @@ class RemoteAccessManager:
         self._cert_pem: str
         self._key_pem: str
         self._enabled: bool = False
-        self._using_ha_cloud: bool = False
-        self._target_using_ha_cloud: bool = False
+        # one of "custom_turn", "ha_cloud" or "stun" - see _get_active_ice_strategy
+        self._ice_strategy: str = "stun"
+        self._target_ice_strategy: str = "stun"
         self._on_unload_callbacks: list[Callable[[], None]] = []
 
     async def setup(self) -> None:
@@ -104,24 +116,60 @@ class RemoteAccessManager:
         """
         Get ICE servers for WebRTC connections.
 
-        Returns HA Cloud TURN servers if available, otherwise returns public STUN servers.
+        Returns a user-configured custom TURN server if set, otherwise HA Cloud TURN
+        servers if available, otherwise falls back to public STUN servers.
         This method can be called regardless of whether remote access is enabled.
 
         :return: List of ICE server configurations.
         """
-        # Default public STUN servers
-        default_ice_servers: list[dict[str, str]] = [
+        _, ice_servers = await self._get_active_ice_strategy()
+        return ice_servers
+
+    def _get_default_stun_servers(self) -> list[dict[str, str]]:
+        """Return the default public STUN servers."""
+        return [
             {"urls": "stun:stun.l.google.com:19302"},
             {"urls": "stun:stun.cloudflare.com:3478"},
             {"urls": "stun:stun.home-assistant.io:3478"},
         ]
 
-        # Try to get HA Cloud ICE servers
-        _, ice_servers = await self._get_ha_cloud_status()
-        if ice_servers:
-            return ice_servers
+    def _get_custom_turn_server(self) -> dict[str, str] | None:
+        """Return the user-configured custom TURN server as an ICE entry, if any."""
+        url = self.mass.config.get(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_URL}", "")
+        if not url:
+            return None
+        server: dict[str, str] = {"urls": url}
+        if username := self.mass.config.get(
+            f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_USERNAME}", ""
+        ):
+            server["username"] = username
+        if encrypted_credential := self.mass.config.get(
+            f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_CREDENTIAL}", ""
+        ):
+            server["credential"] = self.mass.config.decrypt_string(encrypted_credential)
+        return server
 
-        return default_ice_servers
+    async def _get_active_ice_strategy(self) -> tuple[str, list[dict[str, str]]]:
+        """
+        Determine which ICE server strategy is currently active.
+
+        A user-configured custom TURN server takes priority over HA Cloud, since
+        configuring one is an explicit choice. Public STUN servers are always appended
+        as additional candidates (harmless, and still useful alongside a TURN server).
+
+        :return: Tuple of (strategy, ice_servers), where strategy is one of
+            "custom_turn", "ha_cloud" or "stun".
+        """
+        default_ice_servers = self._get_default_stun_servers()
+
+        if custom_turn_server := self._get_custom_turn_server():
+            return "custom_turn", [custom_turn_server, *default_ice_servers]
+
+        _, ha_cloud_ice_servers = await self._get_ha_cloud_status()
+        if ha_cloud_ice_servers:
+            return "ha_cloud", ha_cloud_ice_servers
+
+        return "stun", default_ice_servers
 
     @property
     def is_enabled(self) -> bool:
@@ -190,9 +238,8 @@ class RemoteAccessManager:
         """Replace the remote access gateway with a freshly configured instance."""
         async with self._gateway_lock:
             if self.is_running:
-                ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
-                self._target_using_ha_cloud = bool(ha_cloud_available and ice_servers)
-                if self._target_using_ha_cloud == self._using_ha_cloud:
+                self._target_ice_strategy, _ = await self._get_active_ice_strategy()
+                if self._target_ice_strategy == self._ice_strategy:
                     self.logger.debug("Remote access mode settled before restart")
                     return
             await self._stop_gateway_locked()
@@ -221,14 +268,15 @@ class RemoteAccessManager:
         # can only change through a reload of the webserver - and that restarts this gateway
         local_ws_url = self.webserver.internal_base_url.replace("http", "ws", 1) + "/ws"
 
-        ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
-        using_ha_cloud = bool(ha_cloud_available and ice_servers)
-        self._target_using_ha_cloud = using_ha_cloud
+        ice_strategy, ice_servers = await self._get_active_ice_strategy()
+        self._target_ice_strategy = ice_strategy
         if not self._can_start_gateway():
             self.logger.debug("Remote access disabled while preparing gateway")
             return
 
-        mode = "optimized" if using_ha_cloud else "basic"
+        mode = {"custom_turn": "custom TURN", "ha_cloud": "optimized", "stun": "basic"}[
+            ice_strategy
+        ]
         self.logger.info("Starting remote access in %s mode", mode)
 
         # resolved once, at gateway start: this follows the streams bind IP, while the socket
@@ -246,8 +294,9 @@ class RemoteAccessManager:
             sendspin_url=sendspin_url,
             ice_servers=ice_servers,
             # Pass callback to get fresh ICE servers for each client connection
-            # This ensures TURN credentials are always valid
-            ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
+            # This ensures HA Cloud's time-limited TURN credentials are always valid
+            # (cheap no-op re-fetch for the custom_turn/stun strategies)
+            ice_servers_callback=self.get_ice_servers,
             # Pass callback to set sendspin player on websocket client
             set_sendspin_player_callback=self.webserver.set_sendspin_player_for_webrtc_session,
         )
@@ -261,7 +310,7 @@ class RemoteAccessManager:
             await gateway.stop()
             return
         self.gateway = gateway
-        self._using_ha_cloud = using_ha_cloud
+        self._ice_strategy = ice_strategy
 
     async def _stop_gateway_locked(self) -> None:
         """Stop the remote access gateway while holding the lifecycle lock."""
@@ -280,13 +329,13 @@ class RemoteAccessManager:
         if not self._enabled:
             return
 
-        # Check if HA Cloud status changed
-        ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
-        new_using_ha_cloud = bool(ha_cloud_available and ice_servers)
+        # Check if the active ICE strategy (custom TURN takes priority, then HA Cloud,
+        # then STUN) changed, e.g. because HA Cloud's subscription status flipped.
+        new_ice_strategy, _ = await self._get_active_ice_strategy()
 
-        if new_using_ha_cloud != self._target_using_ha_cloud:
-            self._target_using_ha_cloud = new_using_ha_cloud
-            self.logger.info("HA Cloud status changed, restarting remote access")
+        if new_ice_strategy != self._target_ice_strategy:
+            self._target_ice_strategy = new_ice_strategy
+            self.logger.info("Remote access ICE strategy changed, restarting remote access")
             self._schedule_start()
 
     async def _get_ha_cloud_status(self) -> tuple[bool, list[dict[str, str]] | None]:
@@ -329,28 +378,84 @@ class RemoteAccessManager:
 
         async def get_remote_access_info() -> RemoteAccessInfo:
             """Get remote access information."""
+            encrypted_credential = self.mass.config.get(
+                f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_CREDENTIAL}", ""
+            )
             return RemoteAccessInfo(
                 enabled=self.is_enabled,
                 running=self.is_running,
                 connected=self.is_connected,
                 remote_id=self._remote_id,
-                using_ha_cloud=self._using_ha_cloud,
+                using_ha_cloud=self._ice_strategy == "ha_cloud",
+                using_custom_turn=self._ice_strategy == "custom_turn",
                 signaling_url=SIGNALING_SERVER_URL,
+                custom_turn_url=self.mass.config.get(
+                    f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_URL}", ""
+                ),
+                custom_turn_username=self.mass.config.get(
+                    f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_USERNAME}", ""
+                ),
+                # never return the real credential to the frontend, only whether one is set
+                custom_turn_credential=SECURE_STRING_SUBSTITUTE if encrypted_credential else "",
             )
 
-        async def configure_remote_access(enabled: bool) -> RemoteAccessInfo:
+        async def configure_remote_access(
+            enabled: bool,
+            custom_turn_url: str | None = None,
+            custom_turn_username: str | None = None,
+            custom_turn_credential: str | None = None,
+        ) -> RemoteAccessInfo:
             """
             Configure remote access settings.
 
             :param enabled: Enable or disable remote access.
+            :param custom_turn_url: Custom TURN server url (e.g. ``turn:turn.example.com:3478``),
+                or an empty string to remove it. Omit to leave unchanged.
+            :param custom_turn_username: Username for the custom TURN server, or an empty
+                string to remove it. Omit to leave unchanged.
+            :param custom_turn_credential: Credential/password for the custom TURN server, or
+                an empty string to remove it. Omit to leave unchanged. Stored encrypted.
             """
             changed = self._enabled != enabled
             self._enabled = enabled
             self.mass.config.set(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", enabled)
+
+            turn_settings_changed = False
+            if custom_turn_url is not None:
+                turn_settings_changed = True
+                self.mass.config.set(
+                    f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_URL}", custom_turn_url
+                )
+            if custom_turn_username is not None:
+                turn_settings_changed = True
+                self.mass.config.set(
+                    f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_USERNAME}",
+                    custom_turn_username,
+                )
+            if custom_turn_credential is not None and custom_turn_credential != (
+                SECURE_STRING_SUBSTITUTE
+            ):
+                # the frontend echoes the masked placeholder back when the field was left
+                # untouched; only a real (or empty, to clear) value should be stored
+                if contains_encrypted_value(custom_turn_credential):
+                    msg = "Invalid value for custom_turn_credential"
+                    raise InvalidDataError(msg)
+                turn_settings_changed = True
+                self.mass.config.set(
+                    f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_CUSTOM_TURN_CREDENTIAL}",
+                    self.mass.config.encrypt_string(custom_turn_credential)
+                    if custom_turn_credential
+                    else "",
+                )
+
             if self._enabled and not self.is_running:
                 await self._start_gateway()
             elif not self._enabled:
                 await self.stop()
+            elif turn_settings_changed:
+                # already running with different TURN settings now in effect: restart
+                # so the gateway picks them up
+                self._schedule_start()
             if changed:
                 self.mass.signal_event(
                     EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info()
