@@ -19,12 +19,11 @@ def is_audio_format(fmt: str | None) -> bool:
 
 def library_may_contain_audio(library: dict[str, Any]) -> bool:
     """
-    Return True if a BookOrbit library can hold audiobooks.
+    Return True if a BookOrbit library should be queried during sync.
 
-    Prefer the library's ``allowedFormats``. A library without any format restriction
-    may hold anything, so it is kept and the (audio-only) book query decides.
+    ``allowedFormats`` is a hint only: libraries may list non-audio formats while still
+    holding audiobooks, so every accessible library is queried. Books without audio
+    files are dropped after ``get_book`` (query + ``_audio_files``).
     """
-    allowed = {str(fmt).lower() for fmt in library.get("allowedFormats") or []}
-    if not allowed:
-        return True
-    return not allowed.isdisjoint(AUDIO_FORMATS)
+    _ = library
+    return True

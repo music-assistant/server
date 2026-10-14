@@ -15,6 +15,7 @@ CONF_API_TOKEN = "api_token"  # reserved; unused in v1  # noqa: S105
 CONF_VERIFY_SSL = "verify_ssl"
 
 AUDIO_FORMATS = frozenset({"m4b", "mp3", "m4a", "opus", "ogg", "flac"})
+CATALOG_TTL_SEC = 60
 
 API_PREFIX = "/api/v1"
 

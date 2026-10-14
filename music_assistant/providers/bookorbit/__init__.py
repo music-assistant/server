@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientResponseError
@@ -15,7 +16,7 @@ from music_assistant_models.errors import (
 from music_assistant.models.music_provider import MusicProvider
 
 from .client import BookOrbitAuthError, BookOrbitClient
-from .constants import CONF_PASSWORD, CONF_URL, CONF_USERNAME, CONF_VERIFY_SSL
+from .constants import CATALOG_TTL_SEC, CONF_PASSWORD, CONF_URL, CONF_USERNAME, CONF_VERIFY_SSL
 from .helpers import library_may_contain_audio, normalize_base_url
 from .parsers import (
     AUTHOR_PREFIX,
@@ -67,6 +68,7 @@ class BookOrbitProvider(MusicProvider):
         )
         # BookOrbit book details (id -> BookDetail) of the audiobooks found by the last sync
         self._catalog: dict[str, dict[str, Any]] = {}
+        self._catalog_refreshed_at: float = 0.0
         try:
             await self._client.login()
         except BookOrbitAuthError as err:
@@ -104,7 +106,7 @@ class BookOrbitProvider(MusicProvider):
         if artist := self._catalog_artists().get(prov_artist_id):
             return artist
         if not self._catalog:  # not synced yet
-            await self._refresh_catalog()
+            await self._refresh_catalog(force=True)
             if artist := self._catalog_artists().get(prov_artist_id):
                 return artist
         raise MediaNotFoundError(f"BookOrbit artist {prov_artist_id} not found")
@@ -123,8 +125,14 @@ class BookOrbitProvider(MusicProvider):
             raise MediaNotFoundError(f"BookOrbit book {prov_audiobook_id} has no audio files")
         return parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
 
-    async def _refresh_catalog(self) -> None:
-        """Fetch all audiobooks (with details) from the audio-capable libraries."""
+    async def _refresh_catalog(self, *, force: bool = False) -> None:
+        """Fetch all audiobooks (with details) from accessible libraries."""
+        if (
+            not force
+            and self._catalog
+            and (time.monotonic() - self._catalog_refreshed_at) < CATALOG_TTL_SEC
+        ):
+            return
         try:
             libraries = await self._client.list_libraries()
             catalog: dict[str, dict[str, Any]] = {}
@@ -151,6 +159,7 @@ class BookOrbitProvider(MusicProvider):
         except ClientError as err:
             raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
         self._catalog = catalog
+        self._catalog_refreshed_at = time.monotonic()
 
     def _catalog_artists(self) -> dict[str, Artist]:
         """Return all authors and narrators of the catalog keyed by artist item id."""

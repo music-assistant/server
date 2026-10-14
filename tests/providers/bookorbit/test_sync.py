@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
@@ -38,6 +39,7 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     )
     books = {
         1: [{"id": book_audiobook["id"]}],
+        2: [],
         3: [{"id": book_multifile["id"]}, {"id": 999}],
     }
     prov._client.query_audiobooks = AsyncMock(side_effect=lambda library_id: books[library_id])
@@ -51,11 +53,11 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
 
 
 def test_library_filter() -> None:
-    """Libraries are kept based on allowedFormats."""
+    """All libraries are queried; allowedFormats is not used to skip libraries."""
     assert library_may_contain_audio({"allowedFormats": ["M4B"]})
     assert library_may_contain_audio({"allowedFormats": []})
     assert library_may_contain_audio({})
-    assert not library_may_contain_audio({"allowedFormats": ["epub", "pdf"]})
+    assert library_may_contain_audio({"allowedFormats": ["epub", "pdf"]})
 
 
 @pytest.mark.asyncio
@@ -67,7 +69,7 @@ async def test_refresh_catalog_filters_libraries_and_ebooks(
     assert set(provider._catalog) == {str(book_audiobook["id"]), str(book_multifile["id"])}
     query_mock = cast("Mock", provider._client.query_audiobooks)
     queried = [c.kwargs["library_id"] for c in query_mock.call_args_list]
-    assert queried == [1, 3]
+    assert queried == [1, 2, 3]
 
     audiobooks = [book async for book in provider.get_library_audiobooks()]
     assert {b.item_id for b in audiobooks} == set(provider._catalog)
@@ -92,3 +94,18 @@ async def test_get_audiobook_and_artist(
         await provider.get_artist("author:123456")
     with pytest.raises(MediaNotFoundError):
         await provider.get_artist("bogus")
+
+
+@pytest.mark.asyncio
+async def test_sync_library_reuses_catalog_within_ttl(provider: BookOrbitProvider) -> None:
+    """AUDIOBOOK then ARTIST sync does not refresh the catalog twice within TTL."""
+    get_book = cast("Mock", provider._client.get_book)
+    with patch(
+        "music_assistant.models.music_provider.MusicProvider.sync_library",
+        new=AsyncMock(),
+    ):
+        await provider.sync_library(MediaType.AUDIOBOOK)
+        calls_after_audiobook = get_book.call_count
+        await provider.sync_library(MediaType.ARTIST)
+    assert calls_after_audiobook > 0
+    assert get_book.call_count == calls_after_audiobook
