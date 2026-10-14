@@ -46,5 +46,7 @@ BLOBSTORE_DOMAIN = "blobstore.apple.com"
 # blobstore artwork URLs are presigned with a ~24h expiry, so resolved artwork
 # URLs may only be cached well below that lifetime
 ARTWORK_CACHE_EXPIRATION = 12 * 60 * 60
+# Bounds how often an opened playlist re-checks its change marker (matches the core listing cache)
+PLAYLIST_LAST_MODIFIED_CACHE_EXPIRATION = 15 * 60
 # Bump to re-parse cached api responses whenever the parsed representation changes
 PARSED_ITEM_CACHE_CHECKSUM = "artist_fallback_v1"
