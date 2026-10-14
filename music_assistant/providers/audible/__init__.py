@@ -293,7 +293,8 @@ class Audibleprovider(MusicProvider):
             BrowseFolder(
                 item_id=asin,
                 provider=self.instance_id,
-                path=f"{base_path}/{quote(asin)}",
+                # an id can be a name, which may hold a slash
+                path=f"{base_path}/{quote(asin, safe='')}",
                 name=name,
             )
             for asin, name in sorted(authors.items(), key=lambda x: x[1])
@@ -327,7 +328,8 @@ class Audibleprovider(MusicProvider):
             BrowseFolder(
                 item_id=asin,
                 provider=self.instance_id,
-                path=f"{base_path}/{quote(asin)}",
+                # an id can be a name, which may hold a slash
+                path=f"{base_path}/{quote(asin, safe='')}",
                 name=name,
             )
             for asin, name in sorted(narrators.items(), key=lambda x: x[1])

@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import audible
 import pytest
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import PodcastEpisode
+from music_assistant_models.enums import ArtistType, MediaType
+from music_assistant_models.media_items import Artist, PodcastEpisode
 
 from music_assistant.providers.audible import Audibleprovider
 from music_assistant.providers.audible.audible_helper import (
@@ -468,3 +468,65 @@ async def test_legacy_show_episodes_use_the_listing_order(helper: AudibleHelper)
     parsed = [ep async for ep in helper.get_podcast_episodes("parent")]
 
     assert {ep.item_id: ep.position for ep in parsed} == {"ep5": 3, "ep4": 2, "ep3": 1}
+
+
+@pytest.mark.parametrize(
+    ("role", "artist_type"),
+    [("authors", ArtistType.AUTHOR), ("narrators", ArtistType.NARRATOR)],
+)
+async def test_contributor_without_asin_is_found_by_its_name(
+    helper: AudibleHelper, mass_mock: AsyncMock, role: str, artist_type: ArtistType
+) -> None:
+    """A contributor without an asin is listed, looked up and browsed by its name."""
+    book = {
+        "asin": "book1",
+        "title": "Book 1",
+        "content_delivery_type": "SinglePartBook",
+        role: [{"name": "Jane Doe"}],
+    }
+
+    async def side_effect(_: str, **kwargs: Any) -> dict[str, Any]:
+        return {"items": [book]} if kwargs.get("page") == 1 else {"items": []}
+
+    helper._call_api = AsyncMock(side_effect=side_effect)  # type: ignore[method-assign]
+    mass_mock.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=None)
+
+    parsed_book = helper._parse_audiobook(book)
+    linked = getattr(parsed_book, role)[0]
+    listed = [artist async for artist in helper.get_library_artists()]
+    artist = await helper.get_artist("Jane Doe")
+    get_books = (
+        helper.get_audiobooks_by_author
+        if artist_type == ArtistType.AUTHOR
+        else helper.get_audiobooks_by_narrator
+    )
+
+    assert linked.item_id == "Jane Doe"
+    assert [(x.item_id, x.artist_type) for x in listed] == [("Jane Doe", artist_type)]
+    assert (artist.name, artist.artist_type) == ("Jane Doe", artist_type)
+    assert [x.item_id for x in await get_books("Jane Doe")] == ["book1"]
+
+
+async def test_get_artist_takes_name_and_type_from_the_library(
+    helper: AudibleHelper, mass_mock: AsyncMock
+) -> None:
+    """A library artist is built from what the library holds, without paging audible."""
+    mass_mock.music.artists.get_library_item_by_prov_id = AsyncMock(
+        return_value=Artist(
+            item_id="1",
+            provider="library",
+            name="Jane Doe",
+            artist_type=ArtistType.NARRATOR,
+            provider_mappings=set(),
+        )
+    )
+    helper._call_api = AsyncMock()  # type: ignore[method-assign]
+
+    artist = await helper.get_artist("N1")
+
+    assert (artist.item_id, artist.name, artist.artist_type) == (
+        "N1",
+        "Jane Doe",
+        ArtistType.NARRATOR,
+    )
+    helper._call_api.assert_not_awaited()

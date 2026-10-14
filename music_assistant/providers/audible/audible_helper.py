@@ -233,6 +233,11 @@ class AudibleHelper:
 
         :param asin: The contributor's asin, as carried by its provider mapping.
         """
+        # the library holds name and type, while audible can only be searched page by page
+        if library_artist := await self.mass.music.artists.get_library_item_by_prov_id(
+            asin, self.provider_instance
+        ):
+            return self._parse_artist(asin, library_artist.name, library_artist.artist_type)
         if name := (await self.get_authors()).get(asin):
             return self._parse_artist(asin, name, ArtistType.AUTHOR)
         if name := (await self.get_narrators()).get(asin):
@@ -717,9 +722,8 @@ class AudibleHelper:
             for contributor in contributors:
                 if contributor and isinstance(contributor, dict):
                     name = contributor.get("name", default_name)
-                    # not every contributor carries an asin, fall back to the name
                     result.append(
-                        self._parse_artist(contributor.get("asin") or name, name, artist_type)
+                        self._parse_artist(_contributor_id(contributor) or name, name, artist_type)
                     )
         return result
 
@@ -1204,10 +1208,8 @@ class AudibleHelper:
             "contributors,product_attrs", AUDIOBOOK_CONTENT_TYPES
         ):
             for author in item.get("authors") or []:
-                asin = author.get("asin")
-                name = author.get("name")
-                if asin and name:
-                    authors[asin] = name
+                if (contributor_id := _contributor_id(author)) and (name := author.get("name")):
+                    authors[contributor_id] = name
         return authors
 
     async def get_series(self) -> dict[str, str]:
@@ -1238,10 +1240,8 @@ class AudibleHelper:
             "contributors,product_attrs", AUDIOBOOK_CONTENT_TYPES
         ):
             for narrator in item.get("narrators") or []:
-                asin = narrator.get("asin")
-                name = narrator.get("name")
-                if asin and name:
-                    narrators[asin] = name
+                if (contributor_id := _contributor_id(narrator)) and (name := narrator.get("name")):
+                    narrators[contributor_id] = name
         return narrators
 
     async def get_genres(self) -> set[str]:
@@ -1268,7 +1268,7 @@ class AudibleHelper:
             "contributors,media,product_attrs,product_desc,series", AUDIOBOOK_CONTENT_TYPES
         ):
             for author in item.get("authors") or []:
-                if author.get("asin") == author_asin:
+                if _contributor_id(author) == author_asin:
                     release_date = item.get("release_date") or "0000-00-00"
                     audiobooks.append((release_date, self._parse_audiobook(item)))
                     break
@@ -1282,7 +1282,7 @@ class AudibleHelper:
             "contributors,media,product_attrs,product_desc,series", AUDIOBOOK_CONTENT_TYPES
         ):
             for narrator in item.get("narrators") or []:
-                if narrator.get("asin") == narrator_asin:
+                if _contributor_id(narrator) == narrator_asin:
                     release_date = item.get("release_date") or "0000-00-00"
                     audiobooks.append((release_date, self._parse_audiobook(item)))
                     break
@@ -1337,6 +1337,11 @@ class AudibleHelper:
     async def deregister(self) -> None:
         """Deregister this provider from Audible."""
         await asyncio.to_thread(self.client.auth.deregister_device)
+
+
+def _contributor_id(contributor: dict[str, Any]) -> str | None:
+    """Return the id of an author or narrator: its asin, or its name as not all carry one."""
+    return contributor.get("asin") or contributor.get("name")
 
 
 def _html_to_txt(html_text: str) -> str:
