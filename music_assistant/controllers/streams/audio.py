@@ -4338,8 +4338,8 @@ class StreamsAudio:
         """
         Search the other streaming providers for a better copy of a library track.
 
-        Only the first search of a queue item runs; one that finds nothing or fails leaves the
-        chosen copy to play.
+        Only the first search of a queue item runs; one that finds nothing leaves the chosen
+        copy to play.
 
         :param queue_item: Queue item whose chosen copy is below the upgrade quality.
         :param upgrade_below: The upgrade quality a better copy is searched for.
@@ -4355,19 +4355,15 @@ class StreamsAudio:
             or key in self._better_copy_searched
         ):
             return False
-        try:
-            found = await self._discover_alternative_provider_mappings(
-                queue_item,
-                set(),
-                STREAM_SLOT_MATCH_TIMEOUT,
-                allowed,
-                preferred,
-                "the chosen copy is below the upgrade quality",
-                min_tier=upgrade_below,
-            )
-        except Exception as err:
-            self.logger.warning("Searching a better copy of %s failed: %s", queue_item.name, err)
-            found = set()
+        found = await self._discover_alternative_provider_mappings(
+            queue_item,
+            set(),
+            STREAM_SLOT_MATCH_TIMEOUT,
+            allowed,
+            preferred,
+            "the chosen copy is below the upgrade quality",
+            min_tier=upgrade_below,
+        )
         # marked only once done, so a search cut short by a cancellation runs again
         self._better_copy_searched[key] = queue_item
         if not found:
