@@ -112,18 +112,20 @@ async def test_failed_refresh_still_skips() -> None:
 
 async def test_refresh_favourites_records_ratings() -> None:
     """Catalog and library ids are rated in separate calls and every returned rating is recorded."""
-    rows = [
-        {"provider_item_id": "1001", "item_id": 1},
-        {"provider_item_id": "1002", "item_id": 2},
-        {"provider_item_id": "i.lib1", "item_id": 3},
+    items = [
+        _track(1, "1001"),
+        _track(2, "1002"),
+        _track(3, "i.lib1"),
+        _track(4, "1004", in_library=False),
+        _track(5, "1005", instance="apple_music--other"),
     ]
 
-    async def iter_items(*_args: Any) -> AsyncGenerator[dict[str, Any]]:
-        for row in rows:
-            yield row
+    async def iter_items(*_args: Any) -> AsyncGenerator[Mock]:
+        for item in items:
+            yield item
 
     provider = MagicMock(instance_id="apple_music--test")
-    provider.mass.music.database.iter_items = iter_items
+    provider.mass.music.tracks.iter_library_items_by_prov_id = iter_items
     provider.mass.music.favorites.record_from_provider = AsyncMock()
     ratings = {"1001": True, "i.lib1": False}
     provider.api_client.get_ratings = AsyncMock(
@@ -148,3 +150,11 @@ def _playlist(item_id: str, can_edit: bool, has_catalog: bool, modified: str) ->
     """Return a library playlist listing row."""
     attributes = {"canEdit": can_edit, "hasCatalog": has_catalog, "lastModifiedDate": modified}
     return {"id": item_id, "attributes": attributes}
+
+
+def _track(
+    item_id: int, prov_item_id: str, in_library: bool = True, instance: str = "apple_music--test"
+) -> Mock:
+    """Return a library track with one provider mapping."""
+    mapping = Mock(item_id=prov_item_id, provider_instance=instance, in_library=in_library)
+    return Mock(item_id=str(item_id), provider_mappings=[mapping])

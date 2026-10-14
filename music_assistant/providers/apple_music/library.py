@@ -10,7 +10,6 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Track
 
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.cache import use_cache
 
 from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
@@ -191,20 +190,18 @@ class AppleMusicLibraryManager:
 
     async def refresh_favourites(self, media_type: MediaType) -> None:
         """
-        Record the current Apple Music ratings of the library items of this provider.
+        Record the current Apple Music ratings of the library tracks or albums of this provider.
 
-        :param media_type: The media type to refresh the ratings for.
+        :param media_type: MediaType.TRACK or MediaType.ALBUM.
         """
+        controller = (
+            self.mass.music.tracks if media_type == MediaType.TRACK else self.mass.music.albums
+        )
         db_ids: dict[str, int] = {}
-        async for row in self.mass.music.database.iter_items(
-            DB_TABLE_PROVIDER_MAPPINGS,
-            {
-                "media_type": media_type.value,
-                "provider_instance": self.instance_id,
-                "in_library": True,
-            },
-        ):
-            db_ids[row["provider_item_id"]] = int(row["item_id"])
+        async for item in controller.iter_library_items_by_prov_id(self.instance_id):
+            for mapping in item.provider_mappings:
+                if mapping.provider_instance == self.instance_id and mapping.in_library:
+                    db_ids[mapping.item_id] = int(item.item_id)
         library_ids = [item_id for item_id in db_ids if is_library_id(item_id)]
         catalog_ids = [item_id for item_id in db_ids if not is_library_id(item_id)]
         ratings = await self.api.get_ratings(catalog_ids, media_type)
