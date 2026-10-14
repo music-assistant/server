@@ -1617,6 +1617,7 @@ async def test_title_bonus_uses_filtered_top_tracks_before_unrelated_sources() -
     mass.music.artists.top_tracks.assert_awaited_once_with(
         item_id=current.artists[0].item_id,
         provider_instance_id_or_domain=current.artists[0].provider,
+        limit=None,
     )
     mass.music.artists.tracks.assert_not_awaited()
     mass.music.search.assert_not_awaited()

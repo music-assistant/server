@@ -38,6 +38,9 @@ CONF_MUSIC_USER_TOKEN = "music_user_token"  # noqa: S105 - config key
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"  # noqa: S105 - config key
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"  # noqa: S105 - config key
 CACHE_CATEGORY_DECRYPT_KEY = 1
+# Apple rate limits per developer team and all installs share the bundled token,
+# so the library syncs daily instead of every 12 hours
+LIBRARY_SYNC_INTERVAL_HOURS = 24
 MAX_ARTWORK_DIMENSION = 1000
 BLOBSTORE_DOMAIN = "blobstore.apple.com"
 # blobstore artwork URLs are presigned with a ~24h expiry, so resolved artwork

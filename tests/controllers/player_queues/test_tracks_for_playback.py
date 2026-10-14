@@ -118,7 +118,7 @@ async def test_genre_samples_artists_via_top_tracks() -> None:
 
     result = await resolver.get_genre_tracks(genre, None)
 
-    resolver.mass.music.artists.top_tracks.assert_awaited_once_with("a1", "test")
+    resolver.mass.music.artists.top_tracks.assert_awaited_once_with("a1", "test", limit=None)
     resolver.get_artist_tracks.assert_not_awaited()
     assert {t.item_id for t in result} == {"top1", "top2"}
 
@@ -141,7 +141,7 @@ async def test_genre_artist_without_top_tracks_falls_back() -> None:
 
     result = await resolver.get_genre_tracks(genre, None)
 
-    resolver.mass.music.artists.tracks.assert_awaited_once_with("a1", "test")
+    resolver.mass.music.artists.tracks.assert_awaited_once_with("a1", "test", limit=None)
     resolver.get_artist_tracks.assert_not_awaited()
     assert {t.item_id for t in result} == {"full1"}
 
