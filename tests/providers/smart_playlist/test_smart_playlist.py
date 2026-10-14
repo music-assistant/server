@@ -750,8 +750,10 @@ async def test_folder_tracks_browses_recursively() -> None:
 
     mass.music.browse = AsyncMock(side_effect=browse)
 
-    tracks = await plugin._folder_tracks([root, "filesystem_local--hidden://Diary"])
+    tracks = await plugin._folder_tracks([root, sub, "filesystem_local--hidden://Diary"])
     assert {t.item_id for t in tracks} == {"1", "2"}
+    # the subfolder is in the rule and under the folder, yet browsed once
+    assert [c.args[0] for c in mass.music.browse.call_args_list].count(sub) == 1
     # the parent entry is not followed
     assert "filesystem_local--abc://" not in [c.args[0] for c in mass.music.browse.call_args_list]
 
@@ -1749,6 +1751,15 @@ async def test_get_playlist_tracks_dynamic_cache_key_differs_by_music_sources(
     assert calls[0].args[1] != calls[1].args[1]
     assert calls[0].args[1] == ()
     assert calls[1].args[1] == ("spotify_instance_id", "tidal_instance_id")
+
+    # a user who sees no source at all gets nothing, not the unrestricted sample
+    no_source_user = User(user_id="user-c", username="user-c", role=UserRole.USER)
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.get_current_user",
+        lambda: no_source_user,
+    )
+    assert await plugin.get_playlist_tracks("abc") == []
+    assert len(cached_dynamic_sample_mock.await_args_list) == 2
 
 
 @pytest.mark.asyncio

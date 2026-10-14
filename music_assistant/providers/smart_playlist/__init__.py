@@ -373,6 +373,9 @@ class SmartPlaylistProvider(PluginProvider):
             return await self._evaluate_rules(rules)
         user = get_current_user()
         visible = visible_music_sources(self.mass, user) if user else None
+        if visible is not None and not visible:
+            # no source to sample from: the empty filter below would read as unrestricted
+            return []
         # Tuple ensures a stable cache key and carries the filter into background SWR refreshes.
         user_provider_filter = tuple(sorted(visible)) if visible is not None else ()
         # Filter the cached sample at the boundary (not inside the cached evaluation) so a
@@ -1359,21 +1362,31 @@ class SmartPlaylistProvider(PluginProvider):
             if user_provider_filter is None or path.partition("://")[0] in user_provider_filter
         ]
         tracks: dict[str, Track] = {}
-        # stops at the same cap as the library queries, a huge folder yields the tracks found first
+        # browse each folder only once, in case a rule holds a folder and also one of its subfolders
+        browsed: set[str] = set()
+        # stops at the same cap as the library queries; the subfolders are walked in random
+        # order, so each evaluation of a huge folder samples a different part of it
+        random.shuffle(pending)
         while pending and len(tracks) < FETCH_LIMIT:
             path = pending.pop()
+            if path in browsed:
+                continue
+            browsed.add(path)
             try:
                 items = await self.mass.music.browse(path)
             except MusicAssistantError as err:
                 # e.g. a folder on a source hidden from the user, or one that is gone
                 self.logger.debug("Skipping folder %s: %s", path, err)
                 continue
+            subfolders = []
             for item in items:
                 if isinstance(item, BrowseFolder):
                     if item.path and item.name != "..":
-                        pending.append(item.path)
+                        subfolders.append(item.path)
                 elif isinstance(item, Track) and item.provider == "library" and item.uri:
                     tracks[item.uri] = item
+            random.shuffle(subfolders)
+            pending.extend(subfolders)
         return _filter_by_explicit(list(tracks.values()), explicit)
 
     async def _tracks_from_seeds(
