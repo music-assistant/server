@@ -500,6 +500,8 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> AlbumListing:
         """
         Return the tracks to play for an album, and the entry each of its sources lists for them.
@@ -511,7 +513,14 @@ class AlbumsController(MediaControllerBase[Album]):
         :param item_id: The album id on the provider, or its library id.
         :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         :param in_library_only: Only list the tracks that are in the library.
+        :param sort_field: Sort field, the disc and track order (TRACK_NUMBER) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :raises InvalidDataError: When the sort field is not offered for album tracks.
         """
+        # an unsupported sort is rejected before the album is assembled
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ALBUM_TRACKS, sort_field, sort_direction
+        )
         if not in_library_only and (
             library_album := await self.get_library_item_by_prov_id(
                 item_id, provider_instance_id_or_domain
@@ -519,53 +528,58 @@ class AlbumsController(MediaControllerBase[Album]):
         ):
             assembled, _ = await self._assemble(library_album, self._ensure_provider_filter(None))
             return replace(
-                assembled, tracks=apply_listing(assembled.tracks, ListingType.ALBUM_TRACKS)
+                assembled,
+                tracks=apply_listing(
+                    assembled.tracks,
+                    ListingType.ALBUM_TRACKS,
+                    sort_field=sort_field,
+                    sort_direction=sort_direction,
+                ),
             )
         return mapped_album_listing(
-            await self.tracks(item_id, provider_instance_id_or_domain, in_library_only, limit=None)
+            await self.tracks(
+                item_id,
+                provider_instance_id_or_domain,
+                in_library_only,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+                limit=None,
+            )
         )
 
     async def versions(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> UniqueList[Album]:
-        """Return all versions of an album we can find on all providers."""
-        album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        streaming_search_query = (
-            f"{album.artists[0].name} - {album.name}" if album.artists else album.name
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+    ) -> list[Album]:
+        """
+        Return the versions of an album on all providers, searched, sorted and paged.
+
+        :param item_id: The album id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param search: Only list the versions whose name or artist name contains this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; 0 returns them all.
+        :param offset: Number of versions to skip.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        return await self._versions_listing(
+            item_id,
+            provider_instance_id_or_domain,
+            lambda provider_id: self._assemble_versions(item_id, provider_id),
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
         )
-        result: UniqueList[Album] = UniqueList()
-        for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
-            if not provider or not isinstance(provider, MusicProvider):
-                continue
-            if MediaType.ALBUM not in provider.supported_media_types:
-                continue
-            # TODO: filter by artists in db for non-streaming providers
-            search_query = streaming_search_query if provider.is_streaming_provider else album.name
-            result.extend(
-                prov_item
-                for prov_item in await self.search(search_query, provider_id)
-                if loose_compare_strings(album.name, prov_item.name)
-                and compare_artists(prov_item.artists, album.artists, any_match=True)
-                # make sure that the 'base' version is NOT included
-                and not album.provider_mappings.intersection(prov_item.provider_mappings)
-            )
-            if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
-                # Call the specialized function in addition to searching to
-                # handle cases where the provider hasn't merged the album
-                # variants
-                if mapped_id := next(
-                    (
-                        p.item_id
-                        for p in album.provider_mappings
-                        if p.provider_instance == provider.instance_id
-                    ),
-                    None,
-                ):
-                    result.extend(await provider.get_album_versions(mapped_id))
-        return result
 
     async def resolve_musicbrainz_release_group(
         self, release_group_id: str, allow_update_metadata: bool = True
@@ -980,6 +994,46 @@ class AlbumsController(MediaControllerBase[Album]):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise lookup_error
         return assembled, lookup_error is None and not unanswered
+
+    async def _assemble_versions(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> UniqueList[Album]:
+        """Return all versions of an album we can find on all providers."""
+        album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        streaming_search_query = (
+            f"{album.artists[0].name} - {album.name}" if album.artists else album.name
+        )
+        result: UniqueList[Album] = UniqueList()
+        for provider_id in self.mass.music.get_unique_providers():
+            provider = self.mass.get_provider(provider_id)
+            if not provider or not isinstance(provider, MusicProvider):
+                continue
+            if MediaType.ALBUM not in provider.supported_media_types:
+                continue
+            # TODO: filter by artists in db for non-streaming providers
+            search_query = streaming_search_query if provider.is_streaming_provider else album.name
+            result.extend(
+                prov_item
+                for prov_item in await self.search(search_query, provider_id)
+                if loose_compare_strings(album.name, prov_item.name)
+                and compare_artists(prov_item.artists, album.artists, any_match=True)
+                # make sure that the 'base' version is NOT included
+                and not album.provider_mappings.intersection(prov_item.provider_mappings)
+            )
+            if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
+                # Call the specialized function in addition to searching to
+                # handle cases where the provider hasn't merged the album
+                # variants
+                if mapped_id := next(
+                    (
+                        p.item_id
+                        for p in album.provider_mappings
+                        if p.provider_instance == provider.instance_id
+                    ),
+                    None,
+                ):
+                    result.extend(await provider.get_album_versions(mapped_id))
+        return result
 
     async def _backfill_album_on_tracks(
         self, album_tracks: list[Track], item_id: str, provider_instance_id_or_domain: str

@@ -14,6 +14,7 @@ from music_assistant_models.background_task import BackgroundTask, TaskSchedule
 from music_assistant_models.enums import (
     EventType,
     ImageType,
+    ListingType,
     MediaType,
     SortDirection,
     SortField,
@@ -56,6 +57,7 @@ from music_assistant.constants import (
     RESOURCES_DIR,
 )
 from music_assistant.controllers.music.helpers import search_name_match_clause
+from music_assistant.controllers.music.listing import resolve_listing_sort
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import local_clock_time_to_utc
@@ -417,67 +419,73 @@ class GenreController(MediaControllerBase[Genre]):
     async def tracks(
         self,
         item_id: str | int,
-        limit: int = 500,
+        limit: int | None = 500,
         offset: int = 0,
         order_by: str | None = None,
         *,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
+        search: str | None = None,
     ) -> list[Track]:
         """
-        Return the tracks mapped to a genre.
+        Return the tracks mapped to a genre, searched, sorted and paged.
 
         :param item_id: The genre's library item ID.
-        :param limit: Maximum number of tracks to return (0 = unlimited).
-        :param offset: Offset for pagination.
+        :param limit: Maximum number of tracks to return; 0 returns them all.
+        :param offset: Number of tracks to skip.
         :param order_by: Deprecated legacy sort key.
-        :param sort_field: Sort field to use.
+        :param sort_field: Sort field, the sort name when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
+        :param search: Only list the tracks whose name contains this text.
+        :raises InvalidDataError: When the sort field is not offered for genre tracks.
         """
-        controller = self.mass.music.tracks
-        sort_field, sort_direction = controller.resolve_sort(
-            sort_field, sort_direction, order_by, default=False
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.GENRE_TRACKS, sort_field, sort_direction, order_by
         )
         return await self._mapped_items(
-            controller,
+            self.mass.music.tracks,
             int(item_id),
-            limit,
+            limit or 0,
             offset,
             sort_field=sort_field,
             sort_direction=sort_direction,
+            search=search,
         )
 
     async def albums(
         self,
         item_id: str | int,
-        limit: int = 500,
+        limit: int | None = 500,
         offset: int = 0,
         order_by: str | None = None,
         *,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
+        search: str | None = None,
     ) -> list[Album]:
         """
-        Return the albums mapped to a genre.
+        Return the albums mapped to a genre, searched, sorted and paged.
 
         :param item_id: The genre's library item ID.
-        :param limit: Maximum number of albums to return (0 = unlimited).
-        :param offset: Offset for pagination.
+        :param limit: Maximum number of albums to return; 0 returns them all.
+        :param offset: Number of albums to skip.
         :param order_by: Deprecated legacy sort key.
-        :param sort_field: Sort field to use.
+        :param sort_field: Sort field, the sort name when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
+        :param search: Only list the albums whose name contains this text.
+        :raises InvalidDataError: When the sort field is not offered for genre albums.
         """
-        controller = self.mass.music.albums
-        sort_field, sort_direction = controller.resolve_sort(
-            sort_field, sort_direction, order_by, default=False
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.GENRE_ALBUMS, sort_field, sort_direction, order_by
         )
         return await self._mapped_items(
-            controller,
+            self.mass.music.albums,
             int(item_id),
-            limit,
+            limit or 0,
             offset,
             sort_field=sort_field,
             sort_direction=sort_direction,
+            search=search,
         )
 
     async def mapped_media(
@@ -1259,6 +1267,7 @@ class GenreController(MediaControllerBase[Genre]):
         *,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
+        search: str | None = None,
     ) -> list[ItemCls]:
         """Return the library items of one media type that are mapped to a genre."""
         if controller.media_type == MediaType.ARTIST and sort_field == SortField.ARTIST_NAME:
@@ -1288,6 +1297,7 @@ class GenreController(MediaControllerBase[Genre]):
             f"AND gm.media_type = '{controller.media_type.value}' AND gm.genre_id = :genre_id)"
         )
         return await controller.get_library_items_by_query(
+            search=search,
             extra_query_parts=[query],
             extra_query_params={"genre_id": genre_id},
             extra_join_parts=extra_join_parts,

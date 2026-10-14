@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
     EventType,
     ExternalID,
     ImageType,
+    ListingType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -33,7 +34,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.favorite_update import FavoriteUpdate
-from music_assistant_models.helpers import create_safe_string, get_global_cache_value
+from music_assistant_models.helpers import create_safe_string, create_uri, get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
@@ -41,6 +42,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     ItemMappingSummary,
     MediaCollection,
+    MediaItem,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemMetadataSummary,
@@ -66,7 +68,6 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_SEARCH_RESULTS,
-    LEGACY_SORT_KEYS,
     RANDOM_SORT_FIELDS,
 )
 from music_assistant.controllers.music.helpers import (
@@ -75,6 +76,12 @@ from music_assistant.controllers.music.helpers import (
     search_name_match_clause,
     sibling_instance_mappings,
 )
+from music_assistant.controllers.music.listing import (
+    apply_listing,
+    legacy_sort,
+    resolve_listing_sort,
+)
+from music_assistant.controllers.music.listing_cache import Listing, cached_listing
 from music_assistant.controllers.music.sorting import (
     MEDIA_TYPE_SORT_FIELDS,
     SORT_FIELD_DEFINITIONS,
@@ -104,7 +111,7 @@ from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MediaCatalogMixin
@@ -688,9 +695,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             is unknown.
         """
         if sort_field is None and order_by:
-            if (legacy_sort := LEGACY_SORT_KEYS.get(order_by)) is None:
-                raise InvalidDataError(f"Unknown sort key: {order_by}")
-            sort_field, sort_direction = legacy_sort
+            sort_field, sort_direction = legacy_sort(order_by)
         offered_fields = MEDIA_TYPE_SORT_FIELDS[self.media_type]
         if sort_field is None:
             return (offered_fields[0], sort_direction) if default else (None, None)
@@ -2632,6 +2637,108 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if resolved_reachable_via is not None and provider is None:
             return None
         return self._ensure_provider_filter(provider)
+
+    @final
+    async def _cached_item_listing[T: MediaItem](
+        self,
+        listing: ListingType,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        assemble: Callable[[str], Awaitable[Listing[T] | Sequence[T]]],
+        *,
+        item_type: Any,
+        narrowed_to: Sequence[str] | None = None,
+    ) -> list[T]:
+        """
+        Return a listing of one of this type's items, assembled once and served from the cache.
+
+        The listing is assembled from, and kept under, the provider instance the selector
+        resolves to; when no instance answers for it, it is assembled for the selector as
+        given and not kept.
+
+        :param listing: The listing being served.
+        :param item_id: The item id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param assemble: Assembles the whole listing from the given provider instance (or
+            "library"): a Listing, or just its items when the assembly is always complete.
+        :param item_type: The type of the items, to rebuild them from the cache.
+        :param narrowed_to: The provider instances the calling user's music sources narrow
+            the assembly to, when they do.
+        """
+
+        async def _assemble(provider_id: str) -> Listing[T]:
+            assembled = await assemble(provider_id)
+            return assembled if isinstance(assembled, Listing) else Listing(list(assembled))
+
+        if provider_instance_id_or_domain == "library":
+            instance_id = "library"
+        elif provider := self.mass.get_provider(provider_instance_id_or_domain):
+            instance_id = provider.instance_id
+        else:
+            return (await _assemble(provider_instance_id_or_domain)).items
+        return await cached_listing(
+            self.mass,
+            listing,
+            create_uri(self.media_type, instance_id, item_id),
+            lambda: _assemble(instance_id),
+            item_type=item_type,
+            narrowed_to=narrowed_to,
+        )
+
+    @final
+    async def _versions_listing(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        assemble: Callable[[str], Awaitable[Sequence[ItemCls]]],
+        *,
+        search: str | None,
+        sort_field: SortField | None,
+        sort_direction: SortDirection | None,
+        limit: int | None,
+        offset: int,
+    ) -> list[ItemCls]:
+        """
+        Return the versions of one of this type's items, searched, sorted and paged.
+
+        The providers are searched for the versions once, and the result is served from the
+        cache for a while.
+
+        :param item_id: The item id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param assemble: Searches the providers for the versions of the item, looked up on the
+            given provider instance (or "library").
+        :param search: Only list the versions whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; None or 0 returns them all.
+        :param offset: Number of versions to skip.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        # an unsupported sort is rejected before the providers are searched
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.VERSIONS, sort_field, sort_direction
+        )
+        versions = await self._cached_item_listing(
+            ListingType.VERSIONS,
+            item_id,
+            provider_instance_id_or_domain,
+            assemble,
+            item_type=self.item_cls,
+            # the search only covers the music sources the calling user may see
+            narrowed_to=self._ensure_provider_filter(None),
+        )
+        return apply_listing(
+            versions,
+            ListingType.VERSIONS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     @final
     def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:

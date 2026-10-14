@@ -1155,3 +1155,59 @@ async def test_migration_adds_is_endless_column_to_radios(
         "SELECT item_id, is_endless FROM radios ORDER BY item_id"
     )
     assert [(row["item_id"], row["is_endless"]) for row in rows] == [(1, 1), (2, 1)]
+
+
+async def test_migration_drops_the_token_from_audiobookshelf_image_urls(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-68 database loses the audiobookshelf api token from its stored image urls.
+
+    The cover version stays, images of other providers and unparsable rows are left alone,
+    and running the migration twice is harmless.
+    """
+    base = "http://abs.local"
+    cover = _image("thumb", f"{base}/api/items/li_1/cover?token=secret&ts=5", "audiobookshelf--a")
+    author = _image("thumb", f"{base}/api/authors/au_1/image?token=secret", "audiobookshelf--a")
+    other = _image("thumb", "https://example.com/cover?token=keep", "other--b")
+    for table in ("artists", "audiobooks"):
+        await database.execute(f"ALTER TABLE {table} ADD COLUMN metadata json")
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        await database.execute(f"CREATE TABLE {table}([id] INTEGER PRIMARY KEY, [image] json)")
+    stored = {
+        ("artists", 1): serialize_to_json({"images": [author, other]}),
+        ("artists", 2): 'not json "token="',
+        ("audiobooks", 1): serialize_to_json({"images": [cover]}),
+    }
+    for (table, item_id), metadata in stored.items():
+        await database.execute(
+            f"INSERT INTO {table} (item_id, metadata) VALUES (:item_id, :metadata)",
+            {"item_id": item_id, "metadata": metadata},
+        )
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        await database.execute(
+            f"INSERT INTO {table} (id, image) VALUES (1, :image)",
+            {"image": serialize_to_json(cover)},
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=67, create_tables=AsyncMock()
+        )
+
+    clean_cover = {**cover, "path": f"{base}/api/items/li_1/cover?ts=5"}
+    clean_author = {**author, "path": f"{base}/api/authors/au_1/image"}
+    artists = {
+        row["item_id"]: row["metadata"]
+        for row in await database.get_rows_from_query("SELECT item_id, metadata FROM artists")
+    }
+    assert json.loads(artists[1]) == {"images": [clean_author, other]}
+    assert artists[2] == stored[("artists", 2)]
+    audiobook = await database.get_rows_from_query("SELECT metadata FROM audiobooks")
+    assert json.loads(audiobook[0]["metadata"]) == {"images": [clean_cover]}
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        played = await database.get_rows_from_query(f"SELECT image FROM {table}")
+        assert json.loads(played[0]["image"]) == clean_cover

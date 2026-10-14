@@ -1617,11 +1617,11 @@ class BuiltinProvider(MusicProvider):
                 ):
                     if source == "library":
                         tracks = await self.mass.music.artists.tracks(
-                            random_artist.item_id, "library"
+                            random_artist.item_id, "library", limit=None
                         )
                     else:
                         tracks = await self.mass.music.artists.top_tracks(
-                            random_artist.item_id, random_artist.provider
+                            random_artist.item_id, random_artist.provider, limit=None
                         )
                     if len(tracks) < min_tracks_required:
                         continue

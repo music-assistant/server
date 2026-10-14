@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from bisect import bisect_right
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
+from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -14,11 +16,14 @@ from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.enums import (
     EventType,
+    ListingType,
     MediaType,
     PlaylistMatchPolicy,
     ProviderFeature,
     ProviderSharing,
     ProviderType,
+    SortDirection,
+    SortField,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -38,7 +43,13 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
-from music_assistant.controllers.music.listing_cache import invalidate_listings
+from music_assistant.controllers.music.favorites import with_user_favorites
+from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
+from music_assistant.controllers.music.listing_cache import (
+    Listing,
+    cached_listing,
+    invalidate_listings,
+)
 from music_assistant.controllers.tasks.context import (
     get_current_task,
     report_current_task_failure,
@@ -64,7 +75,11 @@ from music_assistant.helpers.provider_access import access_allows, visible_music
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.media_capabilities import MediaCatalogMixin
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    provider_fetch_log_level,
+)
 
 from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
@@ -75,6 +90,11 @@ _PROVIDER_PLAYLIST_ADD_BATCH_SIZE: Final[int] = 100
 _MIGRATION_REPORT_DETAIL_LIMIT: Final[int] = 200
 _MIGRATION_RESOLVE_BATCH_SIZE: Final[int] = 5
 _MIGRATION_VERIFY_RETRY_DELAYS: Final[tuple[int, ...]] = (1, 2, 4)
+# on top of the fetch failures, a provider may offer no playlist details at all
+_PLAYLIST_DETAILS_ERRORS: Final[tuple[type[Exception], ...]] = (
+    *PROVIDER_FETCH_ERRORS,
+    NotImplementedError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -186,7 +206,95 @@ class PlaylistController(MediaControllerBase[Playlist]):
             FROM playlists"""
         return query, {}
 
-    async def tracks(
+    async def tracks(  # noqa: PLR0913
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        force_refresh: bool = False,
+        allow_dynamic_tracks: bool = False,
+        strict_provider_instance: bool = False,
+        favorite: bool | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+    ) -> list[PlaylistPlayableItem]:
+        """
+        Return the items of a playlist, searched, sorted and paged.
+
+        The whole playlist is fetched from its provider once and served from the cache for a
+        while. A dynamic playlist, and a playlist Music Assistant composes itself, is fetched
+        anew on every request.
+
+        :param item_id: The playlist id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param force_refresh: Fetch the playlist anew instead of serving it from a cache.
+        :param allow_dynamic_tracks: Request a fresh sample from a dynamic playlist; any
+            playlist is then fetched anew, as with force_refresh.
+        :param strict_provider_instance: Do not fall back to another provider instance.
+        :param favorite: Only list the liked (True) or disliked (False) items.
+        :param search: Only list the items whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the playlist order (POSITION) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of items to return; 0 returns them all.
+        :param offset: Number of items to skip.
+        :raises InvalidDataError: When the sort field is not offered for playlist tracks.
+        """
+        # an unsupported sort is rejected before the playlist is fetched
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.PLAYLIST_TRACKS, sort_field, sort_direction
+        )
+        item_id, provider_instance_id_or_domain, library_item = await self._playlist_source(
+            item_id, provider_instance_id_or_domain
+        )
+        provider = self._playlist_provider(provider_instance_id_or_domain, strict_provider_instance)
+        if provider is None:
+            return []
+        # playback/refill requests for dynamic playlists need a fresh sample
+        force_refresh = force_refresh or allow_dynamic_tracks
+        # Music Assistant composes the playlists of its builtin provider and of plugins (smart
+        # playlists) for the user asking, and a dynamic playlist hands out a fresh sample
+        if (
+            not isinstance(provider, MusicProvider)
+            or provider.domain == "builtin"
+            or (library_item is not None and library_item.is_dynamic)
+        ):
+            listing = await self._list_provider_playlist(
+                item_id, provider.instance_id, force_refresh, strict_provider_instance
+            )
+            items = await with_user_favorites(self.mass, get_current_user(), listing.items)
+        else:
+            # a refresh assembles the listing anew and replaces the cached one
+            async with self.mass.cache.handle_refresh(True) if force_refresh else nullcontext():
+                items = await cached_listing(
+                    self.mass,
+                    ListingType.PLAYLIST_TRACKS,
+                    create_uri(MediaType.PLAYLIST, provider.instance_id, item_id),
+                    partial(
+                        self._assemble_playlist,
+                        item_id,
+                        provider.instance_id,
+                        force_refresh,
+                        strict_provider_instance,
+                        library_item,
+                    ),
+                    item_type=PlaylistPlayableItem,
+                )
+        if favorite is not None:
+            items = [item for item in items if item.favorite is favorite]
+        return apply_listing(
+            items,
+            ListingType.PLAYLIST_TRACKS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def iter_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
@@ -195,48 +303,26 @@ class PlaylistController(MediaControllerBase[Playlist]):
         strict_provider_instance: bool = False,
     ) -> AsyncGenerator[PlaylistPlayableItem]:
         """
-        Return playlist items for a provider playlist.
+        Yield all items of a playlist, page by page as its provider lists them.
 
-        :param item_id: Provider playlist ID.
-        :param provider_instance_id_or_domain: Provider instance ID or domain.
+        :param item_id: The playlist id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         :param force_refresh: Bypass cached playlist contents.
         :param allow_dynamic_tracks: Request a fresh sample from dynamic playlists.
         :param strict_provider_instance: Do not fall back to another provider instance.
         """
-        if provider_instance_id_or_domain == "library":
-            library_item = await self._get_visible_library_item(item_id)
-            provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
-        elif self._is_builtin_provider(provider_instance_id_or_domain) and (
-            builtin_item := await self.get_library_item_by_prov_id(
-                item_id, provider_instance_id_or_domain
-            )
+        item_id, provider_instance_id_or_domain, _ = await self._playlist_source(
+            item_id, provider_instance_id_or_domain
+        )
+        # Playback/refill requests for dynamic playlists need fresh tracks from the provider;
+        # the other walkers may reuse cached tracks.
+        async for track in self._iter_provider_playlist(
+            item_id,
+            provider_instance_id_or_domain,
+            force_refresh or allow_dynamic_tracks,
+            strict_provider_instance,
         ):
-            # the access record of a Music Assistant playlist lives on its library row
-            self._check_visible(builtin_item)
-
-        # Playback/refill requests for dynamic playlists need fresh tracks from the provider.
-        # Browse requests may reuse cached tracks.
-        if allow_dynamic_tracks:
-            force_refresh = True
-
-        # playlist tracks are not stored in the db, we always fetch them (cached) from the
-        # provider. The provider decides how many tracks to return; for a dynamic playlist it
-        # returns a bounded sample/batch and terminates by yielding no further pages.
-        page = 0
-        while True:
-            tracks = await self._get_provider_playlist_tracks(
-                item_id,
-                provider_instance_id_or_domain,
-                page=page,
-                force_refresh=force_refresh,
-                strict_provider_instance=strict_provider_instance,
-            )
-            if not tracks:
-                break
-            await self._add_audio_metadata(tracks)
-            for track in tracks:
-                yield track
-            page += 1
+            yield track
 
     async def get(
         self,
@@ -423,7 +509,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         db_id = int(db_playlist_id)
         playlist = await self._get_visible_library_item(db_id)
         items: list[PlaylistItem] = []
-        async for track in self.tracks(
+        async for track in self.iter_tracks(
             item_id=str(db_id),
             provider_instance_id_or_domain="library",
         ):
@@ -831,7 +917,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         update_current_task_progress(0, "Loading source playlist")
         source_tracks: list[Track] = []
         unsupported_items: list[tuple[str, str]] = []
-        async for item in self.tracks(
+        async for item in self.iter_tracks(
             source_playlist_item_id,
             source_provider,
             force_refresh=True,
@@ -1086,6 +1172,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 destination_playlist.item_id,
                 destination_playlist,
             )
+            # a listing read while the tracks were being added holds only part of them
+            await invalidate_listings(self.mass, destination_playlist)
 
         if current_task := get_current_task():
             current_task.metadata.update(
@@ -1226,7 +1314,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 await asyncio.sleep(retry_delay)
             actual_target_ids = [
                 item.item_id
-                async for item in self.tracks(
+                async for item in self.iter_tracks(
                     playlist_item_id,
                     provider_instance_id,
                     force_refresh=True,
@@ -1522,17 +1610,44 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    @guard_single_request
-    async def _get_provider_playlist_tracks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        page: int = 0,
-        force_refresh: bool = False,
-        strict_provider_instance: bool = False,
-    ) -> Sequence[PlaylistPlayableItem]:
-        """Return playlist tracks for the given provider playlist id."""
-        assert provider_instance_id_or_domain != "library"
+    async def _playlist_source(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> tuple[str, str, Playlist | None]:
+        """
+        Return where the items of a playlist come from, once the calling user may see it.
+
+        :param item_id: The playlist id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :return: The playlist id on its provider, that provider, and the library playlist
+            when it was looked up.
+        :raises MediaNotFoundError: The caller may not see the playlist, or may use none of
+            its providers.
+        """
+        if provider_instance_id_or_domain == "library":
+            library_item = await self._get_visible_library_item(item_id)
+            provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
+            return item_id, provider_instance_id_or_domain, library_item
+        if self._is_builtin_provider(provider_instance_id_or_domain) and (
+            builtin_item := await self.get_library_item_by_prov_id(
+                item_id, provider_instance_id_or_domain
+            )
+        ):
+            # the access record of a Music Assistant playlist lives on its library row
+            self._check_visible(builtin_item)
+            return item_id, provider_instance_id_or_domain, builtin_item
+        return item_id, provider_instance_id_or_domain, None
+
+    def _playlist_provider(
+        self, provider_instance_id_or_domain: str, strict_provider_instance: bool
+    ) -> MediaCatalogMixin | None:
+        """
+        Return the provider that lists a playlist, None when no such provider is loaded.
+
+        :param provider_instance_id_or_domain: The provider instance id or domain.
+        :param strict_provider_instance: Only accept this exact instance, and only when it is
+            available.
+        :raises ProviderUnavailableError: The exact instance is required but not available.
+        """
         provider = self.mass.get_provider(
             provider_instance_id_or_domain,
             return_unavailable=strict_provider_instance,
@@ -1545,7 +1660,107 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise ProviderUnavailableError(
                 f"Provider {provider_instance_id_or_domain} is not available"
             )
-        if not isinstance(provider, MediaCatalogMixin):
+        return provider if isinstance(provider, MediaCatalogMixin) else None
+
+    async def _iter_provider_playlist(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        force_refresh: bool,
+        strict_provider_instance: bool,
+    ) -> AsyncGenerator[PlaylistPlayableItem]:
+        """Yield the items of a provider playlist, page by page."""
+        # playlist tracks are not stored in the db, we always fetch them (cached) from the
+        # provider. The provider decides how many tracks to return; for a dynamic playlist it
+        # returns a bounded sample/batch and terminates by yielding no further pages.
+        page = 0
+        while True:
+            tracks = await self._get_provider_playlist_tracks(
+                item_id,
+                provider_instance_id_or_domain,
+                page=page,
+                force_refresh=force_refresh,
+                strict_provider_instance=strict_provider_instance,
+            )
+            if not tracks:
+                break
+            await self._add_audio_metadata(tracks)
+            for track in tracks:
+                yield track
+            page += 1
+
+    async def _list_provider_playlist(
+        self,
+        item_id: str,
+        provider_instance_id: str,
+        force_refresh: bool,
+        strict_provider_instance: bool,
+    ) -> Listing[PlaylistPlayableItem]:
+        """
+        Return the items of a provider playlist, as far as its provider delivers them.
+
+        A page that fails after the first leaves the listing incomplete; a failing first
+        page is raised.
+
+        :param item_id: The playlist id on the provider.
+        :param provider_instance_id: The provider instance the playlist is on.
+        :param force_refresh: Bypass the caches of the provider.
+        :param strict_provider_instance: Only accept this exact provider instance.
+        """
+        items: list[PlaylistPlayableItem] = []
+        try:
+            async for item in self._iter_provider_playlist(
+                item_id, provider_instance_id, force_refresh, strict_provider_instance
+            ):
+                items.append(item)
+        except PROVIDER_FETCH_ERRORS as err:
+            if not items:
+                raise
+            self.logger.log(
+                provider_fetch_log_level(err),
+                "Unable to fetch all items of playlist %s from provider %s: %s",
+                item_id,
+                provider_instance_id,
+                err,
+            )
+            return Listing(items, complete=False)
+        return Listing(items)
+
+    async def _assemble_playlist(
+        self,
+        item_id: str,
+        provider_instance_id: str,
+        force_refresh: bool,
+        strict_provider_instance: bool,
+        library_item: Playlist | None,
+    ) -> Listing[PlaylistPlayableItem]:
+        """Return the items of a provider playlist, to be kept unless it is dynamic."""
+        listing = await self._list_provider_playlist(
+            item_id, provider_instance_id, force_refresh, strict_provider_instance
+        )
+        if library_item is not None or not listing.complete:
+            return listing
+        # whether a playlist outside the library is dynamic shows in its details only
+        try:
+            playlist = await self.get(item_id, provider_instance_id, allow_update_metadata=False)
+        except _PLAYLIST_DETAILS_ERRORS:
+            return Listing(listing.items, complete=False)
+        # the fresh sample a dynamic playlist hands out is never kept
+        return Listing(listing.items, complete=not playlist.is_dynamic)
+
+    @guard_single_request
+    async def _get_provider_playlist_tracks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        page: int = 0,
+        force_refresh: bool = False,
+        strict_provider_instance: bool = False,
+    ) -> Sequence[PlaylistPlayableItem]:
+        """Return playlist tracks for the given provider playlist id."""
+        assert provider_instance_id_or_domain != "library"
+        provider = self._playlist_provider(provider_instance_id_or_domain, strict_provider_instance)
+        if provider is None:
             return []
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
@@ -1611,7 +1826,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # collect current track IDs and URIs
         update_current_task_progress_text("Loading current playlist items")
-        async for item in self.tracks(playlist.item_id, playlist.provider):
+        async for item in self.iter_tracks(playlist.item_id, playlist.provider):
             if item.item_id:
                 cur_playlist_track_ids.add(item.item_id)
             if item.uri:
@@ -1647,7 +1862,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     if track.uri is not None:
                         unwrapped_uris.append(track.uri)
             elif media_type == MediaType.PLAYLIST:
-                async for item in self.tracks(item_id, provider_instance_id_or_domain):
+                async for item in self.iter_tracks(item_id, provider_instance_id_or_domain):
                     if item.uri is not None:
                         unwrapped_uris.append(item.uri)
             elif media_type in PLAYLIST_MEDIA_TYPES:

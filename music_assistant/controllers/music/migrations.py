@@ -16,6 +16,7 @@ import sqlite3
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError, ProviderUnavailableError
@@ -1388,6 +1389,10 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
             if "duplicate column" not in str(err) and "no such table" not in str(err):
                 raise
 
+    if prev_version <= 67:
+        # audiobookshelf image urls carried its api token, which must not reach clients
+        await _drop_audiobookshelf_image_tokens(database)
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active
@@ -1810,3 +1815,54 @@ def _pack_audio_analysis_rows(
             }
         )
     return packed, unreadable_ids
+
+
+async def _drop_audiobookshelf_image_tokens(database: DatabaseConnection) -> None:
+    """Drop the api token from the stored urls of audiobookshelf images."""
+    for table in (
+        DB_TABLE_ARTISTS,
+        DB_TABLE_AUDIOBOOKS,
+        DB_TABLE_PODCASTS,
+        DB_TABLE_MEDIA_PROGRESS,
+        DB_TABLE_PLAY_HISTORY,
+    ):
+        columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+        }
+        # media items keep a list of images in their metadata, played items a single image
+        if "metadata" in columns:
+            id_column, column = "item_id", "metadata"
+        elif "image" in columns:
+            id_column, column = "id", "image"
+        else:
+            continue
+        for db_row in await database.get_rows_from_query(
+            f"SELECT {id_column}, {column} FROM {table} WHERE {column} LIKE '%token=%'", limit=0
+        ):
+            try:
+                value = json_loads(db_row[column])
+            except ValueError:
+                continue
+            if not isinstance(value, dict):
+                continue
+            images = value.get("images") if column == "metadata" else [value]
+            changed = False
+            for image in images if isinstance(images, list) else []:
+                if not (
+                    isinstance(image, dict)
+                    and str(image.get("provider")).startswith("audiobookshelf")
+                    and isinstance(path := image.get("path"), str)
+                ):
+                    continue
+                url = urlsplit(path)
+                query = parse_qsl(url.query, keep_blank_values=True)
+                kept = [(key, val) for key, val in query if key != "token"]
+                if len(kept) == len(query):
+                    continue
+                image["path"] = urlunsplit(url._replace(query=urlencode(kept)))
+                changed = True
+            if changed:
+                await database.update(
+                    table, {id_column: db_row[id_column]}, {column: serialize_to_json(value)}
+                )

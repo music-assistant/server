@@ -410,12 +410,12 @@ async def test_msx_search_input_marks_page_compressed(
         ("/msx/recently-played.json", "tracks", "library_items", True, True),
         ("/msx/albums/album-1/tracks.json", "albums", "tracks", True, True),
         ("/msx/artists/artist-1/albums.json", "artists", "albums", True, True),
-        ("/msx/playlists/playlist-1/tracks.json", "playlists", "tracks", False, True),
+        ("/msx/playlists/playlist-1/tracks.json", "playlists", "iter_tracks", False, True),
         ("/msx/playlist/album/album-1.json", "albums", "tracks", True, False),
         (
             "/msx/playlist/playlist/playlist-1.json",
             "playlists",
-            "tracks",
+            "iter_tracks",
             False,
             False,
         ),
@@ -1127,7 +1127,9 @@ async def test_msx_artist_albums(provider: MSXBridgeProvider, mass_mock: Mock) -
     try:
         resp = await client.get("/msx/artists/5531642/albums.json?provider=yandex_music--test")
         assert resp.status == 200
-        mass_mock.music.artists.albums.assert_awaited_once_with("5531642", "yandex_music--test")
+        mass_mock.music.artists.albums.assert_awaited_once_with(
+            "5531642", "yandex_music--test", limit=None
+        )
         data = await resp.json()
         assert data["headline"] == "Artist Albums"
         assert len(data["items"]) == 1
@@ -1146,7 +1148,9 @@ async def test_msx_playlist_tracks(provider: MSXBridgeProvider, mass_mock: Mock)
     async def _mock_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Any]:
         yield track
 
-    mass_mock.music.playlists.tracks = Mock(side_effect=lambda *_a, **_k: _mock_playlist_tracks())
+    mass_mock.music.playlists.iter_tracks = Mock(
+        side_effect=lambda *_a, **_k: _mock_playlist_tracks()
+    )
 
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
@@ -1785,7 +1789,6 @@ async def test_queue_playlist_duplicate_uri_selects_exact_item(
         ]
 
         player, _media = _make_audio_player(mass_mock, provider)
-        player.mark_queue_playback("msx_test")
         player._attr_current_media = PlayerMedia(
             uri=radio_uri,
             source_id="msx_test",
@@ -2306,7 +2309,9 @@ async def test_msx_playlist_playlist_endpoint(provider: MSXBridgeProvider, mass_
     async def _mock_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Any]:
         yield track
 
-    mass_mock.music.playlists.tracks = Mock(side_effect=lambda *_a, **_k: _mock_playlist_tracks())
+    mass_mock.music.playlists.iter_tracks = Mock(
+        side_effect=lambda *_a, **_k: _mock_playlist_tracks()
+    )
 
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))

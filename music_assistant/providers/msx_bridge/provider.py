@@ -30,7 +30,6 @@ from .constants import (
     DEFAULT_SHOW_STOP_NOTIFICATION,
     GROUP_STREAM_MODE_INDEPENDENT,
     GROUP_STREAM_MODE_REDIRECT,
-    LEGACY_GROUP_STREAM_MODE_SHARED,
     MSX_PLAYER_ID_PREFIX,
 )
 from .http_server import MSXHTTPServer
@@ -270,11 +269,6 @@ class MSXBridgeProvider(PlayerProvider):
             url = f"/msx/queue-playlist/{player_id}.json?start={start_index}&queue_id={qid}"
             self.http_server.broadcast_playlist(player_id, url)
 
-    def notify_goto_index(self, player_id: str, index: int) -> None:
-        """Notify WebSocket clients to jump to a specific playlist index."""
-        if self.http_server:
-            self.http_server.broadcast_goto_index(player_id, index)
-
     def notify_play_paused(self, player_id: str) -> None:
         """Notify WebSocket clients that playback is paused (MA pause -> MSX)."""
         if self.http_server:
@@ -388,10 +382,8 @@ class MSXBridgeProvider(PlayerProvider):
         return f"{prefix_label} ({suffix})"
 
     def _load_stream_mode(self) -> str:
-        """Return the configured stream mode; a stored 'shared' mode plays as independent."""
+        """Return the configured stream mode, falling back to redirect for unknown values."""
         raw_mode = self.config.get_value(CONF_GROUP_STREAM_MODE, DEFAULT_GROUP_STREAM_MODE)
-        if raw_mode == LEGACY_GROUP_STREAM_MODE_SHARED:
-            return GROUP_STREAM_MODE_INDEPENDENT
         if raw_mode not in (GROUP_STREAM_MODE_REDIRECT, GROUP_STREAM_MODE_INDEPENDENT):
             self.logger.warning("Unknown stream delivery mode %r; using redirect", raw_mode)
             return DEFAULT_GROUP_STREAM_MODE

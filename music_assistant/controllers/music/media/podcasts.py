@@ -9,13 +9,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
+    ListingType,
     MediaType,
     ProviderFeature,
     SortDirection,
     SortField,
 )
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
-from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.helpers import create_safe_string, create_uri
 from music_assistant_models.media_items import (
     MediaItemTranscriptCue,
     Podcast,
@@ -26,6 +27,8 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PODCASTS
+from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
+from music_assistant.controllers.music.listing_cache import Listing, cached_listing
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.audio import get_probed_duration
 from music_assistant.helpers.compare import (
@@ -35,12 +38,16 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    provider_fetch_log_level,
+)
 
 from .base import MediaControllerBase, PodcastSyncDetails
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from music_assistant_models.auth import User
 
@@ -172,14 +179,76 @@ class PodcastsController(MediaControllerBase[Podcast]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        fully_played: bool | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+    ) -> list[PodcastEpisode]:
+        """
+        Return the episodes of a podcast, searched, sorted and paged.
+
+        The whole podcast is fetched from its provider once and served from the cache for a
+        while; the resume position and played state are the current user's.
+
+        :param item_id: The podcast id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param fully_played: Only list the episodes the current user played to the end (True),
+            or the ones not played to the end (False).
+        :param search: Only list the episodes whose name contains this text.
+        :param sort_field: Sort field, the newest episode first (POSITION) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of episodes to return; 0 returns them all.
+        :param offset: Number of episodes to skip.
+        :raises InvalidDataError: When the sort field is not offered for podcast episodes.
+        """
+        # an unsupported sort is rejected before the podcast is fetched
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.PODCAST_EPISODES, sort_field, sort_direction
+        )
+        item_id, provider_instance_id_or_domain = await self._podcast_source(
+            item_id, provider_instance_id_or_domain
+        )
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
+            return []
+        episodes = await cached_listing(
+            self.mass,
+            ListingType.PODCAST_EPISODES,
+            create_uri(MediaType.PODCAST, provider.instance_id, item_id),
+            lambda: self._list_provider_podcast(item_id, provider),
+            item_type=PodcastEpisode,
+        )
+        # the progress the user made, as Music Assistant recorded it, is filled in on every
+        # request over what the provider reports, as it changes while listening
+        await self._set_resume_positions(episodes, provider.instance_id)
+        if fully_played is not None:
+            episodes = [x for x in episodes if bool(x.fully_played) is fully_played]
+        return apply_listing(
+            episodes,
+            ListingType.PODCAST_EPISODES,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def iter_episodes(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
     ) -> AsyncGenerator[PodcastEpisode]:
-        """Return podcast episodes for the given provider podcast id."""
-        # always check if we have a library item for this podcast
-        if provider_instance_id_or_domain == "library":
-            library_podcast = await self.get_library_item(item_id)
-            if not library_podcast:
-                raise MediaNotFoundError(f"Podcast {item_id} not found in library")
-            provider_instance_id_or_domain, item_id = self._select_provider_id(library_podcast)
+        """
+        Yield all episodes of a podcast as its provider lists them, with the user's progress.
+
+        :param item_id: The podcast id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        """
+        item_id, provider_instance_id_or_domain = await self._podcast_source(
+            item_id, provider_instance_id_or_domain
+        )
         # podcast episodes are not stored in the db/library
         # so we always need to fetch them from the provider
         async for episode in self._get_provider_podcast_episodes(
@@ -223,25 +292,35 @@ class PodcastsController(MediaControllerBase[Podcast]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> UniqueList[Podcast]:
-        """Return all versions of an podcast we can find on all providers."""
-        podcast = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        search_query = podcast.name
-        result: UniqueList[Podcast] = UniqueList()
-        for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
-            if not isinstance(provider, MusicProvider):
-                continue
-            if MediaType.PODCAST not in provider.supported_media_types:
-                continue
-            result.extend(
-                prov_item
-                for prov_item in await self.search(search_query, provider_id)
-                if loose_compare_strings(podcast.name, prov_item.name)
-                # make sure that the 'base' version is NOT included
-                and not podcast.provider_mappings.intersection(prov_item.provider_mappings)
-            )
-        return result
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+    ) -> list[Podcast]:
+        """
+        Return the versions of a podcast on all providers, searched, sorted and paged.
+
+        :param item_id: The podcast id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param search: Only list the versions whose name contains this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; 0 returns them all.
+        :param offset: Number of versions to skip.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        return await self._versions_listing(
+            item_id,
+            provider_instance_id_or_domain,
+            lambda provider_id: self._assemble_versions(item_id, provider_id),
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+        )
 
     async def match_provider(
         self, db_podcast: Podcast, provider: MusicProvider, strict: bool = True
@@ -346,6 +425,28 @@ class PodcastsController(MediaControllerBase[Podcast]):
         if row["fully_played"] is not None:
             episode.fully_played = bool(row["fully_played"])
 
+    async def _assemble_versions(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> UniqueList[Podcast]:
+        """Return all versions of a podcast we can find on all providers."""
+        podcast = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        search_query = podcast.name
+        result: UniqueList[Podcast] = UniqueList()
+        for provider_id in self.mass.music.get_unique_providers():
+            provider = self.mass.get_provider(provider_id)
+            if not isinstance(provider, MusicProvider):
+                continue
+            if MediaType.PODCAST not in provider.supported_media_types:
+                continue
+            result.extend(
+                prov_item
+                for prov_item in await self.search(search_query, provider_id)
+                if loose_compare_strings(podcast.name, prov_item.name)
+                # make sure that the 'base' version is NOT included
+                and not podcast.provider_mappings.intersection(prov_item.provider_mappings)
+            )
+        return result
+
     async def _add_library_item(self, item: Podcast, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
         db_id = await self.mass.music.database.insert(
@@ -413,6 +514,25 @@ class PodcastsController(MediaControllerBase[Podcast]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
+    async def _podcast_source(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> tuple[str, str]:
+        """
+        Return the podcast id on its provider and that provider.
+
+        :param item_id: The podcast id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :raises MediaNotFoundError: The podcast is not in the library, or the caller may use
+            none of its providers.
+        """
+        # always check if we have a library item for this podcast
+        if provider_instance_id_or_domain == "library":
+            library_podcast = await self.get_library_item(item_id)
+            if not library_podcast:
+                raise MediaNotFoundError(f"Podcast {item_id} not found in library")
+            provider_instance_id_or_domain, item_id = self._select_provider_id(library_podcast)
+        return item_id, provider_instance_id_or_domain
+
     async def _get_provider_podcast_episodes(
         self, item_id: str, provider_instance_id_or_domain: str
     ) -> AsyncGenerator[PodcastEpisode]:
@@ -421,6 +541,70 @@ class PodcastsController(MediaControllerBase[Podcast]):
         if not isinstance(prov, MusicProvider):
             return
 
+        # fetched in one query on first use instead of one per episode: a podcast can have
+        # thousands of them
+        resume_rows: dict[str, Mapping[str, Any]] | None = None
+
+        # grab the episodes from the provider. Providers cache their own listing, so resume
+        # info is applied here to keep per-user progress out of those caches
+        async for item in prov.get_podcast_episodes(item_id):
+            # for providers that do not natively support providing resume info,
+            # we fallback to the playlog db table
+            if item.fully_played is None and not item.resume_position_ms:
+                if resume_rows is None:
+                    resume_rows = await self._get_resume_rows(prov.instance_id)
+                self._apply_resume_row(item, resume_rows.get(item.item_id))
+            await self._restore_probed_duration(item)
+            yield item
+
+    async def _list_provider_podcast(
+        self, item_id: str, provider: MusicProvider
+    ) -> Listing[PodcastEpisode]:
+        """
+        Return the episodes of a podcast, as far as its provider delivers them.
+
+        The episodes carry the resume info their provider reports, none from the playlog. A
+        provider failing part way leaves the listing incomplete; failing at once is raised.
+
+        :param item_id: The podcast id on the provider.
+        :param provider: The provider of the podcast.
+        """
+        episodes: list[PodcastEpisode] = []
+        try:
+            async for episode in provider.get_podcast_episodes(item_id):
+                await self._restore_probed_duration(episode)
+                episodes.append(episode)
+        except PROVIDER_FETCH_ERRORS as err:
+            if not episodes:
+                raise
+            self.logger.log(
+                provider_fetch_log_level(err),
+                "Unable to fetch all episodes of podcast %s from provider %s: %s",
+                item_id,
+                provider.instance_id,
+                err,
+            )
+            return Listing(episodes, complete=False)
+        return Listing(episodes)
+
+    async def _set_resume_positions(
+        self, episodes: Sequence[PodcastEpisode], provider_instance_id: str
+    ) -> None:
+        """Fill in the current user's resume info, over what the provider reports."""
+        if not episodes:
+            return
+        resume_rows = await self._get_resume_rows(provider_instance_id)
+        for episode in episodes:
+            self._apply_resume_row(episode, resume_rows.get(episode.item_id))
+
+    async def _get_resume_rows(self, provider_instance_id: str) -> dict[str, Mapping[str, Any]]:
+        """
+        Return the playlog rows of a provider's episodes, by episode id.
+
+        The rows are the current user's; without a user, the newest row of each episode.
+
+        :param provider_instance_id: The provider instance the episodes belong to.
+        """
         # Get user who initiated the query. Querying the userid as well is most useful
         # in a multi-user environment where a single instance provider is used.
         user: User | None = None
@@ -428,54 +612,34 @@ class PodcastsController(MediaControllerBase[Podcast]):
             # this is the active session user that triggered the action
             user = session_user
         elif provider_user := await self.mass.music._get_user_for_provider(
-            provider_mappings_or_instance_id=provider_instance_id_or_domain
+            provider_mappings_or_instance_id=provider_instance_id
         ):
             # based on configured provider filter we can try to find a user
             user = provider_user
+        match: dict[str, Any] = {
+            "provider": provider_instance_id,
+            "media_type": MediaType.PODCAST_EPISODE,
+        }
+        if user is not None:
+            match["userid"] = user.user_id
+        # limit=0 lifts get_rows' 500 row default, which combined with the ascending sort
+        # would drop the newest rows - the part-played episodes this lookup is for. That
+        # sort also picks the newest row per item_id in the map below, where without a
+        # userid filter several users can hold one
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_MEDIA_PROGRESS, match=match, order_by="timestamp", limit=0
+        )
+        return {row["item_id"]: row for row in rows}
 
-        # fetched in one query on first use instead of one per episode: a podcast can have
-        # thousands of them
-        resume_rows: dict[str, Mapping[str, Any]] | None = None
-
-        async def load_resume_rows() -> dict[str, Mapping[str, Any]]:
-            match: dict[str, Any] = {
-                "provider": prov.instance_id,
-                "media_type": MediaType.PODCAST_EPISODE,
-            }
-            if user is not None:
-                match["userid"] = user.user_id
-            # limit=0 lifts get_rows' 500 row default, which combined with the ascending sort
-            # would drop the newest rows - the part-played episodes this lookup is for. That
-            # sort also picks the newest row per item_id in the map below, where without a
-            # userid filter several users can hold one
-            rows = await self.mass.music.database.get_rows(
-                DB_TABLE_MEDIA_PROGRESS, match=match, order_by="timestamp", limit=0
-            )
-            return {row["item_id"]: row for row in rows}
-
-        async def set_resume_position(episode: PodcastEpisode) -> None:
-            nonlocal resume_rows
-            if episode.fully_played is not None or episode.resume_position_ms:
-                # provider supports resume info, we can skip
-                return
-            # for providers that do not natively support providing resume info,
-            # we fallback to the playlog db table
-            if resume_rows is None:
-                resume_rows = await load_resume_rows()
-            resume_info_db_row = resume_rows.get(episode.item_id)
-            if resume_info_db_row is None:
-                return
-            if resume_info_db_row["seconds_played"]:
-                episode.resume_position_ms = int(resume_info_db_row["seconds_played"] * 1000)
-            if resume_info_db_row["fully_played"] is not None:
-                episode.fully_played = bool(resume_info_db_row["fully_played"])
-
-        # grab the episodes from the provider. Providers cache their own listing, so resume
-        # info is applied here to keep per-user progress out of those caches
-        async for item in prov.get_podcast_episodes(item_id):
-            await set_resume_position(item)
-            await self._restore_probed_duration(item)
-            yield item
+    @staticmethod
+    def _apply_resume_row(episode: PodcastEpisode, row: Mapping[str, Any] | None) -> None:
+        """Fill in the resume position and played state a playlog row holds for an episode."""
+        if row is None:
+            return
+        if row["seconds_played"]:
+            episode.resume_position_ms = int(row["seconds_played"] * 1000)
+        if row["fully_played"] is not None:
+            episode.fully_played = bool(row["fully_played"])
 
     async def _restore_probed_duration(self, episode: PodcastEpisode) -> None:
         """
