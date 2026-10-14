@@ -37,6 +37,7 @@
     "description": "Stream audiobooks from your personal BookOrbit server."
   },
   "errors": {
-    "login_failed": "Login to the BookOrbit server at {0} failed."
+    "login_failed": "Login to the BookOrbit server at {0} failed.",
+    "connection_failed": "Could not reach the BookOrbit server at {0}. Check the URL, port, and network path."
   }
 }

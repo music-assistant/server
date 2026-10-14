@@ -1227,6 +1227,7 @@
   "provider.bookorbit.config_entries.label.label": "Please provide the address of your BookOrbit server and your username and password.",
   "provider.bookorbit.config_entries.url.description": "The URL of the BookOrbit server to connect to. For example https://bookorbit.domain.tld/ or http://192.168.1.4:3000/",
   "provider.bookorbit.config_entries.url.label": "Server",
+  "provider.bookorbit.errors.connection_failed": "Could not reach the BookOrbit server at {0}. Check the URL, port, and network path.",
   "provider.bookorbit.errors.login_failed": "Login to the BookOrbit server at {0} failed.",
   "provider.bookorbit.manifest.description": "Stream audiobooks from your personal BookOrbit server.",
   "provider.bookorbit.media.folder.audiobooks.name": "Audiobooks",
