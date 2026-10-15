@@ -4,10 +4,6 @@
       "label": "HTTP Server Port",
       "description": "Port for the MSX HTTP server."
     },
-    "output_format": {
-      "label": "Audio Output Format",
-      "description": "Audio format for streaming to MSX (mp3, aac, or flac)."
-    },
     "player_idle_timeout": {
       "label": "Player Idle Timeout (minutes)",
       "description": "Unregister MSX players after this many minutes without activity."

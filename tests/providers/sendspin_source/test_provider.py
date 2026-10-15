@@ -29,6 +29,7 @@ from music_assistant.providers.sendspin_source.provider import OUTPUT_FORMAT
 
 from .conftest import (
     _FakeClient,
+    _FakePlayer,
     get_config,
     get_players,
     get_queues,
@@ -107,9 +108,36 @@ async def test_audio_sources_follow_role_activation() -> None:
     )
     sources = await provider.get_audio_sources()
     assert [s.item_id for s in sources] == ["with-role"]
-    assert sources[0].name == "Turntable"
     assert sources[0].exclusive is True
     assert sources[0].can_initiate is True
+
+
+async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> None:
+    """The source is named after its player, and a rename reaches Browse and now-playing."""
+    provider = await make_provider([fake_client])
+    get_players(provider).players["client-1"].display_name = "Living Room"
+    assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Living Room)"]
+    get_players(provider).players["client-1"].display_name = "Den"
+    assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Den)"]
+    details = await provider.get_stream_details("client-1", MediaType.AUDIO_SOURCE)
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "Sendspin Source (Den)"
+
+
+async def test_source_name_uses_the_visible_parent_player(fake_client: _FakeClient) -> None:
+    """A protocol player's source is named after the player the user sees."""
+    provider = await make_provider([fake_client])
+    players = get_players(provider).players
+    players["client-1"].protocol_parent_id = "cast-1"
+    players["cast-1"] = _FakePlayer("cast-1", display_name="Kitchen")
+    assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Kitchen)"]
+
+
+async def test_source_name_falls_back_to_the_device_name(fake_client: _FakeClient) -> None:
+    """Before its player registers, the source is named after the device's own name."""
+    provider = await make_provider([fake_client])
+    get_players(provider).players.clear()
+    assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Turntable)"]
 
 
 async def test_stream_details_rejects_unknown_source() -> None:
