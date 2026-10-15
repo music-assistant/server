@@ -456,6 +456,43 @@ async def test_playlist_tracks_of_a_provider_not_loaded(mass: MusicAssistant) ->
         assert _ids(await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)) == ["t1", "t2"]
 
 
+async def test_a_playlist_is_not_kept_from_another_account_of_a_dropped_one(
+    mass: MusicAssistant,
+) -> None:
+    """An account dropping while its listing is read from the cache is not answered for."""
+    provider = _StubPlaylistProvider(_playlist_tracks(2))
+    sibling = _StubPlaylistProvider(_playlist_tracks(2), instance_id="spotify_2")
+    loaded = [provider, sibling]
+
+    def _get_provider(provider_id: str, *_args: Any, **_kwargs: Any) -> Any:
+        # like `mass.get_provider`, an instance no longer loaded resolves to its domain
+        domain = provider_id.split("_", maxsplit=1)[0]
+        for candidate in loaded:
+            if candidate.instance_id == provider_id:
+                return candidate
+        return next((candidate for candidate in loaded if candidate.domain == domain), None)
+
+    cache_get = mass.cache.get
+
+    async def _drop_during_read(*args: Any, **kwargs: Any) -> Any:
+        loaded[:] = [sibling]
+        return await cache_get(*args, **kwargs)
+
+    with (
+        patch.object(mass, "get_provider", side_effect=_get_provider),
+        patch.object(mass.cache, "get", side_effect=_drop_during_read),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await mass.music.playlists.tracks(PLAYLIST_ID, INSTANCE)
+    assert sibling.pages_fetched == 0
+    cached = await mass.cache.get(
+        ListingType.PLAYLIST_TRACKS.value,
+        provider=create_uri(MediaType.PLAYLIST, INSTANCE, PLAYLIST_ID),
+        category=CACHE_CATEGORY_LISTINGS,
+    )
+    assert cached is None
+
+
 async def test_iter_tracks_walks_every_page_past_the_listing_cache(mass: MusicAssistant) -> None:
     """The iterator yields the whole playlist in provider order, from the provider every time."""
     provider = _StubPlaylistProvider(_playlist_tracks(5))

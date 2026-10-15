@@ -95,6 +95,7 @@ def _similar_tracks_provider() -> MagicMock:
     """Return the music provider of the reference track, which lists similar tracks."""
     provider = MagicMock(spec=MusicProvider)
     provider.instance_id = "qobuz_1"
+    provider.available = True
     provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
     return provider
 

@@ -270,7 +270,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             items = await with_user_favorites(self.mass, get_current_user(), listing.items)
         else:
-            # a refresh assembles the listing anew and replaces the cached one
+            # a refresh assembles the listing anew and replaces the cached one; the fill is
+            # pinned to the resolved account, so no other account answers for it dropping
             async with self.mass.cache.handle_refresh(True) if force_refresh else nullcontext():
                 items = await cached_listing(
                     self.mass,
@@ -281,7 +282,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         item_id,
                         provider.instance_id,
                         force_refresh,
-                        strict_provider_instance,
+                        True,
                         library_item,
                     ),
                     item_type=PlaylistPlayableItem,
