@@ -935,7 +935,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'provider_instance', pm.provider_instance,
                         'available', pm.available,
                         'in_library', pm.in_library,
-                        'is_unique', pm.is_unique
+                        'is_unique', pm.is_unique,
+                        'details', pm.details
                     )) FROM provider_mappings pm WHERE pm.item_id = {self.db_table}.item_id
                         AND pm.media_type = '{self.media_type.value}') AS provider_mappings
                 {extra_columns}

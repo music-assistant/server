@@ -8,6 +8,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from aiohttp import ClientResponseError
 from music_assistant_models.enums import ImageType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -17,11 +18,13 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     UniqueList,
 )
+from yarl import URL
 
 from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.helpers import library_may_contain_audio
+from music_assistant.providers.bookorbit.parsers import AUTHOR_PREFIX
 
 
 @pytest.fixture
@@ -110,6 +113,49 @@ async def test_refresh_catalog_filters_libraries_and_ebooks(
     assert author_image.path.endswith("/api/v1/authors/11/thumbnail?t=1")
     narrator_id = f"narrator:{book_audiobook['audioMetadata']['narrators'][0]['id']}"
     assert not artists[narrator_id].metadata.images
+
+
+@pytest.mark.asyncio
+async def test_refresh_catalog_aborts_on_detail_fetch_error(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """A failed detail fetch must not publish a partial catalog."""
+    previous = {str(book_audiobook["id"]): book_audiobook}
+    provider._catalog = previous
+    provider._catalog_refreshed_at = 0.0
+
+    async def _get_book(book_id: int) -> dict[str, Any]:
+        if book_id == book_multifile["id"]:
+            raise ClientResponseError(
+                request_info=Mock(real_url=URL("http://bo/x")),
+                history=(),
+                status=500,
+                message="boom",
+            )
+        if book_id == book_audiobook["id"]:
+            return book_audiobook
+        if book_id == 999:
+            return {"id": 999, "files": [{"id": 1, "format": "epub"}]}
+        raise KeyError(book_id)
+
+    cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
+    await provider._refresh_catalog(force=True)
+    assert provider._catalog is previous
+
+
+@pytest.mark.asyncio
+async def test_search_artists_matches_name_only_results(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Catalog author search returns name-only rows that must match known artists."""
+    await provider._refresh_catalog()
+    author_name = book_audiobook["authors"][0]["name"]
+    client = cast("Any", provider._client)
+    client.search_authors = AsyncMock(return_value=[{"name": author_name}])
+    client.search_narrators = AsyncMock(return_value=[])
+    found = await provider._search_artists(author_name, limit=5)
+    assert len(found) == 1
+    assert found[0].item_id == f"{AUTHOR_PREFIX}{book_audiobook['authors'][0]['id']}"
 
 
 @pytest.mark.asyncio

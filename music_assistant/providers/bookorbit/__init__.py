@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientResponseError, DummyCookieJar, web
@@ -88,9 +89,28 @@ SUPPORTED_FEATURES = {
 }
 
 
+@dataclass(slots=True, frozen=True)
+class _StreamGrant:
+    """Proxy access for one get_stream_details resolution until playback ends."""
+
+    book_id: str
+    asset_ids: frozenset[str]
+    created_at: float
+
+
 def _people(entries: Any) -> list[dict[str, Any]]:
     """Return the entries that are person objects with an id."""
     return [e for e in entries or [] if isinstance(e, dict) and "id" in e]
+
+
+def _session_id_from_streamdetails(streamdetails: StreamDetails) -> str | None:
+    """Return the BookOrbit stream session id stored on streamdetails, if any."""
+    data = streamdetails.data
+    if isinstance(data, dict):
+        session_id = data.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            return session_id
+    return None
 
 
 def _book_series(book: dict[str, Any]) -> list[tuple[str, str]]:
@@ -152,8 +172,9 @@ class BookOrbitProvider(MusicProvider):
         self._catalog_refreshed_at: float = 0.0
         self._catalog_lock = asyncio.Lock()
         self._force_catalog_refresh = False
-        # book_id -> asset_id -> last access (monotonic); idle entries expire.
-        self._stream_assets: dict[str, dict[str, float]] = {}
+        # session_id -> grant; active playback sessions are not TTL-pruned.
+        self._stream_sessions: dict[str, _StreamGrant] = {}
+        self._active_stream_sessions: set[str] = set()
         self._progress_locks: dict[int, asyncio.Lock] = {}
         self._progress_generation: dict[int, int] = {}
         self._library_names: dict[int, str] = {}
@@ -194,7 +215,8 @@ class BookOrbitProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider and close its BookOrbit client."""
         await super().unload(is_removed)
-        self._stream_assets.clear()
+        self._stream_sessions.clear()
+        self._active_stream_sessions.clear()
         if unregister := self._unregister_route:
             self._unregister_route = None
             unregister()
@@ -299,12 +321,14 @@ class BookOrbitProvider(MusicProvider):
         )
         if not assets:
             raise MediaNotFoundError(f"BookOrbit book {item_id} has no audio assets")
-        self._register_stream_assets(str(book_id), {str(asset["assetId"]) for asset in assets})
+        session_id = self._register_stream_session(
+            str(book_id), {str(asset["assetId"]) for asset in assets}
+        )
         parts = [
             MultiPartPath(
                 path=(
                     f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
-                    f"book_id={book_id}&asset_id={asset['assetId']}"
+                    f"session_id={session_id}&book_id={book_id}&asset_id={asset['assetId']}"
                 ),
                 duration=(
                     float(asset["durationMs"]) / 1000.0
@@ -314,16 +338,7 @@ class BookOrbitProvider(MusicProvider):
             )
             for asset in assets
         ]
-        total_ms = manifest.get("totalDurationMs")
-        duration: int | None
-        if total_ms is not None:
-            duration = round(float(total_ms) / 1000.0)
-        else:
-            book = await self._get_book(item_id, fresh=True)
-            parsed_duration = parse_audiobook(
-                book, provider_instance_id=self.instance_id, base_url=self.base_url
-            ).duration
-            duration = round(parsed_duration) if parsed_duration is not None else None
+        duration = await self._stream_duration(manifest, assets, item_id)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -335,7 +350,22 @@ class BookOrbitProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
             expiration=STREAMDETAILS_EXPIRATION_S,
+            data={"session_id": session_id},
         )
+
+    async def on_stream_started(self, streamdetails: StreamDetails) -> None:
+        """Mark the proxied stream session active so part grants outlive streamdetails TTL."""
+        if (session_id := _session_id_from_streamdetails(streamdetails)) is None:
+            return
+        if session_id in self._stream_sessions:
+            self._active_stream_sessions.add(session_id)
+
+    async def on_streamed(self, streamdetails: StreamDetails) -> None:
+        """Revoke proxy access when playback of this streamdetails completes."""
+        if (session_id := _session_id_from_streamdetails(streamdetails)) is None:
+            return
+        self._active_stream_sessions.discard(session_id)
+        self._stream_sessions.pop(session_id, None)
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
@@ -580,11 +610,12 @@ class BookOrbitProvider(MusicProvider):
     async def _handle_part_request(self, request: web.Request) -> web.StreamResponse:
         """Proxy one audiobook asset to the player with auth and Range support."""
         try:
+            session_id = str(request.query["session_id"])
             book_id = str(int(request.query["book_id"]))
             asset_id = str(request.query["asset_id"])
         except KeyError, ValueError:
-            return web.Response(status=400, text="Missing or invalid book_id/asset_id")
-        if not asset_id or not self._touch_stream_asset(book_id, asset_id):
+            return web.Response(status=400, text="Missing or invalid session_id/book_id/asset_id")
+        if not asset_id or not self._stream_session_allows(session_id, book_id, asset_id):
             return web.Response(status=404, text="Unknown asset")
         try:
             upstream = await self._client.open_file(
@@ -631,35 +662,53 @@ class BookOrbitProvider(MusicProvider):
             self._progress_locks[book_id] = lock
         return lock
 
-    def _register_stream_assets(self, book_id: str, asset_ids: set[str]) -> None:
-        """Allow proxy access for assets from a fresh get_stream_details call."""
-        now = time.monotonic()
-        self._prune_stream_assets(now)
-        self._stream_assets[book_id] = dict.fromkeys(asset_ids, now)
+    def _register_stream_session(self, book_id: str, asset_ids: set[str]) -> str:
+        """Create a proxy session for assets from a fresh get_stream_details call."""
+        self._prune_stream_sessions()
+        session_id = uuid.uuid4().hex
+        self._stream_sessions[session_id] = _StreamGrant(
+            book_id=book_id,
+            asset_ids=frozenset(asset_ids),
+            created_at=time.monotonic(),
+        )
+        return session_id
 
-    def _touch_stream_asset(self, book_id: str, asset_id: str) -> bool:
-        """Refresh an allowlisted asset's idle timer; return whether it is still allowed."""
-        now = time.monotonic()
-        self._prune_stream_assets(now)
-        assets = self._stream_assets.get(book_id)
-        if not assets or asset_id not in assets:
-            return False
-        assets[asset_id] = now
-        return True
+    def _stream_session_allows(self, session_id: str, book_id: str, asset_id: str) -> bool:
+        """Return whether the proxy may serve this asset for the given session."""
+        self._prune_stream_sessions()
+        grant = self._stream_sessions.get(session_id)
+        return grant is not None and grant.book_id == book_id and asset_id in grant.asset_ids
 
-    def _prune_stream_assets(self, now: float | None = None) -> None:
-        """Drop proxy allowlist entries that have been idle too long."""
-        now = time.monotonic() if now is None else now
-        ttl = STREAMDETAILS_EXPIRATION_S * 2
-        stale_books: list[str] = []
-        for book_id, assets in self._stream_assets.items():
-            alive = {asset_id: seen for asset_id, seen in assets.items() if now - seen < ttl}
-            if alive:
-                self._stream_assets[book_id] = alive
-            else:
-                stale_books.append(book_id)
-        for book_id in stale_books:
-            del self._stream_assets[book_id]
+    def _prune_stream_sessions(self) -> None:
+        """Drop never-started sessions whose streamdetails would already have expired."""
+        now = time.monotonic()
+        stale = [
+            session_id
+            for session_id, grant in self._stream_sessions.items()
+            if session_id not in self._active_stream_sessions
+            and now - grant.created_at >= STREAMDETAILS_EXPIRATION_S
+        ]
+        for session_id in stale:
+            del self._stream_sessions[session_id]
+
+    async def _stream_duration(
+        self,
+        manifest: dict[str, Any],
+        assets: list[dict[str, Any]],
+        item_id: str,
+    ) -> int | None:
+        """Return audiobook duration only when every part (or a book total) is known."""
+        if all(asset.get("durationMs") is not None for asset in assets):
+            total_ms = manifest.get("totalDurationMs")
+            if total_ms is not None:
+                return round(float(total_ms) / 1000.0)
+            return round(sum(int(asset["durationMs"]) for asset in assets) / 1000.0)
+        # Partial measured totals understate length; prefer an authoritative book duration.
+        book = await self._get_book(item_id, fresh=True)
+        parsed = parse_audiobook(
+            book, provider_instance_id=self.instance_id, base_url=self.base_url
+        ).duration
+        return parsed if parsed else None
 
     async def _ensure_catalog(self) -> None:
         """Ensure a catalog is loaded before browse or search."""
@@ -700,23 +749,31 @@ class BookOrbitProvider(MusicProvider):
 
             async def _load_book(
                 book_id: str, card: dict[str, Any]
-            ) -> tuple[str, dict[str, Any] | None]:
+            ) -> tuple[str, dict[str, Any] | None, ClientResponseError | None]:
                 try:
                     book = await self._get_book_detail(book_id, card, semaphore)
                 except ClientResponseError as err:
-                    self.logger.warning("Skipping BookOrbit book %s: %s", book_id, err)
+                    self.logger.warning("BookOrbit book detail %s failed: %s", book_id, err)
                     # Only record skips inside an active library sync.
                     if SYNC_RUN_STATE.get() is not None:
                         self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
-                    return book_id, None
+                    return book_id, None, err
                 if book is None or not _audio_files(book):
-                    return book_id, None
-                return book_id, book
+                    return book_id, None, None
+                return book_id, book, None
 
             results = await asyncio.gather(
                 *(_load_book(book_id, card) for book_id, card in cards_by_id.items())
             )
-            catalog = {book_id: book for book_id, book in results if book is not None}
+            detail_errors = [err for _, _, err in results if err is not None]
+            if detail_errors:
+                # Partial catalogs omit books/artists and can drive recursive sync deletions.
+                self.logger.warning(
+                    "Aborting BookOrbit catalog refresh: %d detail fetch(es) failed",
+                    len(detail_errors),
+                )
+                return
+            catalog = {book_id: book for book_id, book, _ in results if book is not None}
             # Drop library memberships that failed detail fetch or have no audio.
             library_books = {
                 library_id: [book_id for book_id in members if book_id in catalog]
@@ -974,8 +1031,23 @@ class BookOrbitProvider(MusicProvider):
             return [a for a in known.values() if needle in a.name.casefold()][:limit]
         found: list[Artist] = []
         for prefix, people in ((AUTHOR_PREFIX, authors), (NARRATOR_PREFIX, narrators)):
-            for person in _people(people):
+            for person in people:
                 # Only artists already present in the audiobook catalog can be resolved later.
-                if (artist := known.get(f"{prefix}{person['id']}")) and artist not in found:
+                if "id" in person:
+                    artist = known.get(f"{prefix}{person['id']}")
+                elif name := person.get("name"):
+                    # /metadata/authors|narrators search returns name-only rows.
+                    needle = str(name).casefold()
+                    artist = next(
+                        (
+                            a
+                            for item_id, a in known.items()
+                            if item_id.startswith(prefix) and a.name.casefold() == needle
+                        ),
+                        None,
+                    )
+                else:
+                    continue
+                if artist is not None and artist not in found:
                     found.append(artist)
         return found[:limit]

@@ -165,6 +165,9 @@ async def test_stream_details_single_file(
     assert details.path.startswith("http://ma:8097/bookorbit--test_part_stream?")
     assert f"book_id={book_audiobook['id']}" in details.path
     assert f"asset_id={asset['assetId']}" in details.path
+    assert "session_id=" in details.path
+    assert isinstance(details.data, dict)
+    assert details.data.get("session_id")
     # no credentials in the url
     assert "token" not in details.path.lower()
 
@@ -180,7 +183,49 @@ async def test_stream_details_multi_file(
     assert [p.duration for p in details.path] == [100.5, 200.5]
     assert f"asset_id={assets[0]['assetId']}" in details.path[0].path
     assert f"asset_id={assets[1]['assetId']}" in details.path[1].path
+    assert "session_id=" in details.path[0].path
     assert details.duration == 301
+
+
+@pytest.mark.asyncio
+async def test_stream_details_unknown_duration_when_part_missing(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """A partial measured total must not become the audiobook duration."""
+    incomplete = manifest_from_book(book_multifile)
+    incomplete["assets"][1]["durationMs"] = None
+    # BookOrbit sums only measured parts when another duration is unknown.
+    incomplete["totalDurationMs"] = incomplete["assets"][0]["durationMs"]
+    incomplete_book = {
+        **book_multifile,
+        "audioMetadata": {**(book_multifile.get("audioMetadata") or {}), "durationSeconds": None},
+        "files": [
+            {**book_multifile["files"][0]},
+            {**book_multifile["files"][1], "durationSeconds": None},
+            *book_multifile["files"][2:],
+        ],
+    }
+    _client(provider).get_audiobook_manifest = AsyncMock(return_value=incomplete)
+    _client(provider).get_book = AsyncMock(return_value=incomplete_book)
+    details = await provider.get_stream_details(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+    assert details.duration is None
+
+
+@pytest.mark.asyncio
+async def test_stream_session_revoked_after_on_streamed(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Proxy grants stay valid during playback and are revoked when the stream ends."""
+    details = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
+    assert isinstance(details.data, dict)
+    session_id = details.data["session_id"]
+    asset = manifest_from_book(book_audiobook)["assets"][0]
+    book_id = str(book_audiobook["id"])
+    assert provider._stream_session_allows(session_id, book_id, asset["assetId"])
+    await provider.on_stream_started(details)
+    assert provider._stream_session_allows(session_id, book_id, asset["assetId"])
+    await provider.on_streamed(details)
+    assert not provider._stream_session_allows(session_id, book_id, asset["assetId"])
 
 
 @pytest.mark.asyncio
@@ -405,7 +450,7 @@ async def test_on_played_ignores_other_media(provider: BookOrbitProvider) -> Non
 async def test_part_request_only_serves_assets_of_the_book(
     provider: BookOrbitProvider, book_multifile: dict[str, Any], book_audiobook: dict[str, Any]
 ) -> None:
-    """The stream proxy refuses asset ids that do not belong to a resolved book."""
+    """The stream proxy refuses asset ids that do not belong to a resolved session."""
     client = _client(provider)
     client.open_file = AsyncMock(side_effect=ClientError("unreachable"))
     book_id = book_multifile["id"]
@@ -420,11 +465,26 @@ async def test_part_request_only_serves_assets_of_the_book(
             return err.status
         return response.status
 
-    assert await status(f"book_id={book_id}&asset_id={assets[0]['assetId']}") == 404  # not yet
-    assert await status(f"asset_id={assets[0]['assetId']}") == 400
-    await provider.get_stream_details(str(book_id), MediaType.AUDIOBOOK)
-    assert await status(f"book_id={book_id}&asset_id={other_asset}") == 404
-    assert await status(f"book_id={book_id}&asset_id=aud_not-a-real-asset") == 404
+    assert (
+        await status(f"session_id=missing&book_id={book_id}&asset_id={assets[0]['assetId']}") == 404
+    )
+    assert await status(f"book_id={book_id}&asset_id={assets[0]['assetId']}") == 400
+    details = await provider.get_stream_details(str(book_id), MediaType.AUDIOBOOK)
+    assert isinstance(details.data, dict)
+    session_id = details.data["session_id"]
+    assert await status(f"session_id={session_id}&book_id={book_id}&asset_id={other_asset}") == 404
+    assert (
+        await status(f"session_id={session_id}&book_id={book_id}&asset_id=aud_not-a-real-asset")
+        == 404
+    )
     client.open_file.assert_not_awaited()
-    assert await status(f"book_id={book_id}&asset_id={assets[0]['assetId']}") == 502
+    assert (
+        await status(f"session_id={session_id}&book_id={book_id}&asset_id={assets[0]['assetId']}")
+        == 502
+    )
     client.open_file.assert_awaited_once()
+    await provider.on_streamed(details)
+    assert (
+        await status(f"session_id={session_id}&book_id={book_id}&asset_id={assets[0]['assetId']}")
+        == 404
+    )

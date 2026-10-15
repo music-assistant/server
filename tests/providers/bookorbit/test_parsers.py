@@ -97,6 +97,15 @@ def test_parse_audiobook_multifile_one_chapter_per_audio_file(
     assert ab.duration == 301
 
 
+def test_parse_audiobook_unknown_duration_when_part_missing(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Incomplete part durations must not invent a short audiobook total."""
+    book_multifile["files"][1]["durationSeconds"] = None
+    book_multifile["audioMetadata"]["durationSeconds"] = None
+    assert _parse(book_multifile).duration == 0
+
+
 def test_parse_audiobook_untitled_falls_back(book_multifile: dict[str, Any]) -> None:
     """Missing title gets a placeholder name."""
     book_multifile["title"] = None

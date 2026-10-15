@@ -104,12 +104,17 @@ def parse_audiobook(
     audio_files = _audio_files(book)
 
     file_durations = [file.get("durationSeconds") for file in audio_files]
+    meta_duration = audio_metadata.get("durationSeconds")
     if len(audio_files) > 1 and all(d is not None for d in file_durations):
         duration = float(sum(file_durations))  # type: ignore[arg-type]
+    elif meta_duration is not None:
+        # Prefer an authoritative book-level total over a partial sum of measured parts.
+        duration = float(meta_duration)
+    elif len(audio_files) == 1 and file_durations and file_durations[0] is not None:
+        duration = float(file_durations[0])
     else:
-        duration = float(
-            audio_metadata.get("durationSeconds") or sum(d or 0 for d in file_durations)
-        )
+        # Unknown: do not invent a short total from incomplete part measurements.
+        duration = 0.0
 
     name = book.get("title") or "UNKNOWN TITLE"
     if subtitle := book.get("subtitle"):
