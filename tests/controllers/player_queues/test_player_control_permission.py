@@ -156,7 +156,7 @@ async def test_reading_and_changing_a_queue_needs_access_to_its_player(
         await _run(command, _player(OTHER_PLAYER, private=False))
 
 
-def test_the_queue_listing_holds_the_users_players_and_what_they_play() -> None:
+async def test_the_queue_a_users_player_plays_is_listed_and_read_but_not_controlled() -> None:
     """Queues of players outside the user's filter are left out, unless the user's player plays it."""
     controller = _controller(
         _player(ALLOWED_PLAYER, private=False),
@@ -165,10 +165,17 @@ def test_the_queue_listing_holds_the_users_players_and_what_they_play() -> None:
         leaders={ALLOWED_PLAYER: LEADER},
     )
     controller._queue_data = {
-        player_id: SimpleNamespace(queue=SimpleNamespace(queue_id=player_id))  # type: ignore[misc]
+        player_id: SimpleNamespace(queue=SimpleNamespace(queue_id=player_id), items=[])  # type: ignore[misc]
         for player_id in (ALLOWED_PLAYER, OTHER_PLAYER, LEADER)
     }
     with _restricted_user([ALLOWED_PLAYER]):
         assert [queue.queue_id for queue in controller.all_queues()] == [ALLOWED_PLAYER, LEADER]
+        # the leader's queue is read like the player's own, but not driven through it
+        assert controller.get_queue(LEADER) is controller._queue_data[LEADER].queue
+        assert controller.get_queue_items(LEADER) == []
+        with pytest.raises(InsufficientPermissions):
+            await controller.set_shuffle(LEADER, True)
+        with pytest.raises(InsufficientPermissions):
+            controller.get_queue(OTHER_PLAYER)
     # an internal caller has no user and sees every queue
     assert len(controller.all_queues()) == 3
