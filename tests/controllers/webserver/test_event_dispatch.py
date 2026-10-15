@@ -218,6 +218,36 @@ async def test_own_client_removal_delivered_after_becoming_restricted(
     assert "browser" in get_written_message(client)
 
 
+async def test_own_client_events_stop_once_its_owner_shares_it(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sharing the own client player ends its exemption; its removal is still delivered."""
+    _stub_players(monkeypatch, mass_minimal, browser=True)
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("browser")
+    mass_minimal.signal_event(EventType.PLAYER_ADDED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+    # the owner shares the player: like any other speaker, it now follows the filter
+    _stub_players(monkeypatch, mass_minimal, browser=False)
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert client._to_write.empty()
+
+    # made private again, the exemption returns, and outlives the player for its removal
+    _stub_players(monkeypatch, mass_minimal, browser=True)
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+    _stub_players(monkeypatch, mass_minimal)
+    mass_minimal.signal_event(EventType.PLAYER_REMOVED, "browser", {})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
 async def test_shared_speaker_claimed_as_client_stays_filtered(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,

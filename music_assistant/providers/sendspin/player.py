@@ -105,6 +105,7 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
+    CONF_SHARED_PLAYER,
     CONF_SOURCE_AUTOSTART_TARGET,
     CONF_SOURCE_INPUT_ACTION,
     CONF_SOURCE_INPUT_DECLINED,
@@ -1624,6 +1625,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
+        self._apply_standalone_visibility()
         await self._apply_preferred_format()
         await self._apply_static_delay()
 
@@ -1893,6 +1895,7 @@ class SendspinPlayer(SendspinBasePlayer):
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
         entries.extend(await super().get_config_entries())
+        entries.extend(self._get_shared_player_config_entries())
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
         if player_role is not None:
@@ -1988,18 +1991,50 @@ class SendspinPlayer(SendspinBasePlayer):
                     self._attr_volume_muted = muted
                 if volume is not None or muted is not None:
                     break
+        self._apply_standalone_visibility()
+
+    @property
+    def _offers_sharing(self) -> bool:
+        """Whether the share setting applies: a web/app player, but never a virtual player."""
+        # a virtual player announces itself as a Music Assistant web player, but it has
+        # no device of its own, so there is nobody to share it with
+        return self.is_web_player and not cast("SendspinProvider", self.provider).is_virtual_player(
+            self.player_id
+        )
+
+    def _apply_standalone_visibility(self) -> None:
+        """Derive the player type, visibility defaults and private flag of this client."""
         # virtual players are server-owned anchors that follow the same
         # hidden/standalone semantics as web players, without relying on the
-        # device-info heuristics above
+        # device-info heuristics in _refresh_client_info
         is_standalone = self.is_web_player or cast(
             "SendspinProvider", self.provider
         ).is_virtual_player(self.player_id)
+        # Sharing changes privacy only; UI visibility and HA exposure stay independent.
+        # The value is read from the store rather than self.config: at construction the
+        # base config holds no values yet, while the store is already written by then
+        # and is updated before a config save is applied to the player.
+        is_shared = self._offers_sharing and bool(
+            self.mass.config.get_raw_player_config_value(self.player_id, CONF_SHARED_PLAYER, False)
+        )
         self._attr_expose_to_ha_by_default = not is_standalone
         self._attr_hidden_by_default = is_standalone
-        self._attr_private = is_standalone
+        self._attr_private = is_standalone and not is_shared
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
         self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
+
+    def _get_shared_player_config_entries(self) -> list[ConfigEntry]:
+        """Return the shared-player entry, which only a web/app player has a use for."""
+        if not self._offers_sharing:
+            return []
+        return [
+            ConfigEntry(
+                key=CONF_SHARED_PLAYER,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            )
+        ]
 
     def _on_group_changed(self, new_group: SendspinGroup) -> None:
         """Handle group change with controller commands and playback session cancellation."""
