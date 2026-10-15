@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from unittest.mock import patch
+from typing import Literal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import ArtistType
@@ -88,6 +89,55 @@ def _failing_provider_fetch(
         return []
 
     return _fetch
+
+
+async def test_author_audiobooks_filter_source_before_paging(mass: MusicAssistant) -> None:
+    """A selected provider excludes other library books and provider requests before paging."""
+    db_author = await _seed_author(mass, library_audiobooks=("Other Book",))
+    books = [
+        Audiobook(
+            item_id=f"book_{index}",
+            provider="streaming_inst",
+            name=f"Selected Book {index}",
+            provider_mappings={_mapping("streaming_inst", f"book_{index}")},
+            authors=UniqueList([db_author]),
+        )
+        for index in range(2)
+    ]
+    fetch = AsyncMock(return_value=books)
+    with (
+        patch.object(mass.music, "get_unique_providers", return_value=_PROVIDERS),
+        patch.object(mass.music.artists, "get_provider_author_audiobooks", fetch),
+    ):
+        items = await mass.music.artists.audiobooks(
+            "author_streaming",
+            "streaming_inst",
+            provider_filter="streaming_inst",
+            limit=1,
+            offset=1,
+        )
+
+    assert [item.name for item in items] == ["Selected Book 1"]
+    fetch.assert_awaited_once_with("author_streaming", "streaming_inst")
+
+
+@pytest.mark.parametrize("collapse_collections", [False, True])
+async def test_author_library_audiobooks_filter_source(
+    mass: MusicAssistant, collapse_collections: Literal[False, True]
+) -> None:
+    """The source filter also excludes other providers' books and collapsed collections."""
+    db_author = await _seed_author(
+        mass, library_audiobooks=("Other Book",), collection_name="Other Series"
+    )
+    items = await mass.music.artists.audiobooks(
+        db_author.item_id,
+        "library",
+        in_library_only=True,
+        provider_filter="streaming_inst",
+        collapse_collections=collapse_collections,
+    )
+
+    assert items == []
 
 
 async def test_author_audiobooks_skip_failing_provider(

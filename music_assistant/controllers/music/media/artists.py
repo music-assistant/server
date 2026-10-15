@@ -709,6 +709,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit: int | None = 500,
             offset: int = 0,
             *,
+            provider_filter: str | None = None,
             collapse_collections: Literal[False] = False,
         ) -> list[Audiobook]: ...
 
@@ -725,10 +726,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit: int | None = 500,
             offset: int = 0,
             *,
+            provider_filter: str | None = None,
             collapse_collections: Literal[True],
         ) -> list[Audiobook | MediaCollection[Audiobook]]: ...
 
-    async def audiobooks(
+    async def audiobooks(  # noqa: PLR0913
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
@@ -740,6 +742,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int | None = 500,
         offset: int = 0,
         *,
+        provider_filter: str | None = None,
         collapse_collections: bool = False,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
@@ -757,6 +760,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of audiobooks to return; 0 returns them all.
         :param offset: Number of audiobooks to skip.
+        :param provider_filter: Only list audiobooks from this provider instance.
         :param collapse_collections: Collapse available collections. Only applies to
             in-library items; when in_library_only is False, provider items are
             appended as plain audiobooks alongside the collapsed collections.
@@ -765,6 +769,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.ARTIST_AUDIOBOOKS, sort_field, sort_direction
         )
+        allowed_providers = self._ensure_provider_filter(provider_filter)
 
         def _listed(
             items: Sequence[Audiobook | MediaCollection[Audiobook]],
@@ -792,6 +797,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             return []
         if not library_artist:
+            self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
             if artist_type == ArtistType.AUTHOR:
                 return _listed(
                     await self.get_provider_author_audiobooks(
@@ -810,6 +816,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             library_artist.item_id,
             artist_type=library_artist.artist_type,
             collapse_collections=collapse_collections,
+            provider_filter=provider_filter,
         )
         result: list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]] = db_items
         if in_library_only:
@@ -824,7 +831,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                     unique_ids.add(f"{collection_item.name}.{collection_item.version}")
             else:
                 unique_ids.add(f"{item.name}.{item.version}")
-        unique_providers = self.mass.music.get_unique_providers()
+        unique_providers = (
+            [provider_filter] if provider_filter else self.mass.music.get_unique_providers()
+        )
         audiobook_method = (
             self.get_provider_author_audiobooks
             if artist_type == ArtistType.AUTHOR
@@ -833,6 +842,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_error: Exception | None = None
         for provider_mapping in library_artist.provider_mappings:
             if provider_mapping.provider_instance not in unique_providers:
+                continue
+            if (
+                allowed_providers is not None
+                and provider_mapping.provider_instance not in allowed_providers
+            ):
                 continue
             try:
                 provider_audiobooks = await audiobook_method(
@@ -873,6 +887,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist_type: ArtistType,
         *,
         collapse_collections: bool = False,
+        provider_filter: str | None = None,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """Return all in-library audiobooks for an author/ narrator."""
         db_id = int(item_id)  # ensure integer
@@ -889,6 +904,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
             collapse_collections=collapse_collections,
+            provider_filter=self._ensure_provider_filter(provider_filter),
         )
 
     async def get_provider_author_audiobooks(
