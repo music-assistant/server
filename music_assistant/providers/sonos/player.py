@@ -302,6 +302,7 @@ class SonosPlayer(Player):
         for task_id in (
             f"sonos_reconnect_{self.player_id}",
             f"restore_airplay_group_{self.player_id}",
+            f"sonos_stop_moved_group_{self.player_id}",
         ):
             # a timer that already fired lives on as a task under the same id,
             # so both are needed to cover the pending and the running case
@@ -856,10 +857,25 @@ class SonosPlayer(Player):
             )
             clip_id = clip["id"]
             _check_clip()
-            duration = await self.mass.streams.get_announcement_duration(announcement)
-            with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout((duration or 10) + ANNOUNCEMENT_STATUS_MARGIN):
-                    await finished.wait()
+            # finding the duration can take as long as rendering the announcement; a clip the
+            # speaker reports finished (or dismissed) before that is known waits for neither
+            duration_lookup = asyncio.ensure_future(
+                self.mass.streams.get_announcement_duration(announcement)
+            )
+            finished_wait = asyncio.ensure_future(finished.wait())
+            racers: list[asyncio.Future[Any]] = [duration_lookup, finished_wait]
+            try:
+                await asyncio.wait(racers, return_when=asyncio.FIRST_COMPLETED)
+                if not finished_wait.done():
+                    duration = duration_lookup.result()
+                    with contextlib.suppress(TimeoutError):
+                        async with asyncio.timeout((duration or 10) + ANNOUNCEMENT_STATUS_MARGIN):
+                            await finished_wait
+            finally:
+                for racer in racers:
+                    racer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await racer
         finally:
             unsubscribe()
 
@@ -930,14 +946,8 @@ class SonosPlayer(Player):
 
         # figure out the active source based on the container
         container_type = active_group.container_type
-        active_service = active_group.active_service
+        active_service = self._active_service(active_group)
         container = active_group.playback_metadata.get("container")
-        if (
-            not active_service
-            and container
-            and container.get("service", {}).get("id") == MusicService.MUSIC_ASSISTANT
-        ):
-            active_service = MusicService.MUSIC_ASSISTANT
         if container_type == ContainerType.LINEIN:
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
@@ -1292,16 +1302,19 @@ class SonosPlayer(Player):
         if not new_coordinator_id or new_coordinator_id == self.player_id:
             return
         self.mass.create_task(
-            self._stop_moved_group(new_coordinator_id, queue_id),
+            self._stop_moved_group(new_coordinator_id, queue_id, self.cloud_queue_item_generation),
             task_id=f"sonos_stop_moved_group_{self.player_id}",
         )
 
-    async def _stop_moved_group(self, new_coordinator_id: str, queue_id: str) -> None:
+    async def _stop_moved_group(
+        self, new_coordinator_id: str, queue_id: str, generation: int
+    ) -> None:
         """
         Stop the playback the new coordinator of this player's former group carries on.
 
         :param new_coordinator_id: The player the speakers made the group's coordinator.
         :param queue_id: The queue this player served when its group moved.
+        :param generation: This player's cloud_queue_item_generation when its group moved.
         """
         new_coordinator = self.mass.players.get_player(new_coordinator_id)
         if not isinstance(new_coordinator, SonosPlayer) or not new_coordinator.connected:
@@ -1312,14 +1325,20 @@ class SonosPlayer(Player):
             )
             return
 
-        def _coordinates() -> bool:
+        def _carries_on() -> bool:
             player = new_coordinator.client.player
-            return player is not None and player.is_coordinator
+            return (
+                player is not None
+                and player.is_coordinator
+                and player.group is not None
+                and player.group.is_subscribed
+            )
 
-        # its own connection reports the role a moment after this player hears of the move
+        # its own connection reports the role, and then reads what the group plays, a
+        # moment after this player hears of the move
         try:
             async with asyncio.timeout(MOVED_GROUP_TIMEOUT):
-                while not _coordinates():
+                while not _carries_on():
                     await asyncio.sleep(0.1)
         except TimeoutError:
             self.logger.debug(
@@ -1328,8 +1347,18 @@ class SonosPlayer(Player):
                 self.display_name,
             )
             return
-        if self.cloud_queue_id not in (queue_id, None):
-            # this player was given something else to play in the meantime
+        if self.cloud_queue_item_generation != generation or self.cloud_queue_id not in (
+            queue_id,
+            None,
+        ):
+            # this player was given something (else) to play in the meantime
+            return
+        group = new_coordinator.group_controller
+        if group.active_session_id or self._active_service(group) != MusicService.MUSIC_ASSISTANT:
+            # so was the new coordinator: what it plays now is not what moved
+            self.logger.debug(
+                "%s plays something else by now, leaving it alone", new_coordinator.display_name
+            )
             return
         self._evicted_cloud_queue = None
         self.logger.info(
@@ -1345,6 +1374,20 @@ class SonosPlayer(Player):
             self.logger.warning(
                 "Could not stop playback on %s: %s", new_coordinator.display_name, err
             )
+
+    @staticmethod
+    def _active_service(group: SonosGroup) -> MusicService | str | None:
+        """
+        Return the service a group plays, a Music Assistant queue included.
+
+        :param group: The group, as its coordinator's connection reports it.
+        """
+        if active_service := group.active_service:
+            return active_service
+        container = group.playback_metadata.get("container")
+        if container and container.get("service", {}).get("id") == MusicService.MUSIC_ASSISTANT:
+            return MusicService.MUSIC_ASSISTANT
+        return None
 
     def _moved_queue_id(self) -> str | None:
         """Return the queue this player serves, or released on an eviction just before."""

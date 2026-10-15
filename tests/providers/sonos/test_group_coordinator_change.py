@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiosonos.api.models import MusicService
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import GroupCoordinatorChangedEvent, SessionErrorEvent
 from aiosonos.exceptions import FailedCommand
@@ -81,8 +82,12 @@ def _player(mass: MagicMock, player_id: str) -> SonosPlayer:
     player._config.name = None
     player.connected = True
     player.cloud_queue_id = None
+    player.cloud_queue_item_generation = 1
     player._evicted_cloud_queue = None
     player.client = MagicMock()
+    # the group it coordinates plays our queue under the session it inherited, not one of its own
+    player.client.player.group.active_session_id = None
+    player.client.player.group.active_service = MusicService.MUSIC_ASSISTANT
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
     player.stop = AsyncMock()  # type: ignore[method-assign]
     return player
@@ -164,6 +169,71 @@ async def test_a_new_play_in_the_meantime_is_left_alone() -> None:
 
     cast("AsyncMock", bathroom.stop).assert_not_awaited()
     assert office.cloud_queue_id == "another_queue"
+
+
+@pytest.mark.asyncio
+async def test_the_same_queue_played_again_in_the_meantime_is_left_alone() -> None:
+    """A reload of the queue on this player while waiting (a seek, a track) is a fresh play."""
+    office, bathroom, scheduled = _office_and_bathroom()
+    _report_coordinator(bathroom, False)
+
+    office._on_group_coordinator_changed(_moved())
+    stop = asyncio.ensure_future(scheduled.pop())
+    await asyncio.sleep(0)
+    office.cloud_queue_item_generation += 1  # what play_media does for the same queue
+    _report_coordinator(bathroom, True)
+    await stop
+
+    cast("AsyncMock", bathroom.stop).assert_not_awaited()
+    assert office.cloud_queue_id == OFFICE
+
+
+@pytest.mark.asyncio
+async def test_the_stop_waits_for_the_new_coordinator_to_read_what_it_plays() -> None:
+    """The role is reported before the group's status is in; the check needs the status."""
+    office, bathroom, scheduled = _office_and_bathroom()
+    cast("MagicMock", bathroom.client).player.group.is_subscribed = False
+
+    office._on_group_coordinator_changed(_moved())
+    stop = asyncio.ensure_future(scheduled.pop())
+    await asyncio.sleep(0.15)
+    cast("AsyncMock", bathroom.stop).assert_not_awaited()
+    cast("MagicMock", bathroom.client).player.group.is_subscribed = True
+    await stop
+
+    cast("AsyncMock", bathroom.stop).assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_new_coordinator_taken_over_in_the_meantime_is_left_alone() -> None:
+    """Another app took the new coordinator before it reported the role: not ours to stop."""
+    office, bathroom, scheduled = _office_and_bathroom()
+    _report_coordinator(bathroom, False)
+
+    office._on_group_coordinator_changed(_moved())
+    stop = asyncio.ensure_future(scheduled.pop())
+    await asyncio.sleep(0)
+    cast("MagicMock", bathroom.client).player.group.active_service = MusicService.SPOTIFY
+    _report_coordinator(bathroom, True)
+    await stop
+
+    cast("AsyncMock", bathroom.stop).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_new_coordinator_given_its_own_session_in_the_meantime_is_left_alone() -> None:
+    """Music Assistant started playing on the new coordinator itself while waiting."""
+    office, bathroom, scheduled = _office_and_bathroom()
+    _report_coordinator(bathroom, False)
+
+    office._on_group_coordinator_changed(_moved())
+    stop = asyncio.ensure_future(scheduled.pop())
+    await asyncio.sleep(0)
+    cast("MagicMock", bathroom.client).player.group.active_session_id = "session2"
+    _report_coordinator(bathroom, True)
+    await stop
+
+    cast("AsyncMock", bathroom.stop).assert_not_awaited()
 
 
 def test_a_group_not_playing_our_queue_is_left_alone() -> None:

@@ -164,3 +164,29 @@ async def test_a_clip_already_done_when_played_ends_the_wait_at_once() -> None:
     client.player.audio_clip_status.side_effect = lambda _clip_id: "DONE"
 
     await asyncio.wait_for(player.play_announcement(_announcement()), 1)
+
+
+@pytest.mark.asyncio
+async def test_a_clip_done_before_its_duration_is_known_ends_the_wait() -> None:
+    """A clip reported done while its duration is still being looked up does not wait for that."""
+    player, client = _player()
+    deliver, _ = _speaker_with_clip_status(client)
+    lookup_cancelled = asyncio.Event()
+
+    async def _slow_lookup(_media: PlayerMedia) -> float | None:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            lookup_cancelled.set()
+            raise
+        return None
+
+    cast("MagicMock", player.mass).streams.get_announcement_duration = _slow_lookup
+
+    announcement = asyncio.ensure_future(player.play_announcement(_announcement()))
+    await asyncio.sleep(0.05)
+    assert not announcement.done()
+    deliver(_clip_status("DONE"))  # type: ignore[operator]
+    await asyncio.wait_for(announcement, 1)
+
+    assert lookup_cancelled.is_set()
