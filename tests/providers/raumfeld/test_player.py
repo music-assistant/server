@@ -569,6 +569,7 @@ def _external_player() -> tuple[RaumfeldPlayer, MagicMock]:
     provider.get_zone_for_room.return_value = ["Bar"]
     provider.zone_location.return_value = _ZONE
     provider.room_renderer_location.return_value = _RENDERER
+    provider.room_transport_url.return_value = "http://192.168.1.42:54730/AVTransport/ctrl"
     player._provider = provider
     return player, host
 
@@ -1118,3 +1119,97 @@ def test_the_other_rooms_stay_grouped_when_spotify_takes_the_leader() -> None:
         assert player._leave_group() is False
     assert player._attr_group_members == []
     assert bank._attr_group_members == ["raumfeld_bank", "raumfeld_kitchen"]
+
+
+_SPOTIFY_TRACK_DIDL = (
+    '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+    'xmlns:raumfeld="urn:schemas-raumfeld-com:meta-data/raumfeld" '
+    'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '
+    'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+    '<item id="0/Spotify/Track" parentID="0/Spotify" restricted="0">'
+    "<raumfeld:section>Spotify</raumfeld:section>"
+    "<dc:title>Who's That</dc:title>"
+    "<upnp:artist>The War On Drugs</upnp:artist>"
+    "</item></DIDL-Lite>"
+)
+
+
+def _renderer_state(transport_state: str) -> dict[str, str]:
+    """Return what a room's renderer reports in LastChange while Spotify Connect plays."""
+    return {
+        "TransportState": transport_state,
+        "CurrentTransportActions": "Pause,Previous,Next,Seek",
+        "AVTransportURIMetaData": _SPOTIFY_TRACK_DIDL,
+        "CurrentTrackDuration": "0:05:15",
+    }
+
+
+async def _poll_renderer(
+    player: RaumfeldPlayer, state: dict[str, str] | None, rel_time: str
+) -> None:
+    """Run one room-renderer poll on the given LastChange state and position."""
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_read_room_state", AsyncMock(return_value=state)),
+        patch.object(
+            player,
+            "_call_transport",
+            AsyncMock(return_value={"RelTime": rel_time, "TrackDuration": "0:05:15"}),
+        ),
+    ):
+        await player._poll_room_playback(MagicMock())
+
+
+async def test_renderer_poll_adopts_spotify_connect() -> None:
+    """A renderer playing Spotify Connect is reported as that source, with its track."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+    await _poll_renderer(player, _renderer_state("PLAYING"), "0:01:00")
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_active_source == "spotify"
+    assert player._external_via_room is True
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "Who's That"
+    assert player._attr_elapsed_time == 60.0
+    assert PlayerFeature.PAUSE in player.supported_features
+
+
+async def test_renderer_poll_keeps_a_paused_spotify_session() -> None:
+    """A paused session stays the active source, at the position it paused at."""
+    player, _ = _external_player()
+    await _poll_renderer(player, _renderer_state("PLAYING"), "0:01:00")
+    await _poll_renderer(player, _renderer_state("PAUSED_PLAYBACK"), "0:01:30")
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._attr_active_source == "spotify"
+    assert player._attr_elapsed_time == 90.0
+
+
+async def test_renderer_poll_drops_an_ended_spotify_session() -> None:
+    """A renderer that stopped no longer reports Spotify Connect as the source."""
+    player, _ = _external_player()
+    await _poll_renderer(player, _renderer_state("PLAYING"), "0:01:00")
+    await _poll_renderer(player, _renderer_state("STOPPED"), "0:00:00")
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._external_source is None
+    assert player._attr_active_source is None
+
+
+async def test_renderer_poll_overlapping_a_command_is_not_applied() -> None:
+    """A renderer reading taken while a command changed what plays is discarded."""
+    player, _ = _external_player()
+    player._attr_playback_state = PlaybackState.IDLE
+
+    async def state_while_a_command_runs(*_args: object) -> dict[str, str]:
+        player._playback_generation += 1
+        return _renderer_state("PLAYING")
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_read_room_state", side_effect=state_while_a_command_runs),
+        patch.object(player, "_call_transport", AsyncMock(return_value={"RelTime": "0:01:00"})),
+    ):
+        await player._poll_room_playback(MagicMock())
+    assert player._external_source is None
+    assert player._attr_playback_state == PlaybackState.IDLE
