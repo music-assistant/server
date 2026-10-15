@@ -2700,8 +2700,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param assemble: Assembles the whole listing from the given provider instance (or
             "library"): a Listing, or just its items when the assembly is always complete.
         :param item_type: The type of the items, to rebuild them from the cache.
-        :param narrowed_to: The provider instances the calling user's music sources narrow
-            the assembly to, when they do.
+        :param narrowed_to: The provider instances the assembly is narrowed to; the calling
+            user's music sources when omitted.
         :raises InsufficientPermissions: The source is not one of the user's music sources.
         :raises ProviderUnavailableError: No provider the user may see serves it.
         """
@@ -2710,6 +2710,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             assembled = await assemble(provider_id)
             return assembled if isinstance(assembled, Listing) else Listing(list(assembled))
 
+        if narrowed_to is None:
+            # the assembly follows the calling user's music sources, so the listing is kept
+            # per set of them
+            narrowed_to = self._ensure_provider_filter(None)
         if provider_instance_id_or_domain == "library":
             instance_id = "library"
         else:
@@ -2768,8 +2772,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_instance_id_or_domain,
             assemble,
             item_type=self.item_cls,
-            # the search only covers the music sources the calling user may see
-            narrowed_to=self._ensure_provider_filter(None),
         )
         return apply_listing(
             versions,
