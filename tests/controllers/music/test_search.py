@@ -724,3 +724,32 @@ async def test_search_exact_match_shortcut_skipped_for_explicit_providers() -> N
     )
 
     prov.search.assert_awaited_once()
+
+
+async def test_search_station_share_url_returns_radio() -> None:
+    """A pasted Apple Music station share link returns the station as a radio result."""
+    controller = _make_controller([])
+    station = Radio(
+        item_id="ra.123",
+        provider="apple_music",
+        name="Chill",
+        is_dynamic=True,
+        provider_mappings={
+            ProviderMapping(
+                item_id="ra.123", provider_domain="apple_music", provider_instance="apple_music"
+            )
+        },
+    )
+    controller.get_item = AsyncMock(return_value=station)  # type: ignore[method-assign]
+
+    result = await controller._search_shareable_url(
+        "https://music.apple.com/us/station/chill/ra.123"
+    )
+
+    assert result is not None
+    assert result.radio == [station]
+    controller.get_item.assert_awaited_once_with(
+        media_type=MediaType.RADIO,
+        item_id="ra.123",
+        provider_instance_id_or_domain="apple_music",
+    )

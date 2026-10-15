@@ -88,6 +88,11 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Apple Music accounts allow a single active playback session."""
         return 1
 
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve, its stations included as radio."""
+        return super().supported_media_types | {MediaType.RADIO}
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
         Return Config entries to configure this provider.

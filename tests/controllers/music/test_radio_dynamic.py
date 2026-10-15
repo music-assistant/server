@@ -389,6 +389,41 @@ class TestVersionsDynamicGuard:
         """A dynamic station reports no other versions, and searches nothing to find that out."""
         assert await radio_ctrl.versions(DYNAMIC_STATION_ID, FAKE_INSTANCE) == []
 
+    async def test_tracklisted_search_results_are_not_versions(
+        self, radio_ctrl: RadioController, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broadcast station only lists same-named broadcasts, never a tracklisted station."""
+
+        def _found(item_id: str, is_dynamic: bool = False, is_endless: bool = True) -> Radio:
+            return Radio(
+                item_id=item_id,
+                provider=DIRECTORY_INSTANCE,
+                name="Static Station",
+                is_dynamic=is_dynamic,
+                is_endless=is_endless,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=item_id,
+                        provider_domain=DIRECTORY_DOMAIN,
+                        provider_instance=DIRECTORY_INSTANCE,
+                    )
+                },
+            )
+
+        search_results = [
+            _found("broadcast"),
+            _found("dynamic", is_dynamic=True),
+            _found("finite", is_endless=False),
+        ]
+        monkeypatch.setattr(
+            radio_ctrl.mass.music, "get_unique_providers", lambda: {DIRECTORY_INSTANCE}
+        )
+        monkeypatch.setattr(radio_ctrl, "search", AsyncMock(return_value=search_results))
+
+        versions = await radio_ctrl._assemble_versions(STATIC_STATION_ID, FAKE_INSTANCE)
+
+        assert [version.item_id for version in versions] == ["broadcast"]
+
 
 class TestMatchProvidersDynamicGuard:
     """Tests for the dynamic-station guard on RadioController.match_providers."""
