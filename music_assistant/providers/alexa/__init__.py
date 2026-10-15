@@ -71,8 +71,8 @@ VOLUME_POLL_HOLD = 2  # no readback this soon after a change in MA, as it may pr
 VOLUME_READ_MAX_AGE = 2  # one readback serves every Echo's poll in the same round
 VOLUME_READ_TIMEOUT = 5
 VOLUME_STEP_TIMEOUT = 10
+UNMUTE_FALLBACK_VOLUME = 10  # unmute of an Echo that was at 0 before MA knew a volume
 # Unmute volume when none was seen before the mute: quiet, but the Echo still plays.
-UNMUTE_FALLBACK_VOLUME = 10
 
 
 async def setup(
@@ -261,7 +261,9 @@ class AlexaPlayer(Player):
         self._echo_volume: int | None = None  # from the last readback or volume step
         self._volume_set_at = -math.inf
         self._volume_sending = False
-        self._unmute_volume: int | None = None
+        self._volume_task: asyncio.Task[None] | None = None
+        # Amazon has no mute, so a muted Echo is held at 0 and keeps the volume to unmute to
+        self._attr_volume_muted = False
         # Keep track of the last metadata we pushed to avoid unnecessary uploads
         self._last_meta_checksum: str | None = None
         # Keep last stream url pushed (set in play_media)
@@ -316,31 +318,17 @@ class AlexaPlayer(Player):
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
-        """Handle VOLUME_SET command on the player."""
-        if volume_level == 0 and self._attr_volume_level:
-            self._unmute_volume = self._attr_volume_level
+        """Handle VOLUME_SET command on the player; a muted Echo keeps it for the unmute."""
         self._attr_volume_level = volume_level
-        self._volume_set_at = self.mass.loop.time()
-        self.update_state()
-        # A slider sends many values; send one step once they stop. The timer only starts the
-        # send, as a task under the timer's id would be cancelled when the next timer fires.
-        self.mass.call_later(
-            VOLUME_SEND_DELAY,
-            lambda: self.mass.create_task(self._send_volume()),
-            task_id=f"alexa_volume_{self.player_id}",
-        )
-
-    @property
-    def volume_muted(self) -> bool | None:
-        """Return the mute state: an Echo's mute is volume 0, and turning it up unmutes it."""
-        return None if self._attr_volume_level is None else self._attr_volume_level == 0
+        self._schedule_volume_send()
 
     async def volume_mute(self, muted: bool) -> None:
         """Mute by stepping the Echo to 0, as Amazon offers no other mute."""
-        if muted:
-            await self.volume_set(0)
-        elif not self._attr_volume_level:
-            await self.volume_set(self._unmute_volume or UNMUTE_FALLBACK_VOLUME)
+        if muted != self._attr_volume_muted:
+            self._attr_volume_muted = muted
+            if not muted and not self._attr_volume_level:
+                self._attr_volume_level = UNMUTE_FALLBACK_VOLUME
+            self._schedule_volume_send()
 
     @property
     def poll_interval(self) -> int:
@@ -368,10 +356,22 @@ class AlexaPlayer(Player):
         if (volume := volumes.get(self.device.device_serial_number)) is None:
             return
         self._echo_volume = volume
-        if self._attr_volume_level != volume:
-            self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
+        # "Alexa, mute" sets the volume to 0, so 0 shows as muted with the volume from before
+        muted = volume == 0
+        if muted == self._attr_volume_muted and (muted or self._attr_volume_level == volume):
+            return
+        self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
+        self._attr_volume_muted = muted
+        if not muted:
             self._attr_volume_level = volume
-            self.update_state()
+        self.update_state()
+
+    async def on_unload(self) -> None:
+        """Drop a volume change still waiting or being sent."""
+        self.mass.cancel_timer(f"alexa_volume_{self.player_id}")
+        if self._volume_task is not None:
+            self._volume_task.cancel()
+        await super().on_unload()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
@@ -474,6 +474,24 @@ class AlexaPlayer(Player):
             _upload_metadata(), task_name=f"alexa_upload_metadata_{self.player_id}"
         )
 
+    def _schedule_volume_send(self) -> None:
+        """Show the change, and send it once a slider's burst of values stops."""
+        self._volume_set_at = self.mass.loop.time()
+        self.update_state()
+
+        def _start_send() -> None:
+            self._volume_task = self.mass.create_task(self._send_volume())
+
+        # The timer only starts the send, as a task under the timer's id would be cancelled
+        # when the next timer fires.
+        self.mass.call_later(
+            VOLUME_SEND_DELAY, _start_send, task_id=f"alexa_volume_{self.player_id}"
+        )
+
+    def _volume_target(self) -> int | None:
+        """Return the volume the Echo should be at."""
+        return 0 if self._attr_volume_muted else self._attr_volume_level
+
     async def _send_volume(self) -> None:
         """Step the Echo to MA's volume, again if that changed while a step was sent."""
         if self._volume_sending:
@@ -482,12 +500,12 @@ class AlexaPlayer(Player):
         provider = cast("AlexaProvider", self.provider)
         self._volume_sending = True
         try:
+            # the last readback may predate a change by voice, button or the Alexa app
+            volumes = await provider.get_volumes()
+            self._echo_volume = volumes.get(self.device.device_serial_number)
             sent = None
-            while (target := self._attr_volume_level) is not None and target != sent:
+            while (target := self._volume_target()) is not None and target != sent:
                 sent = target
-                if self._echo_volume is None:
-                    volumes = await provider.get_volumes()
-                    self._echo_volume = volumes.get(self.device.device_serial_number)
                 if self._echo_volume is None:
                     # not in Amazon's readback (e.g. a speaker group), so no step to take
                     await self.api.set_volume(target / 100)
@@ -508,7 +526,7 @@ class AlexaPlayer(Player):
             return
         finally:
             self._volume_sending = False
-        if self._echo_volume is not None:
+        if self._echo_volume is not None and not self._attr_volume_muted:
             # the Echo has its own volume steps, so it can end up 1 off
             self._attr_volume_level = self._echo_volume
         # a readback taken before this reply would show the old volume

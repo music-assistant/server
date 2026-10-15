@@ -201,15 +201,21 @@ async def test_get_volumes_reads_all_echos_once_per_round() -> None:
         assert await get_volumes() == {}
 
 
-async def test_mute_steps_to_zero_and_back() -> None:
-    """Mute is volume 0, as on the Echo; unmute brings back the volume from before."""
-    player, provider = _player()
+def _echo_follows_steps(player: AlexaPlayer, provider: Any) -> None:
+    """Make each step land exactly on the Echo's volume plus the step."""
     provider.step_volume.side_effect = lambda _device, amount: player._echo_volume + amount
+
+
+async def test_mute_steps_to_zero_and_back() -> None:
+    """Mute steps the Echo to 0 and keeps its volume; unmute steps back to it."""
+    player, provider = _player()
+    _echo_follows_steps(player, provider)
     with patch.object(player, "update_state"):
         await player.poll()
         await player.volume_mute(True)
         await player._send_volume()
-        assert (player.volume_level, player.volume_muted) == (0, True)
+        assert (player.volume_level, player.volume_muted) == (20, True)
+        provider.get_volumes.return_value = {"SERIAL": 0}
 
         await player.volume_mute(False)
         await player._send_volume()
@@ -217,17 +223,67 @@ async def test_mute_steps_to_zero_and_back() -> None:
     assert (player.volume_level, player.volume_muted) == (20, False)
 
 
-async def test_unmute_after_sliding_to_zero_brings_back_the_volume() -> None:
-    """Sliding to 0 mutes too, and unmute goes back to the volume before the slide."""
+async def test_a_muted_echo_stays_silent_when_its_volume_changes() -> None:
+    """A volume change while muted, as from a group, is kept for the unmute."""
     player, provider = _player()
-    provider.step_volume.side_effect = lambda _device, amount: player._echo_volume + amount
+    _echo_follows_steps(player, provider)
     with patch.object(player, "update_state"):
         await player.poll()
-        await player.volume_set(0)
+        await player.volume_mute(True)
         await player._send_volume()
+        provider.get_volumes.return_value = {"SERIAL": 0}
+        await player.volume_set(50)
+        await player._send_volume()
+        assert (player.volume_level, player.volume_muted) == (50, True)
+
         await player.volume_mute(False)
         await player._send_volume()
-    assert player.volume_level == 20
+    assert [c.args[1] for c in provider.step_volume.await_args_list] == [-20, 50]
+    assert (player.volume_level, player.volume_muted) == (50, False)
+
+
+@pytest.mark.parametrize(("before", "unmuted_at"), [(20, 20), (None, 10)])
+async def test_mute_on_the_echo_shows_as_muted(before: int | None, unmuted_at: int) -> None:
+    """A voice mute sets 0, which shows as muted; unmute goes back to the volume before."""
+    player, provider = _player()
+    _echo_follows_steps(player, provider)
+    with patch.object(player, "update_state"):
+        if before is not None:
+            await player.poll()
+        provider.get_volumes.return_value = {"SERIAL": 0}
+        await player.poll()
+        assert (player.volume_level, player.volume_muted) == (before, True)
+
+        await player.volume_mute(False)
+        await player._send_volume()
+    provider.step_volume.assert_awaited_once_with(player.device, unmuted_at)
+    assert (player.volume_level, player.volume_muted) == (unmuted_at, False)
+
+
+async def test_a_change_steps_from_the_echo_volume_now() -> None:
+    """A change made on the Echo since the last readback is not stepped over."""
+    player, provider = _player()
+    _echo_follows_steps(player, provider)
+    with patch.object(player, "update_state"):
+        await player.poll()
+        # turned up by voice after that readback
+        provider.get_volumes.return_value = {"SERIAL": 50}
+        await player.volume_set(40)
+        await player._send_volume()
+    provider.step_volume.assert_awaited_once_with(player.device, -10)
+    assert player.volume_level == 40
+
+
+async def test_unload_drops_a_volume_change_on_its_way() -> None:
+    """A removed Echo gets no volume change that was still waiting or being sent."""
+    player, provider = _player()
+    with patch.object(player, "update_state"):
+        await player.volume_set(40)
+        provider.mass.call_later.call_args.args[1]()
+        provider.mass.create_task.call_args.args[0].close()
+        await player.on_unload()
+    provider.mass.cancel_timer.assert_any_call("alexa_volume_Echo")
+    provider.mass.create_task.return_value.cancel.assert_called_once()
 
 
 def test_poll_is_slower_when_not_playing() -> None:
