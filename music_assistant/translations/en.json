@@ -300,6 +300,7 @@
   "common.errors.invalid_provider_uri": "The provider URI is invalid.",
   "common.errors.invalid_token": "The access token is invalid or has expired.",
   "common.errors.invalid_value": "This value is not valid.",
+  "common.errors.join_code_invalid": "This code is invalid or has expired.",
   "common.errors.last_admin": "This is the last administrator. Make another user an administrator first.",
   "common.errors.login_failed": "Login failed. Please check your credentials and try again.",
   "common.errors.media_not_available_for_user": "This is not available on any of your music sources.",

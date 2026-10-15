@@ -122,6 +122,7 @@ class AIRadioProvider(
         await self._load_stations()
         # after loading, so a v2 stations file has had its chance to migrate its own hosts
         await self._seed_preset_hosts()
+        await self._refresh_preset_hosts()
         await self._load_queue_dj()
         await self._wait_for_engines()
         await self._sync_show_library_items()
@@ -331,6 +332,7 @@ class AIRadioProvider(
         """Create or update a host."""
         async with self._station_lock:
             normalized = self._normalize_host(deepcopy(host))
+            self._resolve_preset_tag(normalized)
             self._hosts[normalized["id"]] = normalized
             await self._write_hosts()
         self.logger.info("AI Radio host saved: %s (%s)", normalized["id"], normalized["name"])
