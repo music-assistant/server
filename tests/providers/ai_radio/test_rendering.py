@@ -2084,6 +2084,17 @@ def test_a_clip_on_a_queue_that_plays_nothing_airs_now() -> None:
     assert renderer._seconds_until_airtime(clip) == 0
 
 
+@pytest.mark.parametrize("state", [PlaybackState.PAUSED, PlaybackState.IDLE])
+def test_a_clip_started_on_a_queue_that_is_not_playing_airs_now(state: PlaybackState) -> None:
+    """A stopped queue renders a clip to start with it, so the songs before it never play."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), _song(1), clip])
+    _play_queue(renderer, state=state, elapsed=50)
+
+    assert renderer._seconds_until_airtime(clip) == 0
+
+
 @pytest.mark.parametrize(
     ("between", "expected"),
     [

@@ -478,7 +478,8 @@ class AIRadioRenderMixin:
         """Return the estimated seconds until the clip airs, 0 when it is due now."""
         queue_id = queue_item.queue_id
         queue = self.mass.player_queues.get(queue_id)
-        if queue is None or queue.current_index is None:
+        # a queue that is not playing only renders a clip to start playback with it
+        if queue is None or queue.state != PlaybackState.PLAYING or queue.current_index is None:
             return 0
         clip_index = self.mass.player_queues.index_by_id(queue_id, queue_item.queue_item_id)
         # beyond the render-ahead window only a jump to the clip renders it, so it airs now
