@@ -879,10 +879,20 @@ class SendspinProvider(PlayerProvider):
         await self.server_api.unpair(client_id)
         await self._refresh_player(client_id)
 
-    async def set_trusted_unpaired(self, client_id: str, enabled: bool) -> None:
-        """Approve or revoke unpaired (unauthenticated) playback for a client."""
+    async def set_trusted_unpaired(
+        self, client_id: str, enabled: bool, *, allow_input: bool = False
+    ) -> None:
+        """
+        Approve or revoke unpaired (unauthenticated) playback for a client.
+
+        :param client_id: The client to approve or revoke.
+        :param enabled: Whether the client may play without pairing.
+        :param allow_input: Whether an approved client may also send its audio input.
+        """
         if enabled:
-            await self.server_api.trust_unpaired(client_id)
+            await self.server_api.trust_unpaired(
+                client_id, approved_roles=frozenset({"source"} if allow_input else ())
+            )
         else:
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
@@ -1655,9 +1665,9 @@ class SendspinProvider(PlayerProvider):
         """
         Approve a device that offers guest access, so it plays without any setup step.
 
-        Guest access only ever carries playback and the device stays free to withdraw it,
-        so there is nothing for the user to decide. A device whose every role needs pairing
-        (a capture-only one) gains nothing and is left to pair instead.
+        This approval only carries playback and the device stays free to withdraw it,
+        so there is nothing for the user to decide. A device with a role that needs pairing,
+        such as a line-in, is left to the setup step instead.
 
         :param client_id: The connected client to approve.
         :param sendspin_client: That client, for its hello and negotiated roles.
@@ -1671,7 +1681,7 @@ class SendspinProvider(PlayerProvider):
         security = sendspin_client.connection_security
         if security is not None and security.psk_category is PskCategory.LONG_TERM:
             return
-        if all(role_requires_pairing(role_id) for role_id in sendspin_client.negotiated_role_ids):
+        if any(role_requires_pairing(role_id) for role_id in sendspin_client.negotiated_role_ids):
             return
         if await self.server_api.pairing_store.trusted_unpaired(client_id) is not None:
             return
