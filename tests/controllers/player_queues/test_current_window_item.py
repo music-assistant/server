@@ -168,15 +168,15 @@ def test_inserting_a_track_after_the_buffered_one_dethrones_the_cached_next() ->
     ctrl = _controller(current_index=0, index_in_buffer=1)
     data = ctrl._queue_data["q1"]
     data.last_served_item_id = _item_id_at(ctrl, 1)
-    data.last_requested_item_id = _item_id_at(ctrl, 1)
+    requested_after = _item_id_at(ctrl, 1)
     stale_next = _item_id_at(ctrl, 2)
     guest = QueueItem.from_media_item("q1", _track("guest"))
 
     data.items.insert(2, guest)
     data.queue.items = len(data.items)
 
-    assert not ctrl.is_current_window_item("q1", stale_next)
-    assert ctrl.is_current_window_item("q1", guest.queue_item_id)
+    assert not ctrl.is_current_window_item("q1", stale_next, requested_after)
+    assert ctrl.is_current_window_item("q1", guest.queue_item_id, requested_after)
 
 
 def test_the_item_after_the_last_one_served_is_allowed() -> None:
@@ -244,12 +244,13 @@ def test_a_track_the_player_gave_up_waiting_for_does_not_pin_the_window() -> Non
     strands the player: it walks its cached queue to the end and stops.
     """
     ctrl = _controller(current_index=0, index_in_buffer=1)
-    data = ctrl._queue_data["q1"]
-    data.last_served_item_id = _item_id_at(ctrl, 1)
-    data.last_requested_item_id = _item_id_at(ctrl, 2)
+    ctrl._queue_data["q1"].last_served_item_id = _item_id_at(ctrl, 1)
+    slow_track = _item_id_at(ctrl, 2)
 
-    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
-    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 4))
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3), slow_track)
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 4), slow_track)
+    # the track after the slow one does not vouch for itself
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3), _item_id_at(ctrl, 3))
 
 
 async def test_a_new_load_drops_what_the_old_one_fetched_and_asked_for() -> None:

@@ -1923,7 +1923,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return next_item
         return None
 
-    def is_current_window_item(self, queue_id: str, queue_item_id: str) -> bool:
+    def is_current_window_item(
+        self, queue_id: str, queue_item_id: str, requested_after: str | None = None
+    ) -> bool:
         """
         Return whether the item sits at or right around the queue's playhead.
 
@@ -1933,6 +1935,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: The queue to check against.
         :param queue_item_id: The queue item id the player asked for.
+        :param requested_after: The queue item id the player asked for before this one.
         """
         queue = self.get(queue_id)
         if queue is None:
@@ -1952,12 +1955,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # a track before its stream delivered a byte asks for the one after it, which no
         # fetch ever recorded. An item the queue no longer holds (a clear or a replace) has
         # no next item
-        queue_data = self._queue_data[queue_id]
-        for from_item in (
-            queue_data.last_served_item_id,
-            queue_data.last_requested_item_id,
-            queue.current_index,
-        ):
+        served_item_id = self._queue_data[queue_id].last_served_item_id
+        for from_item in (served_item_id, requested_after, queue.current_index):
             if from_item is None:
                 continue
             next_item = self.get_next_item(queue_id, from_item)
