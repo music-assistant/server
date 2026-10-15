@@ -11,7 +11,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.player import PlayerMedia
@@ -20,7 +20,6 @@ from music_assistant_models.queue_item import QueueItem
 
 import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.controllers.streams import StreamsController
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
@@ -203,46 +202,6 @@ def _playing_at_end(player: object) -> None:
     player._track_end_handled = False  # type: ignore[attr-defined]
 
 
-async def test_track_end_plays_the_next_item(
-    provider: WebKioskProvider, mass_mock: Mock, player: object
-) -> None:
-    """Finishing a track starts the following queue item without a browser token."""
-    _playing_at_end(player)
-    mass_mock.players.get_player.return_value = player
-    nxt = Mock(queue_item_id="item-2")
-    queue = Mock(queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1"))
-    mass_mock.player_queues.get_active_queue.return_value = queue
-    mass_mock.player_queues.get_next_item.return_value = nxt
-    mass_mock.player_queues.index_by_id.return_value = 1
-    mass_mock.player_queues.play_index = AsyncMock()
-
-    await provider._advance_after_track(
-        "wk_test", cast("WebKioskPlayer", player).playback_generation
-    )
-
-    mass_mock.player_queues.play_index.assert_awaited_once_with("wk_test", 1)
-    mass_mock.players.cmd_stop.assert_not_awaited()
-
-
-async def test_track_end_stops_when_nothing_follows(
-    provider: WebKioskProvider, mass_mock: Mock, player: object
-) -> None:
-    """The last track leaves the player idle instead of stuck on playing."""
-    _playing_at_end(player)
-    mass_mock.players.get_player.return_value = player
-    queue = Mock(queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1"))
-    mass_mock.player_queues.get_active_queue.return_value = queue
-    mass_mock.player_queues.get_next_item.return_value = None
-    mass_mock.player_queues.play_index = AsyncMock()
-
-    await provider._advance_after_track(
-        "wk_test", cast("WebKioskPlayer", player).playback_generation
-    )
-
-    mass_mock.players.cmd_stop.assert_awaited_once_with("wk_test")
-    mass_mock.player_queues.play_index.assert_not_awaited()
-
-
 async def test_track_end_ignores_a_position_still_in_the_song(
     provider: WebKioskProvider, mass_mock: Mock, player: object
 ) -> None:
@@ -264,26 +223,22 @@ async def test_track_end_ignores_a_position_still_in_the_song(
 
 
 async def test_track_end_runs_once_per_play(
-    provider: WebKioskProvider, mass_mock: Mock, player: object
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
 ) -> None:
     """Two end signals for the same play do not skip an extra track."""
     _playing_at_end(player)
+    generation = player.playback_generation
     mass_mock.players.get_player.return_value = player
-    nxt = Mock(queue_item_id="item-2")
-    queue = Mock(queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1"))
-    mass_mock.player_queues.get_active_queue.return_value = queue
-    mass_mock.player_queues.get_next_item.return_value = nxt
-    mass_mock.player_queues.index_by_id.return_value = 1
-    mass_mock.player_queues.play_index = AsyncMock()
+    second = PlayerMedia(uri="b", duration=200, source_id="wk_test", queue_item_id="item-2")
+    third = PlayerMedia(uri="c", duration=200, source_id="wk_test", queue_item_id="item-3")
+    await player.enqueue_next_media(second)
 
-    await provider._advance_after_track(
-        "wk_test", cast("WebKioskPlayer", player).playback_generation
-    )
-    await provider._advance_after_track(
-        "wk_test", cast("WebKioskPlayer", player).playback_generation
-    )
+    await provider._advance_after_track("wk_test", generation)
+    await player.enqueue_next_media(third)
+    await provider._advance_after_track("wk_test", generation)
 
-    mass_mock.player_queues.play_index.assert_awaited_once()
+    assert player.current_media is second
+    assert player.enqueued_media is third
 
 
 async def test_concurrent_tabs_share_one_registered_player(
@@ -443,7 +398,7 @@ async def test_background_media_work_reports_unexpected_errors(
     else:
         _playing_at_end(player)
         mass_mock.players.get_player.return_value = player
-        mass_mock.player_queues.get_active_queue.side_effect = error
+        cast("Any", player).start_enqueued_media = AsyncMock(side_effect=error)
         provider.track_ended("wk_test", cast("WebKioskPlayer", player).playback_generation)
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -663,16 +618,12 @@ async def test_fast_track_end_between_position_reports_advances(
     player.note_seek(145)
     assert not player.playback_reached_end()
     mass_mock.players.get_player.return_value = player
-    mass_mock.player_queues.get_active_queue.return_value = Mock(
-        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="episode")
-    )
-    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="item-2")
-    mass_mock.player_queues.index_by_id.return_value = 1
-    mass_mock.player_queues.play_index = AsyncMock()
+    nxt = PlayerMedia(uri="next", duration=200, source_id="wk_test", queue_item_id="item-2")
+    await player.enqueue_next_media(nxt)
 
     await provider._advance_after_track("wk_test", player.playback_generation, position=149.5)
 
-    mass_mock.player_queues.play_index.assert_awaited_once_with("wk_test", 1)
+    assert player.current_media is nxt
 
 
 async def test_stale_track_end_position_does_not_move_the_clock(
@@ -693,7 +644,13 @@ async def test_stale_track_end_position_does_not_move_the_clock(
 async def test_announcement_end_reports_idle_without_advancing_queue(
     provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
 ) -> None:
-    """An announcement ending leaves the interrupted queue for the announcement restore."""
+    """An announcement ending reports IDLE even when music had handed over its next item."""
+    await player.play_media(
+        PlayerMedia(uri="music", duration=200, source_id="wk_test", queue_item_id="music")
+    )
+    await player.enqueue_next_media(
+        PlayerMedia(uri="next", duration=200, source_id="wk_test", queue_item_id="next")
+    )
     await player.play_media(
         PlayerMedia(
             uri="http://ma.local/announcement",
@@ -704,38 +661,14 @@ async def test_announcement_end_reports_idle_without_advancing_queue(
     )
     player.note_seek(5)
     mass_mock.players.get_player.return_value = player
-    mass_mock.player_queues.get_active_queue.return_value = Mock(
-        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="music")
-    )
-    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="next")
-    mass_mock.player_queues.index_by_id.return_value = 1
     mass_mock.player_queues.play_index = AsyncMock()
 
     await provider._advance_after_track("wk_test", player.playback_generation)
 
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.current_media is None
     mass_mock.player_queues.play_index.assert_not_awaited()
     mass_mock.players.cmd_stop.assert_not_awaited()
-    assert player.playback_state == PlaybackState.IDLE
-
-
-async def test_track_end_of_a_stale_queue_item_does_not_advance(
-    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
-) -> None:
-    """Media that is not the active queue's current item cannot advance that queue."""
-    await player.play_media(
-        PlayerMedia(uri="old", duration=30, source_id="wk_test", queue_item_id="old-item")
-    )
-    player.note_seek(29)
-    mass_mock.players.get_player.return_value = player
-    mass_mock.player_queues.get_active_queue.return_value = Mock(
-        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="other-item")
-    )
-    mass_mock.player_queues.play_index = AsyncMock()
-
-    await provider._advance_after_track("wk_test", player.playback_generation)
-
-    mass_mock.player_queues.play_index.assert_not_awaited()
-    assert player.playback_state == PlaybackState.IDLE
 
 
 async def test_play_index_publishes_wave_and_lyrics_of_the_dispatched_item(
@@ -807,15 +740,19 @@ async def test_non_track_playback_never_requests_track_lyrics(
 async def test_failed_html5_stream_stops_current_playback(
     provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
 ) -> None:
-    """A stream the browser cannot load stops playback instead of staying PLAYING."""
+    """A stream the browser cannot load ends playback instead of staying PLAYING."""
     await player.play_media(PlayerMedia(uri="broken", duration=180, source_id="wk_test"))
     mass_mock.players.get_player.return_value = player
 
+    def state() -> PlaybackState:
+        return player.playback_state
+
     await provider._stop_failed_playback("wk_test", "stale-generation")
-    mass_mock.players.cmd_stop.assert_not_awaited()
+    assert state() == PlaybackState.PLAYING
 
     await provider._stop_failed_playback("wk_test", player.playback_generation)
-    mass_mock.players.cmd_stop.assert_awaited_once_with("wk_test")
+    assert state() == PlaybackState.IDLE
+    mass_mock.players.cmd_stop.assert_not_awaited()
 
 
 async def test_unload_cancels_completion_work_in_flight(
@@ -833,19 +770,15 @@ async def test_unload_cancels_completion_work_in_flight(
     entered = asyncio.Event()
     finished = asyncio.Event()
 
-    async def hold_play_index(_queue_id: str, _index: int) -> None:
+    async def hold_transition() -> bool:
         entered.set()
         await asyncio.Event().wait()
         finished.set()
+        return True
 
     _playing_at_end(player)
     mass_mock.players.get_player.return_value = player
-    mass_mock.player_queues.get_active_queue.return_value = Mock(
-        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1")
-    )
-    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="item-2")
-    mass_mock.player_queues.index_by_id.return_value = 1
-    mass_mock.player_queues.play_index = AsyncMock(side_effect=hold_play_index)
+    player.start_enqueued_media = hold_transition  # type: ignore[method-assign]
     mass_mock.players.iter_players = Mock(return_value=[])
 
     provider.track_ended("wk_test", player.playback_generation)
@@ -858,51 +791,11 @@ async def test_unload_cancels_completion_work_in_flight(
     assert len(tasks) == 1
 
 
-def _own_queue_controller(mass_mock: Mock, queue_id: str) -> PlayerQueue:
-    """Give the kiosk an own queue whose ADD appends an item, like the queue controller."""
-    own = PlayerQueue(
-        queue_id=queue_id,
-        active=False,
-        display_name="Test Kiosk",
-        available=True,
-        items=1,
-        state=PlaybackState.IDLE,
-        current_index=0,
-        current_item=QueueItem(queue_id=queue_id, queue_item_id="old", name="Old", duration=60),
-    )
-    items: list[QueueItem] = [own.current_item]  # type: ignore[list-item]
-
-    async def add(_queue_id: str, _media: object, option: QueueOption) -> None:
-        assert option == QueueOption.ADD
-        items.append(
-            QueueItem(queue_id=queue_id, queue_item_id="adopted", name="Song", duration=200)
-        )
-
-    queues = mass_mock.player_queues
-    queues.get = Mock(side_effect=lambda qid: own if qid == queue_id else None)
-    queues.items = Mock(side_effect=lambda _qid, *_a, **_k: list(items))
-    queues.play_media = AsyncMock(side_effect=add)
-    queues.index_by_id = Mock(
-        side_effect=lambda _qid, item_id: next(
-            (i for i, item in enumerate(items) if item.queue_item_id == item_id), None
-        )
-    )
-    queues.get_item = Mock(
-        side_effect=lambda _qid, item_id: next(
-            (item for item in items if item.queue_item_id == item_id), None
-        )
-    )
-    queues.signal_update = Mock()
-    queues.resume = AsyncMock()
-    queues.seek = AsyncMock()
-    return own
-
-
 @pytest.mark.parametrize("playing", [True, False])
-async def test_sendspin_fallback_of_sync_follower_adopts_the_leader_item(
+async def test_sendspin_fallback_of_sync_follower_leaves_the_group_like_ungroup(
     provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock, playing: bool
 ) -> None:
-    """A follower parks the leader's item and position on its own queue; the leader is untouched."""
+    """A follower leaves the group as an ungroup does: the leader plays on, nothing moves."""
     client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
     player.sendspin_client_id = client_id
     player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
@@ -910,7 +803,6 @@ async def test_sendspin_fallback_of_sync_follower_adopts_the_leader_item(
     protocol = Mock(player_id=client_id, synced_to="speaker", group_members=[])
     players = {player.player_id: player, client_id: protocol, "speaker": leader}
     mass_mock.players.get_player = Mock(side_effect=lambda pid, **_: players.get(pid))
-    track = Mock(name="track-media")
     leader_queue = PlayerQueue(
         queue_id="speaker",
         active=True,
@@ -919,29 +811,21 @@ async def test_sendspin_fallback_of_sync_follower_adopts_the_leader_item(
         items=3,
         state=PlaybackState.PLAYING if playing else PlaybackState.PAUSED,
         current_item=QueueItem(queue_id="speaker", queue_item_id="item", name="Song", duration=200),
-        elapsed_time=42,
-        elapsed_time_last_updated=time.time(),
     )
-    leader_queue.current_item.media_item = track  # type: ignore[union-attr]
     mass_mock.player_queues.get_active_queue = Mock(return_value=leader_queue)
-    own = _own_queue_controller(mass_mock, player.player_id)
+    mass_mock.player_queues.resume = AsyncMock()
+    mass_mock.player_queues.play_media = AsyncMock()
+    mass_mock.player_queues.load = AsyncMock()
 
     await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
 
     leader.set_members.assert_awaited_once_with(player_ids_to_remove=[client_id])
-    mass_mock.player_queues.play_media.assert_awaited_once_with(
-        player.player_id, track, option=QueueOption.ADD
-    )
-    assert own.current_item is not None
-    assert own.current_item.queue_item_id == "adopted"
-    assert own.current_index == 1
-    assert own.resume_pos is not None
-    assert 42 <= own.resume_pos <= 43
-    if playing:
-        mass_mock.player_queues.resume.assert_awaited_once_with(player.player_id)
-    else:
-        mass_mock.player_queues.resume.assert_not_awaited()
-    assert all(call.args[0] != "speaker" for call in mass_mock.player_queues.resume.await_args_list)
+    mass_mock.players.unregister.assert_awaited_once_with(client_id)
+    assert player.active_output_protocol == "native"
+    mass_mock.player_queues.resume.assert_not_awaited()
+    mass_mock.player_queues.play_media.assert_not_awaited()
+    mass_mock.player_queues.load.assert_not_awaited()
+    assert leader_queue.state == (PlaybackState.PLAYING if playing else PlaybackState.PAUSED)
 
 
 async def test_unload_cancels_browser_fallback_in_flight(
@@ -1044,106 +928,74 @@ async def test_lyrics_are_looked_up_only_for_kiosks_showing_them(
     provider.http_server.lyrics_requested.assert_called_with("wk_test")
 
 
-async def _replace_track_while_handler_waits(
-    mass_mock: Mock, player: WebKioskPlayer, handler: Coroutine[Any, Any, None]
-) -> None:
-    """Run handler while a replacement track loads under the playback lock."""
-    loading = asyncio.Event()
-    finish = asyncio.Event()
-
-    async def load_replacement() -> None:
-        async with mass_mock.players.get_group_and_player_lock(player.player_id):
-            loading.set()
-            await finish.wait()
-            await player.play_media(
-                PlayerMedia(uri="new", duration=30, source_id="wk_test", queue_item_id="new")
-            )
-
-    loader = asyncio.create_task(load_replacement())
-    await loading.wait()
-    waiting = asyncio.create_task(handler)
-    await asyncio.sleep(0)
-    finish.set()
-    await asyncio.gather(loader, waiting)
-
-
-async def test_old_end_report_waiting_behind_a_track_change_does_not_advance(
+async def test_track_end_starts_the_enqueued_media(
     provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
 ) -> None:
-    """An end report validated before a replacement loads cannot skip the replacement."""
+    """The handed-over item starts on the kiosk; the queue follows its current media."""
     _playing_at_end(player)
-    old_generation = player.playback_generation
+    nxt = PlayerMedia(uri="next", duration=200, source_id="wk_test", queue_item_id="item-2")
+    await player.enqueue_next_media(nxt)
+    generation = player.playback_generation
     mass_mock.players.get_player.return_value = player
-    mass_mock.player_queues.get_active_queue.return_value = Mock(
-        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1")
-    )
-    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="item-2")
-    mass_mock.player_queues.index_by_id.return_value = 1
     mass_mock.player_queues.play_index = AsyncMock()
+    mass_mock.player_queues.get_active_queue = Mock()
 
-    await _replace_track_while_handler_waits(
-        mass_mock, player, provider._advance_after_track("wk_test", old_generation)
-    )
+    await provider._advance_after_track("wk_test", generation)
 
+    assert player.current_media is nxt
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.playback_generation != generation
+    assert player.enqueued_media is None
     mass_mock.player_queues.play_index.assert_not_awaited()
+    mass_mock.player_queues.get_active_queue.assert_not_called()
     mass_mock.players.cmd_stop.assert_not_awaited()
 
 
-async def test_old_failure_report_waiting_behind_a_track_change_does_not_stop(
+async def test_track_end_without_enqueued_media_goes_idle(
     provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
 ) -> None:
-    """A failure report for the previous stream cannot stop the replacement."""
-    await player.play_media(PlayerMedia(uri="old", duration=30, source_id="wk_test"))
-    old_generation = player.playback_generation
+    """With nothing handed over, the kiosk reports IDLE and leaves the queue to MA."""
+    _playing_at_end(player)
     mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.play_index = AsyncMock()
+    mass_mock.player_queues.get_active_queue = Mock()
 
-    await _replace_track_while_handler_waits(
-        mass_mock, player, provider._stop_failed_playback("wk_test", old_generation)
-    )
+    await provider._advance_after_track("wk_test", player.playback_generation)
 
+    assert player.playback_state == PlaybackState.IDLE
+    mass_mock.player_queues.play_index.assert_not_awaited()
+    mass_mock.player_queues.get_active_queue.assert_not_called()
     mass_mock.players.cmd_stop.assert_not_awaited()
 
 
-async def test_follower_fallback_plays_with_the_leader_queue_user(
-    provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock
+@pytest.mark.parametrize("report", ["ended", "failed"])
+async def test_end_reports_do_not_wait_for_the_playback_lock(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer, report: str
 ) -> None:
-    """The restored item loads as the leader queue's user, then the context is restored."""
-    client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
-    player.sendspin_client_id = client_id
-    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
-    leader = Mock(player_id="speaker", set_members=AsyncMock())
-    protocol = Mock(player_id=client_id, synced_to="speaker", group_members=[])
-    players = {player.player_id: player, client_id: protocol, "speaker": leader}
-    mass_mock.players.get_player = Mock(side_effect=lambda pid, **_: players.get(pid))
-    leader_queue = PlayerQueue(
-        queue_id="speaker",
-        active=True,
-        display_name="Speaker",
-        available=True,
-        items=1,
-        state=PlaybackState.PLAYING,
-        current_item=QueueItem(
-            queue_id="speaker", queue_item_id="item", name="Private song", duration=200
-        ),
+    """An announcement holds the playback lock until the player is IDLE; reports must not wait."""
+    await player.play_media(
+        PlayerMedia(uri="announce", media_type=MediaType.ANNOUNCEMENT, duration=4)
     )
-    mass_mock.player_queues.get_active_queue = Mock(return_value=leader_queue)
-    mass_mock.player_queues._queue_data = {"speaker": Mock(userid="owner-id")}
-    owner = Mock(user_id="owner-id")
-    mass_mock.webserver.auth.get_user = AsyncMock(
-        side_effect=lambda uid: owner if uid == "owner-id" else None
+    player.note_seek(4)
+    mass_mock.players.get_player.return_value = player
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def announcement_waits_for_idle() -> None:
+        async with mass_mock.players.get_group_and_player_lock(player.player_id):
+            held.set()
+            await release.wait()
+
+    holder = asyncio.create_task(announcement_waits_for_idle())
+    await held.wait()
+    handler = (
+        provider._advance_after_track(player.player_id, player.playback_generation)
+        if report == "ended"
+        else provider._stop_failed_playback(player.player_id, player.playback_generation)
     )
-    _own_queue_controller(mass_mock, player.player_id)
-    seen: list[object] = []
-    adopt = mass_mock.player_queues.play_media.side_effect
-
-    async def record_add(*args: Any, **kwargs: Any) -> None:
-        seen.append(get_current_user())
-        await adopt(*args, **kwargs)
-
-    mass_mock.player_queues.play_media.side_effect = record_add
-    mass_mock.player_queues.resume.side_effect = lambda *_a: seen.append(get_current_user())
-
-    await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
-
-    assert seen == [owner, owner]
-    assert get_current_user() is None
+    try:
+        await asyncio.wait_for(handler, 1)
+        assert player.playback_state == PlaybackState.IDLE
+    finally:
+        release.set()
+        await holder

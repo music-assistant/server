@@ -14,6 +14,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
@@ -1022,3 +1023,54 @@ async def test_unverified_tab_cannot_take_output_from_connected_sendspin_owner(
         await provider.bridge_manager.close()
         await asyncio.gather(*tasks, return_exceptions=True)
         await native.on_unload()
+
+
+def _proof(key: X25519PrivateKey, challenge: dict[str, Any]) -> str:
+    """Answer a Sendspin ownership challenge with the given browser key."""
+    public = X25519PublicKey.from_public_bytes(
+        base64.urlsafe_b64decode(challenge["server_key"] + "=")
+    )
+    return hmac.new(key.exchange(public), challenge["message"].encode(), hashlib.sha256).hexdigest()
+
+
+async def test_overlapping_handshakes_cannot_replace_a_proven_identity(
+    provider: WebKioskProvider,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """A second key proven during the first registration cannot take over the device."""
+    registry, _sendspin, _universal, _client, tasks = browser_registry
+    other_key = X25519PrivateKey.generate()
+    other_id = (
+        base64.urlsafe_b64encode(other_key.public_key().public_bytes_raw()).decode().rstrip("=")
+    )
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    try:
+        async with TestClient(TestServer(server.app)) as http:
+            first = await http.ws_connect("/ws?device_id=race&sendspin_client_id=" + CLIENT_ID)
+            second = await http.ws_connect("/ws?device_id=race&sendspin_client_id=" + other_id)
+            first_challenge = await first.receive_json()
+            second_challenge = await second.receive_json()
+            await first.send_json(
+                {"type": "sendspin_proof", "proof": _proof(CLIENT_KEY, first_challenge)}
+            )
+            assert (await first.receive_json())["type"] == "welcome"
+            kiosk = registry.get_player("wk_race")
+            assert isinstance(kiosk, WebKioskPlayer)
+            assert kiosk.sendspin_client_id == CLIENT_ID
+
+            await second.send_json(
+                {"type": "sendspin_proof", "proof": _proof(other_key, second_challenge)}
+            )
+            async with asyncio.timeout(1):
+                closed = await second.receive()
+            assert closed.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING)
+            assert kiosk.sendspin_client_id == CLIENT_ID
+            assert kiosk.sendspin_claim is not None
+            assert kiosk.sendspin_claim.client_id == CLIENT_ID
+            await first.close()
+    finally:
+        provider.cancel_all_player_closes()
+        await asyncio.gather(*tasks, return_exceptions=True)

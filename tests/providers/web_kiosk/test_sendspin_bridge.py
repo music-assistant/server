@@ -11,7 +11,10 @@ from music_assistant_models.errors import PlayerUnavailableError
 
 import music_assistant.providers.web_kiosk.sendspin_bridge as bridge_module
 from music_assistant.providers.web_kiosk.constants import normalize_sendspin_client_id
-from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
+from music_assistant.providers.web_kiosk.ownership import (
+    SendspinIdentityConflictError,
+    VerifiedSendspinClaim,
+)
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 from music_assistant.providers.web_kiosk.sendspin_bridge import (
@@ -115,10 +118,10 @@ async def test_connect_timeout_keeps_playback_when_client_connects(player: WebKi
     ).assert_not_awaited()
 
 
-async def test_note_sendspin_client_id_replaces_previous_bridge(
+async def test_note_sendspin_client_id_keeps_the_proven_identity(
     provider: WebKioskProvider, player: WebKioskPlayer
 ) -> None:
-    """A new browser identity drops the previous bridge before the next one is built."""
+    """A device keeps its proven identity; a different key needs a new device ID."""
     manager = WebKioskSendspinBridgeManager(provider)
     with (
         patch.object(manager, "evaluate_bridge", new_callable=AsyncMock) as evaluate_bridge,
@@ -137,12 +140,15 @@ async def test_note_sendspin_client_id_replaces_previous_bridge(
         evaluate_bridge.assert_awaited_once_with(player)
 
         replacement = "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"
-        await provider.note_sendspin_client_id(
-            player, replacement, sendspin_claim=VerifiedSendspinClaim(player.player_id, replacement)
-        )
+        with pytest.raises(SendspinIdentityConflictError):
+            await provider.note_sendspin_client_id(
+                player,
+                replacement,
+                sendspin_claim=VerifiedSendspinClaim(player.player_id, replacement),
+            )
 
-        assert player.sendspin_client_id == replacement
-        remove_bridge.assert_awaited_once_with(player.player_id, permanent=False)
+        assert player.sendspin_client_id == BROWSER_CLIENT_ID
+        remove_bridge.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

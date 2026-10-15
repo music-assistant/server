@@ -130,6 +130,7 @@ class WebKioskPlayer(Player):
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.ENQUEUE,
             PlayerFeature.PAUSE,
             PlayerFeature.SEEK,
         }
@@ -155,6 +156,7 @@ class WebKioskPlayer(Player):
         self._accepted_position = False
         self._track_end_handled = False
         self._playback_generation = secrets.token_hex(16)
+        self._enqueued_media: PlayerMedia | None = None
 
     @property
     def playback_speed(self) -> float:
@@ -179,9 +181,9 @@ class WebKioskPlayer(Player):
         return "sendspin" if self._uses_sendspin_output() else None
 
     @property
-    def requires_flow_mode(self) -> bool:
-        """Kiosk plays individual tracks — flow mode breaks progress tracking."""
-        return False
+    def enqueued_media(self) -> PlayerMedia | None:
+        """Return the next queue item Music Assistant handed over, if any."""
+        return self._enqueued_media
 
     @property
     def needs_poll(self) -> bool:
@@ -201,6 +203,10 @@ class WebKioskPlayer(Player):
         self, protocol_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Adopt playback arriving on this browser's linked Sendspin output."""
+        # Music Assistant marks a protocol active only for playback it starts or
+        # groups itself. Playback a Sendspin group starts on this browser is not
+        # adopted by the core, so the kiosk would keep reporting its idle native
+        # output without this.
         if (
             not self.sendspin_fallback
             and self.sendspin_client_id == protocol_player.player_id
@@ -265,6 +271,7 @@ class WebKioskPlayer(Player):
         """Handle PLAY MEDIA command — store media for the kiosk to fetch."""
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
         self._playback_generation = secrets.token_hex(16)
+        self._enqueued_media = None
         self.current_stream_url = media.uri
         self._attr_current_media = media
         item = None
@@ -304,6 +311,23 @@ class WebKioskPlayer(Player):
                 playback_speed=self.playback_speed,
                 media=media,
             )
+
+    async def enqueue_next_media(self, media: PlayerMedia) -> None:
+        """Keep the next queue item until the current browser stream ends."""
+        self._enqueued_media = media
+
+    async def start_enqueued_media(self) -> bool:
+        """
+        Start the queue item Music Assistant handed over, if there is one.
+
+        Reporting it as the current media lets the queue controller follow the
+        transition and hand over the item after it.
+        """
+        media = self._enqueued_media
+        if media is None:
+            return False
+        await self.play_media(media)
+        return True
 
     async def refresh_stream(self) -> bool:
         """Rebuild a finite queued HTML5 stream at its current song position."""
@@ -355,6 +379,7 @@ class WebKioskPlayer(Player):
         """Handle STOP command."""
         self.logger.info("stop on %s", self.display_name)
         self._playback_generation = secrets.token_hex(16)
+        self._enqueued_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_current_media = None
         self._attr_elapsed_time = None

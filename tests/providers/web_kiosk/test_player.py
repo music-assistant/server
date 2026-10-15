@@ -6,7 +6,7 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, Mock
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer, media_timeline
@@ -269,3 +269,31 @@ async def test_reconnect_waiting_behind_a_track_change_does_not_seek_it(
 
     mass_mock.players.cmd_seek.assert_not_awaited()
     mass_mock.players.cmd_pause.assert_not_awaited()
+
+
+def test_kiosk_advertises_enqueue_without_flow_mode(player: WebKioskPlayer) -> None:
+    """Music Assistant hands the next queue item to the kiosk instead of a flow stream."""
+    assert PlayerFeature.ENQUEUE in player.supported_features
+    assert not player.requires_flow_mode
+
+
+async def test_enqueue_next_media_is_replaced_and_cleared(player: WebKioskPlayer) -> None:
+    """A later handover replaces the stored item; new playback and stop clear it."""
+    await player.play_media(PlayerMedia(uri="a", duration=60, source_id="wk_test"))
+    first = PlayerMedia(uri="b", duration=60, source_id="wk_test", queue_item_id="b")
+    second = PlayerMedia(uri="c", duration=60, source_id="wk_test", queue_item_id="c")
+
+    def enqueued() -> PlayerMedia | None:
+        return player.enqueued_media
+
+    await player.enqueue_next_media(first)
+    await player.enqueue_next_media(second)
+    assert enqueued() is second
+    assert player.current_media is not None
+    assert player.current_media.uri == "a"
+
+    await player.play_media(PlayerMedia(uri="d", duration=60, source_id="wk_test"))
+    assert enqueued() is None
+    await player.enqueue_next_media(first)
+    await player.stop()
+    assert enqueued() is None

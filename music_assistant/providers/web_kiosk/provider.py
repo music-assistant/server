@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, QueueOption
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
@@ -21,7 +21,6 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import ATTR_ENABLED
-from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
@@ -40,12 +39,11 @@ from .constants import (
 )
 from .http_server import WebKioskHTTPServer
 from .lyrics import parse_track_lyrics
-from .ownership import VerifiedSendspinClaim
+from .ownership import SendspinIdentityConflictError, VerifiedSendspinClaim
 from .player import WebKioskPlayer, playback_lock
 from .sendspin_bridge import WebKioskSendspinBridgeManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.auth import User
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.queue_item import QueueItem
 
@@ -409,17 +407,11 @@ class WebKioskProvider(PlayerProvider):
                 # A startup failure also requests fallback. Only playback that was
                 # running moves to HTML5; a paused or stopped queue keeps its state.
                 was_playing = queue.state == PlaybackState.PLAYING
-                # A sync follower's active queue belongs to its leader. Capture what
-                # it played so the kiosk restores it alone; the leader keeps playing.
+                # A sync follower's active queue belongs to its leader. Leaving the
+                # group ends the kiosk's part in it, as an ungroup does in Music
+                # Assistant: the leader keeps playing and nothing is carried over.
                 protocol = self.mass.players.get_player(client_id)
                 follower = bool(protocol and protocol.synced_to and protocol.synced_to != client_id)
-                item = queue.current_item
-                position = (
-                    queue.corrected_elapsed_time
-                    if was_playing
-                    else queue.resume_pos or queue.elapsed_time or 0
-                )
-                owner = await self._queue_playback_user(queue.queue_id) if follower else None
                 claim = player.sendspin_claim
                 player.sendspin_fallback = True
                 try:
@@ -439,21 +431,10 @@ class WebKioskProvider(PlayerProvider):
                     raise
             # Stream preparation can take time. Release the registration lock while
             # resuming, and do not clear a newer connection's state on failure.
-            if player.sendspin_claim is not claim or not (was_playing or follower):
+            if player.sendspin_claim is not claim or not was_playing or follower:
                 return
             try:
-                if not follower:
-                    await self.mass.player_queues.resume(queue.queue_id)
-                elif item is not None:
-                    # The kiosk socket is unauthenticated. Adopt and resume the
-                    # item as the leader queue's user so source access holds.
-                    token = current_user.set(owner)
-                    try:
-                        await self._adopt_queue_item(player_id, item, position)
-                        if was_playing:
-                            await self.mass.player_queues.resume(player_id)
-                    finally:
-                        current_user.reset(token)
+                await self.mass.player_queues.resume(queue.queue_id)
             except BaseException:
                 if player.sendspin_claim is claim:
                     player.sendspin_fallback = False
@@ -684,111 +665,46 @@ class WebKioskProvider(PlayerProvider):
         except MusicAssistantError, TimeoutError:
             logger.warning("Native playback fallback failed for %s", player_id, exc_info=True)
 
-    async def _adopt_queue_item(self, player_id: str, item: QueueItem, position: float) -> None:
-        """Park another queue's item on this player's own queue at a position, without playing."""
-        queues = self.mass.player_queues
-        known = {queue_item.queue_item_id for queue_item in queues.items(player_id, limit=100000)}
-        # ADD loads the item for the current user and never starts playback.
-        await queues.play_media(player_id, item.media_item or item.uri, option=QueueOption.ADD)
-        added = [
-            queue_item
-            for queue_item in queues.items(player_id, limit=100000)
-            if queue_item.queue_item_id not in known
-        ]
-        own = queues.get(player_id)
-        if not added or own is None:
-            return
-        # Park the queue on the adopted item the way the queue controller parks a
-        # transferred queue, so the next play or resume continues at the position.
-        own.current_index = queues.index_by_id(player_id, added[0].queue_item_id)
-        own.current_item = added[0]
-        own.resume_pos = int(position)
-        queues.signal_update(player_id)
-
-    async def _queue_playback_user(self, queue_id: str) -> User | None:
-        """Return the user a queue plays for, as the queue controller records it."""
-        # The controller keeps the playback user only in its per-queue data and
-        # restores it the same way for background refills; there is no public
-        # accessor for it.
-        queue_data = getattr(self.mass.player_queues, "_queue_data", {}).get(queue_id)
-        userid = getattr(queue_data, "userid", None)
-        if not isinstance(userid, str) or not userid:
-            return None
-        return await self.mass.webserver.auth.get_user(userid)
-
     async def _stop_failed_playback(self, player_id: str, playback_generation: str) -> None:
-        """Stop the current playback when the browser reports that it failed."""
-        async with playback_lock(self.mass, player_id):
-            player = self.mass.players.get_player(player_id)
-            if (
-                not isinstance(player, WebKioskPlayer)
-                or playback_generation != player.playback_generation
-            ):
-                return
-            if player.playback_state == PlaybackState.IDLE:
-                return
-            try:
-                await self.mass.players.cmd_stop(player_id)
-            except MusicAssistantError:
-                logger.warning("Stopping failed playback on %s failed", player_id, exc_info=True)
+        """End the current playback when the browser reports that it failed."""
+        player = self.mass.players.get_player(player_id)
+        if (
+            not isinstance(player, WebKioskPlayer)
+            or playback_generation != player.playback_generation
+            or player.playback_state == PlaybackState.IDLE
+        ):
+            return
+        # Report IDLE like a finished stream; the queue stays where it is.
+        await player.stop()
 
     async def _advance_after_track(
         self, player_id: str, playback_generation: str, position: float | None = None
     ) -> None:
-        """Play the next queue item, or stop when this track was the last one."""
-        # Validate and dispatch under the playback lock, so a report checked
-        # while a replacement track loads cannot act on that replacement.
-        async with playback_lock(self.mass, player_id):
-            player = self.mass.players.get_player(player_id)
-            if (
-                not isinstance(player, WebKioskPlayer)
-                or player.playback_state != PlaybackState.PLAYING
-            ):
-                return
-            if playback_generation != player.playback_generation:
-                return
-            # Position reports are periodic. The final one arrives with the end
-            # report, so a fast stream ending between reports still completes.
-            if position is not None:
-                player.update_position(position)
-            if player._track_end_handled or not player.playback_reached_end():
-                return
-            # One end event per play. play_media clears this when the next item starts.
-            player._track_end_handled = True
-            try:
-                queues = self.mass.player_queues
-                queue = queues.get_active_queue(player_id)
-                if queue is None:
-                    await self.mass.players.cmd_stop(player_id)
-                    return
-                media = player.current_media
-                current = queue.current_item
-                if (
-                    media is None
-                    or media.media_type == MediaType.ANNOUNCEMENT
-                    or media.source_id != queue.queue_id
-                    or current is None
-                    or media.queue_item_id != current.queue_item_id
-                ):
-                    # Announcements and other non-queue media end locally. The
-                    # announcement controller restores the interrupted queue.
-                    await player.stop()
-                    return
-                index = queue.current_index
-                nxt = queues.get_next_item(queue.queue_id, index) if index is not None else None
-                next_index = (
-                    queues.index_by_id(queue.queue_id, nxt.queue_item_id)
-                    if nxt is not None
-                    else None
-                )
-                if next_index is None:
-                    await self.mass.players.cmd_stop(player_id)
-                    return
-                await queues.play_index(queue.queue_id, next_index)
-            except MusicAssistantError:
-                logger.exception("Advancing after track end failed for %s", player_id)
-                with contextlib.suppress(MusicAssistantError):
-                    await self.mass.players.cmd_stop(player_id)
+        """Start the handed-over queue item, or report IDLE when there is none."""
+        # These reports only change the kiosk's own state and issue no Music
+        # Assistant command, so they take no playback lock: an announcement holds
+        # that lock until this player reports IDLE. The generation check and the
+        # state change below run without an await in between, so a replacement
+        # that starts meanwhile is never mistaken for the finished stream.
+        player = self.mass.players.get_player(player_id)
+        if not isinstance(player, WebKioskPlayer) or player.playback_state != PlaybackState.PLAYING:
+            return
+        if playback_generation != player.playback_generation:
+            return
+        # Position reports are periodic. The final one arrives with the end
+        # report, so a fast stream ending between reports still completes.
+        if position is not None:
+            player.update_position(position)
+        if player._track_end_handled or not player.playback_reached_end():
+            return
+        # One end event per play. play_media clears this when the next item starts.
+        player._track_end_handled = True
+        # Music Assistant hands the next queue item over in advance and follows
+        # the player's current media, so queue progression stays in the core.
+        # Without a handed-over item (end of queue, announcement) the player
+        # reports IDLE and the core's own end-of-queue and restore logic runs.
+        if not await player.start_enqueued_media():
+            await player.stop()
 
     def _compose_kiosk_url(self) -> str:
         """Compose the base kiosk URL from the MA webserver base URL and our port."""
@@ -813,6 +729,10 @@ class WebKioskProvider(PlayerProvider):
         """Transfer identity ownership while the player lifecycle lock is held."""
         if claim is None or claim.player_id != player.player_id or claim.client_id != client_id:
             raise InvalidDataError("Sendspin identity ownership has not been verified")
+        # One device keeps the identity it proved first. Handshakes overlap, so this
+        # is checked here, under the lifecycle lock, not only before the proof.
+        if player.sendspin_client_id and player.sendspin_client_id != client_id:
+            raise SendspinIdentityConflictError(player.player_id)
         player.sendspin_claim = claim
         player.sendspin_fallback = False
         owner = self._sendspin_owners.get(client_id)
@@ -820,12 +740,6 @@ class WebKioskProvider(PlayerProvider):
             owner.sendspin_client_id = None
             if self.bridge_manager:
                 await self.bridge_manager.release_bridge(owner.player_id)
-        previous = player.sendspin_client_id
-        if previous and previous != client_id:
-            player.sendspin_client_id = None
-            if self.bridge_manager:
-                await self.bridge_manager.release_bridge(player.player_id)
-            self._sendspin_owners.pop(previous, None)
         player.sendspin_client_id = client_id
         self._sendspin_owners[client_id] = player
 

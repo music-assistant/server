@@ -27,7 +27,11 @@ from .constants import (
     WEB_KIOSK_PLAYER_ID_PREFIX,
     normalize_sendspin_client_id,
 )
-from .ownership import SendspinClaimChallenge, VerifiedSendspinClaim
+from .ownership import (
+    SendspinClaimChallenge,
+    SendspinIdentityConflictError,
+    VerifiedSendspinClaim,
+)
 from .party import PartyAdapter
 from .player import WebKioskPlayer, media_timeline
 
@@ -632,19 +636,14 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         claim = await self._verify_sendspin_claim(request, ws)
         if ws.closed:
             return ws
-        player_id, _, player = await self._ensure_player_for_request(request, claim)
+        registered = await self._register_socket_player(request, ws, claim)
+        if registered is None:
+            return ws
+        player_id, player = registered
         # Count this socket before any await. A reload's old socket can close
         # during that await, and it must still see a live client.
-        if player_id not in self._ws_clients:
-            self._ws_clients[player_id] = set()
-        self._ws_clients[player_id].add(ws)
-        if claim:
-            self._ws_claims[ws] = claim
-        self._ws_peers[ws] = (request.remote, request.headers.get("User-Agent"))
-        if request.query.get("lyrics") == "1":
-            self._ws_lyrics.add(ws)
+        self._track_socket(player_id, ws, request, claim)
         try:
-            self._ws_volume_support[ws] = request.query.get("volume_control") == "1"
             self._update_volume_support(player_id)
             self.provider.cancel_player_close(player_id)
             logger.info(
@@ -686,11 +685,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 if msg.type == WSMsgType.TEXT:
                     self._handle_ws_message(player_id, msg.data, ws)
         finally:
-            self._ws_clients.get(player_id, set()).discard(ws)
-            self._ws_claims.pop(ws, None)
-            self._ws_peers.pop(ws, None)
-            self._ws_lyrics.discard(ws)
-            self._ws_volume_support.pop(ws, None)
+            self._forget_socket(player_id, ws)
             self._update_volume_support(player_id)
             self._update_output_mode(player_id)
             if not self._ws_clients.get(player_id):
@@ -1097,6 +1092,46 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             player_id = f"{WEB_KIOSK_PLAYER_ID_PREFIX}{sanitized}"
             param = ""
         return player_id, param
+
+    def _track_socket(
+        self,
+        player_id: str,
+        ws: web.WebSocketResponse,
+        request: web.Request,
+        claim: VerifiedSendspinClaim | None,
+    ) -> None:
+        """Record a connected socket and everything known about it."""
+        # Every per-socket field is added here and removed in _forget_socket, so
+        # a new field cannot be left behind when the socket closes.
+        self._ws_clients.setdefault(player_id, set()).add(ws)
+        if claim:
+            self._ws_claims[ws] = claim
+        self._ws_peers[ws] = (request.remote, request.headers.get("User-Agent"))
+        if request.query.get("lyrics") == "1":
+            self._ws_lyrics.add(ws)
+        self._ws_volume_support[ws] = request.query.get("volume_control") == "1"
+
+    def _forget_socket(self, player_id: str, ws: web.WebSocketResponse) -> None:
+        """Remove a closed socket and everything recorded about it."""
+        self._ws_clients.get(player_id, set()).discard(ws)
+        self._ws_claims.pop(ws, None)
+        self._ws_peers.pop(ws, None)
+        self._ws_lyrics.discard(ws)
+        self._ws_volume_support.pop(ws, None)
+
+    async def _register_socket_player(
+        self,
+        request: web.Request,
+        ws: web.WebSocketResponse,
+        claim: VerifiedSendspinClaim | None,
+    ) -> tuple[str, WebKioskPlayer | None] | None:
+        """Register the socket's player, closing the socket on an identity conflict."""
+        try:
+            player_id, _, player = await self._ensure_player_for_request(request, claim)
+        except SendspinIdentityConflictError:
+            await ws.close(code=1008, message=b"Use a new device ID for a new Sendspin identity")
+            return None
+        return player_id, player
 
     async def _ensure_player_for_request(
         self, request: web.Request, claim: VerifiedSendspinClaim | None = None

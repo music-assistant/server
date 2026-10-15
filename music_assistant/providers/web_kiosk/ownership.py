@@ -9,6 +9,15 @@ import secrets
 from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from music_assistant_models.errors import InvalidDataError
+
+
+class SendspinIdentityConflictError(InvalidDataError):
+    """A device that already owns a Sendspin identity was offered a different one."""
+
+    def __init__(self, player_id: str) -> None:
+        """Describe the device whose identity is already established."""
+        super().__init__(f"Kiosk {player_id} already owns a different Sendspin identity")
 
 
 @dataclass(frozen=True)

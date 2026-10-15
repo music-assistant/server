@@ -665,12 +665,6 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
 
     mass_mock.create_task.side_effect = spawn
     mass_mock.players.get_player.return_value = player
-    mass_mock.player_queues.get_active_queue.return_value = Mock(
-        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="new-item")
-    )
-    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="next")
-    mass_mock.player_queues.index_by_id.return_value = 1
-    mass_mock.player_queues.play_index = AsyncMock()
     provider.spawn_wave = Mock()  # type: ignore[method-assign]
     provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
     await player.play_media(
@@ -698,6 +692,9 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
     second = await http_client.ws_connect("/ws?device_id=test")
     await second.receive_json()
     new_play = await second.receive_json()
+    following = PlayerMedia(uri="next", duration=30, source_id="wk_test", queue_item_id="next")
+    later = PlayerMedia(uri="later", duration=30, source_id="wk_test", queue_item_id="later")
+    await player.enqueue_next_media(following)
     processed = asyncio.Event()
     provider.on_player_activity = Mock(side_effect=lambda _: processed.set())  # type: ignore[method-assign]
     try:
@@ -705,22 +702,24 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
             {"type": "ended", "playback_generation": old_play.get("playback_generation", "old")}
         )
         await processed.wait()
-        await asyncio.sleep(0)
-        mass_mock.player_queues.play_index.assert_not_awaited()
+        await asyncio.sleep(0.05)
+        assert player.current_media is not None
+        assert player.current_media.uri == "new"
         processed.clear()
         await second.send_json(
             {"type": "ended", "playback_generation": new_play.get("playback_generation", "new")}
         )
         await processed.wait()
-        await asyncio.sleep(0)
-        mass_mock.player_queues.play_index.assert_awaited_once_with("wk_test", 1)
+        await asyncio.sleep(0.05)
+        assert player.current_media is following
+        await player.enqueue_next_media(later)
         processed.clear()
         await second.send_json(
             {"type": "ended", "playback_generation": new_play["playback_generation"]}
         )
         await processed.wait()
-        await asyncio.sleep(0)
-        mass_mock.player_queues.play_index.assert_awaited_once()
+        await asyncio.sleep(0.05)
+        assert player.current_media is following
     finally:
         await first.close()
         await second.close()
@@ -1087,3 +1086,20 @@ async def test_live_and_snapshot_play_messages_share_one_contract(
     assert {key: live[key] for key in live if key != "wave_seq"} == {
         key: snapshot[key] for key in snapshot if key != "wave_seq"
     }
+
+
+async def test_closed_socket_leaves_no_per_socket_state(provider: WebKioskProvider) -> None:
+    """Every per-socket record, including future ones, is dropped when the socket closes."""
+    server = WebKioskHTTPServer(provider, 0)
+    async with TestClient(TestServer(server.app)) as http:
+        ws = await http.ws_connect("/ws?device_id=gone&lyrics=1&volume_control=1")
+        await ws.receive_json()
+        await ws.close()
+        await asyncio.sleep(0.05)
+    per_socket = {
+        name: value
+        for name, value in vars(server).items()
+        if name.startswith("_ws_") and isinstance(value, (dict, set))
+    }
+    assert per_socket
+    assert {name: value for name, value in per_socket.items() if value} == {}
