@@ -134,7 +134,7 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
         engine: TTSEngine,
         language: str | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[str, StreamType, AudioFormat]:
+    ) -> tuple[str, StreamType, AudioFormat, bool]:
         self.tts_texts.append(text)
         self.tts_options.append(options)
         if self.fail_tts:
@@ -143,12 +143,13 @@ class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
             f"http://ha.invalid/api/tts_proxy/{len(self.tts_texts)}.mp3",
             StreamType.HTTP,
             AudioFormat(content_type=ContentType.MP3),
+            True,
         )
 
-    async def _probe_duration(self, path: str) -> int | None:
+    async def _probe_duration(self, path: str, verify_ssl: bool = True) -> int | None:
         return 9
 
-    async def _measure_loudness(self, path: str) -> float | None:
+    async def _measure_loudness(self, path: str, verify_ssl: bool = True) -> float | None:
         self.measure_calls.append(path)
         return self.measured_loudness
 
@@ -166,7 +167,9 @@ def _tts_renderer(path: str, audio_format: AudioFormat | None = None) -> RealTts
     plugin.instance_id = "hass_1"
     plugin.get_tts_message = AsyncMock(
         return_value=SimpleNamespace(
-            path=path, audio_format=audio_format or AudioFormat(content_type=ContentType.UNKNOWN)
+            path=path,
+            audio_format=audio_format or AudioFormat(content_type=ContentType.UNKNOWN),
+            verify_ssl=False,
         )
     )
     engine = TTSEngine(id="tts.cloud", name="Cloud", provider=plugin)
@@ -411,6 +414,7 @@ async def test_render_tts_media_falls_back_without_language_on_rejection() -> No
             SimpleNamespace(
                 path="http://example.test/api/tts_proxy/abc123.mp3",
                 audio_format=AudioFormat(content_type=ContentType.MP3),
+                verify_ssl=True,
             ),
         ]
     )
@@ -506,7 +510,7 @@ async def test_tts_failure_raises_media_not_found_and_logs_the_skip(
             engine: TTSEngine,
             language: str | None = None,
             options: dict[str, Any] | None = None,
-        ) -> tuple[str, StreamType, AudioFormat]:
+        ) -> tuple[str, StreamType, AudioFormat, bool]:
             raise RuntimeError("tts down")
 
     renderer = UnspeakableRenderer()
@@ -571,7 +575,7 @@ async def test_probe_failure_is_not_fatal() -> None:
     """A failed duration probe yields streamdetails without a duration."""
 
     class UnprobableRenderer(DummyRenderer):
-        async def _probe_duration(self, path: str) -> int | None:
+        async def _probe_duration(self, path: str, verify_ssl: bool = True) -> int | None:
             return None
 
     renderer = UnprobableRenderer()
@@ -1126,11 +1130,15 @@ async def test_render_tts_media_streams_a_url_over_http() -> None:
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
     engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    path, stream_type, audio_format = await renderer._render_tts_media("hello world", engine)
+    path, stream_type, audio_format, verify_ssl = await renderer._render_tts_media(
+        "hello world", engine
+    )
 
     assert path == "http://example.test/api/tts_proxy/abc123.mp3"
     assert stream_type == StreamType.HTTP
     assert audio_format.content_type == ContentType.MP3
+    # the engine's own certificate setting travels with the clip
+    assert verify_ssl is False
     # the provider-scoped engine.id, never engine.uid, and never omitted
     engine.provider.get_tts_message.assert_awaited_once_with(
         "hello world", language=None, engine_id="tts.cloud", options=None
@@ -1145,7 +1153,7 @@ async def test_render_tts_media_streams_a_local_file_from_disk(tmp_path: Path) -
     _attach_queue(renderer, [_clip_item("sess_001")])
     engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    path, stream_type, _ = await renderer._render_tts_media("hello world", engine)
+    path, stream_type, _, _ = await renderer._render_tts_media("hello world", engine)
 
     assert path == str(clip)
     assert stream_type == StreamType.LOCAL_FILE
@@ -1158,7 +1166,7 @@ async def test_render_tts_media_keeps_a_declared_audio_format(tmp_path: Path) ->
     renderer = _tts_renderer(str(clip), AudioFormat(content_type=ContentType.WAV))
     engine = cast("Any", renderer)._get_tts_engine.return_value
 
-    _, _, audio_format = await renderer._render_tts_media("hello world", engine)
+    _, _, audio_format, _ = await renderer._render_tts_media("hello world", engine)
 
     assert audio_format.content_type == ContentType.WAV
 
@@ -1300,7 +1308,7 @@ async def test_a_short_clip_levels_itself_but_never_becomes_the_reference() -> N
     """A clip of a few words is too thin a sample to speak for the rest of the engine."""
 
     class BriefRenderer(DummyRenderer):
-        async def _probe_duration(self, path: str) -> int | None:
+        async def _probe_duration(self, path: str, verify_ssl: bool = True) -> int | None:
             return MIN_LOUDNESS_REFERENCE_SECONDS - 1
 
     renderer = BriefRenderer()

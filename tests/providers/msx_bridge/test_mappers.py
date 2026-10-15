@@ -12,6 +12,7 @@ from music_assistant_models.media_items import (
     Artist,
     MediaItemImage,
     MediaItemMetadata,
+    Playlist,
     Track,
     UniqueList,
 )
@@ -20,11 +21,28 @@ from music_assistant.providers.msx_bridge.mappers import (
     get_album_image_fallback,
     map_album_to_msx,
     map_artist_to_msx,
+    map_playlist_to_msx,
     map_track_to_msx,
     msx_list_page,
     sort_album_tracks,
 )
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
+
+
+def test_dynamic_playlist_starts_its_managed_queue() -> None:
+    """A dynamic playlist must start its source instead of browsing a static sample."""
+    playlist = Playlist(
+        item_id="7",
+        provider="library",
+        name="Infinite Mix",
+        provider_mappings=set(),
+        is_dynamic=True,
+    )
+    item = map_playlist_to_msx(playlist, "http://bridge", _mock_provider(), "msx_test")
+    assert (
+        item.action
+        == "execute:http://bridge/api/play-context/msx_test?uri=library%3A%2F%2Fplaylist%2F7&start=0"
+    )
 
 
 def _mock_provider() -> MSXBridgeProvider:
