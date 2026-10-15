@@ -7,7 +7,7 @@ import re
 import secrets
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractAsyncContextManager, contextmanager
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
@@ -21,8 +21,24 @@ from music_assistant.models.player import Player, PlayerMedia
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
 
+    from music_assistant.mass import MusicAssistant
+
     from .ownership import VerifiedSendspinClaim
     from .provider import WebKioskProvider
+
+
+def playback_lock(mass: MusicAssistant, player_id: str) -> AbstractAsyncContextManager[None]:
+    """
+    Return the strict playback lock for state checks followed by playback commands.
+
+    Music Assistant serializes playback commands per player and its group with this
+    lock. Reading playback state and dispatching a command under it makes a stale
+    browser report or a concurrent stop see the outcome of the other operation.
+
+    :param mass: The Music Assistant instance.
+    :param player_id: The player whose playback is read and changed.
+    """
+    return mass.players.get_group_and_player_lock(player_id, strict=True)
 
 
 def _positive_seconds(value: object) -> float | None:
@@ -293,7 +309,7 @@ class WebKioskPlayer(Player):
         """Rebuild a finite queued HTML5 stream at its current song position."""
         # Read media, position and pause state only once a pending track change
         # has finished, and keep the lock through the seek and re-pause.
-        async with self.mass.players.get_group_and_player_lock(self.player_id, strict=True):
+        async with playback_lock(self.mass, self.player_id):
             media = self.current_media
             if not media or not media.queue_item_id or not media.source_id:
                 return False

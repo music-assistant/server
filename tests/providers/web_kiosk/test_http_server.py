@@ -22,6 +22,7 @@ import music_assistant.providers.web_kiosk.party as party_module
 from music_assistant.controllers.webserver.helpers.auth_providers import AuthFailure
 from music_assistant.helpers.api import APICommandHandler
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
+from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
@@ -106,7 +107,15 @@ async def test_ws_rejects_invalid_positions(
     await ws.receive_json()
     player._attr_playback_state = PlaybackState.PLAYING
     player.update_position(12.0)
-    await ws.send_str(json.dumps({"type": message_type, "position": position}))
+    await ws.send_str(
+        json.dumps(
+            {
+                "type": message_type,
+                "position": position,
+                "playback_generation": player.playback_generation,
+            }
+        )
+    )
     # A following valid capability message confirms the preceding frame was processed.
     await ws.send_json({"type": "capabilities", "volume_control": True})
     async with asyncio.timeout(1):
@@ -132,7 +141,13 @@ async def test_ws_accepts_finite_positions(
     await ws.receive_json()
     player._attr_playback_state = PlaybackState.PLAYING
     player.update_position(12.0)
-    await ws.send_json({"type": message_type, "position": position})
+    await ws.send_json(
+        {
+            "type": message_type,
+            "position": position,
+            "playback_generation": player.playback_generation,
+        }
+    )
     await ws.send_json({"type": "capabilities", "volume_control": True})
     async with asyncio.timeout(1):
         while PlayerFeature.VOLUME_SET not in player.supported_features:
@@ -140,6 +155,38 @@ async def test_ws_accepts_finite_positions(
     assert PlayerFeature.VOLUME_SET in player.supported_features
     assert player.elapsed_time == position
     await ws.close()
+
+
+@pytest.mark.parametrize("message_type", ["position", "seek"])
+@pytest.mark.parametrize("generation", [None, "", "previous-generation"])
+async def test_ws_ignores_position_reports_of_another_playback(
+    http_client: TestClient[Any, Any],
+    mass_mock: Mock,
+    player: WebKioskPlayer,
+    message_type: str,
+    generation: str | None,
+) -> None:
+    """A delayed report from a previous stream on another tab cannot move the clock."""
+    mass_mock.players.get_player.return_value = player
+    current = await http_client.ws_connect("/ws?device_id=test")
+    await current.receive_json()
+    stale = await http_client.ws_connect("/ws?device_id=test")
+    await stale.receive_json()
+    await player.play_media(PlayerMedia(uri="new", duration=300, source_id="wk_test"))
+    player.note_seek(12.0)
+    report: dict[str, Any] = {"type": message_type, "position": 250.0}
+    if generation is not None:
+        report["playback_generation"] = generation
+    await stale.send_json(report)
+    # Capability frames sent after the report confirm both sockets were processed.
+    await stale.send_json({"type": "capabilities", "volume_control": True})
+    await current.send_json({"type": "capabilities", "volume_control": True})
+    async with asyncio.timeout(1):
+        while PlayerFeature.VOLUME_SET not in player.supported_features:
+            await asyncio.sleep(0)
+    assert player.elapsed_time == 12.0
+    await stale.close()
+    await current.close()
 
 
 async def test_stream_requires_token(
@@ -974,3 +1021,69 @@ async def test_lyrics_requested_follows_connected_kiosk_options(
         await asyncio.sleep(0.05)
         assert not server.lyrics_requested("wk_lyr")
         await plain.close()
+
+
+async def test_reattach_prefers_the_verified_sendspin_owner_socket(
+    provider: WebKioskProvider,
+) -> None:
+    """Re-enabling with an owner and an HTML5 tab keeps the owner's Sendspin identity."""
+    server = WebKioskHTTPServer(provider, 0)
+    sockets = {Mock(closed=False), Mock(closed=False)}
+    ordered = list(sockets)
+    owner, html5 = ordered[0], ordered[-1]
+    claim = VerifiedSendspinClaim("wk_both", "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo")
+    server._ws_clients["wk_both"] = cast("Any", sockets)
+    server._ws_claims[owner] = claim
+    server._ws_peers[owner] = ("10.0.0.2", "Owner")
+    server._ws_peers[html5] = ("10.0.0.3", "Html5")
+    provider.get_or_register_player = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    await server.reattach_player("wk_both")
+
+    call = provider.get_or_register_player.await_args
+    assert call is not None
+    kwargs = call.kwargs
+    assert kwargs["sendspin_claim"] is claim
+    assert kwargs["sendspin_client_id"] == claim.client_id
+    assert kwargs["ip_address"] == "10.0.0.2"
+
+
+async def test_live_and_snapshot_play_messages_share_one_contract(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """A reconnect receives the same play fields as live playback, so neither drifts."""
+    server = WebKioskHTTPServer(provider, 0)
+    ws = Mock(closed=False)
+    server._ws_clients[player.player_id] = {ws}
+    sent: list[dict[str, Any]] = []
+    server._ws_send = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _ws, data, *_a: sent.append(json.loads(data))
+    )
+    mass_mock.create_task = Mock(side_effect=lambda coro: coro)
+    provider.spawn_wave = Mock()  # type: ignore[method-assign]
+    provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
+    await player.play_media(
+        PlayerMedia(uri="x", duration=120, title="T", artist="A", image_url="img")
+    )
+
+    server.broadcast_play(
+        player.player_id,
+        playback_generation=player.playback_generation,
+        title="T",
+        artist="A",
+        image_url="img",
+        duration=120,
+        start=0,
+        playback_speed=1.0,
+        wave_seq=1,
+    )
+    await mass_mock.create_task.call_args.args[0]
+    await server._send_snapshot(ws, player)
+
+    plays = [message for message in sent if message["type"] == "play"]
+    assert len(plays) == 2
+    live, snapshot = plays
+    assert set(live) == set(snapshot)
+    assert {key: live[key] for key in live if key != "wave_seq"} == {
+        key: snapshot[key] for key in snapshot if key != "wave_seq"
+    }

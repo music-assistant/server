@@ -149,28 +149,17 @@ class WebKioskHTTPServer:
         if not clients:
             logger.debug("broadcast_play: no WebSocket clients for player_id=%s", player_id)
             return
-        play_path = f"/stream/{player_id}?token={self.provider.get_stream_token(player_id)}"
-        payload: dict[str, Any] = {
-            "type": "play",
-            "path": play_path,
-            "player_id": player_id,
-            "playback_generation": playback_generation,
-        }
-        if title:
-            payload["title"] = title
-        if artist:
-            payload["artist"] = artist
-        if image_url:
-            payload["image_url"] = image_url
-        if duration is not None:
-            payload["duration"] = duration
-        # Where audio.currentTime 0 sits in the song. Non-zero after a seek,
-        # because the stream Music Assistant serves then starts at that point.
-        payload["start"] = start
-        payload["playback_speed"] = playback_speed
-        if wave_seq is not None:
-            payload["wave_seq"] = wave_seq
-        msg = json.dumps(payload)
+        msg = self._play_message(
+            player_id,
+            playback_generation=playback_generation,
+            title=title,
+            artist=artist,
+            image_url=image_url,
+            duration=duration,
+            start=start,
+            playback_speed=playback_speed,
+            wave_seq=wave_seq,
+        )
         for ws in list(clients):
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
@@ -304,7 +293,8 @@ class WebKioskHTTPServer:
         clients = [ws for ws in self._ws_clients.get(player_id, ()) if not ws.closed]
         if not clients:
             return
-        ws = clients[-1]
+        # The Sendspin owner defines the registered identity; any tab will do otherwise.
+        ws = self._owner_socket(player_id) or clients[-1]
         remote_ip, user_agent = self._ws_peers.get(ws, (None, None))
         claim = self._ws_claims.get(ws)
         player = await self.provider.get_or_register_player(
@@ -756,27 +746,22 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         if media is None:
             await self._send_volume(player, {ws})
             return
-        play_path = (
-            f"/stream/{player.player_id}?token={self.provider.get_stream_token(player.player_id)}"
-        )
         song_length, stream_start = media_timeline(media)
         wave_seq = self.provider.next_wave_seq(player.player_id)
-        payload: dict[str, Any] = {
-            "type": "play",
-            "path": play_path,
-            "player_id": player.player_id,
-            "playback_generation": player.playback_generation,
-            "title": media.title,
-            "artist": media.artist,
-            "image_url": media.image_url,
-            "duration": song_length,
-            "start": stream_start,
-            "playback_speed": player.playback_speed,
-            "wave_seq": wave_seq,
-        }
+        message = self._play_message(
+            player.player_id,
+            playback_generation=player.playback_generation,
+            title=media.title,
+            artist=media.artist,
+            image_url=media.image_url,
+            duration=song_length,
+            start=stream_start,
+            playback_speed=player.playback_speed,
+            wave_seq=wave_seq,
+        )
         recipients = self._ws_clients.get(player.player_id, {ws}) if refreshed else {ws}
         for client in tuple(recipients):
-            await self._ws_send(client, json.dumps(payload))
+            await self._ws_send(client, message)
         self.provider.spawn_wave(player.player_id, wave_seq)
         self.provider.spawn_lyrics(player.player_id, wave_seq)
         # Position inside the served audio, including while paused. The song
@@ -917,10 +902,9 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             # A device ID is not a credential. While a socket that proved the
             # Sendspin identity is connected, unverified tabs cannot move its
             # output; once the owner is gone, an HTML5 reload switches to native.
-            owner_connected = any(
-                (claim := self._ws_claims.get(ws)) is not None
-                and claim.client_id == player.sendspin_client_id
-                for ws in clients
+            owner_connected = bool(
+                player.sendspin_client_id
+                and self._owner_socket(player_id, player.sendspin_client_id) is not None
             )
             player.set_html5_requested(
                 not owner_connected and any(ws not in self._ws_claims for ws in clients)
@@ -956,18 +940,14 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             ):
                 self._ws_volume_support[ws] = supported
                 self._update_volume_support(player_id)
-        elif msg_type == "position":
+        elif msg_type in ("position", "seek"):
             position = msg.get("position")
-            if _is_finite_position(position):
-                player = self.provider.mass.players.get_player(player_id)
-                if player and isinstance(player, WebKioskPlayer):
+            player = self._reporting_player(player_id, msg)
+            if player is not None and _is_finite_position(position):
+                if msg_type == "seek":
+                    player.note_seek(float(position))
+                else:
                     player.update_position(float(position))
-                    self.provider.on_player_activity(player_id)
-        elif msg_type == "seek":
-            position = msg.get("position")
-            player = self.provider.mass.players.get_player(player_id)
-            if player and isinstance(player, WebKioskPlayer) and _is_finite_position(position):
-                player.note_seek(float(position))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "sendspin_fallback":
             claim = self._ws_claims.get(ws) if ws else None
@@ -992,6 +972,60 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             self.provider.on_player_activity(player_id)
         else:
             logger.debug("Unknown WS message type from %s: %s", player_id, msg_type)
+
+    def _play_message(
+        self,
+        player_id: str,
+        *,
+        playback_generation: str,
+        title: str | None,
+        artist: str | None,
+        image_url: str | None,
+        duration: float | None,
+        start: float,
+        playback_speed: float,
+        wave_seq: int | None,
+    ) -> str:
+        """Build the one play message used for live playback and reconnect snapshots."""
+        payload: dict[str, Any] = {
+            "type": "play",
+            "path": f"/stream/{player_id}?token={self.provider.get_stream_token(player_id)}",
+            "player_id": player_id,
+            "playback_generation": playback_generation,
+            # Where audio.currentTime 0 sits in the song. Non-zero after a seek,
+            # because the stream Music Assistant serves then starts at that point.
+            "start": start,
+            "playback_speed": playback_speed,
+        }
+        optional = {
+            "title": title,
+            "artist": artist,
+            "image_url": image_url,
+            "duration": duration,
+            "wave_seq": wave_seq,
+        }
+        payload.update({key: value for key, value in optional.items() if value is not None})
+        return json.dumps(payload)
+
+    def _owner_socket(
+        self, player_id: str, client_id: str | None = None
+    ) -> web.WebSocketResponse | None:
+        """Return a connected socket that proved a Sendspin identity, optionally a given one."""
+        for ws in self._ws_clients.get(player_id, ()):
+            claim = self._ws_claims.get(ws)
+            if not ws.closed and claim is not None and client_id in (None, claim.client_id):
+                return ws
+        return None
+
+    def _reporting_player(self, player_id: str, msg: dict[str, Any]) -> WebKioskPlayer | None:
+        """Return the player only when a playback report belongs to its current stream."""
+        # Every report about audio progress names the playback it describes. A
+        # delayed report from a previous stream or another tab is dropped here.
+        generation = msg.get("playback_generation")
+        player = self._get_kiosk_player(player_id)
+        if player is None or not isinstance(generation, str) or not generation:
+            return None
+        return player if generation == player.playback_generation else None
 
     def _reject_invalid_stream_token(
         self, request: web.Request, player_id: str

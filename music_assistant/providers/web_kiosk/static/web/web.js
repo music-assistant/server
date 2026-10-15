@@ -458,7 +458,7 @@
     setInterval(function () {
         if (playing && !sendspinStreaming && ws && ws.readyState === WebSocket.OPEN) {
             // Seconds into the served file. Music Assistant adds the seek origin.
-            sendWS({ type: 'position', position: audio.currentTime });
+            sendWS({ type: 'position', position: audio.currentTime, playback_generation: playbackGeneration });
         }
     }, 5000);
 

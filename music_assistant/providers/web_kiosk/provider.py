@@ -41,7 +41,7 @@ from .constants import (
 from .http_server import WebKioskHTTPServer
 from .lyrics import parse_track_lyrics
 from .ownership import VerifiedSendspinClaim
-from .player import WebKioskPlayer
+from .player import WebKioskPlayer, playback_lock
 from .sendspin_bridge import WebKioskSendspinBridgeManager
 
 if TYPE_CHECKING:
@@ -391,7 +391,7 @@ class WebKioskProvider(PlayerProvider):
         # MA serializes playback commands per player (and its group) with this
         # lock. Holding it until the resume makes a stop or pause issued during
         # the teardown run afterwards instead of being undone by the resume.
-        async with self.mass.players.get_group_and_player_lock(player_id):
+        async with playback_lock(self.mass, player_id):
             async with self._player_lock:
                 if self._unloading:
                     return
@@ -695,7 +695,7 @@ class WebKioskProvider(PlayerProvider):
 
     async def _stop_failed_playback(self, player_id: str, playback_generation: str) -> None:
         """Stop the current playback when the browser reports that it failed."""
-        async with self.mass.players.get_group_and_player_lock(player_id, strict=True):
+        async with playback_lock(self.mass, player_id):
             player = self.mass.players.get_player(player_id)
             if (
                 not isinstance(player, WebKioskPlayer)
@@ -715,7 +715,7 @@ class WebKioskProvider(PlayerProvider):
         """Play the next queue item, or stop when this track was the last one."""
         # Validate and dispatch under the playback lock, so a report checked
         # while a replacement track loads cannot act on that replacement.
-        async with self.mass.players.get_group_and_player_lock(player_id, strict=True):
+        async with playback_lock(self.mass, player_id):
             player = self.mass.players.get_player(player_id)
             if (
                 not isinstance(player, WebKioskPlayer)
