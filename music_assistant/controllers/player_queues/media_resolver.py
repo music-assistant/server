@@ -13,7 +13,7 @@ import asyncio
 import random
 from dataclasses import dataclass
 from types import NoneType
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 from music_assistant_models.enums import (
     ArtistType,
@@ -23,7 +23,7 @@ from music_assistant_models.enums import (
     SortDirection,
     SortField,
 )
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -84,7 +84,7 @@ from music_assistant.models.music_provider import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
 
     from music_assistant_models.media_items import ProviderMapping
 
@@ -97,6 +97,8 @@ _START_ITEM_SUBSTRING_MIN_LEN = 3
 _LIBRARY_SELECTIONS = frozenset({"library_tracks", "library_album_tracks", "prefer_library"})
 # caps the album track lookups in flight, so a large discography does not flood a provider
 ALBUM_LOOKUP_BATCH = 5
+# an expired login, too, only skips that provider's albums
+_ARTIST_ALBUMS_ERRORS: Final[tuple[type[Exception], ...]] = (*PROVIDER_FETCH_ERRORS, LoginFailed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -764,6 +766,38 @@ class MediaResolver:
 
         :param copies: The album's copies, in the order to try them.
         """
+        return await self._first_copy_with_tracks(copies, self._album_tracks)
+
+    async def album_copy_items(
+        self, copies: Sequence[Album], userid: str | None, queue_id: str | None
+    ) -> list[ResolvedItem]:
+        """
+        Return the first copy of an album with tracks to play, resolved as when played on its own.
+
+        Each track is pinned to the one source the album plays from, with the album as its
+        origin. The last copy's result is returned as it is, even when empty or failing.
+
+        :param copies: The album's copies, in the order to try them.
+        :param userid: Optional user the playback is for.
+        :param queue_id: Optional queue the playback is requested for.
+        """
+
+        async def _resolve(album: Album) -> list[ResolvedItem]:
+            return await self._resolve_album(album, None, userid, queue_id, None, None, False)
+
+        return await self._first_copy_with_tracks(copies, _resolve)
+
+    async def _first_copy_with_tracks[A: Album | ItemMapping, T](
+        self, copies: Sequence[A], fetch: Callable[[A], Awaitable[list[T]]]
+    ) -> list[T]:
+        """
+        Return what fetch gives for the first copy of an album with tracks to play.
+
+        The last copy's result is returned as it is, even when empty or failing.
+
+        :param copies: The album's copies, in the order to try them.
+        :param fetch: Returns the tracks of one copy.
+        """
         library_tracks = self._album_library_tracks_only()
         for album in copies[:-1]:
             # with the library tracks album setting, a copy in the library plays only its saved
@@ -774,9 +808,9 @@ class MediaResolver:
                     album.item_id, album.provider
                 )
             ):
-                return await self._album_tracks(album)
+                return await fetch(album)
             try:
-                tracks = await self._album_tracks(album)
+                tracks = await fetch(album)
             except PROVIDER_FETCH_ERRORS as err:
                 self.logger.log(
                     provider_fetch_log_level(err),
@@ -793,7 +827,7 @@ class MediaResolver:
                 album.name,
                 album.provider,
             )
-        return await self._album_tracks(copies[-1])
+        return await fetch(copies[-1])
 
     async def _set_episode_resume_point(
         self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
@@ -1120,7 +1154,7 @@ class MediaResolver:
                     )
                 )
                 listed = True
-            except PROVIDER_FETCH_ERRORS as err:
+            except _ARTIST_ALBUMS_ERRORS as err:
                 failed = True
                 # one failing provider must not drop the albums of the artist's other providers
                 self.logger.log(

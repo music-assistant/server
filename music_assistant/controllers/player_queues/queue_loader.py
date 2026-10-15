@@ -717,8 +717,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             album_tracks = (
                 await self._autoplay.get_album_tracks(queue) if mode == AutoplayMode.ALBUMS else []
             )
+            tracks: list[Track] = []
             if album_tracks:
-                tracks = album_tracks
+                # queued below, each with its album as its origin
+                pass
             elif mode == AutoplayMode.PLAYLIST:
                 tracks = await self._autoplay.get_playlist_tracks(queue, existing_tracks)
             elif mode == AutoplayMode.LIBRARY:
@@ -756,8 +758,17 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             if mode == AutoplayMode.ALBUMS:
                 # stay in albums: Auto's pick gives the next album, loose tracks only when none fits
                 album_tracks = await self._autoplay.get_album_of_tracks(queue, tracks)
-                tracks = album_tracks or tracks
-        queue_items = [build_queue_item(queue_id, x) for x in tracks if x.available]
+        # an album's tracks keep the album as their origin, so they play as the album does
+        queue_items = (
+            [
+                build_queue_item(
+                    queue_id, cast("PlayableMediaItemType", entry.item), origin=entry.origin
+                )
+                for entry in album_tracks
+            ]
+            if album_tracks
+            else [build_queue_item(queue_id, x) for x in tracks if x.available]
+        )
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
             return

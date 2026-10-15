@@ -34,7 +34,6 @@ from tests.controllers.player_queues.test_artist_album_order import (
     _add_album,
     _add_artist,
     _library_mapping,
-    _names,
     _providers_available,
     _set_order,
     _set_selection,
@@ -45,6 +44,7 @@ from tests.controllers.player_queues.test_artist_album_order import (
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
+    from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
     from music_assistant.mass import MusicAssistant
 
 __all__ = ["_providers_available"]
@@ -245,8 +245,14 @@ def _queue(mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, *tracks: Track
     """Build a queue holding the given tracks, wired into the queue controller."""
     queue_data = SimpleNamespace(items=[SimpleNamespace(media_item=track) for track in tracks])
     queue_data.userid = None
+    queue_data.queue = SimpleNamespace(queue_id="q1", display_name="Queue")
     monkeypatch.setattr(mass.player_queues, "queue_data", lambda _queue_id: queue_data)
-    return cast("PlayerQueue", SimpleNamespace(queue_id="q1", display_name="Queue"))
+    return cast("PlayerQueue", queue_data.queue)
+
+
+def _names(entries: list[ResolvedItem]) -> list[str]:
+    """Return the names of Autoplay's album tracks, in order."""
+    return [entry.item.name for entry in entries]
 
 
 def _queued_track(artists: list[Artist | ItemMapping], album: Album | ItemMapping | None) -> Track:
@@ -306,8 +312,8 @@ async def test_the_next_album_follows_the_album_artist(
     guest = await _library_artist(mass, "Guest")
     queue = _queue(mass, monkeypatch, _queued_track([guest], waterloo))
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-    lookup = AsyncMock(wraps=mass.music.albums.tracks)
-    monkeypatch.setattr(mass.music.albums, "tracks", lookup)
+    lookup = AsyncMock(wraps=mass.music.albums.playback_listing)
+    monkeypatch.setattr(mass.music.albums, "playback_listing", lookup)
 
     result = await Autoplay(mass.player_queues).get_album_tracks(queue)
 
@@ -471,9 +477,9 @@ async def _similar_setup(
     return _queue(mass, monkeypatch, *queued, last), seed, lookup
 
 
-def _album_of(tracks: list[Track]) -> set[str]:
+def _album_of(entries: list[ResolvedItem]) -> set[str]:
     """Return the album names the tracks are named after."""
-    return {track.name.rsplit(" ", 1)[0] for track in tracks}
+    return {name.rsplit(" ", 1)[0] for name in _names(entries)}
 
 
 async def test_a_similar_artist_plays_next_when_the_artist_runs_out(
@@ -614,7 +620,8 @@ async def test_auto_tries_each_album_once(
 
     assert _names(result) == ([f"{expected} 1", f"{expected} 2"] if expected else [])
     assert lookup.await_count == tries
-    assert library_lookup.await_count == tries
+    # once to find Auto's album in the library, once more to load it, as playing it does
+    assert library_lookup.await_count == 2 * tries
 
 
 async def test_an_album_auto_cannot_load_counts_as_a_failure(
@@ -731,14 +738,14 @@ async def test_a_similar_artist_plays_next_whatever_ends_the_artist(
             await _add_album(mass, seed, f"Broken {year}", year)
         # a 4th album that would load: the 3 failures end the artist first
         await _add_album(mass, seed, "Good", 1978)
-        copy_tracks = queues.album_copy_tracks
+        copy_items = queues.album_copy_items
 
-        async def _failing(copies: list[Album | ItemMapping]) -> list[Track]:
+        async def _failing(copies: list[Album], *args: Any) -> list[ResolvedItem]:
             if copies[0].name.startswith("Broken"):
                 raise MediaNotFoundError("gone")
-            return await copy_tracks(copies)
+            return await copy_items(copies, *args)
 
-        monkeypatch.setattr(queues, "album_copy_tracks", _failing)
+        monkeypatch.setattr(queues, "album_copy_items", _failing)
 
     result = await Autoplay(queues).get_album_tracks(queue)
 

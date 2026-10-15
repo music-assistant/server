@@ -30,9 +30,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemCollection, MediaItemMetadata
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
+from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.controllers.player_queues.autoplay import AutoplayMode
-from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.helpers.collections import get_collection_item_id
@@ -529,6 +530,12 @@ def _stop_states(prev_item: Any) -> tuple[CompareState, CompareState]:
     return cast("CompareState", prev_state), cast("CompareState", {"state": PlaybackState.IDLE})
 
 
+def _album_entries(*item_ids: str) -> list[ResolvedItem]:
+    """Build an album's tracks as Autoplay returns them, with the album as their origin."""
+    album = ItemMapping(media_type=MediaType.ALBUM, item_id="al1", provider="library", name="A")
+    return [ResolvedItem(_track(item_id), QueueItemOrigin(container=album)) for item_id in item_ids]
+
+
 def _tracker() -> Any:
     """Build a playback tracker stand-in for a single non-flow queue."""
     tracker = MagicMock()
@@ -735,7 +742,7 @@ async def test_an_album_batch_is_added_whole_without_the_recency_gate(shuffle: b
     loader = _loader(_queue_item(_track()), seeds=[_track()])
     loader.get.return_value.shuffle_enabled = shuffle
     loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
-    loader._autoplay.get_album_tracks = AsyncMock(return_value=[_track("a1"), _track("a2")])
+    loader._autoplay.get_album_tracks = AsyncMock(return_value=_album_entries("a1", "a2"))
     loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
 
     with (
@@ -752,6 +759,8 @@ async def test_an_album_batch_is_added_whole_without_the_recency_gate(shuffle: b
     gate.assert_not_called()
     loaded = loader.load.await_args.args[1]
     assert [item.media_item.item_id for item in loaded] == ["a1", "a2"]
+    # played from the album, so at the album's loudness
+    assert all(item.origin.container.media_type == MediaType.ALBUM for item in loaded)
     assert loader.load.await_args.kwargs["shuffle"] is shuffle
 
 
@@ -768,9 +777,7 @@ async def test_without_an_album_auto_picks_the_next_album(
     loader.get.return_value.shuffle_enabled = True
     loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
     loader._autoplay.get_album_tracks = AsyncMock(return_value=[])
-    loader._autoplay.get_album_of_tracks = AsyncMock(
-        return_value=[_track(item_id) for item_id in auto_album]
-    )
+    loader._autoplay.get_album_of_tracks = AsyncMock(return_value=_album_entries(*auto_album))
     loader._get_similar_tracks = AsyncMock(return_value=[_track("s1"), _track("s2")])
     loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
 

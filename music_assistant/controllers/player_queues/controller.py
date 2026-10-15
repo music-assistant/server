@@ -86,7 +86,7 @@ from music_assistant.controllers.player_queues.helpers import (
     is_finite_radio,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
-from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
@@ -1862,13 +1862,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         return await self._media_resolver._resolve_library_artist(artist)
 
-    async def album_copy_tracks(self, copies: Sequence[Album | ItemMapping]) -> list[Track]:
+    async def album_copy_items(
+        self, copies: Sequence[Album], userid: str | None, queue_id: str | None
+    ) -> list[ResolvedItem]:
         """
-        Return the tracks of the first copy of an album with tracks to play.
+        Return the first copy of an album with tracks to play, resolved as when played on its own.
 
         :param copies: The album's copies, in the order to try them.
+        :param userid: Optional user the playback is for.
+        :param queue_id: Optional queue the playback is requested for.
         """
-        return await self._media_resolver.album_copy_tracks(copies)
+        return await self._media_resolver.album_copy_items(copies, userid, queue_id)
 
     def recency_windows(self) -> RecencyWindows:
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""
