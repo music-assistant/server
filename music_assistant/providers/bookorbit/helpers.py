@@ -18,24 +18,19 @@ def is_audio_format(fmt: str | None) -> bool:
 
 
 def library_may_contain_audio(library: dict[str, Any]) -> bool:
-    """
-    Return True if a BookOrbit library should be queried during sync.
-
-    ``allowedFormats`` is a hint only: libraries may list non-audio formats while still
-    holding audiobooks, so every accessible library is queried. Books without audio
-    files are dropped after ``get_book`` (query + ``_audio_files``).
-    """
+    """Return whether a BookOrbit library should be included during sync."""
+    # allowedFormats is only a hint; query every accessible library and drop non-audio books later.
     _ = library
     return True
 
 
 def parse_browse_path(path: str) -> tuple[int | None, list[str]]:
     """
-    Split a browse path (``<instance_id>://lb <library id>/<section>/<item id>``).
+    Split a BookOrbit browse path into library id and path segments.
 
-    Returns the library id (None for the root) and the segments below the library
-    (``[]``, ``[section]`` or ``[section, item_id]``).
-    Raises ValueError for paths that are no BookOrbit browse paths.
+    :param path: Browse path (``<instance_id>://lb <library id>/<section>/<item id>``).
+    :returns: Library id (``None`` for the root) and segments below the library.
+    :raises ValueError: If the path is not a BookOrbit browse path.
     """
     _, _, item_path = path.partition("://")
     if not item_path:

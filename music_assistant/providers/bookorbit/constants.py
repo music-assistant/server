@@ -25,7 +25,6 @@ DOMAIN = "bookorbit"
 CONF_URL = "url"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"  # noqa: S105
-# CONF_API_TOKEN reserved for when BookOrbit adds long-lived keys (upstream #1234 / #1154).
 CONF_VERIFY_SSL = "verify_ssl"
 
 AUDIO_FORMATS = frozenset({"m4b", "mp3", "m4a", "opus", "ogg", "flac"})

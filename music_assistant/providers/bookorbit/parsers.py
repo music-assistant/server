@@ -24,7 +24,7 @@ NARRATOR_PREFIX = "narrator:"
 
 
 def _build_cover_url(*, base_url: str, book_id: int, version: str | None) -> str:
-    """Build the (authenticated) cover URL; the version busts caches on cover changes."""
+    """Build an authenticated cover URL, optionally versioned for cache busting."""
     cover_url = f"{base_url}{API_PREFIX}/books/{book_id}/cover"
     if version:
         cover_url += f"?t={version}"
@@ -39,7 +39,7 @@ def _absolute_url(base_url: str, path: str) -> str:
 
 
 def _person_image_path(person: dict[str, Any], *, base_url: str) -> str | None:
-    """Return an absolute photo URL when BookOrbit has a real person image (not a book cover)."""
+    """Return an absolute person photo URL when ``imageUrl`` is present."""
     if image_url := person.get("imageUrl"):
         return _absolute_url(base_url, str(image_url))
     return None
@@ -55,11 +55,7 @@ def _audio_files(book: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _parse_chapters(book: dict[str, Any], duration: float) -> list[MediaItemChapter]:
-    """
-    Build chapters for a book.
-
-    Multi-file audio gets one chapter per file; a single file uses its embedded chapters.
-    """
+    """Build chapter list for a book from files or embedded chapter metadata."""
     audio_files = _audio_files(book)
     if len(audio_files) > 1:
         chapters: list[MediaItemChapter] = []
@@ -95,7 +91,13 @@ def _parse_chapters(book: dict[str, Any], duration: float) -> list[MediaItemChap
 def parse_audiobook(
     book: dict[str, Any], *, provider_instance_id: str, base_url: str
 ) -> MassAudiobook:
-    """Translate a BookOrbit book (BookDetail) to a MassAudiobook."""
+    """
+    Translate a BookOrbit book detail payload to a Music Assistant audiobook.
+
+    :param book: BookOrbit ``BookDetail`` JSON.
+    :param provider_instance_id: Provider instance id for mappings and images.
+    :param base_url: Normalized BookOrbit base URL for cover/image paths.
+    """
     book_id = book["id"]
     item_id = str(book_id)
     audio_metadata = book.get("audioMetadata") or {}
@@ -123,7 +125,7 @@ def parse_audiobook(
                 item_id=item_id,
                 provider_domain=DOMAIN,
                 provider_instance=provider_instance_id,
-                # MA only re-imports when mappings/date_added change; updatedAt forces a refresh
+                # Store updatedAt so library sync can detect remote metadata changes.
                 details=str(book.get("updatedAt") or ""),
             )
         },
@@ -173,7 +175,7 @@ def parse_audiobook(
     else:
         metadata.images = UniqueList([])
 
-    # BookCard payloads carry plain name strings without ids; only detail objects are linked
+    # BookCard may only have name strings; link authors only when detail objects include ids.
     mass_audiobook.authors.set(
         [
             parse_author(author, provider_instance_id=provider_instance_id, base_url=base_url)
@@ -209,6 +211,7 @@ def _parse_person(
     provider_instance_id: str,
     base_url: str,
 ) -> MassArtist:
+    """Translate a BookOrbit person object to a Music Assistant artist."""
     item_id = f"{prefix}{person['id']}"
     image_path = _person_image_path(person, base_url=base_url)
     mass_artist = MassArtist(
@@ -221,7 +224,7 @@ def _parse_person(
                 item_id=item_id,
                 provider_domain=DOMAIN,
                 provider_instance=provider_instance_id,
-                # Image fingerprint forces a library refresh when photos change.
+                # Image path fingerprint so photo changes trigger a library refresh.
                 details=image_path or "",
             )
         },
@@ -246,7 +249,13 @@ def _parse_person(
 
 
 def parse_author(author: dict[str, Any], *, provider_instance_id: str, base_url: str) -> MassArtist:
-    """Translate a BookOrbit author to a MassArtist."""
+    """
+    Translate a BookOrbit author to a Music Assistant artist.
+
+    :param author: Author JSON object.
+    :param provider_instance_id: Provider instance id for mappings and images.
+    :param base_url: Normalized BookOrbit base URL for image paths.
+    """
     return _parse_person(
         author,
         prefix=AUTHOR_PREFIX,
@@ -259,7 +268,13 @@ def parse_author(author: dict[str, Any], *, provider_instance_id: str, base_url:
 def parse_narrator(
     narrator: dict[str, Any], *, provider_instance_id: str, base_url: str
 ) -> MassArtist:
-    """Translate a BookOrbit narrator to a MassArtist."""
+    """
+    Translate a BookOrbit narrator to a Music Assistant artist.
+
+    :param narrator: Narrator JSON object.
+    :param provider_instance_id: Provider instance id for mappings and images.
+    :param base_url: Normalized BookOrbit base URL for image paths.
+    """
     return _parse_person(
         narrator,
         prefix=NARRATOR_PREFIX,

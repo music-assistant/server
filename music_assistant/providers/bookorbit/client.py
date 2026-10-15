@@ -37,16 +37,7 @@ class BookOrbitAuthError(Exception):
 
 
 class BookOrbitClient:
-    """
-    Minimal async client for BookOrbit.
-
-    Tokens are held on the instance only (not persisted); the client re-logins
-    with the configured credentials when refresh is no longer possible.
-
-    Without a ``session`` the client owns a session with a dummy cookie jar, so the
-    refresh cookie never leaks into (or is overwritten by) a shared cookie jar;
-    call :meth:`close` when done.
-    """
+    """Async client for the BookOrbit ``/api/v1`` endpoints."""
 
     def __init__(
         self,
@@ -56,7 +47,15 @@ class BookOrbitClient:
         verify_ssl: bool = True,
         session: ClientSession | None = None,
     ) -> None:
-        """Initialize the client."""
+        """
+        Initialize the client.
+
+        :param base_url: BookOrbit server URL.
+        :param username: Login username.
+        :param password: Login password.
+        :param verify_ssl: Whether to verify TLS certificates.
+        :param session: Optional shared session; when omitted the client owns one.
+        """
         self._session = session
         self._owns_session = session is None
         self.base_url = normalize_base_url(base_url)
@@ -71,6 +70,7 @@ class BookOrbitClient:
     def session(self) -> ClientSession:
         """Return the HTTP session (created on first use when owned)."""
         if self._session is None or (self._owns_session and self._session.closed):
+            # Own a dummy jar so the refresh cookie never leaks into a shared session.
             self._session = ClientSession(cookie_jar=DummyCookieJar(), timeout=AIOHTTP_TIMEOUT)
         return self._session
 
@@ -80,17 +80,24 @@ class BookOrbitClient:
             await self._session.close()
 
     async def login(self) -> None:
-        """Log in with username/password; store access token and refresh cookie."""
+        """Log in with username/password and store access token and refresh cookie."""
         async with self._auth_lock:
             await self._login()
 
     async def refresh(self) -> bool:
-        """Refresh the access token using the refresh cookie. Returns success."""
+        """Refresh the access token using the refresh cookie."""
         async with self._auth_lock:
             return await self._refresh()
 
     async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        """Make an authenticated request; on 401 refresh (then login) once and retry."""
+        """
+        Make an authenticated request, refreshing once on HTTP 401.
+
+        :param method: HTTP method.
+        :param path: Absolute path or URL under the BookOrbit API.
+        :returns: Parsed JSON, response bytes, or ``None``.
+        :raises BookOrbitAuthError: If authentication still fails after retry.
+        """
         await self._ensure_token()
         token = self.access_token
         status, data = await self._send(method, path, **kwargs)
@@ -107,7 +114,11 @@ class BookOrbitClient:
         return await self.request("GET", f"{API_PREFIX}/libraries")  # type: ignore[no-any-return]
 
     async def query_audiobooks(self, *, library_id: int | None = None) -> list[dict[str, Any]]:
-        """Return all audio-format books (optionally limited to one library)."""
+        """
+        Return all audio-format books.
+
+        :param library_id: When set, limit the query to that library.
+        """
         if library_id is not None:
             query_path = f"{API_PREFIX}/libraries/{library_id}/books"
         else:
@@ -133,15 +144,15 @@ class BookOrbitClient:
         return books
 
     async def get_book(self, book_id: int) -> dict[str, Any]:
-        """Return a single book."""
+        """Return a single book detail payload."""
         return await self.request("GET", f"{API_PREFIX}/books/{book_id}")  # type: ignore[no-any-return]
 
     async def search_books(self, query: str) -> list[dict[str, Any]]:
-        """Search books (``GET /books/search?q=``)."""
+        """Search books by query string."""
         return await self._search("books/search", query)
 
     async def list_authors(self) -> list[dict[str, Any]]:
-        """Return all authors (paginated ``GET /authors``), including photo fields."""
+        """Return all authors, including photo fields when present."""
         authors: list[dict[str, Any]] = []
         for page in range(QUERY_MAX_PAGES):
             payload = await self.request(
@@ -163,15 +174,15 @@ class BookOrbitClient:
         return authors
 
     async def search_authors(self, query: str) -> list[dict[str, Any]]:
-        """Search authors in the catalog (``GET /metadata/authors?q=``)."""
+        """Search authors in the catalog."""
         return await self._search("metadata/authors", query)
 
     async def search_narrators(self, query: str) -> list[dict[str, Any]]:
-        """Search narrators in the catalog (``GET /metadata/narrators?q=``)."""
+        """Search narrators in the catalog."""
         return await self._search("metadata/narrators", query)
 
     async def get_audio_progress(self, book_id: int) -> dict[str, Any] | None:
-        """Return audio progress for a book, or None if there is none."""
+        """Return legacy audio progress for a book, or ``None`` if absent."""
         try:
             data = await self.request("GET", f"{API_PREFIX}/books/{book_id}/audio-progress")
         except ClientResponseError as err:
@@ -188,7 +199,7 @@ class BookOrbitClient:
         current_file_id: int,
         position_seconds: float,
     ) -> None:
-        """Create/update audio progress for a book (legacy endpoint)."""
+        """Create or update legacy audio progress for a book."""
         await self.request(
             "PATCH",
             f"{API_PREFIX}/books/{book_id}/audio-progress",
@@ -200,7 +211,7 @@ class BookOrbitClient:
         )
 
     async def get_playback_state(self, book_id: int) -> dict[str, Any] | None:
-        """Return audiobook playback state, or None if there is none."""
+        """Return audiobook playback state, or ``None`` if absent."""
         try:
             data = await self.request("GET", f"{API_PREFIX}/audiobooks/{book_id}/playback-state")
         except ClientResponseError as err:
@@ -220,7 +231,7 @@ class BookOrbitClient:
         base_revision: int,
         manifest_revision: str,
     ) -> dict[str, Any]:
-        """Create/update audiobook playback state (BookOrbit 3.4 player API)."""
+        """Create or update audiobook playback state."""
         return await self.request(  # type: ignore[no-any-return]
             "PUT",
             f"{API_PREFIX}/audiobooks/{book_id}/playback-state",
@@ -235,7 +246,7 @@ class BookOrbitClient:
         )
 
     async def get_cover(self, url: str) -> bytes | None:
-        """Return the bytes of a (BookOrbit) cover image, or None if there is none."""
+        """Return cover image bytes for the given URL, or ``None`` if missing."""
         try:
             data = await self.request("GET", url)
         except ClientResponseError as err:
@@ -245,13 +256,13 @@ class BookOrbitClient:
         return data if isinstance(data, bytes) and data else None
 
     async def get_audiobook_manifest(self, book_id: int) -> dict[str, Any]:
-        """Return the audiobook playback manifest (assets + chapters) for a book."""
+        """Return the audiobook playback manifest for a book."""
         return await self.request(  # type: ignore[no-any-return]
             "GET", f"{API_PREFIX}/audiobooks/{book_id}/manifest"
         )
 
     def stream_url(self, book_id: int, asset_id: str) -> str:
-        """Return the absolute URL serving one audiobook asset (BookOrbit 3.4+)."""
+        """Return the absolute URL that serves one audiobook asset."""
         # Audio must use the audiobook content route; /books/files/{id}/serve rejects audio.
         return f"{self.base_url}{API_PREFIX}/audiobooks/{book_id}/assets/{asset_id}/content"
 
@@ -264,9 +275,17 @@ class BookOrbitClient:
         timeout: ClientTimeout | None = None,
     ) -> ClientResponse:
         """
-        Open an audiobook asset for streaming; the caller must release the response.
+        Open an audiobook asset for streaming.
 
-        On 401 the token is refreshed (or the client logs in again) and the request retried once.
+        The caller must release the response. On HTTP 401 the token is refreshed once
+        and the request is retried.
+
+        :param book_id: Book identifier.
+        :param asset_id: Manifest asset identifier.
+        :param range_header: Optional HTTP Range header value.
+        :param timeout: Optional request timeout override.
+        :returns: Open aiohttp response.
+        :raises BookOrbitAuthError: If authentication still fails after retry.
         """
         await self._ensure_token()
         extra = {"Range": range_header} if range_header else None
@@ -286,7 +305,7 @@ class BookOrbitClient:
         )
 
     async def _ensure_token(self) -> None:
-        """Log in unless an access token is held (once, for concurrent callers)."""
+        """Ensure an access token is available before a request."""
         if self.access_token:
             return
         async with self._auth_lock:
@@ -294,11 +313,7 @@ class BookOrbitClient:
                 await self._login()
 
     async def _reauthenticate(self, rejected_token: str | None) -> None:
-        """
-        Replace a rejected access token: refresh, else log in again.
-
-        Concurrent callers rejected with the same token share one refresh.
-        """
+        """Replace a rejected access token via refresh or login."""
         async with self._auth_lock:
             if self.access_token and self.access_token != rejected_token:
                 return
@@ -306,6 +321,7 @@ class BookOrbitClient:
                 await self._login()
 
     async def _login(self) -> None:
+        """Perform username/password login and capture tokens."""
         async with self.session.post(
             self._url(f"{API_PREFIX}/auth/login"),
             json={"username": self.username, "password": self.password},
@@ -321,6 +337,7 @@ class BookOrbitClient:
             self._capture_refresh_cookie(resp)
 
     async def _refresh(self) -> bool:
+        """Attempt token refresh; return whether a new access token was stored."""
         if not self.refresh_token:
             return False
         try:
@@ -342,26 +359,31 @@ class BookOrbitClient:
             return False
 
     async def _search(self, endpoint: str, query: str) -> list[dict[str, Any]]:
+        """Run a GET search endpoint and return item dicts."""
         payload = await self.request("GET", f"{API_PREFIX}/{endpoint}", params={"q": query})
         return self._extract_items(payload)
 
     def _url(self, path: str) -> str:
+        """Build an absolute URL from a path or return an absolute URL unchanged."""
         if path.startswith(("http://", "https://")):
             return path
         return f"{self.base_url}{path}"
 
     def _capture_refresh_cookie(self, response: Any) -> None:
+        """Store the refresh cookie from an auth response when present."""
         morsel = response.cookies.get(REFRESH_COOKIE)
         if morsel is not None and morsel.value:
             self.refresh_token = morsel.value
 
     def _headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+        """Build request headers including the bearer token when available."""
         headers: dict[str, str] = dict(extra or {})
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
         return headers
 
     async def _send(self, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:
+        """Send one HTTP request and return status plus body."""
         headers = self._headers(kwargs.pop("headers", None))
         async with self.session.request(
             method, self._url(path), headers=headers, ssl=self.verify_ssl, **kwargs
@@ -382,6 +404,7 @@ class BookOrbitClient:
 
     @staticmethod
     def _build_query(page: int) -> dict[str, Any]:
+        """Build a BookOrbit books query payload for one page."""
         return {
             "filter": {
                 "type": "group",
@@ -401,6 +424,7 @@ class BookOrbitClient:
 
     @staticmethod
     def _extract_items(payload: Any) -> list[dict[str, Any]]:
+        """Extract a list of item dicts from a list or paged payload."""
         if isinstance(payload, list):
             return payload
         if isinstance(payload, dict):

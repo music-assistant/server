@@ -43,7 +43,6 @@ _ENTRIES = (
         type=ConfigEntryType.SECURE_STRING,
         required=False,
     ),
-    # No API-token field until BookOrbit supports long-lived keys (upstream #1234 / #1154).
     ConfigEntry(
         key=CONF_VERIFY_SSL,
         type=ConfigEntryType.BOOLEAN,

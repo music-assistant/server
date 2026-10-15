@@ -1,11 +1,4 @@
-"""
-Conversion between Music Assistant positions and BookOrbit audio progress.
-
-BookOrbit 3.4 stores playback in the audiobook playback-state API (assetId + positionMs).
-The legacy ``/books/{id}/audio-progress`` endpoint writes the same row but does not carry
-manifest revision / operation ids the BookOrbit player expects.
-Music Assistant works with one absolute position over the whole (multi-file) audiobook.
-"""
+"""Conversion between Music Assistant positions and BookOrbit progress payloads."""
 
 from __future__ import annotations
 
@@ -19,7 +12,7 @@ FULLY_PLAYED_PERCENTAGE = 100.0
 
 @dataclass(frozen=True)
 class ProgressUpdate:
-    """Body of a BookOrbit audio-progress PATCH (legacy)."""
+    """Body of a BookOrbit legacy audio-progress PATCH."""
 
     percentage: float
     current_file_id: int
@@ -28,7 +21,7 @@ class ProgressUpdate:
 
 @dataclass(frozen=True)
 class PlaybackStateUpdate:
-    """Body fields for BookOrbit ``PUT /audiobooks/{id}/playback-state``."""
+    """Body fields for BookOrbit audiobook playback-state updates."""
 
     asset_id: str
     position_ms: int
@@ -37,10 +30,12 @@ class PlaybackStateUpdate:
 
 
 def _duration(file: dict[str, Any]) -> float:
+    """Return a file's duration in seconds."""
     return float(file.get("durationSeconds") or 0)
 
 
 def _manifest_assets(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return manifest assets sorted by sequence."""
     return sorted(
         (a for a in (manifest.get("assets") or []) if a.get("assetId")),
         key=lambda asset: int(asset.get("sequence") or 0),
@@ -50,7 +45,14 @@ def _manifest_assets(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 def build_progress_update(
     audio_files: list[dict[str, Any]], *, position: float, fully_played: bool
 ) -> ProgressUpdate | None:
-    """Translate an absolute position (seconds) into a BookOrbit progress update."""
+    """
+    Translate an absolute position into a legacy BookOrbit progress update.
+
+    :param audio_files: Ordered audio files for the book.
+    :param position: Absolute position in seconds across the whole audiobook.
+    :param fully_played: Whether playback is complete.
+    :returns: Progress payload, or ``None`` when there are no audio files.
+    """
     if not audio_files:
         return None
     total = sum(_duration(f) for f in audio_files)
@@ -80,7 +82,14 @@ def build_progress_update(
 def build_playback_state_update(
     manifest: dict[str, Any], *, position: float, fully_played: bool
 ) -> PlaybackStateUpdate | None:
-    """Translate an absolute position (seconds) into a BookOrbit playback-state update."""
+    """
+    Translate an absolute position into a BookOrbit playback-state update.
+
+    :param manifest: Audiobook playback manifest.
+    :param position: Absolute position in seconds across the whole audiobook.
+    :param fully_played: Whether playback is complete.
+    :returns: Playback-state payload, or ``None`` when assets/revision are missing.
+    """
     assets = _manifest_assets(manifest)
     revision = manifest.get("revision")
     if not assets or not revision:
@@ -125,7 +134,13 @@ def build_playback_state_update(
 def parse_resume_position(
     audio_files: list[dict[str, Any]], progress: dict[str, Any]
 ) -> tuple[bool, int, datetime | None]:
-    """Translate BookOrbit audio progress to (fully played, position in ms, timestamp)."""
+    """
+    Translate legacy BookOrbit progress into a Music Assistant resume position.
+
+    :param audio_files: Ordered audio files for the book.
+    :param progress: Legacy audio-progress payload.
+    :returns: Fully played flag, absolute position in ms, and optional timestamp.
+    """
     percentage = float(progress.get("percentage") or 0)
     fully_played = percentage >= FULLY_PLAYED_PERCENTAGE
     total = sum(_duration(f) for f in audio_files)
@@ -152,7 +167,13 @@ def parse_resume_position(
 def parse_resume_position_from_playback_state(
     manifest: dict[str, Any], state: dict[str, Any]
 ) -> tuple[bool, int, datetime | None]:
-    """Translate BookOrbit playback-state to (fully played, absolute position in ms, timestamp)."""
+    """
+    Translate BookOrbit playback-state into a Music Assistant resume position.
+
+    :param manifest: Audiobook playback manifest.
+    :param state: Playback-state payload.
+    :returns: Fully played flag, absolute position in ms, and optional timestamp.
+    """
     percentage = float(state.get("percentage") or 0)
     fully_played = bool(state.get("completed")) or percentage >= FULLY_PLAYED_PERCENTAGE
     asset_id = state.get("assetId")

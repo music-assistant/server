@@ -126,12 +126,12 @@ def _book_haystack(book: dict[str, Any]) -> str:
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
-    """Initialize provider instance."""
+    """Create and return a BookOrbit provider instance."""
     return BookOrbitProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 class BookOrbitProvider(MusicProvider):
-    """BookOrbit MusicProvider (audiobooks)."""
+    """Music provider for BookOrbit audiobooks."""
 
     _client: BookOrbitClient
     _unregister_route: Callable[[], None] | None = None
@@ -143,22 +143,19 @@ class BookOrbitProvider(MusicProvider):
         config: ProviderConfig,
         supported_features: set[ProviderFeature] | None = None,
     ) -> None:
-        """Initialize the provider state."""
+        """Initialize provider caches used for catalog, browse, and streaming."""
         super().__init__(mass, manifest, config, supported_features)
-        # BookOrbit book details (id -> BookDetail) of the audiobooks found by the last sync
         self._catalog: dict[str, dict[str, Any]] = {}
         self._catalog_refreshed_at: float = 0.0
         self._catalog_lock = asyncio.Lock()
-        # book id -> asset ids handed out by get_stream_details (the proxy serves only these)
+        # Only assets returned by get_stream_details may be served by the proxy.
         self._stream_assets: dict[str, set[str]] = {}
-        # library id -> name / ids of the catalog's audiobooks in that library (for browse)
         self._library_names: dict[int, str] = {}
         self._library_books: dict[int, list[str]] = {}
-        # author id -> list payload (imageUrl, coverBookId, description, …)
         self._author_meta: dict[int, dict[str, Any]] = {}
 
     async def handle_async_init(self) -> None:
-        """Create the BookOrbit client from the config and log in."""
+        """Create the BookOrbit client from config, log in, and register the stream proxy."""
         self.base_url = normalize_base_url(str(self.get_setup_value(CONF_URL)))
         self._client = BookOrbitClient(
             base_url=self.base_url,
@@ -174,13 +171,13 @@ class BookOrbitProvider(MusicProvider):
         except ClientError as err:
             await self._client.close()
             raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
-        # audio files are proxied by MA, so no token ends up in a stream url
+        # Proxy audio through MA so stream URLs never carry auth tokens.
         self._unregister_route = self.mass.streams.register_dynamic_route(
             f"/{self.instance_id}_part_stream", self._handle_part_request
         )
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
+        """Unload the provider and close its BookOrbit client."""
         await super().unload(is_removed)
         if unregister := self._unregister_route:
             self._unregister_route = None
@@ -189,7 +186,7 @@ class BookOrbitProvider(MusicProvider):
             await client.close()
 
     async def resolve_image(self, path: str) -> str | bytes | None:
-        """Fetch BookOrbit covers with the provider's credentials."""
+        """Fetch a BookOrbit image using the provider credentials when needed."""
         if not path.startswith(f"{self.base_url}/"):
             return path
         try:
@@ -200,33 +197,36 @@ class BookOrbitProvider(MusicProvider):
 
     @property
     def supported_artist_types(self) -> set[ArtistType]:
-        """Supported artist types."""
+        """Return the artist types this provider supports."""
         return {ArtistType.AUTHOR, ArtistType.NARRATOR}
 
     async def sync_library(self, media_type: MediaType) -> None:
-        """Refresh the catalog of audiobooks, then sync audiobooks / artists from it."""
+        """Refresh the BookOrbit catalog when needed, then sync library items."""
         if media_type == MediaType.AUDIOBOOK:
-            # Always re-fetch BookOrbit on an explicit library sync so metadata edits land.
+            # Force a remote refetch so metadata edits in BookOrbit are picked up.
             await self._refresh_catalog(force=True)
         elif media_type == MediaType.ARTIST:
-            # Reuse the catalog just built by the audiobook sync when still fresh.
             await self._refresh_catalog()
         await super().sync_library(media_type)
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
-        """Retrieve the audiobooks found by the catalog refresh."""
+        """Yield audiobooks from the current catalog."""
         for book in list(self._catalog.values()):
             yield parse_audiobook(
                 book, provider_instance_id=self.instance_id, base_url=self.base_url
             )
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
-        """Retrieve the authors and narrators of the catalog's audiobooks."""
+        """Yield authors and narrators from the current catalog."""
         for artist in self._catalog_artists().values():
             yield artist
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get an author (``author:<id>``) or narrator (``narrator:<id>``)."""
+        """
+        Return an author or narrator by provider id.
+
+        :param prov_artist_id: ``author:<id>`` or ``narrator:<id>``.
+        """
         if not prov_artist_id.startswith((AUTHOR_PREFIX, NARRATOR_PREFIX)):
             raise MediaNotFoundError(f"Invalid BookOrbit artist id {prov_artist_id}")
         if artist := self._catalog_artists().get(prov_artist_id):
@@ -238,7 +238,7 @@ class BookOrbitProvider(MusicProvider):
         raise MediaNotFoundError(f"BookOrbit artist {prov_artist_id} not found")
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get a single audiobook."""
+        """Return a single audiobook by BookOrbit book id."""
         try:
             book = await self._client.get_book(int(prov_audiobook_id))
         except ValueError as err:
@@ -252,7 +252,12 @@ class BookOrbitProvider(MusicProvider):
         return parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get the stream of an audiobook: one HTTP part per audio asset, proxied by MA."""
+        """
+        Return stream details for an audiobook.
+
+        :param item_id: BookOrbit book id.
+        :param media_type: Must be ``MediaType.AUDIOBOOK``.
+        """
         if media_type != MediaType.AUDIOBOOK:
             raise MediaNotFoundError("Stream unknown")
         try:
@@ -291,7 +296,6 @@ class BookOrbitProvider(MusicProvider):
         if total_ms is not None:
             duration = round(float(total_ms) / 1000.0)
         else:
-            # Fall back to BookDetail when the manifest omits totalDurationMs.
             book = await self._get_book(item_id, fresh=True)
             parsed_duration = parse_audiobook(
                 book, provider_instance_id=self.instance_id, base_url=self.base_url
@@ -313,7 +317,7 @@ class BookOrbitProvider(MusicProvider):
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
-        """Return (fully played, position in ms, timestamp) from BookOrbit playback state."""
+        """Return resume position from BookOrbit playback state when available."""
         if media_type != MediaType.AUDIOBOOK:
             raise NotImplementedError
         try:
@@ -322,8 +326,7 @@ class BookOrbitProvider(MusicProvider):
             state = await self._client.get_playback_state(book_id)
             if state:
                 return parse_resume_position_from_playback_state(manifest, state)
-            # Legacy fallback when only /audio-progress has been written.
-            # Fetch fresh BookDetail so file durations match the write path.
+            # Fall back to legacy /audio-progress when playback-state is empty.
             book = await self._get_book(item_id, fresh=True)
             progress = await self._client.get_audio_progress(book_id)
         except (ClientError, MediaNotFoundError, ValueError) as err:
@@ -341,7 +344,7 @@ class BookOrbitProvider(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Report progress of an audiobook to BookOrbit's playback-state API."""
+        """Report audiobook progress back to BookOrbit."""
         if media_type != MediaType.AUDIOBOOK:
             return
         try:
@@ -355,22 +358,9 @@ class BookOrbitProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
-        Browse BookOrbit (audiobooks only).
+        Browse BookOrbit libraries, authors, narrators, series, and audiobooks.
 
-        Generates this view:
-        Library_Name_A (Audiobooks library)
-            Authors
-                Author_1 (folder)
-                    Audiobook_1
-            Narrators
-                Narrator_1 (folder)
-                    Audiobook_1
-            Series
-                Series_1 (folder)
-                    Audiobook_1
-            Audiobooks
-                Audiobook_1
-                Audiobook_2
+        :param path: Browse path for this provider instance.
         """
         try:
             library_id, sub_path = parse_browse_path(path)
@@ -407,7 +397,13 @@ class BookOrbitProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Search audiobooks, authors and narrators."""
+        """
+        Search audiobooks, authors, and narrators.
+
+        :param search_query: Free-text query.
+        :param media_types: Media types to include in the result.
+        :param limit: Maximum number of results per media type.
+        """
         results = SearchResults()
         query = search_query.strip()
         if not query:
@@ -422,7 +418,7 @@ class BookOrbitProvider(MusicProvider):
     def _library_item_needs_update(
         self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
     ) -> bool:
-        """Refresh when BookOrbit ``updatedAt``, title/subtitle, or sole-provider images changed."""
+        """Return whether a library item should be refreshed from the provider item."""
         if super()._library_item_needs_update(library_item, prov_item):
             return True
         for prov_map in prov_item.provider_mappings:
@@ -441,19 +437,18 @@ class BookOrbitProvider(MusicProvider):
                 return True
         if not self._is_sole_library_provider(library_item):
             return False
-        # Sole-provider title embeds subtitle; catch edits even if updatedAt was already synced
-        # into mapping details before the library name was rewritten.
+        # Catch sole-provider title/subtitle edits even when mapping details already match.
         lib_name = getattr(library_item, "name", None)
         if lib_name is not None and lib_name != prov_item.name:
             return True
-        # Full library items only (sync-details omit images); empty provider images must clear.
+        # Sync-details omit images; empty provider images must clear sole-provider thumbs.
         return bool(
             hasattr(library_item, "metadata")
             and self._provider_image_paths(library_item) != self._provider_image_paths(prov_item)
         )
 
     def _provider_image_paths(self, item: MediaItemType | LibraryItemSyncDetails) -> list[str]:
-        """Return sorted image paths owned by this BookOrbit instance."""
+        """Return sorted image paths owned by this provider instance."""
         metadata = getattr(item, "metadata", None)
         if metadata is None or not metadata.images:
             return []
@@ -464,17 +459,11 @@ class BookOrbitProvider(MusicProvider):
     def _is_sole_library_provider(
         self, library_item: MediaItemType | LibraryItemSyncDetails
     ) -> bool:
-        """Return True when BookOrbit is the only provider mapped on the library item."""
+        """Return whether this instance is the only provider mapped on the item."""
         return {x.provider_instance for x in library_item.provider_mappings} == {self.instance_id}
 
     async def _sync_library_artists(self) -> set[int]:
-        """
-        Sync artists, overwriting when BookOrbit solely owns the item.
-
-        MA merges images and treats an empty provider image list as “keep existing”, so
-        removed author/narrator photos (or dropped book-cover stand-ins) stay in the DB
-        unless we overwrite and explicitly strip our images when the provider has none.
-        """
+        """Sync authors and narrators into the Music Assistant library."""
         self.logger.debug("Start sync of Artists to Music Assistant library.")
         cur_db_ids: set[int] = set()
         item_count = 0
@@ -506,7 +495,7 @@ class BookOrbitProvider(MusicProvider):
                                 overwrite=sole,
                             )
                             db_id = int(library_item.item_id)
-                            # overwrite + empty images does not replace metadata (all-falsey stub)
+                            # overwrite + empty images does not clear existing metadata images
                             if sole and not self._provider_image_paths(prov_item):
                                 await self.mass.music.artists._remove_provider_images(
                                     db_id, self.instance_id
@@ -538,13 +527,7 @@ class BookOrbitProvider(MusicProvider):
         return cur_db_ids
 
     async def _sync_library_audiobooks(self) -> set[int]:
-        """
-        Sync audiobooks, overwriting library metadata when BookOrbit solely owns the item.
-
-        MA's default audiobook update merges/fill-gaps (title, description, publisher, …).
-        Sync-details also omit mapping ``details``, so change detection loads the full
-        library item for ``updatedAt`` / title comparison.
-        """
+        """Sync audiobooks into the Music Assistant library."""
         self.logger.debug("Start sync of Audiobooks to Music Assistant library.")
         cur_db_ids: set[int] = set()
         item_count = 0
@@ -573,6 +556,7 @@ class BookOrbitProvider(MusicProvider):
                         lib_fully_played = library_item.fully_played
                         lib_resume_position_ms = library_item.resume_position_ms
                     else:
+                        # Load the full item so updatedAt / title / images can be compared.
                         library_item = await self.mass.music.audiobooks.get_library_item(
                             sync_details.item_id
                         )
@@ -631,11 +615,10 @@ class BookOrbitProvider(MusicProvider):
     async def _sync_playback_state(
         self, book_id: int, *, position: int, fully_played: bool
     ) -> None:
-        """Write absolute MA position to BookOrbit playback-state, with legacy fallback."""
+        """Write an absolute Music Assistant position to BookOrbit playback state."""
         manifest = await self._client.get_audiobook_manifest(book_id)
         update = build_playback_state_update(manifest, position=position, fully_played=fully_played)
         if update is None:
-            # Manifest missing assets/revision — fall back to legacy audio-progress.
             await self._sync_audio_progress_legacy(
                 book_id, position=position, fully_played=fully_played
             )
@@ -676,7 +659,7 @@ class BookOrbitProvider(MusicProvider):
     async def _sync_audio_progress_legacy(
         self, book_id: int, *, position: int, fully_played: bool
     ) -> None:
-        """Write progress via legacy ``/books/{id}/audio-progress``."""
+        """Write progress using the legacy BookOrbit audio-progress endpoint."""
         book = await self._get_book(str(book_id), fresh=True)
         files = _audio_files(book)
         if len(files) > 1 and any(f.get("durationSeconds") is None for f in files):
@@ -696,7 +679,7 @@ class BookOrbitProvider(MusicProvider):
         )
 
     async def _get_book(self, item_id: str, *, fresh: bool = False) -> dict[str, Any]:
-        """Return the BookDetail of a book (from the catalog unless fresh is requested)."""
+        """Return book detail from the catalog, or fetch it when ``fresh`` is set."""
         if not fresh and (book := self._catalog.get(item_id)):
             return book
         try:
@@ -709,7 +692,7 @@ class BookOrbitProvider(MusicProvider):
             raise
 
     async def _handle_part_request(self, request: web.Request) -> web.StreamResponse:
-        """Proxy one audiobook asset, with a fresh token and range support."""
+        """Proxy one audiobook asset to the player with auth and Range support."""
         try:
             book_id = str(int(request.query["book_id"]))
             asset_id = str(request.query["asset_id"])
@@ -756,16 +739,16 @@ class BookOrbitProvider(MusicProvider):
         return response
 
     def _book_asset_ids(self, book_id: str) -> set[str]:
-        """Return the asset ids handed out by a prior get_stream_details for this book."""
+        """Return asset ids previously exposed by get_stream_details for a book."""
         return self._stream_assets.get(book_id, set())
 
     async def _ensure_catalog(self) -> None:
-        """Make sure a catalog is loaded; a loaded catalog is only refreshed by syncs."""
+        """Ensure a catalog is loaded before browse or search."""
         if not self._catalog:
             await self._refresh_catalog()
 
     async def _refresh_catalog(self, *, force: bool = False) -> None:
-        """Fetch all audiobooks (with details) from accessible libraries (single-flight)."""
+        """Refresh the in-memory catalog, coalescing concurrent callers."""
         requested_at = time.monotonic()
         async with self._catalog_lock:
             if self._catalog_refreshed_at and (
@@ -776,6 +759,7 @@ class BookOrbitProvider(MusicProvider):
             await self._fetch_catalog()
 
     async def _fetch_catalog(self) -> None:
+        """Fetch audiobook details and author metadata from BookOrbit."""
         try:
             libraries = await self._client.list_libraries()
             catalog: dict[str, dict[str, Any]] = {}
@@ -794,7 +778,6 @@ class BookOrbitProvider(MusicProvider):
                             self.logger.warning("Skipping BookOrbit book %s: %s", book_id, err)
                             self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
                             continue
-                        # books without audio files (ebook only) are no audiobooks
                         if not _audio_files(book):
                             continue
                         catalog[book_id] = book
@@ -802,7 +785,7 @@ class BookOrbitProvider(MusicProvider):
                 if members:
                     library_names[library["id"]] = str(library.get("name") or library["id"])
                     library_books[library["id"]] = members
-            # Book detail authors omit imageUrl/coverBookId; the authors list carries them.
+            # Book detail authors often omit imageUrl; the authors list carries photos.
             author_meta: dict[int, dict[str, Any]] = {}
             try:
                 for author in await self._client.list_authors():
@@ -823,7 +806,7 @@ class BookOrbitProvider(MusicProvider):
         self._catalog_refreshed_at = time.monotonic()
 
     def _enrich_author(self, author: dict[str, Any]) -> dict[str, Any]:
-        """Merge list-level author fields (photo/bio) onto a book-embedded author."""
+        """Attach list-level author photo/bio fields onto a book-embedded author."""
         meta = self._author_meta.get(int(author["id"]))
         if not meta:
             return author
@@ -834,7 +817,7 @@ class BookOrbitProvider(MusicProvider):
         }
 
     def _catalog_artists(self, books: Iterable[dict[str, Any]] | None = None) -> dict[str, Artist]:
-        """Return the authors and narrators of the catalog (or given books) keyed by item id."""
+        """Return authors and narrators for the catalog or the given books."""
         artists: dict[str, Artist] = {}
         for book in self._catalog.values() if books is None else books:
             for author in _people(book.get("authors")):
@@ -861,6 +844,7 @@ class BookOrbitProvider(MusicProvider):
         translation_key: str | None = None,
         translation_params: list[str] | None = None,
     ) -> BrowseFolder:
+        """Build a browse folder for the given path."""
         return BrowseFolder(
             item_id=item_id,
             name=name,
@@ -871,7 +855,7 @@ class BookOrbitProvider(MusicProvider):
         )
 
     def _browse_root(self) -> Sequence[BrowseFolder]:
-        """List the libraries that contain audiobooks."""
+        """List libraries that contain audiobooks."""
         if not self._library_books:
             self.logger.info("No BookOrbit libraries with audiobooks found.")
             return []
@@ -888,7 +872,7 @@ class BookOrbitProvider(MusicProvider):
         ]
 
     def _browse_library(self, current_path: str) -> Sequence[BrowseFolder]:
-        """List the sections of a library."""
+        """List the sections inside a library."""
         return [
             self._folder(
                 f"{current_path}/{BROWSE_ITEMS_TO_PATH[key]}", key.lower(), "", translation_key=key
@@ -898,6 +882,7 @@ class BookOrbitProvider(MusicProvider):
         ]
 
     def _library_book_details(self, library_id: int) -> list[dict[str, Any]]:
+        """Return catalog book details for one library."""
         return [
             self._catalog[book_id]
             for book_id in self._library_books.get(library_id, [])
@@ -907,7 +892,7 @@ class BookOrbitProvider(MusicProvider):
     def _browse_people(
         self, current_path: str, library_id: int, prefix: str
     ) -> Sequence[BrowseFolder]:
-        """List the authors or narrators of a library as folders."""
+        """List authors or narrators in a library as folders."""
         people: dict[str, str] = {}
         for artist in self._catalog_artists(self._library_book_details(library_id)).values():
             if artist.item_id.startswith(prefix):
@@ -918,7 +903,7 @@ class BookOrbitProvider(MusicProvider):
         ]
 
     def _browse_series(self, current_path: str, library_id: int) -> Sequence[BrowseFolder]:
-        """List the series of a library as folders."""
+        """List series in a library as folders."""
         series: dict[str, str] = {}
         for book in self._library_book_details(library_id):
             for series_id, name in _book_series(book):
@@ -929,7 +914,7 @@ class BookOrbitProvider(MusicProvider):
         ]
 
     def _browse_book_ids(self, library_id: int, section: str, item_id: str) -> list[str]:
-        """Return the ids of the library's audiobooks of one author/narrator/series."""
+        """Return book ids in a library for one author, narrator, or series."""
         matching: list[str] = []
         for book in self._library_book_details(library_id):
             match section:
@@ -949,7 +934,7 @@ class BookOrbitProvider(MusicProvider):
     async def _audiobook_items(
         self, book_ids: list[str], series_id: str | None = None
     ) -> Sequence[MediaItemType]:
-        """Resolve catalog audiobooks to library items (parsed from the catalog if not synced)."""
+        """Resolve book ids to library or freshly parsed audiobook items."""
         items: list[tuple[Audiobook, float | None]] = []
         for book_id in book_ids:
             if (book := self._catalog.get(book_id)) is None:
@@ -971,6 +956,7 @@ class BookOrbitProvider(MusicProvider):
         return [item for item, _ in items]
 
     async def _search_audiobooks(self, query: str, limit: int) -> list[Audiobook]:
+        """Search audiobooks by query, falling back to a local catalog scan on API errors."""
         try:
             cards = await self._client.search_books(query)
         except ClientResponseError as err:
@@ -997,6 +983,7 @@ class BookOrbitProvider(MusicProvider):
         return audiobooks
 
     async def _search_artists(self, query: str, limit: int) -> list[Artist]:
+        """Search authors and narrators known from the current catalog."""
         known = self._catalog_artists()
         try:
             authors = await self._client.search_authors(query)
@@ -1008,7 +995,7 @@ class BookOrbitProvider(MusicProvider):
         found: list[Artist] = []
         for prefix, people in ((AUTHOR_PREFIX, authors), (NARRATOR_PREFIX, narrators)):
             for person in _people(people):
-                # only artists of the audiobook catalog can be resolved later on
+                # Only artists already present in the audiobook catalog can be resolved later.
                 if (artist := known.get(f"{prefix}{person['id']}")) and artist not in found:
                     found.append(artist)
         return found[:limit]
