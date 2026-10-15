@@ -745,7 +745,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         playback_user = get_current_user()
         queue_data.userid = playback_user.user_id if playback_user else None
         if playback_user:
-            self.logger.debug(
+            self.logger.info(
                 "User %s requested playback.", playback_user.display_name or playback_user.username
             )
 
