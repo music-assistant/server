@@ -246,6 +246,29 @@ async def test_on_unload_cancels_an_airplay_group_restore_that_already_started(
 
 
 @pytest.mark.asyncio
+async def test_on_unload_cancels_a_pending_stop_of_a_moved_group(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test the stop waiting on a group's new coordinator is aborted when the player is unloaded."""
+    player, _ = _bind_player(timer_mass)
+    waiting = asyncio.Event()
+
+    async def _stop_moved_group() -> None:
+        waiting.set()
+        await asyncio.sleep(5)
+
+    task_id = f"sonos_stop_moved_group_{player.player_id}"
+    timer_mass.create_task(_stop_moved_group(), task_id=task_id)
+    await waiting.wait()
+    task = timer_mass._tracked_tasks[task_id]
+
+    await player.on_unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
 async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
     timer_mass: MusicAssistant,
 ) -> None:
