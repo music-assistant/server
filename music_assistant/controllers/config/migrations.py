@@ -1838,6 +1838,7 @@ _PLAYER_SETUP_DATA_KEYS: dict[str, tuple[str, ...]] = {
 
 _PLAYER_DEAD_SETUP_KEYS: dict[str, tuple[str, ...]] = {
     "airplay": ("ap2password",),
+    "sendspin": ("source_approval_dismissed",),
 }
 
 
