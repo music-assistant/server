@@ -558,15 +558,24 @@ class RaumfeldPlayer(Player):
             self.update_state()
             return
 
+        await self._poll_zone(host, zone)
+
+    async def _poll_zone(self, host: hassfeld.RaumfeldHost, zone: list[str]) -> None:
+        """Read this room's volume and its zone's transport and position, and apply them."""
         # read volume (per room), transport and position (per zone) concurrently so a poll
         # cycle costs one round-trip of wall time instead of three, keeping state snappy.
         # State always comes from the zone: the room's own renderer reports no TrackURI and
         # a meaningless RelTime, so it can only be asked *whether* it plays, not what.
+        generation = self._playback_generation
         _, transport, position = await asyncio.gather(
             self._update_volume(host),
             self._read_transport(host, zone),
             self._read_position(host, zone),
         )
+        if generation != self._playback_generation:
+            # a play or stop command ran meanwhile; the next poll reads what it brought
+            self.update_state()
+            return
 
         playing = False
         ended = False
@@ -580,7 +589,7 @@ class RaumfeldPlayer(Player):
             ended = raw_state in ("STOPPED", "NO_MEDIA_PRESENT")
 
         if position is not None:
-            await self._update_zone_source(position, zone)
+            await self._update_zone_source(position, zone, generation)
             self._apply_position(position, playing)
             if playing:
                 self._near_end = _near_track_end(position)
@@ -708,8 +717,16 @@ class RaumfeldPlayer(Player):
             self.logger.debug("Failed to read transport state of %s: %r", self.room, err)
             return None
 
-    async def _update_zone_source(self, pos: dict[str, str], zone: list[str]) -> None:
-        """Follow what the zone plays when Music Assistant did not start it."""
+    async def _update_zone_source(
+        self, pos: dict[str, str], zone: list[str], generation: int
+    ) -> None:
+        """
+        Follow what the zone plays when Music Assistant did not start it.
+
+        :param pos: The zone's position info.
+        :param zone: The rooms of the zone.
+        :param generation: The playback generation the position was read in.
+        """
         device_uri = pos.get("TrackURI", "") or ""
         active = self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         if self._line_in is not None and device_uri == self._line_in[0]:
@@ -725,7 +742,6 @@ class RaumfeldPlayer(Player):
             self._clear_external()
             return
         # also while stopped: the zone keeps the item loaded and can start it again
-        generation = self._playback_generation
         actions = await self._read_zone_actions(zone)
         if generation != self._playback_generation:
             # a play or stop command ran while reading, which this reading predates

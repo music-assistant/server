@@ -632,7 +632,7 @@ async def test_own_stream_is_not_an_external_source() -> None:
     """Music Assistant's own stream drops a previously active external source."""
     player, _ = _external_player()
     player._set_external(_RADIO_META, "Stop", None, via_room=False)
-    await player._update_zone_source({"TrackURI": f"{BASE_URL}/flow/x/y/z.flac"}, ["Bar"])
+    await player._update_zone_source({"TrackURI": f"{BASE_URL}/flow/x/y/z.flac"}, ["Bar"], 0)
     assert player._external_source is None
     assert player._attr_active_source is None
 
@@ -642,7 +642,7 @@ async def test_zone_playback_from_the_raumfeld_app_is_followed() -> None:
     player, _ = _external_player()
     track_uri = "https://audio.example.com/track.flac?token=secret"
     with patch.object(player, "_read_zone_actions", AsyncMock(return_value="Pause,Next")):
-        await player._update_zone_source({"TrackURI": track_uri, "TrackMetaData": ""}, ["Bar"])
+        await player._update_zone_source({"TrackURI": track_uri, "TrackMetaData": ""}, ["Bar"], 0)
     assert player._attr_active_source == "raumfeld"
     assert PlayerFeature.PAUSE in player._attr_supported_features
     assert player._attr_current_media is not None
@@ -730,7 +730,9 @@ async def test_a_stopped_zone_source_stays_loaded() -> None:
     player._attr_playback_state = PlaybackState.IDLE
     with patch.object(player, "_read_zone_actions", AsyncMock(return_value="Play")):
         await player._update_zone_source(
-            {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""}, ["Bar"]
+            {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""},
+            ["Bar"],
+            0,
         )
     assert player._attr_active_source == "raumfeld"
     assert player._attr_source_list[0].can_play_pause is True
@@ -743,7 +745,9 @@ async def test_this_rooms_line_in_is_not_an_external_source() -> None:
     player, _ = _external_player()
     player._line_in = ("http://192.168.1.42:8888/stream.flac", "Line-in")
     await player._update_zone_source(
-        {"TrackURI": "http://192.168.1.42:8888/stream.flac", "TrackMetaData": ""}, ["Bar"]
+        {"TrackURI": "http://192.168.1.42:8888/stream.flac", "TrackMetaData": ""},
+        ["Bar"],
+        0,
     )
     assert player._external_source is None
 
@@ -826,7 +830,9 @@ async def test_line_in_started_from_the_raumfeld_app_is_shown() -> None:
     player._line_in = ("http://192.168.1.42:8888/stream.flac", "Speaker Bar")
     player._set_external(_RADIO_META, "Stop", None, via_room=False)
     await player._update_zone_source(
-        {"TrackURI": "http://192.168.1.42:8888/stream.flac", "TrackMetaData": ""}, ["Bar"]
+        {"TrackURI": "http://192.168.1.42:8888/stream.flac", "TrackMetaData": ""},
+        ["Bar"],
+        0,
     )
     assert player._external_source is None
     assert player._attr_active_source == "line_in"
@@ -898,7 +904,9 @@ async def test_a_reading_older_than_a_play_command_is_not_adopted() -> None:
         patch.object(player, "_clear_next") as clear_next,
     ):
         await player._update_zone_source(
-            {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""}, ["Bar"]
+            {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""},
+            ["Bar"],
+            0,
         )
     assert player._external_source is None
     clear_next.assert_not_called()
@@ -918,3 +926,28 @@ async def test_resuming_an_external_source_does_not_count_the_pause() -> None:
         await player.play()
     assert player._attr_elapsed_time == 70.0
     assert time.time() - player._attr_elapsed_time_last_updated < 1
+
+
+async def test_a_poll_older_than_a_play_command_is_not_applied() -> None:
+    """Readings taken before MA started its own item do not overwrite it."""
+    player, _ = _external_player()
+    player._attr_poll_interval = 1
+
+    async def position_while_play_media_runs(*_args: object) -> dict[str, str]:
+        player._mark_play_started()
+        return {"TrackURI": "https://radio.example.com/stream", "RelTime": "0:00:05"}
+
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_power"),
+        patch.object(player, "_plays_spotify_connect", return_value=False),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_read_transport", AsyncMock(return_value={})),
+        patch.object(player, "_read_position", side_effect=position_while_play_media_runs),
+        patch.object(player, "_update_zone_source", AsyncMock()) as update_source,
+    ):
+        synced_to.return_value = None
+        await player.poll()
+    update_source.assert_not_awaited()
