@@ -41,6 +41,7 @@ from music_assistant.constants import (
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
+    DB_TABLE_SETTINGS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
     GENRE_ICONS_DIR_NAME,
@@ -52,6 +53,7 @@ from music_assistant.controllers.music.constants import (
     AUDIO_ANALYSIS_PACK_BATCH_SIZE,
     AUDIO_ANALYSIS_PACK_PROGRESS_ROWS,
     DB_SCHEMA_VERSION,
+    PENDING_SHORTCUT_REWRITES_KEY,
 )
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.media.genres import GenreController
@@ -60,6 +62,7 @@ from music_assistant.controllers.streams.audio_analysis_database import create_a
 from music_assistant.controllers.streams.constants import AA_DB_FILENAME
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
+from music_assistant.helpers.uri import create_uri
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 if TYPE_CHECKING:
@@ -1907,6 +1910,7 @@ async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> 
             if {"media_type", id_column, *(("provider",) if scope else ())}
             <= await _table_columns(database, table)
         ]
+        shortcut_rewrites: dict[str, str] = {}
         for row in await database.get_rows_from_query(
             f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
             "WHERE media_type = 'playlist' AND provider_domain = 'apple_music' "
@@ -1936,6 +1940,9 @@ async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> 
                 )
                 await database.execute(f"DELETE FROM {table} WHERE {where}", params)
             await database.delete(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
+            old_uri = create_uri(MediaType.PLAYLIST, "library", str(row["item_id"]))
+            shortcut_rewrites[old_uri] = create_uri(MediaType.RADIO, "library", str(radio_id))
+        await _park_shortcut_rewrites(database, shortcut_rewrites)
     # plays of a station outside the library are keyed by the station id
     for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
         columns = await _table_columns(database, table)
@@ -1973,6 +1980,24 @@ def _station_radio_metadata(metadata: Any) -> Any:
             image["path"] = f"radio/{path.removeprefix('playlist/')}"
             changed = True
     return serialize_to_json(value) if changed else metadata
+
+
+async def _park_shortcut_rewrites(database: DatabaseConnection, rewrites: dict[str, str]) -> None:
+    """Park old -> new sidebar shortcut URIs for the auth database to pick up after startup."""
+    if not rewrites or not {"key", "value"} <= await _table_columns(database, DB_TABLE_SETTINGS):
+        return
+    parked: Any = {}
+    if row := await database.get_row(DB_TABLE_SETTINGS, {"key": PENDING_SHORTCUT_REWRITES_KEY}):
+        with suppress(TypeError, ValueError):
+            parked = json_loads(row["value"])
+    await database.insert_or_replace(
+        DB_TABLE_SETTINGS,
+        {
+            "key": PENDING_SHORTCUT_REWRITES_KEY,
+            "value": json_dumps({**(parked if isinstance(parked, dict) else {}), **rewrites}),
+            "type": "json",
+        },
+    )
 
 
 async def _table_columns(database: DatabaseConnection, table: str) -> set[str]:

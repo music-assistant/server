@@ -23,6 +23,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.music import MusicController, migrations
+from music_assistant.controllers.music.constants import PENDING_SHORTCUT_REWRITES_KEY
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.migrations import migrate_database
 from music_assistant.helpers.database import DatabaseConnection
@@ -1315,20 +1316,29 @@ async def test_migration_moves_apple_music_station_playlists_to_radios(
             "('2', 'library', 'playlist', 'u1', 'My Mix', NULL)",
             {"image": serialize_to_json(token)},
         )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_SETTINGS}([key] TEXT PRIMARY KEY, [value] TEXT, [type] TEXT)"
+    )
     await database.commit()
 
     mass = MagicMock()
     mass.cache.clear = AsyncMock()
     await migrate_database(mass, database, MagicMock(), prev_version=68, create_tables=AsyncMock())
     migrated = await _station_snapshot(database)
+    parked = await database.get_row(DB_TABLE_SETTINGS, {"key": PENDING_SHORTCUT_REWRITES_KEY})
     await migrate_database(mass, database, MagicMock(), prev_version=68, create_tables=AsyncMock())
 
     assert await _station_snapshot(database) == migrated
+    assert parked is not None
+    assert (
+        await database.get_row(DB_TABLE_SETTINGS, {"key": PENDING_SHORTCUT_REWRITES_KEY}) == parked
+    )
     radios = await database.get_rows_from_query("SELECT * FROM radios", limit=0)
     assert len(radios) == 1
     radio = dict(radios[0])
     radio_id = radio.pop("item_id")
     assert radio_id != 5
+    assert json.loads(parked["value"]) == {"library://playlist/5": f"library://radio/{radio_id}"}
     assert json.loads(radio.pop("metadata")) == {
         "images": [{**token, "path": "radio/ra.111"}, remote]
     }
