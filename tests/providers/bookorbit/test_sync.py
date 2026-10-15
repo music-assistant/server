@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from aiohttp import ClientResponseError
 from music_assistant_models.enums import ImageType, MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
@@ -119,7 +119,7 @@ async def test_refresh_catalog_filters_libraries_and_ebooks(
 async def test_refresh_catalog_aborts_on_detail_fetch_error(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
-    """A failed detail fetch must not publish a partial catalog."""
+    """A failed detail fetch must raise and leave the previous catalog untouched."""
     previous = {str(book_audiobook["id"]): book_audiobook}
     provider._catalog = previous
     provider._catalog_refreshed_at = 0.0
@@ -139,8 +139,58 @@ async def test_refresh_catalog_aborts_on_detail_fetch_error(
         raise KeyError(book_id)
 
     cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
-    await provider._refresh_catalog(force=True)
+    with pytest.raises(ProviderUnavailableError, match="incomplete"):
+        await provider._refresh_catalog(force=True)
     assert provider._catalog is previous
+
+
+@pytest.mark.asyncio
+async def test_refresh_catalog_cold_start_detail_error_raises(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """Cold start must not publish an empty catalog after a detail failure."""
+    assert provider._catalog == {}
+
+    async def _get_book(book_id: int) -> dict[str, Any]:
+        if book_id == book_multifile["id"]:
+            raise ClientResponseError(
+                request_info=Mock(real_url=URL("http://bo/x")),
+                history=(),
+                status=503,
+                message="unavailable",
+            )
+        if book_id == book_audiobook["id"]:
+            return book_audiobook
+        if book_id == 999:
+            return {"id": 999, "files": [{"id": 1, "format": "epub"}]}
+        raise KeyError(book_id)
+
+    cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
+    with pytest.raises(ProviderUnavailableError, match="incomplete"):
+        await provider._refresh_catalog(force=True)
+    assert provider._catalog == {}
+
+
+@pytest.mark.asyncio
+async def test_refresh_catalog_author_list_failure_preserves_author_meta(
+    provider: BookOrbitProvider,
+) -> None:
+    """A failed author-list fetch must not clear stored author artwork metadata."""
+    await provider._refresh_catalog()
+    previous_meta = provider._author_meta
+    assert previous_meta
+    cast("Any", provider._client).list_authors = AsyncMock(
+        side_effect=ClientResponseError(
+            request_info=Mock(real_url=URL("http://bo/authors")),
+            history=(),
+            status=500,
+            message="authors down",
+        )
+    )
+    provider._catalog_refreshed_at = 0.0
+    with pytest.raises(ClientResponseError):
+        await provider._refresh_catalog(force=True)
+    assert provider._author_meta is previous_meta
 
 
 @pytest.mark.asyncio

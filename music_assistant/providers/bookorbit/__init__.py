@@ -361,11 +361,18 @@ class BookOrbitProvider(MusicProvider):
             self._active_stream_sessions.add(session_id)
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
-        """Revoke proxy access when playback of this streamdetails completes."""
+        """
+        Revoke proxy access when a stream consumer ends.
+
+        Also expires the streamdetails so seek/reconnect cannot reuse part URLs after
+        the grant is gone (MA may keep unexpired streamdetails on the queue item).
+        """
         if (session_id := _session_id_from_streamdetails(streamdetails)) is None:
             return
         self._active_stream_sessions.discard(session_id)
         self._stream_sessions.pop(session_id, None)
+        # Force re-resolution: cached details would otherwise keep serving dead part URLs.
+        streamdetails.expiration = 0
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
@@ -767,12 +774,15 @@ class BookOrbitProvider(MusicProvider):
             )
             detail_errors = [err for _, _, err in results if err is not None]
             if detail_errors:
-                # Partial catalogs omit books/artists and can drive recursive sync deletions.
+                # Raising aborts sync before the deletion pass; a silent return would
+                # yield an empty catalog on cold start and delete library items.
                 self.logger.warning(
                     "Aborting BookOrbit catalog refresh: %d detail fetch(es) failed",
                     len(detail_errors),
                 )
-                return
+                raise ProviderUnavailableError(
+                    f"BookOrbit catalog refresh incomplete ({len(detail_errors)} detail error(s))."
+                ) from detail_errors[0]
             catalog = {book_id: book for book_id, book, _ in results if book is not None}
             # Drop library memberships that failed detail fetch or have no audio.
             library_books = {
@@ -784,13 +794,12 @@ class BookOrbitProvider(MusicProvider):
                 lid: name for lid, name in library_names.items() if lid in library_books
             }
             # Book detail authors often omit imageUrl; the authors list carries photos.
+            # Fail the refresh if this list is unavailable so we do not treat a transient
+            # error as confirmed photo removal (which would rewrite artist mappings).
             author_meta: dict[int, dict[str, Any]] = {}
-            try:
-                for author in await self._client.list_authors():
-                    if isinstance(author, dict) and "id" in author:
-                        author_meta[int(author["id"])] = author
-            except ClientResponseError as err:
-                self.logger.warning("BookOrbit author list unavailable (no author thumbs): %s", err)
+            for author in await self._client.list_authors():
+                if isinstance(author, dict) and "id" in author:
+                    author_meta[int(author["id"])] = author
         except BookOrbitAuthError as err:
             raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
         except ClientResponseError:

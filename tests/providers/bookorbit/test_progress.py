@@ -226,6 +226,30 @@ async def test_stream_session_revoked_after_on_streamed(
     assert provider._stream_session_allows(session_id, book_id, asset["assetId"])
     await provider.on_streamed(details)
     assert not provider._stream_session_allows(session_id, book_id, asset["assetId"])
+    # Cached streamdetails must not keep serving the revoked part URLs.
+    assert details.expiration == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_session_reresolves_after_on_streamed(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Stop/seek that ends a consumer must re-resolve rather than reuse dead part URLs."""
+    first = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
+    assert isinstance(first.data, dict)
+    first_session = first.data["session_id"]
+    await provider.on_stream_started(first)
+    await provider.on_streamed(first)
+    assert first.expiration == 0
+    second = await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
+    assert isinstance(second.data, dict)
+    second_session = second.data["session_id"]
+    assert second_session != first_session
+    assert second.expiration > 0
+    asset = manifest_from_book(book_audiobook)["assets"][0]
+    book_id = str(book_audiobook["id"])
+    assert not provider._stream_session_allows(first_session, book_id, asset["assetId"])
+    assert provider._stream_session_allows(second_session, book_id, asset["assetId"])
 
 
 @pytest.mark.asyncio
