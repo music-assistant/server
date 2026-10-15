@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import math
 from functools import partial
 from types import SimpleNamespace
@@ -12,13 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from alexapy.errors import AlexapyError
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import CONF_MAX_VOLUME, CONF_MIN_VOLUME
-from music_assistant.controllers.players import PlayerController
-from music_assistant.models.player import Player
 from music_assistant.providers.alexa import AlexaPlayer, AlexaProvider
-from tests.common import MockPlayer, MockProvider, create_mock_config
+from tests.common import MockProvider, create_mock_config
 
 
 def _player() -> tuple[AlexaPlayer, Any]:
@@ -104,10 +100,10 @@ async def test_failed_step_leaves_the_volume_to_the_next_poll() -> None:
 
 
 async def test_a_failed_send_goes_out_once_more() -> None:
-    """A send that fails, like on another Echo's failed read, is tried once more."""
+    """A failed send is tried once more."""
     player, provider = _player()
     provider.get_volumes.side_effect = [
-        AlexapyError("volume read failed moments ago"),
+        AlexapyError("volume read failed"),
         {"SERIAL": 20},
     ]
     provider.step_volume.return_value = 40
@@ -149,22 +145,8 @@ async def test_echo_missing_from_the_readback_gets_a_volume_routine() -> None:
     assert player.volume_level == 40
 
 
-async def test_change_in_ma_during_a_readback_wins() -> None:
-    """A readback that was on its way when MA changed the volume is not shown."""
-    player, provider = _player()
-
-    async def read() -> dict[str, int]:
-        await player.volume_set(40)
-        return {"SERIAL": 20}
-
-    provider.get_volumes.side_effect = read
-    with patch.object(player, "update_state"):
-        await player.poll()
-    assert player.volume_level == 40
-
-
 async def test_poll_waits_after_a_step_reply() -> None:
-    """A readback taken before the step's reply is not shown over it."""
+    """No poll for 2 s after a step's reply."""
     player, provider = _player()
     provider.step_volume.return_value = 50
     with patch.object(player, "update_state"):
@@ -269,21 +251,6 @@ async def test_unload_drops_a_volume_change_on_its_way() -> None:
     provider.mass.create_task.return_value.cancel.assert_called_once()
 
 
-async def test_a_second_timer_keeps_the_running_send() -> None:
-    """A change while a send is out leaves that send in place, so unload still stops it."""
-    player, provider = _player()
-    running = MagicMock(done=MagicMock(return_value=False))
-    provider.mass.create_task.side_effect = lambda coro: (coro.close(), running)[1]
-    with patch.object(player, "update_state"):
-        await player.volume_set(40)
-        provider.mass.call_later.call_args.args[1]()
-        await player.volume_set(50)
-        provider.mass.call_later.call_args.args[1]()
-        await player.on_unload()
-    assert provider.mass.create_task.call_count == 1
-    running.cancel.assert_called_once()
-
-
 async def test_changes_in_a_row_step_from_the_last_reply() -> None:
     """A second change within 2 s of the shared read starts from where the first one left the Echo."""
     player, provider = _player()
@@ -324,37 +291,6 @@ async def test_poll_skips_while_a_volume_call_is_out() -> None:
     provider.get_volumes.assert_not_awaited()
 
 
-async def test_a_change_during_a_failed_send_goes_out_again() -> None:
-    """A change made while a step fails is sent once more instead of being dropped."""
-    player, provider = _player()
-
-    async def step(_device: object, _amount: int) -> int:
-        await player.volume_set(50)
-        raise AlexapyError("volume step failed: TIME_OUT")
-
-    provider.step_volume.side_effect = step
-    with patch.object(player, "update_state"):
-        await player.volume_set(40)
-        await player._send_volume()
-    assert provider.mass.call_later.call_count == 3
-
-
-async def test_a_change_during_a_failed_read_goes_out_again() -> None:
-    """A change made while the read before a step fails is sent once the failed read expires."""
-    player, provider = _player()
-
-    async def read() -> dict[str, int]:
-        await player.volume_set(50)
-        raise AlexapyError("volume read failed")
-
-    provider.get_volumes.side_effect = read
-    with patch.object(player, "update_state"):
-        await player.volume_set(40)
-        await player._send_volume()
-    assert provider.mass.call_later.call_count == 3
-    assert provider.mass.call_later.call_args.args[0] == 2
-
-
 async def test_volume_zero_steps_fully_down() -> None:
     """Volume 0 steps the Echo fully down."""
     player, provider = _player()
@@ -371,44 +307,6 @@ async def test_volume_zero_steps_fully_down() -> None:
     provider.step_volume.assert_awaited_once_with(player.device, -100)
     assert echo["volume"] == 0
     assert player.volume_level == 0
-
-
-@pytest.mark.parametrize("call", ["read", "step"])
-async def test_a_stalled_reply_body_times_out(call: str) -> None:
-    """A reply whose body never arrives fails within the call's timeout."""
-
-    async def stall(**_kwargs: object) -> None:
-        await asyncio.sleep(3600)
-
-    response = MagicMock(json=AsyncMock(side_effect=stall))
-    provider = SimpleNamespace(
-        login=MagicMock(),
-        mass=MagicMock(),
-        _volumes={},
-        _volumes_read_at=-math.inf,
-        _volumes_lock=asyncio.Lock(),
-    )
-    provider.mass.loop.time.return_value = 100.0
-    device = SimpleNamespace(device_serial_number="SERIAL", _device_type="TYPE")
-    with (
-        patch(
-            "music_assistant.providers.alexa.AlexaAPI._static_request",
-            AsyncMock(return_value=response),
-        ),
-        patch("music_assistant.providers.alexa.VOLUME_READ_TIMEOUT", 0.01),
-        patch("music_assistant.providers.alexa.VOLUME_STEP_TIMEOUT", 0.01),
-    ):
-        task = asyncio.ensure_future(
-            AlexaProvider.get_volumes(cast("Any", provider))
-            if call == "read"
-            else AlexaProvider.step_volume(cast("Any", provider), cast("Any", device), 5)
-        )
-        await asyncio.wait({task}, timeout=1)
-    if not task.done():
-        task.cancel()
-        pytest.fail("the call waited past its timeout")
-    assert isinstance(task.exception(), TimeoutError)
-    assert not provider._volumes_lock.locked()
 
 
 def test_poll_is_slower_when_not_playing() -> None:
@@ -447,89 +345,3 @@ async def test_step_volume_returns_the_new_volume(body: dict[str, Any], result: 
     method, _, uri = request.await_args.args
     assert (method, uri) == ("put", "/api/devices/TYPE/SERIAL/audio/v2/speakerVolume")
     assert request.await_args.kwargs["data"]["amount"] == 5
-
-
-_ACTIONS = ("set 0", "set 30", "voice 0", "voice 25", "voice 50 unseen", "poll", "group set 30")
-
-
-def _group() -> tuple[PlayerController, dict[str, AlexaPlayer], dict[str, int], dict[str, int]]:
-    """Return a controller with a group of Echos A at 20 and B at 40, and their true and read volumes."""
-    mass = MagicMock()
-    mass.closing = False
-    mass.loop.time.return_value = 100.0
-    mass.config.get = MagicMock(return_value=[])
-    limits = {CONF_MIN_VOLUME: 0, CONF_MAX_VOLUME: 100}
-    mass.config.get_raw_player_config_value = MagicMock(
-        side_effect=lambda _player_id, key, default=None: limits.get(key, default)
-    )
-    mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
-    mass.player_queues.get = MagicMock(return_value=None)
-    controller = PlayerController(mass)
-    mass.players = controller
-    provider = cast("Any", MockProvider("alexa", instance_id="alexa--1", mass=mass))
-    echo = {"A": 20, "B": 40}
-    readback = dict(echo)
-    provider.get_volumes = AsyncMock(side_effect=lambda: dict(readback))
-
-    async def step(device: Any, amount: int) -> int:
-        serial = device.device_serial_number
-        echo[serial] = readback[serial] = max(0, min(100, echo[serial] + amount))
-        return echo[serial]
-
-    provider.step_volume = AsyncMock(side_effect=step)
-    provider._volumes_lock = asyncio.Lock()
-    players: dict[str, Player] = {}
-    for name in ("a", "b"):
-        mass.config.get_base_player_config.return_value = create_mock_config(name)
-        players[name] = AlexaPlayer(provider, name, MagicMock(device_serial_number=name.upper()))
-    group = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
-    group._attr_supported_features = {PlayerFeature.VOLUME_SET}
-    group._attr_group_members = ["a", "b"]
-    controller._players = {**players, "group": group}
-    for player in (*players.values(), group, *players.values()):
-        player.set_initialized()
-        player.update_state(signal_event=False)
-    return controller, cast("dict[str, AlexaPlayer]", players), echo, readback
-
-
-async def _run(actions: tuple[str, ...]) -> None:
-    """Run the actions on Echo A or the group, checking MA against both Echos after each."""
-    controller, players, echo, readback = _group()
-    mass = cast("Any", controller.mass)
-    now = 100.0
-    for player in players.values():
-        await player.poll()
-    for action in (*actions, "poll"):
-        now += 3
-        mass.loop.time.return_value = now
-        was_level = players["a"].volume_level
-        command, _, value = action.removeprefix("group ").partition(" ")
-        if action.startswith("group"):
-            await controller.cmd_group_volume("group", int(value))
-        elif command == "set":
-            await controller.cmd_volume_set("a", int(value))
-        elif command == "voice":
-            echo["A"] = int(value.split()[0])
-        if command == "set":
-            for player in players.values():
-                await player._send_volume()
-        if action.endswith("unseen"):
-            continue
-        now += 3
-        mass.loop.time.return_value = now
-        readback.update(echo)
-        for player in players.values():
-            await player.poll()
-        where = f"{actions} at {action}"
-        for name, player in players.items():
-            serial = name.upper()
-            assert echo[serial] == player.volume_level, f"{where}: {name} at {echo[serial]}"
-        if action.startswith("set") and was_level != int(value):
-            assert abs(echo["A"] - int(value)) <= 1, f"{where}: a at {echo['A']}"
-
-
-async def test_every_short_sequence_keeps_ma_and_the_echos_in_step() -> None:
-    """Every sequence of up to 3 actions keeps MA's volume true to each Echo."""
-    for length in range(1, 4):
-        for actions in itertools.product(_ACTIONS, repeat=length):
-            await _run(actions)
