@@ -1133,7 +1133,9 @@ class StreamsAudio:
         temp_file = f"/tmp/{shortuuid.random(20)}.txt"  # noqa: S108
         try:
             async with aiofiles.open(temp_file, "w") as f:
-                await f.write(build_concat_filelist(files_list))
+                await f.write(
+                    build_concat_filelist(files_list, verify_ssl=streamdetails.verify_ssl)
+                )
             async for chunk in get_ffmpeg_stream(
                 audio_input=temp_file,
                 input_format=streamdetails.audio_format,
@@ -3236,7 +3238,7 @@ class StreamsAudio:
             async for chunk in audio_input:
                 yield chunk
             return
-        overlay_input, pass_fds = overlay
+        overlay_input, pass_fds, verify_ssl = overlay
         try:
             async for chunk in get_ffmpeg_overlay_stream(
                 audio_input=audio_input,
@@ -3245,6 +3247,7 @@ class StreamsAudio:
                 overlay_volume=queue.overlay_volume,
                 chunk_size=pcm_format.pcm_sample_size,
                 pass_fds=pass_fds,
+                verify_ssl=verify_ssl,
             ):
                 yield chunk
         finally:
@@ -4458,6 +4461,7 @@ class StreamsAudio:
             collect_log_history=True,
             loglevel=ffmpeg_loglevel,
             pass_fds=pass_fds,
+            verify_ssl=streamdetails.verify_ssl,
         )
 
         try:
@@ -5579,9 +5583,11 @@ class StreamsAudio:
 
     async def _resolve_overlay_input(
         self, queue: PlayerQueue
-    ) -> tuple[str, tuple[int, ...]] | None:
+    ) -> tuple[str, tuple[int, ...], bool] | None:
         """
-        Resolve the queue's overlay source to the input for ffmpeg, with the descriptors it needs.
+        Resolve the queue's overlay source to the input for ffmpeg.
+
+        Returns the input, the descriptors it needs and whether its certificate must be verified.
 
         Returns None (with a warning logged) when the source can not be resolved,
         so the caller can degrade to music-only playback. The caller closes the descriptors.
@@ -5633,7 +5639,7 @@ class StreamsAudio:
                 err,
             )
             return None
-        return inputs[0], pass_fds
+        return inputs[0], pass_fds, streamdetails.verify_ssl
 
     async def _add_remote_mp3_input_args(
         self,

@@ -201,6 +201,35 @@ def test_get_ffmpeg_args_omits_layout_above_stereo() -> None:
         assert "-channel_layout" not in part
 
 
+def _has_tls_verify_off(input_args: list[str]) -> bool:
+    """Return whether the input args disable TLS verification."""
+    return any(input_args[i : i + 2] == ["-tls_verify", "0"] for i in range(len(input_args)))
+
+
+@pytest.mark.parametrize(
+    ("input_path", "verify_ssl", "expected"),
+    [
+        ("https://192.168.1.10:8123/x.mp3", False, True),
+        ("https://192.168.1.10:8123/x.mp3", True, False),
+        ("http://192.168.1.10/x.mp3", False, False),
+    ],
+)
+def test_get_ffmpeg_args_skips_tls_verify_on_request(
+    input_path: str, verify_ssl: bool, expected: bool
+) -> None:
+    """Only https inputs opened with verify_ssl off skip certificate verification."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path=input_path,
+        verify_ssl=verify_ssl,
+    )
+
+    input_args, _ = _split_at_input(args)
+    assert _has_tls_verify_off(input_args) is expected
+
+
 def test_multichannel_pcm_folds_down_without_stretching(tmp_path: Path) -> None:
     """Raw surround PCM keeps its real width and length, and its rear channels survive."""
     source = tmp_path / "surround.pcm"
@@ -1039,6 +1068,16 @@ def test_overlay_mixer_reconnects_for_http_sources() -> None:
     assert overlay.input_args[-2:] == ["-stream_loop", "-1"]
 
 
+def test_overlay_mixer_skips_tls_verification_only_when_asked() -> None:
+    """An https overlay source opts out of certificate verification on request."""
+    url = "https://example.com/fx.mp3"
+    (unverified,) = _build_overlay_mixer(url, _PCM_FORMAT, 100, verify_ssl=False).inputs
+    (default,) = _build_overlay_mixer(url, _PCM_FORMAT, 100).inputs
+    pair = ["-tls_verify", "0"]
+    assert any(unverified.input_args[i : i + 2] == pair for i in range(len(unverified.input_args)))
+    assert "-tls_verify" not in default.input_args
+
+
 def test_overlay_args_probe_the_main_input_and_add_no_filters() -> None:
     """Both inputs are read under our own limits and no filter is injected on top."""
     args = get_ffmpeg_args(
@@ -1708,6 +1747,19 @@ async def test_probe_audio_stream_opens_the_input_like_the_decoder(
     assert proc.args[read_args_start : read_args_start + len(_INPUT_READ_ARGS)] == _INPUT_READ_ARGS
     assert proc.args.index("-user_agent") < proc.args.index("-i")
     assert proc.args[-2:] == ["-i", "https://example.com/a.flac"]
+
+
+@pytest.mark.parametrize("verify_ssl", [False, True])
+async def test_probe_audio_stream_skips_tls_verify_on_request(
+    monkeypatch: pytest.MonkeyPatch, verify_ssl: bool
+) -> None:
+    """The probe skips certificate verification when asked, like the decoder does."""
+    proc = _FakeProbeProcess(_probe_output(codec_name="flac", sample_rate="44100", channels=2))
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    await probe_audio_stream("https://example.com/a.flac", verify_ssl=verify_ssl)
+
+    assert _has_tls_verify_off(proc.args[: proc.args.index("-i")]) is not verify_ssl
 
 
 async def test_probe_audio_stream_returns_nothing_on_a_failed_probe(
