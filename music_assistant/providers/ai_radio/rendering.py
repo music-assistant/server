@@ -8,7 +8,7 @@ import json
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import (
@@ -477,9 +477,11 @@ class AIRadioRenderMixin:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
         # a clip renders a song or more before it airs, so it names the time it is due to air
-        airtime = self._configured_now() + timedelta(
-            seconds=self._seconds_until_airtime(queue_item)
-        )
+        now = self._configured_now()
+        # added in UTC, so a wait across a clock change counts real seconds, not wall clock ones
+        airtime = (
+            now.astimezone(UTC) + timedelta(seconds=self._seconds_until_airtime(queue_item))
+        ).astimezone(now.tzinfo)
         values["<timestamp>"] = format_ai_radio_timestamp(airtime)
         # weather is the only deferred placeholder that costs a network round-trip, so it is
         # only fetched when the prompt actually references it

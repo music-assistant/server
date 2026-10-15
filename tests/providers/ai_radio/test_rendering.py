@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from music_assistant_models.enums import (
@@ -69,6 +71,8 @@ from music_assistant.providers.ai_radio.models import DJQueueState, RenderHealth
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
 
 from .events import ProviderEventRecorder
+
+AMSTERDAM = ZoneInfo("Europe/Amsterdam")
 
 
 class DummyRenderer(ProviderEventRecorder, AIRadioRenderMixin):
@@ -2167,3 +2171,26 @@ async def test_the_timestamp_names_the_time_the_clip_airs() -> None:
 
     # the clock stands at 18:30 and the current record has half an hour left
     assert "19:00" in renderer.llm_prompts[0]
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        pytest.param(datetime(2026, 10, 25, 2, 59, tzinfo=AMSTERDAM), "02:02 CET", id="fall back"),
+        pytest.param(datetime(2026, 3, 29, 1, 59, tzinfo=AMSTERDAM), "03:02 CEST", id="spring on"),
+    ],
+)
+async def test_the_timestamp_counts_real_seconds_across_a_clock_change(
+    now: datetime, expected: str
+) -> None:
+    """A wait across a daylight saving change names the time the clock shows when it airs."""
+    renderer = DummyRenderer()
+    cast("Any", renderer)._configured_now = lambda: now
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0, duration=180), clip])
+    started = _play_queue(renderer)
+
+    renderer._render_ahead("player_a")
+    await asyncio.gather(*started.values())
+
+    assert expected in renderer.llm_prompts[0]
