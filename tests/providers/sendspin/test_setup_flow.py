@@ -22,7 +22,7 @@ from aiosendspin.noise.pairing import (
     PairingError,
     RemotePairingAbortError,
 )
-from aiosendspin.noise.trust_store import PskCategory
+from aiosendspin.noise.trust_store import PskCategory, TrustedUnpairedClient
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
 
 from music_assistant.helpers.util import join_task
@@ -39,10 +39,12 @@ from music_assistant.providers.sendspin.constants import (
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
-    CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_INPUT_ACTION,
+    CONF_SOURCE_INPUT_DECLINED,
     CONNECT_METHOD_PAIR,
     CONNECT_METHOD_UNPAIRED,
+    CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+    CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
@@ -51,7 +53,7 @@ from music_assistant.providers.sendspin.constants import (
     SOURCE_INPUT_PAIR,
 )
 from music_assistant.providers.sendspin.helpers import SecurityActionError
-from music_assistant.providers.sendspin.player import SendspinBasePlayer
+from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinSourcePlayer
 from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
@@ -199,6 +201,7 @@ class _FakeProvider:
         self.cancel_calls = 0
         self.clear_calls = 0
         self.trust_calls: list[bool] = []
+        self.allow_input_calls: list[bool] = []
         self._gesture = gesture
         self._submit_outcomes = deque(submit_outcomes or [])
         self._token_errors = deque(token_errors or [])
@@ -262,10 +265,15 @@ class _FakeProvider:
         self.cancel_calls += 1
         self.session = None
 
-    async def set_trusted_unpaired(self, client_id: str, enabled: bool) -> None:
+    async def set_trusted_unpaired(
+        self, client_id: str, enabled: bool, *, allow_input: bool = False
+    ) -> None:
         self.trust_calls.append(enabled)
+        self.allow_input_calls.append(allow_input)
         if enabled:
-            self.server_api.pairing_store.trusted = object()
+            self.server_api.pairing_store.trusted = TrustedUnpairedClient(
+                client_id=client_id, approved_roles=frozenset({"source"} if allow_input else ())
+            )
 
     async def pair_with_token(self, client_id: str, token: str) -> None:
         self.tokens.append(token)
@@ -274,8 +282,10 @@ class _FakeProvider:
         self.api.active_roles = ("player",)
 
 
-def _make_player(api: _FakeApi, provider: _FakeProvider) -> SendspinBasePlayer:
-    player = SendspinBasePlayer.__new__(SendspinBasePlayer)
+def _make_player(
+    api: _FakeApi, provider: _FakeProvider, *, cls: type[SendspinBasePlayer] = SendspinBasePlayer
+) -> SendspinBasePlayer:
+    player = cls.__new__(cls)
     player._player_id = "client-1"
     player._provider = cast("SendspinProvider", provider)
     player.api = cast("SendspinClient", api)
@@ -545,6 +555,7 @@ async def test_consent_step_grants_trust() -> None:
     await _wait_for(lambda: session.finished)
     await task
     assert provider.trust_calls == [True]
+    assert provider.allow_input_calls == [False]
     assert provider.start_calls == 0
     assert provider.tokens == []
     # a one-click allow closes the dialog without a success screen
@@ -585,8 +596,8 @@ async def test_consent_without_pair_methods_still_asks() -> None:
     assert provider.trust_calls == [True]
 
 
-async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
-    """A plain allow on a combo also declines the pending audio input, one submit total."""
+async def test_consent_on_combo_approves_the_input_in_one_click() -> None:
+    """A plain allow on a combo also approves the pending audio input, one submit total."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
     api.negotiated_role_ids = ["player@v1", "source@v1"]
     provider = _FakeProvider(api)
@@ -596,16 +607,87 @@ async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
 
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
-    assert [entry.key for entry in step.entries] == [CONF_CONNECT_METHOD]
+    assert [option.value for option in step.entries[0].options] == [
+        CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+        CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
+        CONNECT_METHOD_PAIR,
+    ]
     assert step.last_step is True
-    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED})
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})
 
     await _wait_for(lambda: session.finished)
     await task
     assert provider.trust_calls == [True]
+    assert provider.allow_input_calls == [True]
     mass.config.set_raw_player_config_value.assert_called_once_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
+        "client-1", CONF_SOURCE_INPUT_DECLINED, False
     )
+
+
+async def test_consent_without_the_input_approves_playback_only() -> None:
+    """A combo that cannot pair still gets the choice, and declining keeps its input off."""
+    api = _FakeApi([], unpaired_access=True)
+    api.negotiated_role_ids = ["player@v1", "source@v1"]
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+    mass = _attach_mass(player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert [option.value for option in step.entries[0].options] == [
+        CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+        CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
+    ]
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.allow_input_calls == [False]
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        "client-1", CONF_SOURCE_INPUT_DECLINED, True
+    )
+
+
+async def test_consent_on_a_source_only_device_approves_its_input() -> None:
+    """A capture-only device is never offered a connection without its input."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
+    api.negotiated_role_ids = ["source@v1"]
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider, cls=SendspinSourcePlayer)
+    _attach_mass(player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert [option.value for option in step.entries[0].options] == [
+        CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+        CONNECT_METHOD_PAIR,
+    ]
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.allow_input_calls == [True]
+
+
+async def test_consent_without_a_choice_on_a_source_only_device_approves_its_input() -> None:
+    """With nothing to pick, the single consent click still approves the input."""
+    api = _FakeApi([], unpaired_access=True)
+    api.negotiated_role_ids = ["source@v1"]
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider, cls=SendspinSourcePlayer)
+    _attach_mass(player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert step.entries == []
+    session.handle_submit({})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.allow_input_calls == [True]
 
 
 async def test_consent_opting_into_pairing_pairs_instead() -> None:
@@ -656,8 +738,7 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
     """
     A guest device with a pending input consents on the approval step, not the input picker.
 
-    Guest access already carries playback, so the only choice left is the optional upgrade
-    to a pairing; finishing keeps guest access and leaves the input off.
+    Guest access already carries playback, so finishing keeps it and turns the input on.
     """
     api = _combo_api_with_pending_source()
     provider = _FakeProvider(api)
@@ -669,14 +750,15 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
     assert [entry.key for entry in step.entries] == [CONF_CONNECT_METHOD]
     assert step.last_step is True
-    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED})
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})
 
     await _wait_for(lambda: session.finished)
     await task
     mass.config.set_raw_player_config_value.assert_called_once_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
+        "client-1", CONF_SOURCE_INPUT_DECLINED, False
     )
     assert provider.trust_calls == [True]
+    assert provider.allow_input_calls == [True]
     assert provider.start_calls == 0
     assert session.finish_step_id == FINISH_STEP_SILENT
 
@@ -701,7 +783,7 @@ async def test_input_picker_serves_a_device_that_withdrew_guest_access() -> None
     await _wait_for(lambda: session.finished)
     await task
     mass.config.set_raw_player_config_value.assert_called_once_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
+        "client-1", CONF_SOURCE_INPUT_DECLINED, True
     )
     assert provider.trust_calls == []
     assert session.finish_step_id == FINISH_STEP_SILENT
