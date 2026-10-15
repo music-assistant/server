@@ -81,7 +81,7 @@ class TestDspChangeRestart:
 
         mock_mass.player_queues.is_playing_queue.assert_called_once_with("player_1", player)
         mock_mass.call_later.assert_called_once_with(
-            0, mock_mass.player_queues.resume, "player_1", False
+            0, controller._resume_queue_after_dsp_change, "player_1"
         )
         _stop_and_play(controller)[0].assert_not_awaited()
 
@@ -113,7 +113,7 @@ class TestDspChangeRestart:
 
         mock_mass.player_queues.is_playing_queue.assert_not_called()
         mock_mass.call_later.assert_called_once_with(
-            0, mock_mass.player_queues.resume, "player_1", False
+            0, controller._resume_queue_after_dsp_change, "player_1"
         )
 
     async def test_does_nothing_when_not_playing(self, mock_mass: MagicMock) -> None:
@@ -180,8 +180,22 @@ class TestDspChangeRestart:
 
         mock_mass.player_queues.is_playing_queue.assert_called_once_with("leader", child)
         mock_mass.call_later.assert_called_once_with(
-            0, mock_mass.player_queues.resume, "leader", False
+            0, controller._resume_queue_after_dsp_change, "leader"
         )
+
+    async def test_restart_skips_a_queue_emptied_before_it_runs(self, mock_mass: MagicMock) -> None:
+        """A queue transferred away while the restart waited for the lock is not resumed."""
+        controller = _controller(mock_mass, _player())
+        queue = MagicMock(queue_id="player_1", items=3)
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        mock_mass.player_queues.resume = AsyncMock()
+
+        await controller.on_player_dsp_change("player_1", after_group_change=True)
+        _delay, target, *args = mock_mass.call_later.call_args.args
+        queue.items = 0
+        await target(*args)
+
+        mock_mass.player_queues.resume.assert_not_awaited()
 
 
 class TestGroupDspChange:
