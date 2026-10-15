@@ -89,6 +89,7 @@ class WebKioskPlayer(Player):
     current_stream_url: str | None = None
     # sendspin-js 5 client id (base64url public key). None until the browser announces it.
     sendspin_client_id: str | None = None
+    html5_requested: bool = False
     output_format: str = "mp3"
     _skip_ws_depth: int = 0
     _accepted_position: bool = False
@@ -131,6 +132,7 @@ class WebKioskPlayer(Player):
         self._playback_speed = 1.0
         self.output_format = output_format
         self.sendspin_fallback = False
+        self.html5_requested = False
         self.sendspin_client_id = None
         self.sendspin_claim: VerifiedSendspinClaim | None = None
         self._skip_ws_depth = 0
@@ -214,6 +216,18 @@ class WebKioskPlayer(Player):
         else:
             self._attr_supported_features.discard(PlayerFeature.VOLUME_SET)
         self.update_state()
+
+    def set_html5_requested(self, requested: bool) -> None:
+        """
+        Record whether a connected tab of this device asked for HTML5 playback.
+
+        :param requested: True when native output must be used for this device.
+        """
+        if requested == self.html5_requested:
+            return
+        self.html5_requested = requested
+        if self.initialized.is_set():
+            self.update_state()
 
     def update_browser_info(self, user_agent: str) -> None:
         """Update model, browser vendor and version from the connected browser."""
@@ -471,7 +485,7 @@ class WebKioskPlayer(Player):
     def _uses_sendspin_output(self) -> bool:
         """Return whether the browser asked for Sendspin and its linked output can play."""
         client_id = self.sendspin_client_id
-        if not client_id or self.sendspin_fallback:
+        if not client_id or self.sendspin_fallback or self.html5_requested:
             return False
         if all(link.output_protocol_id != client_id for link in self.linked_output_protocols):
             return False

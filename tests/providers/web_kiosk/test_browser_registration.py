@@ -864,3 +864,42 @@ async def test_first_ungrouped_play_uses_the_requested_sendspin_output(
         await provider.bridge_manager.close()
         await asyncio.gather(*tasks, return_exceptions=True)
         await native.on_unload()
+
+
+async def test_same_device_reload_into_html5_restores_native_output(
+    provider: WebKioskProvider,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """Reloading a Sendspin kiosk with sendspin=0 inside the grace period plays natively."""
+    registry, sendspin, _universal, client, tasks = browser_registry
+    native = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+    await registry.register(native)
+    provider.sendspin_bridge_enabled = True
+    provider.bridge_manager = WebKioskSendspinBridgeManager(provider)
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    try:
+        async with TestClient(TestServer(server.app)) as http:
+            first = await connect_owned_ws(
+                http, "/ws?device_id=mode&sendspin_client_id=" + CLIENT_ID
+            )
+            await first.receive_json()
+            kiosk = registry.get_player("wk_mode")
+            assert isinstance(kiosk, WebKioskPlayer)
+            assert registry._select_best_output_protocol(kiosk)[0].player_id == CLIENT_ID
+
+            await first.close()
+            second = await http.ws_connect("/ws?device_id=mode&sendspin=0")
+            await second.receive_json()
+            assert registry.get_player("wk_mode") is kiosk
+            target, protocol = registry._select_best_output_protocol(kiosk)
+            assert target is kiosk
+            assert protocol is None
+            await second.close()
+    finally:
+        provider.cancel_all_player_closes()
+        await provider.bridge_manager.close()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await native.on_unload()

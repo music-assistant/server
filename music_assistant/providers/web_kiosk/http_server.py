@@ -314,6 +314,7 @@ class WebKioskHTTPServer:
             return
         player.on_ws_connected()
         self._update_volume_support(player_id)
+        self._update_output_mode(player_id)
         self.broadcast_player_name(player)
         for client in clients:
             await self._send_snapshot(client, player)
@@ -660,6 +661,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             # JSON-RPC playback commands before the first "play" push arrives.
             custom_name = player.config.name if player else None
             self._player_names[player_id] = custom_name
+            self._update_output_mode(player_id)
             await self._ws_send(
                 ws,
                 json.dumps(
@@ -691,6 +693,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             self._ws_peers.pop(ws, None)
             self._ws_volume_support.pop(ws, None)
             self._update_volume_support(player_id)
+            self._update_output_mode(player_id)
             if not self._ws_clients.get(player_id):
                 self._media_signatures.pop(player_id, None)
                 self._player_names.pop(player_id, None)
@@ -876,6 +879,14 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 self._ws_clients.get(player_id, set()).discard(ws)
                 self._ws_volume_support.pop(ws, None)
                 self._update_volume_support(player_id)
+
+    def _update_output_mode(self, player_id: str) -> None:
+        """Use native output while any connected tab of the device asked for HTML5."""
+        clients = self._ws_clients.get(player_id, set())
+        if clients and (player := self._get_kiosk_player(player_id)):
+            # A Sendspin tab can also play native streams; an HTML5 tab cannot
+            # play Sendspin, so one HTML5 tab moves the device to native output.
+            player.set_html5_requested(any(ws not in self._ws_claims for ws in clients))
 
     def _update_volume_support(self, player_id: str) -> None:
         """Require all connected outputs to support the shared volume command."""

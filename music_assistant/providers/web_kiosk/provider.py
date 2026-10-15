@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, QueueOption
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
@@ -70,6 +70,7 @@ class WebKioskProvider(PlayerProvider):
         self._sendspin_owners: dict[str, WebKioskPlayer] = {}
         self._player_last_activity = {}
         self._disconnect_tasks = {}
+        self._background_tasks: set[asyncio.Future[Any]] = set()
         self._wave_seq = {}
         # one secret per provider instance; the per-player tokens derive from it
         self._stream_token_secret = secrets.token_bytes(32)
@@ -144,6 +145,13 @@ class WebKioskProvider(PlayerProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload — stop timeout task, HTTP server, then unregister players."""
         self._unloading = True
+        # Completion and metadata work must not outlive this instance and
+        # dispatch to a replacement kiosk with the same player id.
+        background = list(self._background_tasks)
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
         disconnect_tasks = list(self._disconnect_tasks.values())
         self.cancel_all_player_closes()
         if disconnect_tasks:
@@ -392,13 +400,18 @@ class WebKioskProvider(PlayerProvider):
             # A startup failure also requests fallback. Only playback that was
             # running moves to HTML5; a paused or stopped queue keeps its state.
             was_playing = queue.state == PlaybackState.PLAYING
+            # A sync follower's active queue belongs to its leader. Capture what
+            # it played so the kiosk restores it alone; the leader keeps playing.
+            protocol = self.mass.players.get_player(client_id)
+            follower = bool(protocol and protocol.synced_to and protocol.synced_to != client_id)
+            item = queue.current_item
+            position = queue.corrected_elapsed_time
             claim = player.sendspin_claim
             player.sendspin_fallback = True
             try:
                 # Controller commands resolve protocol IDs back to their native
                 # parent, which would release a captured static group. Detach only
                 # this owned transport through the protocol player's public API.
-                protocol = self.mass.players.get_player(client_id)
                 if protocol and (protocol.synced_to or len(protocol.group_members) > 1):
                     leader = self.mass.players.get_player(
                         protocol.synced_to or protocol.player_id, raise_unavailable=True
@@ -415,7 +428,14 @@ class WebKioskProvider(PlayerProvider):
         if not was_playing or player.sendspin_claim is not claim:
             return
         try:
-            await self.mass.player_queues.resume(queue.queue_id)
+            if not follower:
+                await self.mass.player_queues.resume(queue.queue_id)
+            elif item is not None:
+                await self.mass.player_queues.play_media(
+                    player_id, item.media_item or item.uri, option=QueueOption.PLAY
+                )
+                if position >= 1:
+                    await self.mass.player_queues.seek(player_id, int(position))
         except BaseException:
             if player.sendspin_claim is claim:
                 player.sendspin_fallback = False
@@ -551,10 +571,18 @@ class WebKioskProvider(PlayerProvider):
                 self._disconnect_tasks.pop(player_id, None)
 
     def _spawn(self, coro: Any) -> None:
-        """Schedule coro. A test double that hands the coroutine back is closed."""
+        """Schedule coro as provider-owned work that unload cancels."""
+        if self._unloading:
+            coro.close()
+            return
         task = self.mass.create_task(coro)
+        # A test double that hands the coroutine back is closed.
         if asyncio.iscoroutine(task):
             task.close()
+            return
+        if isinstance(task, asyncio.Future):
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def _publish_wave(
         self, player_id: str, seq: int, media: PlayerMedia | None = None

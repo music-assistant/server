@@ -11,11 +11,12 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
 
 import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.controllers.streams import StreamsController
@@ -814,3 +815,86 @@ async def test_failed_html5_stream_stops_current_playback(
 
     await provider._stop_failed_playback("wk_test", player.playback_generation)
     mass_mock.players.cmd_stop.assert_awaited_once_with("wk_test")
+
+
+async def test_unload_cancels_completion_work_in_flight(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """Background playback work cannot outlive the provider and reach a replacement kiosk."""
+    tasks: list[asyncio.Task[Any]] = []
+
+    def spawn(coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        task = asyncio.ensure_future(coro)
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task = Mock(side_effect=spawn)
+    entered = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def hold_play_index(_queue_id: str, _index: int) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+        finished.set()
+
+    _playing_at_end(player)
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.get_active_queue.return_value = Mock(
+        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1")
+    )
+    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="item-2")
+    mass_mock.player_queues.index_by_id.return_value = 1
+    mass_mock.player_queues.play_index = AsyncMock(side_effect=hold_play_index)
+    mass_mock.players.iter_players = Mock(return_value=[])
+
+    provider.track_ended("wk_test", player.playback_generation)
+    await asyncio.wait_for(entered.wait(), 1)
+    await provider.unload()
+
+    assert all(task.done() for task in tasks)
+    assert not finished.is_set()
+    provider.track_ended("wk_test", player.playback_generation)
+    assert len(tasks) == 1
+
+
+async def test_sendspin_fallback_of_sync_follower_keeps_leader_playing(
+    provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """A follower restores the leader's item on its own output without restarting the leader."""
+    client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+    player.sendspin_client_id = client_id
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
+    leader = Mock(player_id="speaker", set_members=AsyncMock())
+    protocol = Mock(player_id=client_id, synced_to="speaker", group_members=[])
+    players = {player.player_id: player, client_id: protocol, "speaker": leader}
+    mass_mock.players.get_player = Mock(side_effect=lambda pid, **_: players.get(pid))
+    track = Mock(name="track-media")
+    leader_queue = PlayerQueue(
+        queue_id="speaker",
+        active=True,
+        display_name="Speaker",
+        available=True,
+        items=3,
+        state=PlaybackState.PLAYING,
+        current_item=QueueItem(
+            queue_id="speaker", queue_item_id="item", name="Song", duration=200, media_item=None
+        ),
+        elapsed_time=42,
+        elapsed_time_last_updated=time.time(),
+    )
+    leader_queue.current_item.media_item = track  # type: ignore[union-attr]
+    mass_mock.player_queues.get_active_queue = Mock(return_value=leader_queue)
+    mass_mock.player_queues.resume = AsyncMock()
+    mass_mock.player_queues.play_media = AsyncMock()
+    mass_mock.player_queues.seek = AsyncMock()
+
+    await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
+
+    leader.set_members.assert_awaited_once_with(player_ids_to_remove=[client_id])
+    mass_mock.player_queues.resume.assert_not_awaited()
+    mass_mock.player_queues.play_media.assert_awaited_once_with(
+        player.player_id, track, option=QueueOption.PLAY
+    )
+    position = mass_mock.player_queues.seek.await_args.args
+    assert position[0] == player.player_id
+    assert 42 <= position[1] <= 43
