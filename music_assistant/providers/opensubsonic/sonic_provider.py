@@ -20,6 +20,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderPermissionDenied,
@@ -814,6 +815,32 @@ class OpenSonicProvider(MusicProvider):
             )
         except SonicError as ex:
             msg = f"Failed to remove songs from {prov_playlist_id}, check your permissions."
+            raise ProviderPermissionDenied(msg) from ex
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one track of the playlist to another position (both 1-based).
+
+        Note that the configured user must own the playlist to edit this way.
+        """
+        # the Subsonic API has no move, so the whole order is written back in one call that
+        # replaces the songs of the playlist
+        try:
+            sonic_playlist: SonicPlaylist = await self.conn.get_playlist(prov_playlist_id)
+        except (ParameterError, DataNotFoundError) as e:
+            msg = f"Playlist {prov_playlist_id} not found"
+            raise MediaNotFoundError(msg) from e
+        song_ids = [song.id for song in sonic_playlist.entry or []]
+        if not (1 <= from_position <= len(song_ids) and 1 <= to_position <= len(song_ids)):
+            msg = f"Position out of range for a playlist of {len(song_ids)} item(s)"
+            raise InvalidDataError(msg)
+        song_ids.insert(to_position - 1, song_ids.pop(from_position - 1))
+        try:
+            await self.conn.create_playlist(playlist_id=prov_playlist_id, song_ids=song_ids)
+        except SonicError as ex:
+            msg = f"Failed to reorder songs in {prov_playlist_id}, check your permissions."
             raise ProviderPermissionDenied(msg) from ex
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
