@@ -165,6 +165,7 @@ class WebKioskHTTPServer:
         # Where audio.currentTime 0 sits in the song. Non-zero after a seek,
         # because the stream Music Assistant serves then starts at that point.
         payload["start"] = start
+        payload["playback_speed"] = playback_speed
         if wave_seq is not None:
             payload["wave_seq"] = wave_seq
         msg = json.dumps(payload)
@@ -528,7 +529,11 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             result = await self.provider.mass.webserver.auth.login(
                 username=username, password=password, device_name="Web Kiosk URL Builder"
             )
-            token = result.get("access_token") if result.get("success") else None
+            token = (
+                result.get("access_token")
+                if isinstance(result, dict) and result.get("success")
+                else None
+            )
         if not isinstance(token, str) or not token:
             return web.json_response({"error": "MA sign-in failed"}, status=401)
         user = await self.provider.mass.webserver.auth.authenticate_with_token(token)
@@ -684,10 +689,12 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             self._publish_effective_media(player, force=True)
             return
         if player.current_media is None:
+            await self._send_volume(player, {ws})
             return
         refreshed = await player.refresh_stream()
         media = cast("PlayerMedia | None", player.current_media)
         if media is None:
+            await self._send_volume(player, {ws})
             return
         play_path = (
             f"/stream/{player.player_id}?token={self.provider.get_stream_token(player.player_id)}"
@@ -723,8 +730,14 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         if player.playback_state == PlaybackState.PAUSED:
             for client in tuple(recipients):
                 await self._ws_send(client, json.dumps({"type": "pause"}))
-        # The slider starts at 100. Send the real level so a reconnect does
-        # not jump the volume on the first drag.
+        await self._send_volume(player, recipients)
+
+    async def _send_volume(
+        self, player: WebKioskPlayer, recipients: set[web.WebSocketResponse]
+    ) -> None:
+        """Send the MA volume level to freshly connected kiosk pages."""
+        # The slider and audio element start at 100. Send the real level so a
+        # reconnect neither jumps the volume on the first drag nor plays loud.
         if player.volume_level is not None:
             for client in tuple(recipients):
                 await self._ws_send(
@@ -888,7 +901,11 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         elif msg_type == "ended":
             generation = msg.get("playback_generation")
             if isinstance(generation, str) and generation:
-                self.provider.track_ended(player_id, generation)
+                position = msg.get("position")
+                if _is_finite_position(position):
+                    self.provider.track_ended(player_id, generation, position=float(position))
+                else:
+                    self.provider.track_ended(player_id, generation)
             self.provider.on_player_activity(player_id)
         else:
             logger.debug("Unknown WS message type from %s: %s", player_id, msg_type)

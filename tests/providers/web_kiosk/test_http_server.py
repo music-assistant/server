@@ -18,7 +18,9 @@ from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedE
 from music_assistant_models.player import PlayerMedia
 
 import music_assistant.providers.web_kiosk.party as party_module
+from music_assistant.controllers.webserver.helpers.auth_providers import AuthFailure
 from music_assistant.helpers.api import APICommandHandler
+from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
@@ -206,6 +208,25 @@ async def test_ws_ended_asks_the_provider_to_advance(
     await asyncio.sleep(0.05)
 
     provider.track_ended.assert_called_once_with(hello["player_id"], "test-generation")
+    await ws.close()
+
+
+async def test_ws_ended_forwards_final_position(
+    http_client: TestClient[Any, Any], provider: WebKioskProvider
+) -> None:
+    """The final stream position sent with the end report reaches the provider."""
+    provider.track_ended = Mock()  # type: ignore[method-assign]
+    ws = await http_client.ws_connect("/ws?device_id=endpos")
+    hello = json.loads((await ws.receive()).data)
+
+    await ws.send_str(
+        json.dumps({"type": "ended", "playback_generation": "test-generation", "position": 149.5})
+    )
+    await asyncio.sleep(0.05)
+
+    provider.track_ended.assert_called_once_with(
+        hello["player_id"], "test-generation", position=149.5
+    )
     await ws.close()
 
 
@@ -526,6 +547,22 @@ async def test_builder_signin_uses_ma_credentials_and_rejects_cross_site(
     assert response.status == 401
 
 
+async def test_builder_signin_rejects_failed_ma_login(
+    http_client: TestClient[Any, Any], mass_mock: Mock
+) -> None:
+    """A failed MA sign-in is reported as unauthorized instead of a server error."""
+    mass_mock.webserver.auth.login = AsyncMock(
+        return_value=AuthFailure("Invalid username or password")
+    )
+    mass_mock.webserver.auth.authenticate_with_token = AsyncMock()
+    response = await http_client.post(
+        "/builder-auth", json={"username": "test-user", "password": "wrong-test-password"}
+    )
+    assert response.status == 401
+    assert "wk_builder_auth" not in response.cookies
+    mass_mock.webserver.auth.authenticate_with_token.assert_not_awaited()
+
+
 async def test_ws_rejects_same_site_browser(http_client: TestClient[Any, Any]) -> None:
     """A browser on another origin must not receive player snapshots or stream tokens."""
     with pytest.raises(WSServerHandshakeError) as error:
@@ -812,6 +849,45 @@ async def test_html5_reconnect_prepares_stream_at_current_song_position(
     assert existing_play["playback_generation"] == new_play["playback_generation"]
     await second.close()
     await ws.close()
+
+
+async def test_idle_reconnect_restores_volume_before_playback(
+    http_client: TestClient[Any, Any], provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """A reloaded idle kiosk receives its MA volume so later playback is not at 100%."""
+    registered = WebKioskPlayer(provider, "wk_idle", name="Idle")
+    registered.update_state = Mock()  # type: ignore[misc,method-assign]
+    registered._attr_volume_level = 30
+    mass_mock.players.get_player.return_value = registered
+    ws = await http_client.ws_connect("/ws?device_id=idle")
+    await ws.receive_json()
+    async with asyncio.timeout(1):
+        while True:
+            message = await ws.receive_json()
+            if message.get("type") == "volume":
+                break
+    assert message["level"] == 30
+    await ws.close()
+
+
+async def test_play_broadcast_carries_playback_speed(
+    provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """Ordinary play messages tell the browser the speed of the stream."""
+    server = WebKioskHTTPServer(provider, 0)
+    ws = Mock(closed=False)
+    server._ws_clients["wk_test"] = {ws}
+    server._ws_send = AsyncMock()  # type: ignore[method-assign]
+    mass_mock.create_task = Mock(side_effect=lambda coro: coro)
+
+    server.broadcast_play("wk_test", playback_generation="gen", playback_speed=2.0)
+    await mass_mock.create_task.call_args.args[0]
+
+    sent = server._ws_send.await_args
+    assert sent is not None
+    payload = json.loads(sent.args[1])
+    assert payload["type"] == "play"
+    assert payload["playback_speed"] == 2.0
 
 
 @pytest.mark.parametrize(

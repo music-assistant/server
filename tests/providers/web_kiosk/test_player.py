@@ -104,6 +104,22 @@ async def test_pause_snapshots_elapsed_time(player: WebKioskPlayer) -> None:
     assert player._attr_elapsed_time >= 15.0
 
 
+async def test_repeated_pause_keeps_paused_position(player: WebKioskPlayer) -> None:
+    """A second pause must not add the time spent paused to the position."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 10.0
+    player._attr_elapsed_time_last_updated = time.time() - 5.0
+    await player.pause()
+    paused_position = player._attr_elapsed_time
+    assert paused_position is not None
+
+    player._attr_elapsed_time_last_updated = time.time() - 60.0
+    await player.pause()
+
+    assert player.playback_state == PlaybackState.PAUSED
+    assert player._attr_elapsed_time == paused_position
+
+
 async def test_stop_clears_media_and_stream(player: WebKioskPlayer) -> None:
     """stop() returns the player to IDLE and clears current media."""
     await player.play_media(_media())

@@ -594,3 +594,84 @@ async def test_failed_initialization_releases_resources(
     stop.assert_awaited_once()
     assert provider.bridge_manager is None
     assert provider.http_server is None
+
+
+@pytest.mark.parametrize(
+    ("queue_state", "resumed"),
+    [
+        (PlaybackState.PLAYING, True),
+        (PlaybackState.PAUSED, False),
+        (PlaybackState.IDLE, False),
+    ],
+)
+async def test_sendspin_fallback_resumes_only_playing_queue(
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    mass_mock: Mock,
+    queue_state: PlaybackState,
+    resumed: bool,
+) -> None:
+    """Falling back to HTML5 keeps a paused or stopped queue where it was."""
+    client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+    player.sendspin_client_id = client_id
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
+    mass_mock.players.get_player = Mock(
+        side_effect=lambda player_id, **_: player if player_id == player.player_id else None
+    )
+    queue = PlayerQueue(
+        queue_id=player.player_id,
+        active=True,
+        display_name="Test Kiosk",
+        available=True,
+        items=1,
+        state=queue_state,
+    )
+    mass_mock.player_queues.get_active_queue = Mock(return_value=queue)
+    mass_mock.player_queues.resume = AsyncMock()
+
+    await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
+
+    assert player.sendspin_fallback
+    assert player.active_output_protocol == "native"
+    assert mass_mock.player_queues.resume.await_count == int(resumed)
+    assert queue.state == queue_state
+
+
+async def test_fast_track_end_between_position_reports_advances(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """A 2x episode ending between heartbeats completes from the final reported position."""
+    mass_mock.player_queues.get.return_value = Mock(
+        current_item=Mock(extra_attributes={"playback_speed": 2.0})
+    )
+    await player.play_media(
+        PlayerMedia(uri="podcast", duration=299, stream_duration=299, source_id="wk_test")
+    )
+    player.note_seek(145)
+    assert not player.playback_reached_end()
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.get_active_queue.return_value = Mock(
+        queue_id="wk_test", current_index=0
+    )
+    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="item-2")
+    mass_mock.player_queues.index_by_id.return_value = 1
+    mass_mock.player_queues.play_index = AsyncMock()
+
+    await provider._advance_after_track("wk_test", player.playback_generation, position=149.5)
+
+    mass_mock.player_queues.play_index.assert_awaited_once_with("wk_test", 1)
+
+
+async def test_stale_track_end_position_does_not_move_the_clock(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """An end report from an older playback cannot change the current position."""
+    await player.play_media(PlayerMedia(uri="track", duration=300, source_id="wk_test"))
+    player.note_seek(20)
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.play_index = AsyncMock()
+
+    await provider._advance_after_track("wk_test", "older-generation", position=299)
+
+    assert player.elapsed_time == 20
+    mass_mock.player_queues.play_index.assert_not_awaited()

@@ -289,7 +289,7 @@
     function reportTrackEnded() {
         if (endReported || !playbackGeneration || !audio.ended || isPrimeSource() || sendspinStreaming) return;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        sendWS({ type: 'ended', playback_generation: playbackGeneration });
+        sendWS({ type: 'ended', playback_generation: playbackGeneration, position: audio.currentTime });
         endReported = true;
     }
 

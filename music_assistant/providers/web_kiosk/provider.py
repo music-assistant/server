@@ -375,6 +375,9 @@ class WebKioskProvider(PlayerProvider):
             queue = self.mass.player_queues.get_active_queue(player_id)
             if queue is None:
                 raise PlayerUnavailableError("No active queue for Sendspin fallback")
+            # A startup failure also requests fallback. Only playback that was
+            # running moves to HTML5; a paused or stopped queue keeps its state.
+            was_playing = queue.state == PlaybackState.PLAYING
             claim = player.sendspin_claim
             player.sendspin_fallback = True
             try:
@@ -395,7 +398,7 @@ class WebKioskProvider(PlayerProvider):
                 raise
         # Stream preparation can take time. Release the registration lock while
         # resuming, and do not clear a newer connection's state on failure.
-        if player.sendspin_claim is not claim:
+        if not was_playing or player.sendspin_claim is not claim:
             return
         try:
             await self.mass.player_queues.resume(queue.queue_id)
@@ -404,9 +407,17 @@ class WebKioskProvider(PlayerProvider):
                 player.sendspin_fallback = False
             raise
 
-    def track_ended(self, player_id: str, playback_generation: str) -> None:
-        """Advance the queue after the browser finishes its audio file."""
-        self._spawn(self._advance_after_track(player_id, playback_generation))
+    def track_ended(
+        self, player_id: str, playback_generation: str, *, position: float | None = None
+    ) -> None:
+        """
+        Advance the queue after the browser finishes its audio file.
+
+        :param player_id: The kiosk player that finished playback.
+        :param playback_generation: The playback instance the browser finished.
+        :param position: The final position in seconds into the served audio, if reported.
+        """
+        self._spawn(self._advance_after_track(player_id, playback_generation, position))
 
     def notify_play_paused(self, player_id: str) -> None:
         """Notify the kiosk WebSocket client that playback is paused."""
@@ -575,13 +586,19 @@ class WebKioskProvider(PlayerProvider):
         plain, lrc = await self.mass.metadata.get_track_lyrics(media)
         return parse_track_lyrics(plain, lrc)
 
-    async def _advance_after_track(self, player_id: str, playback_generation: str) -> None:
+    async def _advance_after_track(
+        self, player_id: str, playback_generation: str, position: float | None = None
+    ) -> None:
         """Play the next queue item, or stop when this track was the last one."""
         player = self.mass.players.get_player(player_id)
         if not isinstance(player, WebKioskPlayer) or player.playback_state != PlaybackState.PLAYING:
             return
         if playback_generation != player.playback_generation:
             return
+        # Position reports are periodic. The final one arrives with the end
+        # report, so a fast stream ending between reports still completes.
+        if position is not None:
+            player.update_position(position)
         if player._track_end_handled or not player.playback_reached_end():
             return
         # One end event per play. play_media clears this when the next item starts.
