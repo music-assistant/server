@@ -701,6 +701,25 @@ async def test_audiobook_collections_collapse_and_preserve_order(
     assert [item.name for item in collection.items] == ["Alpha 1", "Alpha 1.5", "Alpha 2"]
     assert all(isinstance(item, Audiobook) for item in collection.items)
 
+    page = await controller.get_collection(
+        collections["Alpha Series"].item_id,
+        search="1",
+        limit=1,
+        offset=1,
+    )
+    assert [item.name for item in page.items] == ["Alpha 1.5"]
+
+    # the favorite filter runs before the page is cut: the liked book is the last one
+    alpha_books = collections["Alpha Series"].items
+    await _like(mass, MediaType.AUDIOBOOK, str(alpha_books[-1].item_id), True)
+    with patch(GET_CURRENT_USER, return_value=LISTING_USER):
+        favorites = await controller.get_collection(
+            collections["Alpha Series"].item_id,
+            favorite=True,
+            limit=1,
+        )
+    assert [item.name for item in favorites.items] == ["Alpha 2"]
+
 
 async def test_artist_audiobooks_collapse_collections(
     mass: MusicAssistant,
