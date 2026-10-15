@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
@@ -75,3 +76,37 @@ def test_metadata_builder_clamps_progress_to_duration() -> None:
     metadata = SendspinPlayer._build_current_media_metadata(player, media, None, is_playing=True)
 
     assert metadata.track_progress == 180_000
+
+
+async def test_push_pairs_the_position_with_the_playing_state() -> None:
+    """A resume during the artwork lookup reports the fresh position, not the idle snapshot."""
+    player = MagicMock()
+    player.available = True
+    player._content_takeover_pending = False
+    player._metadata_generation = 1
+    for name in (
+        "_media_identity",
+        "_metadata_publish_allowed",
+        "_build_current_media_metadata",
+        "_compute_track_progress_ms",
+    ):
+        setattr(player, name, getattr(SendspinPlayer, name).__get__(player, SendspinPlayer))
+    player._queue_repeat_shuffle.return_value = (MagicMock(), False)
+    player._send_beat_schedule = AsyncMock()
+    idle_media = _media(74, updated_ago=360.0)
+    idle_media.duration = 309
+    player.state = SimpleNamespace(current_media=idle_media, playback_state=PlaybackState.IDLE)
+
+    async def resume_during_lookup(*_args: object, **_kwargs: object) -> None:
+        playing_media = _media(74, updated_ago=0.0)
+        playing_media.duration = 309
+        player.state = SimpleNamespace(
+            current_media=playing_media, playback_state=PlaybackState.PLAYING
+        )
+
+    player._send_album_artwork = AsyncMock(side_effect=resume_during_lookup)
+
+    await SendspinPlayer.send_current_media_metadata(player)
+
+    metadata = player._metadata_role.set_metadata.call_args.args[0]
+    assert 74_000 <= metadata.track_progress <= 75_500

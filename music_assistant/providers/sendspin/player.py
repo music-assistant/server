@@ -1749,6 +1749,7 @@ class SendspinPlayer(SendspinBasePlayer):
             async with self._metadata_lock:
                 await self._clear_current_media_metadata(generation=generation)
             return
+        media_identity = self._media_identity()
         # check if we are playing a MA queue item
         queue_item: QueueItem | None = None
         queue: PlayerQueue | None = None
@@ -1784,6 +1785,11 @@ class SendspinPlayer(SendspinBasePlayer):
         if not self._metadata_publish_allowed(generation):
             return
 
+        # Pair the position with the playing state, which may have changed during the lookups.
+        if (
+            current_media := self.state.current_media
+        ) is None or self._media_identity() != media_identity:
+            return
         is_playing = self.state.playback_state == PlaybackState.PLAYING
         metadata = self._build_current_media_metadata(
             current_media,
