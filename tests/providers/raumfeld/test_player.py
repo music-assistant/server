@@ -970,3 +970,13 @@ async def test_a_play_command_during_the_source_read_drops_the_whole_reading() -
     ):
         await player._poll_zone(MagicMock(), ["Bar"])
     apply_position.assert_not_called()
+
+
+def test_a_room_in_a_zone_does_not_play_spotify_connect() -> None:
+    """A stale Spotify Connect flag does not take a grouped room out of its group."""
+    player, host = _external_player()
+    host.room_is_spotify_single_room.return_value = True
+    with patch.object(player, "_active_zone", return_value=["Bank", "Bar"]):
+        assert player._plays_spotify_connect() is False
+    with patch.object(player, "_active_zone", return_value=None):
+        assert player._plays_spotify_connect() is True

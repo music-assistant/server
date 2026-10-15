@@ -670,6 +670,12 @@ class RaumfeldPlayer(Player):
 
     def _plays_spotify_connect(self) -> bool:
         """Return whether Spotify Connect is playing on this room's own renderer."""
+        # Spotify Connect takes the room out of every zone, so a room in a zone does not play
+        # it. hassfeld keeps a room flagged once the host reported Spotify Connect on it, also
+        # after the session ended, so the flag alone would keep pulling the room out of any
+        # group it joins later.
+        if self._active_zone() is not None:
+            return False
         try:
             return bool(self.raumfeld.host.room_is_spotify_single_room(self.room))
         except HOST_ERRORS:
