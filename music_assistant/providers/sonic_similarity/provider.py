@@ -25,11 +25,7 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
-from music_assistant_models.errors import (
-    ActionUnavailable,
-    MusicAssistantError,
-    SetupFailedError,
-)
+from music_assistant_models.errors import ActionUnavailable, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -66,6 +62,7 @@ from music_assistant.providers.sonic_similarity.constants import (
     METADATA_BONUS_SCALE,
     PERIODIC_REFRESH_INTERVAL_HOURS,
     PERIODIC_REFRESH_TASK_ID,
+    REBUILD_TASK_ID,
     RECOMMEND_ITEM_LIMIT,
     RECOMMEND_PER_SEED_LIMIT,
     RECOMMEND_SEED_COUNT,
@@ -144,7 +141,7 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        status_18, status_clap, status_text = await self._collect_status_text()
+        status_18, status_clap, status_text = self._collect_status_text()
 
         return (
             # === Generic: the two opt-in engine toggles ===
@@ -303,28 +300,8 @@ class SonicSimilarityPlugin(PluginProvider):
             return None
         return await super().handle_config_action(action)
 
-    async def handle_async_init(self) -> None:
-        """
-        Build the 18-dim search index before the provider is registered.
-
-        Failures here raise SetupFailedError so the loader surfaces them through
-        MA's standard provider-failure UI (a silent failure in loaded_in_mass
-        would be swallowed by its fire-and-forget task wrapper).
-        """
-        self.logger.info("Sonic Similarity initializing, building search index...")
-        try:
-            await self._rebuild_search_index()
-        except Exception as err:
-            msg = f"Failed to build Traits search index: {err}"
-            raise SetupFailedError(msg) from err
-        self.logger.info(
-            "Search index ready: %d signatures cached, corpus_stats=%s",
-            len(self._signature_cache),
-            self.corpus_means is not None,
-        )
-
     async def loaded_in_mass(self) -> None:
-        """Register similarity API commands and set up the optional CLAP engine."""
+        """Register the API commands, load the optional CLAP engine and start the index builds."""
         self._unregister_handles.append(
             self.mass.register_api_command(
                 "sonic_similarity/similar", self._handle_similar, required_scope=Scope.LIBRARY_READ
@@ -359,8 +336,7 @@ class SonicSimilarityPlugin(PluginProvider):
                         required_scope=Scope.LIBRARY_READ,
                     )
                 )
-                await self._rebuild_clap_index_from_database()
-                self.logger.info("Character index ready: %d embeddings", len(self._clap_index))
+                self.logger.info("Character index loaded: %d embeddings", len(self._clap_index))
             except Exception:
                 # CLAP is optional — failure must not block the 18-dim engine.
                 self.logger.exception(
@@ -387,9 +363,14 @@ class SonicSimilarityPlugin(PluginProvider):
             schedule=TaskSchedule.hourly(every=PERIODIC_REFRESH_INTERVAL_HOURS),
             allow_retry=True,
         )
+        # Both rebuilds read every analysis row in the library, so they run as their own
+        # task: this post-load step gates the provider's readiness and must not wait on
+        # library-proportional work.
+        self.mass.create_task(self._rebuild_indexes(), task_id=REBUILD_TASK_ID)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister API commands; delete on-disk indexes when the provider is uninstalled."""
+        self.mass.cancel_task(REBUILD_TASK_ID)
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
@@ -627,27 +608,16 @@ class SonicSimilarityPlugin(PluginProvider):
         )
         return SearchResults(tracks=[t for t in resolved if t is not None])
 
-    async def _collect_status_text(self) -> tuple[str, str, str]:
+    def _collect_status_text(self) -> tuple[str, str, str]:
         """
         Return (18-dim, CLAP, text-encoder) label-text triples for the plugin page.
 
         Each string is single-line, safe to render in a LABEL config entry, and
-        degrades gracefully depending on the current engine/index state.
+        degrades gracefully depending on the current engine/index state. Built from
+        in-memory state only: this runs on the provider load path.
         """
-        eighteen = "Traits engine: not yet loaded"
         clap = "Character engine: disabled"
         text = "Text encoder: disabled"
-
-        # Optional coverage lookup against the upstream AA provider via #3851's API.
-        coverage_pct: float | None = None
-        try:
-            coverage = await self.mass.streams.audio_analysis.get_coverage(AA_PROVIDER_DOMAIN)
-        except Exception:
-            coverage = None
-        if coverage is not None:
-            total = coverage.analyzed + coverage.pending
-            if total > 0:
-                coverage_pct = round(100.0 * coverage.analyzed / total, 1)
 
         # 18-dim line.
         index_size = len(self._search_index) if self._search_index is not None else 0
@@ -656,19 +626,13 @@ class SonicSimilarityPlugin(PluginProvider):
             f"{len(self._signature_cache):,} signatures cached",
             f"corpus stats {'ready' if self.corpus_means is not None else 'pending'}",
         ]
-        if coverage_pct is not None:
-            parts.append(f"{coverage_pct}% coverage")
         eighteen = "Traits engine: " + " · ".join(parts)
         if (err_18dim := self._last_rebuild_error.get("Traits")) is not None:
             eighteen += f" — last rebuild failed: {err_18dim}"
 
         # CLAP line (only meaningful when the index is built).
         if self._clap_index is not None:
-            clap_size = len(self._clap_index)
-            clap_parts = [f"{clap_size:,} embeddings indexed"]
-            if coverage_pct is not None:
-                clap_parts.append(f"{coverage_pct}% coverage")
-            clap = "Character engine: " + " · ".join(clap_parts)
+            clap = f"Character engine: {len(self._clap_index):,} embeddings indexed"
             if (err_clap := self._last_rebuild_error.get("Character")) is not None:
                 clap += f" — last rebuild failed: {err_clap}"
 
@@ -716,6 +680,10 @@ class SonicSimilarityPlugin(PluginProvider):
             self._last_seen_row_count,
             current,
         )
+        await self._rebuild_indexes()
+
+    async def _rebuild_indexes(self) -> None:
+        """Rebuild the Traits index, then the Character index when enabled, one after the other."""
         await self._safe_rebuild("Traits", self._rebuild_search_index)
         if self._clap_index is not None:
             await self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
@@ -1195,6 +1163,8 @@ class SonicSimilarityPlugin(PluginProvider):
             "clap_index_enabled": self._clap_index is not None,
             "text_search_enabled": text_search_enabled,
             "text_encoder_loaded": self._text_encoder is not None,
+            "rebuild_in_progress": self._rebuild_lock.locked() or self._clap_rebuild_lock.locked(),
+            "last_rebuild_error": dict(self._last_rebuild_error),
         }
         if self._clap_index is not None:
             status["clap_index_size"] = len(self._clap_index)
