@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 class MSXPlayer(Player):
     """Represents a Smart TV running MSX as a Music Assistant player."""
 
-    output_format: str = "mp3"
     _skip_ws_depth: int = 0
     _accepted_position: bool = False
     _media_ready: asyncio.Event
@@ -45,7 +44,6 @@ class MSXPlayer(Player):
         provider: MSXBridgeProvider,
         player_id: str,
         name: str = "MSX TV",
-        output_format: str = "mp3",
         *,
         ip_address: str | None = None,
     ) -> None:
@@ -68,7 +66,6 @@ class MSXPlayer(Player):
         self._attr_available = True
         self._attr_powered = True
         self._attr_volume_level = 100
-        self.output_format = output_format
         self._media_ready = asyncio.Event()
         self.prepare_lock = asyncio.Lock()
         self._skip_ws_depth = 0
@@ -209,6 +206,7 @@ class MSXPlayer(Player):
         """Handle VOLUME_SET command."""
         self._attr_volume_level = volume_level
         self.update_state()
+        cast("MSXBridgeProvider", self.provider).notify_volume(self.player_id, volume_level)
 
     async def seek(self, position_seconds: int) -> None:
         """Handle SEEK command — send seek action to MSX player via WebSocket."""
