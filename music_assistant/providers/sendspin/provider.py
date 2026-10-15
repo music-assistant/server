@@ -507,9 +507,10 @@ class SendspinProvider(PlayerProvider):
                 # The device lost its half of the pairing; it plays again once re-paired.
                 self.logger.info("Client %s can no longer use its pairing", client_id)
                 self.mass.create_task(self._refresh_player(client_id))
-            # Transport lifecycle events, implemented in another PR.
-            case ClientConnectedEvent():
-                pass
+            case ClientConnectedEvent(client_id):
+                # A reconnect within aiosendspin's cleanup delay reuses the player, and this
+                # event fires before the new connection's roles are attached.
+                self.mass.loop.call_soon(self._refresh_player_state, client_id)
             case ClientDisconnectedEvent(client_id):
                 self._pending_pairing_evictions.add(client_id)
                 self.mass.call_later(
@@ -1479,6 +1480,12 @@ class SendspinProvider(PlayerProvider):
         # so pushed config (preferred format, static delay) must be re-applied.
         await player.on_config_updated()
         player.update_state()
+
+    def _refresh_player_state(self, client_id: str) -> None:
+        """Recalculate a registered player's state for its client's new connection."""
+        player = self.mass.players.get_player(client_id)
+        if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
+            player.update_state()
 
     def _on_user_access_revoked(self, user: User) -> None:
         """Handle a user's access being withdrawn (tokens revoked or account deleted)."""
