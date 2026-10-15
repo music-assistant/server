@@ -260,6 +260,7 @@ class WebKioskPlayer(Player):
                 duration=song_length,
                 start=stream_start,
                 playback_speed=self.playback_speed,
+                media=media,
             )
 
     async def refresh_stream(self) -> bool:

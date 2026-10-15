@@ -602,14 +602,22 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
     mass_mock.create_task.side_effect = spawn
     mass_mock.players.get_player.return_value = player
     mass_mock.player_queues.get_active_queue.return_value = Mock(
-        queue_id="wk_test", current_index=0
+        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="new-item")
     )
     mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="next")
     mass_mock.player_queues.index_by_id.return_value = 1
     mass_mock.player_queues.play_index = AsyncMock()
     provider.spawn_wave = Mock()  # type: ignore[method-assign]
     provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
-    await player.play_media(PlayerMedia(uri="old", duration=30, media_type=MediaType.TRACK))
+    await player.play_media(
+        PlayerMedia(
+            uri="old",
+            duration=30,
+            media_type=MediaType.TRACK,
+            source_id="wk_test",
+            queue_item_id="old-item",
+        )
+    )
     first = await http_client.ws_connect("/ws?device_id=test")
     await first.receive_json()
     old_play = await first.receive_json()
@@ -619,6 +627,8 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
             duration=duration,
             stream_duration=stream_duration,
             media_type=MediaType.TRACK,
+            source_id="wk_test",
+            queue_item_id="new-item",
         )
     )
     second = await http_client.ws_connect("/ws?device_id=test")

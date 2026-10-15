@@ -9,17 +9,18 @@ import hmac
 import logging
 import secrets
 import time
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, PlaybackState
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
     PlayerUnavailableError,
 )
 
+from music_assistant.constants import ATTR_ENABLED
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
@@ -41,6 +42,10 @@ from .lyrics import parse_track_lyrics
 from .ownership import VerifiedSendspinClaim
 from .player import WebKioskPlayer
 from .sendspin_bridge import WebKioskSendspinBridgeManager
+
+if TYPE_CHECKING:
+    from music_assistant_models.player import PlayerMedia
+    from music_assistant_models.queue_item import QueueItem
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +213,8 @@ class WebKioskProvider(PlayerProvider):
                         await self.bridge_manager.prepare_player(existing)
                         await self.bridge_manager.evaluate_bridge(existing)
                 return existing
+            if not self.mass.config.get_raw_player_config_value(player_id, ATTR_ENABLED, True):
+                return None
             name = display_name or self.player_display_name(player_id)
             player = WebKioskPlayer(
                 provider=self,
@@ -284,21 +291,15 @@ class WebKioskProvider(PlayerProvider):
         self._player_last_activity[player_id] = time.monotonic()
 
     def on_player_disabled(self, player_id: str) -> None:
-        """
-        Handle player disabled: do not unregister (base would unregister).
-
-        Kiosk players are registered on demand; unregister on disable would remove them
-        from the list. On enable, discovery is empty so the player would not come back
-        until the kiosk reconnects. We keep the player registered but disabled so it stays
-        visible in the list when re-enabled.
-
-        Still stop playback on the kiosk by broadcasting stop.
-        """
+        """Stop the kiosk page and unregister the player while keeping its browser connected."""
         if self.http_server:
             self.http_server.broadcast_stop(player_id)
+        self._spawn(self._handle_player_unregister(player_id))
 
     def on_player_enabled(self, player_id: str) -> None:
-        """Handle player enabled: no-op, player already registered."""
+        """Register the enabled kiosk again when its browser is still connected."""
+        if self.http_server and self.http_server.client_count(player_id):
+            self._spawn(self.http_server.reattach_player(player_id))
 
     async def remove_player(self, player_id: str) -> None:
         """
@@ -323,6 +324,7 @@ class WebKioskProvider(PlayerProvider):
         duration: float | None = None,
         start: float = 0,
         playback_speed: float = 1.0,
+        media: PlayerMedia | None = None,
     ) -> None:
         """Notify the kiosk WebSocket client that playback started."""
         if self.http_server:
@@ -340,8 +342,8 @@ class WebKioskProvider(PlayerProvider):
             )
             # The browser may have no Music Assistant token. The curve still
             # belongs to the track this player is already decoding.
-            self.spawn_wave(player_id, seq)
-            self.spawn_lyrics(player_id, seq)
+            self.spawn_wave(player_id, seq, media)
+            self.spawn_lyrics(player_id, seq, media)
 
     def next_wave_seq(self, player_id: str) -> int:
         """Return the next energy-curve generation for this player."""
@@ -349,13 +351,25 @@ class WebKioskProvider(PlayerProvider):
         self._wave_seq[player_id] = seq
         return seq
 
-    def spawn_wave(self, player_id: str, seq: int) -> None:
-        """Look up the current track's energy curve and send it to the page."""
-        self._spawn(self._publish_wave(player_id, seq))
+    def spawn_wave(self, player_id: str, seq: int, media: PlayerMedia | None = None) -> None:
+        """
+        Look up the track's energy curve and send it to the page.
 
-    def spawn_lyrics(self, player_id: str, seq: int) -> None:
-        """Look up the current track's lyrics and send them to the page."""
-        self._spawn(self._publish_lyrics(player_id, seq))
+        :param player_id: The kiosk player to send the curve to.
+        :param seq: The energy-curve generation the page expects.
+        :param media: The dispatched media; the active queue item is used when omitted.
+        """
+        self._spawn(self._publish_wave(player_id, seq, media))
+
+    def spawn_lyrics(self, player_id: str, seq: int, media: PlayerMedia | None = None) -> None:
+        """
+        Look up the track's lyrics and send them to the page.
+
+        :param player_id: The kiosk player to send the lyrics to.
+        :param seq: The energy-curve generation the page expects.
+        :param media: The dispatched media; the active queue item is used when omitted.
+        """
+        self._spawn(self._publish_lyrics(player_id, seq, media))
 
     async def fallback_sendspin(
         self, player_id: str, *, expected_client_id: str | None = None
@@ -533,24 +547,26 @@ class WebKioskProvider(PlayerProvider):
         if asyncio.iscoroutine(task):
             task.close()
 
-    async def _publish_wave(self, player_id: str, seq: int) -> None:
+    async def _publish_wave(
+        self, player_id: str, seq: int, media: PlayerMedia | None = None
+    ) -> None:
         """Send the stored RMS curve for the player's current queue item."""
         if self.http_server is None:
             return
         try:
-            bins = await self._current_wave(player_id)
+            bins = await self._current_wave(player_id, media)
         except MusicAssistantError:
             logger.debug("Energy curve lookup failed for %s", player_id, exc_info=True)
             bins = None
         if self.http_server is not None:
             self.http_server.broadcast_wave(player_id, seq, bins)
 
-    async def _current_wave(self, player_id: str) -> list[float] | None:
+    async def _current_wave(
+        self, player_id: str, media: PlayerMedia | None = None
+    ) -> list[float] | None:
         """Return the stored energy bins for the playing item, if analysis exists."""
-        queue = self.mass.player_queues.get_active_queue(player_id)
-        item = getattr(queue, "current_item", None)
-        media = getattr(item, "media_item", None)
-        mappings = getattr(media, "provider_mappings", None) or []
+        media_item = getattr(self._queue_item(player_id, media), "media_item", None)
+        mappings = getattr(media_item, "provider_mappings", None) or []
         analysis = self.mass.streams.audio_analysis
         for mapping in mappings:
             item_id = getattr(mapping, "item_id", None)
@@ -564,27 +580,38 @@ class WebKioskProvider(PlayerProvider):
                 return [float(value) for value in bins]
         return None
 
-    async def _publish_lyrics(self, player_id: str, seq: int) -> None:
+    async def _publish_lyrics(
+        self, player_id: str, seq: int, media: PlayerMedia | None = None
+    ) -> None:
         """Send the current track's lyric lines to the kiosk page."""
         if self.http_server is None:
             return
         try:
-            lines = await self._current_lyrics(player_id)
+            lines = await self._current_lyrics(player_id, media)
         except MusicAssistantError:
             logger.debug("Lyrics lookup failed for %s", player_id, exc_info=True)
             lines = []
         if self.http_server is not None:
             self.http_server.broadcast_lyrics(player_id, seq, lines)
 
-    async def _current_lyrics(self, player_id: str) -> list[dict[str, Any]]:
+    async def _current_lyrics(
+        self, player_id: str, media: PlayerMedia | None = None
+    ) -> list[dict[str, Any]]:
         """Return parsed lyric lines for the playing item."""
-        queue = self.mass.player_queues.get_active_queue(player_id)
-        item = getattr(queue, "current_item", None)
-        media = getattr(item, "media_item", None)
-        if media is None:
+        media_item = getattr(self._queue_item(player_id, media), "media_item", None)
+        if media_item is None:
             return []
-        plain, lrc = await self.mass.metadata.get_track_lyrics(media)
+        plain, lrc = await self.mass.metadata.get_track_lyrics(media_item)
         return parse_track_lyrics(plain, lrc)
+
+    def _queue_item(self, player_id: str, media: PlayerMedia | None) -> QueueItem | None:
+        """Return the queue item of the dispatched media, else the active queue's item."""
+        # A queue updates its current item only after dispatch returns, so the
+        # identity carried by the media is the reliable one during play_media.
+        if media is not None and media.source_id and media.queue_item_id:
+            return self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
+        return getattr(queue, "current_item", None)
 
     async def _advance_after_track(
         self, player_id: str, playback_generation: str, position: float | None = None
@@ -608,6 +635,19 @@ class WebKioskProvider(PlayerProvider):
             queue = queues.get_active_queue(player_id)
             if queue is None:
                 await self.mass.players.cmd_stop(player_id)
+                return
+            media = player.current_media
+            current = queue.current_item
+            if (
+                media is None
+                or media.media_type == MediaType.ANNOUNCEMENT
+                or media.source_id != queue.queue_id
+                or current is None
+                or media.queue_item_id != current.queue_item_id
+            ):
+                # Announcements and other non-queue media end locally. The
+                # announcement controller restores the interrupted queue.
+                await player.stop()
                 return
             index = queue.current_index
             nxt = queues.get_next_item(queue.queue_id, index) if index is not None else None

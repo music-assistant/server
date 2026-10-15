@@ -97,6 +97,7 @@ class WebKioskHTTPServer:
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
         self._ws_volume_support: dict[web.WebSocketResponse, bool] = {}
         self._ws_claims: dict[web.WebSocketResponse, VerifiedSendspinClaim] = {}
+        self._ws_peers: dict[web.WebSocketResponse, tuple[str | None, str | None]] = {}
         self.party = PartyAdapter(provider)
         self._setup_routes()
 
@@ -292,6 +293,30 @@ class WebKioskHTTPServer:
     def client_count(self, player_id: str) -> int:
         """Return how many browser sockets are open for this player."""
         return len(self._ws_clients.get(player_id, ()))
+
+    async def reattach_player(self, player_id: str) -> None:
+        """Register a player again for its connected browser after it was enabled."""
+        clients = [ws for ws in self._ws_clients.get(player_id, ()) if not ws.closed]
+        if not clients:
+            return
+        ws = clients[-1]
+        remote_ip, user_agent = self._ws_peers.get(ws, (None, None))
+        claim = self._ws_claims.get(ws)
+        player = await self.provider.get_or_register_player(
+            player_id,
+            display_name=self.provider.player_display_name(player_id, remote_ip=remote_ip),
+            ip_address=remote_ip,
+            sendspin_client_id=claim.client_id if claim else None,
+            sendspin_claim=claim,
+            user_agent=user_agent,
+        )
+        if player is None or self.provider.mass.players.get_player(player_id) is not player:
+            return
+        player.on_ws_connected()
+        self._update_volume_support(player_id)
+        self.broadcast_player_name(player)
+        for client in clients:
+            await self._send_snapshot(client, player)
 
     def _setup_routes(self) -> None:
         """Register all HTTP routes."""
@@ -619,6 +644,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         self._ws_clients[player_id].add(ws)
         if claim:
             self._ws_claims[ws] = claim
+        self._ws_peers[ws] = (request.remote, request.headers.get("User-Agent"))
         try:
             self._ws_volume_support[ws] = request.query.get("volume_control") == "1"
             self._update_volume_support(player_id)
@@ -662,6 +688,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         finally:
             self._ws_clients.get(player_id, set()).discard(ws)
             self._ws_claims.pop(ws, None)
+            self._ws_peers.pop(ws, None)
             self._ws_volume_support.pop(ws, None)
             self._update_volume_support(player_id)
             if not self._ws_clients.get(player_id):

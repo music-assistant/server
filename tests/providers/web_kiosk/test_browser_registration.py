@@ -43,6 +43,7 @@ from music_assistant.providers.sendspin.provider import SendspinProvider
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
+from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 from music_assistant.providers.web_kiosk.sendspin_bridge import (
     WebKioskSendspinBridge,
@@ -129,7 +130,9 @@ def _configure_registry(mass_mock: Mock) -> tuple[PlayerController, list[asyncio
     mass_mock.config.set.side_effect = set_config
     mass_mock.config.remove.side_effect = lambda key: store.pop(key, None)
     mass_mock.config.get_raw_player_config_value.side_effect = lambda pid, key, default=None: (
-        get_config("players/" + pid + "/values/" + key, default)
+        get_config(
+            "players/" + pid + "/values/" + key, get_config("players/" + pid + "/" + key, default)
+        )
     )
     mass_mock.config.get_raw_core_config_value.return_value = "GLOBAL"
     mass_mock.player_queues.get_active_queue.return_value = None
@@ -738,3 +741,85 @@ async def test_html5_fallback_resumes_real_parent_queue(  # noqa: PLR0915
         await native.on_unload()
         if group:
             await registry.unregister(group.player_id)
+
+
+def _set_enabled(mass_mock: Mock, player_id: str, enabled: bool) -> PlayerConfig:
+    """Persist an enabled flag the way the config manager exposes it to the registry."""
+    base = mass_mock.config.get_base_player_config.side_effect
+    config: PlayerConfig = replace(base(player_id), enabled=enabled)
+    mass_mock.config.set(f"players/{player_id}/enabled", enabled)
+    mass_mock.config.get_base_player_config.side_effect = lambda pid, *args: (
+        config if pid == player_id else base(pid, *args)
+    )
+    mass_mock.config.get_player_config = AsyncMock(
+        side_effect=lambda pid, *args: config if pid == player_id else base(pid, *args)
+    )
+    return config
+
+
+async def test_disabling_connected_kiosk_stops_accepting_playback(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """A disabled kiosk leaves the registry, and enabling restores its connected browser."""
+    registry, _sendspin, _universal, _client, tasks = browser_registry
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    async with TestClient(TestServer(server.app)) as http:
+        ws = await http.ws_connect("/ws?device_id=toggle&volume_control=1")
+        await ws.receive_json()
+        kiosk = registry.get_player("wk_toggle")
+        assert isinstance(kiosk, WebKioskPlayer)
+        assert PlayerFeature.VOLUME_SET in kiosk.supported_features
+
+        disabled = _set_enabled(mass_mock, "wk_toggle", False)
+        await registry.on_player_config_change(disabled, {"enabled"})
+        await asyncio.gather(*tasks)
+        assert registry.get_player("wk_toggle") is None
+        assert not ws.closed
+
+        enabled = _set_enabled(mass_mock, "wk_toggle", True)
+        await registry.on_player_config_change(enabled, {"enabled"})
+        await asyncio.gather(*tasks)
+        restored = registry.get_player("wk_toggle")
+        assert isinstance(restored, WebKioskPlayer)
+        assert restored.enabled
+        assert restored.available
+        assert PlayerFeature.VOLUME_SET in restored.supported_features
+        await ws.close()
+    provider.cancel_all_player_closes()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_enabling_kiosk_disabled_at_startup_registers_connected_browser(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """A browser connected while its kiosk is disabled appears as soon as it is enabled."""
+    registry, _sendspin, _universal, _client, tasks = browser_registry
+    mass_mock.config.create_default_player_config(
+        "wk_startup", provider.instance_id, PlayerType.PLAYER, enabled=False
+    )
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    async with TestClient(TestServer(server.app)) as http:
+        ws = await http.ws_connect("/ws?device_id=startup&volume_control=1")
+        await ws.receive_json()
+        assert registry.get_player("wk_startup") is None
+
+        enabled = _set_enabled(mass_mock, "wk_startup", True)
+        await registry.on_player_config_change(enabled, {"enabled"})
+        await asyncio.gather(*tasks)
+        kiosk = registry.get_player("wk_startup")
+        assert isinstance(kiosk, WebKioskPlayer)
+        assert kiosk.available
+        assert PlayerFeature.VOLUME_SET in kiosk.supported_features
+        await ws.close()
+    provider.cancel_all_player_closes()
+    await asyncio.gather(*tasks, return_exceptions=True)

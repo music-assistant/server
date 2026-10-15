@@ -6,6 +6,7 @@ import asyncio
 import builtins
 import importlib.util
 import time
+from collections.abc import Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -189,7 +190,13 @@ async def test_publish_lyrics_sends_parsed_lines(provider: WebKioskProvider) -> 
 def _playing_at_end(player: object) -> None:
     """Put a player at the end of a 30 second track."""
     player._attr_playback_state = PlaybackState.PLAYING  # type: ignore[attr-defined]
-    player._attr_current_media = Mock(duration=30, stream_duration=None)  # type: ignore[attr-defined]
+    player._attr_current_media = Mock(  # type: ignore[attr-defined]
+        duration=30,
+        stream_duration=None,
+        media_type=MediaType.TRACK,
+        source_id="wk_test",
+        queue_item_id="item-1",
+    )
     player._attr_elapsed_time = 29  # type: ignore[attr-defined]
     player._track_end_handled = False  # type: ignore[attr-defined]
 
@@ -201,7 +208,7 @@ async def test_track_end_plays_the_next_item(
     _playing_at_end(player)
     mass_mock.players.get_player.return_value = player
     nxt = Mock(queue_item_id="item-2")
-    queue = Mock(queue_id="wk_test", current_index=0)
+    queue = Mock(queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1"))
     mass_mock.player_queues.get_active_queue.return_value = queue
     mass_mock.player_queues.get_next_item.return_value = nxt
     mass_mock.player_queues.index_by_id.return_value = 1
@@ -221,7 +228,7 @@ async def test_track_end_stops_when_nothing_follows(
     """The last track leaves the player idle instead of stuck on playing."""
     _playing_at_end(player)
     mass_mock.players.get_player.return_value = player
-    queue = Mock(queue_id="wk_test", current_index=0)
+    queue = Mock(queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1"))
     mass_mock.player_queues.get_active_queue.return_value = queue
     mass_mock.player_queues.get_next_item.return_value = None
     mass_mock.player_queues.play_index = AsyncMock()
@@ -261,7 +268,7 @@ async def test_track_end_runs_once_per_play(
     _playing_at_end(player)
     mass_mock.players.get_player.return_value = player
     nxt = Mock(queue_item_id="item-2")
-    queue = Mock(queue_id="wk_test", current_index=0)
+    queue = Mock(queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1"))
     mass_mock.player_queues.get_active_queue.return_value = queue
     mass_mock.player_queues.get_next_item.return_value = nxt
     mass_mock.player_queues.index_by_id.return_value = 1
@@ -641,17 +648,21 @@ async def test_fast_track_end_between_position_reports_advances(
     provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
 ) -> None:
     """A 2x episode ending between heartbeats completes from the final reported position."""
-    mass_mock.player_queues.get.return_value = Mock(
-        current_item=Mock(extra_attributes={"playback_speed": 2.0})
-    )
+    mass_mock.player_queues.get_item.return_value = Mock(extra_attributes={"playback_speed": 2.0})
     await player.play_media(
-        PlayerMedia(uri="podcast", duration=299, stream_duration=299, source_id="wk_test")
+        PlayerMedia(
+            uri="podcast",
+            duration=299,
+            stream_duration=299,
+            source_id="wk_test",
+            queue_item_id="episode",
+        )
     )
     player.note_seek(145)
     assert not player.playback_reached_end()
     mass_mock.players.get_player.return_value = player
     mass_mock.player_queues.get_active_queue.return_value = Mock(
-        queue_id="wk_test", current_index=0
+        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="episode")
     )
     mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="item-2")
     mass_mock.player_queues.index_by_id.return_value = 1
@@ -675,3 +686,95 @@ async def test_stale_track_end_position_does_not_move_the_clock(
 
     assert player.elapsed_time == 20
     mass_mock.player_queues.play_index.assert_not_awaited()
+
+
+async def test_announcement_end_reports_idle_without_advancing_queue(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """An announcement ending leaves the interrupted queue for the announcement restore."""
+    await player.play_media(
+        PlayerMedia(
+            uri="http://ma.local/announcement",
+            media_type=MediaType.ANNOUNCEMENT,
+            title="Announcement",
+            duration=5,
+        )
+    )
+    player.note_seek(5)
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.get_active_queue.return_value = Mock(
+        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="music")
+    )
+    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="next")
+    mass_mock.player_queues.index_by_id.return_value = 1
+    mass_mock.player_queues.play_index = AsyncMock()
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    mass_mock.player_queues.play_index.assert_not_awaited()
+    mass_mock.players.cmd_stop.assert_not_awaited()
+    assert player.playback_state == PlaybackState.IDLE
+
+
+async def test_track_end_of_a_stale_queue_item_does_not_advance(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """Media that is not the active queue's current item cannot advance that queue."""
+    await player.play_media(
+        PlayerMedia(uri="old", duration=30, source_id="wk_test", queue_item_id="old-item")
+    )
+    player.note_seek(29)
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.get_active_queue.return_value = Mock(
+        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="other-item")
+    )
+    mass_mock.player_queues.play_index = AsyncMock()
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    mass_mock.player_queues.play_index.assert_not_awaited()
+    assert player.playback_state == PlaybackState.IDLE
+
+
+async def test_play_index_publishes_wave_and_lyrics_of_the_dispatched_item(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """The queue updates its current item only after dispatch, so lookups use the new item."""
+    tasks: list[asyncio.Task[Any]] = []
+
+    def spawn(coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        task = asyncio.ensure_future(coro)
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task = Mock(side_effect=spawn)
+    previous = Mock(
+        media_item=Mock(provider_mappings=[Mock(item_id="old", provider_instance="lib")])
+    )
+    dispatched = Mock(
+        media_item=Mock(provider_mappings=[Mock(item_id="new", provider_instance="lib")]),
+        extra_attributes={},
+    )
+    mass_mock.player_queues.get_active_queue.return_value = Mock(current_item=previous)
+    mass_mock.player_queues.get_item.side_effect = lambda queue_id, item_id: (
+        dispatched if (queue_id, item_id) == ("wk_test", "new-item") else None
+    )
+    mass_mock.streams.audio_analysis.get_wave_form = AsyncMock(
+        side_effect=lambda item_id, _provider: [1.0] if item_id == "new" else [0.5]
+    )
+    mass_mock.metadata.get_track_lyrics = AsyncMock(
+        side_effect=lambda media: (
+            ("new line", None) if media is dispatched.media_item else ("old", None)
+        )
+    )
+    provider.http_server = Mock()
+
+    await player.play_media(
+        PlayerMedia(uri="new", duration=180, source_id="wk_test", queue_item_id="new-item")
+    )
+    await asyncio.gather(*tasks)
+
+    assert provider.http_server.broadcast_wave.call_args.args[2] == [1.0]
+    assert provider.http_server.broadcast_lyrics.call_args.args[2] == [
+        {"t": None, "text": "new line"}
+    ]
