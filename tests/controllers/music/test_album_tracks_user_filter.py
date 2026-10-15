@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import AlbumType, ProviderSharing
+from music_assistant_models.enums import AlbumType, MediaType, ProviderSharing
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -97,3 +97,30 @@ async def test_album_tracks_respect_user_music_sources(mass: MusicAssistant) -> 
             db_album.item_id, "library", in_library_only=True
         )
         assert {track.name for track in filtered_library_tracks} == {"Track Local"}
+
+
+async def test_album_tracks_can_filter_to_the_current_users_favorites(
+    mass: MusicAssistant,
+) -> None:
+    """The favorite-only filter runs over the current user's track states."""
+    db_album = await _seed_album_with_mixed_provider_tracks(mass)
+    tracks = await mass.music.albums.tracks(db_album.item_id, "library")
+    liked_track = tracks[0]
+    favorite_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    await mass.music.favorites.set(
+        MediaType.TRACK, int(liked_track.item_id), True, [favorite_user.user_id]
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.music.media.base.get_current_user",
+            return_value=favorite_user,
+        ),
+        patch(
+            "music_assistant.controllers.music.listing_cache.get_current_user",
+            return_value=favorite_user,
+        ),
+    ):
+        favorites = await mass.music.albums.tracks(db_album.item_id, "library", favorite_only=True)
+
+    assert [track.item_id for track in favorites] == [liked_track.item_id]

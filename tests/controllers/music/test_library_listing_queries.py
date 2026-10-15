@@ -701,6 +701,14 @@ async def test_audiobook_collections_collapse_and_preserve_order(
     assert [item.name for item in collection.items] == ["Alpha 1", "Alpha 1.5", "Alpha 2"]
     assert all(isinstance(item, Audiobook) for item in collection.items)
 
+    page = await controller.get_collection(
+        collections["Alpha Series"].item_id,
+        search="1",
+        limit=1,
+        offset=1,
+    )
+    assert [item.name for item in page.items] == ["Alpha 1.5"]
+
 
 async def test_artist_audiobooks_collapse_collections(
     mass: MusicAssistant,

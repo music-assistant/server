@@ -260,6 +260,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        favorite_only: bool = False,
     ) -> list[Track]:
         """
         Return the tracks of an artist, searched, sorted and paged.
@@ -278,6 +279,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of tracks to return; 0 returns them all.
         :param offset: Number of tracks to skip.
+        :param favorite_only: Only list tracks the current user likes.
         :raises InvalidDataError: When the sort field is not offered for artist tracks.
         """
         # an unsupported sort is rejected before the tracks are assembled
@@ -298,6 +300,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 # library tracks follow the calling user's music sources
                 narrowed_to=self._ensure_provider_filter(None),
             )
+        if favorite_only:
+            tracks = [track for track in tracks if track.favorite is True]
         return apply_listing(
             tracks,
             ListingType.ARTIST_TRACKS,
@@ -318,6 +322,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        album_types: list[AlbumType] | None = None,
     ) -> list[Album]:
         """
         Return the albums of an artist, searched, sorted and paged.
@@ -335,6 +340,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
+        :param album_types: Only list albums whose type is included.
         :raises InvalidDataError: When the sort field is not offered for artist albums.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -351,6 +357,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 lambda instance_id: self.get_provider_artist_albums(item_id, instance_id),
                 item_type=Album,
             )
+        if album_types:
+            albums = [album for album in albums if album.album_type in album_types]
         return apply_listing(
             albums,
             ListingType.ARTIST_ALBUMS,

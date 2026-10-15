@@ -820,8 +820,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             case _:
                 return []
 
-    async def get_collection(self, item_id: str) -> MediaCollection[ItemCls]:
-        """Get a single collection."""
+    async def get_collection(
+        self,
+        item_id: str,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> MediaCollection[ItemCls]:
+        """
+        Get a collection and optionally search or page its items.
+
+        :param item_id: The collection ID.
+        :param search: Only include items whose name contains this text.
+        :param limit: Maximum number of items to return; None or 0 returns them all.
+        :param offset: Number of items to skip.
+        """
         name = get_collection_name_from_item_id(item_id)
         query_params: dict[str, Any] = {"collection_name": name}
         sql_query, base_query_params = self._build_final_query([], [], summary=False)
@@ -837,6 +850,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             raise MediaNotFoundError(f"Collection {name} not found.")
 
         hidden_sources = self._hidden_sources()
+        items = UniqueList(
+            [
+                self.item_cls.from_dict(self._parse_db_row(json_loads(x), hidden_sources))
+                for x in json_loads(db_rows[0]["media_data"])
+            ]
+        )
+        if search:
+            normalized_search = create_safe_string(search, True, True)
+            items = UniqueList(
+                item
+                for item in items
+                if normalized_search in create_safe_string(item.name, True, True)
+            )
+        if offset or limit:
+            items = UniqueList(items[offset : offset + limit] if limit else items[offset:])
         return cast(
             "MediaCollection[ItemCls]",
             MediaCollection(
@@ -844,12 +872,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 name=db_rows[0]["name"],
                 provider="library",
                 provider_mappings=set(),
-                items=UniqueList(
-                    [
-                        self.item_cls.from_dict(self._parse_db_row(json_loads(x), hidden_sources))
-                        for x in json_loads(db_rows[0]["media_data"])
-                    ]
-                ),
+                items=items,
             ),
         )
 
