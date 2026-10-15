@@ -38,7 +38,10 @@ from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.universal_player.constants import CONF_CREATED_AT
-from music_assistant.providers.universal_player.player import UniversalPlayer
+from music_assistant.providers.universal_player.player import (
+    UniversalPlayer,
+    get_clean_player_name,
+)
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
 
@@ -1036,10 +1039,8 @@ class TestMintPlayerId:
 class TestGetCleanPlayerName:
     """Tests for player name selection."""
 
-    def test_prefers_chromecast_name(self, mock_mass: MagicMock) -> None:
+    def test_prefers_chromecast_name(self) -> None:
         """Test that Chromecast names are preferred over other protocols."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
         airplay_provider = MockProvider("airplay")
         chromecast_provider = MockProvider("chromecast")
 
@@ -1057,13 +1058,11 @@ class TestGetCleanPlayerName:
         )
 
         # Chromecast should be preferred (priority 1)
-        clean_name = universal_provider._get_clean_player_name([airplay_player, chromecast_player])
+        clean_name = get_clean_player_name([airplay_player, chromecast_player])
         assert clean_name == "Living Room Speaker"
 
-    def test_filters_mac_address_names(self, mock_mass: MagicMock) -> None:
+    def test_filters_mac_address_names(self) -> None:
         """Test that MAC address-like names are filtered out."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
         squeezelite_provider = MockProvider("squeezelite")
         airplay_provider = MockProvider("airplay")
 
@@ -1083,13 +1082,11 @@ class TestGetCleanPlayerName:
         )
 
         # Should prefer Kitchen Speaker over MAC address
-        clean_name = universal_provider._get_clean_player_name([sq_player, ap_player])
+        clean_name = get_clean_player_name([sq_player, ap_player])
         assert clean_name == "Kitchen Speaker"
 
-    def test_filters_player_id_names(self, mock_mass: MagicMock) -> None:
+    def test_filters_player_id_names(self) -> None:
         """Test that player ID-like names are filtered out."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
         sendspin_provider = MockProvider("sendspin")
         dlna_provider = MockProvider("dlna")
 
@@ -1109,13 +1106,11 @@ class TestGetCleanPlayerName:
         )
 
         # Should prefer Bedroom TV over player ID
-        clean_name = universal_provider._get_clean_player_name([ss_player, dlna_player])
+        clean_name = get_clean_player_name([ss_player, dlna_player])
         assert clean_name == "Bedroom TV"
 
-    def test_valid_name_unchanged(self, mock_mass: MagicMock) -> None:
+    def test_valid_name_unchanged(self) -> None:
         """Test that valid names are returned unchanged."""
-        universal_provider = create_mock_universal_provider(mock_mass)
-
         provider = MockProvider("airplay")
         player = MockPlayer(
             provider,
@@ -1124,8 +1119,20 @@ class TestGetCleanPlayerName:
             player_type=PlayerType.PLAYER,
         )
 
-        clean_name = universal_provider._get_clean_player_name([player])
+        clean_name = get_clean_player_name([player])
         assert clean_name == "HomePod Mini"
+
+    def test_no_name_without_a_usable_one(self) -> None:
+        """Test that no name is returned when every name looks like a technical id."""
+        provider = MockProvider("squeezelite")
+        player = MockPlayer(
+            provider,
+            "sq_123456",
+            "AA:BB:CC:DD:EE:FF",
+            player_type=PlayerType.PROTOCOL,
+        )
+
+        assert get_clean_player_name([player]) is None
 
 
 class TestCachedProtocolParentRestore:
