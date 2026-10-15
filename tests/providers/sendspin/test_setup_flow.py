@@ -39,10 +39,12 @@ from music_assistant.providers.sendspin.constants import (
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
-    CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_INPUT_ACTION,
+    CONF_SOURCE_INPUT_DECLINED,
     CONNECT_METHOD_PAIR,
     CONNECT_METHOD_UNPAIRED,
+    CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+    CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
@@ -603,15 +605,46 @@ async def test_consent_on_combo_approves_the_input_in_one_click() -> None:
 
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
-    assert [entry.key for entry in step.entries] == [CONF_CONNECT_METHOD]
+    assert [option.value for option in step.entries[0].options] == [
+        CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+        CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
+        CONNECT_METHOD_PAIR,
+    ]
     assert step.last_step is True
-    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED})
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})
 
     await _wait_for(lambda: session.finished)
     await task
     assert provider.trust_calls == [True]
     assert provider.allow_input_calls == [True]
-    mass.config.set_raw_player_config_value.assert_not_called()
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        "client-1", CONF_SOURCE_INPUT_DECLINED, False
+    )
+
+
+async def test_consent_without_the_input_approves_playback_only() -> None:
+    """A combo that cannot pair still gets the choice, and declining keeps its input off."""
+    api = _FakeApi([], unpaired_access=True)
+    api.negotiated_role_ids = ["player@v1", "source@v1"]
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+    mass = _attach_mass(player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert [option.value for option in step.entries[0].options] == [
+        CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+        CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
+    ]
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.allow_input_calls == [False]
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        "client-1", CONF_SOURCE_INPUT_DECLINED, True
+    )
 
 
 async def test_consent_opting_into_pairing_pairs_instead() -> None:
@@ -662,8 +695,7 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
     """
     A guest device with a pending input consents on the approval step, not the input picker.
 
-    Guest access already carries playback, so the only choice left is the optional upgrade
-    to a pairing; finishing keeps guest access and turns the input on.
+    Guest access already carries playback, so finishing keeps it and turns the input on.
     """
     api = _combo_api_with_pending_source()
     provider = _FakeProvider(api)
@@ -675,11 +707,13 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
     assert [entry.key for entry in step.entries] == [CONF_CONNECT_METHOD]
     assert step.last_step is True
-    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED})
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})
 
     await _wait_for(lambda: session.finished)
     await task
-    mass.config.set_raw_player_config_value.assert_not_called()
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        "client-1", CONF_SOURCE_INPUT_DECLINED, False
+    )
     assert provider.trust_calls == [True]
     assert provider.allow_input_calls == [True]
     assert provider.start_calls == 0
@@ -706,7 +740,7 @@ async def test_input_picker_serves_a_device_that_withdrew_guest_access() -> None
     await _wait_for(lambda: session.finished)
     await task
     mass.config.set_raw_player_config_value.assert_called_once_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
+        "client-1", CONF_SOURCE_INPUT_DECLINED, True
     )
     assert provider.trust_calls == []
     assert session.finish_step_id == FINISH_STEP_SILENT

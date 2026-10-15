@@ -105,11 +105,13 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
-    CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_AUTOSTART_TARGET,
     CONF_SOURCE_INPUT_ACTION,
+    CONF_SOURCE_INPUT_DECLINED,
     CONNECT_METHOD_PAIR,
     CONNECT_METHOD_UNPAIRED,
+    CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+    CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
     DEFAULT_SENDSPIN_STATIC_DELAY,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
@@ -477,8 +479,8 @@ class SendspinBasePlayer(Player):
         Drive approval or pairing for this encrypted Sendspin device.
 
         An unapproved device shows a one-time consent step that allows it to play,
-        with secure pairing offered as an optional extra; a device whose only pending
-        part is its audio input picks between pairing and declining the input.
+        with secure pairing offered as an optional extra; a device without guest access whose
+        only pending part is its audio input picks between pairing and declining the input.
         A paired device must be unpaired before it can pair again. Pairing succeeds
         as a side effect of the provider pairing calls;
         declining the audio input persists via the player config. Bridge/web players
@@ -501,8 +503,7 @@ class SendspinBasePlayer(Player):
             and self._offers_unpaired_consent
             and (not self.api.active_roles or self._source_input_pending)
         ):
-            # Guest access already carries playback, so the only thing left to consent to is
-            # the audio input: finishing keeps guest access and turns the input on.
+            # Finishing approves guest access and settles the audio input.
             wants_pairing = await self._run_consent_step(
                 session, provider, offer_pairing=bool(options)
             )
@@ -619,36 +620,47 @@ class SendspinBasePlayer(Player):
         if self.api.roles_by_family("source"):
             return False
         return not self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, False
+            self.player_id, CONF_SOURCE_INPUT_DECLINED, False
         )
 
     async def _run_consent_step(
         self, session: SetupSession, provider: SendspinProvider, *, offer_pairing: bool
     ) -> bool:
         """Show the one-time consent step; return True when the user chose to pair instead."""
-        entries = []
+        has_input = "source" in self._negotiated_families()
+        options = (
+            [
+                ConfigValueOption(value=CONNECT_METHOD_UNPAIRED_WITH_INPUT),
+                ConfigValueOption(value=CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT),
+            ]
+            if has_input
+            else [ConfigValueOption(value=CONNECT_METHOD_UNPAIRED)]
+        )
         if offer_pairing:
+            options.append(ConfigValueOption(value=CONNECT_METHOD_PAIR))
+        entries = []
+        if len(options) > 1:
             entries.append(
                 ConfigEntry(
                     key=CONF_CONNECT_METHOD,
                     type=ConfigEntryType.STRING,
                     required=True,
-                    options=[
-                        ConfigValueOption(value=CONNECT_METHOD_UNPAIRED),
-                        ConfigValueOption(value=CONNECT_METHOD_PAIR),
-                    ],
+                    options=options,
                     expanded_options=True,
                 )
             )
         # A device with an audio input needs its own wording; the rest of the page is shared.
-        step_id = "approve_device_source" if self._source_input_pending else "approve_device"
+        step_id = "approve_device_source" if has_input else "approve_device"
         values = await session.form(entries, step_id=step_id, last_step=True)
-        if offer_pairing and values.get(CONF_CONNECT_METHOD) == CONNECT_METHOD_PAIR:
+        method = str(values.get(CONF_CONNECT_METHOD, CONNECT_METHOD_UNPAIRED))
+        if method == CONNECT_METHOD_PAIR:
             return True
-        # The input-specific wording asked for the input as well, so connecting approves it.
-        await provider.set_trusted_unpaired(
-            self.player_id, enabled=True, allow_input=step_id == "approve_device_source"
-        )
+        allow_input = method == CONNECT_METHOD_UNPAIRED_WITH_INPUT
+        if has_input:
+            self.mass.config.set_raw_player_config_value(
+                self.player_id, CONF_SOURCE_INPUT_DECLINED, not allow_input
+            )
+        await provider.set_trusted_unpaired(self.player_id, enabled=True, allow_input=allow_input)
         return False
 
     async def _run_source_input_step(self, session: SetupSession, *, offer_pair: bool) -> bool:
@@ -670,7 +682,7 @@ class SendspinBasePlayer(Player):
         if str(values[CONF_SOURCE_INPUT_ACTION]) != SOURCE_INPUT_DISMISS:
             return False
         self.mass.config.set_raw_player_config_value(
-            self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, True
+            self.player_id, CONF_SOURCE_INPUT_DECLINED, True
         )
         self.update_state()
         return True
@@ -1001,14 +1013,14 @@ class SendspinBasePlayer(Player):
                 # device never drops back to needs_setup, not even when the call fails.
                 if not allow_input:
                     self.mass.config.set_raw_player_config_value(
-                        self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, True
+                        self.player_id, CONF_SOURCE_INPUT_DECLINED, True
                     )
                 await provider.set_trusted_unpaired(
                     self.player_id, enabled=True, allow_input=allow_input
                 )
                 if allow_input:
                     self.mass.config.set_raw_player_config_value(
-                        self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, False
+                        self.player_id, CONF_SOURCE_INPUT_DECLINED, False
                     )
             elif action in _MANAGEMENT_ACTIONS:
                 await provider.management_set_pairing_config(

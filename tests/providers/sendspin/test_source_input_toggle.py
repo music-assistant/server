@@ -10,7 +10,7 @@ from aiosendspin.noise.trust_store import TrustedUnpairedClient
 from music_assistant.providers.sendspin.constants import (
     CONF_ACTION_SOURCE_INPUT_DISABLE,
     CONF_ACTION_SOURCE_INPUT_ENABLE,
-    CONF_SOURCE_APPROVAL_DISMISSED,
+    CONF_SOURCE_INPUT_DECLINED,
 )
 from music_assistant.providers.sendspin.player import SendspinBasePlayer
 
@@ -45,7 +45,7 @@ async def test_the_input_can_be_turned_off_and_on_again() -> None:
         cast("SendspinProvider", provider), CONF_ACTION_SOURCE_INPUT_DISABLE
     )
     mass.config.set_raw_player_config_value.assert_called_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
+        "client-1", CONF_SOURCE_INPUT_DECLINED, True
     )
     assert await _action_keys(player, provider) == [CONF_ACTION_SOURCE_INPUT_ENABLE]
 
@@ -53,7 +53,7 @@ async def test_the_input_can_be_turned_off_and_on_again() -> None:
         cast("SendspinProvider", provider), CONF_ACTION_SOURCE_INPUT_ENABLE
     )
     mass.config.set_raw_player_config_value.assert_called_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, False
+        "client-1", CONF_SOURCE_INPUT_DECLINED, False
     )
     assert provider.trust_calls == [True, True]
     assert provider.allow_input_calls == [False, True]

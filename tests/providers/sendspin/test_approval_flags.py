@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 
-from music_assistant.providers.sendspin.constants import CONF_SOURCE_APPROVAL_DISMISSED
+from music_assistant.providers.sendspin.constants import CONF_SOURCE_INPUT_DECLINED
 from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinSourcePlayer
 
 if TYPE_CHECKING:
@@ -96,7 +96,22 @@ def test_declined_audio_input_clears_the_pending_state() -> None:
     player = _make_player(api, dismissed=True)
     assert player._source_input_pending is False
     config_get = cast("mock.Mock", player.mass.config.get_raw_player_config_value)
-    config_get.assert_called_once_with("client-1", CONF_SOURCE_APPROVAL_DISMISSED, False)
+    config_get.assert_called_once_with("client-1", CONF_SOURCE_INPUT_DECLINED, False)
+
+
+def test_an_input_declined_by_an_older_version_is_asked_again() -> None:
+    """Older versions also declined the input without asking, so their marker does not count."""
+    api = _make_api(
+        active_roles=("player@v1",),
+        negotiated_role_ids=("player@v1", "source@v1"),
+        unpaired_access=True,
+    )
+    player = _make_player(api)
+    config_get = cast("mock.Mock", player.mass.config.get_raw_player_config_value)
+    config_get.side_effect = lambda _player_id, key, default: (
+        key == "source_approval_dismissed" or default
+    )
+    assert player._source_input_pending is True
 
 
 def test_active_source_role_clears_the_pending_state() -> None:
