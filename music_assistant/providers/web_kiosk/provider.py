@@ -414,7 +414,11 @@ class WebKioskProvider(PlayerProvider):
                 protocol = self.mass.players.get_player(client_id)
                 follower = bool(protocol and protocol.synced_to and protocol.synced_to != client_id)
                 item = queue.current_item
-                position = queue.corrected_elapsed_time
+                position = (
+                    queue.corrected_elapsed_time
+                    if was_playing
+                    else queue.resume_pos or queue.elapsed_time or 0
+                )
                 owner = await self._queue_playback_user(queue.queue_id) if follower else None
                 claim = player.sendspin_claim
                 player.sendspin_fallback = True
@@ -435,21 +439,19 @@ class WebKioskProvider(PlayerProvider):
                     raise
             # Stream preparation can take time. Release the registration lock while
             # resuming, and do not clear a newer connection's state on failure.
-            if not was_playing or player.sendspin_claim is not claim:
+            if player.sendspin_claim is not claim or not (was_playing or follower):
                 return
             try:
                 if not follower:
                     await self.mass.player_queues.resume(queue.queue_id)
                 elif item is not None:
-                    # The kiosk socket is unauthenticated. Load the item as the
-                    # leader queue's user so private sources and ownership hold.
+                    # The kiosk socket is unauthenticated. Adopt and resume the
+                    # item as the leader queue's user so source access holds.
                     token = current_user.set(owner)
                     try:
-                        await self.mass.player_queues.play_media(
-                            player_id, item.media_item or item.uri, option=QueueOption.PLAY
-                        )
-                        if position >= 1:
-                            await self.mass.player_queues.seek(player_id, int(position))
+                        await self._adopt_queue_item(player_id, item, position)
+                        if was_playing:
+                            await self.mass.player_queues.resume(player_id)
                     finally:
                         current_user.reset(token)
             except BaseException:
@@ -681,6 +683,27 @@ class WebKioskProvider(PlayerProvider):
             await self.fallback_sendspin(player_id, expected_client_id=client_id)
         except MusicAssistantError, TimeoutError:
             logger.warning("Native playback fallback failed for %s", player_id, exc_info=True)
+
+    async def _adopt_queue_item(self, player_id: str, item: QueueItem, position: float) -> None:
+        """Park another queue's item on this player's own queue at a position, without playing."""
+        queues = self.mass.player_queues
+        known = {queue_item.queue_item_id for queue_item in queues.items(player_id, limit=100000)}
+        # ADD loads the item for the current user and never starts playback.
+        await queues.play_media(player_id, item.media_item or item.uri, option=QueueOption.ADD)
+        added = [
+            queue_item
+            for queue_item in queues.items(player_id, limit=100000)
+            if queue_item.queue_item_id not in known
+        ]
+        own = queues.get(player_id)
+        if not added or own is None:
+            return
+        # Park the queue on the adopted item the way the queue controller parks a
+        # transferred queue, so the next play or resume continues at the position.
+        own.current_index = queues.index_by_id(player_id, added[0].queue_item_id)
+        own.current_item = added[0]
+        own.resume_pos = int(position)
+        queues.signal_update(player_id)
 
     async def _queue_playback_user(self, queue_id: str) -> User | None:
         """Return the user a queue plays for, as the queue controller records it."""

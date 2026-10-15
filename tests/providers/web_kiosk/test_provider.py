@@ -858,10 +858,51 @@ async def test_unload_cancels_completion_work_in_flight(
     assert len(tasks) == 1
 
 
-async def test_sendspin_fallback_of_sync_follower_keeps_leader_playing(
-    provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock
+def _own_queue_controller(mass_mock: Mock, queue_id: str) -> PlayerQueue:
+    """Give the kiosk an own queue whose ADD appends an item, like the queue controller."""
+    own = PlayerQueue(
+        queue_id=queue_id,
+        active=False,
+        display_name="Test Kiosk",
+        available=True,
+        items=1,
+        state=PlaybackState.IDLE,
+        current_index=0,
+        current_item=QueueItem(queue_id=queue_id, queue_item_id="old", name="Old", duration=60),
+    )
+    items: list[QueueItem] = [own.current_item]  # type: ignore[list-item]
+
+    async def add(_queue_id: str, _media: object, option: QueueOption) -> None:
+        assert option == QueueOption.ADD
+        items.append(
+            QueueItem(queue_id=queue_id, queue_item_id="adopted", name="Song", duration=200)
+        )
+
+    queues = mass_mock.player_queues
+    queues.get = Mock(side_effect=lambda qid: own if qid == queue_id else None)
+    queues.items = Mock(side_effect=lambda _qid, *_a, **_k: list(items))
+    queues.play_media = AsyncMock(side_effect=add)
+    queues.index_by_id = Mock(
+        side_effect=lambda _qid, item_id: next(
+            (i for i, item in enumerate(items) if item.queue_item_id == item_id), None
+        )
+    )
+    queues.get_item = Mock(
+        side_effect=lambda _qid, item_id: next(
+            (item for item in items if item.queue_item_id == item_id), None
+        )
+    )
+    queues.signal_update = Mock()
+    queues.resume = AsyncMock()
+    queues.seek = AsyncMock()
+    return own
+
+
+@pytest.mark.parametrize("playing", [True, False])
+async def test_sendspin_fallback_of_sync_follower_adopts_the_leader_item(
+    provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock, playing: bool
 ) -> None:
-    """A follower restores the leader's item on its own output without restarting the leader."""
+    """A follower parks the leader's item and position on its own queue; the leader is untouched."""
     client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
     player.sendspin_client_id = client_id
     player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
@@ -876,29 +917,31 @@ async def test_sendspin_fallback_of_sync_follower_keeps_leader_playing(
         display_name="Speaker",
         available=True,
         items=3,
-        state=PlaybackState.PLAYING,
-        current_item=QueueItem(
-            queue_id="speaker", queue_item_id="item", name="Song", duration=200, media_item=None
-        ),
+        state=PlaybackState.PLAYING if playing else PlaybackState.PAUSED,
+        current_item=QueueItem(queue_id="speaker", queue_item_id="item", name="Song", duration=200),
         elapsed_time=42,
         elapsed_time_last_updated=time.time(),
     )
     leader_queue.current_item.media_item = track  # type: ignore[union-attr]
     mass_mock.player_queues.get_active_queue = Mock(return_value=leader_queue)
-    mass_mock.player_queues.resume = AsyncMock()
-    mass_mock.player_queues.play_media = AsyncMock()
-    mass_mock.player_queues.seek = AsyncMock()
+    own = _own_queue_controller(mass_mock, player.player_id)
 
     await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
 
     leader.set_members.assert_awaited_once_with(player_ids_to_remove=[client_id])
-    mass_mock.player_queues.resume.assert_not_awaited()
     mass_mock.player_queues.play_media.assert_awaited_once_with(
-        player.player_id, track, option=QueueOption.PLAY
+        player.player_id, track, option=QueueOption.ADD
     )
-    position = mass_mock.player_queues.seek.await_args.args
-    assert position[0] == player.player_id
-    assert 42 <= position[1] <= 43
+    assert own.current_item is not None
+    assert own.current_item.queue_item_id == "adopted"
+    assert own.current_index == 1
+    assert own.resume_pos is not None
+    assert 42 <= own.resume_pos <= 43
+    if playing:
+        mass_mock.player_queues.resume.assert_awaited_once_with(player.player_id)
+    else:
+        mass_mock.player_queues.resume.assert_not_awaited()
+    assert all(call.args[0] != "speaker" for call in mass_mock.player_queues.resume.await_args_list)
 
 
 async def test_unload_cancels_browser_fallback_in_flight(
@@ -1089,13 +1132,18 @@ async def test_follower_fallback_plays_with_the_leader_queue_user(
     mass_mock.webserver.auth.get_user = AsyncMock(
         side_effect=lambda uid: owner if uid == "owner-id" else None
     )
+    _own_queue_controller(mass_mock, player.player_id)
     seen: list[object] = []
-    mass_mock.player_queues.play_media = AsyncMock(
-        side_effect=lambda *_a, **_k: seen.append(get_current_user())
-    )
-    mass_mock.player_queues.seek = AsyncMock()
+    adopt = mass_mock.player_queues.play_media.side_effect
+
+    async def record_add(*args: Any, **kwargs: Any) -> None:
+        seen.append(get_current_user())
+        await adopt(*args, **kwargs)
+
+    mass_mock.player_queues.play_media.side_effect = record_add
+    mass_mock.player_queues.resume.side_effect = lambda *_a: seen.append(get_current_user())
 
     await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
 
-    assert seen == [owner]
+    assert seen == [owner, owner]
     assert get_current_user() is None
