@@ -14,7 +14,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
-from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
@@ -381,6 +381,10 @@ class RaumfeldPlayer(Player):
             self._clear_external()
         if self._external_source is None:
             self._attr_active_source = None
+            self._attr_playback_state = PlaybackState.IDLE
+        elif self._announcing():
+            # MA waits for the room to go idle before it announces; the zone keeps the
+            # source loaded either way
             self._attr_playback_state = PlaybackState.IDLE
         else:
             # A stopped zone keeps what it was playing loaded, and can start it again. MA
@@ -811,7 +815,12 @@ class RaumfeldPlayer(Player):
             via_room=False,
         )
         source = self._external_source
-        if source and source.can_play_pause and self._attr_playback_state == PlaybackState.IDLE:
+        if (
+            source
+            and source.can_play_pause
+            and self._attr_playback_state == PlaybackState.IDLE
+            and not self._announcing()
+        ):
             # MA only offers to resume a source that is paused
             self._attr_playback_state = PlaybackState.PAUSED
 
@@ -904,6 +913,10 @@ class RaumfeldPlayer(Player):
             image_url=meta["image_url"],
             duration=duration or None,
         )
+
+    def _announcing(self) -> bool:
+        """Return whether Music Assistant is playing an announcement on this player."""
+        return bool(self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS))
 
     def _reading_is_current(self, generation: int) -> bool:
         """
@@ -1131,7 +1144,12 @@ class RaumfeldPlayer(Player):
 
     def _freeze_elapsed(self) -> None:
         """Advance the elapsed-time anchor to now so a pause keeps the shown position."""
-        if self._attr_elapsed_time is not None and self._attr_elapsed_time_last_updated is not None:
+        # only a playing position has moved on since its anchor; a paused one has not
+        if (
+            self._attr_playback_state == PlaybackState.PLAYING
+            and self._attr_elapsed_time is not None
+            and self._attr_elapsed_time_last_updated is not None
+        ):
             now = time.time()
             self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
             self._attr_elapsed_time_last_updated = now

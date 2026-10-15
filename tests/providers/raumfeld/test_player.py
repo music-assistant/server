@@ -35,6 +35,7 @@ def _flow_player() -> RaumfeldPlayer:
     player._attr_elapsed_time = None
     player._attr_elapsed_time_last_updated = None
     player._external_source = None
+    player._extra_data = {}
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
     player.mass = mass
@@ -1238,3 +1239,41 @@ async def test_a_negative_seek_is_reported_as_the_start() -> None:
         await player.seek(-5)
     action.assert_awaited_once_with(_RENDERER, "Seek", Unit="ABS_TIME", Target="00:00:00")
     assert player._attr_elapsed_time == 0.0
+
+
+async def test_stopping_a_paused_source_keeps_its_position() -> None:
+    """A stop on a source that is already paused does not count the paused time as played."""
+    player, host = _external_player()
+    host.async_zone_stop = AsyncMock()
+    player._set_external(_RADIO_META, "Play", None, via_room=False)
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_elapsed_time = 70.0
+    player._attr_elapsed_time_last_updated = time.time() - 10
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_transport_action", AsyncMock()),
+    ):
+        await player.stop()
+    assert player._attr_elapsed_time == 70.0
+
+
+async def test_a_stop_for_an_announcement_reports_idle() -> None:
+    """MA waits for an idle room before it announces, so a loaded source is not kept paused."""
+    player, host = _external_player()
+    host.async_zone_stop = AsyncMock()
+    player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    player._extra_data = {"announcement_in_progress": True}
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_transport_action", AsyncMock()),
+        patch.object(player, "_read_zone_actions", AsyncMock(return_value="Play")),
+    ):
+        await player.stop()
+        assert player._attr_playback_state == PlaybackState.IDLE
+        # a poll during the announcement does not turn the loaded source back to paused
+        await player._update_zone_source(
+            {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""}, ["Bar"], 0
+        )
+    assert player._attr_playback_state == PlaybackState.IDLE
