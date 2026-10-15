@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import math
 from functools import partial
 from types import SimpleNamespace
@@ -358,6 +359,28 @@ async def test_volume_zero_from_ma_is_not_a_mute() -> None:
     assert [c.args[1] for c in provider.step_volume.await_args_list] == [-20, 30]
 
 
+@pytest.mark.parametrize("mute_first", [True, False])
+async def test_a_mute_stays_on_at_volume_zero(mute_first: bool) -> None:
+    """Muted at a volume of 0, in either order, the Echo stays silent when the volume goes up."""
+    player, provider = _player()
+    _echo_follows_steps(player, provider)
+    with patch.object(player, "update_state"):
+        if mute_first:
+            await player.volume_mute(True)
+            await player.volume_set(0)
+        else:
+            await player.volume_set(0)
+            await player.volume_mute(True)
+        await player._send_volume()
+        provider.get_volumes.return_value = {"SERIAL": 0}
+        provider.mass.loop.time.return_value = 103.0
+        await player.poll()
+        assert player.volume_muted is True
+        await player.volume_set(30)
+        await player._send_volume()
+    assert player._echo_volume == 0
+
+
 async def test_poll_skips_while_a_volume_call_is_out() -> None:
     """A poll doesn't wait on another Echo's step, as MA polls every player in one loop."""
     player, provider = _player()
@@ -433,3 +456,58 @@ async def test_step_volume_returns_the_new_volume(body: dict[str, Any], result: 
     method, _, uri = request.await_args.args
     assert (method, uri) == ("put", "/api/devices/TYPE/SERIAL/audio/v2/speakerVolume")
     assert request.await_args.kwargs["data"]["amount"] == 5
+
+
+_ACTIONS = ("set 0", "set 30", "mute", "unmute", "voice mute", "voice 25", "poll")
+
+
+async def _run(actions: tuple[str, ...]) -> None:
+    """Run the actions on a player and a fake Echo, checking MA against the Echo after each."""
+    player, provider = _player()
+    echo = {"volume": 20}
+    provider.get_volumes.side_effect = lambda: {"SERIAL": echo["volume"]}
+
+    async def step(_device: object, amount: int) -> int:
+        echo["volume"] = max(0, min(100, echo["volume"] + amount))
+        return echo["volume"]
+
+    provider.step_volume.side_effect = step
+    now = 100.0
+    with patch.object(player, "update_state"):
+        await player.poll()
+        muted = False  # what the user asked for: only an unmute or a turn-up on the Echo clears it
+        for action in actions:
+            now += 3  # past the poll hold, so each poll reads back
+            provider.mass.loop.time.return_value = now
+            was_muted = muted
+            if action.startswith("set"):
+                await player.volume_set(int(action.split()[1]))
+            elif action in ("mute", "unmute"):
+                muted = action == "mute"
+                await player.volume_mute(muted)
+            elif action == "voice mute":
+                muted = muted or echo["volume"] > 0
+                echo["volume"] = 0
+            elif action == "voice 25":
+                muted = False
+                echo["volume"] = 25
+            if action.startswith(("set", "mute", "unmute")):
+                await player._send_volume()
+            now += 3
+            provider.mass.loop.time.return_value = now
+            await player.poll()
+            where = f"{actions} at {action}"
+            assert player.volume_muted is muted, where
+            if muted:
+                assert echo["volume"] == 0, where
+            else:
+                assert echo["volume"] == player.volume_level, where
+            if action == "unmute" and was_muted:
+                assert echo["volume"] > 0, where
+
+
+async def test_every_short_sequence_keeps_ma_and_the_echo_in_step() -> None:
+    """Every sequence of up to 4 actions keeps MA's mute and volume true to the Echo."""
+    for length in range(1, 5):
+        for actions in itertools.product(_ACTIONS, repeat=length):
+            await _run(actions)

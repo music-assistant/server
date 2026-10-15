@@ -362,9 +362,9 @@ class AlexaPlayer(Player):
         if (volume := volumes.get(self.device.device_serial_number)) is None:
             return
         self._echo_volume = volume
-        # "Alexa, mute" sets the volume to 0, so 0 shows as muted with the volume from before,
-        # unless MA set 0 itself
-        muted = volume == 0 and self._attr_volume_level != 0
+        # "Alexa, mute" sets the volume to 0, so 0 shows as muted with the volume from before.
+        # A 0 that MA set itself stays a volume, and a mute already on stays on.
+        muted = volume == 0 and (self._attr_volume_muted or self._attr_volume_level != 0)
         if muted == self._attr_volume_muted and (muted or self._attr_volume_level == volume):
             return
         self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
