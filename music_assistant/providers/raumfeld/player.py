@@ -96,6 +96,11 @@ POWER_SETTLE_TIME = 5.0
 # the host has loaded, never the address the host streams it from.
 EXTERNAL_URI_SCHEME = "raumfeld://"
 
+# How long (seconds) a handover of this room's queue to the rooms that play on may take. A
+# stop that arrives in that time is MA ending the queue here, not a request to stop the
+# Spotify Connect session that took the room.
+QUEUE_HANDOVER_TIMEOUT = 30.0
+
 EXTERNAL_SOURCE_FEATURES = {
     PlayerFeature.PAUSE,
     PlayerFeature.NEXT_PREVIOUS,
@@ -158,6 +163,8 @@ class RaumfeldPlayer(Player):
     # number of such commands running, so a poll can tell its readings no longer apply
     _playback_generation = 0
     _playback_changes = 0
+    # until when a stop is taken as MA ending this room's queue during a handover
+    _handover_until = 0.0
 
     def __init__(
         self,
@@ -341,6 +348,11 @@ class RaumfeldPlayer(Player):
     @_changes_playback
     async def stop(self) -> None:
         """Send STOP command."""
+        if time.time() < self._handover_until:
+            # MA ends this room's queue while handing it over; the room itself plays
+            # Spotify Connect now, which must go on
+            self._handover_until = 0.0
+            return
         self._clear_next()
         # we treat pause as stop; freeze the extrapolated position into the anchor so the
         # paused progress bar stays where playback was, instead of snapping back to the
@@ -553,8 +565,11 @@ class RaumfeldPlayer(Player):
         """Poll the Raumfeld host for this room's current state."""
         host = self.raumfeld.host
         self._update_power()
-        if self._plays_spotify_connect():
-            self._leave_group()
+        if self._plays_spotify_connect() and self._leave_group():
+            # the handover reads this room's queue as it is now; Spotify Connect is taken
+            # over on the next poll
+            self.update_state()
+            return
         # a grouped follower shares the zone's transport/position with its leader, so it
         # polls only its own (per-room) volume and mirrors the leader's state: without that a
         # stopped group would leave the follower reading as playing until it is ungrouped
@@ -905,19 +920,38 @@ class RaumfeldPlayer(Player):
         if self._external_source is not None and self._presented_external() is None:
             self._clear_external()
 
-    def _leave_group(self) -> None:
-        """Leave the sync group, after the host took this room out of its zone."""
+    def _leave_group(self) -> bool:
+        """
+        Leave the sync group, after the host took this room out of its zone.
+
+        Return whether this room's queue is being handed over to the rooms that play on.
+        """
         # Spotify Connect does that, and the room then no longer shares the group's session,
         # whether it followed or led it
         if not self.synced_to or self.synced_to == self.player_id:
-            if self._attr_group_members:
-                self.set_group_members([])
-            return
+            if not self._attr_group_members:
+                return False
+            if time.time() < self._handover_until:
+                return True
+            queue = self.mass.player_queues.get_active_queue(self.player_id)
+            if (
+                queue is not None
+                and queue.queue_id == self.player_id
+                and queue.state == PlaybackState.PLAYING
+            ):
+                # The other rooms play on in a zone of their own, from this room's queue.
+                # Hand that queue to one of them the way MA does when a leader leaves its
+                # group, so they show and control what they play.
+                self._handover_until = time.time() + QUEUE_HANDOVER_TIMEOUT
+                self.mass.create_task(self.mass.players.cmd_ungroup(self.player_id))
+                return True
+            self.set_group_members([])
+            return False
         leader = self.mass.players.get_player(self.synced_to)
-        if not isinstance(leader, RaumfeldPlayer):
-            return
-        remaining = [pid for pid in leader.group_members if pid != self.player_id]
-        leader.set_group_members(remaining if len(remaining) > 1 else [])
+        if isinstance(leader, RaumfeldPlayer):
+            remaining = [pid for pid in leader.group_members if pid != self.player_id]
+            leader.set_group_members(remaining if len(remaining) > 1 else [])
+        return False
 
     def _clear_external(self) -> None:
         """Drop the external source, and the controls that only applied to it."""

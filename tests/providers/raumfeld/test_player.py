@@ -1008,3 +1008,60 @@ async def test_a_play_command_invalidates_polls_that_overlap_it() -> None:
         await player.play()
     assert player._playback_changes == 0
     assert player._playback_generation == generation + 2
+
+
+def _taken_leader(queue_state: PlaybackState) -> tuple[RaumfeldPlayer, MagicMock]:
+    """Build a group leader whose own queue is in the given state."""
+    player = _flow_player()
+    player._player_id = "raumfeld_bar"
+    player._attr_group_members = ["raumfeld_bar", "raumfeld_bank"]
+    queue = MagicMock(queue_id="raumfeld_bar", state=queue_state)
+    mass = MagicMock()
+    mass.player_queues.get_active_queue.return_value = queue
+    player.mass = mass
+    return player, mass
+
+
+def test_a_leader_taken_by_spotify_connect_hands_its_queue_over() -> None:
+    """The rooms that play on get the queue, the way MA does when a leader leaves."""
+    player, mass = _taken_leader(PlaybackState.PLAYING)
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        synced_to.return_value = None
+        assert player._leave_group() is True
+        # a later poll does not start a second handover
+        assert player._leave_group() is True
+    mass.players.cmd_ungroup.assert_called_once_with("raumfeld_bar")
+    assert player._attr_group_members == ["raumfeld_bar", "raumfeld_bank"]
+
+
+def test_a_leader_with_nothing_playing_just_leaves_its_group() -> None:
+    """Without a playing queue there is nothing to hand over."""
+    player, mass = _taken_leader(PlaybackState.IDLE)
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        synced_to.return_value = None
+        assert player._leave_group() is False
+    mass.players.cmd_ungroup.assert_not_called()
+    assert player._attr_group_members == []
+
+
+async def test_the_stop_of_a_handover_leaves_spotify_connect_playing() -> None:
+    """MA ending this room's queue during the handover does not stop Spotify Connect."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause,Stop", 315, via_room=True)
+    player._handover_until = time.time() + 30
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
+    ):
+        await player.stop()
+        action.assert_not_awaited()
+        assert player._attr_active_source == "spotify"
+        # the next stop is a stop again
+        await player.stop()
+    action.assert_awaited_once_with(_RENDERER, "Stop")
