@@ -1276,6 +1276,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _beat_retry_queue_item_id: str | None = None
     _metadata_generation: int = 0
     _content_takeover_pending: bool = False
+    # Item (uri and queue item id) of the metadata last published to the group.
+    _published_item: tuple[str, str | None] | None = None
     playback_session: SendspinPlaybackSession
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # HA media_player entity announcements are relayed to (ESPHome-backed devices)
@@ -1515,14 +1517,22 @@ class SendspinPlayer(SendspinBasePlayer):
         async with self._metadata_lock:
             self._metadata_generation += 1
             self._content_takeover_pending = False
-            await self._clear_current_media_metadata(generation=self._metadata_generation)
+            # A queue parked on its item keeps showing it, frozen where playback stopped.
+            if self.state.current_media is None:
+                await self._clear_current_media_metadata(generation=self._metadata_generation)
+            else:
+                self._cancel_beat_retry()
+                self._last_beat_queue_item_id = None
+                self._last_beat_anchor_us = None
+                if (visualizer_role := self._visualizer_role) is not None:
+                    visualizer_role.clear_beat_schedule()
         # group.stop() snapshots the live position, which it can only do while the push
         # stream is up - cancelling first leaves it re-emitting a stale anchor. Teardown
         # goes in finally so a failing group stop can't strand the session, and nothing
         # may await between the two: the STOPPED event cancels this session inline, and a
         # suspension in between would let that cancel cut pipeline teardown short.
         try:
-            await self.api.group.stop()
+            await self.api.group.stop(keep_progress=True)
         finally:
             # Bridge members buffer seconds of audio on their downstream protocol
             # and keep that transport warm across stream ends; a user stop must
@@ -1535,6 +1545,18 @@ class SendspinPlayer(SendspinBasePlayer):
             # The cancel is what ends the stream on that path, so deliver the
             # notify again; bridges already torn down ignore it.
             self._notify_bridges_explicit_stop(self.api.group.clients)
+        # The stop cancelled any push still loading, which may have left the previous item.
+        if (
+            self.synced_to is None
+            and self._published_item is not None
+            and (media := self.state.current_media) is not None
+            and (media.uri, media.queue_item_id) != self._published_item
+        ):
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.player_id}",
+                abort_existing=True,
+            )
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
@@ -1837,6 +1859,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 )
             if (metadata_role := self._metadata_role) is not None:
                 metadata_role.set_metadata(metadata)
+                self._published_item = (current_media.uri, current_media.queue_item_id)
 
         if not self._metadata_publish_allowed(generation):
             return
@@ -2361,6 +2384,7 @@ class SendspinPlayer(SendspinBasePlayer):
             controller_role.set_seek_max_ms(None)
         self.last_sent_artwork_url = None
         self.last_sent_artist_artwork_url = None
+        self._published_item = None
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
 
