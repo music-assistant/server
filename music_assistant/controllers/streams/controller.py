@@ -2465,7 +2465,15 @@ class StreamsController(CoreController):
     def _raise_if_stale_item_request(
         self, player: Player, queue_id: str, queue_item: QueueItem
     ) -> None:
-        """Refuse (404) the request if the item fell out of the queue's playhead window."""
+        """
+        Refuse (404) the request if the item fell out of the queue's playhead window.
+
+        A refused item is also dropped as the queue's last requested item.
+
+        :param player: The player that requested the item.
+        :param queue_id: The queue the item belongs to.
+        :param queue_item: The requested queue item.
+        """
         if not player.strict_queue_item_requests:
             return
         if self.mass.player_queues.is_current_window_item(queue_id, queue_item.queue_item_id):

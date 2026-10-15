@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
@@ -219,13 +219,6 @@ def test_restarting_at_another_item_drops_the_previous_look_ahead() -> None:
 
     assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
 
-    ctrl._queue_data["q1"].last_requested_item_id = _item_id_at(ctrl, 2)
-    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
-
-    ctrl._queue_data["q1"].last_requested_item_id = None  # play_index clears this one too
-
-    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
-
 
 def test_a_track_the_player_gave_up_on_before_it_streamed_does_not_pin_the_window() -> None:
     """
@@ -257,3 +250,25 @@ def test_a_track_the_player_gave_up_waiting_for_does_not_pin_the_window() -> Non
 
     assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
     assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 4))
+
+
+async def test_a_new_load_drops_what_the_old_one_fetched_and_asked_for() -> None:
+    """Neither the item last fetched nor the one last asked for vouches across a restart."""
+    ctrl = _controller(current_index=1)
+    data = ctrl._queue_data["q1"]
+    data.last_served_item_id = _item_id_at(ctrl, 2)
+    data.last_requested_item_id = _item_id_at(ctrl, 2)
+    ctrl._preload_next_item = Mock()
+    ctrl._cleanup_stale_queue_buffers = Mock()
+    ctrl._load_item = AsyncMock()
+    ctrl._check_player_permission = Mock()
+    ctrl._set_transitioning = Mock()
+    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl.mark_ended = Mock()
+    ctrl.mass.streams.is_smart_fades_active.return_value = False
+    ctrl.mass.players.play_media = AsyncMock()
+
+    await ctrl.play_index("q1", 0)
+
+    assert data.last_served_item_id is None
+    assert data.last_requested_item_id is None
