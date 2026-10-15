@@ -1340,3 +1340,26 @@ async def test_an_album_is_restored_at_its_track_and_position() -> None:
     assert [c.args[1] for c in action.await_args_list] == ["SetAVTransportURI", "Play", "Seek"]
     assert action.await_args_list[0].kwargs["CurrentURI"].endswith("fii=2")
     assert action.await_args_list[2].kwargs == {"Unit": "ABS_TIME", "Target": "0:00:48"}
+
+
+async def test_spotify_connect_ended_by_an_announcement_is_not_replayed() -> None:
+    """A Spotify session the announcement ended is left idle, not handed to MA's streams."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause,Stop", 315, via_room=True)
+    media = player._attr_current_media
+    assert media is not None
+    player._extra_data = {"announcement_in_progress": True}
+    mass = MagicMock()
+    mass.streams.resolve_stream_url = AsyncMock()
+    player.mass = mass
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
+    ):
+        await player.stop()
+        player._extra_data = {}
+        action.reset_mock()
+        await player.play_media(media)
+    action.assert_not_awaited()
+    mass.streams.resolve_stream_url.assert_not_awaited()
+    assert player._attr_playback_state == PlaybackState.IDLE

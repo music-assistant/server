@@ -447,6 +447,13 @@ class RaumfeldPlayer(Player):
                 # the zone has something else loaded by now (an announcement)
                 await self._restore_zone_source(context)
                 return
+            # Nothing left to start again. Spotify Connect is the case: any other playback
+            # on the room, an announcement included, takes it out of single-room mode and
+            # ends the session, which only the Spotify app can start again.
+            self.logger.debug("Nothing to resume on %s for %s", self.room, media.uri)
+            self._attr_playback_state = PlaybackState.IDLE
+            self.update_state()
+            return
         self._mark_play_started()
         # a new item supersedes the queued next one; MA enqueues the next after it again
         self._clear_next()
