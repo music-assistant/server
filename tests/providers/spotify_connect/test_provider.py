@@ -391,6 +391,41 @@ async def test_a_prompt_stop_after_pause_is_not_reported() -> None:
     logger.warning.assert_not_called()
 
 
+async def _play_state_event(
+    provider: SpotifyConnectProvider, daemon: _PlayerDaemon, event_type: BackendEventType, now: int
+) -> None:
+    """Deliver a play state event from the backend at a given wall clock time."""
+    with patch("music_assistant.providers.spotify_connect.provider.time.time", return_value=now):
+        await provider._handle_backend_event(daemon, BackendEvent(type=event_type))
+
+
+async def test_a_resume_does_not_count_the_pause_as_play_time() -> None:
+    """After a 5 minute pause, the position resumes where playback paused."""
+    provider, daemon, _ = _tethered_provider()
+    daemon.playing = True
+    daemon.stream_metadata.elapsed_time = 30
+    daemon.stream_metadata.elapsed_time_last_updated = 1000
+
+    await _play_state_event(provider, daemon, BackendEventType.PAUSED, now=1060)
+    await _play_state_event(provider, daemon, BackendEventType.PLAYING, now=1360)
+
+    assert daemon.stream_metadata.elapsed_time == 90
+    assert daemon.stream_metadata.elapsed_time_last_updated == 1360
+
+
+async def test_a_repeated_pause_event_keeps_the_paused_position() -> None:
+    """The backend reports a pause through several events, which must not add up."""
+    provider, daemon, _ = _tethered_provider()
+    daemon.playing = True
+    daemon.stream_metadata.elapsed_time = 30
+    daemon.stream_metadata.elapsed_time_last_updated = 1000
+
+    await _play_state_event(provider, daemon, BackendEventType.PAUSED, now=1060)
+    await _play_state_event(provider, daemon, BackendEventType.PAUSED, now=1120)
+
+    assert daemon.stream_metadata.elapsed_time == 90
+
+
 def _provider_with_stored_config(
     setup_data: dict[str, Any], tmp_path: Path
 ) -> SpotifyConnectProvider:
