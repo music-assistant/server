@@ -727,6 +727,21 @@ async def test_tts_uses_the_first_engine_by_default() -> None:
         assert request.kwargs["json"] == {"engine_id": "tts.first", "message": "Hello"}
 
 
+@pytest.mark.parametrize("verify_ssl", [True, False])
+async def test_tts_clip_follows_the_ssl_verification_setting(verify_ssl: bool) -> None:
+    """The clip's certificate is verified only when the provider verifies SSL."""
+    async with _start_provider([_state("tts.first", "First")], **{CONF_VERIFY_SSL: verify_ssl}) as (
+        provider,
+        _,
+    ):
+        provider.mass.running_as_hass_addon = False
+        _mock_tts_response(provider)
+
+        stream = await provider.get_tts_message("Hello")
+
+        assert stream.verify_ssl is verify_ssl
+
+
 async def test_tts_uses_the_requested_engine() -> None:
     """Render speech on the requested engine."""
     states = [_state("tts.first", "First"), _state("tts.second", "Second")]
