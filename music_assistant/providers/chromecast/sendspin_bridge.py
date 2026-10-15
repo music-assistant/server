@@ -559,11 +559,14 @@ class SendspinChromecastBridge:
             # (including a stale Sendspin session) and starts a fresh instance,
             # so an explicit quit_app() beforehand is unnecessary.
             event = asyncio.Event()
+            launched = False
 
             def launched_callback(
-                success: bool,  # noqa: ARG001
+                success: bool,
                 response: dict[str, Any] | None,  # noqa: ARG001
             ) -> None:
+                nonlocal launched
+                launched = success
                 self.mass.loop.call_soon_threadsafe(event.set)
 
             def launch() -> None:
@@ -578,6 +581,26 @@ class SendspinChromecastBridge:
 
             await self.mass.loop.run_in_executor(None, launch)
             await asyncio.wait_for(event.wait(), timeout=30.0)
+            if not launched:
+                # e.g. CAST_INIT_TIMEOUT from a receiver whose Cast firmware is too old to
+                # run the app: there is no app to send the config to, nor one that will
+                # ever report ready, so fail the waiting command now
+                failure = self.cast_player.cc.socket_client.receiver_controller.launch_failure
+                reason = getattr(failure, "reason", None) or "no reason given"
+                self.logger.warning(
+                    "Cast device %s refused to start the Sendspin Cast App: %s",
+                    self.cast_player.display_name,
+                    reason,
+                )
+                # Bubbles up to the frontend toast via play_media / set_members awaiting
+                # this future.
+                self._resolve_cast_app_ready(
+                    PlayerCommandFailed(
+                        f"Sendspin could not start on {self.cast_player.display_name}: "
+                        f"the Cast receiver refused the launch ({reason})."
+                    )
+                )
+                return
             # Send config with retry — the Cast app's message listener
             # may not be ready immediately after the launch callback fires.
             await self._send_sendspin_config_with_retry()
