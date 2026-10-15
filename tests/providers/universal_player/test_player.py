@@ -326,6 +326,22 @@ def test_name_kept_when_no_registered_protocol_player_has_a_usable_name() -> Non
     assert universal.name == "Kitchen"
 
 
+def test_name_kept_when_remaining_protocol_player_has_a_player_id_name() -> None:
+    """A player id of the protocol player that is left does not replace the last known name."""
+    mass = _make_mock_mass()
+    airplay = _make_protocol_player("ap_1", "airplay")
+    airplay.state.name = "Kitchen"
+    sendspin = _make_protocol_player("sendspin_1", "sendspin")
+    sendspin.state.name = "sendspin_device_abc"
+    _register_players(mass, airplay, sendspin)
+    universal = _make_universal_player(mass, ["ap_1", "sendspin_1"])
+    assert universal.name == "Kitchen"
+
+    _register_players(mass, sendspin)
+
+    assert universal.name == "Kitchen"
+
+
 async def test_remove_player_unregisters_before_deleting_stale_protocol_configs() -> None:
     """The universal player is removed before the configs of its offline protocols."""
     mass = _make_mock_mass()

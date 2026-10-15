@@ -58,7 +58,9 @@ def get_clean_player_name(protocol_players: list[Player]) -> str | None:
         if len(name_lower) >= 32 and all(c in "0123456789abcdef" for c in name_lower[:32]):
             return False
         # Filter out names that start with common player ID prefixes
-        return not name_lower.startswith(("ap_", "cc_", "dlna_", "sq_", "sendspin_", "universal_"))
+        return not name.lower().startswith(
+            ("ap_", "cc_", "dlna_", "sq_", "sendspin_", "universal_")
+        )
 
     # Sort players by protocol priority, then find the first valid name
     sorted_players = sorted(
