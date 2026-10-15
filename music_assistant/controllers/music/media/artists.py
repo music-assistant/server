@@ -898,10 +898,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         prov = cast("MusicProvider", prov)
         if ProviderFeature.AUTHOR_AUDIOBOOKS in prov.supported_features:
             return await prov.get_author_audiobooks(item_id)
-        # fallback implementation using the db
+        # fallback implementation using the db, on the (visible) account that answers
         return await self._get_db_author_narrator_audiobooks(
             item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            provider_instance_id_or_domain=prov.instance_id,
             artist_type=ArtistType.AUTHOR,
         )
 
@@ -917,10 +917,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         prov = cast("MusicProvider", prov)
         if ProviderFeature.NARRATOR_AUDIOBOOKS in prov.supported_features:
             return await prov.get_narrator_audiobooks(item_id)
-        # fallback implementation using the db
+        # fallback implementation using the db, on the (visible) account that answers
         return await self._get_db_author_narrator_audiobooks(
             item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            provider_instance_id_or_domain=prov.instance_id,
             artist_type=ArtistType.NARRATOR,
         )
 

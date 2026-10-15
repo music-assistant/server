@@ -910,6 +910,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         A streaming provider stamps its domain on the items it serves, so the plain lookup
         also finds a library copy that only another account of the service holds.
+
+        :param item_id: The item id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
         """
         library_item = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
