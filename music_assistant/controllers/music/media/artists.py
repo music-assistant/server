@@ -300,9 +300,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 provider_instance_id_or_domain,
                 lambda instance_id: self.get_provider_artist_tracks(item_id, instance_id),
                 item_type=Track,
-                # without an artist tracks listing the artist's albums are listed, whose
-                # library tracks follow the calling user's music sources
-                narrowed_to=self._ensure_provider_filter(None),
             )
         return apply_listing(
             tracks,

@@ -153,6 +153,20 @@ def _as_user(user: User | None) -> ExitStack:
     return stack
 
 
+def _keep_listings(music: MusicController) -> None:
+    """Keep what the listings store, like the cache database does."""
+    store: dict[tuple[str | None, str], object] = {}
+
+    async def _get(key: str, provider: str | None = None, **_: object) -> object | None:
+        return store.get((provider, key))
+
+    async def _set(key: str, data: object, provider: str | None = None, **_: object) -> None:
+        store[(provider, key)] = data
+
+    music.mass.cache.get = AsyncMock(side_effect=_get)  # type: ignore[method-assign]
+    music.mass.cache.set = AsyncMock(side_effect=_set)  # type: ignore[method-assign]
+
+
 async def test_resolve_visible_provider(music: MusicController) -> None:
     """A source is served to its owner, swapped for the member's own account, or refused."""
     with _as_user(OWNER):
@@ -628,21 +642,75 @@ async def test_provider_listings_keep_the_served_item_over_a_hidden_library_copy
         assert [item.provider for item in await listing(music, THEIRS)] == ["library"]
 
 
+@pytest.mark.parametrize(
+    ("listing", "provider_method", "create_item"),
+    [
+        pytest.param(
+            lambda music: music.artists.top_tracks("ar1", SHARED_SPOTIFY),
+            "get_artist_toptracks",
+            create_track,
+            id="top_tracks",
+        ),
+        pytest.param(
+            lambda music: music.artists.top_albums("ar1", SHARED_SPOTIFY),
+            "get_artist_topalbums",
+            create_album,
+            id="top_albums",
+        ),
+        pytest.param(
+            lambda music: music.artists.similar_artists("ar1", SHARED_SPOTIFY),
+            "get_similar_artists",
+            _artist,
+            id="similar_artists",
+        ),
+    ],
+)
+async def test_provider_listings_are_kept_per_users_sources(
+    music: MusicController,
+    listing: Callable[[MusicController], Awaitable[Sequence[MediaItemType]]],
+    provider_method: str,
+    create_item: Callable[[str, str], MediaItemType],
+) -> None:
+    """A listing assembled for one user is not served to a user with other sources."""
+    _keep_listings(music)
+    shared_spotify = _add_shared_spotify(music)
+    setattr(
+        shared_spotify, provider_method, AsyncMock(return_value=[create_item(SHARED_SPOTIFY, "i1")])
+    )
+
+    with _as_user(OWNER):
+        assert [item.item_id for item in await listing(music)] == ["i1"]
+    setattr(
+        shared_spotify, provider_method, AsyncMock(return_value=[create_item(SHARED_SPOTIFY, "i2")])
+    )
+    with _as_user(MEMBER):
+        assert [item.item_id for item in await listing(music)] == ["i2"]
+
+
 async def test_similar_tracks_skip_a_mapping_on_a_hidden_source(music: MusicController) -> None:
-    """Only the mappings on the user's sources are asked for similar tracks."""
+    """Only the mappings on the user's sources are asked, whatever listing another user kept."""
+    _keep_listings(music)
+    # the owner sees the member's source too, so the listing is complete for them and kept
+    set_music_source_access(
+        music.mass, {MINE: ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.MEMBERS)}
+    )
     track = create_track(THEIRS, "t1")
     track.provider_mappings.add(_mapping(MINE, "t1-mine"))
     library_track = await music.tracks.add_item_to_library(track)
     for instance_id in (THEIRS, MINE):
         provider = _mock(music, instance_id)
-        provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
         provider.get_similar_tracks = AsyncMock(return_value=[create_track(instance_id, "s1")])
+    _mock(music, THEIRS).supported_features = {ProviderFeature.SIMILAR_TRACKS}
 
+    with _as_user(OWNER):
+        similar = await music.tracks.similar_tracks(library_track.item_id, "library")
+    assert [item.provider for item in similar] == [THEIRS]
+
+    _mock(music, MINE).supported_features = {ProviderFeature.SIMILAR_TRACKS}
     with _as_user(MEMBER):
         similar = await music.tracks.similar_tracks(library_track.item_id, "library")
-
     assert [item.provider for item in similar] == [MINE]
-    _mock(music, THEIRS).get_similar_tracks.assert_not_awaited()
+    _mock(music, THEIRS).get_similar_tracks.assert_awaited_once()
 
 
 async def test_export_radios_lists_only_the_users_sources(music: MusicController) -> None:
