@@ -103,9 +103,11 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   taking the run back.
 - **The Spotify app cannot reach in.** Single-track mode advertises no Connect device
   and disables remote control and transfer for its playback context, so there is
-  nothing for the app to move, pause or take over. Playing on the account from another
+  nothing for the app to move or take over. Playing on the account from another
   device can still kill the stream Spotify-side; that ends the run as an incomplete
-  delivery and the queue moves on.
+  delivery and the queue moves on. A pause from the app or Web API still reaches the
+  engine, and a paused engine stalls the stream, so the run stops the queue on it. Play
+  in Music Assistant resumes at the same position; play in the Spotify app does not.
 - **The engine never crossfades**: its own crossfade is written off in the prefs before
   every spawn, so each track's audio arrives clean from its first sample. Music Assistant
   mixes the boundary itself from the tail it holds back, which is what keeps waveforms,
