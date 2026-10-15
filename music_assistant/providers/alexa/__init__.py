@@ -67,12 +67,15 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()  # no special features supporte
 VOLUME_SEND_DELAY = 0.5  # a slider sends many values; wait until they stop
 VOLUME_POLL_INTERVAL_PLAYING = 5
 VOLUME_POLL_INTERVAL_IDLE = 30
-VOLUME_POLL_HOLD = 2  # no readback this soon after a change in MA, as it may predate it
+VOLUME_POLL_HOLD = (
+    2  # no readback this soon after a change in MA, as the read may predate the change
+)
 VOLUME_READ_MAX_AGE = 2  # one readback serves every Echo's poll in the same round
 VOLUME_READ_TIMEOUT = 5
 VOLUME_STEP_TIMEOUT = 10
-UNMUTE_FALLBACK_VOLUME = 10  # unmute of an Echo that was at 0 before MA knew a volume
-# Unmute volume when none was seen before the mute: quiet, but the Echo still plays.
+
+# unmute volume when MA had none or 0: quiet, but the Echo still plays
+UNMUTE_FALLBACK_VOLUME = 10
 
 
 async def setup(
@@ -323,7 +326,7 @@ class AlexaPlayer(Player):
         self._schedule_volume_send()
 
     async def volume_mute(self, muted: bool) -> None:
-        """Mute by stepping the Echo to 0, as Amazon offers no other mute."""
+        """Mute by setting the Echo to 0, as Amazon offers no other mute."""
         if muted != self._attr_volume_muted:
             self._attr_volume_muted = muted
             if not muted and not self._attr_volume_level:
@@ -341,9 +344,12 @@ class AlexaPlayer(Player):
         """Read the Echo's volume back from Amazon."""
         set_at = self._volume_set_at
         if self._volume_sending or self.mass.loop.time() - set_at < VOLUME_POLL_HOLD:
-            # a volume change is on its way; its step reply shows the result
+            # a change is on its way, or so recent that a read may not show it yet
             return
         provider = cast("AlexaProvider", self.provider)
+        if provider._volumes_lock.locked():
+            # MA polls every player in one loop, so don't wait on a step or read already out
+            return
         try:
             volumes = await provider.get_volumes()
         except (AlexapyError, aiohttp.ClientError, TimeoutError, ValueError) as err:
@@ -356,8 +362,9 @@ class AlexaPlayer(Player):
         if (volume := volumes.get(self.device.device_serial_number)) is None:
             return
         self._echo_volume = volume
-        # "Alexa, mute" sets the volume to 0, so 0 shows as muted with the volume from before
-        muted = volume == 0
+        # "Alexa, mute" sets the volume to 0, so 0 shows as muted with the volume from before,
+        # unless MA set 0 itself
+        muted = volume == 0 and self._attr_volume_level != 0
         if muted == self._attr_volume_muted and (muted or self._attr_volume_level == volume):
             return
         self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
@@ -480,7 +487,9 @@ class AlexaPlayer(Player):
         self.update_state()
 
         def _start_send() -> None:
-            self._volume_task = self.mass.create_task(self._send_volume())
+            # a running send picks up the newest volume when its step is done
+            if self._volume_task is None or self._volume_task.done():
+                self._volume_task = self.mass.create_task(self._send_volume())
 
         # The timer only starts the send, as a task under the timer's id would be cancelled
         # when the next timer fires.
@@ -495,15 +504,14 @@ class AlexaPlayer(Player):
     async def _send_volume(self) -> None:
         """Step the Echo to MA's volume, again if that changed while a step was sent."""
         if self._volume_sending:
-            # the running send picks up the newest volume when its step is done
             return
         provider = cast("AlexaProvider", self.provider)
         self._volume_sending = True
+        sent = None
         try:
             # the last readback may predate a change by voice, button or the Alexa app
             volumes = await provider.get_volumes()
             self._echo_volume = volumes.get(self.device.device_serial_number)
-            sent = None
             while (target := self._volume_target()) is not None and target != sent:
                 sent = target
                 if self._echo_volume is None:
@@ -523,9 +531,16 @@ class AlexaPlayer(Player):
             self.logger.warning("Could not set the volume of %s: %s", self.display_name, err)
             # the next poll shows the volume the Echo has
             self._echo_volume = None
-            return
+            failed = True
+        else:
+            failed = False
         finally:
             self._volume_sending = False
+        if failed:
+            if sent is not None and self._volume_target() != sent:
+                # changed while the failed step was out; one more try, not a retry loop
+                self._schedule_volume_send()
+            return
         if self._echo_volume is not None and not self._attr_volume_muted:
             # the Echo has its own volume steps, so it can end up 1 off
             self._attr_volume_level = self._echo_volume
@@ -598,7 +613,7 @@ class AlexaProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.devices = {}
-        self._volumes: dict[str, int] = {}
+        self._volumes: dict[str, int] | None = None
         self._volumes_read_at = -math.inf
         self._volumes_lock = asyncio.Lock()
         self._intents: list[dict[str, Any]] | None = None
@@ -653,19 +668,25 @@ class AlexaProvider(PlayerProvider):
 
     async def get_volumes(self) -> dict[str, int]:
         """Return each Echo's volume by serial number, read once per poll round."""
-        # the players poll one after another, so each waits for a read already on its way
+        # Players poll one after another, so one read serves the round. The lock makes a call
+        # wait for a read or step already on its way.
         async with self._volumes_lock:
             if self.mass.loop.time() - self._volumes_read_at < VOLUME_READ_MAX_AGE:
+                if self._volumes is None:
+                    # an empty result would make every Echo look like a speaker group
+                    raise AlexapyError("volume read failed moments ago")
                 return self._volumes
-            self._volumes = {}
+            self._volumes = None
             try:
                 # alexapy retries for up to 2 minutes, which would hold up every player's poll
                 async with asyncio.timeout(VOLUME_READ_TIMEOUT):
                     response = await AlexaAPI._static_request(
                         "get", self.login, "/api/devices/deviceType/dsn/audio/v1/allDeviceVolumes"
                     )
-                body = await response.json(content_type=None) if response else {}
-                self._volumes = {
+                if not response:
+                    raise AlexapyError("no volume readback")
+                body = await response.json(content_type=None)
+                self._volumes = volumes = {
                     item["dsn"]: item["speakerVolume"]
                     for item in body.get("volumes", [])
                     if item.get("dsn") and item.get("speakerVolume") is not None
@@ -673,7 +694,7 @@ class AlexaProvider(PlayerProvider):
             finally:
                 # a failed read counts too, so the next player does not wait for one again
                 self._volumes_read_at = self.mass.loop.time()
-            return self._volumes
+            return volumes
 
     async def step_volume(self, device: AlexaDevice, amount: int) -> int:
         """Change an Echo's volume by a step and return its new volume."""
@@ -690,12 +711,17 @@ class AlexaProvider(PlayerProvider):
             "muted": False,
             "synchronous": True,
         }
-        # alexapy retries for up to 2 minutes, which would hold up the next volume change
-        async with asyncio.timeout(VOLUME_STEP_TIMEOUT):
-            response = await AlexaAPI._static_request("put", self.login, uri, data=data)
-        body = await response.json(content_type=None) if response else {}
-        if (volume := body.get("speakerVolume")) is None:
-            raise AlexapyError(f"volume step failed: {body.get('error')}")
+        # holds the shared read, so a read can't start before the step and return after it
+        async with self._volumes_lock:
+            # alexapy retries for up to 2 minutes, which would hold up the next volume change
+            async with asyncio.timeout(VOLUME_STEP_TIMEOUT):
+                response = await AlexaAPI._static_request("put", self.login, uri, data=data)
+            body = await response.json(content_type=None) if response else {}
+            if (volume := body.get("speakerVolume")) is None:
+                raise AlexapyError(f"volume step failed: {body.get('error')}")
+            if self._volumes and device.device_serial_number in self._volumes:
+                # a change within 2 s of the read then starts from this volume
+                self._volumes[device.device_serial_number] = int(volume)
         return int(volume)
 
     async def get_intent_utterance(self, intent_name: str, default: str) -> str:

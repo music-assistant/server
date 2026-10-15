@@ -25,6 +25,7 @@ def _player() -> tuple[AlexaPlayer, Any]:
     provider.get_volumes = AsyncMock(return_value={"SERIAL": 20})
     provider.step_volume = AsyncMock()
     provider.login = MagicMock()
+    provider._volumes_lock = asyncio.Lock()
     player = AlexaPlayer(provider, "Echo", MagicMock(device_serial_number="SERIAL"))
     return player, provider
 
@@ -188,7 +189,7 @@ async def test_get_volumes_reads_all_echos_once_per_round() -> None:
         "music_assistant.providers.alexa.AlexaAPI._static_request",
         AsyncMock(side_effect=slow_request),
     ) as request:
-        # two players polling at once share one read
+        # two calls at once, like a poll and a volume send, share one read
         assert list(await asyncio.gather(get_volumes(), get_volumes())) == [{"A": 30}] * 2
         provider.mass.loop.time.return_value = 101.0
         assert await get_volumes() == {"A": 30}
@@ -198,7 +199,15 @@ async def test_get_volumes_reads_all_echos_once_per_round() -> None:
         provider.mass.loop.time.return_value = 103.0
         with pytest.raises(TimeoutError):
             await get_volumes()
-        assert await get_volumes() == {}
+        # within 2 s a failed read fails again, so no Echo looks missing from the readback
+        with pytest.raises(AlexapyError):
+            await get_volumes()
+
+        request.side_effect = None
+        request.return_value = None
+        provider.mass.loop.time.return_value = 106.0
+        with pytest.raises(AlexapyError):
+            await get_volumes()
 
 
 def _echo_follows_steps(player: AlexaPlayer, provider: Any) -> None:
@@ -244,7 +253,7 @@ async def test_a_muted_echo_stays_silent_when_its_volume_changes() -> None:
 
 @pytest.mark.parametrize(("before", "unmuted_at"), [(20, 20), (None, 10)])
 async def test_mute_on_the_echo_shows_as_muted(before: int | None, unmuted_at: int) -> None:
-    """A voice mute sets 0, which shows as muted; unmute goes back to the volume before."""
+    """A voice mute sets 0, which shows as muted; unmute goes back to the volume before, or 10."""
     player, provider = _player()
     _echo_follows_steps(player, provider)
     with patch.object(player, "update_state"):
@@ -286,6 +295,92 @@ async def test_unload_drops_a_volume_change_on_its_way() -> None:
     provider.mass.create_task.return_value.cancel.assert_called_once()
 
 
+async def test_a_second_timer_keeps_the_running_send() -> None:
+    """A change while a send is out leaves that send in place, so unload still stops it."""
+    player, provider = _player()
+    running = MagicMock(done=MagicMock(return_value=False))
+    provider.mass.create_task.side_effect = lambda coro: (coro.close(), running)[1]
+    with patch.object(player, "update_state"):
+        await player.volume_set(40)
+        provider.mass.call_later.call_args.args[1]()
+        await player.volume_set(50)
+        provider.mass.call_later.call_args.args[1]()
+        await player.on_unload()
+    assert provider.mass.create_task.call_count == 1
+    running.cancel.assert_called_once()
+
+
+async def test_changes_in_a_row_step_from_the_last_reply() -> None:
+    """A second change within 2 s of the shared read starts from where the first one left the Echo."""
+    player, provider = _player()
+    provider._volumes = {}
+    provider._volumes_read_at = -math.inf
+    provider._volumes_lock = asyncio.Lock()
+    provider.get_volumes = partial(AlexaProvider.get_volumes, provider)
+    provider.step_volume = partial(AlexaProvider.step_volume, provider)
+    echo = {"volume": 20}
+
+    async def request(method: str, *_args: object, **kwargs: Any) -> MagicMock:
+        if method == "put":
+            echo["volume"] += kwargs["data"]["amount"]
+            body: dict[str, Any] = {"speakerVolume": echo["volume"]}
+        else:
+            body = {"volumes": [{"dsn": "SERIAL", "speakerVolume": echo["volume"]}]}
+        return MagicMock(json=AsyncMock(return_value=body))
+
+    with (
+        patch.object(player, "update_state"),
+        patch("music_assistant.providers.alexa.AlexaAPI._static_request", side_effect=request),
+    ):
+        await player.volume_set(40)
+        await player._send_volume()
+        await player.volume_set(50)
+        await player._send_volume()
+        assert echo["volume"] == 50
+        await player.volume_mute(True)
+        await player._send_volume()
+    assert echo["volume"] == 0
+
+
+async def test_volume_zero_from_ma_is_not_a_mute() -> None:
+    """A slider taken to 0 in MA stays a volume, so raising it again turns the Echo up."""
+    player, provider = _player()
+    _echo_follows_steps(player, provider)
+    with patch.object(player, "update_state"):
+        await player.volume_set(0)
+        await player._send_volume()
+        provider.get_volumes.return_value = {"SERIAL": 0}
+        provider.mass.loop.time.return_value = 103.0
+        await player.poll()
+        assert player.volume_muted is False
+        await player.volume_set(30)
+        await player._send_volume()
+    assert [c.args[1] for c in provider.step_volume.await_args_list] == [-20, 30]
+
+
+async def test_poll_skips_while_a_volume_call_is_out() -> None:
+    """A poll doesn't wait on another Echo's step, as MA polls every player in one loop."""
+    player, provider = _player()
+    async with provider._volumes_lock:
+        await player.poll()
+    provider.get_volumes.assert_not_awaited()
+
+
+async def test_a_change_during_a_failed_send_goes_out_again() -> None:
+    """A change made while a step fails is sent once more instead of being dropped."""
+    player, provider = _player()
+
+    async def step(_device: object, _amount: int) -> int:
+        await player.volume_set(50)
+        raise AlexapyError("volume step failed: TIME_OUT")
+
+    provider.step_volume.side_effect = step
+    with patch.object(player, "update_state"):
+        await player.volume_set(40)
+        await player._send_volume()
+    assert provider.mass.call_later.call_count == 3
+
+
 def test_poll_is_slower_when_not_playing() -> None:
     """The volume is read every 5 s while playing, and every 30 s otherwise."""
     player, _ = _player()
@@ -320,7 +415,7 @@ async def test_volume_up_on_the_echo_unmutes() -> None:
 async def test_step_volume_returns_the_new_volume(body: dict[str, Any], result: int | None) -> None:
     """The step's reply carries the Echo's new volume, or an error."""
     response = MagicMock(json=AsyncMock(return_value=body))
-    provider = SimpleNamespace(login=MagicMock())
+    provider = SimpleNamespace(login=MagicMock(), _volumes={}, _volumes_lock=asyncio.Lock())
     device = SimpleNamespace(device_serial_number="SERIAL", _device_type="TYPE")
     with patch(
         "music_assistant.providers.alexa.AlexaAPI._static_request",
