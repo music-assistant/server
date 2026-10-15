@@ -390,6 +390,7 @@ class RaumfeldPlayer(Player):
             self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
+    @_changes_playback
     async def pause(self) -> None:
         """Send PAUSE command (only offered while an external source is playing)."""
         await self._external_command("Pause")
@@ -405,6 +406,7 @@ class RaumfeldPlayer(Player):
         """Send PREVIOUS TRACK command (only offered while an external source is playing)."""
         await self._external_command("Previous")
 
+    @_changes_playback
     async def seek(self, position: int) -> None:
         """Send SEEK command (only offered while an external source is playing)."""
         hours, remainder = divmod(max(position, 0), 3600)

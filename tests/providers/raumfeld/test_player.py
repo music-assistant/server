@@ -1065,3 +1065,20 @@ async def test_the_stop_of_a_handover_leaves_spotify_connect_playing() -> None:
         # the next stop is a stop again
         await player.stop()
     action.assert_awaited_once_with(_RENDERER, "Stop")
+
+
+async def test_pause_and_seek_invalidate_overlapping_polls() -> None:
+    """A poll that read the zone before a pause or seek does not undo what they set."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Pause,Seek", 315, via_room=True)
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()),
+    ):
+        generation = player._playback_generation
+        await player.pause()
+        assert not player._reading_is_current(generation)
+        generation = player._playback_generation
+        await player.seek(60)
+        assert not player._reading_is_current(generation)
+    assert player._playback_changes == 0
