@@ -11,6 +11,7 @@ from aiosendspin.server import (
     ClientConnectedEvent,
     SignalState,
     SourceSignalChangedEvent,
+    SourceStreamEndedEvent,
     SourceStreamStartedEvent,
 )
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption, StreamType
@@ -279,6 +280,35 @@ async def test_stream_ends_after_source_timeout(
     monkeypatch.setattr(provider_module, "SOURCE_TIMEOUT_S", 0.05)
     chunks = [chunk async for chunk in provider.get_audio_stream(_stream_details())]
     assert 1 <= len(chunks) <= 10
+
+
+async def test_turning_the_input_off_releases_the_source_at_once(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connected client that loses its source role leaves nothing to wait for."""
+    provider = await make_provider([fake_client])
+    await _start_streaming(provider, fake_client, monkeypatch)
+
+    fake_client.detach_roles()
+    fake_client.emit(SourceStreamEndedEvent())
+    await _settle()
+
+    assert get_players(provider).deselected == ["queue-1"]
+
+
+async def test_a_disconnect_keeps_the_source_waiting(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dropped client may come back, so its source holds until the timeout."""
+    provider = await make_provider([fake_client])
+    await _start_streaming(provider, fake_client, monkeypatch)
+
+    fake_client.is_connected = False
+    fake_client.detach_roles()
+    fake_client.emit(SourceStreamEndedEvent())
+    await _settle()
+
+    assert get_players(provider).deselected == []
 
 
 async def test_reconnect_re_requests_start(fake_client: _FakeClient) -> None:
