@@ -353,6 +353,37 @@ async def test_concurrent_401s_share_one_refresh(aiohttp_client: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_authors_paginates(aiohttp_client: Any) -> None:
+    """Authors are fetched across pages until the reported total is reached."""
+
+    async def authors(request: web.Request) -> web.Response:
+        page = int(request.query["page"])
+        size = int(request.query["size"])
+        assert size == 100
+        if page == 0:
+            items = [
+                {"id": i, "name": f"A{i}", "imageUrl": f"/api/v1/authors/{i}/thumbnail"}
+                for i in range(100)
+            ]
+        elif page == 1:
+            items = [{"id": 100, "name": "A100", "coverBookId": 9}]
+        else:
+            items = []
+        return web.json_response({"items": items, "total": 101, "page": page, "size": size})
+
+    app = web.Application()
+    app.router.add_get("/api/v1/authors", authors)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    result = await bo.list_authors()
+    assert len(result) == 101
+    assert result[0]["imageUrl"].endswith("/thumbnail")
+    assert result[-1] == {"id": 100, "name": "A100", "coverBookId": 9}
+
+
+@pytest.mark.asyncio
 async def test_get_cover_returns_bytes_or_none(aiohttp_client: Any) -> None:
     """Covers are fetched with the bearer token; a missing cover is None."""
 

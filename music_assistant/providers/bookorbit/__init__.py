@@ -154,6 +154,8 @@ class BookOrbitProvider(MusicProvider):
         # library id -> name / ids of the catalog's audiobooks in that library (for browse)
         self._library_names: dict[int, str] = {}
         self._library_books: dict[int, list[str]] = {}
+        # author id -> list payload (imageUrl, coverBookId, description, …)
+        self._author_meta: dict[int, dict[str, Any]] = {}
 
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from the config and log in."""
@@ -420,7 +422,7 @@ class BookOrbitProvider(MusicProvider):
     def _library_item_needs_update(
         self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
     ) -> bool:
-        """Refresh when BookOrbit ``updatedAt`` or display title/subtitle changed."""
+        """Refresh when BookOrbit ``updatedAt``, title/subtitle, or sole-provider images changed."""
         if super()._library_item_needs_update(library_item, prov_item):
             return True
         for prov_map in prov_item.provider_mappings:
@@ -437,13 +439,26 @@ class BookOrbitProvider(MusicProvider):
             )
             if lib_map is None or prov_map.details != lib_map.details:
                 return True
+        if not self._is_sole_library_provider(library_item):
+            return False
         # Sole-provider title embeds subtitle; catch edits even if updatedAt was already synced
         # into mapping details before the library name was rewritten.
         lib_name = getattr(library_item, "name", None)
+        if lib_name is not None and lib_name != prov_item.name:
+            return True
+        # Full library items only (sync-details omit images); empty provider images must clear.
         return bool(
-            lib_name is not None
-            and lib_name != prov_item.name
-            and self._is_sole_library_provider(library_item)
+            hasattr(library_item, "metadata")
+            and self._provider_image_paths(library_item) != self._provider_image_paths(prov_item)
+        )
+
+    def _provider_image_paths(self, item: MediaItemType | LibraryItemSyncDetails) -> list[str]:
+        """Return sorted image paths owned by this BookOrbit instance."""
+        metadata = getattr(item, "metadata", None)
+        if metadata is None or not metadata.images:
+            return []
+        return sorted(
+            img.path for img in metadata.images if img.provider in (self.instance_id, self.domain)
         )
 
     def _is_sole_library_provider(
@@ -451,6 +466,76 @@ class BookOrbitProvider(MusicProvider):
     ) -> bool:
         """Return True when BookOrbit is the only provider mapped on the library item."""
         return {x.provider_instance for x in library_item.provider_mappings} == {self.instance_id}
+
+    async def _sync_library_artists(self) -> set[int]:
+        """
+        Sync artists, overwriting when BookOrbit solely owns the item.
+
+        MA merges images and treats an empty provider image list as “keep existing”, so
+        removed author/narrator photos (or dropped book-cover stand-ins) stay in the DB
+        unless we overwrite and explicitly strip our images when the provider has none.
+        """
+        self.logger.debug("Start sync of Artists to Music Assistant library.")
+        cur_db_ids: set[int] = set()
+        item_count = 0
+        async for prov_item in self.get_library_artists():
+            item_count += 1
+            self._update_sync_task_item_status(MediaType.ARTIST, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.ARTIST, prov_item.item_id)
+            db_id: int | None = None
+            try:
+                sync_details = await self.mass.music.artists.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                )
+                db_id = sync_details.item_id if sync_details else None
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.artists.add_item_to_library(prov_item)
+                        db_id = int(library_item.item_id)
+                    else:
+                        library_item = await self.mass.music.artists.get_library_item(
+                            sync_details.item_id
+                        )
+                        if self._library_item_needs_update(library_item, prov_item):
+                            sole = self._is_sole_library_provider(library_item)
+                            library_item = await self.mass.music.artists.update_item_in_library(
+                                sync_details.item_id,
+                                prov_item,
+                                overwrite=sole,
+                            )
+                            db_id = int(library_item.item_id)
+                            # overwrite + empty images does not replace metadata (all-falsey stub)
+                            if sole and not self._provider_image_paths(prov_item):
+                                await self.mass.music.artists._remove_provider_images(
+                                    db_id, self.instance_id
+                                )
+                        else:
+                            db_id = sync_details.item_id
+                    cur_db_ids.add(db_id)
+                    if prov_item.favorite is not None:
+                        await self.mass.music.favorites.record_from_provider(
+                            self.instance_id, MediaType.ARTIST, db_id, prov_item.favorite
+                        )
+                    fallback_genres = (
+                        set(prov_item.metadata.genres)
+                        if prov_item.metadata and prov_item.metadata.genres
+                        else None
+                    )
+                    await self._sync_item_genres(
+                        MediaType.ARTIST,
+                        prov_item.item_id,
+                        db_id,
+                        fallback_genres,
+                    )
+                await asyncio.sleep(0)
+            except Exception as err:
+                self._handle_sync_item_failure(MediaType.ARTIST, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.ARTIST, prov_item.item_id, db_id, cur_db_ids
+                )
+        return cur_db_ids
 
     async def _sync_library_audiobooks(self) -> set[int]:
         """
@@ -717,6 +802,14 @@ class BookOrbitProvider(MusicProvider):
                 if members:
                     library_names[library["id"]] = str(library.get("name") or library["id"])
                     library_books[library["id"]] = members
+            # Book detail authors omit imageUrl/coverBookId; the authors list carries them.
+            author_meta: dict[int, dict[str, Any]] = {}
+            try:
+                for author in await self._client.list_authors():
+                    if isinstance(author, dict) and "id" in author:
+                        author_meta[int(author["id"])] = author
+            except ClientResponseError as err:
+                self.logger.warning("BookOrbit author list unavailable (no author thumbs): %s", err)
         except BookOrbitAuthError as err:
             raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
         except ClientResponseError:
@@ -726,20 +819,38 @@ class BookOrbitProvider(MusicProvider):
         self._catalog = catalog
         self._library_names = library_names
         self._library_books = library_books
+        self._author_meta = author_meta
         self._catalog_refreshed_at = time.monotonic()
+
+    def _enrich_author(self, author: dict[str, Any]) -> dict[str, Any]:
+        """Merge list-level author fields (photo/bio) onto a book-embedded author."""
+        meta = self._author_meta.get(int(author["id"]))
+        if not meta:
+            return author
+        return {
+            **author,
+            "imageUrl": author.get("imageUrl") or meta.get("imageUrl"),
+            "description": author.get("description") or meta.get("description"),
+        }
 
     def _catalog_artists(self, books: Iterable[dict[str, Any]] | None = None) -> dict[str, Artist]:
         """Return the authors and narrators of the catalog (or given books) keyed by item id."""
         artists: dict[str, Artist] = {}
         for book in self._catalog.values() if books is None else books:
-            for author in book.get("authors") or []:
-                if isinstance(author, dict) and "id" in author:
-                    parsed = parse_author(author, provider_instance_id=self.instance_id)
-                    artists.setdefault(parsed.item_id, parsed)
-            for narrator in (book.get("audioMetadata") or {}).get("narrators") or []:
-                if isinstance(narrator, dict) and "id" in narrator:
-                    parsed = parse_narrator(narrator, provider_instance_id=self.instance_id)
-                    artists.setdefault(parsed.item_id, parsed)
+            for author in _people(book.get("authors")):
+                parsed = parse_author(
+                    self._enrich_author(author),
+                    provider_instance_id=self.instance_id,
+                    base_url=self.base_url,
+                )
+                artists.setdefault(parsed.item_id, parsed)
+            for narrator in _people((book.get("audioMetadata") or {}).get("narrators")):
+                parsed = parse_narrator(
+                    narrator,
+                    provider_instance_id=self.instance_id,
+                    base_url=self.base_url,
+                )
+                artists.setdefault(parsed.item_id, parsed)
         return artists
 
     def _folder(

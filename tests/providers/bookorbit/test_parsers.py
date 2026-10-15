@@ -107,6 +107,7 @@ def test_parse_author() -> None:
     artist = parse_author(
         {"id": 11, "name": "Frank Herbert", "sortName": "Herbert, Frank"},
         provider_instance_id=INSTANCE,
+        base_url=BASE_URL,
     )
     assert artist.item_id == "author:11"
     assert artist.provider == INSTANCE
@@ -115,6 +116,41 @@ def test_parse_author() -> None:
     assert artist.artist_type == ArtistType.AUTHOR
     (mapping,) = artist.provider_mappings
     assert (mapping.item_id, mapping.provider_domain) == ("author:11", "bookorbit")
+    assert mapping.details == ""
+    assert not artist.metadata.images
+
+
+def test_parse_author_image_url() -> None:
+    """Author photos use the BookOrbit thumbnail path."""
+    artist = parse_author(
+        {
+            "id": 6,
+            "name": "Agatha Christie",
+            "sortName": "Christie, Agatha",
+            "imageUrl": "/api/v1/authors/6/thumbnail?t=1",
+            "description": "Queen of Crime",
+        },
+        provider_instance_id=INSTANCE,
+        base_url=BASE_URL,
+    )
+    assert artist.metadata.images is not None
+    (image,) = artist.metadata.images
+    assert image.type == ImageType.THUMB
+    assert image.path == f"{BASE_URL}/api/v1/authors/6/thumbnail?t=1"
+    assert image.remotely_accessible is False
+    (mapping,) = artist.provider_mappings
+    assert mapping.details == image.path
+    assert artist.metadata.description == "Queen of Crime"
+
+
+def test_parse_author_ignores_cover_book_id() -> None:
+    """Book covers are not used as author thumbnails."""
+    artist = parse_author(
+        {"id": 11, "name": "Frank Herbert", "coverBookId": 42, "lastAddedAt": "t1"},
+        provider_instance_id=INSTANCE,
+        base_url=BASE_URL,
+    )
+    assert not artist.metadata.images
 
 
 def test_parse_narrator_without_sort_name() -> None:
@@ -122,7 +158,18 @@ def test_parse_narrator_without_sort_name() -> None:
     artist = parse_narrator(
         {"id": 23, "name": "Ray Porter", "sortName": None, "displayOrder": 0},
         provider_instance_id=INSTANCE,
+        base_url=BASE_URL,
     )
     assert artist.item_id == "narrator:23"
     assert artist.sort_name == "Ray Porter"
     assert artist.artist_type == ArtistType.NARRATOR
+    assert not artist.metadata.images
+
+
+def test_parse_audiobook_narrators_have_no_book_cover_thumbs(
+    book_audiobook: dict[str, Any],
+) -> None:
+    """Narrators stay without images when BookOrbit has no narrator photos."""
+    ab = _parse(book_audiobook)
+    for narrator in ab.narrators:
+        assert not narrator.metadata.images

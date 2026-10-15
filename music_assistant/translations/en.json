@@ -1222,8 +1222,6 @@
   "provider.bbc_sounds.media.folder.today.name": "Today",
   "provider.bbc_sounds.media.folder.yesterday.name": "Yesterday",
   "provider.bluesound.manifest.description": "Send high-resolution audio to Bluesound speakers and multiroom systems.",
-  "provider.bookorbit.config_entries.api_token.description": "Reserved for future use. Leave empty and use username and password.",
-  "provider.bookorbit.config_entries.api_token.label": "API token (not used yet)",
   "provider.bookorbit.config_entries.label.label": "Please provide the address of your BookOrbit server and your username and password.",
   "provider.bookorbit.config_entries.url.description": "The URL of the BookOrbit server to connect to. For example https://bookorbit.domain.tld/ or http://192.168.1.4:3000/",
   "provider.bookorbit.config_entries.url.label": "Server",

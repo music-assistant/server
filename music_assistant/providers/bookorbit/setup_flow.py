@@ -12,7 +12,6 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.bookorbit.client import BookOrbitAuthError, BookOrbitClient
 from music_assistant.providers.bookorbit.constants import (
-    CONF_API_TOKEN,
     CONF_PASSWORD,
     CONF_URL,
     CONF_USERNAME,
@@ -44,11 +43,7 @@ _ENTRIES = (
         type=ConfigEntryType.SECURE_STRING,
         required=False,
     ),
-    ConfigEntry(
-        key=CONF_API_TOKEN,
-        type=ConfigEntryType.SECURE_STRING,
-        required=False,
-    ),
+    # No API-token field until BookOrbit supports long-lived keys (upstream #1234 / #1154).
     ConfigEntry(
         key=CONF_VERIFY_SSL,
         type=ConfigEntryType.BOOLEAN,
@@ -157,7 +152,7 @@ async def run_setup(session: SetupSession) -> None:
         setup_data.update(
             (key, value)
             for key, value in submitted.items()
-            if key not in (CONF_PASSWORD, CONF_API_TOKEN) or value not in (None, "")
+            if key != CONF_PASSWORD or value not in (None, "")
         )
         if not submitted.get(CONF_PASSWORD) and prior_username != setup_data.get(CONF_USERNAME):
             setup_data[CONF_PASSWORD] = None

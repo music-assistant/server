@@ -8,9 +8,15 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ImageType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Audiobook, ProviderMapping
+from music_assistant_models.media_items import (
+    Artist,
+    Audiobook,
+    MediaItemImage,
+    ProviderMapping,
+    UniqueList,
+)
 
 from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.models.music_provider import MusicProvider
@@ -54,6 +60,16 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
         999: {**book_audiobook, "id": 999, "files": [{"id": 1, "format": "epub"}]},
     }
     prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
+    prov._client.list_authors = AsyncMock(
+        return_value=[
+            {
+                "id": book_audiobook["authors"][0]["id"],
+                "name": book_audiobook["authors"][0]["name"],
+                "imageUrl": "/api/v1/authors/11/thumbnail?t=1",
+                "coverBookId": book_audiobook["id"],
+            }
+        ]
+    )
     return prov
 
 
@@ -78,9 +94,16 @@ async def test_refresh_catalog_filters_libraries_and_ebooks(
 
     audiobooks = [book async for book in provider.get_library_audiobooks()]
     assert {b.item_id for b in audiobooks} == set(provider._catalog)
-    artists = {a.item_id async for a in provider.get_library_artists()}
-    assert f"author:{book_audiobook['authors'][0]['id']}" in artists
+    artists = {a.item_id: a async for a in provider.get_library_artists()}
+    author_id = f"author:{book_audiobook['authors'][0]['id']}"
+    assert author_id in artists
     assert all(a.startswith(("author:", "narrator:")) for a in artists)
+    author_images = artists[author_id].metadata.images
+    assert author_images is not None
+    (author_image,) = author_images
+    assert author_image.path.endswith("/api/v1/authors/11/thumbnail?t=1")
+    narrator_id = f"narrator:{book_audiobook['audioMetadata']['narrators'][0]['id']}"
+    assert not artists[narrator_id].metadata.images
 
 
 @pytest.mark.asyncio
@@ -192,6 +215,43 @@ def test_library_item_needs_update_when_title_diverges(provider: BookOrbitProvid
         provider_mappings={mapping},
         duration=100,
     )
+    with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
+        assert provider._library_item_needs_update(library, prov_item) is True
+
+
+def test_library_item_needs_update_when_sole_provider_images_change(
+    provider: BookOrbitProvider,
+) -> None:
+    """Stale book-cover stand-ins must refresh when the provider clears artist images."""
+    mapping = ProviderMapping(
+        item_id="author:11",
+        provider_domain="bookorbit",
+        provider_instance=provider.instance_id,
+        details="",
+        in_library=True,
+    )
+    library = Artist(
+        item_id="author:11",
+        provider=provider.instance_id,
+        name="Frank Herbert",
+        provider_mappings={mapping},
+    )
+    library.metadata.images = UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path="http://bo/api/v1/books/42/cover",
+                provider=provider.instance_id,
+            )
+        ]
+    )
+    prov_item = Artist(
+        item_id="author:11",
+        provider=provider.instance_id,
+        name="Frank Herbert",
+        provider_mappings={mapping},
+    )
+    prov_item.metadata.images = UniqueList([])
     with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
         assert provider._library_item_needs_update(library, prov_item) is True
 

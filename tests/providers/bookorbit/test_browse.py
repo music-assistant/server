@@ -42,6 +42,7 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     prov._client.query_audiobooks = AsyncMock(side_effect=lambda library_id: books[library_id])
     details = {book_audiobook["id"]: book_audiobook, book_multifile["id"]: book_multifile}
     prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
+    prov._client.list_authors = AsyncMock(return_value=[])
     return prov
 
 

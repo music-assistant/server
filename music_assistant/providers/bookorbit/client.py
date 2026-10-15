@@ -140,6 +140,28 @@ class BookOrbitClient:
         """Search books (``GET /books/search?q=``)."""
         return await self._search("books/search", query)
 
+    async def list_authors(self) -> list[dict[str, Any]]:
+        """Return all authors (paginated ``GET /authors``), including photo fields."""
+        authors: list[dict[str, Any]] = []
+        for page in range(QUERY_MAX_PAGES):
+            payload = await self.request(
+                "GET",
+                f"{API_PREFIX}/authors",
+                params={"page": page, "size": QUERY_PAGE_SIZE},
+            )
+            items = self._extract_items(payload)
+            authors.extend(items)
+            if not items or not isinstance(payload, dict):
+                break
+            total = payload.get("total")
+            page_size = int(payload.get("size") or QUERY_PAGE_SIZE)
+            if total is not None:
+                if len(authors) >= int(total):
+                    break
+            elif len(items) < page_size:
+                break
+        return authors
+
     async def search_authors(self, query: str) -> list[dict[str, Any]]:
         """Search authors in the catalog (``GET /metadata/authors?q=``)."""
         return await self._search("metadata/authors", query)

@@ -31,6 +31,20 @@ def _build_cover_url(*, base_url: str, book_id: int, version: str | None) -> str
     return cover_url
 
 
+def _absolute_url(base_url: str, path: str) -> str:
+    """Join a BookOrbit-relative path with the instance base URL."""
+    if path.startswith(("http://", "https://")):
+        return path
+    return f"{base_url.rstrip('/')}{path if path.startswith('/') else f'/{path}'}"
+
+
+def _person_image_path(person: dict[str, Any], *, base_url: str) -> str | None:
+    """Return an absolute photo URL when BookOrbit has a real person image (not a book cover)."""
+    if image_url := person.get("imageUrl"):
+        return _absolute_url(base_url, str(image_url))
+    return None
+
+
 def _audio_files(book: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the audio files of a book in BookOrbit order."""
     return [
@@ -162,7 +176,7 @@ def parse_audiobook(
     # BookCard payloads carry plain name strings without ids; only detail objects are linked
     mass_audiobook.authors.set(
         [
-            parse_author(author, provider_instance_id=provider_instance_id)
+            parse_author(author, provider_instance_id=provider_instance_id, base_url=base_url)
             for author in book.get("authors") or []
             if isinstance(author, dict)
         ]
@@ -172,7 +186,10 @@ def parse_audiobook(
         key=lambda n: n.get("displayOrder", 0),
     )
     mass_audiobook.narrators.set(
-        [parse_narrator(n, provider_instance_id=provider_instance_id) for n in narrators]
+        [
+            parse_narrator(n, provider_instance_id=provider_instance_id, base_url=base_url)
+            for n in narrators
+        ]
     )
 
     metadata.chapters = _parse_chapters(book, duration)
@@ -185,10 +202,16 @@ def parse_audiobook(
 
 
 def _parse_person(
-    person: dict[str, Any], *, prefix: str, artist_type: ArtistType, provider_instance_id: str
+    person: dict[str, Any],
+    *,
+    prefix: str,
+    artist_type: ArtistType,
+    provider_instance_id: str,
+    base_url: str,
 ) -> MassArtist:
     item_id = f"{prefix}{person['id']}"
-    return MassArtist(
+    image_path = _person_image_path(person, base_url=base_url)
+    mass_artist = MassArtist(
         item_id=item_id,
         provider=provider_instance_id,
         name=person["name"],
@@ -198,27 +221,49 @@ def _parse_person(
                 item_id=item_id,
                 provider_domain=DOMAIN,
                 provider_instance=provider_instance_id,
+                # Image fingerprint forces a library refresh when photos change.
+                details=image_path or "",
             )
         },
         artist_type=artist_type,
     )
+    if description := person.get("description"):
+        mass_artist.metadata.description = description
+    if image_path:
+        mass_artist.metadata.images = UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_path,
+                    provider=provider_instance_id,
+                    remotely_accessible=False,
+                )
+            ]
+        )
+    else:
+        mass_artist.metadata.images = UniqueList([])
+    return mass_artist
 
 
-def parse_author(author: dict[str, Any], *, provider_instance_id: str) -> MassArtist:
+def parse_author(author: dict[str, Any], *, provider_instance_id: str, base_url: str) -> MassArtist:
     """Translate a BookOrbit author to a MassArtist."""
     return _parse_person(
         author,
         prefix=AUTHOR_PREFIX,
         artist_type=ArtistType.AUTHOR,
         provider_instance_id=provider_instance_id,
+        base_url=base_url,
     )
 
 
-def parse_narrator(narrator: dict[str, Any], *, provider_instance_id: str) -> MassArtist:
+def parse_narrator(
+    narrator: dict[str, Any], *, provider_instance_id: str, base_url: str
+) -> MassArtist:
     """Translate a BookOrbit narrator to a MassArtist."""
     return _parse_person(
         narrator,
         prefix=NARRATOR_PREFIX,
         artist_type=ArtistType.NARRATOR,
         provider_instance_id=provider_instance_id,
+        base_url=base_url,
     )
