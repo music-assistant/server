@@ -4251,10 +4251,11 @@ class StreamsAudio:
 
         Without a quality to reach, only providers that can start a stream right now are
         searched, up to the first match. With one, the search goes on past a poorer match
-        until a match of that quality is found. A found mapping is added to the media item,
-        and stored for a library item without merging another library item into it, so the
-        selection can continue on the discovered provider. A provider that recently found no
-        match for a library track is not searched for it again.
+        until a match of that quality is found, and a match of unknown quality is only stored.
+        A found mapping is added to the media item, and stored for a library item without
+        merging another library item into it, so the selection can continue on the discovered
+        provider. A provider that recently found no match for a library track is not searched
+        for it again.
 
         :param queue_item: Queue item whose track should be matched on another provider.
         :param excluded: Provider instances not to search on.
@@ -4322,7 +4323,18 @@ class StreamsAudio:
             self.logger.debug("Searching an alternative provider for %s timed out", media_item.name)
         if not matches:
             return set()
-        media_item.provider_mappings.update(matches)
+        # a copy of unknown quality can not be judged against the quality searched for: it is
+        # kept for later plays, which learn its quality, but takes no part in this selection
+        usable = (
+            matches
+            if min_tier is None
+            else [
+                mapping
+                for mapping in matches
+                if quality_tier(mapping.audio_format) != QualityTier.UNKNOWN
+            ]
+        )
+        media_item.provider_mappings.update(usable)
         if media_item.provider == "library":
             # persist in the background so future plays have the mapping ahead of time;
             # cancellation of this playback must never interrupt the library write
@@ -4337,7 +4349,7 @@ class StreamsAudio:
         )
         return {
             provider.instance_id
-            for mapping in matches
+            for mapping in usable
             for provider in self._get_mapping_providers(mapping, allowed)
         }
 

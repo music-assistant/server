@@ -46,6 +46,8 @@ from tests.common import set_music_source_access
 LOCAL = "filesystem_local--files"
 SPOTIFY = "spotify--ogg"
 TIDAL = "tidal--hifi"
+# a service whose catalog gives no format
+YANDEX = "yandex_music--own"
 LIBRARY_ID = "42"
 LOCAL_ID = "Artist/Album/01.mp3"
 SPOTIFY_ID = "spotify-1"
@@ -439,6 +441,47 @@ async def test_a_copy_reaching_the_upgrade_quality_plays_without_a_search() -> N
     assert streamdetails.provider == TIDAL
     spotify.get_stream_details.assert_not_awaited()
     mass.music.tracks.match_provider.assert_not_awaited()
+
+
+async def test_a_found_copy_of_unknown_quality_does_not_stop_the_upgrade() -> None:
+    """An own account's match of unknown quality is kept for later, the lossless match plays."""
+    yandex = _provider(YANDEX)
+    tidal = _provider(TIDAL)
+    mass = _mass([_provider(LOCAL, streaming=False), yandex, tidal], owned=(YANDEX,))
+    yandex_match = _mapping(YANDEX, "yandex-1", AudioFormat())
+    tidal_match = _mapping(TIDAL, TIDAL_ID, FLAC)
+    found = {YANDEX: [yandex_match], TIDAL: [tidal_match]}
+    mass.music.tracks.match_provider = AsyncMock(
+        side_effect=lambda _track, provider, **_kwargs: found[provider.instance_id]
+    )
+    audio = StreamsAudio(mass)
+
+    streamdetails = await audio.get_stream_details(_queue_item(_mapping(LOCAL, LOCAL_ID, MP3)))
+
+    assert streamdetails.provider == TIDAL
+    yandex.get_stream_details.assert_not_awaited()
+    await asyncio.sleep(0)
+    mass.music.tracks.add_unclaimed_provider_mappings.assert_awaited_once_with(
+        LIBRARY_ID, [yandex_match, tidal_match]
+    )
+
+
+async def test_a_found_copy_of_unknown_quality_alone_leaves_the_chosen_copy() -> None:
+    """A match of unknown quality is no known upgrade: it is stored, the chosen copy plays."""
+    yandex = _provider(YANDEX)
+    mass = _mass([_provider(LOCAL, streaming=False), yandex], owned=(YANDEX,))
+    yandex_match = _mapping(YANDEX, "yandex-1", AudioFormat())
+    mass.music.tracks.match_provider = AsyncMock(return_value=[yandex_match])
+    audio = StreamsAudio(mass)
+
+    streamdetails = await audio.get_stream_details(_queue_item(_mapping(LOCAL, LOCAL_ID, MP3)))
+
+    assert streamdetails.provider == LOCAL
+    yandex.get_stream_details.assert_not_awaited()
+    await asyncio.sleep(0)
+    mass.music.tracks.add_unclaimed_provider_mappings.assert_awaited_once_with(
+        LIBRARY_ID, [yandex_match]
+    )
 
 
 async def test_the_search_goes_on_past_a_match_below_the_upgrade_quality() -> None:
