@@ -97,8 +97,8 @@ _START_ITEM_SUBSTRING_MIN_LEN = 3
 _LIBRARY_SELECTIONS = frozenset({"library_tracks", "library_album_tracks", "prefer_library"})
 # caps the album track lookups in flight, so a large discography does not flood a provider
 ALBUM_LOOKUP_BATCH = 5
-# an expired login, too, only skips that provider's albums
-_ARTIST_ALBUMS_ERRORS: Final[tuple[type[Exception], ...]] = (*PROVIDER_FETCH_ERRORS, LoginFailed)
+# an expired login, too, only skips that provider (its albums or its copy of an album)
+_SKIP_PROVIDER_ERRORS: Final[tuple[type[Exception], ...]] = (*PROVIDER_FETCH_ERRORS, LoginFailed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -811,7 +811,7 @@ class MediaResolver:
                 return await fetch(album)
             try:
                 tracks = await fetch(album)
-            except PROVIDER_FETCH_ERRORS as err:
+            except _SKIP_PROVIDER_ERRORS as err:
                 self.logger.log(
                     provider_fetch_log_level(err),
                     "Unable to fetch the tracks of album %s from %s, trying another copy: %s",
@@ -1154,7 +1154,7 @@ class MediaResolver:
                     )
                 )
                 listed = True
-            except _ARTIST_ALBUMS_ERRORS as err:
+            except _SKIP_PROVIDER_ERRORS as err:
                 failed = True
                 # one failing provider must not drop the albums of the artist's other providers
                 self.logger.log(

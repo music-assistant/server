@@ -532,7 +532,10 @@ async def test_an_album_on_two_providers_plays_once(mass: MusicAssistant) -> Non
     assert _names(result) == ["Arrival 1", "Arrival 2"]
 
 
-async def test_an_album_plays_from_its_other_copy_when_one_fails(mass: MusicAssistant) -> None:
+@pytest.mark.parametrize("error", [MediaNotFoundError, LoginFailed])
+async def test_an_album_plays_from_its_other_copy_when_one_fails(
+    mass: MusicAssistant, error: type[Exception]
+) -> None:
     """When one copy of an album on two providers can't be fetched, the other copy plays."""
     artist = await _add_artist(mass)
     first = _streaming_album("Arrival", 1976, "streaming")
@@ -544,7 +547,7 @@ async def test_an_album_plays_from_its_other_copy_when_one_fails(mass: MusicAssi
 
     def _tracks(item_id: str, *args: object, **kwargs: object) -> list[Track]:
         if item_id == first.item_id:
-            raise MediaNotFoundError("provider is offline")
+            raise error("provider is offline")
         return provider_tracks(item_id, *args, **kwargs)  # type: ignore[no-any-return]
 
     lookup.side_effect = _tracks
