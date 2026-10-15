@@ -483,7 +483,7 @@ class AlexaPlayer(Player):
                 sent = target
                 if self._echo_volume is None:
                     await self.api.set_volume(target / 100)
-                elif target == 0 or target != self._echo_volume:
+                elif target != self._echo_volume:
                     amount = -100 if target == 0 else target - self._echo_volume
                     self._echo_volume = await provider.step_volume(self.device, amount)
                     self.logger.debug(
@@ -640,6 +640,7 @@ class AlexaProvider(PlayerProvider):
             self._volumes = None
             try:
                 async with asyncio.timeout(VOLUME_READ_TIMEOUT):
+                    # Amazon updates this a few seconds after a change made on the Echo
                     response = await AlexaAPI._static_request(
                         "get", self.login, "/api/devices/deviceType/dsn/audio/v1/allDeviceVolumes"
                     )

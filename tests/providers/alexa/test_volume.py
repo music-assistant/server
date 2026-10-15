@@ -133,17 +133,6 @@ async def test_a_send_that_keeps_failing_is_not_retried_again() -> None:
     assert provider.mass.call_later.call_count == 2
 
 
-async def test_volume_zero_is_sent_when_the_readback_already_says_zero() -> None:
-    """Volume 0 is sent even when the readback still shows 0 from before a voice change."""
-    player, provider = _player()
-    provider.get_volumes.return_value = {"SERIAL": 0}
-    provider.step_volume.return_value = 0
-    with patch.object(player, "update_state"):
-        await player.volume_set(0)
-        await player._send_volume()
-    provider.step_volume.assert_awaited_once_with(player.device, -100)
-
-
 async def test_echo_missing_from_the_readback_gets_a_volume_routine() -> None:
     """A device the readback leaves out, like a speaker group, still gets its volume."""
     player, provider = _player()
@@ -256,7 +245,7 @@ def _echo_follows_steps(player: AlexaPlayer, provider: Any) -> None:
 
 
 async def test_a_change_steps_from_the_echo_volume_now() -> None:
-    """A change made on the Echo since the last readback is not stepped over."""
+    """A step goes from the Echo's volume read just before it."""
     player, provider = _player()
     _echo_follows_steps(player, provider)
     with patch.object(player, "update_state"):
@@ -366,10 +355,10 @@ async def test_a_change_during_a_failed_read_goes_out_again() -> None:
     assert provider.mass.call_later.call_args.args[0] == 2
 
 
-async def test_volume_zero_lands_on_zero_from_a_stale_readback() -> None:
-    """Volume 0 reaches 0 even when the Echo is 1 above its last readback."""
+async def test_volume_zero_steps_fully_down() -> None:
+    """Volume 0 steps the Echo fully down."""
     player, provider = _player()
-    echo = {"volume": 21}
+    echo = {"volume": 20}
 
     async def step(_device: object, amount: int) -> int:
         echo["volume"] = max(0, min(100, echo["volume"] + amount))
@@ -379,6 +368,7 @@ async def test_volume_zero_lands_on_zero_from_a_stale_readback() -> None:
     with patch.object(player, "update_state"):
         await player.volume_set(0)
         await player._send_volume()
+    provider.step_volume.assert_awaited_once_with(player.device, -100)
     assert echo["volume"] == 0
     assert player.volume_level == 0
 
