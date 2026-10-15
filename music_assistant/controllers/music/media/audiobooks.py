@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime
 from json import loads as json_loads
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
@@ -379,7 +378,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 continue
             copy_bookmarks = [
                 MediaItemBookmark(
-                    position=0,
                     name=row["name"],
                     start=row["start"],
                     provider_instance_id=mapping.provider_instance,
@@ -401,12 +399,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 ProviderFeature.AUDIOBOOK_BOOKMARKS
             ):
                 copy_bookmarks += await provider.get_audiobook_bookmarks(mapping.item_id)
-            bookmarks += [
-                replace(bookmark, position=position)
-                for position, bookmark in enumerate(
-                    sorted(copy_bookmarks, key=lambda x: x.start), start=1
-                )
-            ]
+            bookmarks += sorted(copy_bookmarks, key=lambda x: x.start)
         return bookmarks
 
     async def set_bookmark(

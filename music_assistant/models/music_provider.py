@@ -730,7 +730,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         Get the user's bookmarks of the given audiobook.
 
         Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS.
-        The position of each bookmark is set by the caller.
 
         :param prov_audiobook_id: The id of the audiobook on the provider.
         """

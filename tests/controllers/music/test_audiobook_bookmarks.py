@@ -35,7 +35,6 @@ def _provider(features: set[ProviderFeature]) -> Mock:
     provider.get_audiobook_bookmarks = AsyncMock(
         side_effect=lambda item_id: [
             MediaItemBookmark(
-                position=0,
                 name=name,
                 start=start,
                 provider_instance_id=ABS,
@@ -99,7 +98,6 @@ async def test_bookmark_goes_to_the_provider_only_when_it_may_edit(
 
     assert await music_mass.music.audiobooks.bookmarks(book.item_id, "library") == [
         MediaItemBookmark(
-            position=1,
             name="Arrakis",
             start=754.5,
             provider_instance_id=ABS,
@@ -129,13 +127,13 @@ async def test_bookmarks_stored_by_music_assistant(
         await audiobooks.remove_bookmark(LOCAL, "dune.m4b", 60.0)
 
     listed = [
-        (x.provider_instance_id, x.position, x.start, x.name)
+        (x.provider_instance_id, x.start, x.name)
         for x in await audiobooks.bookmarks(book.item_id, "library")
     ]
     assert listed == [
-        (ABS, 1, 30.0, "Other copy"),
-        (LOCAL, 1, 30.0, "Earlier"),
-        (LOCAL, 2, 90.0, "Later"),
+        (ABS, 30.0, "Other copy"),
+        (LOCAL, 30.0, "Earlier"),
+        (LOCAL, 90.0, "Later"),
     ]
 
     set_current_user(User(user_id="other", username="other", role=UserRole.USER))
