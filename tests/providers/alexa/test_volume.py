@@ -12,10 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from alexapy.errors import AlexapyError
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
+from music_assistant.constants import CONF_MAX_VOLUME, CONF_MIN_VOLUME
+from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import Player
 from music_assistant.providers.alexa import AlexaPlayer, AlexaProvider
-from tests.common import MockProvider, create_mock_config
+from tests.common import MockPlayer, MockProvider, create_mock_config
 
 
 def _player() -> tuple[AlexaPlayer, Any]:
@@ -216,60 +219,6 @@ def _echo_follows_steps(player: AlexaPlayer, provider: Any) -> None:
     provider.step_volume.side_effect = lambda _device, amount: player._echo_volume + amount
 
 
-async def test_mute_steps_to_zero_and_back() -> None:
-    """Mute steps the Echo to 0 and keeps its volume; unmute steps back to it."""
-    player, provider = _player()
-    _echo_follows_steps(player, provider)
-    with patch.object(player, "update_state"):
-        await player.poll()
-        await player.volume_mute(True)
-        await player._send_volume()
-        assert (player.volume_level, player.volume_muted) == (20, True)
-        provider.get_volumes.return_value = {"SERIAL": 0}
-
-        await player.volume_mute(False)
-        await player._send_volume()
-    assert [c.args[1] for c in provider.step_volume.await_args_list] == [-20, 20]
-    assert (player.volume_level, player.volume_muted) == (20, False)
-
-
-async def test_a_muted_echo_stays_silent_when_its_volume_changes() -> None:
-    """A volume change while muted, as from a group, is kept for the unmute."""
-    player, provider = _player()
-    _echo_follows_steps(player, provider)
-    with patch.object(player, "update_state"):
-        await player.poll()
-        await player.volume_mute(True)
-        await player._send_volume()
-        provider.get_volumes.return_value = {"SERIAL": 0}
-        await player.volume_set(50)
-        await player._send_volume()
-        assert (player.volume_level, player.volume_muted) == (50, True)
-
-        await player.volume_mute(False)
-        await player._send_volume()
-    assert [c.args[1] for c in provider.step_volume.await_args_list] == [-20, 50]
-    assert (player.volume_level, player.volume_muted) == (50, False)
-
-
-@pytest.mark.parametrize(("before", "unmuted_at"), [(20, 20), (None, 10)])
-async def test_mute_on_the_echo_shows_as_muted(before: int | None, unmuted_at: int) -> None:
-    """A voice mute sets 0, which shows as muted; unmute goes back to the volume before, or 10."""
-    player, provider = _player()
-    _echo_follows_steps(player, provider)
-    with patch.object(player, "update_state"):
-        if before is not None:
-            await player.poll()
-        provider.get_volumes.return_value = {"SERIAL": 0}
-        await player.poll()
-        assert (player.volume_level, player.volume_muted) == (before, True)
-
-        await player.volume_mute(False)
-        await player._send_volume()
-    provider.step_volume.assert_awaited_once_with(player.device, unmuted_at)
-    assert (player.volume_level, player.volume_muted) == (unmuted_at, False)
-
-
 async def test_a_change_steps_from_the_echo_volume_now() -> None:
     """A change made on the Echo since the last readback is not stepped over."""
     player, provider = _player()
@@ -338,47 +287,9 @@ async def test_changes_in_a_row_step_from_the_last_reply() -> None:
         await player.volume_set(50)
         await player._send_volume()
         assert echo["volume"] == 50
-        await player.volume_mute(True)
-        await player._send_volume()
-    assert echo["volume"] == 0
-
-
-async def test_volume_zero_from_ma_is_not_a_mute() -> None:
-    """A slider taken to 0 in MA stays a volume, so raising it again turns the Echo up."""
-    player, provider = _player()
-    _echo_follows_steps(player, provider)
-    with patch.object(player, "update_state"):
         await player.volume_set(0)
         await player._send_volume()
-        provider.get_volumes.return_value = {"SERIAL": 0}
-        provider.mass.loop.time.return_value = 103.0
-        await player.poll()
-        assert player.volume_muted is False
-        await player.volume_set(30)
-        await player._send_volume()
-    assert [c.args[1] for c in provider.step_volume.await_args_list] == [-20, 30]
-
-
-@pytest.mark.parametrize("mute_first", [True, False])
-async def test_a_mute_stays_on_at_volume_zero(mute_first: bool) -> None:
-    """Muted at a volume of 0, in either order, the Echo stays silent when the volume goes up."""
-    player, provider = _player()
-    _echo_follows_steps(player, provider)
-    with patch.object(player, "update_state"):
-        if mute_first:
-            await player.volume_mute(True)
-            await player.volume_set(0)
-        else:
-            await player.volume_set(0)
-            await player.volume_mute(True)
-        await player._send_volume()
-        provider.get_volumes.return_value = {"SERIAL": 0}
-        provider.mass.loop.time.return_value = 103.0
-        await player.poll()
-        assert player.volume_muted is True
-        await player.volume_set(30)
-        await player._send_volume()
-    assert player._echo_volume == 0
+    assert echo["volume"] == 0
 
 
 async def test_poll_skips_while_a_volume_call_is_out() -> None:
@@ -412,22 +323,6 @@ def test_poll_is_slower_when_not_playing() -> None:
     assert player.poll_interval == 5
 
 
-async def test_volume_up_on_the_echo_unmutes() -> None:
-    """A muted Echo turned up by voice or button shows as unmuted."""
-    player, provider = _player()
-    provider.step_volume.return_value = 0
-    with patch.object(player, "update_state"):
-        await player.volume_mute(True)
-        await player._send_volume()
-        provider.get_volumes.return_value = {"SERIAL": 30}
-        provider.mass.loop.time.return_value = 103.0
-        await player.poll()
-        assert player.volume_muted is False
-        # unmute now leaves the volume set on the Echo alone
-        await player.volume_mute(False)
-    assert player.volume_level == 30
-
-
 @pytest.mark.parametrize(
     ("body", "result"),
     [
@@ -458,56 +353,89 @@ async def test_step_volume_returns_the_new_volume(body: dict[str, Any], result: 
     assert request.await_args.kwargs["data"]["amount"] == 5
 
 
-_ACTIONS = ("set 0", "set 30", "mute", "unmute", "voice mute", "voice 25", "poll")
+# "voice 50 unseen" changes the Echo before Amazon's readback shows it, so MA acts on an old volume
+_ACTIONS = ("set 0", "set 30", "voice 0", "voice 25", "voice 50 unseen", "poll", "group set 30")
+
+
+def _group() -> tuple[PlayerController, dict[str, AlexaPlayer], dict[str, int], dict[str, int]]:
+    """Return a controller with a group of Echos A at 20 and B at 40, and their true and read volumes."""
+    mass = MagicMock()
+    mass.closing = False
+    mass.loop.time.return_value = 100.0
+    mass.config.get = MagicMock(return_value=[])
+    limits = {CONF_MIN_VOLUME: 0, CONF_MAX_VOLUME: 100}
+    mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, key, default=None: limits.get(key, default)
+    )
+    mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
+    mass.player_queues.get = MagicMock(return_value=None)
+    controller = PlayerController(mass)
+    mass.players = controller
+    provider = cast("Any", MockProvider("alexa", instance_id="alexa--1", mass=mass))
+    echo = {"A": 20, "B": 40}
+    readback = dict(echo)
+    provider.get_volumes = AsyncMock(side_effect=lambda: dict(readback))
+
+    async def step(device: Any, amount: int) -> int:
+        serial = device.device_serial_number
+        echo[serial] = readback[serial] = max(0, min(100, echo[serial] + amount))
+        return echo[serial]
+
+    provider.step_volume = AsyncMock(side_effect=step)
+    provider._volumes_lock = asyncio.Lock()
+    players: dict[str, Player] = {}
+    for name in ("a", "b"):
+        mass.config.get_base_player_config.return_value = create_mock_config(name)
+        players[name] = AlexaPlayer(provider, name, MagicMock(device_serial_number=name.upper()))
+    group = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+    group._attr_supported_features = {PlayerFeature.VOLUME_SET}
+    group._attr_group_members = ["a", "b"]
+    controller._players = {**players, "group": group}
+    for player in (*players.values(), group, *players.values()):
+        player.set_initialized()
+        player.update_state(signal_event=False)
+    return controller, cast("dict[str, AlexaPlayer]", players), echo, readback
 
 
 async def _run(actions: tuple[str, ...]) -> None:
-    """Run the actions on a player and a fake Echo, checking MA against the Echo after each."""
-    player, provider = _player()
-    echo = {"volume": 20}
-    provider.get_volumes.side_effect = lambda: {"SERIAL": echo["volume"]}
-
-    async def step(_device: object, amount: int) -> int:
-        echo["volume"] = max(0, min(100, echo["volume"] + amount))
-        return echo["volume"]
-
-    provider.step_volume.side_effect = step
+    """Run the actions on Echo A or the group, checking MA against both Echos after each."""
+    controller, players, echo, readback = _group()
+    mass = cast("Any", controller.mass)
     now = 100.0
-    with patch.object(player, "update_state"):
+    for player in players.values():
         await player.poll()
-        muted = False  # what the user asked for: only an unmute or a turn-up on the Echo clears it
-        for action in actions:
-            now += 3  # past the poll hold, so each poll reads back
-            provider.mass.loop.time.return_value = now
-            was_muted = muted
-            if action.startswith("set"):
-                await player.volume_set(int(action.split()[1]))
-            elif action in ("mute", "unmute"):
-                muted = action == "mute"
-                await player.volume_mute(muted)
-            elif action == "voice mute":
-                muted = muted or echo["volume"] > 0
-                echo["volume"] = 0
-            elif action == "voice 25":
-                muted = False
-                echo["volume"] = 25
-            if action.startswith(("set", "mute", "unmute")):
+    for action in (*actions, "poll"):
+        now += 3  # past the poll hold, so each poll reads back
+        mass.loop.time.return_value = now
+        was_level = players["a"].volume_level
+        command, _, value = action.removeprefix("group ").partition(" ")
+        if action.startswith("group"):
+            await controller.cmd_group_volume("group", int(value))
+        elif command == "set":
+            await controller.cmd_volume_set("a", int(value))
+        elif command == "voice":
+            echo["A"] = int(value.split()[0])
+        if command == "set":
+            for player in players.values():
                 await player._send_volume()
-            now += 3
-            provider.mass.loop.time.return_value = now
+        if action.endswith("unseen"):
+            continue
+        now += 3
+        mass.loop.time.return_value = now
+        readback.update(echo)
+        for player in players.values():
             await player.poll()
-            where = f"{actions} at {action}"
-            assert player.volume_muted is muted, where
-            if muted:
-                assert echo["volume"] == 0, where
-            else:
-                assert echo["volume"] == player.volume_level, where
-            if action == "unmute" and was_muted:
-                assert echo["volume"] > 0, where
+        where = f"{actions} at {action}"
+        for name, player in players.items():
+            serial = name.upper()
+            assert echo[serial] == player.volume_level, f"{where}: {name} at {echo[serial]}"
+        if action.startswith("set") and was_level != int(value):
+            # a set MA thinks is already done sends nothing; the Echo can end up 1 off
+            assert abs(echo["A"] - int(value)) <= 1, f"{where}: a at {echo['A']}"
 
 
-async def test_every_short_sequence_keeps_ma_and_the_echo_in_step() -> None:
-    """Every sequence of up to 4 actions keeps MA's mute and volume true to the Echo."""
-    for length in range(1, 5):
+async def test_every_short_sequence_keeps_ma_and_the_echos_in_step() -> None:
+    """Every sequence of up to 3 actions keeps MA's volume true to each Echo."""
+    for length in range(1, 4):
         for actions in itertools.product(_ACTIONS, repeat=length):
             await _run(actions)
