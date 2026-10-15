@@ -183,11 +183,13 @@
                     if (adoptPlayback && msg.state === "playing") {
                         // A new page (e.g. Search) joins playback that is already running.
                         startPositionTimer(msg.position);
+                        displaySourcePosition(msg.position);
                     } else if (adoptPlayback && msg.state === "paused") {
                         stopPositionTimer();
                         pausedAtPosition = msg.position;
                         positionStartValue = msg.position;
                         positionStartTime = 0;
+                        displaySourcePosition(msg.position);
                     } else if (samePlayback && msg.state === "playing") {
                         startPositionTimer(getCurrentPosition());
                     }
