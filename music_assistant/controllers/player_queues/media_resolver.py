@@ -10,6 +10,7 @@ config and the music controller via its owning controller, and holds no per-queu
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from dataclasses import dataclass
 from types import NoneType
@@ -23,7 +24,12 @@ from music_assistant_models.enums import (
     SortDirection,
     SortField,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -74,7 +80,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_item_media_type_from_item_id,
 )
-from music_assistant.helpers.compare import compare_album, compare_item_ids
+from music_assistant.helpers.compare import compare_album, compare_album_name, compare_item_ids
 from music_assistant.helpers.provider_access import playback_instance_for, playback_sources_for
 from music_assistant.helpers.util import is_disc_dir
 from music_assistant.models.music_provider import (
@@ -90,6 +96,7 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.music.media.album_tracks import AlbumListing
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
+    from music_assistant.mass import MusicAssistant
 
 _LATEST_EPISODE_KEYWORDS = frozenset({"latest", "newest"})
 _START_ITEM_SUBSTRING_MIN_LEN = 3
@@ -99,6 +106,11 @@ _LIBRARY_SELECTIONS = frozenset({"library_tracks", "library_album_tracks", "pref
 ALBUM_LOOKUP_BATCH = 5
 # an expired login, too, only skips that provider (its albums or its copy of an album)
 _SKIP_PROVIDER_ERRORS: Final[tuple[type[Exception], ...]] = (*PROVIDER_FETCH_ERRORS, LoginFailed)
+# any provider error only skips that album or lookup, so the refill goes on
+ALBUM_LOAD_ERRORS: Final[tuple[type[Exception], ...]] = (
+    MusicAssistantError,
+    *PROVIDER_FETCH_ERRORS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -715,7 +727,7 @@ class MediaResolver:
     async def artist_album_candidates(
         self,
         artist: Artist,
-        played: Sequence[Album | ItemMapping],
+        played: list[Album | ItemMapping],
         anchor: Album | None,
     ) -> list[list[Album]] | None:
         """
@@ -726,7 +738,8 @@ class MediaResolver:
         doesn't apply to the artist, and None when its albums can't be listed.
 
         :param artist: The artist to play.
-        :param played: The albums with a track in the queue.
+        :param played: The albums with a track in the queue. Mappings it loads are replaced in
+            place, so a later call with the same list reuses them.
         :param anchor: The album that played last, if known.
         """
         selection = await self._artist_selection(artist)
@@ -754,6 +767,12 @@ class MediaResolver:
                 len(ordered),
             )
             ordered = ordered[split:] + ordered[:split]
+        await load_played_namesakes(
+            self.mass,
+            self.logger,
+            played,
+            [copy for album in ordered for copy in copies[album.uri]],
+        )
         return [
             copies[album.uri] for album in ordered if not album_is_played(copies[album.uri], played)
         ]
@@ -1752,6 +1771,36 @@ class MediaResolver:
         return best
 
 
+async def load_played_namesakes(
+    mass: MusicAssistant,
+    logger: logging.Logger,
+    played: list[Album | ItemMapping],
+    albums: Sequence[Album],
+) -> None:
+    """
+    Load in place each played album mapping named like one of the albums.
+
+    A mapping has no year or artists to compare, so an unlinked copy of the same album on
+    another provider only matches it once loaded. A mapping that matches one of the albums by
+    ID already, or fails to load, stays as it is and matches by ID only.
+
+    :param played: The albums that already played.
+    :param albums: The albums about to be checked against them.
+    """
+    for idx, item in enumerate(played):
+        if (
+            isinstance(item, ItemMapping)
+            and any(compare_album_name(item.name, album.name) for album in albums)
+            and not any(compare_item_ids(item, album) for album in albums)
+        ):
+            try:
+                played[idx] = await mass.music.albums.get(
+                    item.item_id, item.provider, allow_update_metadata=False
+                )
+            except ALBUM_LOAD_ERRORS as err:
+                logger.debug("Unable to load album %s, matching it by ID only: %s", item.name, err)
+
+
 def album_is_played(
     copies: Sequence[Album | ItemMapping], played: Sequence[Album | ItemMapping]
 ) -> bool:
@@ -1761,7 +1810,7 @@ def album_is_played(
     :param copies: The album's copies.
     :param played: The albums that already played.
     """
-    # a mapping has no metadata to compare, so it matches by ID only
+    # a mapping has no metadata to compare, so it matches by ID only (see load_played_namesakes)
     return any(
         compare_item_ids(copy, item)
         or (isinstance(copy, Album) and isinstance(item, Album) and compare_album(copy, item))

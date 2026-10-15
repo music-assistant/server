@@ -124,10 +124,10 @@ async def test_a_queued_album_matches_its_other_copy(mass: MusicAssistant) -> No
 
 
 async def test_queued_album_mappings_match_by_id_only(mass: MusicAssistant) -> None:
-    """A queued album mapping counts as played by its ID, not by a same-named album."""
+    """A queued album mapping counts as played by its ID, not by a name it shares and can't load."""
     artist, albums = await _artist_with_years(mass, 1995, 1998, 2005)
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-    played = [
+    played: list[Album | ItemMapping] = [
         ItemMapping(
             media_type=MediaType.ALBUM,
             item_id=albums[1995].item_id,
@@ -142,6 +142,51 @@ async def test_queued_album_mappings_match_by_id_only(mass: MusicAssistant) -> N
     result = await mass.player_queues.artist_album_candidates(artist, played, None)
 
     assert _album_names(result) == ["Album 1998", "Album 2005"]
+
+
+@pytest.mark.parametrize(
+    ("namesake", "expected"),
+    [
+        ("same artist", ["Album 2005"]),
+        ("other artist", ["Album 1995", "Album 2005"]),
+        ("fails to load", ["Album 1995", "Album 2005"]),
+    ],
+)
+async def test_a_queued_mapping_of_an_unlinked_copy_is_compared_in_full(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, namesake: str, expected: list[str]
+) -> None:
+    """A queued mapping named like an album is loaded, so an unlinked copy of it counts as played."""
+    artist, albums = await _artist_with_years(mass, 1995, 1998, 2005)
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    copy = replace(
+        albums[1995],
+        item_id="copy",
+        provider="other",
+        provider_mappings={
+            ProviderMapping(item_id="copy", provider_domain="other", provider_instance="other")
+        },
+    )
+    if namesake == "other artist":
+        copy = replace(copy, artists=UniqueList([_provider_artist()]))
+        copy.artists[0].name = "Not ABBA"
+    lookup = _stub_album_lookup(
+        mass, monkeypatch, [copy], MediaNotFoundError if namesake == "fails to load" else None
+    )
+    played: list[Album | ItemMapping] = [
+        ItemMapping.from_item(copy),
+        # matches its album by ID, so it needs no loading
+        ItemMapping.from_item(albums[1998]),
+        # named like none of the artist's albums
+        ItemMapping(media_type=MediaType.ALBUM, item_id="x", provider="other", name="Elsewhere"),
+    ]
+
+    first = await mass.player_queues.artist_album_candidates(artist, played, None)
+    again = await mass.player_queues.artist_album_candidates(artist, played, None)
+
+    assert _album_names(first) == _album_names(again) == expected
+    # only the namesake loads, and once it has, a similar artist's call reuses it
+    loads = 2 if namesake == "fails to load" else 1
+    assert [call.args[0] for call in lookup.await_args_list] == ["copy"] * loads
 
 
 @pytest.mark.parametrize("anchor_kind", ["single", "compilation", "other artist"])
@@ -663,6 +708,26 @@ async def test_auto_skips_the_provider_copy_of_a_played_library_album(
     queue = _queue(mass, monkeypatch, _queued_track([artist], ItemMapping.from_item(library_copy)))
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
     auto = [_queued_track([artist], ItemMapping.from_item(album)) for album in (heard, picked)]
+
+    result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
+
+    assert _names(result) == ["B 1", "B 2"]
+
+
+async def test_auto_skips_an_unlinked_copy_of_a_played_album(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto's copy of a played album on another provider, not linked to it, counts as played."""
+    artist = _provider_artist()
+    heard, other_copy, picked = (
+        replace(_streaming_album(name, 1970, provider), artists=UniqueList([artist]))
+        for name, provider in (("A", "streaming"), ("A", "other"), ("B", "streaming"))
+    )
+    _stub_provider(mass, [heard, other_copy, picked])
+    _stub_album_lookup(mass, monkeypatch, [heard, other_copy, picked])
+    queue = _queue(mass, monkeypatch, _queued_track([artist], ItemMapping.from_item(heard)))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    auto = [_queued_track([artist], ItemMapping.from_item(album)) for album in (other_copy, picked)]
 
     result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
 

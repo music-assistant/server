@@ -14,7 +14,7 @@ from __future__ import annotations
 import random
 from contextlib import suppress
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature, SortField
 from music_assistant_models.errors import MusicAssistantError
@@ -36,9 +36,13 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
     ArtistOrder,
 )
-from music_assistant.controllers.player_queues.media_resolver import album_is_played
+from music_assistant.controllers.player_queues.media_resolver import (
+    ALBUM_LOAD_ERRORS,
+    album_is_played,
+    load_played_namesakes,
+)
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, provider_fetch_log_level
+from music_assistant.models.music_provider import provider_fetch_log_level
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -58,11 +62,6 @@ GENRE_SEED_ITEM_COUNT = 3
 # albums the whole-albums mode tries before it falls back to the Auto mode
 ALBUM_PICK_ATTEMPTS = 3
 SIMILAR_ARTISTS_LIMIT = 10
-# any provider error only skips that album or lookup, so the refill goes on
-ALBUM_LOAD_ERRORS: Final[tuple[type[Exception], ...]] = (
-    MusicAssistantError,
-    *PROVIDER_FETCH_ERRORS,
-)
 # media types that carry a useful genre signal for the library mix
 GENRE_SEED_MEDIA_TYPES = (MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST)
 # media types that end on their own but have a natural successor of their own: Autoplay
@@ -289,6 +288,7 @@ class Autoplay:
                 skipped.append(mapping)
                 attempts += 1
                 continue
+            await load_played_namesakes(self.mass, self.logger, skipped, [album])
             played = album_is_played([album], skipped)
             # an album is looked at once, also when several of Auto's tracks come from it
             skipped.append(album)
