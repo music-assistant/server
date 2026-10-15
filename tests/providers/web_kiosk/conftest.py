@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import asyncio
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -64,6 +66,14 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.players.cmd_pause = AsyncMock()
     mass.players.cmd_play = AsyncMock()
     mass.players.cmd_stop = AsyncMock()
+    playback_locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def playback_lock(player_id: str, **_kwargs: object) -> AsyncIterator[None]:
+        async with playback_locks.setdefault(player_id, asyncio.Lock()):
+            yield
+
+    mass.players.get_group_and_player_lock = playback_lock
     mass.players.get = Mock(return_value=None)
     mass.players.get_player = Mock(return_value=None)
     mass.players.register = AsyncMock()

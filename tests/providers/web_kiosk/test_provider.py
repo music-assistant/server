@@ -898,3 +898,103 @@ async def test_sendspin_fallback_of_sync_follower_keeps_leader_playing(
     position = mass_mock.player_queues.seek.await_args.args
     assert position[0] == player.player_id
     assert 42 <= position[1] <= 43
+
+
+async def test_unload_cancels_browser_fallback_in_flight(
+    provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """A browser-requested fallback is provider-owned work that unload cancels."""
+    tasks: list[asyncio.Task[Any]] = []
+
+    def spawn(coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        task = asyncio.ensure_future(coro)
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task = Mock(side_effect=spawn)
+    mass_mock.players.iter_players = Mock(return_value=[])
+    entered = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def hold_fallback(_player_id: str, **_kwargs: object) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+        finished.set()
+
+    provider.fallback_sendspin = AsyncMock(side_effect=hold_fallback)  # type: ignore[method-assign]
+
+    provider.request_sendspin_fallback("wk_test", "client")
+    await asyncio.wait_for(entered.wait(), 1)
+    await provider.unload()
+
+    assert all(task.done() for task in tasks)
+    assert not finished.is_set()
+    provider.request_sendspin_fallback("wk_test", "client")
+    assert len(tasks) == 1
+
+
+async def test_stop_during_fallback_teardown_is_not_undone(
+    provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """A stop issued while the Sendspin output is being detached wins over the resume."""
+    client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+    player.sendspin_client_id = client_id
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
+    mass_mock.players.get_player = Mock(
+        side_effect=lambda pid, **_: player if pid == player.player_id else None
+    )
+    queue = PlayerQueue(
+        queue_id=player.player_id,
+        active=True,
+        display_name="Test Kiosk",
+        available=True,
+        items=1,
+        state=PlaybackState.PLAYING,
+    )
+    mass_mock.player_queues.get_active_queue = Mock(return_value=queue)
+    order: list[str] = []
+    mass_mock.player_queues.resume = AsyncMock(side_effect=lambda _qid: order.append("resume"))
+    detaching = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_unregister(_player_id: str) -> None:
+        detaching.set()
+        await release.wait()
+
+    mass_mock.players.unregister = AsyncMock(side_effect=slow_unregister)
+
+    async def user_stop() -> None:
+        # The player controller runs stop under the same playback lock.
+        async with mass_mock.players.get_group_and_player_lock(player.player_id):
+            queue.state = PlaybackState.IDLE
+            order.append("stop")
+
+    fallback = asyncio.create_task(
+        provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
+    )
+    await asyncio.wait_for(detaching.wait(), 1)
+    stop = asyncio.create_task(user_stop())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(fallback, stop)
+
+    assert order[-1] == "stop"
+    assert queue.state == PlaybackState.IDLE
+
+
+async def test_lyrics_are_looked_up_only_for_kiosks_showing_them(
+    provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """No connected kiosk shows lyrics, so no lyrics lookup is scheduled."""
+    provider.http_server = Mock()
+    provider.http_server.lyrics_requested.return_value = False
+    mass_mock.create_task = Mock()
+
+    provider.spawn_lyrics("wk_test", 1)
+    mass_mock.create_task.assert_not_called()
+
+    provider.http_server.lyrics_requested.return_value = True
+    mass_mock.create_task = Mock(side_effect=lambda coro: coro)
+    provider.spawn_lyrics("wk_test", 2)
+    mass_mock.create_task.assert_called_once()
+    provider.http_server.lyrics_requested.assert_called_with("wk_test")

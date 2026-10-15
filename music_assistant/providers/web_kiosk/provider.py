@@ -377,69 +377,85 @@ class WebKioskProvider(PlayerProvider):
         :param seq: The energy-curve generation the page expects.
         :param media: The dispatched media; the active queue item is used when omitted.
         """
+        # Lyrics lookups can refresh metadata and call external providers.
+        if self.http_server is None or not self.http_server.lyrics_requested(player_id):
+            return
         self._spawn(self._publish_lyrics(player_id, seq, media))
 
     async def fallback_sendspin(
         self, player_id: str, *, expected_client_id: str | None = None
     ) -> None:
         """Resume the active MA queue through the kiosk's native HTML5 output."""
-        async with self._player_lock:
-            if self._unloading:
+        # MA serializes playback commands per player (and its group) with this
+        # lock. Holding it until the resume makes a stop or pause issued during
+        # the teardown run afterwards instead of being undone by the resume.
+        async with self.mass.players.get_group_and_player_lock(player_id):
+            async with self._player_lock:
+                if self._unloading:
+                    return
+                player = self.mass.players.get_player(player_id)
+                if not isinstance(player, WebKioskPlayer) or not player.sendspin_client_id:
+                    return
+                client_id = player.sendspin_client_id
+                if expected_client_id is not None and client_id != expected_client_id:
+                    return
+                if player.sendspin_fallback:
+                    return
+                queue = self.mass.player_queues.get_active_queue(player_id)
+                if queue is None:
+                    raise PlayerUnavailableError("No active queue for Sendspin fallback")
+                # A startup failure also requests fallback. Only playback that was
+                # running moves to HTML5; a paused or stopped queue keeps its state.
+                was_playing = queue.state == PlaybackState.PLAYING
+                # A sync follower's active queue belongs to its leader. Capture what
+                # it played so the kiosk restores it alone; the leader keeps playing.
+                protocol = self.mass.players.get_player(client_id)
+                follower = bool(protocol and protocol.synced_to and protocol.synced_to != client_id)
+                item = queue.current_item
+                position = queue.corrected_elapsed_time
+                claim = player.sendspin_claim
+                player.sendspin_fallback = True
+                try:
+                    # Controller commands resolve protocol IDs back to their native
+                    # parent, which would release a captured static group. Detach only
+                    # this owned transport through the protocol player's public API.
+                    if protocol and (protocol.synced_to or len(protocol.group_members) > 1):
+                        leader = self.mass.players.get_player(
+                            protocol.synced_to or protocol.player_id, raise_unavailable=True
+                        )
+                        assert leader is not None
+                        await leader.set_members(player_ids_to_remove=[client_id])
+                    await self.mass.players.unregister(client_id)
+                    player.set_active_output_protocol("native")
+                except BaseException:
+                    player.sendspin_fallback = False
+                    raise
+            # Stream preparation can take time. Release the registration lock while
+            # resuming, and do not clear a newer connection's state on failure.
+            if not was_playing or player.sendspin_claim is not claim:
                 return
-            player = self.mass.players.get_player(player_id)
-            if not isinstance(player, WebKioskPlayer) or not player.sendspin_client_id:
-                return
-            client_id = player.sendspin_client_id
-            if expected_client_id is not None and client_id != expected_client_id:
-                return
-            if player.sendspin_fallback:
-                return
-            queue = self.mass.player_queues.get_active_queue(player_id)
-            if queue is None:
-                raise PlayerUnavailableError("No active queue for Sendspin fallback")
-            # A startup failure also requests fallback. Only playback that was
-            # running moves to HTML5; a paused or stopped queue keeps its state.
-            was_playing = queue.state == PlaybackState.PLAYING
-            # A sync follower's active queue belongs to its leader. Capture what
-            # it played so the kiosk restores it alone; the leader keeps playing.
-            protocol = self.mass.players.get_player(client_id)
-            follower = bool(protocol and protocol.synced_to and protocol.synced_to != client_id)
-            item = queue.current_item
-            position = queue.corrected_elapsed_time
-            claim = player.sendspin_claim
-            player.sendspin_fallback = True
             try:
-                # Controller commands resolve protocol IDs back to their native
-                # parent, which would release a captured static group. Detach only
-                # this owned transport through the protocol player's public API.
-                if protocol and (protocol.synced_to or len(protocol.group_members) > 1):
-                    leader = self.mass.players.get_player(
-                        protocol.synced_to or protocol.player_id, raise_unavailable=True
+                if not follower:
+                    await self.mass.player_queues.resume(queue.queue_id)
+                elif item is not None:
+                    await self.mass.player_queues.play_media(
+                        player_id, item.media_item or item.uri, option=QueueOption.PLAY
                     )
-                    assert leader is not None
-                    await leader.set_members(player_ids_to_remove=[client_id])
-                await self.mass.players.unregister(client_id)
-                player.set_active_output_protocol("native")
+                    if position >= 1:
+                        await self.mass.player_queues.seek(player_id, int(position))
             except BaseException:
-                player.sendspin_fallback = False
+                if player.sendspin_claim is claim:
+                    player.sendspin_fallback = False
                 raise
-        # Stream preparation can take time. Release the registration lock while
-        # resuming, and do not clear a newer connection's state on failure.
-        if not was_playing or player.sendspin_claim is not claim:
-            return
-        try:
-            if not follower:
-                await self.mass.player_queues.resume(queue.queue_id)
-            elif item is not None:
-                await self.mass.player_queues.play_media(
-                    player_id, item.media_item or item.uri, option=QueueOption.PLAY
-                )
-                if position >= 1:
-                    await self.mass.player_queues.seek(player_id, int(position))
-        except BaseException:
-            if player.sendspin_claim is claim:
-                player.sendspin_fallback = False
-            raise
+
+    def request_sendspin_fallback(self, player_id: str, client_id: str) -> None:
+        """
+        Schedule native playback for a browser whose Sendspin output has no audio.
+
+        :param player_id: The kiosk player that asked for the fallback.
+        :param client_id: The Sendspin client the request was verified for.
+        """
+        self._spawn(self._fallback_sendspin_safely(player_id, client_id))
 
     def track_ended(
         self, player_id: str, playback_generation: str, *, position: float | None = None
@@ -649,6 +665,13 @@ class WebKioskProvider(PlayerProvider):
             return self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
         queue = self.mass.player_queues.get_active_queue(player_id)
         return getattr(queue, "current_item", None)
+
+    async def _fallback_sendspin_safely(self, player_id: str, client_id: str) -> None:
+        """Handle expected fallback failures without losing the kiosk socket."""
+        try:
+            await self.fallback_sendspin(player_id, expected_client_id=client_id)
+        except MusicAssistantError, TimeoutError:
+            logger.warning("Native playback fallback failed for %s", player_id, exc_info=True)
 
     async def _stop_failed_playback(self, player_id: str, playback_generation: str) -> None:
         """Stop the current playback when the browser reports that it failed."""

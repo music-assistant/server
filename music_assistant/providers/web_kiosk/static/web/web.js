@@ -206,6 +206,7 @@
         var proto = location.protocol === 'https:' ? 'wss' : 'ws';
         var qs = 'device_id=' + encodeURIComponent(deviceId);
         qs += '&volume_control=' + (mediaVolumeWritable || sendspinStreaming ? '1' : '0');
+        if (SHOW.lyrics) qs += '&lyrics=1';
         if (sendspinClientId) qs += '&sendspin_client_id=' + encodeURIComponent(sendspinClientId);
         var socket = new WebSocket(proto + '://' + location.host + '/ws?' + qs);
         ws = socket;

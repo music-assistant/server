@@ -7,11 +7,12 @@ import base64
 import hashlib
 import hmac
 import json
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import Any, Self, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientError, WSServerHandshakeError
+from aiohttp.test_utils import TestClient, TestServer
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
@@ -23,9 +24,6 @@ from music_assistant.helpers.api import APICommandHandler
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
-
-if TYPE_CHECKING:
-    from aiohttp.test_utils import TestClient
 
 
 async def test_health_returns_ok(http_client: TestClient[Any, Any]) -> None:
@@ -958,3 +956,21 @@ async def test_sendspin_proof_cannot_be_replayed_on_another_socket(
         await second.receive()
     mass_mock.players.register.assert_not_awaited()
     await second.close()
+
+
+async def test_lyrics_requested_follows_connected_kiosk_options(
+    provider: WebKioskProvider,
+) -> None:
+    """Only a connected page with the lyrics addition asks for lyric lookups."""
+    server = WebKioskHTTPServer(provider, 0)
+    async with TestClient(TestServer(server.app)) as http:
+        plain = await http.ws_connect("/ws?device_id=lyr")
+        await plain.receive_json()
+        assert not server.lyrics_requested("wk_lyr")
+        showing = await http.ws_connect("/ws?device_id=lyr&lyrics=1")
+        await showing.receive_json()
+        assert server.lyrics_requested("wk_lyr")
+        await showing.close()
+        await asyncio.sleep(0.05)
+        assert not server.lyrics_requested("wk_lyr")
+        await plain.close()

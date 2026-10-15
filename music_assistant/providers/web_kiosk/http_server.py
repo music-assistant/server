@@ -98,6 +98,7 @@ class WebKioskHTTPServer:
         self._ws_volume_support: dict[web.WebSocketResponse, bool] = {}
         self._ws_claims: dict[web.WebSocketResponse, VerifiedSendspinClaim] = {}
         self._ws_peers: dict[web.WebSocketResponse, tuple[str | None, str | None]] = {}
+        self._ws_lyrics: set[web.WebSocketResponse] = set()
         self.party = PartyAdapter(provider)
         self._setup_routes()
 
@@ -293,6 +294,10 @@ class WebKioskHTTPServer:
     def client_count(self, player_id: str) -> int:
         """Return how many browser sockets are open for this player."""
         return len(self._ws_clients.get(player_id, ()))
+
+    def lyrics_requested(self, player_id: str) -> bool:
+        """Return whether any connected page of this player shows lyrics."""
+        return any(ws in self._ws_lyrics for ws in self._ws_clients.get(player_id, ()))
 
     async def reattach_player(self, player_id: str) -> None:
         """Register a player again for its connected browser after it was enabled."""
@@ -646,6 +651,8 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         if claim:
             self._ws_claims[ws] = claim
         self._ws_peers[ws] = (request.remote, request.headers.get("User-Agent"))
+        if request.query.get("lyrics") == "1":
+            self._ws_lyrics.add(ws)
         try:
             self._ws_volume_support[ws] = request.query.get("volume_control") == "1"
             self._update_volume_support(player_id)
@@ -682,6 +689,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             )
             # A reconnecting/reloaded kiosk needs the current play state, otherwise it
             # stays silent until the next playback command.
+            await self._move_playback_to_native_output(player)
             await self._send_snapshot(ws, player)
 
             async for msg in ws:
@@ -691,6 +699,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             self._ws_clients.get(player_id, set()).discard(ws)
             self._ws_claims.pop(ws, None)
             self._ws_peers.pop(ws, None)
+            self._ws_lyrics.discard(ws)
             self._ws_volume_support.pop(ws, None)
             self._update_volume_support(player_id)
             self._update_output_mode(player_id)
@@ -707,6 +716,27 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             logger.debug("WebSocket client disconnected for player %s", player_id)
 
         return ws
+
+    async def _move_playback_to_native_output(self, player: WebKioskPlayer | None) -> None:
+        """Move Sendspin playback to native output once an HTML5 tab needs it."""
+        if (
+            player is None
+            or not player.html5_requested
+            or not player.sendspin_client_id
+            or player.sendspin_fallback
+            or player.active_output_protocol != player.sendspin_client_id
+        ):
+            return
+        try:
+            # The same handover as the no-audio fallback: a running queue resumes
+            # natively, a paused one stays paused at its position.
+            await self.provider.fallback_sendspin(
+                player.player_id, expected_client_id=player.sendspin_client_id
+            )
+        except MusicAssistantError, TimeoutError:
+            logger.warning(
+                "Moving playback to native output failed for %s", player.player_id, exc_info=True
+            )
 
     async def _send_snapshot(
         self, ws: web.WebSocketResponse, player: WebKioskPlayer | None
@@ -881,12 +911,20 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 self._update_volume_support(player_id)
 
     def _update_output_mode(self, player_id: str) -> None:
-        """Use native output while any connected tab of the device asked for HTML5."""
+        """Use native output for an HTML5 tab unless the verified Sendspin owner is connected."""
         clients = self._ws_clients.get(player_id, set())
         if clients and (player := self._get_kiosk_player(player_id)):
-            # A Sendspin tab can also play native streams; an HTML5 tab cannot
-            # play Sendspin, so one HTML5 tab moves the device to native output.
-            player.set_html5_requested(any(ws not in self._ws_claims for ws in clients))
+            # A device ID is not a credential. While a socket that proved the
+            # Sendspin identity is connected, unverified tabs cannot move its
+            # output; once the owner is gone, an HTML5 reload switches to native.
+            owner_connected = any(
+                (claim := self._ws_claims.get(ws)) is not None
+                and claim.client_id == player.sendspin_client_id
+                for ws in clients
+            )
+            player.set_html5_requested(
+                not owner_connected and any(ws not in self._ws_claims for ws in clients)
+            )
 
     def _update_volume_support(self, player_id: str) -> None:
         """Require all connected outputs to support the shared volume command."""
@@ -935,7 +973,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             claim = self._ws_claims.get(ws) if ws else None
             player = self._get_kiosk_player(player_id)
             if claim and player and player.sendspin_client_id == claim.client_id:
-                self.provider.mass.create_task(self._fallback_sendspin(player_id, claim.client_id))
+                self.provider.request_sendspin_fallback(player_id, claim.client_id)
         elif msg_type == "playback_error":
             generation = msg.get("playback_generation")
             if isinstance(generation, str) and generation:
@@ -954,13 +992,6 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             self.provider.on_player_activity(player_id)
         else:
             logger.debug("Unknown WS message type from %s: %s", player_id, msg_type)
-
-    async def _fallback_sendspin(self, player_id: str, client_id: str) -> None:
-        """Handle expected fallback failures without losing the kiosk socket."""
-        try:
-            await self.provider.fallback_sendspin(player_id, expected_client_id=client_id)
-        except MusicAssistantError, TimeoutError:
-            logger.warning("Native playback fallback failed for %s", player_id, exc_info=True)
 
     def _reject_invalid_stream_token(
         self, request: web.Request, player_id: str
