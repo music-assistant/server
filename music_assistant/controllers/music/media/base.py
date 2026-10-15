@@ -2900,6 +2900,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_domain=raw_mapping["provider_domain"],
                 provider_instance=raw_mapping["provider_instance"],
                 available=bool(raw_mapping["available"]),
+                details=raw_mapping.get("details"),
                 in_library=parse_optional_bool(raw_mapping["in_library"]),
                 is_unique=parse_optional_bool(raw_mapping["is_unique"]),
             )

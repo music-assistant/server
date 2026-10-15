@@ -225,8 +225,8 @@ def _parse_person(
                 item_id=item_id,
                 provider_domain=DOMAIN,
                 provider_instance=provider_instance_id,
-                # Image path fingerprint so photo changes trigger a library refresh.
-                details=image_path or "",
+                # Name + image path so renames and photo changes trigger a library refresh.
+                details=f"{person['name']}|{image_path or ''}",
                 is_unique=True,
             )
         },

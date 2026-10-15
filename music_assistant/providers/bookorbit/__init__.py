@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientResponseError, DummyCookieJar, web
 from music_assistant_models.enums import (
@@ -36,6 +36,10 @@ from .client import BookOrbitAuthError, BookOrbitClient
 from .constants import (
     AIOHTTP_TIMEOUT,
     BROWSE_ITEMS_TO_PATH,
+    BROWSE_LIBRARY_BATCH_SIZE,
+    CACHE_CATEGORY_BOOK,
+    CACHE_EXPIRATION_BOOK,
+    CATALOG_DETAIL_CONCURRENCY,
     CATALOG_TTL_SEC,
     CONF_PASSWORD,
     CONF_URL,
@@ -72,10 +76,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
-    from music_assistant.controllers.music.media.base import (
-        AudiobookSyncDetails,
-        LibraryItemSyncDetails,
-    )
+    from music_assistant.controllers.music.media.base import LibraryItemSyncDetails
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
@@ -450,31 +451,25 @@ class BookOrbitProvider(MusicProvider):
         """Return whether a library item should be refreshed from the provider item."""
         if super()._library_item_needs_update(library_item, prov_item):
             return True
-        for prov_map in prov_item.provider_mappings:
-            if prov_map.provider_instance != self.instance_id:
-                continue
-            lib_map = next(
-                (
-                    x
-                    for x in library_item.provider_mappings
-                    if x.provider_instance == prov_map.provider_instance
-                    and x.item_id == prov_map.item_id
-                ),
-                None,
-            )
-            if lib_map is None or prov_map.details != lib_map.details:
-                return True
         if not self._is_sole_library_provider(library_item):
             return False
-        # Catch sole-provider title/subtitle edits even when mapping details already match.
+        # Full library items only (sync-details omit name/metadata). Defensive catch-up
+        # when mapping fingerprints already match but local metadata diverged.
         lib_name = getattr(library_item, "name", None)
         if lib_name is not None and lib_name != prov_item.name:
             return True
-        # Sync-details omit images; empty provider images must clear sole-provider thumbs.
         return bool(
             hasattr(library_item, "metadata")
             and self._provider_image_paths(library_item) != self._provider_image_paths(prov_item)
         )
+
+    def _library_sync_overwrite(
+        self,
+        library_item: MediaItemType | LibraryItemSyncDetails,
+        prov_item: MediaItemType,
+    ) -> bool:
+        """Overwrite sole-provider library items so BookOrbit metadata replaces merges."""
+        return self._is_sole_library_provider(library_item)
 
     def _provider_image_paths(self, item: MediaItemType | LibraryItemSyncDetails) -> list[str]:
         """Return sorted image paths owned by this provider instance."""
@@ -490,156 +485,6 @@ class BookOrbitProvider(MusicProvider):
     ) -> bool:
         """Return whether this instance is the only provider mapped on the item."""
         return {x.provider_instance for x in library_item.provider_mappings} == {self.instance_id}
-
-    async def _sync_library_artists(self) -> set[int]:
-        """Sync authors and narrators into the Music Assistant library."""
-        self.logger.debug("Start sync of Artists to Music Assistant library.")
-        cur_db_ids: set[int] = set()
-        item_count = 0
-        async for prov_item in self.get_library_artists():
-            item_count += 1
-            self._update_sync_task_item_status(MediaType.ARTIST, item_count, prov_item.name)
-            self._note_listed_sync_item(MediaType.ARTIST, prov_item.item_id)
-            db_id: int | None = None
-            try:
-                sync_details = await self.mass.music.artists.get_library_item_sync_details(
-                    prov_item.provider_mappings,
-                )
-                db_id = sync_details.item_id if sync_details else None
-                async with self.mass.music.database.deferred_commit():
-                    if not sync_details:
-                        for prov_map in prov_item.provider_mappings:
-                            prov_map.in_library = True
-                        library_item = await self.mass.music.artists.add_item_to_library(prov_item)
-                        db_id = int(library_item.item_id)
-                    else:
-                        library_item = await self.mass.music.artists.get_library_item(
-                            sync_details.item_id
-                        )
-                        if self._library_item_needs_update(library_item, prov_item):
-                            sole = self._is_sole_library_provider(library_item)
-                            library_item = await self.mass.music.artists.update_item_in_library(
-                                sync_details.item_id,
-                                prov_item,
-                                overwrite=sole,
-                            )
-                            db_id = int(library_item.item_id)
-                            # overwrite + empty images does not clear existing metadata images
-                            if sole and not self._provider_image_paths(prov_item):
-                                await self.mass.music.artists._remove_provider_images(
-                                    db_id, self.instance_id
-                                )
-                        else:
-                            db_id = sync_details.item_id
-                    cur_db_ids.add(db_id)
-                    if prov_item.favorite is not None:
-                        await self.mass.music.favorites.record_from_provider(
-                            self.instance_id, MediaType.ARTIST, db_id, prov_item.favorite
-                        )
-                    fallback_genres = (
-                        set(prov_item.metadata.genres)
-                        if prov_item.metadata and prov_item.metadata.genres
-                        else None
-                    )
-                    await self._sync_item_genres(
-                        MediaType.ARTIST,
-                        prov_item.item_id,
-                        db_id,
-                        fallback_genres,
-                    )
-                await asyncio.sleep(0)
-            except Exception as err:
-                self._handle_sync_item_failure(MediaType.ARTIST, prov_item.uri, err)
-                self._protect_failed_sync_item(
-                    MediaType.ARTIST, prov_item.item_id, db_id, cur_db_ids
-                )
-        return cur_db_ids
-
-    async def _sync_library_audiobooks(self) -> set[int]:
-        """Sync audiobooks into the Music Assistant library."""
-        self.logger.debug("Start sync of Audiobooks to Music Assistant library.")
-        cur_db_ids: set[int] = set()
-        item_count = 0
-        async for prov_item in self.get_library_audiobooks():
-            item_count += 1
-            self._update_sync_task_item_status(MediaType.AUDIOBOOK, item_count, prov_item.name)
-            self._note_listed_sync_item(MediaType.AUDIOBOOK, prov_item.item_id)
-            db_id: int | None = None
-            try:
-                sync_details = cast(
-                    "AudiobookSyncDetails | None",
-                    await self.mass.music.audiobooks.get_library_item_sync_details(
-                        prov_item.provider_mappings,
-                    ),
-                )
-                db_id = sync_details.item_id if sync_details else None
-                self._validate_audiobook_author_narrator_types(prov_item)
-                async with self.mass.music.database.deferred_commit():
-                    if not sync_details:
-                        for prov_map in prov_item.provider_mappings:
-                            prov_map.in_library = True
-                        library_item = await self.mass.music.audiobooks.add_item_to_library(
-                            prov_item
-                        )
-                        db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
-                    else:
-                        # Load the full item so updatedAt / title / images can be compared.
-                        library_item = await self.mass.music.audiobooks.get_library_item(
-                            sync_details.item_id
-                        )
-                        needs_update = self._library_item_needs_update(
-                            library_item, prov_item
-                        ) or sync_details.authors_narrators_changed(prov_item)
-                        if needs_update:
-                            library_item = await self.mass.music.audiobooks.update_item_in_library(
-                                sync_details.item_id,
-                                prov_item,
-                                overwrite=self._is_sole_library_provider(library_item),
-                            )
-                            db_id = int(library_item.item_id)
-                            lib_fully_played = library_item.fully_played
-                            lib_resume_position_ms = library_item.resume_position_ms
-                        else:
-                            db_id = sync_details.item_id
-                            lib_fully_played = sync_details.fully_played
-                            lib_resume_position_ms = sync_details.resume_position_ms
-
-                    cur_db_ids.add(db_id)
-                    if prov_item.favorite is not None:
-                        await self.mass.music.favorites.record_from_provider(
-                            self.instance_id, MediaType.AUDIOBOOK, db_id, prov_item.favorite
-                        )
-                    if (
-                        prov_item.resume_position_ms is not None
-                        and prov_item.fully_played is not None
-                        and (
-                            lib_resume_position_ms != prov_item.resume_position_ms
-                            or lib_fully_played != prov_item.fully_played
-                        )
-                    ):
-                        await self.mass.music.audiobooks.update_item_in_library(db_id, prov_item)
-
-                    fallback_genres = (
-                        set(prov_item.metadata.genres)
-                        if prov_item.metadata and prov_item.metadata.genres
-                        else None
-                    )
-                    await self._sync_item_genres(
-                        MediaType.AUDIOBOOK,
-                        prov_item.item_id,
-                        db_id,
-                        fallback_genres,
-                    )
-
-                await asyncio.sleep(0)
-            except Exception as err:
-                self._handle_sync_item_failure(MediaType.AUDIOBOOK, prov_item.uri, err)
-                self._protect_failed_sync_item(
-                    MediaType.AUDIOBOOK, prov_item.item_id, db_id, cur_db_ids
-                )
-        return cur_db_ids
 
     async def _sync_playback_state(
         self, book_id: int, *, position: int, fully_played: bool
@@ -836,31 +681,51 @@ class BookOrbitProvider(MusicProvider):
         """Fetch audiobook details and author metadata from BookOrbit."""
         try:
             libraries = await self._client.list_libraries()
-            catalog: dict[str, dict[str, Any]] = {}
             library_names: dict[int, str] = {}
             library_books: dict[int, list[str]] = {}
+            # Collect unique cards first, then fetch missing details concurrently.
+            cards_by_id: dict[str, dict[str, Any]] = {}
             for library in libraries:
                 if not library_may_contain_audio(library):
                     continue
                 members: list[str] = []
                 for card in await self._client.query_audiobooks(library_id=library["id"]):
                     book_id = str(card["id"])
-                    if book_id not in catalog:
-                        try:
-                            book = await self._client.get_book(int(card["id"]))
-                        except ClientResponseError as err:
-                            self.logger.warning("Skipping BookOrbit book %s: %s", book_id, err)
-                            # Only record skips inside an active library sync.
-                            if SYNC_RUN_STATE.get() is not None:
-                                self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
-                            continue
-                        if not _audio_files(book):
-                            continue
-                        catalog[book_id] = book
+                    cards_by_id.setdefault(book_id, card)
                     members.append(book_id)
                 if members:
                     library_names[library["id"]] = str(library.get("name") or library["id"])
                     library_books[library["id"]] = members
+            semaphore = asyncio.Semaphore(CATALOG_DETAIL_CONCURRENCY)
+
+            async def _load_book(
+                book_id: str, card: dict[str, Any]
+            ) -> tuple[str, dict[str, Any] | None]:
+                try:
+                    book = await self._get_book_detail(book_id, card, semaphore)
+                except ClientResponseError as err:
+                    self.logger.warning("Skipping BookOrbit book %s: %s", book_id, err)
+                    # Only record skips inside an active library sync.
+                    if SYNC_RUN_STATE.get() is not None:
+                        self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
+                    return book_id, None
+                if book is None or not _audio_files(book):
+                    return book_id, None
+                return book_id, book
+
+            results = await asyncio.gather(
+                *(_load_book(book_id, card) for book_id, card in cards_by_id.items())
+            )
+            catalog = {book_id: book for book_id, book in results if book is not None}
+            # Drop library memberships that failed detail fetch or have no audio.
+            library_books = {
+                library_id: [book_id for book_id in members if book_id in catalog]
+                for library_id, members in library_books.items()
+            }
+            library_books = {lid: members for lid, members in library_books.items() if members}
+            library_names = {
+                lid: name for lid, name in library_names.items() if lid in library_books
+            }
             # Book detail authors often omit imageUrl; the authors list carries photos.
             author_meta: dict[int, dict[str, Any]] = {}
             try:
@@ -880,6 +745,35 @@ class BookOrbitProvider(MusicProvider):
         self._library_books = library_books
         self._author_meta = author_meta
         self._catalog_refreshed_at = time.monotonic()
+
+    async def _get_book_detail(
+        self,
+        book_id: str,
+        card: dict[str, Any],
+        semaphore: asyncio.Semaphore,
+    ) -> dict[str, Any] | None:
+        """Return a BookDetail from cache or a bounded BookOrbit fetch."""
+        checksum = card.get("updatedAt")
+        cached = await self.mass.cache.get(
+            key=book_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_BOOK,
+            checksum=str(checksum) if checksum is not None else None,
+            default=None,
+        )
+        if isinstance(cached, dict):
+            return cached
+        async with semaphore:
+            book = await self._client.get_book(int(card["id"]))
+        await self.mass.cache.set(
+            key=book_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_BOOK,
+            data=book,
+            expiration=CACHE_EXPIRATION_BOOK,
+            checksum=str(book.get("updatedAt") or checksum or ""),
+        )
+        return book
 
     def _enrich_author(self, author: dict[str, Any]) -> dict[str, Any]:
         """Attach list-level author photo/bio fields onto a book-embedded author."""
@@ -1011,19 +905,29 @@ class BookOrbitProvider(MusicProvider):
         self, book_ids: list[str], series_id: str | None = None
     ) -> Sequence[MediaItemType]:
         """Resolve book ids to library or freshly parsed audiobook items."""
-        items: list[tuple[Audiobook, float | None]] = []
-        for book_id in book_ids:
-            if (book := self._catalog.get(book_id)) is None:
-                continue
-            item = await self.mass.music.get_library_item_by_prov_id(
-                media_type=MediaType.AUDIOBOOK,
-                item_id=book_id,
-                provider_instance_id_or_domain=self.instance_id,
+        known_ids = [book_id for book_id in book_ids if book_id in self._catalog]
+        library_by_id: dict[str, Audiobook] = {}
+        for offset in range(0, len(known_ids), BROWSE_LIBRARY_BATCH_SIZE):
+            batch = known_ids[offset : offset + BROWSE_LIBRARY_BATCH_SIZE]
+            library_items = await self.mass.music.audiobooks.get_library_items_by_prov_id(
+                provider_instance=self.instance_id,
+                provider_item_ids=batch,
+                limit=0,
             )
-            if not isinstance(item, Audiobook):
-                item = parse_audiobook(
-                    book, provider_instance_id=self.instance_id, base_url=self.base_url
-                )
+            for library_item in library_items:
+                for mapping in library_item.provider_mappings:
+                    if (
+                        mapping.provider_instance == self.instance_id
+                        and mapping.item_id in batch
+                        and mapping.item_id not in library_by_id
+                    ):
+                        library_by_id[mapping.item_id] = library_item
+        items: list[tuple[Audiobook, float | None]] = []
+        for book_id in known_ids:
+            book = self._catalog[book_id]
+            item = library_by_id.get(book_id) or parse_audiobook(
+                book, provider_instance_id=self.instance_id, base_url=self.base_url
+            )
             items.append((item, _series_index(book, series_id)))
         if series_id is not None:
             items.sort(key=lambda x: (x[1] is None, x[1] or 0, x[0].name.casefold()))

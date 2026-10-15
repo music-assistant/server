@@ -117,7 +117,7 @@ def test_parse_author() -> None:
     assert artist.artist_type == ArtistType.AUTHOR
     (mapping,) = artist.provider_mappings
     assert (mapping.item_id, mapping.provider_domain) == ("author:11", "bookorbit")
-    assert mapping.details == ""
+    assert mapping.details == "Frank Herbert|"
     assert not artist.metadata.images
 
 
@@ -140,7 +140,7 @@ def test_parse_author_image_url() -> None:
     assert image.path == f"{BASE_URL}/api/v1/authors/6/thumbnail?t=1"
     assert image.remotely_accessible is False
     (mapping,) = artist.provider_mappings
-    assert mapping.details == image.path
+    assert mapping.details == f"Agatha Christie|{image.path}"
     assert artist.metadata.description == "Queen of Crime"
 
 

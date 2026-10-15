@@ -29,6 +29,13 @@ CONF_VERIFY_SSL = "verify_ssl"
 
 AUDIO_FORMATS = frozenset({"m4b", "mp3", "m4a", "opus", "ogg", "flac"})
 CATALOG_TTL_SEC = 60
+# Bound concurrent BookOrbit book-detail fetches during catalog refresh.
+CATALOG_DETAIL_CONCURRENCY = 8
+# mass.cache category / TTL for raw BookDetail payloads (invalidated via updatedAt checksum).
+CACHE_CATEGORY_BOOK = 0
+CACHE_EXPIRATION_BOOK = 24 * 3600
+# Batch size for browse-time library lookups by provider item id.
+BROWSE_LIBRARY_BATCH_SIZE = 200
 
 API_PREFIX = "/api/v1"
 

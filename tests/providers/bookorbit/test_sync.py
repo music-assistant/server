@@ -28,6 +28,9 @@ from music_assistant.providers.bookorbit.helpers import library_may_contain_audi
 def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> BookOrbitProvider:
     """Create a provider with a mocked client."""
     mass = Mock()
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
+    mass.music.audiobooks.get_library_items_by_prov_id = AsyncMock(return_value=[])
     manifest = Mock()
     manifest.domain = "bookorbit"
     config = Mock()
@@ -49,9 +52,12 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
         ]
     )
     books = {
-        1: [{"id": book_audiobook["id"]}],
+        1: [{"id": book_audiobook["id"], "updatedAt": book_audiobook.get("updatedAt")}],
         2: [],
-        3: [{"id": book_multifile["id"]}, {"id": 999}],
+        3: [
+            {"id": book_multifile["id"], "updatedAt": book_multifile.get("updatedAt")},
+            {"id": 999},
+        ],
     }
     prov._client.query_audiobooks = AsyncMock(side_effect=lambda library_id: books[library_id])
     details = {
@@ -140,13 +146,14 @@ async def test_sync_library_reuses_catalog_within_ttl(provider: BookOrbitProvide
 
 
 def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitProvider) -> None:
-    """Metadata edits bump updatedAt; that must trigger a library update."""
+    """Metadata edits bump updatedAt; that must trigger a library update via mapping details."""
     mapping_old = ProviderMapping(
         item_id="1",
         provider_domain="bookorbit",
         provider_instance=provider.instance_id,
         details="2026-01-01T00:00:00.000Z",
         in_library=True,
+        is_unique=True,
     )
     mapping_new = ProviderMapping(
         item_id="1",
@@ -154,6 +161,7 @@ def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitPr
         provider_instance=provider.instance_id,
         details="2026-10-14T20:00:00.000Z",
         in_library=True,
+        is_unique=True,
     )
     library = AudiobookSyncDetails(
         item_id=1,
@@ -172,14 +180,14 @@ def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitPr
         provider_mappings={mapping_new},
         duration=100,
     )
-    with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
-        assert provider._library_item_needs_update(library, prov_item) is True
+    assert provider._library_item_needs_update(library, prov_item) is True
     mapping_same = ProviderMapping(
         item_id="1",
         provider_domain="bookorbit",
         provider_instance=provider.instance_id,
         details="2026-01-01T00:00:00.000Z",
         in_library=True,
+        is_unique=True,
     )
     prov_same = Audiobook(
         item_id="1",
@@ -188,8 +196,7 @@ def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitPr
         provider_mappings={mapping_same},
         duration=100,
     )
-    with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
-        assert provider._library_item_needs_update(library, prov_same) is False
+    assert provider._library_item_needs_update(library, prov_same) is False
 
 
 def test_library_item_needs_update_when_title_diverges(provider: BookOrbitProvider) -> None:
@@ -200,6 +207,7 @@ def test_library_item_needs_update_when_title_diverges(provider: BookOrbitProvid
         provider_instance=provider.instance_id,
         details="2026-10-14T20:00:00.000Z",
         in_library=True,
+        is_unique=True,
     )
     library = Audiobook(
         item_id="1",
@@ -215,8 +223,7 @@ def test_library_item_needs_update_when_title_diverges(provider: BookOrbitProvid
         provider_mappings={mapping},
         duration=100,
     )
-    with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
-        assert provider._library_item_needs_update(library, prov_item) is True
+    assert provider._library_item_needs_update(library, prov_item) is True
 
 
 def test_library_item_needs_update_when_sole_provider_images_change(
@@ -227,8 +234,9 @@ def test_library_item_needs_update_when_sole_provider_images_change(
         item_id="author:11",
         provider_domain="bookorbit",
         provider_instance=provider.instance_id,
-        details="",
+        details="Frank Herbert|",
         in_library=True,
+        is_unique=True,
     )
     library = Artist(
         item_id="author:11",
@@ -252,12 +260,11 @@ def test_library_item_needs_update_when_sole_provider_images_change(
         provider_mappings={mapping},
     )
     prov_item.metadata.images = UniqueList([])
-    with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
-        assert provider._library_item_needs_update(library, prov_item) is True
+    assert provider._library_item_needs_update(library, prov_item) is True
 
 
-def test_is_sole_library_provider(provider: BookOrbitProvider) -> None:
-    """Merged library items must keep merge semantics; sole BookOrbit items overwrite."""
+def test_library_sync_overwrite_sole_provider(provider: BookOrbitProvider) -> None:
+    """Merged library items keep merge semantics; sole BookOrbit items overwrite."""
     sole = Audiobook(
         item_id="1",
         provider=provider.instance_id,
@@ -273,6 +280,7 @@ def test_is_sole_library_provider(provider: BookOrbitProvider) -> None:
         duration=100,
     )
     assert provider._is_sole_library_provider(sole) is True
+    assert provider._library_sync_overwrite(sole, sole) is True
 
     merged = Audiobook(
         item_id="1",
@@ -295,6 +303,29 @@ def test_is_sole_library_provider(provider: BookOrbitProvider) -> None:
         duration=100,
     )
     assert provider._is_sole_library_provider(merged) is False
+    assert provider._library_sync_overwrite(merged, sole) is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_catalog_uses_cache_and_concurrency(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """Catalog refresh reuses mass.cache hits and still fetches cache misses."""
+    cache = cast("Mock", provider.mass.cache)
+
+    async def _cache_get(key: str, **_kwargs: Any) -> dict[str, Any] | None:
+        return book_audiobook if key == str(book_audiobook["id"]) else None
+
+    cache.get = AsyncMock(side_effect=_cache_get)
+    await provider._refresh_catalog(force=True)
+    get_book = cast("Mock", provider._client.get_book)
+    # Cached book skipped; ebook-only id 999 and multifile still fetched.
+    assert get_book.await_count == 2
+    assert {c.args[0] for c in get_book.await_args_list} == {
+        book_multifile["id"],
+        999,
+    }
+    assert cache.set.await_count == 2
 
 
 @pytest.mark.asyncio

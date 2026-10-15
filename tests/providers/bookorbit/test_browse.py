@@ -22,7 +22,9 @@ INSTANCE = "bookorbit--test"
 def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> BookOrbitProvider:
     """Create a provider with a mocked client and mass; library 1 holds both books."""
     mass = Mock()
-    mass.music.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
+    mass.music.audiobooks.get_library_items_by_prov_id = AsyncMock(return_value=[])
     manifest = Mock()
     manifest.domain = "bookorbit"
     config = Mock()
@@ -38,7 +40,13 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     prov._client.list_libraries = AsyncMock(
         return_value=[{"id": 1, "name": "Audio"}, {"id": 2, "name": "Ebooks"}]
     )
-    books = {1: [{"id": book_audiobook["id"]}, {"id": book_multifile["id"]}], 2: []}
+    books = {
+        1: [
+            {"id": book_audiobook["id"], "updatedAt": book_audiobook.get("updatedAt")},
+            {"id": book_multifile["id"], "updatedAt": book_multifile.get("updatedAt")},
+        ],
+        2: [],
+    }
     prov._client.query_audiobooks = AsyncMock(side_effect=lambda library_id: books[library_id])
     details = {book_audiobook["id"]: book_audiobook, book_multifile["id"]: book_multifile}
     prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
@@ -174,6 +182,24 @@ async def test_concurrent_catalog_loads_are_single_flight(provider: BookOrbitPro
     client.list_libraries.assert_awaited_once()
     await provider._refresh_catalog(force=True)
     assert client.list_libraries.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_browse_audiobooks_batches_library_lookups(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """Audiobook browse uses one batched library lookup instead of per-book queries."""
+    await _browse(provider, f"{INSTANCE}://lb 1/b")
+    batch = cast("AsyncMock", provider.mass.music.audiobooks.get_library_items_by_prov_id)
+    batch.assert_awaited_once()
+    assert batch.await_args is not None
+    kwargs = batch.await_args.kwargs
+    assert kwargs["provider_instance"] == INSTANCE
+    assert kwargs["limit"] == 0
+    assert set(kwargs["provider_item_ids"]) == {
+        str(book_audiobook["id"]),
+        str(book_multifile["id"]),
+    }
 
 
 @pytest.mark.asyncio
