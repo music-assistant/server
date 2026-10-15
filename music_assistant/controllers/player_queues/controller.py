@@ -1422,6 +1422,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         if not queue.active:
             return
+        # a stopped player's position is unreliable, keep the last played position
+        if player.state.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            return
         player_elapsed = player.state.corrected_elapsed_time
         if player_elapsed is None:
             return
