@@ -53,7 +53,13 @@ from .constants import (
     BrowseItemsTranslationKey,
     BrowsePaths,
 )
-from .helpers import library_may_contain_audio, normalize_base_url, parse_browse_path
+from .helpers import (
+    library_may_contain_audio,
+    normalize_base_url,
+    parse_browse_path,
+    parse_series_index,
+    series_index_sort_key,
+)
 from .parsers import (
     AUTHOR_PREFIX,
     NARRATOR_PREFIX,
@@ -127,16 +133,14 @@ def _book_series(book: dict[str, Any]) -> list[tuple[str, str]]:
     return []
 
 
-def _series_index(book: dict[str, Any], series_id: str | None) -> float | None:
-    """Return the position of a book in the given series."""
+def _series_index(book: dict[str, Any], series_id: str | None) -> str | None:
+    """Return the BookOrbit series index string for the given series, if any."""
     if series_id is None:
         return None
     for membership in book.get("seriesMemberships") or []:
         if str(membership.get("seriesId")) == series_id:
-            index = membership.get("seriesIndex")
-            return float(index) if index is not None else None
-    index = book.get("seriesIndex")
-    return float(index) if index is not None else None
+            return parse_series_index(membership.get("seriesIndex"))
+    return parse_series_index(book.get("seriesIndex"))
 
 
 def _book_haystack(book: dict[str, Any]) -> str:
@@ -204,9 +208,14 @@ class BookOrbitProvider(MusicProvider):
         except BookOrbitAuthError as err:
             await self._client.close()
             raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
-        except ClientError as err:
+        except (ClientError, TimeoutError) as err:
             await self._client.close()
             raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
+        except asyncio.CancelledError:
+            # MA may cancel init before the client's longer HTTP timeout; close the
+            # owned session because the provider is not registered for unload yet.
+            await self._client.close()
+            raise
         # Proxy audio through MA so stream URLs never carry auth tokens.
         self._unregister_route = self.mass.streams.register_dynamic_route(
             f"/{self.instance_id}_part_stream", self._handle_part_request
@@ -389,7 +398,7 @@ class BookOrbitProvider(MusicProvider):
             # Fall back to legacy /audio-progress when playback-state is empty.
             book = await self._get_book(item_id, fresh=True)
             progress = await self._client.get_audio_progress(book_id)
-        except (ClientError, MediaNotFoundError, ValueError) as err:
+        except (ClientError, TimeoutError, MediaNotFoundError, ValueError) as err:
             raise NotImplementedError from err
         if not progress:
             raise NotImplementedError  # fall back to MA's own position
@@ -842,12 +851,16 @@ class BookOrbitProvider(MusicProvider):
         return book
 
     def _enrich_author(self, author: dict[str, Any]) -> dict[str, Any]:
-        """Attach list-level author photo/bio fields onto a book-embedded author."""
+        """Overlay list-level author fields onto a (possibly cached) book author."""
         meta = self._author_meta.get(int(author["id"]))
         if not meta:
             return author
+        # Prefer /authors list for name/sortName so renames apply even when the
+        # book detail is still served from a stale cache entry.
         return {
             **author,
+            "name": meta.get("name") or author.get("name"),
+            "sortName": meta["sortName"] if "sortName" in meta else author.get("sortName"),
             "imageUrl": author.get("imageUrl") or meta.get("imageUrl"),
             "description": author.get("description") or meta.get("description"),
         }
@@ -988,7 +1001,7 @@ class BookOrbitProvider(MusicProvider):
                         and mapping.item_id not in library_by_id
                     ):
                         library_by_id[mapping.item_id] = library_item
-        items: list[tuple[Audiobook, float | None]] = []
+        items: list[tuple[Audiobook, str | None]] = []
         for book_id in known_ids:
             book = self._catalog[book_id]
             item = library_by_id.get(book_id) or parse_audiobook(
@@ -996,23 +1009,28 @@ class BookOrbitProvider(MusicProvider):
             )
             items.append((item, _series_index(book, series_id)))
         if series_id is not None:
-            items.sort(key=lambda x: (x[1] is None, x[1] or 0, x[0].name.casefold()))
+            items.sort(
+                key=lambda x: (series_index_sort_key(x[1]), x[0].name.casefold()),
+            )
         else:
             items.sort(key=lambda x: x[0].name.casefold())
         return [item for item, _ in items]
 
     async def _search_audiobooks(self, query: str, limit: int) -> list[Audiobook]:
-        """Search audiobooks by query, falling back to a local catalog scan on API errors."""
+        """Search audiobooks by query, merging catalog matches so ebooks cannot hide them."""
+        needle = query.casefold()
+        catalog_ids = [b for b, book in self._catalog.items() if needle in _book_haystack(book)]
         try:
             cards = await self._client.search_books(query)
         except ClientResponseError as err:
             self.logger.debug("BookOrbit book search failed: %s", err)
-            needle = query.casefold()
-            ids = [b for b, book in self._catalog.items() if needle in _book_haystack(book)]
+            ids = catalog_ids
         else:
-            ids = [str(card["id"]) for card in cards if isinstance(card, dict) and "id" in card]
+            api_ids = [str(card["id"]) for card in cards if isinstance(card, dict) and "id" in card]
+            # Keep API order, then append catalog hits that the default page omitted.
+            ids = list(dict.fromkeys([*api_ids, *catalog_ids]))
         audiobooks: list[Audiobook] = []
-        for book_id in dict.fromkeys(ids):
+        for book_id in ids:
             if len(audiobooks) >= limit:
                 break
             book = self._catalog.get(book_id)

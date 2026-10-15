@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from music_assistant.providers.bookorbit.constants import AUDIO_FORMATS, BrowsePaths
+
+# Match BookOrbit packages/types series-index.ts.
+_SERIES_INDEX_MAX_LENGTH = 20
+_SERIES_INDEX_PATTERN = re.compile(r"^\d+(?:\.\d+)?$")
 
 
 def normalize_base_url(url: str) -> str:
@@ -18,10 +23,86 @@ def is_audio_format(fmt: str | None) -> bool:
 
 
 def library_may_contain_audio(library: dict[str, Any]) -> bool:
-    """Return whether a BookOrbit library should be included during sync."""
-    # allowedFormats is only a hint; query every accessible library and drop non-audio books later.
-    _ = library
-    return True
+    """Return whether a BookOrbit library should be queried for audiobooks."""
+    # Podcast libraries reject /libraries/{id}/books with HTTP 400.
+    # allowedFormats is only a hint; ignore it and drop non-audio books later.
+    # Older BookOrbit builds omit type; treat those as book libraries.
+    return str(library.get("type") or "books") == "books"
+
+
+def parse_series_index(value: Any) -> str | None:
+    """Return a BookOrbit series index string, or None when invalid."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        candidate = str(value)
+    elif isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):  # noqa: PLR0124
+            return None
+        candidate = str(int(value)) if value.is_integer() else str(value)
+    elif isinstance(value, str):
+        candidate = value.strip()
+    else:
+        return None
+    if len(candidate) > _SERIES_INDEX_MAX_LENGTH or not _SERIES_INDEX_PATTERN.fullmatch(candidate):
+        return None
+    return candidate
+
+
+def _normalized_integer_segment(value: str) -> str:
+    normalized = value.lstrip("0")
+    return normalized or "0"
+
+
+def compare_series_indices(left: str, right: str) -> int:
+    """
+    Compare series indices using BookOrbit segment semantics.
+
+    Whole and fractional parts are integer segments (so ``1.10`` > ``1.2``),
+    missing fractional segments sort before present ones, then original text ties.
+    """
+    left_parts = left.split(".", 1)
+    right_parts = right.split(".", 1)
+    whole = _compare_integer_segments(left_parts[0], right_parts[0])
+    if whole:
+        return whole
+    left_has_frac = len(left_parts) > 1
+    right_has_frac = len(right_parts) > 1
+    if not left_has_frac and right_has_frac:
+        return -1
+    if left_has_frac and not right_has_frac:
+        return 1
+    if left_has_frac and right_has_frac:
+        fraction = _compare_integer_segments(left_parts[1], right_parts[1])
+        if fraction:
+            return fraction
+    if left == right:
+        return 0
+    return -1 if left < right else 1
+
+
+def _compare_integer_segments(left: str, right: str) -> int:
+    normalized_left = _normalized_integer_segment(left)
+    normalized_right = _normalized_integer_segment(right)
+    if len(normalized_left) != len(normalized_right):
+        return -1 if len(normalized_left) < len(normalized_right) else 1
+    if normalized_left == normalized_right:
+        return 0
+    return -1 if normalized_left < normalized_right else 1
+
+
+def series_index_sort_key(index: str | None) -> tuple[Any, ...]:
+    """Return a sort key matching :func:`compare_series_indices` (None last)."""
+    if index is None:
+        return (1,)
+    whole, sep, fraction = index.partition(".")
+    whole_n = _normalized_integer_segment(whole)
+    if not sep:
+        frac_key: tuple[Any, ...] = (0,)
+    else:
+        frac_n = _normalized_integer_segment(fraction)
+        frac_key = (1, len(frac_n), frac_n)
+    return (0, len(whole_n), whole_n, frac_key, index)
 
 
 def parse_browse_path(path: str) -> tuple[int | None, list[str]]:

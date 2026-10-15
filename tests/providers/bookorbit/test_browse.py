@@ -13,7 +13,12 @@ from music_assistant_models.media_items import BrowseFolder
 
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.constants import CATALOG_TTL_SEC
-from music_assistant.providers.bookorbit.helpers import parse_browse_path
+from music_assistant.providers.bookorbit.helpers import (
+    compare_series_indices,
+    parse_browse_path,
+    parse_series_index,
+    series_index_sort_key,
+)
 
 INSTANCE = "bookorbit--test"
 
@@ -69,6 +74,16 @@ def test_parse_browse_path() -> None:
             parse_browse_path(bad)
 
 
+def test_series_index_uses_integer_segments_not_float() -> None:
+    """BookOrbit orders ``1.10`` after ``1.2``; float() would reverse that."""
+    assert parse_series_index("1.10") == "1.10"
+    assert parse_series_index(1.10) == "1.1"  # numeric 1.10 collapses; strings preserve
+    assert compare_series_indices("1.2", "1.10") < 0
+    assert compare_series_indices("1", "1.2") < 0
+    ordered = sorted(["1.10", "1.2", "1", "2"], key=series_index_sort_key)
+    assert ordered == ["1", "1.2", "1.10", "2"]
+
+
 @pytest.mark.asyncio
 async def test_browse_tree(provider: BookOrbitProvider, book_audiobook: dict[str, Any]) -> None:
     """Root lists audio libraries; sections, people, series and books route correctly."""
@@ -112,6 +127,51 @@ async def test_browse_tree(provider: BookOrbitProvider, book_audiobook: dict[str
 
 
 @pytest.mark.asyncio
+async def test_browse_series_orders_by_segmented_index(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Series browse uses BookOrbit segment order, not float decimal order."""
+    later = {
+        **book_audiobook,
+        "id": 43,
+        "title": "Dune Later",
+        "seriesIndex": "1.10",
+        "seriesMemberships": [
+            {
+                "seriesId": 7,
+                "seriesName": "Dune Chronicles",
+                "seriesIndex": "1.10",
+                "displayOrder": 0,
+            }
+        ],
+    }
+    earlier = {
+        **book_audiobook,
+        "id": 44,
+        "title": "Dune Earlier",
+        "seriesIndex": "1.2",
+        "seriesMemberships": [
+            {
+                "seriesId": 7,
+                "seriesName": "Dune Chronicles",
+                "seriesIndex": "1.2",
+                "displayOrder": 0,
+            }
+        ],
+    }
+    provider._catalog = {
+        str(book_audiobook["id"]): book_audiobook,
+        "43": later,
+        "44": earlier,
+    }
+    provider._library_books = {1: [str(book_audiobook["id"]), "43", "44"]}
+    provider._library_names = {1: "Audio"}
+    provider._catalog_refreshed_at = 1.0
+    series_books = await _browse(provider, f"{INSTANCE}://lb 1/s/7")
+    assert [b.item_id for b in series_books] == [str(book_audiobook["id"]), "44", "43"]
+
+
+@pytest.mark.asyncio
 async def test_search_audiobooks_and_artists(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:
@@ -131,6 +191,23 @@ async def test_search_audiobooks_and_artists(
     result = await provider.search("dune", [MediaType.AUDIOBOOK, MediaType.ARTIST], limit=5)
     assert [b.item_id for b in result.audiobooks] == [str(book_audiobook["id"])]
     assert [a.item_id for a in result.artists] == [f"author:{author['id']}"]
+
+
+@pytest.mark.asyncio
+async def test_search_audiobooks_merges_catalog_when_api_page_is_ebooks(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """A successful ebook-heavy search page must still surface catalog audiobooks."""
+    await provider._ensure_catalog()
+    client = cast("Mock", provider._client)
+    # Default BookOrbit search page is 10 mixed-format hits; none are the audiobook.
+    client.search_books = AsyncMock(return_value=[{"id": i} for i in range(1000, 1010)])
+    ebook = ClientResponseError(Mock(), (), status=404)
+    client.get_book = AsyncMock(side_effect=ebook)
+    client.search_authors = AsyncMock(return_value=[])
+    client.search_narrators = AsyncMock(return_value=[])
+    result = await provider.search("dune", [MediaType.AUDIOBOOK], limit=5)
+    assert str(book_audiobook["id"]) in {b.item_id for b in result.audiobooks}
 
 
 @pytest.mark.asyncio

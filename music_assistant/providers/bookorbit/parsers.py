@@ -268,8 +268,11 @@ def _parse_person(
                 item_id=item_id,
                 provider_domain=DOMAIN,
                 provider_instance=provider_instance_id,
-                # Name + image path so renames and photo changes trigger a library refresh.
-                details=f"{person['name']}|{image_path or ''}",
+                # Name/sort/bio/image so renames and metadata-only edits trigger a refresh.
+                details=(
+                    f"{person['name']}|{person.get('sortName') or person['name']}|"
+                    f"{person.get('description') or ''}|{image_path or ''}"
+                ),
                 is_unique=True,
             )
         },

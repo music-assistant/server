@@ -218,6 +218,31 @@ async def test_validate_connection_raises_setup_flow_error_on_unreachable_host()
 
 
 @pytest.mark.asyncio
+async def test_validate_connection_login_timeout_is_connection_failed() -> None:
+    """Login total timeouts surface as retryable connection_failed, not internal_error."""
+    mass = mock.Mock()
+    session = _make_session(lambda *_a, **_k: {"instance_id": "x"}, mass)
+    with (
+        _patch_create_clientsession(),
+        mock.patch(
+            "music_assistant.providers.bookorbit.setup_flow.BookOrbitClient.login",
+            new=mock.AsyncMock(side_effect=TimeoutError("total timeout")),
+        ),
+        pytest.raises(SetupFlowError) as exc,
+    ):
+        await _validate_connection(
+            session,
+            {
+                CONF_URL: "http://bookorbit.example",
+                CONF_USERNAME: "u",
+                CONF_PASSWORD: "p",
+                CONF_VERIFY_SSL: True,
+            },
+        )
+    assert exc.value.translation_key == "connection_failed"
+
+
+@pytest.mark.asyncio
 async def test_validate_connection_raises_setup_flow_error_on_empty_password() -> None:
     """First setup without a password surfaces password_required, not KeyError."""
     mass = mock.Mock()

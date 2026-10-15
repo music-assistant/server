@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -23,6 +24,12 @@ from yarl import URL
 from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
+from music_assistant.providers.bookorbit.constants import (
+    CONF_PASSWORD,
+    CONF_URL,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+)
 from music_assistant.providers.bookorbit.helpers import library_may_contain_audio
 from music_assistant.providers.bookorbit.parsers import AUTHOR_PREFIX
 
@@ -83,11 +90,48 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
 
 
 def test_library_filter() -> None:
-    """All libraries are queried; allowedFormats is not used to skip libraries."""
+    """Book libraries are queried; allowedFormats is ignored; podcasts are skipped."""
     assert library_may_contain_audio({"allowedFormats": ["M4B"]})
     assert library_may_contain_audio({"allowedFormats": []})
     assert library_may_contain_audio({})
     assert library_may_contain_audio({"allowedFormats": ["epub", "pdf"]})
+    assert library_may_contain_audio({"type": "books", "allowedFormats": ["epub"]})
+    assert not library_may_contain_audio({"type": "podcasts", "allowedFormats": ["mp3"]})
+
+
+@pytest.mark.asyncio
+async def test_refresh_catalog_skips_podcast_libraries(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Podcast libraries must not be queried; they reject /books with HTTP 400."""
+    cast("Any", provider._client).list_libraries = AsyncMock(
+        return_value=[
+            {"id": 1, "name": "Audio", "type": "books", "allowedFormats": ["m4b"]},
+            {"id": 9, "name": "Shows", "type": "podcasts", "allowedFormats": ["mp3"]},
+            {"id": 2, "name": "Ebooks", "allowedFormats": ["epub"]},
+        ]
+    )
+
+    async def _query(library_id: int) -> list[dict[str, Any]]:
+        if library_id == 9:
+            raise ClientResponseError(
+                request_info=Mock(real_url=URL("http://bo/libraries/9/books")),
+                history=(),
+                status=400,
+                message="wrong library type",
+            )
+        if library_id == 1:
+            return [{"id": book_audiobook["id"], "updatedAt": book_audiobook.get("updatedAt")}]
+        return []
+
+    cast("Any", provider._client).query_audiobooks = AsyncMock(side_effect=_query)
+    await provider._refresh_catalog(force=True)
+    queried = [
+        c.kwargs["library_id"]
+        for c in cast("Mock", provider._client.query_audiobooks).call_args_list
+    ]
+    assert queried == [1, 2]
+    assert str(book_audiobook["id"]) in provider._catalog
 
 
 @pytest.mark.asyncio
@@ -206,6 +250,38 @@ async def test_search_artists_matches_name_only_results(
     found = await provider._search_artists(author_name, limit=5)
     assert len(found) == 1
     assert found[0].item_id == f"{AUTHOR_PREFIX}{book_audiobook['authors'][0]['id']}"
+
+
+@pytest.mark.asyncio
+async def test_enrich_author_overlays_renamed_author_from_list(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Forced sync must apply /authors renames even when the book detail is cached."""
+    author_id = book_audiobook["authors"][0]["id"]
+    stale_book = {
+        **book_audiobook,
+        "authors": [{"id": author_id, "name": "Old Name", "sortName": "Name, Old"}],
+    }
+
+    async def _cache_get(key: str, **_kwargs: Any) -> dict[str, Any] | None:
+        return stale_book if key == str(book_audiobook["id"]) else None
+
+    cast("Any", provider.mass.cache).get = AsyncMock(side_effect=_cache_get)
+    cast("Any", provider._client).list_authors = AsyncMock(
+        return_value=[
+            {
+                "id": author_id,
+                "name": "New Name",
+                "sortName": "Name, New",
+                "imageUrl": "/api/v1/authors/11/thumbnail?t=2",
+            }
+        ]
+    )
+    await provider._refresh_catalog(force=True)
+    artists = {a.item_id: a async for a in provider.get_library_artists()}
+    artist = artists[f"{AUTHOR_PREFIX}{author_id}"]
+    assert artist.name == "New Name"
+    assert artist.sort_name == "Name, New"
 
 
 @pytest.mark.asyncio
@@ -441,3 +517,71 @@ async def test_sync_library_forces_catalog_refresh(provider: BookOrbitProvider) 
     ):
         await provider.sync_library(MediaType.AUDIOBOOK)
     fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_async_init_closes_client_on_login_timeout(
+    provider: BookOrbitProvider,
+) -> None:
+    """Login TimeoutError must close the owned session before ProviderUnavailableError."""
+    values = {
+        CONF_URL: "http://bo",
+        CONF_USERNAME: "u",
+        CONF_PASSWORD: "p",
+        CONF_VERIFY_SSL: True,
+    }
+    client = Mock()
+    client.login = AsyncMock(side_effect=TimeoutError("total timeout"))
+    client.close = AsyncMock()
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        patch(
+            "music_assistant.providers.bookorbit.create_clientsession",
+            return_value=Mock(),
+        ),
+        patch(
+            "music_assistant.providers.bookorbit.BookOrbitClient",
+            return_value=client,
+        ),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await provider.handle_async_init()
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_async_init_closes_client_on_cancel(
+    provider: BookOrbitProvider,
+) -> None:
+    """Cancelled init must close the owned session before re-raising."""
+    values = {
+        CONF_URL: "http://bo",
+        CONF_USERNAME: "u",
+        CONF_PASSWORD: "p",
+        CONF_VERIFY_SSL: True,
+    }
+    client = Mock()
+    client.login = AsyncMock(side_effect=asyncio.CancelledError())
+    client.close = AsyncMock()
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        patch(
+            "music_assistant.providers.bookorbit.create_clientsession",
+            return_value=Mock(),
+        ),
+        patch(
+            "music_assistant.providers.bookorbit.BookOrbitClient",
+            return_value=client,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await provider.handle_async_init()
+    client.close.assert_awaited_once()

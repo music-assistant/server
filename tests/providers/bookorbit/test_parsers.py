@@ -197,7 +197,7 @@ def test_parse_author() -> None:
     assert artist.artist_type == ArtistType.AUTHOR
     (mapping,) = artist.provider_mappings
     assert (mapping.item_id, mapping.provider_domain) == ("author:11", "bookorbit")
-    assert mapping.details == "Frank Herbert|"
+    assert mapping.details == "Frank Herbert|Herbert, Frank||"
     assert not artist.metadata.images
 
 
@@ -220,8 +220,29 @@ def test_parse_author_image_url() -> None:
     assert image.path == f"{BASE_URL}/api/v1/authors/6/thumbnail?t=1"
     assert image.remotely_accessible is False
     (mapping,) = artist.provider_mappings
-    assert mapping.details == f"Agatha Christie|{image.path}"
+    assert mapping.details == f"Agatha Christie|Christie, Agatha|Queen of Crime|{image.path}"
     assert artist.metadata.description == "Queen of Crime"
+
+
+def test_parse_author_fingerprint_includes_bio_and_sort_name() -> None:
+    """Biography-only or sort-name-only edits must change the sync fingerprint."""
+    base = {"id": 6, "name": "Agatha Christie", "sortName": "Christie, Agatha"}
+    before = parse_author(base, provider_instance_id=INSTANCE, base_url=BASE_URL)
+    bio_only = parse_author(
+        {**base, "description": "Queen of Crime"},
+        provider_instance_id=INSTANCE,
+        base_url=BASE_URL,
+    )
+    sort_only = parse_author(
+        {**base, "sortName": "Christie, A."},
+        provider_instance_id=INSTANCE,
+        base_url=BASE_URL,
+    )
+    (before_mapping,) = before.provider_mappings
+    (bio_mapping,) = bio_only.provider_mappings
+    (sort_mapping,) = sort_only.provider_mappings
+    assert before_mapping.details != bio_mapping.details
+    assert before_mapping.details != sort_mapping.details
 
 
 def test_parse_author_ignores_cover_book_id() -> None:

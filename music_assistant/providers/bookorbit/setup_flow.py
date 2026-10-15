@@ -104,7 +104,7 @@ async def _check_login(client: BookOrbitClient, base_url: str) -> None:
             translation_args=[base_url],
             translation_owner=DOMAIN,
         ) from err
-    except ClientError as err:
+    except (ClientError, TimeoutError) as err:
         raise SetupFlowError(
             f"Could not reach BookOrbit at {base_url}.",
             translation_key="connection_failed",

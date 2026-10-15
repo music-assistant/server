@@ -344,6 +344,16 @@ async def test_get_resume_position_client_error_falls_back(
 
 
 @pytest.mark.asyncio
+async def test_get_resume_position_timeout_falls_back(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Total HTTP timeouts must also defer to MA's saved position."""
+    _client(provider).get_audiobook_manifest.side_effect = TimeoutError("total timeout")
+    with pytest.raises(NotImplementedError):
+        await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
 async def test_get_resume_position_without_progress_falls_back(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:
