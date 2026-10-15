@@ -2630,6 +2630,61 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.add_client(member.api)
 
+    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
+        """Handle standalone display Play commands."""
+        super().group_event_cb(group, event)
+        if (
+            isinstance(event, ControllerPlayEvent)
+            and group is self.api.group
+            and self.synced_to is None
+            and group.clients
+            and group.clients[0].client_id == self.player_id
+        ):
+            self.mass.create_task(self._play_static_group())
+
+    def _subscribe_client_callbacks(self) -> None:
+        """Subscribe to events and advertise standalone display controls."""
+        super()._subscribe_client_callbacks()
+        self._set_display_commands(self.api.group)
+
+    def _on_group_changed(self, new_group: SendspinGroup) -> None:
+        """Refresh controls when the display changes groups."""
+        self._set_display_commands(new_group)
+        super()._on_group_changed(new_group)
+
+    def _set_display_commands(self, group: SendspinGroup) -> None:
+        """Advertise Play only when this display leads its current group."""
+        # Supported commands belong to the entire group, so a display follower
+        # must not replace the audio leader's controls, even before membership sync.
+        if (
+            group is self.api.group
+            and group.clients
+            and group.clients[0].client_id == self.player_id
+            and (controller_role := self._controller_role) is not None
+        ):
+            controller_role.set_supported_commands([MediaCommand.PLAY])
+
+    async def _play_static_group(self) -> None:
+        """Play the single available configured group containing this display."""
+        groups = [
+            player
+            for player in self.mass.players.iter_players(
+                return_unavailable=False, return_disabled=False
+            )
+            if player.type == PlayerType.GROUP
+            and self.player_id in player.state.static_group_members
+        ]
+        if len(groups) != 1:
+            self.logger.warning(
+                "Cannot route Play from display %s: expected one available configured group, "
+                "found %s (%s)",
+                self.player_id,
+                len(groups),
+                ", ".join(player.player_id for player in groups) or "none",
+            )
+            return
+        await self.mass.players.cmd_play(groups[0].player_id)
+
 
 class SendspinSourcePlayer(SendspinBasePlayer):
     """
