@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.sendspin.player import SendspinPlayer
 
@@ -70,13 +71,29 @@ async def test_session_is_cancelled_even_if_the_group_stop_fails() -> None:
 async def test_stop_keeps_a_parked_item_frozen() -> None:
     """A stop that leaves current media keeps its metadata frozen, but no beats."""
     mock = _player_mock()
-    mock.state.current_media = MagicMock()
+    mock.state.current_media = PlayerMedia(uri="track-1", queue_item_id="item-1")
+    mock._published_item = ("track-1", "item-1")
 
     await SendspinPlayer.stop(mock)
 
     mock._clear_current_media_metadata.assert_not_awaited()
     mock.api.group.stop.assert_awaited_once_with(keep_progress=True)
     mock._visualizer_role.clear_beat_schedule.assert_called_once()
+    mock.mass.create_task.assert_not_called()
+
+
+async def test_stop_republishes_when_the_display_shows_another_item() -> None:
+    """A stop that cancelled the push of a new item publishes that item."""
+    mock = _player_mock()
+    mock.state.current_media = PlayerMedia(uri="track-2", queue_item_id="item-2")
+    mock._published_item = ("track-1", "item-1")
+
+    await SendspinPlayer.stop(mock)
+
+    mock.mass.create_task.assert_called_once()
+    assert (
+        mock.mass.create_task.call_args.kwargs["task_id"] == f"sendspin_metadata_{mock.player_id}"
+    )
 
 
 async def test_stop_without_current_media_clears_metadata() -> None:
