@@ -104,9 +104,7 @@ _START_ITEM_SUBSTRING_MIN_LEN = 3
 _LIBRARY_SELECTIONS = frozenset({"library_tracks", "library_album_tracks", "prefer_library"})
 # caps the album track lookups in flight, so a large discography does not flood a provider
 ALBUM_LOOKUP_BATCH = 5
-# an expired login, too, only skips that provider (its albums or its copy of an album)
 _SKIP_PROVIDER_ERRORS: Final[tuple[type[Exception], ...]] = (*PROVIDER_FETCH_ERRORS, LoginFailed)
-# any provider error only skips that album or lookup, so the refill goes on
 ALBUM_LOAD_ERRORS: Final[tuple[type[Exception], ...]] = (
     MusicAssistantError,
     *PROVIDER_FETCH_ERRORS,
@@ -751,8 +749,6 @@ class MediaResolver:
         order = self.get_artist_order()
         ordered = order_albums([album_copies[0] for album_copies in albums], order)
         if order is ArtistOrder.ALBUMS_BY_RELEASE and anchor is not None and anchor.year:
-            # an anchor that is not in the list (a single, another artist's album) is placed by
-            # its year only, so the albums of that year count as after it
             listed = next(
                 (
                     album
@@ -819,8 +815,7 @@ class MediaResolver:
         """
         library_tracks = self._album_library_tracks_only()
         for album in copies[:-1]:
-            # with the library tracks album setting, a copy in the library plays only its saved
-            # tracks; another copy outside the library would play the album in full
+            # a library copy may play only its saved tracks
             if library_tracks and (
                 album.provider == "library"
                 or await self.mass.music.albums.get_library_item_by_prov_id(
@@ -1810,7 +1805,6 @@ def album_is_played(
     :param copies: The album's copies.
     :param played: The albums that already played.
     """
-    # a mapping has no metadata to compare, so it matches by ID only (see load_played_namesakes)
     return any(
         compare_item_ids(copy, item)
         or (isinstance(copy, Album) and isinstance(item, Album) and compare_album(copy, item))

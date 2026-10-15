@@ -334,7 +334,6 @@ class Autoplay:
     async def _similar_artists(self, artist: Artist) -> list[Artist]:
         """Return MA's similar artists of the artist, via its library copy when in the library."""
         library_artist = await self.queues.resolve_library_artist(artist)
-        # a provider artist stored only for a saved track is not in the library, as when played
         if (
             library_artist is not None
             and artist.provider != "library"
