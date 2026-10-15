@@ -84,6 +84,8 @@ async def setup(
 class JellyfinProvider(MusicProvider):
     """Provider for a jellyfin music library."""
 
+    _verify_ssl: bool = True
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return ()
@@ -107,13 +109,13 @@ class JellyfinProvider(MusicProvider):
         # to be an opaque identifier
 
         device_id = hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
-        verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
-        http_session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
+        self._verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if self._verify_ssl else self.mass.http_session_no_ssl
 
         session_config = SessionConfiguration(
             session=http_session,
             url=str(self.get_setup_value(CONF_URL)),
-            verify_ssl=verify_ssl,
+            verify_ssl=self._verify_ssl,
             app_name=USER_APP_NAME,
             app_version=self.mass.version,
             device_name=socket.gethostname(),
@@ -426,6 +428,7 @@ class JellyfinProvider(MusicProvider):
             path=url,
             can_seek=True,
             allow_seek=True,
+            verify_ssl=self._verify_ssl,
         )
 
     @use_cache(3600)  # Cache for 1 hour

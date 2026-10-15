@@ -109,8 +109,17 @@ class _FakeQueue:
 class _FakePlayer:
     """Player stand-in owning a queue."""
 
-    def __init__(self, player_id: str, state: PlaybackState = PlaybackState.IDLE) -> None:
+    def __init__(
+        self,
+        player_id: str,
+        state: PlaybackState = PlaybackState.IDLE,
+        *,
+        display_name: str | None = None,
+        protocol_parent_id: str | None = None,
+    ) -> None:
         self.player_id = player_id
+        self.display_name = display_name or player_id
+        self.protocol_parent_id = protocol_parent_id
         self.queue = _FakeQueue(player_id, state)
 
 
@@ -293,6 +302,7 @@ class _FakeConfig:
     """
 
     instance_id = "sendspin_source"
+    name = "Sendspin Source"
 
     def __init__(self, values: dict[str, Any] | None = None) -> None:
         self.values = values or {}

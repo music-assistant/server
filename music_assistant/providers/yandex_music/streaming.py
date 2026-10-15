@@ -130,9 +130,10 @@ class YandexMusicStreamingManager:
             sample_rate = file_info.get("sample_rate") or 0
             bit_depth = file_info.get("bit_depth") or 0
 
-            if (not sample_rate or not bit_depth) and not needs_decryption:
-                # Probe raw stream headers for real sample_rate/bit_depth
-                probed_sr, probed_bd = await self._probe_stream_params(url, codec)
+            if not sample_rate or not bit_depth:
+                probed_sr, probed_bd = await self._probe_stream_params(
+                    url, codec, decryption_key=file_info.get("key") if needs_decryption else None
+                )
                 sample_rate = sample_rate or probed_sr
                 bit_depth = bit_depth or probed_bd
 
@@ -362,7 +363,7 @@ class YandexMusicStreamingManager:
         preferred_normalized = (preferred_quality or "").strip().lower()
 
         # Sort by bitrate descending
-        sorted_infos = sorted(
+        sorted_infos: list[DownloadInfo] = sorted(
             download_infos,
             key=lambda x: x.bitrate_in_kbps or 0,
             reverse=True,
@@ -383,7 +384,7 @@ class YandexMusicStreamingManager:
 
         # Efficient: Prefer lowest bitrate AAC/MP3
         if preferred_normalized == QUALITY_EFFICIENT:
-            sorted_infos_asc = sorted(
+            sorted_infos_asc: list[DownloadInfo] = sorted(
                 download_infos,
                 # ``or float('inf')`` (rather than the previous ``or 999``) makes
                 # the sentinel unambiguous: 999 kbps is conceivably a real
@@ -580,7 +581,9 @@ class YandexMusicStreamingManager:
 
         return 0, 0
 
-    async def _probe_stream_params(self, url: str, codec: str) -> tuple[int, int]:
+    async def _probe_stream_params(
+        self, url: str, codec: str, *, decryption_key: str | None = None
+    ) -> tuple[int, int]:
         """
         Probe audio params by reading the first bytes of the stream.
 
@@ -589,6 +592,7 @@ class YandexMusicStreamingManager:
 
         :param url: Stream URL.
         :param codec: Codec string from API (e.g. "flac-mp4", "flac").
+        :param decryption_key: Hex AES key for encrypted stream headers.
         :return: (sample_rate, bit_depth) or (0, 0) if probing fails.
         """
         codec_lower = (codec or "").lower()
@@ -612,6 +616,11 @@ class YandexMusicStreamingManager:
                 if resp.status not in (200, 206):
                     return 0, 0
                 header_bytes = await resp.content.read(probe_size)
+                if decryption_key:
+                    decryptor = Cipher(
+                        algorithms.AES(bytes.fromhex(decryption_key)), modes.CTR(bytes(16))
+                    ).decryptor()
+                    header_bytes = decryptor.update(header_bytes) + decryptor.finalize()
                 self.logger.debug("Probe read %d bytes for codec=%s", len(header_bytes), codec)
                 result = parser(header_bytes)
                 self.logger.debug("Probe result: sample_rate=%d, bit_depth=%d", *result)
