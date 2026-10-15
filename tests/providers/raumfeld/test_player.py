@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -882,3 +883,38 @@ def test_adopting_an_external_source_drops_the_queued_next_item() -> None:
         player._advance_armed = True
         player._set_external(_SPOTIFY_META, "Pause", 315, via_room=True)
     clear_next.assert_called_once()
+
+
+async def test_a_reading_older_than_a_play_command_is_not_adopted() -> None:
+    """A poll that read the zone before MA started its own item leaves that item alone."""
+    player, _ = _external_player()
+
+    async def actions_while_play_media_runs(_zone: list[str]) -> str:
+        player._mark_play_started()
+        return "Pause,Next,Previous"
+
+    with (
+        patch.object(player, "_read_zone_actions", side_effect=actions_while_play_media_runs),
+        patch.object(player, "_clear_next") as clear_next,
+    ):
+        await player._update_zone_source(
+            {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""}, ["Bar"]
+        )
+    assert player._external_source is None
+    clear_next.assert_not_called()
+
+
+async def test_resuming_an_external_source_does_not_count_the_pause() -> None:
+    """The position frozen at the pause runs on from the resume, not from the pause."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Play", 315, via_room=True)
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_elapsed_time = 70.0
+    player._attr_elapsed_time_last_updated = time.time() - 10
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()),
+    ):
+        await player.play()
+    assert player._attr_elapsed_time == 70.0
+    assert time.time() - player._attr_elapsed_time_last_updated < 1

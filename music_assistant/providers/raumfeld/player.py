@@ -131,6 +131,9 @@ class RaumfeldPlayer(Player):
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
     # set before the player is fully constructed, as the base class reads the features
     _external_source: PlayerSource | None = None
+    # bumped by every command that changes what plays, so a poll that read the device
+    # before such a command can tell its readings no longer apply
+    _playback_generation = 0
 
     def __init__(
         self,
@@ -296,7 +299,10 @@ class RaumfeldPlayer(Player):
         self._drop_ended_external()
         if self._external_source is not None:
             # resume what the host or the speaker itself was playing, where it paused
+            self._playback_generation += 1
             await self._external_command("Play", Speed="1")
+            # the position was frozen at the pause; it runs on from now, not from then
+            self._attr_elapsed_time_last_updated = time.time()
             self._attr_playback_state = PlaybackState.PLAYING
             self.update_state()
             return
@@ -310,6 +316,7 @@ class RaumfeldPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command."""
+        self._playback_generation += 1
         self._clear_next()
         # we treat pause as stop; freeze the extrapolated position into the anchor so the
         # paused progress bar stays where playback was, instead of snapping back to the
@@ -663,6 +670,7 @@ class RaumfeldPlayer(Player):
             await self._update_volume(host)
             self.update_state()
             return
+        generation = self._playback_generation
         _, state, position = await asyncio.gather(
             self._update_volume(host),
             self._read_room_state(control_url),
@@ -670,6 +678,10 @@ class RaumfeldPlayer(Player):
             # returns, which a room's own renderer does not have
             self._call_transport(location, "GetPositionInfo"),
         )
+        if generation != self._playback_generation:
+            # a play or stop command ran meanwhile; the next poll reads what it brought
+            self.update_state()
+            return
         if state:
             self._attr_playback_state = _map_transport_state(state.get("TransportState"))
         active = self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
@@ -713,9 +725,14 @@ class RaumfeldPlayer(Player):
             self._clear_external()
             return
         # also while stopped: the zone keeps the item loaded and can start it again
+        generation = self._playback_generation
+        actions = await self._read_zone_actions(zone)
+        if generation != self._playback_generation:
+            # a play or stop command ran while reading, which this reading predates
+            return
         self._set_external(
             parse_didl_metadata(pos.get("TrackMetaData")),
-            await self._read_zone_actions(zone),
+            actions,
             parse_duration(pos.get("TrackDuration")),
             via_room=False,
         )
@@ -1011,6 +1028,7 @@ class RaumfeldPlayer(Player):
 
     def _mark_play_started(self) -> None:
         """Record a play/resume command and switch to fast polling."""
+        self._playback_generation += 1
         self._play_started_at = time.time()
         self._attr_poll_interval = FAST_POLL_INTERVAL
         # a fresh play/resume: the not-yet-playing startup gap must not look like the
