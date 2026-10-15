@@ -145,7 +145,7 @@ def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitPr
     prov_item = Audiobook(
         item_id="1",
         provider=provider.instance_id,
-        name="Updated Title",
+        name="Hatchet",
         provider_mappings={mapping_new},
         duration=100,
     )
@@ -161,12 +161,80 @@ def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitPr
     prov_same = Audiobook(
         item_id="1",
         provider=provider.instance_id,
-        name="Same",
+        name="Hatchet",
         provider_mappings={mapping_same},
         duration=100,
     )
     with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
         assert provider._library_item_needs_update(library, prov_same) is False
+
+
+def test_library_item_needs_update_when_title_diverges(provider: BookOrbitProvider) -> None:
+    """A stale library title must refresh even if updatedAt was already stored."""
+    mapping = ProviderMapping(
+        item_id="1",
+        provider_domain="bookorbit",
+        provider_instance=provider.instance_id,
+        details="2026-10-14T20:00:00.000Z",
+        in_library=True,
+    )
+    library = Audiobook(
+        item_id="1",
+        provider=provider.instance_id,
+        name="Hatchet",
+        provider_mappings={mapping},
+        duration=100,
+    )
+    prov_item = Audiobook(
+        item_id="1",
+        provider=provider.instance_id,
+        name="Hatchet | Survival",
+        provider_mappings={mapping},
+        duration=100,
+    )
+    with patch.object(BookOrbitProvider, "_check_provider_mappings", return_value=True):
+        assert provider._library_item_needs_update(library, prov_item) is True
+
+
+def test_is_sole_library_provider(provider: BookOrbitProvider) -> None:
+    """Merged library items must keep merge semantics; sole BookOrbit items overwrite."""
+    sole = Audiobook(
+        item_id="1",
+        provider=provider.instance_id,
+        name="Hatchet",
+        provider_mappings={
+            ProviderMapping(
+                item_id="1",
+                provider_domain="bookorbit",
+                provider_instance=provider.instance_id,
+                in_library=True,
+            )
+        },
+        duration=100,
+    )
+    assert provider._is_sole_library_provider(sole) is True
+
+    merged = Audiobook(
+        item_id="1",
+        provider=provider.instance_id,
+        name="Hatchet",
+        provider_mappings={
+            ProviderMapping(
+                item_id="1",
+                provider_domain="bookorbit",
+                provider_instance=provider.instance_id,
+                in_library=True,
+            ),
+            ProviderMapping(
+                item_id="other",
+                provider_domain="filesystem_local",
+                provider_instance="filesystem_local--x",
+                in_library=True,
+            ),
+        },
+        duration=100,
+    )
+    assert provider._is_sole_library_provider(merged) is False
 
 
 @pytest.mark.asyncio

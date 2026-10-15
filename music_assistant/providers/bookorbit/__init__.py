@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientError, ClientResponseError, web
 from music_assistant_models.enums import (
@@ -70,7 +70,10 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
-    from music_assistant.controllers.music.media.base import LibraryItemSyncDetails
+    from music_assistant.controllers.music.media.base import (
+        AudiobookSyncDetails,
+        LibraryItemSyncDetails,
+    )
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
@@ -318,7 +321,8 @@ class BookOrbitProvider(MusicProvider):
             if state:
                 return parse_resume_position_from_playback_state(manifest, state)
             # Legacy fallback when only /audio-progress has been written.
-            book = await self._get_book(item_id)
+            # Fetch fresh BookDetail so file durations match the write path.
+            book = await self._get_book(item_id, fresh=True)
             progress = await self._client.get_audio_progress(book_id)
         except (ClientError, MediaNotFoundError, ValueError) as err:
             raise NotImplementedError from err
@@ -416,7 +420,7 @@ class BookOrbitProvider(MusicProvider):
     def _library_item_needs_update(
         self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
     ) -> bool:
-        """Also refresh when BookOrbit ``updatedAt`` (mapping details) changed."""
+        """Refresh when BookOrbit ``updatedAt`` or display title/subtitle changed."""
         if super()._library_item_needs_update(library_item, prov_item):
             return True
         for prov_map in prov_item.provider_mappings:
@@ -433,7 +437,111 @@ class BookOrbitProvider(MusicProvider):
             )
             if lib_map is None or prov_map.details != lib_map.details:
                 return True
-        return False
+        # Sole-provider title embeds subtitle; catch edits even if updatedAt was already synced
+        # into mapping details before the library name was rewritten.
+        lib_name = getattr(library_item, "name", None)
+        return bool(
+            lib_name is not None
+            and lib_name != prov_item.name
+            and self._is_sole_library_provider(library_item)
+        )
+
+    def _is_sole_library_provider(
+        self, library_item: MediaItemType | LibraryItemSyncDetails
+    ) -> bool:
+        """Return True when BookOrbit is the only provider mapped on the library item."""
+        return {x.provider_instance for x in library_item.provider_mappings} == {self.instance_id}
+
+    async def _sync_library_audiobooks(self) -> set[int]:
+        """
+        Sync audiobooks, overwriting library metadata when BookOrbit solely owns the item.
+
+        MA's default audiobook update merges/fill-gaps (title, description, publisher, …).
+        Sync-details also omit mapping ``details``, so change detection loads the full
+        library item for ``updatedAt`` / title comparison.
+        """
+        self.logger.debug("Start sync of Audiobooks to Music Assistant library.")
+        cur_db_ids: set[int] = set()
+        item_count = 0
+        async for prov_item in self.get_library_audiobooks():
+            item_count += 1
+            self._update_sync_task_item_status(MediaType.AUDIOBOOK, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.AUDIOBOOK, prov_item.item_id)
+            db_id: int | None = None
+            try:
+                sync_details = cast(
+                    "AudiobookSyncDetails | None",
+                    await self.mass.music.audiobooks.get_library_item_sync_details(
+                        prov_item.provider_mappings,
+                    ),
+                )
+                db_id = sync_details.item_id if sync_details else None
+                self._validate_audiobook_author_narrator_types(prov_item)
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.audiobooks.add_item_to_library(
+                            prov_item
+                        )
+                        db_id = int(library_item.item_id)
+                        lib_fully_played = library_item.fully_played
+                        lib_resume_position_ms = library_item.resume_position_ms
+                    else:
+                        library_item = await self.mass.music.audiobooks.get_library_item(
+                            sync_details.item_id
+                        )
+                        needs_update = self._library_item_needs_update(
+                            library_item, prov_item
+                        ) or sync_details.authors_narrators_changed(prov_item)
+                        if needs_update:
+                            library_item = await self.mass.music.audiobooks.update_item_in_library(
+                                sync_details.item_id,
+                                prov_item,
+                                overwrite=self._is_sole_library_provider(library_item),
+                            )
+                            db_id = int(library_item.item_id)
+                            lib_fully_played = library_item.fully_played
+                            lib_resume_position_ms = library_item.resume_position_ms
+                        else:
+                            db_id = sync_details.item_id
+                            lib_fully_played = sync_details.fully_played
+                            lib_resume_position_ms = sync_details.resume_position_ms
+
+                    cur_db_ids.add(db_id)
+                    if prov_item.favorite is not None:
+                        await self.mass.music.favorites.record_from_provider(
+                            self.instance_id, MediaType.AUDIOBOOK, db_id, prov_item.favorite
+                        )
+                    if (
+                        prov_item.resume_position_ms is not None
+                        and prov_item.fully_played is not None
+                        and (
+                            lib_resume_position_ms != prov_item.resume_position_ms
+                            or lib_fully_played != prov_item.fully_played
+                        )
+                    ):
+                        await self.mass.music.audiobooks.update_item_in_library(db_id, prov_item)
+
+                    fallback_genres = (
+                        set(prov_item.metadata.genres)
+                        if prov_item.metadata and prov_item.metadata.genres
+                        else None
+                    )
+                    await self._sync_item_genres(
+                        MediaType.AUDIOBOOK,
+                        prov_item.item_id,
+                        db_id,
+                        fallback_genres,
+                    )
+
+                await asyncio.sleep(0)
+            except Exception as err:
+                self._handle_sync_item_failure(MediaType.AUDIOBOOK, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.AUDIOBOOK, prov_item.item_id, db_id, cur_db_ids
+                )
+        return cur_db_ids
 
     async def _sync_playback_state(
         self, book_id: int, *, position: int, fully_played: bool

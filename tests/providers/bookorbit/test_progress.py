@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientError, ClientResponseError, web
@@ -256,6 +256,27 @@ async def test_get_resume_position_without_progress_falls_back(
     """No progress on the server defers to MA's own position."""
     with pytest.raises(NotImplementedError):
         await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
+async def test_get_resume_position_legacy_fetches_fresh_book(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Legacy audio-progress resume must not use a stale in-memory catalog book."""
+    files = _audio_files(book_multifile)
+    _client(provider).get_playback_state.return_value = None
+    _client(provider).get_audio_progress.return_value = {
+        "currentFileId": files[1]["id"],
+        "positionSeconds": 10.0,
+        "percentage": 40.0,
+        "isFinished": False,
+    }
+    with patch.object(provider, "_get_book", new_callable=AsyncMock) as get_book:
+        get_book.return_value = book_multifile
+        result = await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+    get_book.assert_awaited_once_with(str(book_multifile["id"]), fresh=True)
+    assert result[0] is False
+    assert result[1] == 110_500
 
 
 @pytest.mark.asyncio
