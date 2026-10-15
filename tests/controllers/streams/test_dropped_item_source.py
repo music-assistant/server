@@ -124,6 +124,7 @@ class _Harness:
         )
         self.ctrl.audio.get_stream_details = AsyncMock(side_effect=self._stream_details)
         self.ctrl.audio.get_queue_item_stream.side_effect = _source
+        self.ctrl.audio.fade_into_pending.return_value = False
 
     def start(
         self, item_id: str, method: str = "GET"
