@@ -731,6 +731,7 @@ async def test_folder_tracks_browses_recursively() -> None:
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
     root, sub = "filesystem_local--abc://Rock", "filesystem_local--abc://Rock/Classic"
+    gone = "filesystem_local--abc://Deleted"
     listings: dict[str, list[Any]] = {
         root: [
             BrowseFolder(item_id="back", provider="x", path="filesystem_local--abc://", name=".."),
@@ -739,19 +740,22 @@ async def test_folder_tracks_browses_recursively() -> None:
             # not in the library (yet), so no smart playlist can hold it
             ItemMapping(media_type=MediaType.TRACK, item_id="new.mp3", provider="x", name="new"),
         ],
-        sub: [_library_track("2")],
+        # more than one page of a browse listing
+        sub: [_library_track(str(i)) for i in range(2, 602)],
     }
 
-    async def browse(path: str) -> list[Any]:
+    async def browse(path: str, *, limit: int = 500) -> list[Any]:
+        if path == gone:
+            raise FileNotFoundError(path)
         if path not in listings:
             msg = "hidden"
             raise InsufficientPermissions(msg)
-        return listings[path]
+        return listings[path][:limit] if limit else listings[path]
 
     mass.music.browse = AsyncMock(side_effect=browse)
 
-    tracks = await plugin._folder_tracks([root, sub, "filesystem_local--hidden://Diary"])
-    assert {t.item_id for t in tracks} == {"1", "2"}
+    tracks = await plugin._folder_tracks([root, sub, gone, "filesystem_local--hidden://Diary"])
+    assert {t.item_id for t in tracks} == {str(i) for i in range(1, 602)}
     # the subfolder is in the rule and under the folder, yet browsed once
     assert [c.args[0] for c in mass.music.browse.call_args_list].count(sub) == 1
     # the parent entry is not followed

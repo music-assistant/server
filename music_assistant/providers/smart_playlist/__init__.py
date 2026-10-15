@@ -1373,9 +1373,10 @@ class SmartPlaylistProvider(PluginProvider):
                 continue
             browsed.add(path)
             try:
-                items = await self.mass.music.browse(path)
-            except MusicAssistantError as err:
-                # e.g. a folder on a source hidden from the user, or one that is gone
+                # browse pages its listing, the whole folder is needed
+                items = await self.mass.music.browse(path, limit=0)
+            except (MusicAssistantError, OSError) as err:
+                # e.g. a folder on a source hidden from the user, or one deleted or renamed
                 self.logger.debug("Skipping folder %s: %s", path, err)
                 continue
             subfolders = []
