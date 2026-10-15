@@ -52,11 +52,11 @@ def _controller() -> PlayerQueuesController:
             duration=DURATION,
         )
 
-    ctrl._load_item = AsyncMock(side_effect=load_item)
-    ctrl.signal_update = Mock()
-    ctrl._check_player_permission = Mock()
-    ctrl._set_transitioning = Mock()
-    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl._load_item = AsyncMock(side_effect=load_item)  # type: ignore[method-assign]
+    ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
+    ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
+    ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)
