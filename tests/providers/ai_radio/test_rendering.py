@@ -1537,7 +1537,7 @@ def _attach_post(
 
     mass.player_queues.load_next_queue_item = AsyncMock(side_effect=load_next_queue_item)
     mass.player_queues.get = lambda queue_id: SimpleNamespace(
-        queue_id=queue_id, flow_mode=flow_mode, current_index=None
+        queue_id=queue_id, flow_mode=flow_mode, current_index=None, state=PlaybackState.PLAYING
     )
     mass.streams.flow_mode_required = MagicMock(return_value=flow_mode_required)
     mass.streams.boundary_mix_required = MagicMock(return_value=boundary_mix_required)
