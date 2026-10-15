@@ -302,12 +302,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     @api_command("player_queues/all", required_scope=Scope.QUEUES_READ, allow_impersonation=True)
     def all_queues(self) -> tuple[PlayerQueue, ...]:
-        """Return the queues of the players the calling user may use."""
+        """Return the queues of the players the calling user may use, and the ones they play."""
         user = get_current_user()
+        # a synced or grouped player plays its leader's queue, which is listed with it as
+        # `get_player_active_queue` serves it for the player
+        playing: set[str] = set()
+        for player in self.mass.players:
+            if has_player_access(user, player.player_id, player) and (
+                queue := self.mass.players.get_active_queue(player)
+            ):
+                playing.add(queue.queue_id)
         return tuple(
             queue
             for queue in self.all()
-            if has_player_access(user, queue.queue_id, self.mass.players.get_player(queue.queue_id))
+            if queue.queue_id in playing
+            or has_player_access(user, queue.queue_id, self.mass.players.get_player(queue.queue_id))
         )
 
     @api_command("player_queues/get", required_scope=Scope.QUEUES_READ, allow_impersonation=True)

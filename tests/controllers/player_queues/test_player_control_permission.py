@@ -27,6 +27,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 
 ALLOWED_PLAYER = "kitchen"
 OTHER_PLAYER = "living_room"
+LEADER = "bedroom"
 OWN_CLIENT = "browser_session_1"
 
 
@@ -54,12 +55,30 @@ def _restricted_user(allowed_players: list[str], own_player: str | None = None) 
         current_user.reset(user_token)
 
 
-def _controller(*players: SimpleNamespace) -> PlayerQueuesController:
+class _Players:
+    """Stand-in for the players controller: a registry, and the queue each player plays."""
+
+    def __init__(self, players: tuple[SimpleNamespace, ...], leaders: dict[str, str]) -> None:
+        self._players = {player.player_id: player for player in players}
+        self._leaders = leaders
+
+    def __iter__(self) -> Iterator[SimpleNamespace]:
+        return iter(self._players.values())
+
+    def get_player(self, player_id: str) -> SimpleNamespace | None:
+        return self._players.get(player_id)
+
+    def get_active_queue(self, player: SimpleNamespace) -> SimpleNamespace:
+        return SimpleNamespace(queue_id=self._leaders.get(player.player_id, player.player_id))
+
+
+def _controller(
+    *players: SimpleNamespace, leaders: dict[str, str] | None = None
+) -> PlayerQueuesController:
     """Build a bare queue controller over a registry of players, without any queue."""
-    registry = {player.player_id: player for player in players}
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.mass = SimpleNamespace(  # type: ignore[assignment]
-        players=SimpleNamespace(get_player=registry.get)
+        players=_Players(players, leaders or {})
     )
     controller._queue_data = {}
     return controller
@@ -137,16 +156,19 @@ async def test_reading_and_changing_a_queue_needs_access_to_its_player(
         await _run(command, _player(OTHER_PLAYER, private=False))
 
 
-def test_the_queue_listing_holds_only_the_users_players() -> None:
-    """The listing leaves out the queues of players outside the user's filter."""
+def test_the_queue_listing_holds_the_users_players_and_what_they_play() -> None:
+    """Queues of players outside the user's filter are left out, unless the user's player plays it."""
     controller = _controller(
-        _player(ALLOWED_PLAYER, private=False), _player(OTHER_PLAYER, private=False)
+        _player(ALLOWED_PLAYER, private=False),
+        _player(OTHER_PLAYER, private=False),
+        _player(LEADER, private=False),
+        leaders={ALLOWED_PLAYER: LEADER},
     )
     controller._queue_data = {
         player_id: SimpleNamespace(queue=SimpleNamespace(queue_id=player_id))  # type: ignore[misc]
-        for player_id in (ALLOWED_PLAYER, OTHER_PLAYER)
+        for player_id in (ALLOWED_PLAYER, OTHER_PLAYER, LEADER)
     }
     with _restricted_user([ALLOWED_PLAYER]):
-        assert [queue.queue_id for queue in controller.all_queues()] == [ALLOWED_PLAYER]
+        assert [queue.queue_id for queue in controller.all_queues()] == [ALLOWED_PLAYER, LEADER]
     # an internal caller has no user and sees every queue
-    assert len(controller.all_queues()) == 2
+    assert len(controller.all_queues()) == 3
