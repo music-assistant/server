@@ -622,8 +622,10 @@ class RaumfeldPlayer(Player):
 
         playing = False
         ended = False
+        transitioning = False
         if transport is not None:
             raw_state = (transport.get("CurrentTransportState") or "").upper()
+            transitioning = raw_state == "TRANSITIONING"
             # the zone passes through TRANSITIONING for about half a second when it starts
             # and when it stops (measured), so that says nothing about where it is heading
             if raw_state != "TRANSITIONING":
@@ -631,7 +633,9 @@ class RaumfeldPlayer(Player):
             playing = self._attr_playback_state == PlaybackState.PLAYING
             ended = raw_state in ("STOPPED", "NO_MEDIA_PRESENT")
 
-        if position is not None:
+        # while switching items the zone briefly reports no item at all (measured), which
+        # must not end the source that is playing and show MA's own queue in between
+        if position is not None and not transitioning:
             await self._update_zone_source(position, zone, generation)
             if not self._reading_is_current(generation):
                 # a play or stop command ran while the source was being read

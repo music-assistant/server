@@ -1082,3 +1082,21 @@ async def test_pause_and_seek_invalidate_overlapping_polls() -> None:
         await player.seek(60)
         assert not player._reading_is_current(generation)
     assert player._playback_changes == 0
+
+
+async def test_a_zone_switching_items_keeps_the_source() -> None:
+    """The moment a zone reports no item while it switches does not end the source."""
+    player, _ = _external_player()
+    player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(
+            player,
+            "_read_transport",
+            AsyncMock(return_value={"CurrentTransportState": "TRANSITIONING"}),
+        ),
+        patch.object(player, "_read_position", AsyncMock(return_value={"TrackURI": ""})),
+    ):
+        await player._poll_zone(MagicMock(), ["Bar"])
+    assert player._attr_active_source == "tunein"
