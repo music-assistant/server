@@ -1490,14 +1490,22 @@ class SendspinPlayer(SendspinBasePlayer):
         async with self._metadata_lock:
             self._metadata_generation += 1
             self._content_takeover_pending = False
-            await self._clear_current_media_metadata(generation=self._metadata_generation)
+            # A queue parked on its item keeps showing it, frozen where playback stopped.
+            if self.state.current_media is None:
+                await self._clear_current_media_metadata(generation=self._metadata_generation)
+            else:
+                self._cancel_beat_retry()
+                self._last_beat_queue_item_id = None
+                self._last_beat_anchor_us = None
+                if (visualizer_role := self._visualizer_role) is not None:
+                    visualizer_role.clear_beat_schedule()
         # group.stop() snapshots the live position, which it can only do while the push
         # stream is up - cancelling first leaves it re-emitting a stale anchor. Teardown
         # goes in finally so a failing group stop can't strand the session, and nothing
         # may await between the two: the STOPPED event cancels this session inline, and a
         # suspension in between would let that cancel cut pipeline teardown short.
         try:
-            await self.api.group.stop()
+            await self.api.group.stop(keep_progress=True)
         finally:
             # Bridge members buffer seconds of audio on their downstream protocol
             # and keep that transport warm across stream ends; a user stop must

@@ -31,7 +31,7 @@ async def test_stop_freezes_progress_while_transport_is_still_live() -> None:
     transport = SimpleNamespace(stream_active=True)
     stream_active_at_freeze: list[bool] = []
 
-    async def group_stop() -> None:
+    async def group_stop(**_kwargs: object) -> None:
         stream_active_at_freeze.append(transport.stream_active)
         transport.stream_active = False
 
@@ -65,3 +65,25 @@ async def test_session_is_cancelled_even_if_the_group_stop_fails() -> None:
         await SendspinPlayer.stop(mock)
 
     mock.playback_session.cancel.assert_awaited_once_with("stop command")
+
+
+async def test_stop_keeps_a_parked_item_frozen() -> None:
+    """A stop that leaves current media keeps its metadata frozen, but no beats."""
+    mock = _player_mock()
+    mock.state.current_media = MagicMock()
+
+    await SendspinPlayer.stop(mock)
+
+    mock._clear_current_media_metadata.assert_not_awaited()
+    mock.api.group.stop.assert_awaited_once_with(keep_progress=True)
+    mock._visualizer_role.clear_beat_schedule.assert_called_once()
+
+
+async def test_stop_without_current_media_clears_metadata() -> None:
+    """Nothing left to show clears the metadata."""
+    mock = _player_mock()
+    mock.state.current_media = None
+
+    await SendspinPlayer.stop(mock)
+
+    mock._clear_current_media_metadata.assert_awaited_once()
