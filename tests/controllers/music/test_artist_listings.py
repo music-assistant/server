@@ -146,7 +146,7 @@ async def test_library_artist_tracks_can_filter_to_the_current_users_favorites(
         "music_assistant.controllers.music.media.base.get_current_user",
         return_value=favorite_user,
     ):
-        favorites = await mass.music.artists.tracks(artist_id, "library", favorite_only=True)
+        favorites = await mass.music.artists.tracks(artist_id, "library", favorite=True)
 
     assert [track.item_id for track in favorites] == [liked_track.item_id]
 
@@ -223,7 +223,7 @@ async def test_library_artist_albums_filter_favorites_before_paging(
         page = await mass.music.artists.albums(
             artist_id,
             "library",
-            favorite_only=True,
+            favorite=True,
             sort_field=SortField.NAME,
             limit=1,
             offset=0,

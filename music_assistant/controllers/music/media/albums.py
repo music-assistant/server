@@ -430,7 +430,7 @@ class AlbumsController(MediaControllerBase[Album]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
-        favorite_only: bool = False,
+        favorite: bool | None = None,
     ) -> list[Track]:
         """
         Return the tracks of an album, searched, sorted and paged.
@@ -447,7 +447,7 @@ class AlbumsController(MediaControllerBase[Album]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of tracks to return; 0 returns them all.
         :param offset: Number of tracks to skip.
-        :param favorite_only: Only list tracks the current user likes.
+        :param favorite: Only list the tracks the current user likes (True) or dislikes (False).
         :raises InvalidDataError: When the sort field is not offered for album tracks.
         """
         # an unsupported sort is rejected before the album is assembled
@@ -487,8 +487,8 @@ class AlbumsController(MediaControllerBase[Album]):
                     item_type=Track,
                     narrowed_to=allowed_providers,
                 )
-        if favorite_only:
-            tracks = [track for track in tracks if track.favorite is True]
+        if favorite is not None:
+            tracks = [track for track in tracks if track.favorite is favorite]
         return apply_listing(
             tracks,
             ListingType.ALBUM_TRACKS,

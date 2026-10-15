@@ -260,7 +260,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
-        favorite_only: bool = False,
+        favorite: bool | None = None,
     ) -> list[Track]:
         """
         Return the tracks of an artist, searched, sorted and paged.
@@ -279,7 +279,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of tracks to return; 0 returns them all.
         :param offset: Number of tracks to skip.
-        :param favorite_only: Only list tracks the current user likes.
+        :param favorite: Only list the tracks the current user likes (True) or dislikes (False).
         :raises InvalidDataError: When the sort field is not offered for artist tracks.
         """
         # an unsupported sort is rejected before the tracks are assembled
@@ -300,8 +300,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 # library tracks follow the calling user's music sources
                 narrowed_to=self._ensure_provider_filter(None),
             )
-        if favorite_only:
-            tracks = [track for track in tracks if track.favorite is True]
+        if favorite is not None:
+            tracks = [track for track in tracks if track.favorite is favorite]
         return apply_listing(
             tracks,
             ListingType.ARTIST_TRACKS,
@@ -323,7 +323,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int | None = 500,
         offset: int = 0,
         album_types: list[AlbumType] | None = None,
-        favorite_only: bool = False,
+        favorite: bool | None = None,
     ) -> list[Album]:
         """
         Return the albums of an artist, searched, sorted and paged.
@@ -342,7 +342,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
         :param album_types: Only list albums whose type is included.
-        :param favorite_only: Only list albums the current user likes.
+        :param favorite: Only list the albums the current user likes (True) or dislikes (False).
         :raises InvalidDataError: When the sort field is not offered for artist albums.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -361,8 +361,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         if album_types:
             albums = [album for album in albums if album.album_type in album_types]
-        if favorite_only:
-            albums = [album for album in albums if album.favorite is True]
+        if favorite is not None:
+            albums = [album for album in albums if album.favorite is favorite]
         return apply_listing(
             albums,
             ListingType.ARTIST_ALBUMS,
@@ -769,7 +769,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.ARTIST_AUDIOBOOKS, sort_field, sort_direction
         )
-        allowed_providers = self._ensure_provider_filter(provider_filter)
 
         def _listed(
             items: Sequence[Audiobook | MediaCollection[Audiobook]],
@@ -842,11 +841,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_error: Exception | None = None
         for provider_mapping in library_artist.provider_mappings:
             if provider_mapping.provider_instance not in unique_providers:
-                continue
-            if (
-                allowed_providers is not None
-                and provider_mapping.provider_instance not in allowed_providers
-            ):
                 continue
             try:
                 provider_audiobooks = await audiobook_method(
