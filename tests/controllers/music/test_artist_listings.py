@@ -10,7 +10,9 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
+    AlbumType,
     ArtistType,
+    MediaType,
     ProviderFeature,
     ProviderSharing,
     SortDirection,
@@ -126,6 +128,29 @@ async def test_library_artist_tracks_follow_the_listing_contract(mass: MusicAssi
         await _tracks(sort_field=SortField.YEAR)
 
 
+async def test_library_artist_tracks_can_filter_to_the_current_users_favorites(
+    mass: MusicAssistant,
+) -> None:
+    """The favorite-only filter only returns tracks liked by the current user."""
+    for track in (_track("t1", "Zebra"), _track("t2", "Apple")):
+        await mass.music.tracks.add_item_to_library(track)
+    artist_id = await _library_artist_id(mass)
+    tracks = await mass.music.artists.tracks(artist_id, "library")
+    liked_track = tracks[0]
+    favorite_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    await mass.music.favorites.set(
+        MediaType.TRACK, int(liked_track.item_id), True, [favorite_user.user_id]
+    )
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=favorite_user,
+    ):
+        favorites = await mass.music.artists.tracks(artist_id, "library", favorite=True)
+
+    assert [track.item_id for track in favorites] == [liked_track.item_id]
+
+
 async def test_library_artist_albums_follow_the_listing_contract(mass: MusicAssistant) -> None:
     """The library albums of an artist are searched, sorted and paged, by sort name by default."""
     for album in (
@@ -151,6 +176,60 @@ async def test_library_artist_albums_follow_the_listing_contract(mass: MusicAssi
     assert await _albums(limit=2, offset=2) == ["Zebra"]
     with pytest.raises(InvalidDataError):
         await _albums(sort_field=SortField.DURATION)
+
+
+async def test_library_artist_albums_filter_types_before_paging(mass: MusicAssistant) -> None:
+    """Album type filters are applied before the requested page is sliced."""
+    album = _album("a1", "Album")
+    album.album_type = AlbumType.ALBUM
+    single = _album("a2", "Single")
+    single.album_type = AlbumType.SINGLE
+    ep = _album("a3", "EP")
+    ep.album_type = AlbumType.EP
+    for item in (album, single, ep):
+        await mass.music.albums.add_item_to_library(item)
+    artist_id = await _library_artist_id(mass)
+
+    page = await mass.music.artists.albums(
+        artist_id,
+        "library",
+        album_types=[AlbumType.SINGLE, AlbumType.EP],
+        sort_field=SortField.NAME,
+        limit=1,
+        offset=1,
+    )
+
+    assert [item.name for item in page] == ["Single"]
+
+
+async def test_library_artist_albums_filter_favorites_before_paging(
+    mass: MusicAssistant,
+) -> None:
+    """Artist album favorites are scoped to the current user and applied before paging."""
+    albums = [
+        await mass.music.albums.add_item_to_library(_album("a1", "Zebra")),
+        await mass.music.albums.add_item_to_library(_album("a2", "Apple")),
+    ]
+    artist_id = await _library_artist_id(mass)
+    favorite_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    await mass.music.favorites.set(
+        MediaType.ALBUM, int(albums[0].item_id), True, [favorite_user.user_id]
+    )
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=favorite_user,
+    ):
+        page = await mass.music.artists.albums(
+            artist_id,
+            "library",
+            favorite=True,
+            sort_field=SortField.NAME,
+            limit=1,
+            offset=0,
+        )
+
+    assert [item.name for item in page] == ["Zebra"]
 
 
 async def test_appears_on_follows_the_listing_contract(mass: MusicAssistant) -> None:

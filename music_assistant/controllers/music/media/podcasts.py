@@ -185,6 +185,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        exclude_item_id: str | None = None,
     ) -> list[PodcastEpisode]:
         """
         Return the episodes of a podcast, searched, sorted and paged.
@@ -201,6 +202,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of episodes to return; 0 returns them all.
         :param offset: Number of episodes to skip.
+        :param exclude_item_id: Episode item ID to omit from the listing.
         :raises InvalidDataError: When the sort field is not offered for podcast episodes.
         """
         # an unsupported sort is rejected before the podcast is fetched
@@ -225,6 +227,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         await self._set_resume_positions(episodes, provider.instance_id)
         if fully_played is not None:
             episodes = [x for x in episodes if bool(x.fully_played) is fully_played]
+        if exclude_item_id is not None:
+            episodes = [x for x in episodes if x.item_id != exclude_item_id]
         return apply_listing(
             episodes,
             ListingType.PODCAST_EPISODES,
