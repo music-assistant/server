@@ -483,7 +483,7 @@ async def test_an_album_outside_the_library_pins_its_tracks_to_their_own_copies(
         resolved = await resolver._resolve_media_items(_album(TIDAL))
 
     cast("AsyncMock", resolver.mass.music.albums.playback_listing).assert_awaited_once_with(
-        "al1", TIDAL, in_library_only=False
+        "al1", TIDAL, in_library_only=False, sort_field=None, sort_direction=None
     )
     assert [_pin(x) for x in resolved] == [(TIDAL, "t1"), (TIDAL, "t2")]
 
@@ -498,7 +498,7 @@ async def test_an_album_plays_only_its_library_tracks_when_set_to() -> None:
         await resolver._resolve_media_items(_album(TIDAL))
 
     cast("AsyncMock", resolver.mass.music.albums.playback_listing).assert_awaited_once_with(
-        "al1", TIDAL, in_library_only=True
+        "al1", TIDAL, in_library_only=True, sort_field=None, sort_direction=None
     )
 
 
@@ -893,7 +893,9 @@ async def test_a_subfolder_and_a_playlist_in_a_folder_are_the_origin_of_their_ow
     )
     playlist_track = _track("Music/Other/02.flac", FILESYSTEM)
     resolver.mass.music.browse = AsyncMock(  # type: ignore[method-assign]
-        side_effect=lambda path: [subfolder, m3u] if path == folder.path else [subfolder_track]
+        side_effect=lambda path, **_kwargs: (
+            [subfolder, m3u] if path == folder.path else [subfolder_track]
+        )
     )
     resolver.mass.music.get_item_by_uri = AsyncMock(return_value=playlist)  # type: ignore[method-assign]
     resolver.get_playlist_tracks = AsyncMock(return_value=[playlist_track])  # type: ignore[method-assign]

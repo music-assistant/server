@@ -82,6 +82,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import SortDirection, SortField
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.player_queues.media_resolver import (
@@ -768,7 +769,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
-        sort_by: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         start_from_beginning: bool = False,
         shuffle: bool | None = None,
     ) -> None:
@@ -790,7 +792,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         playback_user = get_current_user()
         playback_userid = playback_user.user_id if playback_user else None
         if playback_user:
-            self.logger.debug(
+            self.logger.info(
                 "User %s requested playback.", playback_user.display_name or playback_user.username
             )
 
@@ -1004,7 +1006,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         start_item_uri,
                         userid=playback_userid,
                         queue_id=queue_id,
-                        sort_by=sort_by,
+                        sort_field=sort_field,
+                        sort_direction=sort_direction,
                         start_from_beginning=start_from_beginning,
                         # under shuffle "start here and play forward" has no meaning, so keep the
                         # whole playlist/album (chosen track first) instead of dropping everything

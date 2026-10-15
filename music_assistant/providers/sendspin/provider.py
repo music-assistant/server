@@ -507,9 +507,10 @@ class SendspinProvider(PlayerProvider):
                 # The device lost its half of the pairing; it plays again once re-paired.
                 self.logger.info("Client %s can no longer use its pairing", client_id)
                 self.mass.create_task(self._refresh_player(client_id))
-            # Transport lifecycle events, implemented in another PR.
-            case ClientConnectedEvent():
-                pass
+            case ClientConnectedEvent(client_id):
+                # A reconnect within aiosendspin's cleanup delay reuses the player, and this
+                # event fires before the new connection's roles are attached.
+                self.mass.loop.call_soon(self._refresh_player_state, client_id)
             case ClientDisconnectedEvent(client_id):
                 self._pending_pairing_evictions.add(client_id)
                 self.mass.call_later(
@@ -878,10 +879,20 @@ class SendspinProvider(PlayerProvider):
         await self.server_api.unpair(client_id)
         await self._refresh_player(client_id)
 
-    async def set_trusted_unpaired(self, client_id: str, enabled: bool) -> None:
-        """Approve or revoke unpaired (unauthenticated) playback for a client."""
+    async def set_trusted_unpaired(
+        self, client_id: str, enabled: bool, *, allow_input: bool = False
+    ) -> None:
+        """
+        Approve or revoke unpaired (unauthenticated) playback for a client.
+
+        :param client_id: The client to approve or revoke.
+        :param enabled: Whether the client may play without pairing.
+        :param allow_input: Whether an approved client may also send its audio input.
+        """
         if enabled:
-            await self.server_api.trust_unpaired(client_id)
+            await self.server_api.trust_unpaired(
+                client_id, approved_roles=frozenset({"source"} if allow_input else ())
+            )
         else:
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
@@ -1480,6 +1491,12 @@ class SendspinProvider(PlayerProvider):
         await player.on_config_updated()
         player.update_state()
 
+    def _refresh_player_state(self, client_id: str) -> None:
+        """Recalculate a registered player's state for its client's new connection."""
+        player = self.mass.players.get_player(client_id)
+        if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
+            player.update_state()
+
     def _on_user_access_revoked(self, user: User) -> None:
         """Handle a user's access being withdrawn (tokens revoked or account deleted)."""
         # Both owner forms, so the match cannot depend on the user's role at mint time.
@@ -1648,9 +1665,9 @@ class SendspinProvider(PlayerProvider):
         """
         Approve a device that offers guest access, so it plays without any setup step.
 
-        Guest access only ever carries playback and the device stays free to withdraw it,
-        so there is nothing for the user to decide. A device whose every role needs pairing
-        (a capture-only one) gains nothing and is left to pair instead.
+        This approval only carries playback and the device stays free to withdraw it,
+        so there is nothing for the user to decide. A device with a role that needs pairing,
+        such as a line-in, is left to the setup step instead.
 
         :param client_id: The connected client to approve.
         :param sendspin_client: That client, for its hello and negotiated roles.
@@ -1664,7 +1681,7 @@ class SendspinProvider(PlayerProvider):
         security = sendspin_client.connection_security
         if security is not None and security.psk_category is PskCategory.LONG_TERM:
             return
-        if all(role_requires_pairing(role_id) for role_id in sendspin_client.negotiated_role_ids):
+        if any(role_requires_pairing(role_id) for role_id in sendspin_client.negotiated_role_ids):
             return
         if await self.server_api.pairing_store.trusted_unpaired(client_id) is not None:
             return

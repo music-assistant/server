@@ -154,6 +154,4 @@ async def _prepare_msx_audio_locked(
         raise PlayerUnavailableError("Player is disabled")
     if not media:
         raise ResourceTemporarilyUnavailable("Playback setup timeout")
-    if media.source_id:
-        player.mark_queue_playback(media.source_id)
     return media

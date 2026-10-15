@@ -68,7 +68,6 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_SEARCH_RESULTS,
-    LEGACY_SORT_KEYS,
     RANDOM_SORT_FIELDS,
 )
 from music_assistant.controllers.music.helpers import (
@@ -76,6 +75,11 @@ from music_assistant.controllers.music.helpers import (
     provider_mappings_from_urls,
     search_name_match_clause,
     sibling_instance_mappings,
+)
+from music_assistant.controllers.music.listing import (
+    apply_listing,
+    legacy_sort,
+    resolve_listing_sort,
 )
 from music_assistant.controllers.music.listing_cache import Listing, cached_listing
 from music_assistant.controllers.music.sorting import (
@@ -691,9 +695,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             is unknown.
         """
         if sort_field is None and order_by:
-            if (legacy_sort := LEGACY_SORT_KEYS.get(order_by)) is None:
-                raise InvalidDataError(f"Unknown sort key: {order_by}")
-            sort_field, sort_direction = legacy_sort
+            sort_field, sort_direction = legacy_sort(order_by)
         offered_fields = MEDIA_TYPE_SORT_FIELDS[self.media_type]
         if sort_field is None:
             return (offered_fields[0], sort_direction) if default else (None, None)
@@ -2681,6 +2683,61 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             lambda: _assemble(instance_id),
             item_type=item_type,
             narrowed_to=narrowed_to,
+        )
+
+    @final
+    async def _versions_listing(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        assemble: Callable[[str], Awaitable[Sequence[ItemCls]]],
+        *,
+        search: str | None,
+        sort_field: SortField | None,
+        sort_direction: SortDirection | None,
+        limit: int | None,
+        offset: int,
+    ) -> list[ItemCls]:
+        """
+        Return the versions of one of this type's items, searched, sorted and paged.
+
+        The providers are searched for the versions once, and the result is served from the
+        cache for a while.
+
+        :param item_id: The item id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param assemble: Searches the providers for the versions of the item, looked up on the
+            given provider instance (or "library").
+        :param search: Only list the versions whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; None or 0 returns them all.
+        :param offset: Number of versions to skip.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        # an unsupported sort is rejected before the providers are searched
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.VERSIONS, sort_field, sort_direction
+        )
+        versions = await self._cached_item_listing(
+            ListingType.VERSIONS,
+            item_id,
+            provider_instance_id_or_domain,
+            assemble,
+            item_type=self.item_cls,
+            # the search only covers the music sources the calling user may see
+            narrowed_to=self._ensure_provider_filter(None),
+        )
+        return apply_listing(
+            versions,
+            ListingType.VERSIONS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
         )
 
     @final

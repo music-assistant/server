@@ -51,7 +51,7 @@ async def test_update_playlist_metadata_processes_dynamic_playlists() -> None:
         if False:
             yield  # type: ignore[unreachable]  # pragma: no cover
 
-    mixin.mass.music.playlists.tracks = mock_tracks
+    mixin.mass.music.playlists.iter_tracks = mock_tracks
     mixin.mass.music.playlists.update_item_in_library = AsyncMock()
 
     playlist = Mock()

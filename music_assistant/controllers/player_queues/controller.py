@@ -22,11 +22,14 @@ import shortuuid
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     EventType,
+    ListingType,
     MediaType,
     PlaybackState,
     PlayerType,
     QueueOption,
     RepeatMode,
+    SortDirection,
+    SortField,
 )
 from music_assistant_models.errors import (
     AudioError,
@@ -56,6 +59,7 @@ from music_assistant.constants import (
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
 )
+from music_assistant.controllers.music.listing import legacy_sort, resolve_listing_sort
 from music_assistant.controllers.player_queues.autoplay import Autoplay
 from music_assistant.controllers.player_queues.config import (
     core_config_entries,
@@ -130,20 +134,54 @@ _WIRE_SOURCE_MEDIA_TYPES: Final = frozenset(
 # how many times play_index will try to load an item before giving up
 _MAX_LOAD_ATTEMPTS: Final = 5
 
+# the listing whose order an album or playlist plays in
+_PLAYBACK_LISTINGS: Final[dict[MediaType, ListingType]] = {
+    MediaType.ALBUM: ListingType.ALBUM_TRACKS,
+    MediaType.PLAYLIST: ListingType.PLAYLIST_TRACKS,
+}
 
-async def _is_audio_source(item: MediaItemType | ItemMapping | str) -> bool:
+
+async def _media_type(item: MediaItemType | ItemMapping | str) -> MediaType:
     """
-    Return whether the given media names a live audio source.
+    Return the media type one entry of a play request names, UNKNOWN for an unparsable uri.
 
     :param item: One entry of a play request.
     """
     if not isinstance(item, str):
-        return item.media_type == MediaType.AUDIO_SOURCE
+        return item.media_type
     try:
         media_type, _, _ = await parse_uri(item)
     except MusicAssistantError:
-        return False
-    return media_type == MediaType.AUDIO_SOURCE
+        return MediaType.UNKNOWN
+    return media_type
+
+
+async def _resolve_play_sort(
+    media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+    sort_field: SortField | None,
+    sort_direction: SortDirection | None,
+    sort_by: str | None,
+) -> tuple[SortField | None, SortDirection | None]:
+    """
+    Return the sort a play request plays its albums and playlists in.
+
+    The deprecated sort key only counts when no sort field is given.
+
+    :param media: The media a play request was given.
+    :param sort_field: The requested sort field.
+    :param sort_direction: The requested sort direction.
+    :param sort_by: The deprecated sort key an outdated client sends.
+    :return: The sort field and direction, each None for the listing's default.
+    :raises InvalidDataError: When the sort key is unknown, or an album or playlist of the
+        request does not offer the sort field.
+    """
+    if sort_field is None and sort_by:
+        sort_field, sort_direction = legacy_sort(sort_by)
+    if sort_field is not None:
+        for item in media if isinstance(media, list) else [media]:
+            if (listing := _PLAYBACK_LISTINGS.get(await _media_type(item))) is not None:
+                resolve_listing_sort(listing, sort_field, sort_direction)
+    return sort_field, sort_direction
 
 
 async def _resolve_audio_source_request(
@@ -160,7 +198,7 @@ async def _resolve_audio_source_request(
     :raises InvalidCommand: When a live source is named among other media.
     """
     items = media if isinstance(media, list) else [media]
-    sources = [item for item in items if await _is_audio_source(item)]
+    sources = [item for item in items if await _media_type(item) == MediaType.AUDIO_SOURCE]
     if not sources:
         return None
     if len(items) > 1:
@@ -524,6 +562,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         sort_by: str | None = None,
         start_from_beginning: bool = False,
         shuffle: bool | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> None:
         """
         Play media item(s) on the given queue.
@@ -534,7 +574,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param radio_mode: Deprecated — translated to a radio_playlist:// dynamic playlist;
             prefer enqueuing that URI directly.
         :param start_item: Optional item to start the playlist or album from.
-        :param sort_by: Optional sort key to order tracks before applying start_item.
+        :param sort_by: Deprecated, use sort_field and sort_direction: the sort key of an
+            outdated client, which only counts when no sort_field is given.
         :param start_from_beginning: Start a podcast episode at position 0, ignoring any
             saved resume position. The stored progress itself is left untouched.
         :param shuffle: Play the media shuffled (or explicitly in order). Only applies to the
@@ -542,10 +583,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             (an always-on smart mix). Omit to follow the queue's own shuffle setting, which media
             with an order of its own (album, podcast, episode, audiobook, audio source) switches
             off; the first item of a batch decides for the whole batch.
+        :param sort_field: Play an album or playlist in the order its tracks listing shows for
+            this sort field, before applying start_item; the listing's default when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :raises InvalidDataError: When the sort key is unknown, or an album or playlist does
+            not offer the sort field.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        # a request with a sort that is not offered is rejected before anything is played
+        sort_field, sort_direction = await _resolve_play_sort(
+            media, sort_field, sort_direction, sort_by
+        )
         # A live source is not queue content: it plays on the player while the queue
         # keeps its own items. Selecting it is the real operation, so a play request
         # naming one is forwarded there rather than enqueued.
@@ -559,7 +609,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             option,
             radio_mode,
             start_item,
-            sort_by,
+            sort_field,
+            sort_direction,
             start_from_beginning,
             shuffle,
         )
@@ -1759,16 +1810,24 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         return await self._media_resolver.get_tracks_for_playback(media_item)
 
     async def get_playlist_tracks(
-        self, playlist: Playlist, start_item: str | None = None, sort_by: str | None = None
+        self,
+        playlist: Playlist,
+        start_item: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> list[PlaylistPlayableItem]:
         """
         Return the playable tracks for a playlist, honoring the user's selection prefs.
 
         :param playlist: The playlist to resolve.
         :param start_item: Optional item URI to start the playlist from.
-        :param sort_by: Optional sort key for the returned tracks.
+        :param sort_field: Sort field, the playlist order (POSITION) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :raises InvalidDataError: When the sort field is not offered for playlist tracks.
         """
-        return await self._media_resolver.get_playlist_tracks(playlist, start_item, sort_by)
+        return await self._media_resolver.get_playlist_tracks(
+            playlist, start_item, sort_field, sort_direction
+        )
 
     async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
         """

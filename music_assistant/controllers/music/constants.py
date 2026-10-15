@@ -24,6 +24,9 @@ CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 CACHE_CATEGORY_LISTINGS: Final[int] = 11
 # how long an assembled listing is served without asking the providers again
 LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
+# a browse folder can show what is live right now, so it is kept just long enough to page
+# through it
+BROWSE_CACHE_EXPIRATION: Final[int] = 2 * 60
 # how many similar artists or tracks the providers are asked for, the size of such a listing
 SIMILAR_ITEMS_LIMIT: Final[int] = 25
 
@@ -96,7 +99,8 @@ RANDOM_SORT_FIELDS: Final[frozenset[SortField]] = frozenset(
     {SortField.RANDOM, SortField.RANDOM_PLAY_COUNT}
 )
 
-# the deprecated order_by keys of library listings and the typed sort each one stands for
+# the deprecated sort keys (order_by of the listings, sort_by of play requests) and the typed
+# sort each one stands for
 LEGACY_SORT_KEYS: Final[dict[str, tuple[SortField, SortDirection | None]]] = {
     "name": (SortField.NAME, SortDirection.ASC),
     "name_desc": (SortField.NAME, SortDirection.DESC),
@@ -122,6 +126,10 @@ LEGACY_SORT_KEYS: Final[dict[str, tuple[SortField, SortDirection | None]]] = {
     "album_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
     "track_artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
     "track_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    # the album and playlist pages of the web frontend send these with a play request
+    "artist": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "album": (SortField.ALBUM_NAME, SortDirection.ASC),
+    "track_number": (SortField.TRACK_NUMBER, SortDirection.ASC),
     "favorite_timestamp": (SortField.FAVORITE_TIMESTAMP, SortDirection.ASC),
     "favorite_timestamp_desc": (SortField.FAVORITE_TIMESTAMP, SortDirection.DESC),
     "random": (SortField.RANDOM, None),

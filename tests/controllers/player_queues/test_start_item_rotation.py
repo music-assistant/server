@@ -55,7 +55,7 @@ def _playlist_resolver(tracks: list[Track]) -> MediaResolver:
         for track in tracks:
             yield track
 
-    mass.music.playlists.tracks = _tracks
+    mass.music.playlists.iter_tracks = _tracks
     return resolver
 
 

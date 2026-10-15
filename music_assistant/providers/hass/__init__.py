@@ -748,6 +748,10 @@ class HomeAssistantProvider(PluginProvider):
             media_type=MediaType.SOUND_EFFECT,
             stream_type=StreamType.HTTP,
             path=url,
+            # the add-on reaches HA through the supervisor, and HA's own https certificate
+            # is self-signed on most installs
+            verify_ssl=not self.mass.running_as_hass_addon
+            and bool(self.get_setup_value(CONF_VERIFY_SSL, True)),
         )
 
     async def _hass_listener(self) -> None:

@@ -15,7 +15,14 @@ from dataclasses import dataclass
 from types import NoneType
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature, SortField
+from music_assistant_models.enums import (
+    ArtistType,
+    ListingType,
+    MediaType,
+    ProviderFeature,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -36,6 +43,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.constants import PlaylistPlayableItem
+from music_assistant.controllers.music.listing import resolve_listing_sort
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_ORDER_ARTIST,
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
@@ -51,7 +59,6 @@ from music_assistant.controllers.player_queues.helpers import (
     is_finite_radio,
     order_albums,
     origin_for,
-    sort_tracks,
 )
 from music_assistant.controllers.streams.stream_sources import (
     ContainerListing,
@@ -238,7 +245,6 @@ class MediaResolver:
         self,
         album: Album,
         start_item: str | None,
-        sort_by: str | None = None,
         keep_preceding_items: bool = False,
     ) -> list[Track]:
         """
@@ -246,7 +252,6 @@ class MediaResolver:
 
         :param album: The album to fetch the tracks for.
         :param start_item: Optional item_id/uri of the track to start from.
-        :param sort_by: Optional sort key to order the tracks by before applying start_item.
         :param keep_preceding_items: Move the tracks before start_item behind the rest instead
             of dropping them, so the full album is returned with start_item first.
         """
@@ -254,9 +259,7 @@ class MediaResolver:
             "Fetching tracks to play for album %s",
             album.name,
         )
-        return self._album_order(
-            await self._album_tracks(album), start_item, sort_by, keep_preceding_items
-        )
+        return self._album_order(await self._album_tracks(album), start_item, keep_preceding_items)
 
     async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
         """
@@ -352,31 +355,41 @@ class MediaResolver:
         self,
         playlist: Playlist,
         start_item: str | None,
-        sort_by: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         keep_preceding_items: bool = False,
     ) -> list[PlaylistPlayableItem]:
         """
         Return tracks for given playlist, based on user preference.
 
+        The tracks come in the order the playlist's tracks listing sorts them in.
+
         :param playlist: The playlist to fetch the tracks for.
         :param start_item: Optional item_id/uri/name of the track to start from.
-        :param sort_by: Optional sort key to order the tracks by before applying start_item.
+        :param sort_field: Sort field, the playlist order (POSITION) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
         :param keep_preceding_items: Move the tracks before start_item behind the rest instead
             of dropping them, so the full playlist is returned with start_item first.
+        :raises InvalidDataError: When the sort field is not offered for playlist tracks.
         """
         result: list[PlaylistPlayableItem] = []
         self.logger.info(
             "Fetching tracks to play for playlist %s",
             playlist.name,
         )
+        # an unsupported sort is rejected before the playlist is fetched
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.PLAYLIST_TRACKS, sort_field, sort_direction
+        )
         force_refresh = playlist.is_dynamic
-        needs_sort = sort_by is not None and sort_by != "position"
+        # the order the provider lists the playlist in
+        in_playlist_order = sort_field == SortField.POSITION and sort_direction == SortDirection.ASC
         # Fast path: no re-sort needed and the preceding tracks are dropped anyway, so
         # skip-until-found in a single pass and never materialize huge playlists when
         # starting near the end.
-        if not needs_sort and not keep_preceding_items:
+        if in_playlist_order and not keep_preceding_items:
             start_item_found = False
-            async for playlist_track in self.mass.music.playlists.tracks(
+            async for playlist_track in self.mass.music.playlists.iter_tracks(
                 playlist.item_id,
                 playlist.provider,
                 force_refresh=force_refresh,
@@ -390,18 +403,32 @@ class MediaResolver:
                     continue
                 result.append(playlist_track)
             return result
-        # Sort/rotate path: must materialize all tracks before sorting or rotating, then slice.
-        async for playlist_track in self.mass.music.playlists.tracks(
-            playlist.item_id,
-            playlist.provider,
-            force_refresh=force_refresh,
-            allow_dynamic_tracks=playlist.is_dynamic,
-        ):
-            if not playlist_track.available:
-                continue
-            result.append(playlist_track)
-        if needs_sort:
-            result = sort_tracks(result, cast("str", sort_by))
+        if in_playlist_order:
+            # Rotate path: must materialize all tracks before rotating, then slice.
+            async for playlist_track in self.mass.music.playlists.iter_tracks(
+                playlist.item_id,
+                playlist.provider,
+                force_refresh=force_refresh,
+                allow_dynamic_tracks=playlist.is_dynamic,
+            ):
+                if not playlist_track.available:
+                    continue
+                result.append(playlist_track)
+        else:
+            # any other order is the one the playlist's tracks listing shows
+            result = [
+                playlist_track
+                for playlist_track in await self.mass.music.playlists.tracks(
+                    playlist.item_id,
+                    playlist.provider,
+                    force_refresh=force_refresh,
+                    allow_dynamic_tracks=playlist.is_dynamic,
+                    sort_field=sort_field,
+                    sort_direction=sort_direction,
+                    limit=None,
+                )
+                if playlist_track.available
+            ]
         if start_item is not None:
             for idx, track in enumerate(result):
                 if _start_item_matches(start_item, track):
@@ -479,7 +506,8 @@ class MediaResolver:
             podcast.name,
         )
         all_episodes = [
-            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+            x
+            async for x in self.mass.music.podcasts.iter_episodes(podcast.item_id, podcast.provider)
         ]
         all_episodes.sort(key=lambda x: x.position)
         # Require exact case and keyword match to minimise false positives.
@@ -559,7 +587,8 @@ class MediaResolver:
         """
         podcast = episode.podcast
         all_episodes = [
-            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+            x
+            async for x in self.mass.music.podcasts.iter_episodes(podcast.item_id, podcast.provider)
         ]
         all_episodes.sort(key=lambda x: x.position)
         current_index = next(
@@ -1052,7 +1081,8 @@ class MediaResolver:
         start_item: str | None = None,
         userid: str | None = None,
         queue_id: str | None = None,
-        sort_by: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         start_from_beginning: bool = False,
         keep_preceding_items: bool = False,
         artist_tracks: list[Track] | None = None,
@@ -1072,7 +1102,9 @@ class MediaResolver:
             to start an audiobook/podcast episode at.
         :param userid: Optional user the playback is attributed to.
         :param queue_id: Optional queue the playback is requested for.
-        :param sort_by: Optional sort key to order tracks by before applying start_item.
+        :param sort_field: For a playlist/album, the sort field of its tracks listing to play
+            the tracks in before applying start_item; the listing's default when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
         :param start_from_beginning: Ignore any saved resume position for a podcast episode.
         :param keep_preceding_items: For a playlist/album, move the tracks before start_item
             behind the rest instead of dropping them, so the full item is returned with
@@ -1093,7 +1125,8 @@ class MediaResolver:
             playlist_tracks = await self.get_playlist_tracks(
                 media_item,
                 start_item,
-                sort_by=sort_by,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
                 keep_preceding_items=keep_preceding_items,
             )
             self._mark_container_played(media_item, playlist_tracks, userid, queue_id)
@@ -1114,7 +1147,13 @@ class MediaResolver:
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
             return await self._resolve_album(
-                media_item, start_item, userid, queue_id, sort_by, keep_preceding_items
+                media_item,
+                start_item,
+                userid,
+                queue_id,
+                sort_field,
+                sort_direction,
+                keep_preceding_items,
             )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
@@ -1196,7 +1235,7 @@ class MediaResolver:
             folder.name,
         )
         try:
-            folder_items = await self.mass.music.browse(folder.path)
+            folder_items = await self.mass.music.browse(folder.path, limit=None)
         except OSError as err:
             # e.g. the (top-level) folder URI points at a path that no longer exists
             raise MediaNotFoundError(f"Folder '{folder.path}' could not be found") from err
@@ -1240,7 +1279,8 @@ class MediaResolver:
         start_item: str | None,
         userid: str | None,
         queue_id: str | None,
-        sort_by: str | None,
+        sort_field: SortField | None,
+        sort_direction: SortDirection | None,
         keep_preceding_items: bool,
     ) -> list[ResolvedItem]:
         """
@@ -1256,7 +1296,9 @@ class MediaResolver:
         :param start_item: Optional item_id/uri of the track to start from.
         :param userid: Optional user the playback is for.
         :param queue_id: Optional queue the playback is requested for.
-        :param sort_by: Optional sort key to order the tracks by before applying start_item.
+        :param sort_field: The sort field of the album's tracks listing to play the tracks in
+            before applying start_item; the disc and track order when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
         :param keep_preceding_items: Move the tracks before start_item behind the rest instead
             of dropping them, so the full album is returned with start_item first.
         """
@@ -1265,7 +1307,11 @@ class MediaResolver:
             album.name,
         )
         listing = await self.mass.music.albums.playback_listing(
-            album.item_id, album.provider, in_library_only=self._album_library_tracks_only()
+            album.item_id,
+            album.provider,
+            in_library_only=self._album_library_tracks_only(),
+            sort_field=sort_field,
+            sort_direction=sort_direction,
         )
         tracks = [track for track in listing.tracks if track.available]
         source, served = await self._album_source(listing, tracks, userid, queue_id)
@@ -1273,7 +1319,7 @@ class MediaResolver:
             self.logger.debug("Playing album %s from %s", album.name, source)
         container = ItemMapping.from_item(album)
         resolved: list[ResolvedItem] = []
-        for track in self._album_order(tracks, start_item, sort_by, keep_preceding_items):
+        for track in self._album_order(tracks, start_item, keep_preceding_items):
             if (played := served.get(cast("str", track.uri))) is not None:
                 item, copy = played
                 resolved.append(
@@ -1519,21 +1565,17 @@ class MediaResolver:
     def _album_order(
         tracks: list[Track],
         start_item: str | None,
-        sort_by: str | None,
         keep_preceding_items: bool,
     ) -> list[Track]:
         """
         Return the tracks of an album in the order to play them, from the start item on.
 
-        :param tracks: The album's tracks, in album order.
+        :param tracks: The album's tracks, in the order to play them.
         :param start_item: Optional item_id/uri of the track to start from; nothing plays
             when the album does not have it.
-        :param sort_by: Optional sort key to order the tracks by before applying start_item.
         :param keep_preceding_items: Move the tracks before start_item behind the rest instead
             of dropping them.
         """
-        if sort_by and sort_by != "track_number":
-            tracks = sort_tracks(tracks, sort_by)
         if start_item is None:
             return tracks
         for idx, track in enumerate(tracks):

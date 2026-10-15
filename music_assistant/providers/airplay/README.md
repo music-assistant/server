@@ -8,7 +8,7 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 
 - **Dual Protocol Support**: The cliairplay binary automatically resolves the best route (RAOP, AirPlay 2 RAOP-compat or native AirPlay 2) from the device's mDNS TXT records
 - **Pairing**: Supports pairing with Apple devices (Apple TV, HomePod, Mac) using HAP/HomeKit pair-setup (via the cliairplay binary) or legacy RAOP pairing (native)
-- **Multi-Room Audio**: Synchronizes playback across multiple AirPlay devices from a single wall-clock start instant, with a shared PTP clock daemon for native AirPlay 2 timing
+- **Multi-Room Audio**: Synchronizes playback across multiple AirPlay devices from a single start instant, with a shared PTP clock daemon for native AirPlay 2 timing
 - **Now-Playing Metadata**: Sends title/artist/album/artwork/progress — as DMAP over the stream for speakers, and additionally as MediaRemote over the native AirPlay 2 flow so an Apple TV renders the now-playing screen
 - **Hi-Res Audio**: 24-bit playback (44.1/48 kHz) over the AirPlay 2 flow, enabled automatically for receivers that advertise 24-bit ALAC
 - **DACP Remote Control**: Receives remote control commands (play/pause/volume/next/previous) from devices while streaming
