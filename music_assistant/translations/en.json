@@ -1079,6 +1079,8 @@
   "provider.airplay.setup_flow.streaming_repair_offer.description": "This device is already paired for streaming. Optionally pair again to replace the stored pairing, for example after the device was reset or its password was changed. You can skip this to keep the current pairing.",
   "provider.airplay.setup_flow.streaming_repair_offer.title": "Pair again (optional)",
   "provider.airplay_receiver.config_entries.connected_players.description": "The Music Assistant players to expose via AirPlay. Every selected player is advertised as its own AirPlay receiver; audio streamed to it plays on that player. Leave empty to keep the plugin idle.",
+  "provider.airplay_receiver.config_entries.latency_offset_ms.description": "Added to the playback delay the AirPlay sender asks for (about 2 seconds on Apple devices). A negative value plays AirPlay audio sooner: set it to about minus the fixed delay of the connected player, for example -500 for a Bluetooth speaker. Too negative a value causes dropouts.",
+  "provider.airplay_receiver.config_entries.latency_offset_ms.label": "Latency offset (ms)",
   "provider.airplay_receiver.config_entries.publish_name_template.description": "How each receiver shown in the AirPlay device list is named, based on the connected player's name.",
   "provider.airplay_receiver.manifest.description": "Receive AirPlay audio streams and use them as a source in Music Assistant.",
   "provider.alexa.config_entries.alexa_language.label": "Alexa Language",
