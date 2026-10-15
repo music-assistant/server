@@ -630,6 +630,21 @@ async def test_on_dj_queue_event_auto_arms_a_show_queue(tmp_path: Path) -> None:
     assert dj.rendered_ahead == ["q1"]
 
 
+async def test_on_dj_queue_event_renders_ahead_only_once_the_dj_is_ready(tmp_path: Path) -> None:
+    """A DJ still clearing the previous host's clips renders nothing ahead."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [])
+    state = dj._arm_dj_state("q1", "amy")
+    event = cast("Any", SimpleNamespace(event=EventType.QUEUE_UPDATED, object_id="q1"))
+
+    await dj._on_dj_queue_event(event)
+    assert dj.rendered_ahead == []
+
+    state.ready = True
+    await dj._on_dj_queue_event(event)
+    assert dj.rendered_ahead == ["q1"]
+
+
 async def test_on_dj_queue_event_does_not_rearm_a_manually_disabled_show(tmp_path: Path) -> None:
     """A user disabling the DJ mid-show must not get it re-armed by the next queue event."""
     dj = _dj_harness(tmp_path)

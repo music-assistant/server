@@ -2060,23 +2060,46 @@ def test_a_clip_on_a_queue_that_plays_nothing_airs_now() -> None:
     assert renderer._seconds_until_airtime(clip) == 0
 
 
-def test_a_clip_airs_once_the_current_record_and_the_ones_before_it_played() -> None:
+@pytest.mark.parametrize(
+    ("between", "expected"),
+    [
+        pytest.param(_song(1, duration=180), 150 + 180, id="record in between"),
+        pytest.param(_song(1, duration=None), 150 + FALLBACK_TRACK_SECONDS, id="unknown length"),
+        pytest.param(_song(1, available=False), 150, id="unplayable record is skipped"),
+    ],
+)
+def test_a_clip_airs_once_the_current_record_and_the_ones_before_it_played(
+    between: QueueItem, expected: float
+) -> None:
     """The wait is the current record's remainder plus every playable record in between."""
     renderer = DummyRenderer()
     clip = _dj_clip_item("djlive", 1)
-    _attach_queue(
-        renderer,
-        [
-            _song(0),
-            _song(1, duration=None),
-            _song(2, available=False),
-            _song(3, duration=180),
-            clip,
-        ],
-    )
+    _attach_queue(renderer, [_song(0), between, clip])
     _play_queue(renderer, elapsed=50)
 
-    assert renderer._seconds_until_airtime(clip) == 150 + FALLBACK_TRACK_SECONDS + 180
+    assert renderer._seconds_until_airtime(clip) == expected
+
+
+def test_a_clip_behind_an_airing_clip_waits_for_its_loaded_length() -> None:
+    """An airing clip counts with the length its stream details know, not a song's length."""
+    renderer = DummyRenderer()
+    airing = _dj_clip_item("djlive", 1)
+    airing.streamdetails = cast("Any", SimpleNamespace(duration=20))
+    clip = _dj_clip_item("djlive", 2)
+    _attach_queue(renderer, [airing, _song(1, duration=180), clip])
+    _play_queue(renderer, elapsed=5)
+
+    assert renderer._seconds_until_airtime(clip) == 15 + 180
+
+
+def test_a_clip_beyond_the_render_ahead_window_airs_now() -> None:
+    """Only a jump to the clip renders it that far ahead, so it airs right away."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), _song(1), _song(2), clip])
+    _play_queue(renderer, elapsed=50)
+
+    assert renderer._seconds_until_airtime(clip) == 0
 
 
 async def test_the_timestamp_names_the_time_the_clip_airs() -> None:

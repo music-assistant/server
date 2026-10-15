@@ -264,7 +264,8 @@ class AIRadioQueueDJMixin:
             else:
                 self._schedule_replan(queue_id)
                 await self._maybe_detach_show_dj(queue_id)
-                if queue_id in self._dj_queues:
+                # an unready state is still clearing the previous host's clips
+                if (state := self._dj_queues.get(queue_id)) is not None and state.ready:
                     self._render_ahead(queue_id)
         # an arm-once record can outlive its DJ state (manual disable, deleted host, a failed
         # arm), so it is reconciled against the queue's current sources independently here
@@ -560,7 +561,7 @@ class AIRadioQueueDJMixin:
         if (queue := self.mass.player_queues.get(queue_id)) is not None:
             guard_index = self._dj_guard_index(queue)
             items = self._dj_queue_items(queue_id)
-            # the failed clip is the one the queue is loading while this runs, and the slot
+            # the failed clip may be the one the queue is loading while this runs, and the slot
             # right after the guard may be handed to the player at any moment: both stay (the
             # clip marked unplayable), since taking either out would shift the indexes the
             # queue's load walks. everything beyond them goes

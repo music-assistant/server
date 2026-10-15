@@ -474,12 +474,16 @@ class AIRadioRenderMixin:
         if queue is None or queue.current_index is None:
             return 0
         clip_index = self.mass.player_queues.index_by_id(queue_id, queue_item.queue_item_id)
-        if clip_index is None or clip_index <= queue.current_index:
+        # beyond the render-ahead window only a jump to the clip renders it, so it airs now
+        if clip_index is None or not 0 < clip_index - queue.current_index <= RENDER_AHEAD_ITEMS:
             return 0
         current, *between = self.mass.player_queues.items(
             queue_id, limit=clip_index - queue.current_index, offset=queue.current_index
         )
-        remaining = (current.duration or FALLBACK_TRACK_SECONDS) - queue.corrected_elapsed_time
+        # a clip's queue item only learns its length once it streamed, its stream details
+        # know it as soon as it is loaded
+        duration = (current.streamdetails and current.streamdetails.duration) or current.duration
+        remaining = (duration or FALLBACK_TRACK_SECONDS) - queue.corrected_elapsed_time
         # the queue skips an unplayable item, so it takes no airtime
         return max(0, remaining) + sum(
             item.duration or FALLBACK_TRACK_SECONDS for item in between if item.available
