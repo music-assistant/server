@@ -85,6 +85,7 @@ async def test_stop_keeps_a_parked_item_frozen() -> None:
 async def test_stop_republishes_when_the_display_shows_another_item() -> None:
     """A stop that cancelled the push of a new item publishes that item."""
     mock = _player_mock()
+    mock.synced_to = None
     mock.state.current_media = PlayerMedia(uri="track-2", queue_item_id="item-2")
     mock._published_item = ("track-1", "item-1")
 
@@ -94,6 +95,25 @@ async def test_stop_republishes_when_the_display_shows_another_item() -> None:
     assert (
         mock.mass.create_task.call_args.kwargs["task_id"] == f"sendspin_metadata_{mock.player_id}"
     )
+
+
+@pytest.mark.parametrize(
+    ("synced_to", "published_item"),
+    [("leader", ("track-1", "item-1")), (None, None)],
+    ids=["synced_member", "nothing_published"],
+)
+async def test_stop_republishes_nothing_where_nothing_was_shown(
+    synced_to: str | None, published_item: tuple[str, str] | None
+) -> None:
+    """A synced member or an empty display gets no metadata from the stop."""
+    mock = _player_mock()
+    mock.synced_to = synced_to
+    mock.state.current_media = PlayerMedia(uri="track-2", queue_item_id="item-2")
+    mock._published_item = published_item
+
+    await SendspinPlayer.stop(mock)
+
+    mock.mass.create_task.assert_not_called()
 
 
 async def test_stop_without_current_media_clears_metadata() -> None:

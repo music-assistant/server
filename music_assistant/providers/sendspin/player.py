@@ -1521,10 +1521,12 @@ class SendspinPlayer(SendspinBasePlayer):
             # notify again; bridges already torn down ignore it.
             self._notify_bridges_explicit_stop(self.api.group.clients)
         # The stop cancelled any push still loading, which may have left the previous item.
-        if (media := self.state.current_media) is not None and (
-            media.uri,
-            media.queue_item_id,
-        ) != self._published_item:
+        if (
+            self.synced_to is None
+            and self._published_item is not None
+            and (media := self.state.current_media) is not None
+            and (media.uri, media.queue_item_id) != self._published_item
+        ):
             self.mass.create_task(
                 self.send_current_media_metadata(),
                 task_id=f"sendspin_metadata_{self.player_id}",
