@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, call, patch
@@ -1190,6 +1191,54 @@ async def test_broadcast_play_path_carries_token(
 
         payload = await ws.receive_json(timeout=5)
         assert payload["path"] == f"/stream/msx_test?token={provider.get_stream_token('msx_test')}"
+        await ws.close()
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize(
+    ("state", "elapsed_age", "expected"),
+    [(PlaybackState.PLAYING, 5.0, 125.0), (PlaybackState.PAUSED, 5.0, 120.0)],
+)
+async def test_state_sync_carries_decoder_position(
+    provider: MSXBridgeProvider,
+    mass_mock: Mock,
+    state: PlaybackState,
+    elapsed_age: float,
+    expected: float,
+) -> None:
+    """A new plugin page must learn the running decoder position, not start at zero."""
+    player = _register_msx_player(mass_mock, provider, "msx_test")
+    player._attr_playback_state = state
+    player._attr_current_media = PlayerMedia(uri="library://track/1", duration=300)
+    player._attr_elapsed_time = 120.0
+    player._attr_elapsed_time_last_updated = time.time() - elapsed_age
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws?device_id=test")
+        payload = await ws.receive_json()
+        assert payload["type"] == "state_sync"
+        assert payload["position"] == pytest.approx(expected, abs=1.0)
+        await ws.close()
+    finally:
+        await client.close()
+
+
+async def test_state_sync_position_is_null_without_playback(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """An idle player reports no decoder position."""
+    _register_msx_player(mass_mock, provider, "msx_test")
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws?device_id=test")
+        payload = await ws.receive_json()
+        assert payload["type"] == "state_sync"
+        assert payload["position"] is None
         await ws.close()
     finally:
         await client.close()

@@ -173,12 +173,24 @@
                 var msg = JSON.parse(ev.data);
                 if (msg.type === "state_sync") {
                     var samePlayback = playbackId && playbackId === msg.playback_id;
+                    var adoptPlayback = !playbackId && msg.enabled && msg.playback_id
+                        && typeof msg.position === "number" && isFinite(msg.position);
                     if (!msg.enabled || (!samePlayback && playbackId)) {
                         stopPositionTimer();
                         tvx.InteractionPlugin.executeAction("[player:eject|player:hide]");
                     }
                     applyClockContext(msg);
-                    if (samePlayback && msg.state === "playing") startPositionTimer(getCurrentPosition());
+                    if (adoptPlayback && msg.state === "playing") {
+                        // A new page (e.g. Search) joins playback that is already running.
+                        startPositionTimer(msg.position);
+                    } else if (adoptPlayback && msg.state === "paused") {
+                        stopPositionTimer();
+                        pausedAtPosition = msg.position;
+                        positionStartValue = msg.position;
+                        positionStartTime = 0;
+                    } else if (samePlayback && msg.state === "playing") {
+                        startPositionTimer(getCurrentPosition());
+                    }
                 } else if (msg.type === "clock_reset") {
                     applyClockContext(msg);
                     resetPlaybackClock();
@@ -268,6 +280,7 @@
     function MAHandler() {}
 
     function getCurrentPosition() {
+        if (!positionStartTime) return positionStartValue;
         return positionStartValue + (Date.now() / 1000 - positionStartTime);
     }
 

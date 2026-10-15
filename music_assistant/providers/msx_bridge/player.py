@@ -185,6 +185,23 @@ class MSXPlayer(Player):
             "served_duration": self._served_duration(),
         }
 
+    def decoder_position(self) -> float | None:
+        """Return the current position within the audio served to the TV, if playing."""
+        if (
+            self._attr_playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            or self._attr_elapsed_time is None
+        ):
+            return None
+        position = float(self._attr_elapsed_time)
+        if (
+            self._attr_playback_state == PlaybackState.PLAYING
+            and self._attr_elapsed_time_last_updated is not None
+        ):
+            position += max(0.0, time.time() - self._attr_elapsed_time_last_updated)
+        if (duration := self._served_duration()) is not None:
+            position = min(position, duration)
+        return max(0.0, position)
+
     def bind_native_completion(self, token: str, media: PlayerMedia | None) -> None:
         """Bind one native decoder request to its current media generation."""
         if media is not None and self.current_media is media and self.config.enabled:

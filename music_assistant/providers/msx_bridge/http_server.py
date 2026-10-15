@@ -1215,6 +1215,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 "type": "state_sync",
                 "enabled": player.config.enabled,
                 "state": player.playback_state.value,
+                "position": player.decoder_position(),
                 **player.clock_context(),
             }
         )
