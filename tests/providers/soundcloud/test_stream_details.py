@@ -167,6 +167,8 @@ async def test_stream_url_prefers_full_aac_over_preview_cdn(
     )
 
     assert result == AAC_CDN
+    # the preview transcoding is resolved once, not again on the way to AAC
+    assert provider._soundcloud.get.await_count == 2
 
 
 async def test_stream_url_falls_back_to_preview(provider: SoundcloudMusicProvider) -> None:

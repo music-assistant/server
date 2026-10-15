@@ -523,29 +523,27 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         transcodings = track_info.get("media", {}).get("transcodings", [])
         # a 30 second preview is only used when the track has no full stream at all
         preview_url: str | None = None
-        # Two passes: prefer progressive mp3, fall back to any mp3 or aac (which may be HLS)
-        for preferred_protocol in ("progressive", None):
-            for transcoding in transcodings:
-                preset = transcoding.get("preset", "")
-                protocol = transcoding.get("format", {}).get("protocol", "")
-                if not preset.startswith(("mp3", "aac")):
-                    continue
-                if preferred_protocol is not None and protocol != preferred_protocol:
-                    continue
-                if preview_url and transcoding.get("snipped"):
-                    continue
-                stream_url = (
-                    f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
-                    f"&track_authorization={track_auth}"
-                )
-                req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
-                if not isinstance(req, dict) or "url" not in req:
-                    continue
-                url = str(req["url"])
-                if transcoding.get("snipped") or urlparse(url).hostname == PREVIEW_CDN_HOST:
-                    preview_url = preview_url or url
-                    continue
-                return url
+        # prefer progressive mp3, then any other mp3 or aac (which may be HLS)
+        for transcoding in sorted(
+            transcodings,
+            key=lambda item: item.get("format", {}).get("protocol") != "progressive",
+        ):
+            if not transcoding.get("preset", "").startswith(("mp3", "aac")):
+                continue
+            if preview_url and transcoding.get("snipped"):
+                continue
+            stream_url = (
+                f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
+                f"&track_authorization={track_auth}"
+            )
+            req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
+            if not isinstance(req, dict) or "url" not in req:
+                continue
+            url = str(req["url"])
+            if transcoding.get("snipped") or urlparse(url).hostname == PREVIEW_CDN_HOST:
+                preview_url = preview_url or url
+                continue
+            return url
         return preview_url
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
