@@ -1910,7 +1910,6 @@ async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> 
             if {"media_type", id_column, *(("provider",) if scope else ())}
             <= await _table_columns(database, table)
         ]
-        shortcut_rewrites: dict[str, str] = {}
         for row in await database.get_rows_from_query(
             f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
             "WHERE media_type = 'playlist' AND provider_domain = 'apple_music' "
@@ -1920,29 +1919,31 @@ async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> 
             playlist = await database.get_row(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
             if playlist is None:
                 continue
-            values = {column: playlist[column] for column in copied_columns}
-            values["metadata"] = _station_radio_metadata(values["metadata"])
-            radio_id = await database.insert(
-                DB_TABLE_RADIOS,
-                {
-                    **{key: value for key, value in values.items() if value is not None},
-                    "is_dynamic": True,
-                    "is_endless": True,
-                },
-            )
-            for table, id_column, scope in references:
-                where = f"media_type = 'playlist' AND {id_column} = :old_id{scope}"
-                params = {"old_id": row["item_id"], "new_id": radio_id}
-                await database.execute(
-                    f"UPDATE OR IGNORE {table} SET media_type = 'radio', {id_column} = :new_id "
-                    f"WHERE {where}",
-                    params,
+            # one commit per station, so a hard stop leaves it either fully moved or untouched
+            async with database.deferred_commit():
+                values = {column: playlist[column] for column in copied_columns}
+                values["metadata"] = _station_radio_metadata(values["metadata"])
+                radio_id = await database.insert(
+                    DB_TABLE_RADIOS,
+                    {
+                        **{key: value for key, value in values.items() if value is not None},
+                        "is_dynamic": True,
+                        "is_endless": True,
+                    },
                 )
-                await database.execute(f"DELETE FROM {table} WHERE {where}", params)
-            await database.delete(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
-            old_uri = create_uri(MediaType.PLAYLIST, "library", str(row["item_id"]))
-            shortcut_rewrites[old_uri] = create_uri(MediaType.RADIO, "library", str(radio_id))
-        await _park_shortcut_rewrites(database, shortcut_rewrites)
+                for table, id_column, scope in references:
+                    where = f"media_type = 'playlist' AND {id_column} = :old_id{scope}"
+                    params = {"old_id": row["item_id"], "new_id": radio_id}
+                    await database.execute(
+                        f"UPDATE OR IGNORE {table} SET media_type = 'radio', {id_column} = :new_id "
+                        f"WHERE {where}",
+                        params,
+                    )
+                    await database.execute(f"DELETE FROM {table} WHERE {where}", params)
+                await database.delete(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
+                old_uri = create_uri(MediaType.PLAYLIST, "library", str(row["item_id"]))
+                new_uri = create_uri(MediaType.RADIO, "library", str(radio_id))
+                await _park_shortcut_rewrites(database, {old_uri: new_uri})
     # plays of a station outside the library are keyed by the station id
     for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
         columns = await _table_columns(database, table)
