@@ -202,6 +202,36 @@ async def test_library_artist_albums_filter_types_before_paging(mass: MusicAssis
     assert [item.name for item in page] == ["Single"]
 
 
+async def test_library_artist_albums_filter_favorites_before_paging(
+    mass: MusicAssistant,
+) -> None:
+    """Artist album favorites are scoped to the current user and applied before paging."""
+    albums = [
+        await mass.music.albums.add_item_to_library(_album("a1", "Zebra")),
+        await mass.music.albums.add_item_to_library(_album("a2", "Apple")),
+    ]
+    artist_id = await _library_artist_id(mass)
+    favorite_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    await mass.music.favorites.set(
+        MediaType.ALBUM, int(albums[0].item_id), True, [favorite_user.user_id]
+    )
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=favorite_user,
+    ):
+        page = await mass.music.artists.albums(
+            artist_id,
+            "library",
+            favorite_only=True,
+            sort_field=SortField.NAME,
+            limit=1,
+            offset=0,
+        )
+
+    assert [item.name for item in page] == ["Zebra"]
+
+
 async def test_appears_on_follows_the_listing_contract(mass: MusicAssistant) -> None:
     """The albums an artist appears on stay newest first by default, and sort, search and page."""
     for index, (name, year) in enumerate((("Early", 1990), ("Late", 2020), ("Middle", 2005))):

@@ -709,6 +709,16 @@ async def test_audiobook_collections_collapse_and_preserve_order(
     )
     assert [item.name for item in page.items] == ["Alpha 1.5"]
 
+    alpha_books = collections["Alpha Series"].items
+    await _like(mass, MediaType.AUDIOBOOK, str(alpha_books[0].item_id), True)
+    with patch(GET_CURRENT_USER, return_value=LISTING_USER):
+        favorites = await controller.get_collection(
+            collections["Alpha Series"].item_id,
+            favorite_only=True,
+            limit=1,
+        )
+    assert [item.name for item in favorites.items] == ["Alpha 1"]
+
 
 async def test_artist_audiobooks_collapse_collections(
     mass: MusicAssistant,

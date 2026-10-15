@@ -323,6 +323,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int | None = 500,
         offset: int = 0,
         album_types: list[AlbumType] | None = None,
+        favorite_only: bool = False,
     ) -> list[Album]:
         """
         Return the albums of an artist, searched, sorted and paged.
@@ -341,6 +342,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
         :param album_types: Only list albums whose type is included.
+        :param favorite_only: Only list albums the current user likes.
         :raises InvalidDataError: When the sort field is not offered for artist albums.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -359,6 +361,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
         if album_types:
             albums = [album for album in albums if album.album_type in album_types]
+        if favorite_only:
+            albums = [album for album in albums if album.favorite is True]
         return apply_listing(
             albums,
             ListingType.ARTIST_ALBUMS,

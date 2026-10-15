@@ -826,6 +826,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None = None,
         limit: int | None = None,
         offset: int = 0,
+        favorite_only: bool = False,
     ) -> MediaCollection[ItemCls]:
         """
         Get a collection and optionally search or page its items.
@@ -834,6 +835,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param search: Only include items whose name contains this text.
         :param limit: Maximum number of items to return; None or 0 returns them all.
         :param offset: Number of items to skip.
+        :param favorite_only: Only include items the current user likes.
         """
         name = get_collection_name_from_item_id(item_id)
         query_params: dict[str, Any] = {"collection_name": name}
@@ -863,6 +865,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 for item in items
                 if normalized_search in create_safe_string(item.name, True, True)
             )
+        if favorite_only:
+            items = UniqueList(item for item in items if item.favorite is True)
         if offset or limit:
             items = UniqueList(items[offset : offset + limit] if limit else items[offset:])
         return cast(
