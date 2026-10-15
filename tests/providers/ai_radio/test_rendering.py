@@ -2123,6 +2123,16 @@ def test_a_clip_airs_once_the_current_record_and_the_ones_before_it_played(
     assert renderer._seconds_until_airtime(clip) == expected
 
 
+def test_an_unplayable_current_record_takes_no_airtime() -> None:
+    """A record the queue is about to skip adds nothing to the wait."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0, available=False), _song(1, duration=180), clip])
+    _play_queue(renderer)
+
+    assert renderer._seconds_until_airtime(clip) == 180
+
+
 def test_a_clip_behind_an_airing_clip_waits_for_its_loaded_length() -> None:
     """An airing clip counts with the length its stream details know, not a song's length."""
     renderer = DummyRenderer()

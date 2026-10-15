@@ -504,7 +504,11 @@ class AIRadioRenderMixin:
         # a clip's queue item only learns its length once it streamed, its stream details
         # know it as soon as it is loaded
         duration = (current.streamdetails and current.streamdetails.duration) or current.duration
-        remaining = (duration or FALLBACK_TRACK_SECONDS) - queue.corrected_elapsed_time
+        remaining = (
+            (duration or FALLBACK_TRACK_SECONDS) - queue.corrected_elapsed_time
+            if current.available
+            else 0
+        )
         # the queue skips an unplayable item, so it takes no airtime
         return max(0, remaining) + sum(
             item.duration or FALLBACK_TRACK_SECONDS for item in between if item.available
