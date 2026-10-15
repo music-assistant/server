@@ -313,6 +313,7 @@ class CueSheetHandler:
                 output_format=streamdetails.audio_format,
                 extra_input_args=["-ss", str(actual_seek), "-t", str(remaining_duration)],
                 pass_fds=() if fd is None else (fd,),
+                verify_ssl=streamdetails.verify_ssl,
             ):
                 yield chunk
         finally:

@@ -53,7 +53,7 @@ async def test_stop_notifies_bridges_between_group_stop_and_session_cancel() -> 
     """
     mock = _player_mock()
     order: list[str] = []
-    mock.api.group.stop.side_effect = lambda: order.append("group_stop")
+    mock.api.group.stop.side_effect = lambda **_kwargs: order.append("group_stop")
     mock._notify_bridges_explicit_stop = MagicMock(side_effect=lambda _: order.append("notify"))
     mock.playback_session.cancel.side_effect = lambda _reason: order.append("cancel")
 

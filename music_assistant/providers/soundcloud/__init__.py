@@ -59,6 +59,8 @@ SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 # Such a track does still advertise plain mp3 transcodings, but requesting one of those returns
 # a 404, so the presence of an encrypted protocol is what tells us the track is unplayable.
 DRM_PROTOCOL_MARKER = "encrypted"
+# 30 second previews (policy SNIP) are served from their own CDN, even for a progressive mp3
+PREVIEW_CDN_HOST = "cf-preview-media.sndcdn.com"
 
 
 class DrmProtectedTrackError(MediaNotFoundError):
@@ -519,23 +521,30 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not track_auth:
             return None
         transcodings = track_info.get("media", {}).get("transcodings", [])
-        # Two passes: prefer progressive mp3, fall back to any mp3 (which may be HLS)
-        for preferred_protocol in ("progressive", None):
-            for transcoding in transcodings:
-                preset = transcoding.get("preset", "")
-                protocol = transcoding.get("format", {}).get("protocol", "")
-                if not preset.startswith("mp3"):
-                    continue
-                if preferred_protocol is not None and protocol != preferred_protocol:
-                    continue
-                stream_url = (
-                    f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
-                    f"&track_authorization={track_auth}"
-                )
-                req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
-                if isinstance(req, dict) and "url" in req:
-                    return str(req["url"])
-        return None
+        # a 30 second preview is only used when the track has no full stream at all
+        preview_url: str | None = None
+        # prefer progressive mp3, then any other mp3 or aac (which may be HLS)
+        for transcoding in sorted(
+            transcodings,
+            key=lambda item: item.get("format", {}).get("protocol") != "progressive",
+        ):
+            if not transcoding.get("preset", "").startswith(("mp3", "aac")):
+                continue
+            if preview_url and transcoding.get("snipped"):
+                continue
+            stream_url = (
+                f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
+                f"&track_authorization={track_auth}"
+            )
+            req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
+            if not isinstance(req, dict) or "url" not in req:
+                continue
+            url = str(req["url"])
+            if transcoding.get("snipped") or urlparse(url).hostname == PREVIEW_CDN_HOST:
+                preview_url = preview_url or url
+                continue
+            return url
+        return preview_url
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -553,7 +562,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         # that makes a fresh HTTP request to the stored URL, which may have expired.
         expiration = 30  # conservative default if expiry cannot be determined
         if parsed_qs := parse_qs(urlparse(url).query):
-            for param in ("Expires", "expire"):
+            for param in ("Expires", "expires", "expire"):
                 if expire_ts := parsed_qs.get(param, [None])[0]:
                     expiration = max(30, int(expire_ts) - int(time.time()) - 10)
                     break
@@ -566,7 +575,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 content_type=ContentType.UNKNOWN,
             ),
             stream_type=StreamType.HLS
-            if url.startswith("https://cf-hls-media.sndcdn.com")
+            if (
+                url.startswith("https://cf-hls-media.sndcdn.com")
+                or urlparse(url).path.endswith(".m3u8")
+            )
             else StreamType.HTTP,
             path=url,
             can_seek=True,

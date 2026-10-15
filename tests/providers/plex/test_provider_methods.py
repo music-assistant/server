@@ -473,6 +473,7 @@ class TestStreamDetailsGuards:
         plex_track = _make_stream_track(has_audio_streams=False)
         provider._get_data = AsyncMock(return_value=plex_track)
         provider._plex_server.url.return_value = "http://plex.local/file.flac?download=1"
+        provider._verify_ssl = False
 
         result = await provider.get_stream_details("/library/metadata/1", MediaType.TRACK)
 
@@ -480,6 +481,7 @@ class TestStreamDetailsGuards:
         assert result.path == "http://plex.local/file.flac?download=1"
         assert result.audio_format.content_type == ContentType.FLAC
         assert result.audio_format.bit_rate is None
+        assert result.verify_ssl is False
 
     @pytest.mark.asyncio
     async def test_music_stream_transcode_without_size_uses_download(self) -> None:

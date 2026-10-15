@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, cast
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
@@ -13,7 +13,9 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import CONF_HTTP_PROFILE
+from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
 from music_assistant.providers.msx_bridge.player import MSXPlayer
+from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 from tests.providers.msx_bridge.factories import queue_item as make_queue_item
 
 # --- Initialization and properties ---
@@ -40,16 +42,14 @@ def test_init_defaults(player: MSXPlayer) -> None:
     assert player._attr_available is True
     assert player._attr_powered is True
     assert player._attr_volume_level == 100
-    assert player.output_format == "mp3"
     assert player.requires_flow_mode is False
 
 
 def test_init_custom_params(provider: Any) -> None:
-    """MSXPlayer should accept custom name and output_format."""
-    p = MSXPlayer(provider, "msx_custom", name="Living Room TV", output_format="flac")
+    """MSXPlayer should accept a custom name."""
+    p = MSXPlayer(provider, "msx_custom", name="Living Room TV")
     cast("Any", p).update_state = Mock()
     assert p._attr_name == "Living Room TV"
-    assert p.output_format == "flac"
 
 
 async def test_http_profile_defaults_to_chunked(player: MSXPlayer) -> None:
@@ -316,6 +316,23 @@ async def test_volume_set(player: MSXPlayer) -> None:
     await player.volume_set(75)
     assert player._attr_volume_level == 75
     _update_state_mock(player).assert_called()
+
+
+async def test_volume_set_reaches_native_client(
+    player: MSXPlayer, provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A volume command must reach the TV, not only change the MA state."""
+    server = MSXHTTPServer(provider, 0)
+    provider.http_server = server
+    ws = Mock(closed=False, send_str=AsyncMock())
+    server._ws_clients[player.player_id] = {ws}
+    tasks: list[asyncio.Task[Any]] = []
+    mass_mock.create_task = Mock(side_effect=lambda coro: tasks.append(asyncio.ensure_future(coro)))
+
+    await player.volume_set(25)
+    await asyncio.gather(*tasks)
+
+    ws.send_str.assert_called_once_with('{"type": "volume", "level": 25}')
 
 
 async def test_poll_updates_elapsed(player: MSXPlayer) -> None:

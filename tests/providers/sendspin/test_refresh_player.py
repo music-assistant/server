@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
 
 import pytest
+from aiosendspin.server import ClientConnectedEvent
 from music_assistant_models.enums import PlayerType
 
 import music_assistant.providers.sendspin.player as player_module
@@ -21,6 +23,7 @@ from music_assistant.providers.sendspin.player import (
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
+    from aiosendspin.server import SendspinServer
     from aiosendspin.server.client import SendspinClient
 
     from music_assistant.mass import MusicAssistant
@@ -32,6 +35,7 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
     provider.mass = cast(
         "MusicAssistant",
         SimpleNamespace(
+            loop=asyncio.get_running_loop(),
             players=SimpleNamespace(get_player=lambda _client_id: player),
             create_task=Mock(side_effect=AssertionError("refresh must not spawn tasks")),
         ),
@@ -67,6 +71,17 @@ async def test_refresh_player_ignores_uninitialized_player() -> None:
     await provider._refresh_player("c")
     player.on_config_updated.assert_not_awaited()
     player.update_state.assert_not_called()
+
+
+async def test_reconnect_recalculates_the_player_state_once_attached() -> None:
+    """A reconnect that reuses the player, as right after an unpair, re-reads its setup state."""
+    player = _mock_player()
+    provider = _make_provider(player)
+    provider.event_cb(cast("SendspinServer", None), ClientConnectedEvent("c"))
+    # aiosendspin attaches the new connection's roles after the event, so nothing is read yet
+    player.update_state.assert_not_called()
+    await asyncio.sleep(0)
+    player.update_state.assert_called_once()
 
 
 class _StubPlayer:

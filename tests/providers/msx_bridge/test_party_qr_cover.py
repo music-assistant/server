@@ -23,9 +23,13 @@ from PIL import Image
 
 from music_assistant.helpers.util import join_task
 from music_assistant.providers.msx_bridge import party as party_module
-from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer, PartyInfo
+from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
 from music_assistant.providers.msx_bridge.mappers import PlaylistTrack, map_tracks_to_msx_playlist
-from music_assistant.providers.msx_bridge.party import COVER_FETCH_MAX_BYTES, stamp_qr_on_cover
+from music_assistant.providers.msx_bridge.party import (
+    COVER_FETCH_MAX_BYTES,
+    PartyInfo,
+    stamp_qr_on_cover,
+)
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 from tests.common import collect_loop_errors
 
