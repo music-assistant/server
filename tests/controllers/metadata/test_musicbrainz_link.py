@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from itertools import count
 from time import time
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
@@ -91,6 +92,27 @@ def _musicbrainz(rate_limited: bool = False) -> Mock:
     """Return a MusicBrainz provider stub reporting the given rate limit state."""
     musicbrainz = Mock()
     musicbrainz.rate_limited = rate_limited
+    # a count that moves on every read, so each item reads as having sent a request
+    type(musicbrainz).request_count = PropertyMock(side_effect=count())
+    return musicbrainz
+
+
+def _cache_aware(ctrl: MetaDataController, *, cached: Sequence[Mock] = ()) -> Mock:
+    """
+    Give a controller a MusicBrainz stub that only counts the requests of uncached items.
+
+    The stubbed link step sends a request for every item except the cached ones.
+
+    :param cached: Items the link step answers from the cache.
+    """
+    musicbrainz = Mock(rate_limited=False, request_count=0)
+    _mass(ctrl).get_provider = Mock(return_value=musicbrainz)
+
+    async def _link(item: Mock) -> None:
+        if item not in cached:
+            musicbrainz.request_count += 1
+
+    _linked(ctrl).side_effect = _link
     return musicbrainz
 
 
@@ -193,6 +215,40 @@ def _queue(
     music.artists.get_library_items_by_query = _answer("artists", artists, relink_artists)
     music.tracks.get_library_items_by_query = _answer("tracks", tracks, ())
     return queried
+
+
+def _pending_albums(
+    ctrl: MetaDataController, albums: Sequence[Mock], *, stuck: Sequence[Mock] = ()
+) -> list[int]:
+    """
+    Stub the album selection to return the albums not yet looked up, return the limits asked.
+
+    The stubbed link step marks each album looked up, except the stuck ones.
+
+    :param albums: The albums due for identification, newest first.
+    :param stuck: Albums whose lookup never completes.
+    """
+    limits: list[int] = []
+    for album in albums:
+        album.metadata.last_musicbrainz_lookup = None
+    link_step = _linked(ctrl).side_effect
+
+    async def _query(**kwargs: Any) -> list[Mock]:
+        if kwargs["extra_query_parts"][0] != _albums_to_identify_query():
+            return []
+        limits.append(kwargs["limit"])
+        due = [album for album in albums if album.metadata.last_musicbrainz_lookup is None]
+        return due[: kwargs["limit"]]
+
+    async def _link(item: Mock) -> None:
+        if link_step:
+            await link_step(item)
+        if item not in stuck:
+            item.metadata.last_musicbrainz_lookup = NOW
+
+    _mass(ctrl).music.albums.get_library_items_by_query = AsyncMock(side_effect=_query)
+    _linked(ctrl).side_effect = _link
+    return limits
 
 
 def _linked(ctrl: MetaDataController) -> AsyncMock:
@@ -327,6 +383,73 @@ async def test_link_run_counts_its_progress_from_one() -> None:
         (1, MUSICBRAINZ_LINK_BATCH_SIZE),
         (2, MUSICBRAINZ_LINK_BATCH_SIZE),
     ]
+
+
+# --------------------------------------------------------------------------- #
+#  items answered from the cache                                               #
+# --------------------------------------------------------------------------- #
+
+
+async def test_link_run_items_answered_from_the_cache_leave_the_budget() -> None:
+    """Only items that sent a request use up the budget, cached ones come on top."""
+    ctrl = _controller()
+    albums = _albums(100)
+    _cache_aware(ctrl, cached=albums[:30])
+    limits = _pending_albums(ctrl, albums)
+
+    await ctrl._link_library_to_musicbrainz()
+
+    assert _linked(ctrl).await_count == 30 + MUSICBRAINZ_LINK_BATCH_SIZE
+    assert limits == [MUSICBRAINZ_LINK_BATCH_SIZE, MUSICBRAINZ_LINK_BATCH_SIZE - 20]
+    assert ctrl._musicbrainz_link_summary is not None
+    assert ctrl._musicbrainz_link_summary["processed"] == {"albums": 80}
+
+
+async def test_link_run_selects_a_phase_again_while_budget_remains() -> None:
+    """A phase answered from the cache is selected again until it runs dry, then the next starts."""
+    ctrl = _controller()
+    albums = _albums(120)
+    _cache_aware(ctrl, cached=albums)
+    limits = _pending_albums(ctrl, albums)
+    artists_query = _mass(ctrl).music.artists.get_library_items_by_query
+
+    await ctrl._link_library_to_musicbrainz()
+
+    assert _linked(ctrl).await_count == 120
+    assert limits == [MUSICBRAINZ_LINK_BATCH_SIZE] * 3
+    assert artists_query.await_args_list[0].kwargs["limit"] == MUSICBRAINZ_LINK_BATCH_SIZE
+
+
+async def test_link_run_ends_a_phase_that_only_selects_items_it_already_handled() -> None:
+    """Items whose lookup keeps failing are not retried in the same run."""
+    ctrl = _controller()
+    albums = _albums(60)
+    _cache_aware(ctrl, cached=albums)
+    limits = _pending_albums(ctrl, albums, stuck=albums[:50])
+    artists_query = _mass(ctrl).music.artists.get_library_items_by_query
+
+    with patch(_REPORT_FAILURE):
+        await ctrl._link_library_to_musicbrainz()
+
+    assert _linked(ctrl).await_count == 50
+    assert limits == [MUSICBRAINZ_LINK_BATCH_SIZE] * 2
+    artists_query.assert_awaited()
+    assert ctrl._musicbrainz_link_summary is not None
+    assert ctrl._musicbrainz_link_summary["failed"] == 50
+
+
+async def test_link_run_pauses_only_after_an_item_that_sent_a_request() -> None:
+    """An item answered from the cache is not followed by the pause."""
+    ctrl = _controller()
+    albums = _albums(5)
+    _cache_aware(ctrl, cached=albums[1:3])
+    _queue(ctrl, albums=albums)
+
+    with patch(f"{_CONTROLLER}.asyncio.sleep", AsyncMock()) as sleep:
+        await ctrl._link_library_to_musicbrainz()
+
+    # after the first and the fourth album
+    assert sleep.await_count == 2
 
 
 # --------------------------------------------------------------------------- #

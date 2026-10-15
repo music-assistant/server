@@ -31,6 +31,8 @@ class MusicBrainzAPIClient:
         """Initialize the API client."""
         self.mass = mass
         self.logger = logging.getLogger(__name__)
+        # requests sent to MusicBrainz, cached answers excluded
+        self.request_count = 0
 
     @use_cache(86400 * 30)  # Cache for 30 days
     @throttle_with_retries
@@ -60,6 +62,7 @@ class MusicBrainzAPIClient:
 
     async def _request(self, endpoint: str, **params: str) -> Any:
         """Perform one request against the MusicBrainz API and return its JSON body."""
+        self.request_count += 1
         url = f"{MB_BASE_URL}/{endpoint}"
         headers = {
             "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"

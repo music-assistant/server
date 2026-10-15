@@ -96,11 +96,12 @@ METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 
 METADATA_SCAN_BATCH_SIZE = 25
 
-# how many library items one MusicBrainz link run identifies, across all of its phases
+# how many library items one MusicBrainz link run identifies with a request to MusicBrainz,
+# across all of its phases; items answered from the cache do not count
 MUSICBRAINZ_LINK_BATCH_SIZE = 50
 
-# seconds between two items of a MusicBrainz link run, keeping the mirror free for the
-# lookups users are waiting on
+# seconds after an item of a MusicBrainz link run that sent a request to MusicBrainz, keeping
+# the mirror free for the lookups users are waiting on
 MUSICBRAINZ_LINK_ITEM_INTERVAL = 2.0
 
 # seconds one item of a MusicBrainz link run may take before it is given up on

@@ -2274,6 +2274,19 @@ async def test_browse_release_groups_is_empty_for_an_unknown_artist() -> None:
         assert api_client.get_browse_data.await_count == 1
 
 
+async def test_api_client_counts_requests_but_not_cached_answers() -> None:
+    """A request to MusicBrainz is counted, an answer from the cache is not."""
+    client, mass = _api_client({"id": RADIOHEAD_MBID})
+
+    await client.get_data(f"artist/{RADIOHEAD_MBID}")
+    mass.cache.get_with_freshness.return_value = ({"id": RADIOHEAD_MBID}, True, True)
+    await client.get_data(f"artist/{RADIOHEAD_MBID}")
+    await asyncio.sleep(0)
+
+    assert mass.http_session.get.call_count == 1
+    assert client.request_count == 1
+
+
 # ---------------------------------------------------------------------------
 # api client
 # ---------------------------------------------------------------------------

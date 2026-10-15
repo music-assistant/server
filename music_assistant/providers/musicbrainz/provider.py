@@ -135,6 +135,11 @@ class MusicbrainzProvider(MetadataProvider):
         """Whether MusicBrainz is currently holding requests back with a rate limit."""
         return self._api_client.throttler.cooldown_remaining > 0
 
+    @property
+    def request_count(self) -> int:
+        """Number of requests sent to MusicBrainz so far, answers from the cache not included."""
+        return self._api_client.request_count
+
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Return MusicBrainz recommendation folders (artist birthdays/memorials and group founded/disbanded)."""
         return await self._recommendations.get_recommendations()

@@ -692,62 +692,62 @@ class MetaDataController(
         processed: dict[str, int] = {}
         linked = not_found = failed = 0
         rate_limited = False
+        # only items that sent a request to MusicBrainz use up the budget, items answered
+        # from the cache are free
         budget = MUSICBRAINZ_LINK_BATCH_SIZE
+        requested = False
         for phase in self._musicbrainz_link_phases(linked_domains):
             if budget <= 0 or rate_limited:
                 break
             update_current_task_progress_text(f"Searching for {phase.name}")
-            items: list[Artist | Album | Track] = await self._get_scan_batch(
-                phase.controller,
-                phase.table,
-                phase.query,
-                phase.params,
-                limit=budget,
-                sort_field=SortField.TIMESTAMP_ADDED,
-                sort_direction=SortDirection.DESC,
-            )
-            for item in items:
-                if musicbrainz.rate_limited:
-                    # the pacing already keeps this run within the limit, so a cooldown
-                    # means the mirror is busy: leave the rest to the next run
-                    update_current_task_progress_text(
-                        "MusicBrainz is rate limiting, resuming next run"
-                    )
-                    rate_limited = True
-                    break
-                if processed:
-                    # the pause between two items, so the run's first one starts right away
-                    await asyncio.sleep(MUSICBRAINZ_LINK_ITEM_INTERVAL)
-                update_current_task_progress_from_index(
-                    MUSICBRAINZ_LINK_BATCH_SIZE - budget + 1,
-                    MUSICBRAINZ_LINK_BATCH_SIZE,
-                    f"Identifying {item.media_type.value} on MusicBrainz: {item.name}",
+            handled: set[str] = set()
+            while budget > 0 and not rate_limited:
+                limit = budget
+                items: list[Artist | Album | Track] = await self._get_scan_batch(
+                    phase.controller,
+                    phase.table,
+                    phase.query,
+                    phase.params,
+                    limit=limit,
+                    sort_field=SortField.TIMESTAMP_ADDED,
+                    sort_direction=SortDirection.DESC,
                 )
-                mapping_count = len(item.provider_mappings)
-                try:
-                    async with asyncio.timeout(MUSICBRAINZ_LINK_ITEM_TIMEOUT):
-                        await self.link_item_to_musicbrainz(item)
-                except _SCAN_ITEM_ERRORS as err:
-                    failed += 1
-                    report_current_task_failure(f"{item.name}: {err}")
-                    self.logger.warning(
-                        "Error while identifying %s %s on MusicBrainz: %s",
-                        item.media_type.value,
-                        item.name,
-                        str(err),
-                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                # an item whose lookup did not complete is selected again, so a batch
+                # without new items ends the phase
+                new_items = [item for item in items if item.item_id not in handled]
+                for item in new_items:
+                    if musicbrainz.rate_limited:
+                        # the pacing already keeps this run within the limit, so a cooldown
+                        # means the mirror is busy: leave the rest to the next run
+                        update_current_task_progress_text(
+                            "MusicBrainz is rate limiting, resuming next run"
+                        )
+                        rate_limited = True
+                        break
+                    if requested:
+                        # the pause follows an item that sent a request, so the run's first
+                        # item starts right away
+                        await asyncio.sleep(MUSICBRAINZ_LINK_ITEM_INTERVAL)
+                    update_current_task_progress_from_index(
+                        MUSICBRAINZ_LINK_BATCH_SIZE - budget + 1,
+                        MUSICBRAINZ_LINK_BATCH_SIZE,
+                        f"Identifying {item.media_type.value} on MusicBrainz: {item.name}",
                     )
-                else:
-                    if item.metadata.last_musicbrainz_lookup is None:
-                        # the identity step logged why it gave up and left the marker unset,
-                        # so the item heads the selection again next run
-                        failed += 1
-                        report_current_task_failure(f"{item.name}: lookup failed")
-                    else:
+                    handled.add(item.item_id)
+                    mapping_count = len(item.provider_mappings)
+                    request_count = musicbrainz.request_count
+                    if await self._link_run_item(item):
                         linked += len(item.provider_mappings) > mapping_count
                         not_found += item.mbid is None
-                processed[phase.name] = processed.get(phase.name, 0) + 1
-                budget -= 1
+                    else:
+                        failed += 1
+                    processed[phase.name] = processed.get(phase.name, 0) + 1
+                    requested = musicbrainz.request_count != request_count
+                    if requested:
+                        budget -= 1
+                if not new_items or len(items) < limit:
+                    # nothing new was selected, or the batch held all of the phase's due items
+                    break
         self._musicbrainz_link_summary = {
             "finished_at": int(time()),
             "processed": cast("SerializableType", processed),
@@ -765,6 +765,28 @@ class MetaDataController(
             ", stopped on rate limit" if rate_limited else "",
         )
         update_current_task_progress(100, f"Processed {sum(processed.values())} item(s)")
+
+    async def _link_run_item(self, item: Artist | Album | Track) -> bool:
+        """Identify a library item in a link run, report a failure, return whether it completed."""
+        try:
+            async with asyncio.timeout(MUSICBRAINZ_LINK_ITEM_TIMEOUT):
+                await self.link_item_to_musicbrainz(item)
+        except _SCAN_ITEM_ERRORS as err:
+            report_current_task_failure(f"{item.name}: {err}")
+            self.logger.warning(
+                "Error while identifying %s %s on MusicBrainz: %s",
+                item.media_type.value,
+                item.name,
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(10) else None,
+            )
+            return False
+        if item.metadata.last_musicbrainz_lookup is None:
+            # the identity step logged why it gave up and left the marker unset,
+            # so the item heads the selection again next run
+            report_current_task_failure(f"{item.name}: lookup failed")
+            return False
+        return True
 
     def _musicbrainz_link_phases(self, linked_domains: dict[str, int]) -> list[_LinkPhase]:
         """
