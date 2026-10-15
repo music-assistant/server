@@ -667,26 +667,44 @@ class SonicSimilarityPlugin(PluginProvider):
         return await self.mass.streams.audio_analysis.get_audio_analysis_count(AA_PROVIDER_DOMAIN)
 
     async def _periodic_refresh(self) -> None:
-        """Scheduled-task handler: rebuild indexes when the analysis row count changed."""
+        """Scheduled-task handler: rebuild the indexes when rows changed or a build failed."""
+        if self._rebuild_lock.locked() or self._clap_rebuild_lock.locked():
+            self.logger.debug("Periodic refresh: a rebuild is already running; skipping")
+            return
         try:
             current = await self._count_analysis_rows()
         except Exception:
             self.logger.exception("Periodic refresh: row count query failed; skipping")
             return
-        if current == self._last_seen_row_count:
-            return
-        self.logger.info(
-            "Periodic refresh: analysis row count changed %d → %d, rebuilding indexes",
-            self._last_seen_row_count,
-            current,
-        )
-        await self._rebuild_indexes()
+        if current != self._last_seen_row_count:
+            self.logger.info(
+                "Periodic refresh: analysis row count changed %d → %d, rebuilding indexes",
+                self._last_seen_row_count,
+                current,
+            )
+            await self._rebuild_indexes()
+        elif self._last_rebuild_error:
+            self.logger.info(
+                "Periodic refresh: retrying the failed %s rebuild",
+                " and ".join(sorted(self._last_rebuild_error)),
+            )
+            await self._rebuild_indexes(failed_only=True)
 
-    async def _rebuild_indexes(self) -> None:
-        """Rebuild the Traits index, then the Character index when enabled, one after the other."""
-        await self._safe_rebuild("Traits", self._rebuild_search_index)
+    async def _rebuild_indexes(self, *, failed_only: bool = False) -> None:
+        """
+        Rebuild the Traits index, then the Character index when enabled, one after the other.
+
+        :param failed_only: Rebuild only the indexes whose last rebuild failed.
+        """
+        rebuilds: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+            ("Traits", self._rebuild_search_index)
+        ]
         if self._clap_index is not None:
-            await self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
+            rebuilds.append(("Character", self._rebuild_clap_index_from_database))
+        for label, rebuild_fn in rebuilds:
+            if failed_only and label not in self._last_rebuild_error:
+                continue
+            await self._safe_rebuild(label, rebuild_fn)
 
     def _delete_all_index_files(self) -> None:
         """Best-effort removal of every versioned index file for the active domain."""
