@@ -1225,7 +1225,7 @@ async def _create_station_tables(database: DatabaseConnection) -> None:
     playlog_columns = (
         "[id] INTEGER PRIMARY KEY AUTOINCREMENT, [item_id] TEXT NOT NULL, "
         "[provider] TEXT NOT NULL, [media_type] TEXT NOT NULL, [userid] TEXT NOT NULL, "
-        "[name] TEXT NOT NULL"
+        "[name] TEXT NOT NULL, [image] json"
     )
     for table in ("playlists", "radios"):
         await database.execute(f"DROP TABLE {table}")
@@ -1261,8 +1261,8 @@ async def _station_snapshot(database: DatabaseConnection) -> dict[str, Any]:
         "radios": "SELECT * FROM radios",
         "mappings": f"SELECT media_type, item_id, provider_item_id FROM {DB_TABLE_PROVIDER_MAPPINGS}",
         "favorites": f"SELECT media_type, item_id FROM {DB_TABLE_FAVORITES}",
-        "progress": f"SELECT media_type, item_id, provider FROM {DB_TABLE_MEDIA_PROGRESS}",
-        "history": f"SELECT media_type, item_id, provider FROM {DB_TABLE_PLAY_HISTORY}",
+        "progress": f"SELECT media_type, item_id, provider, image FROM {DB_TABLE_MEDIA_PROGRESS}",
+        "history": f"SELECT media_type, item_id, provider, image FROM {DB_TABLE_PLAY_HISTORY}",
     }
     return {
         name: sorted(tuple(row) for row in await database.get_rows_from_query(query, limit=0))
@@ -1309,10 +1309,11 @@ async def test_migration_moves_apple_music_station_playlists_to_radios(
     )
     for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
         await database.execute(
-            f"INSERT INTO {table} (item_id, provider, media_type, userid, name) VALUES "
-            "('5', 'library', 'playlist', 'u1', 'Chill Station'), "
-            "('ra.111', 'apple_music--abc', 'playlist', 'u1', 'Chill Station'), "
-            "('2', 'library', 'playlist', 'u1', 'My Mix')"
+            f"INSERT INTO {table} (item_id, provider, media_type, userid, name, image) VALUES "
+            "('5', 'library', 'playlist', 'u1', 'Chill Station', :image), "
+            "('ra.111', 'apple_music--abc', 'playlist', 'u1', 'Chill Station', :image), "
+            "('2', 'library', 'playlist', 'u1', 'My Mix', NULL)",
+            {"image": serialize_to_json(token)},
         )
     await database.commit()
 
@@ -1347,8 +1348,9 @@ async def test_migration_moves_apple_music_station_playlists_to_radios(
     assert migrated["mappings"] == [("playlist", 2, "pl.222"), ("radio", radio_id, "ra.111")]
     assert migrated["favorites"] == [("playlist", 2), ("radio", radio_id)]
     for played in (migrated["progress"], migrated["history"]):
+        radio_image = serialize_to_json({**token, "path": "radio/ra.111"})
         assert played == [
-            ("playlist", "2", "library"),
-            ("radio", str(radio_id), "library"),
-            ("radio", "ra.111", "apple_music--abc"),
+            ("playlist", "2", "library", None),
+            ("radio", str(radio_id), "library", radio_image),
+            ("radio", "ra.111", "apple_music--abc", radio_image),
         ]

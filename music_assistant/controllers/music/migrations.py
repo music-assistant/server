@@ -1938,7 +1938,8 @@ async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> 
             await database.delete(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
     # plays of a station outside the library are keyed by the station id
     for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
-        if not {"media_type", "item_id", "provider"} <= await _table_columns(database, table):
+        columns = await _table_columns(database, table)
+        if not {"media_type", "item_id", "provider"} <= columns:
             continue
         where = (
             "media_type = 'playlist' AND item_id GLOB 'ra.*' "
@@ -1946,6 +1947,12 @@ async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> 
         )
         await database.execute(f"UPDATE OR IGNORE {table} SET media_type = 'radio' WHERE {where}")
         await database.execute(f"DELETE FROM {table} WHERE {where}")
+        if "image" in columns:
+            await database.execute(
+                f"UPDATE {table} SET image = REPLACE(image, "
+                '\'"path":"playlist/ra.\', \'"path":"radio/ra.\') '
+                "WHERE media_type = 'radio' AND image GLOB '*\"path\":\"playlist/ra.*'"
+            )
 
 
 def _station_radio_metadata(metadata: Any) -> Any:
