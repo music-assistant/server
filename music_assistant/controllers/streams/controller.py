@@ -806,6 +806,10 @@ class StreamsController(CoreController):
         # (its refresh signal can get lost): refusing it makes the player re-read the
         # queue, where serving it would silently play a track the user moved away
         self._raise_if_stale_item_request(player, queue_id, queue_item)
+        if request.method == "GET":
+            # recorded before any audio goes out: a player that gives up waiting on a slow
+            # item asks for the one after it, which must not be refused as stale
+            pq_data.last_requested_item_id = queue_item_id
 
         is_audio_source = (
             queue_item.media_item is not None
@@ -2466,6 +2470,11 @@ class StreamsController(CoreController):
             return
         if self.mass.player_queues.is_current_window_item(queue_id, queue_item.queue_item_id):
             return
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+        if queue_data is not None and queue_data.last_requested_item_id == queue_item.queue_item_id:
+            # an item that turned stale while its request was set up no longer vouches for
+            # its successor, which the player may still ask for out of its stale copy
+            queue_data.last_requested_item_id = None
         self.logger.debug(
             "Denying stream request from %s for %s: the queue has moved on",
             player.display_name,

@@ -1077,6 +1077,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.index_in_buffer = index
             # a new load owns nothing yet, so the old item must not vouch for its successor
             queue_data.last_served_item_id = None
+            queue_data.last_requested_item_id = None
             # a player still playing (or paused on) an item will report once more on it, so that
             # one stays served; the rest of the old load is never heard from again, and an idle
             # player has nothing left that could be
@@ -1947,11 +1948,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # get_next_item accounts for repeat mode and unavailable items. Measured from the
         # item the player last fetched, since that is the one it asks to follow (a player
         # reading ahead of our playhead is otherwise refused the track it needs next), and
-        # from the playhead itself: a player that gave up on a track before its stream
-        # delivered a byte asks for the one after it, which no fetch ever recorded. A
-        # served item the queue no longer holds (a clear or a replace) has no next item
-        served_item_id = self._queue_data[queue_id].last_served_item_id
-        for from_item in (served_item_id, queue.current_index):
+        # from the item it last asked for and the playhead itself: a player that gave up on
+        # a track before its stream delivered a byte asks for the one after it, which no
+        # fetch ever recorded. An item the queue no longer holds (a clear or a replace) has
+        # no next item
+        queue_data = self._queue_data[queue_id]
+        for from_item in (
+            queue_data.last_served_item_id,
+            queue_data.last_requested_item_id,
+            queue.current_index,
+        ):
             if from_item is None:
                 continue
             next_item = self.get_next_item(queue_id, from_item)

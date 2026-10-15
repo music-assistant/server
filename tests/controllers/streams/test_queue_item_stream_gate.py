@@ -16,10 +16,10 @@ ITEM_ID = "item1"
 PLAYER_ID = "player1"
 
 
-def _make_request() -> MagicMock:
-    """Build a GET request for the single-item stream route."""
+def _make_request(method: str = "GET") -> MagicMock:
+    """Build a request for the single-item stream route."""
     request = MagicMock()
-    request.method = "GET"
+    request.method = method
     request.match_info = {
         "queue_id": QUEUE_ID,
         "player_id": PLAYER_ID,
@@ -47,7 +47,9 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     ctrl.mass.player_queues.get.return_value = queue
     pq_data = MagicMock()
     pq_data.session_id = SESSION_ID
+    pq_data.last_requested_item_id = None
     ctrl.mass.player_queues.queue_data.return_value = pq_data
+    ctrl.mass.player_queues.queue_data_or_none.return_value = pq_data
     ctrl.mass.player_queues.is_current_window_item.return_value = item_in_window
 
     player = MagicMock()
@@ -55,6 +57,7 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     ctrl.mass.players.get_player.return_value = player
 
     queue_item = MagicMock()
+    queue_item.queue_item_id = ITEM_ID
     queue_item.media_item = None
     queue_item.streamdetails = None
     ctrl.mass.player_queues.get_item.return_value = queue_item
@@ -77,6 +80,7 @@ async def test_stale_item_request_is_refused_for_a_strict_player() -> None:
     assert ctrl._open_item_streams == {}
     ctrl.audio.get_stream_details.assert_not_awaited()
     ctrl.mass.player_queues.track_loaded_in_buffer.assert_not_called()
+    assert ctrl.mass.player_queues.queue_data.return_value.last_requested_item_id is None
 
 
 async def test_window_item_request_passes_the_gate() -> None:
@@ -87,6 +91,31 @@ async def test_window_item_request_passes_the_gate() -> None:
         await StreamsController.serve_queue_item_stream(ctrl, _make_request())
 
     assert "No streamdetails" in str(exc.value.reason)
+
+
+async def test_accepted_request_is_recorded_before_any_audio_goes_out() -> None:
+    """
+    An accepted GET vouches for its successor even if its stream never starts.
+
+    A player that gives up waiting on a slow item asks for the one after it, while
+    the slow item's request is still stuck in setup.
+    """
+    ctrl = _make_controller(strict_player=True, item_in_window=True)
+
+    with pytest.raises(web.HTTPNotFound):
+        await StreamsController.serve_queue_item_stream(ctrl, _make_request())
+
+    assert ctrl.mass.player_queues.queue_data.return_value.last_requested_item_id == ITEM_ID
+
+
+async def test_head_probe_is_not_recorded_as_a_request() -> None:
+    """A HEAD probe is speculative, so it must not vouch for the item after it."""
+    ctrl = _make_controller(strict_player=True, item_in_window=True)
+
+    with pytest.raises(web.HTTPNotFound):
+        await StreamsController.serve_queue_item_stream(ctrl, _make_request("HEAD"))
+
+    assert ctrl.mass.player_queues.queue_data.return_value.last_requested_item_id is None
 
 
 async def test_relaxed_player_is_served_without_a_window_check() -> None:
@@ -121,3 +150,5 @@ async def test_item_falling_out_of_the_window_during_setup_is_refused() -> None:
 
     assert "not up next" in str(exc.value.reason)
     assert ctrl.mass.player_queues.is_current_window_item.call_count == 2
+    # the stale item no longer vouches for its successor, which the player's copy still holds
+    assert ctrl.mass.player_queues.queue_data.return_value.last_requested_item_id is None

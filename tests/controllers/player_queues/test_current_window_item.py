@@ -168,6 +168,7 @@ def test_inserting_a_track_after_the_buffered_one_dethrones_the_cached_next() ->
     ctrl = _controller(current_index=0, index_in_buffer=1)
     data = ctrl._queue_data["q1"]
     data.last_served_item_id = _item_id_at(ctrl, 1)
+    data.last_requested_item_id = _item_id_at(ctrl, 1)
     stale_next = _item_id_at(ctrl, 2)
     guest = QueueItem.from_media_item("q1", _track("guest"))
 
@@ -218,6 +219,13 @@ def test_restarting_at_another_item_drops_the_previous_look_ahead() -> None:
 
     assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
 
+    ctrl._queue_data["q1"].last_requested_item_id = _item_id_at(ctrl, 2)
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+
+    ctrl._queue_data["q1"].last_requested_item_id = None  # play_index clears this one too
+
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+
 
 def test_a_track_the_player_gave_up_on_before_it_streamed_does_not_pin_the_window() -> None:
     """
@@ -232,3 +240,20 @@ def test_a_track_the_player_gave_up_on_before_it_streamed_does_not_pin_the_windo
 
     assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 2))
     assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+
+
+def test_a_track_the_player_gave_up_waiting_for_does_not_pin_the_window() -> None:
+    """
+    A player that gave up on a slow track asks for the one after it.
+
+    The slow track was asked for but never delivered a byte, so neither the last served
+    item nor the playhead the player reports moved onto it. Refusing the track after it
+    strands the player: it walks its cached queue to the end and stops.
+    """
+    ctrl = _controller(current_index=0, index_in_buffer=1)
+    data = ctrl._queue_data["q1"]
+    data.last_served_item_id = _item_id_at(ctrl, 1)
+    data.last_requested_item_id = _item_id_at(ctrl, 2)
+
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 4))
