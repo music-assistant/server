@@ -9,6 +9,7 @@ import pytest
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ConfigEntryType, PlayerFeature
+from music_assistant_models.errors import InvalidDataError, PlayerCommandFailed
 
 from music_assistant.constants import (
     CONF_ENTRY_NATIVE_VOLUME,
@@ -99,8 +100,8 @@ class TestApplyNativeVolumePin:
 
         volume_set.assert_not_awaited()
 
-    async def test_skips_when_pin_value_invalid(self, mock_mass: MagicMock) -> None:
-        """Invalid stored pin values are skipped rather than forced to 100."""
+    async def test_rejects_when_pin_value_invalid(self, mock_mass: MagicMock) -> None:
+        """Invalid stored pin values raise so config-save can roll back."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_config_side_effect(
                 {CONF_VOLUME_CONTROL: "media_player.denon", CONF_NATIVE_VOLUME: "loud"}
@@ -109,7 +110,8 @@ class TestApplyNativeVolumePin:
         controller = PlayerController(mock_mass)
         player, volume_set = _make_player(mock_mass)
 
-        await controller._apply_native_volume_pin(player)
+        with pytest.raises(InvalidDataError, match="Invalid native volume pin"):
+            await controller._apply_native_volume_pin(player)
 
         volume_set.assert_not_awaited()
 
@@ -155,8 +157,8 @@ class TestApplyNativeVolumePin:
 
         volume_set.assert_not_awaited()
 
-    async def test_clamps_out_of_range_levels(self, mock_mass: MagicMock) -> None:
-        """Out-of-range pin values are clamped to 0-100 before apply."""
+    async def test_rejects_out_of_range_levels(self, mock_mass: MagicMock) -> None:
+        """Out-of-range pin values raise instead of being coerced."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_config_side_effect(
                 {CONF_VOLUME_CONTROL: "media_player.denon", CONF_NATIVE_VOLUME: 150}
@@ -165,9 +167,10 @@ class TestApplyNativeVolumePin:
         controller = PlayerController(mock_mass)
         player, volume_set = _make_player(mock_mass)
 
-        await controller._apply_native_volume_pin(player)
+        with pytest.raises(InvalidDataError, match="out of range"):
+            await controller._apply_native_volume_pin(player)
 
-        volume_set.assert_awaited_once_with(100)
+        volume_set.assert_not_awaited()
 
     async def test_volume_set_errors_propagate(self, mock_mass: MagicMock) -> None:
         """A failing volume_set raises so config-save can roll back."""
@@ -287,10 +290,10 @@ class TestNativeVolumePinOnConfigChange:
 
 
 class TestNativeVolumePinOnRegister:
-    """Register/reconnect callers catch pin failures so connect is not aborted."""
+    """Register/reconnect callers catch expected pin failures so connect is not aborted."""
 
-    async def test_register_or_update_swallows_apply_errors(self, mock_mass: MagicMock) -> None:
-        """A failing pin on reconnect must not raise out of register_or_update."""
+    async def test_register_or_update_swallows_command_errors(self, mock_mass: MagicMock) -> None:
+        """Expected command/config errors on reconnect must not abort register_or_update."""
         mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
         mock_mass.cache = MagicMock()
         mock_mass.cache.get = AsyncMock(return_value=None)
@@ -309,12 +312,40 @@ class TestNativeVolumePinOnRegister:
                 controller,
                 "_apply_native_volume_pin",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("device busy"),
+                side_effect=PlayerCommandFailed("device busy"),
             ),
         ):
             await controller.register_or_update(player)
 
         assert controller._players[player.player_id] is player
+
+    async def test_register_or_update_propagates_unexpected_errors(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Programming errors on reconnect still surface out of register_or_update."""
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mock_mass.cache = MagicMock()
+        mock_mass.cache.get = AsyncMock(return_value=None)
+        queue = MagicMock()
+        queue.items = []
+        mock_mass.player_queues = MagicMock()
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        controller = PlayerController(mock_mass)
+        player, _volume_set = _make_player(mock_mass)
+        player.set_initialized()
+        controller._players[player.player_id] = player
+
+        with (
+            patch.object(player, "update_state"),
+            patch.object(
+                controller,
+                "_apply_native_volume_pin",
+                new_callable=AsyncMock,
+                side_effect=AttributeError("bug in pin helper"),
+            ),
+            pytest.raises(AttributeError, match="bug in pin helper"),
+        ):
+            await controller.register_or_update(player)
 
 
 class TestNativeVolumeConfigEntry:

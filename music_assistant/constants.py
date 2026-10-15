@@ -462,9 +462,9 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
 )
 
 # Softvol/protocol pin when UI volume is mapped to an external control.
-# Visibility (hidden when volume_control is native/follow_protocol) is set
-# dynamically in _create_player_control_config_entries — depends_on_value_not
-# only supports a single exclusion value.
+# Kept visible whenever the player supports native volume_set so draft
+# volume_control switches can still surface the pin; runtime apply no-ops
+# for native/follow_protocol. depends_on_value_not only excludes one value.
 CONF_ENTRY_NATIVE_VOLUME = ConfigEntry(
     key=CONF_NATIVE_VOLUME,
     type=ConfigEntryType.INTEGER,

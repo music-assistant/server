@@ -1722,11 +1722,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
             # Pin native softvol when UI volume is mapped externally (e.g. to an AVR).
             # Must run after provider setup defaults (e.g. squeezelite DEFAULT_PLAYER_VOLUME).
-            # Catch here so a device rejection cannot abort registration; config-save
-            # lets the same helper raise so save_player_config can roll back.
+            # Catch expected command/config errors so a device rejection cannot abort
+            # registration; config-save lets the same helper raise so
+            # save_player_config can roll back. Programming errors still surface.
             try:
                 await self._apply_native_volume_pin(player)
-            except Exception:
+            except MusicAssistantError:
                 self.logger.exception(
                     "Failed to apply native volume pin on player %s",
                     player.display_name,
@@ -1793,7 +1794,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 # have restored a low default before calling register_or_update).
                 try:
                     await self._apply_native_volume_pin(player)
-                except Exception:
+                except MusicAssistantError:
                     self.logger.exception(
                         "Failed to apply native volume pin on player %s",
                         player.display_name,
@@ -4407,9 +4408,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
         try:
             level = int(cast("int", raw_level))
-        except TypeError, ValueError:
-            return
-        level = max(0, min(100, level))
+        except (TypeError, ValueError) as err:
+            msg = f"Invalid native volume pin for player {player.display_name}: {raw_level!r}"
+            raise InvalidDataError(msg) from err
+        if not 0 <= level <= 100:
+            msg = f"Native volume pin out of range for player {player.display_name}: {level}"
+            raise InvalidDataError(msg)
         # Serialize with cmd_volume_set / member volume so an in-flight VOLUME
         # command cannot overwrite the Softvol pin (and vice versa).
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.VOLUME):
