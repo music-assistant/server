@@ -981,6 +981,59 @@ async def test_previews_count_towards_the_hourly_limit(
     assert _engine_calls(provider) == 3
 
 
+async def test_a_background_cover_can_not_take_a_slot_a_preview_reserved(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A preview reserves all its slots at once, so nothing slips in while it stores them."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{
+            CONF_PREVIEW_PLAYLIST: "234",
+            CONF_PREVIEW_STYLE: ["spotify", "neon"],
+            CONF_MAX_PER_HOUR: 2,
+            CONF_DESCRIPTIONS: False,
+        },
+    )
+    cache = _mass(provider).cache
+    store = cache.set
+
+    async def slow_set(*args: Any, **kwargs: Any) -> None:
+        # storing the reservation hands control to the background generation
+        await asyncio.sleep(0)
+        await store(*args, **kwargs)
+
+    cache.set = slow_set
+    background = _smart_playlist(item_id="9")
+
+    with _no_engine_pickers():
+        await asyncio.gather(
+            provider.handle_config_action(CONF_ACTION_PREVIEW),
+            provider.get_playlist_metadata(background),
+        )
+
+    assert _engine_calls(provider) == 2
+    assert background.image is None
+
+
+async def test_refresh_regenerates_a_cover_whose_file_is_gone(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A cover still named by the playlist but deleted from disk is made again."""
+    playlist = _smart_playlist()
+    await provider.get_playlist_metadata(playlist)
+    assert playlist.image is not None
+    Path(provider._images_dir, playlist.image.path).unlink()
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        side_effect=lambda: _async_iter([playlist])
+    )
+    _mass(provider).metadata.update_metadata = AsyncMock()
+
+    await provider._ai.refresh()
+
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(playlist, force_refresh=True)
+
+
 async def test_only_one_preview_runs_at_a_time(provider: PlaylistMetadataProvider) -> None:
     """Pressing preview again while one runs is refused, and covers render two at a time."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())

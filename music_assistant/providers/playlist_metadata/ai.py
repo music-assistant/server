@@ -380,15 +380,16 @@ class AIArtwork:
         looks = self._preview_looks()
         if self._preview_lock.locked():
             raise ActionUnavailable("A preview is already being generated, wait for it to finish")
-        # previews count towards the hourly limit, like the covers they preview
-        if (available := self._available(self._generated_at)) < len(looks):
-            raise ActionUnavailable(
-                f"The hourly limit leaves {available} cover(s) for now, "
-                "pick fewer styles to preview or try again later"
-            )
         async with self._preview_lock:
-            for _look in looks:
-                await self._record(self._generated_at, CACHE_KEY_GENERATED_AT)
+            # previews count towards the hourly limit, like the covers they preview. The check
+            # and the reservation of every slot run with nothing awaited in between, so a
+            # background generation can not take a slot in between
+            if (available := self._available(self._generated_at)) < len(looks):
+                raise ActionUnavailable(
+                    f"The hourly limit leaves {available} cover(s) for now, "
+                    "pick fewer styles to preview or try again later"
+                )
+            await self._record(self._generated_at, CACHE_KEY_GENERATED_AT, count=len(looks))
             self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
             slots = asyncio.Semaphore(PREVIEW_CONCURRENCY)
 
@@ -576,7 +577,14 @@ class AIArtwork:
             if image_engine is not None and not await self._has_own_artwork(playlist):
                 file_name = await self._file_name(playlist, image_engine)
                 current = playlist.image
-                if current and self.is_own_image(current) and current.path == file_name:
+                if (
+                    current
+                    and self.is_own_image(current)
+                    and current.path == file_name
+                    and await asyncio.to_thread(
+                        os.path.isfile, os.path.join(self._images_dir, file_name)
+                    )
+                ):
                     file_name = None
             needs_description = text_engine is not None and (
                 playlist.metadata.description is None
@@ -889,9 +897,19 @@ class AIArtwork:
             )
         )
 
-    async def _record(self, timestamps: deque[float], key: str) -> None:
-        """Record a generation now, and store it so a reload or restart still counts it."""
-        timestamps.append(time.time())
+    async def _record(self, timestamps: deque[float], key: str, count: int = 1) -> None:
+        """
+        Record generations now, and store them so a reload or restart still counts them.
+
+        The generations are recorded before anything is awaited, so a check of the limit
+        right before this call and the recording happen as one step.
+
+        :param timestamps: When each generation of this kind ran, oldest first.
+        :param key: The cache key the timestamps are stored under.
+        :param count: The number of generations to record.
+        """
+        now = time.time()
+        timestamps.extend([now] * count)
         await self.mass.cache.set(
             key,
             list(timestamps),
