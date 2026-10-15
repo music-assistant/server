@@ -66,6 +66,8 @@ CACHE_CATEGORY_FAILURES: Final = 2
 # a failed cover or description is tried again after these delays, and after the last one
 # only once something that shapes it changes (or everything is regenerated)
 FAILURE_BACKOFF_SECONDS: Final = (3600, 6 * 3600, 24 * 3600)
+# an engine that could not be reached is left alone this long before the next playlist tries it
+ENGINE_RETRY_SECONDS: Final = 15 * 60
 CACHE_KEY_GENERATION: Final = "generation"
 # the times of the recent generations, so the hourly limit survives a reload or restart
 CACHE_KEY_GENERATED_AT: Final = "generated_at"

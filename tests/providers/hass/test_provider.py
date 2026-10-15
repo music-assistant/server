@@ -13,10 +13,11 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientResponseError
-from hass_client.exceptions import BaseHassClientError, FailedCommand
+from hass_client.exceptions import BaseHassClientError, FailedCommand, NotConnected
 from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import (
     MusicAssistantError,
+    ProviderUnavailableError,
     SetupFailedError,
     UnsupportedFeaturedException,
 )
@@ -834,6 +835,17 @@ async def test_ai_generate_image_refuses_a_link_outside_the_ai_task_images() -> 
             await provider.ai_generate_image("A sunset")
 
         fetch_image.assert_not_awaited()
+
+
+async def test_ai_generate_image_reports_an_unreachable_home_assistant() -> None:
+    """A lost connection is reported as unavailable, not as a failed generation."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(side_effect=NotConnected("gone"))
+
+        with pytest.raises(ProviderUnavailableError):
+            await provider.ai_generate_image("A sunset")
 
 
 async def test_ai_generate_image_raises_without_an_image() -> None:

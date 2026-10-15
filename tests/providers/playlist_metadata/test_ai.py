@@ -18,7 +18,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import ActionUnavailable, MediaNotFoundError
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Artist,
     MediaItemImage,
@@ -674,7 +678,7 @@ async def test_changed_smart_playlist_rules_make_a_new_cover_and_description(
 
 
 async def test_refresh_passes_do_not_overlap(provider: PlaylistMetadataProvider) -> None:
-    """A refresh asked for during one runs once after it, instead of alongside it."""
+    """A refresh asked for during one is covered by it, instead of running alongside it."""
     passes = 0
     running = 0
     overlapped = False
@@ -693,8 +697,16 @@ async def test_refresh_passes_do_not_overlap(provider: PlaylistMetadataProvider)
 
     await asyncio.gather(provider._ai.refresh(), provider._ai.refresh(), provider._ai.refresh())
 
-    assert passes == 2
+    assert passes == 1
     assert not overlapped
+
+    # a regenerate during a pass has it run again, as the pass may have used the old keys
+    _mass(provider).create_task = MagicMock(side_effect=lambda coro, **_kw: coro.close())
+    await asyncio.gather(
+        provider._ai.refresh(), provider.handle_config_action(CONF_ACTION_REGENERATE)
+    )
+
+    assert passes == 3
 
 
 async def test_unloading_stops_the_worker(provider: PlaylistMetadataProvider) -> None:
@@ -749,6 +761,133 @@ async def test_preview_asks_for_the_visual_concept_once(
     assert _text_calls(provider) == 1
 
 
+async def test_refresh_queues_a_missing_description(provider: PlaylistMetadataProvider) -> None:
+    """With only descriptions on, the hourly pass writes one for a playlist that has none."""
+    _set_config(provider, template="album_grid")
+    playlist = _smart_playlist()
+    _register(provider, playlist)
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        side_effect=lambda: _async_iter([playlist])
+    )
+
+    await provider._ai.refresh()
+    await _settle(provider)
+
+    assert _text_calls(provider) == 1
+    assert playlist.metadata.description == DESCRIPTION
+
+
+@pytest.mark.parametrize(
+    ("description", "replaced"),
+    [
+        ("[Smart Playlist] Similar to Innerbloom", True),
+        ("Deep melodic house, written by the smart playlist provider's AI.", False),
+        ("   ", True),
+    ],
+)
+async def test_which_smart_playlist_descriptions_are_replaced(
+    provider: PlaylistMetadataProvider, description: str, replaced: bool
+) -> None:
+    """The plain rules summary or a blank one is replaced; a written one is kept."""
+    playlist = _smart_playlist()
+    playlist.metadata.description = description
+
+    await _metadata(provider, playlist)
+
+    assert (playlist.metadata.description == DESCRIPTION) is replaced
+    assert _text_calls(provider) == int(replaced)
+
+
+async def test_unreadable_rules_keep_the_current_cover_and_description(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """While a smart playlist's rules can not be read, nothing is made from a guess."""
+    playlist = _smart_playlist()
+    await _metadata(provider, playlist)
+    cover = playlist.image
+    rules = _mass(provider).get_provider("smart_playlist").get_smart_playlist_rules
+    rules.return_value = None
+    playlist.metadata.description = "[Smart Playlist] Similar to Innerbloom"
+
+    await _metadata(provider, playlist)
+
+    assert playlist.image == cover
+    assert _engine_calls(provider) == 1
+    assert _text_calls(provider) == 1
+    assert Path(provider._images_dir, cover.path).exists()  # type: ignore[union-attr]
+
+
+async def test_rule_changes_that_do_not_shape_the_prompt_keep_the_cover(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Excluding a track or changing the limit does not pay for a new cover."""
+    playlist = _smart_playlist()
+    await _metadata(provider, playlist)
+    rules = _mass(provider).get_provider("smart_playlist").get_smart_playlist_rules
+    rules.return_value = {**SMART_RULES, "limit": 50, "excluded_track_uris": ["x://1"]}
+
+    await _metadata(provider, playlist)
+
+    assert _engine_calls(provider) == 1
+
+
+async def test_an_unreachable_engine_is_retried_and_never_given_up_on(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """An outage leaves the engine alone for a while, instead of a try per playlist."""
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=ProviderUnavailableError("Home Assistant is not reachable")
+    )
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
+    first, second = _smart_playlist(item_id="1"), _smart_playlist(item_id="2")
+
+    await _metadata(provider, first)
+    await _metadata(provider, second)
+
+    # the second playlist waits for the engine instead of trying it as well
+    assert _engine_calls(provider) == 1
+    assert provider._ai.waiting
+
+    # long after the backoff would have given up on a content failure, it is still tried
+    for _task in _tasks(provider).values():
+        _task.cancel()
+    provider._ai._pending.clear()
+    start = time.time()
+    for offset in (3700, 7 * 3600 + 3700, 31 * 3600 + 3700, 56 * 3600 + 3700):
+        provider._ai._paused_until.clear()
+        with patch(
+            "music_assistant.providers.playlist_metadata.ai.time.time",
+            return_value=start + offset,
+        ):
+            await _metadata(provider, first)
+    assert _engine_calls(provider) == 5
+
+
+async def test_new_work_wakes_a_waiting_worker(provider: PlaylistMetadataProvider) -> None:
+    """Work that is not blocked does not wait out the hourly limit of other work."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1, CONF_DESCRIPTIONS: False})
+    await _metadata(provider, _smart_playlist(item_id="1"))
+    await _metadata(provider, _smart_playlist(item_id="2"))
+    assert provider._ai.waiting
+    _set_config(provider, **{CONF_DESCRIPTIONS: True})
+    third = _smart_playlist(item_id="3")
+
+    await _metadata(provider, third)
+
+    assert third.metadata.description == DESCRIPTION
+    assert provider._ai.waiting
+
+
+async def test_nothing_is_queued_after_unloading(provider: PlaylistMetadataProvider) -> None:
+    """A metadata refresh still running on an unloaded provider starts no worker."""
+    await provider.unload()
+
+    await _metadata(provider, _smart_playlist())
+
+    assert _engine_calls(provider) == 0
+    assert not provider._ai._pending
+
+
 async def test_resolve_image_returns_a_stored_cover(provider: PlaylistMetadataProvider) -> None:
     """A stored cover is served from the images directory."""
     Path(provider._images_dir, "1_abc.jpg").write_bytes(b"jpeg")
@@ -771,6 +910,7 @@ async def test_scheduled_refresh_generates_missing_covers(
     provider: PlaylistMetadataProvider,
 ) -> None:
     """The hourly pass has the covers made that playlists in scope lack, then applies them."""
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
     missing = _smart_playlist(item_id="1")
     out_of_scope = _playlist("builtin", item_id="2", is_editable=True)
     _register(provider, missing, out_of_scope)
@@ -1444,8 +1584,9 @@ def _add_worker_fakes(provider: PlaylistMetadataProvider) -> None:
     """
     Give the mocked Music Assistant what the worker needs, behaving like the real thing.
 
-    Tasks really run, playlists are fetched from a small library, and a metadata refresh runs
-    the provider's and merges its result into the library playlist.
+    Tasks really run (started eagerly, like Music Assistant does), playlists are fetched from
+    a small library as fresh copies, and a metadata refresh runs the provider's on a fresh copy
+    and stores the result back in the library playlist.
     """
     mass = _mass(provider)
     # the library the worker fetches playlists from, filled by _metadata and _register
@@ -1455,7 +1596,7 @@ def _add_worker_fakes(provider: PlaylistMetadataProvider) -> None:
     async def get_library_item(item_id: str) -> Playlist:
         if (playlist := library.get(str(item_id))) is None:
             raise MediaNotFoundError(item_id)
-        return playlist
+        return Playlist.from_dict(playlist.to_dict())
 
     mass.music.playlists.get_library_item = AsyncMock(side_effect=get_library_item)
     tasks: dict[str, asyncio.Task[Any]] = {}
@@ -1466,17 +1607,20 @@ def _add_worker_fakes(provider: PlaylistMetadataProvider) -> None:
         if task_id and (existing := tasks.get(task_id)) and not existing.done():
             coro.close()
             return existing
-        task = asyncio.ensure_future(coro)
+        task = asyncio.Task(coro, eager_start=True)
         tasks[task_id or str(id(task))] = task
         return task
 
     mass.create_task = MagicMock(side_effect=create_task)
 
     async def update_metadata(item: Any, **_kwargs: Any) -> None:
-        # like the metadata controller: the provider's metadata merged into the library item
-        playlist = next(pl for pl in library.values() if item in (pl.uri, pl))
+        # like the metadata controller: the library item as it is now, the provider's metadata
+        # merged into it, and the result stored
+        stored = next(pl for pl in library.values() if item in (pl.uri, pl))
+        playlist = Playlist.from_dict(stored.to_dict())
         if metadata := await provider.get_playlist_metadata(playlist):
             playlist.metadata.update(metadata)
+        stored.metadata = playlist.metadata
 
     mass.metadata.update_metadata = AsyncMock(side_effect=update_metadata)
 

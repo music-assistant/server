@@ -22,7 +22,13 @@ from urllib.parse import unquote, urlsplit
 
 from aiohttp import ClientResponseError
 from hass_client import HomeAssistantClient
-from hass_client.exceptions import BaseHassClientError
+from hass_client.exceptions import (
+    BaseHassClientError,
+    CannotConnect,
+    ConnectionFailed,
+    NotConnected,
+    TransportError,
+)
 from hass_client.utils import get_websocket_url
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
@@ -36,6 +42,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     MusicAssistantError,
+    ProviderUnavailableError,
     SetupFailedError,
     UnsupportedFeaturedException,
 )
@@ -681,19 +688,24 @@ class HomeAssistantProvider(PluginProvider):
         entity_id = engine_id or next((engine.id for engine in self._image_engines), None)
         if entity_id is None:
             raise UnsupportedFeaturedException("No AI Task entity that generates images")
-        result = await self.hass.send_command(
-            "call_service",
-            domain="ai_task",
-            service="generate_image",
-            service_data={
-                # Home Assistant names the stored image after the task and the current second,
-                # so images generated at the same time need their own task name
-                "task_name": f"music_assistant_{secrets.token_hex(4)}",
-                "instructions": prompt,
-                "entity_id": entity_id,
-            },
-            return_response=True,
-        )
+        try:
+            result = await self.hass.send_command(
+                "call_service",
+                domain="ai_task",
+                service="generate_image",
+                service_data={
+                    # Home Assistant names the stored image after the task and the current
+                    # second, so images generated at the same time need their own task name
+                    "task_name": f"music_assistant_{secrets.token_hex(4)}",
+                    "instructions": prompt,
+                    "entity_id": entity_id,
+                },
+                return_response=True,
+            )
+        except (CannotConnect, ConnectionFailed, NotConnected, TransportError) as err:
+            # told apart from a failed generation, so callers can retry once HA is back
+            msg = f"Home Assistant is not reachable: {err}"
+            raise ProviderUnavailableError(msg) from err
         response = result.get("response", {}) if isinstance(result, dict) else {}
         # a signed link to the image Home Assistant stored in its media source
         url = response.get("url") if isinstance(response, dict) else None
