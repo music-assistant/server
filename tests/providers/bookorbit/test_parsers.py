@@ -5,6 +5,7 @@ from typing import Any
 from music_assistant_models.enums import ArtistType, ImageType, MediaType
 
 from music_assistant.providers.bookorbit.parsers import (
+    _parse_chapters,
     parse_audiobook,
     parse_author,
     parse_narrator,
@@ -104,6 +105,76 @@ def test_parse_audiobook_unknown_duration_when_part_missing(
     book_multifile["files"][1]["durationSeconds"] = None
     book_multifile["audioMetadata"]["durationSeconds"] = None
     assert _parse(book_multifile).duration == 0
+
+
+def test_parse_audiobook_omits_synthetic_chapters_when_duration_unknown(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Unknown part durations must not invent chapter seek offsets."""
+    book_multifile["files"][0]["durationSeconds"] = None
+    book_multifile["audioMetadata"]["durationSeconds"] = None
+    assert list(_parse(book_multifile).metadata.chapters) == []
+
+
+def test_parse_audiobook_multipart_prefers_embedded_chapters(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Authoritative chapters win over synthetic one-chapter-per-file timelines."""
+    book_multifile["audioMetadata"]["chapters"] = [
+        {"title": "Prologue", "startMs": 0},
+        {"title": "Act Two", "startMs": 120_000},
+    ]
+    book_multifile["audioMetadata"]["durationSeconds"] = 301
+    chapters = _parse(book_multifile).metadata.chapters
+    assert [(c.position, c.name, c.start, c.end) for c in chapters] == [
+        (1, "Prologue", 0, 120),
+        (2, "Act Two", 120, 301),
+    ]
+
+
+def test_parse_audiobook_synthetic_chapters_follow_sort_order(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Synthetic chapters use playback sortOrder, not the raw files array order."""
+    # Path/list order is reversed relative to playback order.
+    book_multifile["files"] = [
+        {
+            "id": 772,
+            "filename": "02.mp3",
+            "format": "mp3",
+            "durationSeconds": 200.5,
+            "sortOrder": 1,
+        },
+        {
+            "id": 771,
+            "filename": "01.mp3",
+            "format": "mp3",
+            "durationSeconds": 100.5,
+            "sortOrder": 0,
+        },
+        {"id": 773, "filename": "book.epub", "format": "epub", "durationSeconds": None},
+    ]
+    ab = _parse(book_multifile)
+    assert [(c.position, c.name, c.start, c.end) for c in ab.metadata.chapters] == [
+        (1, "01.mp3", 0, 100.5),
+        (2, "02.mp3", 100.5, 301),
+    ]
+
+
+def test_parse_chapters_playback_files_independent_of_book_files(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Explicit playback parts (e.g. manifest sequence) own synthetic chapter order."""
+    # Book files stay in their original order; playback list is deliberately reversed.
+    playback_files = [
+        {"id": 772, "filename": "02.mp3", "durationSeconds": 200.5},
+        {"id": 771, "filename": "01.mp3", "durationSeconds": 100.5},
+    ]
+    chapters = _parse_chapters(book_multifile, duration=301.0, playback_files=playback_files)
+    assert [(c.position, c.name, c.start, c.end) for c in chapters] == [
+        (1, "02.mp3", 0, 200.5),
+        (2, "01.mp3", 200.5, 301.0),
+    ]
 
 
 def test_parse_audiobook_untitled_falls_back(book_multifile: dict[str, Any]) -> None:

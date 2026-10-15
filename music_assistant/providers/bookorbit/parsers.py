@@ -46,35 +46,28 @@ def _person_image_path(person: dict[str, Any], *, base_url: str) -> str | None:
 
 
 def _audio_files(book: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return the audio files of a book in BookOrbit order."""
-    return [
+    """Return audio files in BookOrbit playback order (``sortOrder``, then id)."""
+    files = [
         file
         for file in book.get("files") or []
         if (file.get("format") or "").lower() in AUDIO_FORMATS
     ]
+    # Match BookOrbit: ORDER BY sortOrder ASC NULLS LAST, id ASC.
+    return sorted(
+        files,
+        key=lambda file: (
+            file.get("sortOrder") is None,
+            file.get("sortOrder") if file.get("sortOrder") is not None else 0,
+            int(file["id"]) if file.get("id") is not None else 0,
+        ),
+    )
 
 
-def _parse_chapters(book: dict[str, Any], duration: float) -> list[MediaItemChapter]:
-    """Build chapter list for a book from files or embedded chapter metadata."""
-    audio_files = _audio_files(book)
-    if len(audio_files) > 1:
-        chapters: list[MediaItemChapter] = []
-        start = 0.0
-        for position, file in enumerate(audio_files, 1):
-            end = start + float(file.get("durationSeconds") or 0)
-            chapters.append(
-                MediaItemChapter(
-                    position=position,
-                    name=file.get("filename") or f"Part {position}",
-                    start=start,
-                    end=end,
-                )
-            )
-            start = end
-        return chapters
-
-    embedded = (book.get("audioMetadata") or {}).get("chapters") or []
-    chapters = []
+def _chapters_from_embedded(
+    embedded: list[dict[str, Any]], duration: float
+) -> list[MediaItemChapter]:
+    """Build chapters from BookOrbit ``audioMetadata.chapters`` start offsets."""
+    chapters: list[MediaItemChapter] = []
     for position, chapter in enumerate(embedded, 1):
         next_start_ms = embedded[position]["startMs"] if position < len(embedded) else None
         chapters.append(
@@ -86,6 +79,51 @@ def _parse_chapters(book: dict[str, Any], duration: float) -> list[MediaItemChap
             )
         )
     return chapters
+
+
+def _chapters_from_playback_parts(
+    audio_files: list[dict[str, Any]],
+) -> list[MediaItemChapter]:
+    """One synthetic chapter per audio part when every part duration is known."""
+    if len(audio_files) <= 1:
+        return []
+    if any(file.get("durationSeconds") is None for file in audio_files):
+        # Unknown durations would invent a broken seek timeline (treat-as-zero).
+        return []
+    chapters: list[MediaItemChapter] = []
+    start = 0.0
+    for position, file in enumerate(audio_files, 1):
+        end = start + float(file["durationSeconds"])
+        chapters.append(
+            MediaItemChapter(
+                position=position,
+                name=file.get("filename") or f"Part {position}",
+                start=start,
+                end=end,
+            )
+        )
+        start = end
+    return chapters
+
+
+def _parse_chapters(
+    book: dict[str, Any],
+    duration: float,
+    *,
+    playback_files: list[dict[str, Any]] | None = None,
+) -> list[MediaItemChapter]:
+    """
+    Build chapters from authoritative metadata, else one chapter per playback part.
+
+    Prefer ``audioMetadata.chapters`` for any book. Synthetic multi-part chapters use
+    playback order (``sortOrder`` / explicit ``playback_files``) and are omitted when
+    any part duration is unknown.
+    """
+    embedded = (book.get("audioMetadata") or {}).get("chapters") or []
+    if embedded:
+        return _chapters_from_embedded(embedded, duration)
+    parts = playback_files if playback_files is not None else _audio_files(book)
+    return _chapters_from_playback_parts(parts)
 
 
 def parse_audiobook(
