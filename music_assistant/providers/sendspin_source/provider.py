@@ -173,13 +173,11 @@ class SendspinSourceProvider(PluginProvider):
         for client in sendspin.server_api.connected_clients:
             if self._get_source_role(client) is None:
                 continue
-            info = client.info_or_none
-            name = info.name if info else client.client_id
             sources.append(
                 AudioSource(
                     item_id=client.client_id,
                     provider=self.instance_id,
-                    name=name,
+                    name=self._source_name(client.client_id),
                     provider_mappings={
                         ProviderMapping(
                             item_id=client.client_id,
@@ -209,14 +207,13 @@ class SendspinSourceProvider(PluginProvider):
         client = self._get_client(item_id)
         if client is None or self._get_source_role(client) is None:
             raise MediaNotFoundError(f"Unknown or unavailable Sendspin source: {item_id}")
-        info = client.info_or_none
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=OUTPUT_FORMAT,
             media_type=media_type,
             stream_type=StreamType.CUSTOM,
-            stream_metadata=StreamMetadata(title=info.name if info else item_id),
+            stream_metadata=StreamMetadata(title=self._source_name(item_id)),
         )
 
     async def on_source_selected(
@@ -394,13 +391,11 @@ class SendspinSourceProvider(PluginProvider):
         except TimeoutError:
             if self._get_session(session.client_id) is not session:
                 return
-            client = self._get_client(session.client_id)
-            info = client.info_or_none if client else None
             raise AudioError(
                 f"Sendspin source {session.client_id} did not start streaming",
                 translation_key="no_audio",
                 translation_owner=self.translation_owner,
-                translation_args=[info.name if info else session.client_id],
+                translation_args=[self._device_name(session.client_id)],
             ) from None
 
     def _on_server_event(self, server: SendspinServer, event: SendspinEvent) -> None:
@@ -464,6 +459,13 @@ class SendspinSourceProvider(PluginProvider):
             self.mass.create_task(self._attach_stream(session, event))
         elif isinstance(event, SourceStreamEndedEvent):
             self.logger.debug("Sendspin source %s ended its stream", client_id)
+            # A connected client without a source role sends no more audio, a dropped one may
+            # reconnect.
+            if client.is_connected and self._get_source_role(client) is None:
+                self.logger.info(
+                    "Sendspin source %s lost its source role, stopping playback", client_id
+                )
+                self.mass.create_task(self._release_source(session))
 
     def _on_signal_reported(self, client_id: str, signal: SignalState) -> None:
         """
@@ -541,14 +543,17 @@ class SendspinSourceProvider(PluginProvider):
         state = self._clients.get(client_id)
         if state is None or state.signal != SignalState.ABSENT or state.session is None:
             return
-        session = state.session
         self.logger.info("Line-in signal gone on %s, stopping playback", client_id)
+        await self._release_source(state.session)
+
+    async def _release_source(self, session: _SourceSession) -> None:
+        """Give the source up on the player that owns it, stopping that player."""
         try:
             # Queue stop also cancels pending preload and enqueue timers.
             await self.mass.players.deselect_source(
                 session.owner_player_id,
                 provider_instance_id=self.instance_id,
-                source_id=client_id,
+                source_id=session.client_id,
                 playback_session_id=session.playback_session_id,
             )
         except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
@@ -687,6 +692,22 @@ class SendspinSourceProvider(PluginProvider):
         task = self.mass.get_task(task_id)
         if cancel_running and task is not None and task is not asyncio.current_task():
             self.mass.cancel_task(task_id)
+
+    def _source_name(self, client_id: str) -> str:
+        return f"{self.name} ({self._device_name(client_id)})"
+
+    def _device_name(self, client_id: str) -> str:
+        """Return the name of the player the user sees for this client."""
+        if (player := self.mass.players.get_player(client_id)) is not None:
+            if player.protocol_parent_id and (
+                parent := self.mass.players.get_player(player.protocol_parent_id)
+            ):
+                player = parent
+            return player.display_name
+        # Fall back to the device's own name while it has no registered player.
+        client = self._get_client(client_id)
+        info = client.info_or_none if client else None
+        return info.name if info else client_id
 
     def _autostart_timer_id(self, client_id: str) -> str:
         return f"{self.instance_id}_autostart_{client_id}"

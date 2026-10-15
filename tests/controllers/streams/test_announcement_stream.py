@@ -95,6 +95,8 @@ async def test_source_is_rendered_once_for_all_consumers() -> None:
 
     # the source is fetched/decoded once, yet every consumer got the full audio
     assert factory.call_count == 1
+    # self-signed Home Assistant hosts are common, so the source is opened unverified
+    assert factory.call_args.kwargs["verify_ssl"] is False
     assert all(len(chunks) == 3 for chunks in [sequential, *concurrent])
     assert renderer.active_renders == 0
 

@@ -11,6 +11,7 @@ from aiosendspin.server import (
     ClientConnectedEvent,
     SignalState,
     SourceSignalChangedEvent,
+    SourceStreamEndedEvent,
     SourceStreamStartedEvent,
 )
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption, StreamType
@@ -29,6 +30,7 @@ from music_assistant.providers.sendspin_source.provider import OUTPUT_FORMAT
 
 from .conftest import (
     _FakeClient,
+    _FakePlayer,
     get_config,
     get_players,
     get_queues,
@@ -107,9 +109,36 @@ async def test_audio_sources_follow_role_activation() -> None:
     )
     sources = await provider.get_audio_sources()
     assert [s.item_id for s in sources] == ["with-role"]
-    assert sources[0].name == "Turntable"
     assert sources[0].exclusive is True
     assert sources[0].can_initiate is True
+
+
+async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> None:
+    """The source is named after its player, and a rename reaches Browse and now-playing."""
+    provider = await make_provider([fake_client])
+    get_players(provider).players["client-1"].display_name = "Living Room"
+    assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Living Room)"]
+    get_players(provider).players["client-1"].display_name = "Den"
+    assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Den)"]
+    details = await provider.get_stream_details("client-1", MediaType.AUDIO_SOURCE)
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "Sendspin Source (Den)"
+
+
+async def test_source_name_uses_the_visible_parent_player(fake_client: _FakeClient) -> None:
+    """A protocol player's source is named after the player the user sees."""
+    provider = await make_provider([fake_client])
+    players = get_players(provider).players
+    players["client-1"].protocol_parent_id = "cast-1"
+    players["cast-1"] = _FakePlayer("cast-1", display_name="Kitchen")
+    assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Kitchen)"]
+
+
+async def test_source_name_falls_back_to_the_device_name(fake_client: _FakeClient) -> None:
+    """Before its player registers, the source is named after the device's own name."""
+    provider = await make_provider([fake_client])
+    get_players(provider).players.clear()
+    assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Turntable)"]
 
 
 async def test_stream_details_rejects_unknown_source() -> None:
@@ -251,6 +280,35 @@ async def test_stream_ends_after_source_timeout(
     monkeypatch.setattr(provider_module, "SOURCE_TIMEOUT_S", 0.05)
     chunks = [chunk async for chunk in provider.get_audio_stream(_stream_details())]
     assert 1 <= len(chunks) <= 10
+
+
+async def test_turning_the_input_off_releases_the_source_at_once(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connected client that loses its source role leaves nothing to wait for."""
+    provider = await make_provider([fake_client])
+    await _start_streaming(provider, fake_client, monkeypatch)
+
+    fake_client.detach_roles()
+    fake_client.emit(SourceStreamEndedEvent())
+    await _settle()
+
+    assert get_players(provider).deselected == ["queue-1"]
+
+
+async def test_a_disconnect_keeps_the_source_waiting(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dropped client may come back, so its source holds until the timeout."""
+    provider = await make_provider([fake_client])
+    await _start_streaming(provider, fake_client, monkeypatch)
+
+    fake_client.is_connected = False
+    fake_client.detach_roles()
+    fake_client.emit(SourceStreamEndedEvent())
+    await _settle()
+
+    assert get_players(provider).deselected == []
 
 
 async def test_reconnect_re_requests_start(fake_client: _FakeClient) -> None:

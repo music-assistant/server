@@ -1843,13 +1843,16 @@ async def test_get_buffer_decodes_an_unknown_source_at_its_probed_format() -> No
     mass.streams.audio.get_media_stream = _get_media_stream
     details = _make_unknown_format_details()
     details.extra_input_args = ["-user_agent", "test"]
+    details.verify_ssl = False
 
     with patch.object(
         audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=PROBED_FLAC)
     ) as probe:
         buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
     try:
-        probe.assert_awaited_once_with(details.path, ["-user_agent", "test"], pass_fds=())
+        probe.assert_awaited_once_with(
+            details.path, ["-user_agent", "test"], pass_fds=(), verify_ssl=False
+        )
         assert buffer.pcm_format.content_type == ContentType.PCM_S24LE
         assert (buffer.pcm_format.sample_rate, buffer.pcm_format.bit_depth) == (48000, 24)
         assert requested_formats == [buffer.pcm_format]
@@ -2041,7 +2044,9 @@ async def test_get_buffer_probes_the_hls_substream_the_producer_plays(resolves: 
             "https://example.com/master.m3u8"
         )
         if resolves:
-            probe.assert_awaited_once_with("https://cdn.example.com/variant.m3u8", [], pass_fds=())
+            probe.assert_awaited_once_with(
+                "https://cdn.example.com/variant.m3u8", [], pass_fds=(), verify_ssl=True
+            )
             assert buffer.pcm_format.sample_rate == 48000
         else:
             probe.assert_not_awaited()
