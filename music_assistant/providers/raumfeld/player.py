@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from typing import TYPE_CHECKING, cast
 
@@ -26,6 +27,9 @@ from .constants import (
 from .helpers import external_source, parse_didl_metadata, parse_duration, query_last_change
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+    from typing import Any, Concatenate
+
     import hassfeld
     from music_assistant_models.config_entries import ConfigEntry
 
@@ -99,6 +103,25 @@ EXTERNAL_SOURCE_FEATURES = {
 }
 
 
+def _changes_playback[**P, R](
+    func: Callable[Concatenate[RaumfeldPlayer, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[RaumfeldPlayer, P], Coroutine[Any, Any, R]]:
+    """Mark a command that changes what plays, so polls do not apply readings from before it."""
+
+    @functools.wraps(func)
+    async def wrapper(player: RaumfeldPlayer, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        player._playback_changes += 1
+        player._playback_generation += 1
+        try:
+            return await func(player, *args, **kwargs)
+        finally:
+            player._playback_changes -= 1
+            # a poll that overlapped the command read the state from before it ended
+            player._playback_generation += 1
+
+    return wrapper
+
+
 def _map_transport_state(state: str | None) -> PlaybackState:
     """Map a UPnP ``CurrentTransportState`` value to a Music Assistant PlaybackState."""
     value = (state or "").upper()
@@ -131,9 +154,10 @@ class RaumfeldPlayer(Player):
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
     # set before the player is fully constructed, as the base class reads the features
     _external_source: PlayerSource | None = None
-    # bumped by every command that changes what plays, so a poll that read the device
-    # before such a command can tell its readings no longer apply
+    # bumped when a command that changes what plays starts and when it ends, and the
+    # number of such commands running, so a poll can tell its readings no longer apply
     _playback_generation = 0
+    _playback_changes = 0
 
     def __init__(
         self,
@@ -294,12 +318,12 @@ class RaumfeldPlayer(Player):
         self._attr_powered = powered
         self.update_state()
 
+    @_changes_playback
     async def play(self) -> None:
         """Send PLAY/resume command."""
         self._drop_ended_external()
         if self._external_source is not None:
             # resume what the host or the speaker itself was playing, where it paused
-            self._playback_generation += 1
             await self._external_command("Play", Speed="1")
             # the position was frozen at the pause; it runs on from now, not from then
             self._attr_elapsed_time_last_updated = time.time()
@@ -314,9 +338,9 @@ class RaumfeldPlayer(Player):
         except HOST_ERRORS as err:
             raise PlayerCommandFailed(f"Failed to resume {self.room}: {err!r}") from err
 
+    @_changes_playback
     async def stop(self) -> None:
         """Send STOP command."""
-        self._playback_generation += 1
         self._clear_next()
         # we treat pause as stop; freeze the extrapolated position into the anchor so the
         # paused progress bar stays where playback was, instead of snapping back to the
@@ -378,6 +402,7 @@ class RaumfeldPlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
 
+    @_changes_playback
     async def play_media(self, media: PlayerMedia) -> None:
         """
         Handle PLAY MEDIA: point the room's zone at the MA stream URL.
@@ -419,6 +444,7 @@ class RaumfeldPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
+    @_changes_playback
     async def select_source(self, source: str) -> None:
         """Handle SELECT_SOURCE: play the room's analog Line-In input."""
         if source != SOURCE_LINE_IN or self._line_in is None:
@@ -572,7 +598,7 @@ class RaumfeldPlayer(Player):
             self._read_transport(host, zone),
             self._read_position(host, zone),
         )
-        if generation != self._playback_generation:
+        if not self._reading_is_current(generation):
             # a play or stop command ran meanwhile; the next poll reads what it brought
             self.update_state()
             return
@@ -590,7 +616,7 @@ class RaumfeldPlayer(Player):
 
         if position is not None:
             await self._update_zone_source(position, zone, generation)
-            if generation != self._playback_generation:
+            if not self._reading_is_current(generation):
                 # a play or stop command ran while the source was being read
                 self.update_state()
                 return
@@ -697,7 +723,7 @@ class RaumfeldPlayer(Player):
             # returns, which a room's own renderer does not have
             self._call_transport(location, "GetPositionInfo"),
         )
-        if generation != self._playback_generation:
+        if not self._reading_is_current(generation):
             # a play or stop command ran meanwhile; the next poll reads what it brought
             self.update_state()
             return
@@ -753,7 +779,7 @@ class RaumfeldPlayer(Player):
             return
         # also while stopped: the zone keeps the item loaded and can start it again
         actions = await self._read_zone_actions(zone)
-        if generation != self._playback_generation:
+        if not self._reading_is_current(generation):
             # a play or stop command ran while reading, which this reading predates
             return
         self._set_external(
@@ -856,6 +882,14 @@ class RaumfeldPlayer(Player):
             image_url=meta["image_url"],
             duration=duration or None,
         )
+
+    def _reading_is_current(self, generation: int) -> bool:
+        """
+        Return whether a poll's readings still describe what plays.
+
+        :param generation: The playback generation the poll started its reads in.
+        """
+        return generation == self._playback_generation and not self._playback_changes
 
     def _presented_external(self) -> PlayerSource | None:
         """Return the external source, unless Music Assistant no longer presents it."""
@@ -1054,7 +1088,6 @@ class RaumfeldPlayer(Player):
 
     def _mark_play_started(self) -> None:
         """Record a play/resume command and switch to fast polling."""
-        self._playback_generation += 1
         self._play_started_at = time.time()
         self._attr_poll_interval = FAST_POLL_INTERVAL
         # a fresh play/resume: the not-yet-playing startup gap must not look like the

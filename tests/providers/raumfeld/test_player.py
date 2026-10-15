@@ -896,7 +896,7 @@ async def test_a_reading_older_than_a_play_command_is_not_adopted() -> None:
     player, _ = _external_player()
 
     async def actions_while_play_media_runs(_zone: list[str]) -> str:
-        player._mark_play_started()
+        player._playback_generation += 1
         return "Pause,Next,Previous"
 
     with (
@@ -934,7 +934,7 @@ async def test_a_poll_older_than_a_play_command_is_not_applied() -> None:
     player._attr_poll_interval = 1
 
     async def position_while_play_media_runs(*_args: object) -> dict[str, str]:
-        player._mark_play_started()
+        player._playback_generation += 1
         return {"TrackURI": "https://radio.example.com/stream", "RelTime": "0:00:05"}
 
     with (
@@ -958,7 +958,7 @@ async def test_a_play_command_during_the_source_read_drops_the_whole_reading() -
     player, _ = _external_player()
 
     async def source_read_while_play_media_runs(*_args: object) -> None:
-        player._mark_play_started()
+        player._playback_generation += 1
 
     with (
         patch.object(player, "update_state"),
@@ -980,3 +980,31 @@ def test_a_room_in_a_zone_does_not_play_spotify_connect() -> None:
         assert player._plays_spotify_connect() is False
     with patch.object(player, "_active_zone", return_value=None):
         assert player._plays_spotify_connect() is True
+
+
+async def test_a_poll_during_a_play_command_is_not_applied() -> None:
+    """Readings a poll takes while MA is still starting its own item are discarded."""
+    player, _ = _external_player()
+    player._playback_changes = 1
+    with patch.object(player, "_read_zone_actions", AsyncMock(return_value="Pause")):
+        await player._update_zone_source(
+            {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""},
+            ["Bar"],
+            player._playback_generation,
+        )
+    assert player._external_source is None
+
+
+async def test_a_play_command_invalidates_polls_that_overlap_it() -> None:
+    """A command bumps the generation when it starts and again when it ends."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Play", 315, via_room=True)
+    player._attr_playback_state = PlaybackState.PAUSED
+    generation = player._playback_generation
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()),
+    ):
+        await player.play()
+    assert player._playback_changes == 0
+    assert player._playback_generation == generation + 2
