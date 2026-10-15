@@ -925,6 +925,13 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             player = self._get_kiosk_player(player_id)
             if claim and player and player.sendspin_client_id == claim.client_id:
                 self.provider.mass.create_task(self._fallback_sendspin(player_id, claim.client_id))
+        elif msg_type == "playback_error":
+            generation = msg.get("playback_generation")
+            if isinstance(generation, str) and generation:
+                logger.warning(
+                    "Kiosk %s could not play its stream: %s", player_id, msg.get("reason")
+                )
+                self.provider.playback_failed(player_id, generation)
         elif msg_type == "ended":
             generation = msg.get("playback_generation")
             if isinstance(generation, str) and generation:

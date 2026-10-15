@@ -211,6 +211,25 @@ async def test_ws_ended_asks_the_provider_to_advance(
     await ws.close()
 
 
+async def test_ws_playback_error_asks_the_provider_to_stop(
+    http_client: TestClient[Any, Any], provider: WebKioskProvider
+) -> None:
+    """A browser stream failure reaches the provider with its playback generation."""
+    provider.playback_failed = Mock()  # type: ignore[method-assign]
+    ws = await http_client.ws_connect("/ws?device_id=failing")
+    hello = json.loads((await ws.receive()).data)
+
+    await ws.send_str(
+        json.dumps(
+            {"type": "playback_error", "playback_generation": "gen", "reason": "NotSupportedError"}
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    provider.playback_failed.assert_called_once_with(hello["player_id"], "gen")
+    await ws.close()
+
+
 async def test_ws_ended_forwards_final_position(
     http_client: TestClient[Any, Any], provider: WebKioskProvider
 ) -> None:

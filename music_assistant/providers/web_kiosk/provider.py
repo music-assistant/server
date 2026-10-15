@@ -433,6 +433,15 @@ class WebKioskProvider(PlayerProvider):
         """
         self._spawn(self._advance_after_track(player_id, playback_generation, position))
 
+    def playback_failed(self, player_id: str, playback_generation: str) -> None:
+        """
+        Stop playback the browser could not load or continue.
+
+        :param player_id: The kiosk player that reported the failure.
+        :param playback_generation: The playback instance that failed.
+        """
+        self._spawn(self._stop_failed_playback(player_id, playback_generation))
+
     def notify_play_paused(self, player_id: str) -> None:
         """Notify the kiosk WebSocket client that playback is paused."""
         if self.http_server:
@@ -599,7 +608,7 @@ class WebKioskProvider(PlayerProvider):
     ) -> list[dict[str, Any]]:
         """Return parsed lyric lines for the playing item."""
         media_item = getattr(self._queue_item(player_id, media), "media_item", None)
-        if media_item is None:
+        if media_item is None or media_item.media_type != MediaType.TRACK:
             return []
         plain, lrc = await self.mass.metadata.get_track_lyrics(media_item)
         return parse_track_lyrics(plain, lrc)
@@ -612,6 +621,21 @@ class WebKioskProvider(PlayerProvider):
             return self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
         queue = self.mass.player_queues.get_active_queue(player_id)
         return getattr(queue, "current_item", None)
+
+    async def _stop_failed_playback(self, player_id: str, playback_generation: str) -> None:
+        """Stop the current playback when the browser reports that it failed."""
+        player = self.mass.players.get_player(player_id)
+        if (
+            not isinstance(player, WebKioskPlayer)
+            or playback_generation != player.playback_generation
+        ):
+            return
+        if player.playback_state == PlaybackState.IDLE:
+            return
+        try:
+            await self.mass.players.cmd_stop(player_id)
+        except MusicAssistantError:
+            logger.warning("Stopping failed playback on %s failed", player_id, exc_info=True)
 
     async def _advance_after_track(
         self, player_id: str, playback_generation: str, position: float | None = None

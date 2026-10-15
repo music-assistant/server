@@ -96,6 +96,7 @@
     var lyricsIdx = -1;
     var renderedLyrics = null;
     var endReported = false;
+    var errorReported = false;
     var playbackGeneration = '';
 
     var audio = new Audio();
@@ -286,6 +287,18 @@
         sendWS({ type:'capabilities', volume_control:mediaVolumeWritable || sendspinStreaming });
         syncVolume(audio.volume * 100);
     }
+    function reportPlaybackError(generation, reason) {
+        // Only the stream that is still current may fail. A replaced stream's
+        // late rejection or abort must not stop the new playback.
+        if (!generation || generation !== playbackGeneration || errorReported) return;
+        if (isPrimeSource() || sendspinStreaming) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        sendWS({ type: 'playback_error', playback_generation: generation, reason: reason });
+        errorReported = true;
+        playing = false; sync();
+        setStatus('Playback failed');
+    }
+
     function reportTrackEnded() {
         if (endReported || !playbackGeneration || !audio.ended || isPrimeSource() || sendspinStreaming) return;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -350,6 +363,7 @@
                 break;
             case 'play':
                 endReported = false;
+                errorReported = false;
                 // A new track retires the previous curve. The matching wave
                 // message may already be waiting, or it arrives next.
                 if (typeof msg.wave_seq === 'number') takeServerWave(msg.wave_seq);
@@ -553,6 +567,7 @@
     }
     function startPlayback() {
         if (sendspinStreaming) return;
+        var generation = playbackGeneration;
         var attempt = audio.play();
         if (!attempt || !attempt.then) { markHtmlUnlocked(); return; }
         attempt.then(function () {
@@ -566,6 +581,7 @@
                 return;
             }
             setStatus((err && err.message) || 'Playback failed');
+            reportPlaybackError(generation, name || 'Error');
         });
     }
     function cmd(name, args) {
@@ -1157,6 +1173,12 @@
         };
         audio.addEventListener('loadedmetadata', applyPendingSeek);
         audio.addEventListener('canplay', applyPendingSeek);
+        audio.onerror = function () {
+            // MEDIA_ERR_ABORTED is a replaced or cleared source, not a failure.
+            var code = audio.error && audio.error.code;
+            if (!code || code === 1 || !audio.getAttribute('src')) return;
+            reportPlaybackError(playbackGeneration, 'MediaError' + code);
+        };
         audio.onended = function () {
             // The page often has no Music Assistant token, so next goes over
             // the player socket. The provider then advances the queue.

@@ -170,7 +170,7 @@ async def test_publish_wave_sends_stored_bins(provider: WebKioskProvider) -> Non
 
 async def test_publish_lyrics_sends_parsed_lines(provider: WebKioskProvider) -> None:
     """Lyric lines go out on the player socket without a browser token."""
-    media = Mock()
+    media = Mock(media_type=MediaType.TRACK)
     queue = Mock(current_item=Mock(media_item=media))
     cast("Mock", provider.mass.player_queues).get_active_queue.return_value = queue
     cast("Mock", provider.mass.metadata).get_track_lyrics = AsyncMock(
@@ -426,7 +426,7 @@ async def test_background_media_work_reports_unexpected_errors(
 
     mass_mock.create_task.side_effect = spawn
     mapping = Mock(item_id="track", provider_instance="library")
-    media = Mock(provider_mappings=[mapping])
+    media = Mock(media_type=MediaType.TRACK, provider_mappings=[mapping])
     mass_mock.player_queues.get_active_queue.return_value = Mock(
         current_item=Mock(media_item=media)
     )
@@ -752,7 +752,10 @@ async def test_play_index_publishes_wave_and_lyrics_of_the_dispatched_item(
         media_item=Mock(provider_mappings=[Mock(item_id="old", provider_instance="lib")])
     )
     dispatched = Mock(
-        media_item=Mock(provider_mappings=[Mock(item_id="new", provider_instance="lib")]),
+        media_item=Mock(
+            media_type=MediaType.TRACK,
+            provider_mappings=[Mock(item_id="new", provider_instance="lib")],
+        ),
         extra_attributes={},
     )
     mass_mock.player_queues.get_active_queue.return_value = Mock(current_item=previous)
@@ -778,3 +781,36 @@ async def test_play_index_publishes_wave_and_lyrics_of_the_dispatched_item(
     assert provider.http_server.broadcast_lyrics.call_args.args[2] == [
         {"t": None, "text": "new line"}
     ]
+
+
+@pytest.mark.parametrize(
+    "media_type", [MediaType.RADIO, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE]
+)
+async def test_non_track_playback_never_requests_track_lyrics(
+    provider: WebKioskProvider, media_type: MediaType
+) -> None:
+    """Only tracks are passed to the track lyrics lookup."""
+    media = Mock(media_type=media_type)
+    queue = Mock(current_item=Mock(media_item=media))
+    cast("Mock", provider.mass.player_queues).get_active_queue.return_value = queue
+    cast("Mock", provider.mass.metadata).get_track_lyrics = AsyncMock(return_value=("x", None))
+    provider.http_server = Mock()
+
+    await provider._publish_lyrics("wk_test", 3)
+
+    cast("Mock", provider.mass.metadata).get_track_lyrics.assert_not_awaited()
+    provider.http_server.broadcast_lyrics.assert_called_once_with("wk_test", 3, [])
+
+
+async def test_failed_html5_stream_stops_current_playback(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """A stream the browser cannot load stops playback instead of staying PLAYING."""
+    await player.play_media(PlayerMedia(uri="broken", duration=180, source_id="wk_test"))
+    mass_mock.players.get_player.return_value = player
+
+    await provider._stop_failed_playback("wk_test", "stale-generation")
+    mass_mock.players.cmd_stop.assert_not_awaited()
+
+    await provider._stop_failed_playback("wk_test", player.playback_generation)
+    mass_mock.players.cmd_stop.assert_awaited_once_with("wk_test")

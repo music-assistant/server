@@ -149,6 +149,18 @@ class WebKioskPlayer(Player):
         return self._playback_generation
 
     @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features; native playback yields to an active Sendspin output."""
+        if self._uses_sendspin_output():
+            return self._attr_supported_features - {PlayerFeature.PLAY_MEDIA}
+        return self._attr_supported_features
+
+    @property
+    def default_output_protocol_domain(self) -> str | None:
+        """Prefer the linked Sendspin output while the browser runs in Sendspin mode."""
+        return "sendspin" if self._uses_sendspin_output() else None
+
+    @property
     def requires_flow_mode(self) -> bool:
         """Kiosk plays individual tracks — flow mode breaks progress tracking."""
         return False
@@ -455,6 +467,16 @@ class WebKioskPlayer(Player):
         if not isinstance(duration, (int, float)) or duration <= 0:
             return None
         return float(duration) / self._playback_speed
+
+    def _uses_sendspin_output(self) -> bool:
+        """Return whether the browser asked for Sendspin and its linked output can play."""
+        client_id = self.sendspin_client_id
+        if not client_id or self.sendspin_fallback:
+            return False
+        if all(link.output_protocol_id != client_id for link in self.linked_output_protocols):
+            return False
+        protocol = self.mass.players.get_player(client_id)
+        return bool(protocol and protocol.available_for_playback)
 
     async def _resume_from_pause(self) -> None:
         """Resume playback after pause — tell the kiosk to unpause its audio element."""

@@ -823,3 +823,44 @@ async def test_enabling_kiosk_disabled_at_startup_registers_connected_browser(
         await ws.close()
     provider.cancel_all_player_closes()
     await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_first_ungrouped_play_uses_the_requested_sendspin_output(
+    provider: WebKioskProvider,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """Sendspin mode selects its linked output; fallback and explicit HTML5 stay native."""
+    registry, sendspin, _universal, client, tasks = browser_registry
+    native = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+    await registry.register(native)
+    provider.sendspin_bridge_enabled = True
+    provider.bridge_manager = WebKioskSendspinBridgeManager(provider)
+    try:
+        kiosk = await provider.get_or_register_player(
+            "wk_mode",
+            sendspin_client_id=CLIENT_ID,
+            sendspin_claim=VerifiedSendspinClaim("wk_mode", CLIENT_ID),
+        )
+        assert kiosk is not None
+        assert kiosk.state.active_group is None
+        target, protocol = registry._select_best_output_protocol(kiosk)
+        assert target.player_id == CLIENT_ID
+        assert protocol is not None
+
+        kiosk.sendspin_fallback = True
+        target, protocol = registry._select_best_output_protocol(kiosk)
+        assert target is kiosk
+        assert protocol is None
+
+        html5 = await provider.get_or_register_player("wk_html5")
+        assert html5 is not None
+        target, protocol = registry._select_best_output_protocol(html5)
+        assert target is html5
+        assert protocol is None
+    finally:
+        provider.cancel_all_player_closes()
+        await provider.bridge_manager.close()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await native.on_unload()
