@@ -1985,6 +1985,30 @@ async def test_a_clip_that_is_rendering_is_not_rendered_ahead_again() -> None:
     assert renderer.llm_calls == 1
 
 
+async def test_cancelling_the_renders_ahead_stops_one_in_flight() -> None:
+    """A render started ahead stops before it reaches the engines once it is cancelled."""
+    renderer = DummyRenderer()
+    clip = _dj_clip_item("djlive", 1)
+    _attach_queue(renderer, [_song(0), clip])
+    started = _play_queue(renderer)
+    cancelled: list[str] = []
+
+    def cancel_task(task_id: str) -> None:
+        cancelled.append(task_id)
+        started[task_id].cancel()
+
+    cast("Any", renderer).mass.cancel_task = cancel_task
+    renderer._render_ahead("player_a")
+
+    renderer._cancel_renders_ahead()
+
+    assert cancelled == ["ai_radio_render_ahead_djlive_001"]
+    with pytest.raises(asyncio.CancelledError):
+        await started["ai_radio_render_ahead_djlive_001"]
+    assert renderer.llm_calls == 0
+    assert ATTR_RENDERED_TEXT not in clip.extra_attributes
+
+
 async def test_a_clip_rendered_ahead_reuses_its_script_and_plans_its_post_when_due() -> None:
     """The queue's own request airs the script rendered ahead, and only it plans the post."""
     renderer = DummyRenderer()

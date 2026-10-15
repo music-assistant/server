@@ -247,6 +247,13 @@ class AIRadioRenderMixin:
                 task_id=f"ai_radio_render_ahead_{clip_id}",
             )
 
+    def _cancel_renders_ahead(self) -> None:
+        """Cancel the clip renders that were started ahead of their airtime."""
+        # an ahead render takes its clip's lock as soon as it starts, so every clip that has
+        # one in flight holds a lock
+        for clip_id in getattr(self, "_render_locks", {}):
+            self.mass.cancel_task(f"ai_radio_render_ahead_{clip_id}")
+
     async def _render_clip_ahead(self, queue_item: QueueItem, prompt: str, clip_id: str) -> None:
         """Render the clip's script and media before the queue asks for them."""
         async with self._lock_for(clip_id):

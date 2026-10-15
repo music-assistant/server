@@ -183,6 +183,7 @@ class DummyQueueDJ(
         self._dj_queues: dict[str, Any] = {}
         self._dj_file = tmp_path / "queue_dj.json"
         self._dj_lock = asyncio.Lock()
+        self._unloading = False
         self.rendered_ahead: list[str] = []
         # the disable path reaches the real clip cleanup, which needs a queue layer;
         # this one holds no queue at all, so cleanup finds nothing to do

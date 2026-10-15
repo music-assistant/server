@@ -265,7 +265,8 @@ class AIRadioQueueDJMixin:
                 self._schedule_replan(queue_id)
                 await self._maybe_detach_show_dj(queue_id)
                 # an unready state is still clearing the previous host's clips
-                if (state := self._dj_queues.get(queue_id)) is not None and state.ready:
+                state = self._dj_queues.get(queue_id)
+                if state is not None and state.ready and not self._unloading:
                     self._render_ahead(queue_id)
         # an arm-once record can outlive its DJ state (manual disable, deleted host, a failed
         # arm), so it is reconciled against the queue's current sources independently here
