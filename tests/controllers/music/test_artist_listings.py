@@ -519,6 +519,24 @@ async def _seed_author_audiobooks(mass: MusicAssistant) -> str:
     return str(author.item_id)
 
 
+async def test_provider_author_audiobooks_fall_back_to_the_library_of_the_answering_account(
+    mass: MusicAssistant,
+) -> None:
+    """A provider without an author listing falls back to the library, also when asked by domain."""
+    await _seed_author_audiobooks(mass)
+    set_music_source_access(mass, {"qobuz_1": None})
+    provider = Mock(spec=MusicProvider)
+    provider.instance_id = "qobuz_1"
+    provider.supported_features = set()
+    user = User(user_id="reader", username="reader", role=UserRole.USER)
+    with (
+        patch.object(mass, "get_provider", return_value=provider),
+        patch("music_assistant.controllers.music.media.base.get_current_user", return_value=user),
+    ):
+        books = await mass.music.artists.get_provider_author_audiobooks("author1", "qobuz")
+    assert _names(books) == ["Zebra", "Apple", "Mango"]
+
+
 async def test_artist_audiobooks_follow_the_listing_contract(mass: MusicAssistant) -> None:
     """An author's audiobooks are searched, sorted and paged, by sort name by default."""
     author_id = await _seed_author_audiobooks(mass)

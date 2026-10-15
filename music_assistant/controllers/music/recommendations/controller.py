@@ -80,11 +80,12 @@ class RecommendationsController:
         """
         # the rows listing leaves out the music sources the user may not see, and only lists
         # providers declaring the feature; a row of any other provider does not exist, nor
-        # does another account of the same service stand in for its rows
+        # does another account of the same service stand in for the rows of a hidden one
+        # (a row naming its service by domain is served by a visible account of it)
         prov = self.mass.music.get_visible_provider(provider)
         if (
             prov is None
-            or prov.instance_id != provider
+            or provider not in (prov.instance_id, prov.domain)
             or ProviderFeature.RECOMMENDATIONS not in prov.supported_features
         ):
             return UniqueList()

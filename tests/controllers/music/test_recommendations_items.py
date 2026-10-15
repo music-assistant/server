@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
@@ -21,7 +22,6 @@ from music_assistant.providers.recommendations import LibraryRecommendationsProv
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
-    import pytest
     from music_assistant_models.media_items import BrowseFolder, MediaItemType
 
 
@@ -165,13 +165,14 @@ async def test_rows_interleave_uneven_provider_lengths_no_tail_dropped(
     assert len(folders) == len(builtin_ids) + 4 + 1
 
 
+@pytest.mark.parametrize("row_provider", ["fake_instance", "fake"])
 async def test_items_routed_to_provider(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, row_provider: str
 ) -> None:
-    """Items for a provider row are fetched from that provider."""
+    """Items for a provider row are fetched from that provider, named by instance or domain."""
     provider = _build(_RowsProvider)
     monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: provider)
-    items = await mass.music.recommendations.get_recommendation_items("fake_instance", "row1")
+    items = await mass.music.recommendations.get_recommendation_items(row_provider, "row1")
     assert [item.item_id for item in items] == ["prov-item"]
 
 
