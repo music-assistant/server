@@ -8,6 +8,7 @@ import threading
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from functools import partial
 from sqlite3 import IntegrityError
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
@@ -15,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from music_assistant_models.api import SuccessResultMessage
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing
@@ -24,6 +26,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     UserNotFoundError,
 )
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import (
     CONF_PLAYERS,
@@ -33,6 +36,7 @@ from music_assistant.constants import (
     HOMEASSISTANT_SYSTEM_USER,
 )
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.auth import (
     JOIN_CODE_GLOBAL_FAILURE_CEILING,
     JOIN_CODE_GLOBAL_RATE_LIMIT_KEY,
@@ -60,6 +64,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     PRUNE_THRESHOLD,
+    AuthFailure,
     AuthResult,
     BuiltinLoginProvider,
     LoginRateLimiter,
@@ -70,7 +75,7 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.pkce import pkce_challenge
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
@@ -293,7 +298,11 @@ async def test_authenticate_with_unknown_username_still_hashes_the_password(
         "builtin", {"username": "nosuchuser", "password": "some_password"}
     )
 
-    assert result == AuthResult(success=False, error="Invalid username or password")
+    assert result == AuthResult(
+        success=False,
+        error="Invalid username or password",
+        translation_key="login_failed",
+    )
     hash_password.assert_awaited_once()
 
 
@@ -364,12 +373,18 @@ async def test_authenticate_with_password_refuses_a_disabled_user(
     result = await auth_manager.authenticate_with_credentials(
         "builtin", {"username": "disabledlogin", "password": "secure_password_123"}
     )
-    assert result == AuthResult(success=False, error="User account is disabled")
+    assert result == AuthResult(
+        success=False, error="User account is disabled", translation_key="user_account_disabled"
+    )
 
     result = await auth_manager.authenticate_with_credentials(
         "builtin", {"username": "disabledlogin", "password": "wrong_password"}
     )
-    assert result == AuthResult(success=False, error="Invalid username or password")
+    assert result == AuthResult(
+        success=False,
+        error="Invalid username or password",
+        translation_key="login_failed",
+    )
 
 
 async def test_create_token(auth_manager: AuthenticationManager) -> None:
@@ -1744,8 +1759,10 @@ async def test_exchange_signs_in_the_user_of_an_app_sign_in(
     oauth_provider.complete_authorization = AsyncMock(return_value=user)
     pending = _start_app_sign_in(auth_manager)
 
-    result = await auth_manager.exchange_authorization_code(
-        pending.state, "idp_code", CLIENT_VERIFIER, device_name="Phone"
+    result = _as_sent(
+        await auth_manager.exchange_authorization_code(
+            pending.state, "idp_code", CLIENT_VERIFIER, device_name="Phone"
+        )
     )
 
     assert result["success"] is True
@@ -1757,8 +1774,8 @@ async def test_exchange_signs_in_the_user_of_an_app_sign_in(
     }
     assert await auth_manager.authenticate_with_token(result["access_token"]) is not None
     oauth_provider.complete_authorization.assert_awaited_once_with(pending, {"code": "idp_code"})
-    again = await auth_manager.exchange_authorization_code(
-        pending.state, "idp_code", CLIENT_VERIFIER
+    again = _as_sent(
+        await auth_manager.exchange_authorization_code(pending.state, "idp_code", CLIENT_VERIFIER)
     )
     assert again["success"] is False
     assert again["translation_key"] == "sign_in_expired"
@@ -1804,7 +1821,7 @@ async def test_exchange_refuses_an_invalid_sign_in(
     if expired:
         pending.expires_at = 0
 
-    result = await auth_manager.exchange_authorization_code(pending.state, code, verifier)
+    result = _as_sent(await auth_manager.exchange_authorization_code(pending.state, code, verifier))
 
     assert result["success"] is False
     assert result["translation_key"] == translation_key
@@ -1815,7 +1832,9 @@ async def test_exchange_refuses_an_invalid_sign_in(
 
 async def test_exchange_refuses_an_unknown_state(auth_manager: AuthenticationManager) -> None:
     """An exchange for a state that was never handed out fails."""
-    result = await auth_manager.exchange_authorization_code("w.unknown", "code", CLIENT_VERIFIER)
+    result = _as_sent(
+        await auth_manager.exchange_authorization_code("w.unknown", "code", CLIENT_VERIFIER)
+    )
 
     assert result == {
         "success": False,
@@ -1835,8 +1854,8 @@ async def test_exchange_passes_on_a_refusal_of_the_provider(
     )
     pending = _start_app_sign_in(auth_manager)
 
-    result = await auth_manager.exchange_authorization_code(
-        pending.state, "idp_code", CLIENT_VERIFIER
+    result = _as_sent(
+        await auth_manager.exchange_authorization_code(pending.state, "idp_code", CLIENT_VERIFIER)
     )
 
     assert result == {
@@ -1857,12 +1876,16 @@ async def test_failed_exchanges_are_rate_limited_per_connection(
         for _ in range(3):
             await auth_manager.exchange_authorization_code("w.unknown", "code", CLIENT_VERIFIER)
         pending = _start_app_sign_in(auth_manager)
-        throttled = await auth_manager.exchange_authorization_code(
-            pending.state, "idp_code", CLIENT_VERIFIER
+        throttled = _as_sent(
+            await auth_manager.exchange_authorization_code(
+                pending.state, "idp_code", CLIENT_VERIFIER
+            )
         )
         set_current_client_id("connection-b")
-        other = await auth_manager.exchange_authorization_code(
-            pending.state, "idp_code", CLIENT_VERIFIER
+        other = _as_sent(
+            await auth_manager.exchange_authorization_code(
+                pending.state, "idp_code", CLIENT_VERIFIER
+            )
         )
     finally:
         set_current_client_id(None)
@@ -1871,6 +1894,120 @@ async def test_failed_exchanges_are_rate_limited_per_connection(
     assert throttled["translation_key"] == "rate_limited"
     # the throttled attempt left the sign-in for a retry
     assert other["success"] is True
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "attempts", "translation_key"),
+    [
+        ("exchange_authorization_code", ("w.unknown", "c", CLIENT_VERIFIER), 1, "sign_in_expired"),
+        ("exchange_authorization_code", ("w.unknown", "c", CLIENT_VERIFIER), 4, "rate_limited"),
+        ("login", ("nobody", "wrong_password"), 1, "login_failed"),
+        ("login", ("nobody", "wrong_password"), 4, "rate_limited"),
+        ("exchange_join_code", ("WRONGCODE123",), 1, "join_code_invalid"),
+        ("exchange_join_code", ("WRONGCODE123",), 4, "rate_limited"),
+    ],
+    ids=[
+        "exchange_expired",
+        "exchange_throttled",
+        "login_invalid",
+        "login_throttled",
+        "join_code_invalid",
+        "join_code_throttled",
+    ],
+)
+async def test_sign_in_failures_read_in_the_language_of_the_client(
+    auth_manager: AuthenticationManager,
+    command: str,
+    args: tuple[str, ...],
+    attempts: int,
+    translation_key: str,
+) -> None:
+    """
+    A failed sign-in sent over the websocket or HTTP API reads in the language of the client.
+
+    :param command: The sign-in command of the authentication manager to call.
+    :param args: The arguments of the failing call.
+    :param attempts: How many times the call is made, the last result is checked.
+    :param translation_key: The expected translation key of the failure.
+    """
+    translations = TranslationController(auth_manager.mass)
+    translations._locales["nl"] = {f"common.errors.{translation_key}": "Vertaalde foutmelding"}
+    for _ in range(attempts - 1):
+        await getattr(auth_manager, command)(*args)
+    failure = await getattr(auth_manager, command)(*args)
+    assert isinstance(failure, AuthFailure)
+
+    with _client_locale(translations, "nl"):
+        websocket = json_loads(SuccessResultMessage(message_id="1", result=failure).to_json())
+        http = json_loads(json_dumps(failure))
+
+    expected = {
+        "success": False,
+        "error": "Vertaalde foutmelding",
+        "translation_key": translation_key,
+    }
+    assert websocket["result"] == expected
+    assert http == expected
+
+
+async def test_sign_in_failure_args_fill_the_error_but_are_not_sent(
+    auth_manager: AuthenticationManager, oauth_provider: MagicMock
+) -> None:
+    """The args of a failure fill the localized error, without a client the English is kept."""
+    oauth_provider.complete_authorization = AsyncMock(
+        side_effect=AuthenticationFailed(
+            "Unknown or disabled user: bob",
+            translation_key="unknown_or_disabled_user",
+            translation_args=["bob"],
+        )
+    )
+    pending = _start_app_sign_in(auth_manager)
+    failure = await auth_manager.exchange_authorization_code(
+        pending.state, "idp_code", CLIENT_VERIFIER
+    )
+    assert isinstance(failure, AuthFailure)
+    translations = TranslationController(auth_manager.mass)
+    translations._locales["nl"] = {
+        "common.errors.unknown_or_disabled_user": "Onbekende of uitgeschakelde gebruiker: {0}"
+    }
+
+    with _client_locale(translations, "nl"):
+        localized = failure.to_dict()
+
+    assert localized == {
+        "success": False,
+        "error": "Onbekende of uitgeschakelde gebruiker: bob",
+        "translation_key": "unknown_or_disabled_user",
+    }
+    assert failure.to_dict() == {
+        "success": False,
+        "error": "Unknown or disabled user: bob",
+        "translation_key": "unknown_or_disabled_user",
+    }
+
+
+def _as_sent(result: dict[str, Any] | AuthFailure) -> dict[str, Any]:
+    """
+    Return the result of a sign-in command as the API sends it to a client.
+
+    :param result: The result of the sign-in command.
+    """
+    return result.to_dict() if isinstance(result, AuthFailure) else result
+
+
+@contextmanager
+def _client_locale(translations: TranslationController, locale: str) -> Iterator[None]:
+    """
+    Serialize API results in the given language, as for a client that set it.
+
+    :param translations: The translation controller to resolve the strings with.
+    :param locale: The language of the client.
+    """
+    token = TRANSLATION_RESOLVER.set(partial(translations.get_translation, locale=locale))
+    try:
+        yield
+    finally:
+        TRANSLATION_RESOLVER.reset(token)
 
 
 def _start_app_sign_in(auth_manager: AuthenticationManager) -> PendingLogin:
@@ -3065,7 +3202,7 @@ async def test_authenticate_with_join_code_api(auth_manager: AuthenticationManag
     )
 
     # Call the API endpoint
-    result = await auth_manager.exchange_join_code(code)
+    result = _as_sent(await auth_manager.exchange_join_code(code))
 
     assert result["success"] is True
     assert "access_token" in result
@@ -3082,7 +3219,7 @@ async def test_authenticate_with_join_code_api_invalid(
 
     :param auth_manager: AuthenticationManager instance.
     """
-    result = await auth_manager.exchange_join_code("BADCODE")
+    result = _as_sent(await auth_manager.exchange_join_code("BADCODE"))
 
     assert result["success"] is False
     assert "error" in result
@@ -3250,11 +3387,11 @@ async def test_exchange_join_code_rate_limited(auth_manager: AuthenticationManag
     """
     # Three failures trip the progressive delay threshold.
     for _ in range(3):
-        result = await auth_manager.exchange_join_code("WRONGCODE123")
+        result = _as_sent(await auth_manager.exchange_join_code("WRONGCODE123"))
         assert result["success"] is False
 
     # The next attempt must be rejected for rate limiting, not just "invalid".
-    result = await auth_manager.exchange_join_code("WRONGCODE123")
+    result = _as_sent(await auth_manager.exchange_join_code("WRONGCODE123"))
     assert result["success"] is False
     assert "too many" in result["error"].lower()
 
@@ -3270,9 +3407,12 @@ async def test_exchange_join_code_rate_limit_concurrent_burst(
 
     :param auth_manager: AuthenticationManager instance.
     """
-    results = await asyncio.gather(
-        *(auth_manager.exchange_join_code("WRONGCODE123") for _ in range(10))
-    )
+    results = [
+        _as_sent(result)
+        for result in await asyncio.gather(
+            *(auth_manager.exchange_join_code("WRONGCODE123") for _ in range(10))
+        )
+    ]
 
     assert all(result["success"] is False for result in results)
     # Only the first 3 attempts may reach the actual code check; the rest must be throttled.
@@ -3298,14 +3438,14 @@ async def test_exchange_join_code_success_does_not_reset_rate_limit(
 
     # A couple of failures, still below the throttle threshold.
     for _ in range(2):
-        assert (await auth_manager.exchange_join_code("NOPE12345678"))["success"] is False
+        assert (_as_sent(await auth_manager.exchange_join_code("NOPE12345678")))["success"] is False
 
     # A valid exchange still succeeds but must not wipe the counter.
-    assert (await auth_manager.exchange_join_code(code))["success"] is True
+    assert (_as_sent(await auth_manager.exchange_join_code(code)))["success"] is True
 
     # The third failure trips the threshold, throttling further attempts.
-    assert (await auth_manager.exchange_join_code("NOPE12345678"))["success"] is False
-    result = await auth_manager.exchange_join_code(code)
+    assert (_as_sent(await auth_manager.exchange_join_code("NOPE12345678")))["success"] is False
+    result = _as_sent(await auth_manager.exchange_join_code(code))
     assert result["success"] is False
     assert "too many" in result["error"].lower()
 
@@ -3327,15 +3467,15 @@ async def test_exchange_join_code_rate_limit_is_per_connection(
     # One guest burns through the progressive delay threshold with a stale code.
     set_current_client_id("connection-a")
     for _ in range(3):
-        assert (await auth_manager.exchange_join_code("EXPIRED12345"))["success"] is False
-    result = await auth_manager.exchange_join_code("EXPIRED12345")
+        assert (_as_sent(await auth_manager.exchange_join_code("EXPIRED12345")))["success"] is False
+    result = _as_sent(await auth_manager.exchange_join_code("EXPIRED12345"))
     assert "too many" in result["error"].lower()
 
     # A second guest is unaffected, both for a bad code and for a valid one.
     set_current_client_id("connection-b")
-    result = await auth_manager.exchange_join_code("EXPIRED12345")
+    result = _as_sent(await auth_manager.exchange_join_code("EXPIRED12345"))
     assert "invalid" in result["error"].lower()
-    assert (await auth_manager.exchange_join_code(code))["success"] is True
+    assert (_as_sent(await auth_manager.exchange_join_code(code)))["success"] is True
 
 
 async def test_exchange_join_code_success_clears_connection_rate_limit(
@@ -3354,18 +3494,18 @@ async def test_exchange_join_code_success_clears_connection_rate_limit(
 
     set_current_client_id("connection-c")
     for _ in range(2):
-        assert (await auth_manager.exchange_join_code("MISTYPED1234"))["success"] is False
+        assert (_as_sent(await auth_manager.exchange_join_code("MISTYPED1234")))["success"] is False
 
-    assert (await auth_manager.exchange_join_code(code))["success"] is True
+    assert (_as_sent(await auth_manager.exchange_join_code(code)))["success"] is True
 
     # Without the reset, the fourth failure overall would trip the threshold.
     for _ in range(2):
-        result = await auth_manager.exchange_join_code("MISTYPED1234")
+        result = _as_sent(await auth_manager.exchange_join_code("MISTYPED1234"))
         assert "invalid" in result["error"].lower()
 
     # The shared bucket of connection-less callers is untouched by all of this.
     set_current_client_id(None)
-    result = await auth_manager.exchange_join_code("MISTYPED1234")
+    result = _as_sent(await auth_manager.exchange_join_code("MISTYPED1234"))
     assert "invalid" in result["error"].lower()
 
 
@@ -3390,7 +3530,7 @@ async def test_exchange_join_code_global_ceiling_throttles_every_client(
 
     # An untouched connection is throttled, even when it presents a valid code.
     set_current_client_id("connection-never-seen-before")
-    result = await auth_manager.exchange_join_code(code)
+    result = _as_sent(await auth_manager.exchange_join_code(code))
     assert result["success"] is False
     assert "too many" in result["error"].lower()
 
@@ -3411,20 +3551,23 @@ async def test_exchange_join_code_rate_limit_falls_back_to_peer_address(
 
     set_current_peer_address("192.0.2.10")
     for _ in range(3):
-        assert (await auth_manager.exchange_join_code("EXPIRED12345"))["success"] is False
-    assert "too many" in (await auth_manager.exchange_join_code("EXPIRED12345"))["error"].lower()
+        assert (_as_sent(await auth_manager.exchange_join_code("EXPIRED12345")))["success"] is False
+    assert (
+        "too many"
+        in (_as_sent(await auth_manager.exchange_join_code("EXPIRED12345")))["error"].lower()
+    )
 
     # A caller from another address is unaffected.
     set_current_peer_address("192.0.2.11")
-    assert (await auth_manager.exchange_join_code(code))["success"] is True
+    assert (_as_sent(await auth_manager.exchange_join_code(code)))["success"] is True
 
     # An address can be shared by everyone behind a proxy, so success must not clear it.
     set_current_peer_address("192.0.2.10")
-    assert "too many" in (await auth_manager.exchange_join_code(code))["error"].lower()
+    assert "too many" in (_as_sent(await auth_manager.exchange_join_code(code)))["error"].lower()
 
     # A websocket client id always wins over the peer address.
     set_current_client_id("connection-e")
-    assert (await auth_manager.exchange_join_code(code))["success"] is True
+    assert (_as_sent(await auth_manager.exchange_join_code(code)))["success"] is True
 
 
 def test_mask_join_code() -> None:
