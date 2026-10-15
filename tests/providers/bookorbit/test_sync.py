@@ -126,15 +126,15 @@ async def test_get_audiobook_and_artist(
 
 @pytest.mark.asyncio
 async def test_sync_library_reuses_catalog_within_ttl(provider: BookOrbitProvider) -> None:
-    """AUDIOBOOK then ARTIST sync does not refresh the catalog twice within TTL."""
+    """Forced audiobook listing then artist listing does not refresh twice within TTL."""
     get_book = cast("Mock", provider._client.get_book)
-    with patch(
-        "music_assistant.models.music_provider.MusicProvider.sync_library",
-        new=AsyncMock(),
-    ):
-        await provider.sync_library(MediaType.AUDIOBOOK)
-        calls_after_audiobook = get_book.call_count
-        await provider.sync_library(MediaType.ARTIST)
+    provider._force_catalog_refresh = True
+    async for _ in provider.get_library_audiobooks():
+        pass
+    calls_after_audiobook = get_book.call_count
+    provider._force_catalog_refresh = False
+    async for _ in provider.get_library_artists():
+        pass
     assert calls_after_audiobook > 0
     assert get_book.call_count == calls_after_audiobook
 
@@ -302,9 +302,15 @@ async def test_sync_library_forces_catalog_refresh(provider: BookOrbitProvider) 
     """An audiobook library sync always re-fetches BookOrbit, ignoring the TTL."""
     provider._catalog_refreshed_at = time.monotonic()
     provider._catalog = {"1": {"id": 1}}
+
+    async def _parent_sync(self: MusicProvider, media_type: MediaType) -> None:
+        assert media_type == MediaType.AUDIOBOOK
+        async for _ in self.get_library_audiobooks():
+            break
+
     with (
         patch.object(provider, "_fetch_catalog", new_callable=AsyncMock) as fetch,
-        patch.object(MusicProvider, "sync_library", new_callable=AsyncMock),
+        patch.object(MusicProvider, "sync_library", _parent_sync),
     ):
         await provider.sync_library(MediaType.AUDIOBOOK)
     fetch.assert_awaited_once()

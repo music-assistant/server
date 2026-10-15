@@ -94,16 +94,18 @@ def build_playback_state_update(
     revision = manifest.get("revision")
     if not assets or not revision:
         return None
+    # Missing part durations make absolute→asset mapping unsafe; fall back to legacy.
+    if any(asset.get("durationMs") is None for asset in assets):
+        return None
     position_ms = max(int(float(position) * 1000), 0)
     total_ms = manifest.get("totalDurationMs")
     if total_ms is None:
-        total_ms = sum(int(a["durationMs"]) for a in assets if a.get("durationMs") is not None)
+        total_ms = sum(int(a["durationMs"]) for a in assets)
     if fully_played or (total_ms and position_ms >= int(total_ms)):
         last = assets[-1]
-        last_dur = int(last["durationMs"]) if last.get("durationMs") is not None else 0
         return PlaybackStateUpdate(
             asset_id=str(last["assetId"]),
-            position_ms=last_dur,
+            position_ms=int(last["durationMs"]),
             percentage=FULLY_PLAYED_PERCENTAGE,
             manifest_revision=str(revision),
         )
@@ -111,17 +113,14 @@ def build_playback_state_update(
     chosen = assets[0]
     in_asset_ms = position_ms
     for asset in assets:
-        duration_ms = int(asset["durationMs"]) if asset.get("durationMs") is not None else 0
+        duration_ms = int(asset["durationMs"])
         end = elapsed + duration_ms
         chosen = asset
         in_asset_ms = position_ms - elapsed
-        if position_ms < end or duration_ms == 0:
+        if position_ms < end:
             break
         elapsed = end
-    if chosen.get("durationMs") is not None:
-        in_asset_ms = min(max(in_asset_ms, 0), int(chosen["durationMs"]))
-    else:
-        in_asset_ms = max(in_asset_ms, 0)
+    in_asset_ms = min(max(in_asset_ms, 0), int(chosen["durationMs"]))
     percentage = min(position_ms / float(total_ms) * 100, 100.0) if total_ms else 0.0
     return PlaybackStateUpdate(
         asset_id=str(chosen["assetId"]),
@@ -185,7 +184,9 @@ def parse_resume_position_from_playback_state(
             absolute_ms += position_in_asset_ms
             found = True
             break
-        absolute_ms += int(asset["durationMs"]) if asset.get("durationMs") is not None else 0
+        if asset.get("durationMs") is None:
+            raise ValueError("BookOrbit manifest has an asset with unknown duration")
+        absolute_ms += int(asset["durationMs"])
     if not found:
         total_ms = int(manifest.get("totalDurationMs") or 0)
         absolute_ms = int(percentage / 100 * total_ms) if total_ms else 0

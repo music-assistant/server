@@ -14,6 +14,7 @@ from aiohttp import (
     DummyCookieJar,
 )
 
+from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.providers.bookorbit.constants import (
     AIOHTTP_TIMEOUT,
     API_PREFIX,
@@ -23,6 +24,8 @@ from music_assistant.providers.bookorbit.helpers import normalize_base_url
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +49,9 @@ class BookOrbitClient:
         password: str,
         verify_ssl: bool = True,
         session: ClientSession | None = None,
+        *,
+        owns_session: bool | None = None,
+        mass: MusicAssistant | None = None,
     ) -> None:
         """
         Initialize the client.
@@ -54,10 +60,14 @@ class BookOrbitClient:
         :param username: Login username.
         :param password: Login password.
         :param verify_ssl: Whether to verify TLS certificates.
-        :param session: Optional shared session; when omitted the client owns one.
+        :param session: Optional HTTP session; when omitted one is created on first use.
+        :param owns_session: Whether :meth:`close` should close ``session`` (default: own
+            when ``session`` is omitted).
+        :param mass: Music Assistant instance used to build an owned MA HTTP session.
         """
         self._session = session
-        self._owns_session = session is None
+        self._owns_session = session is None if owns_session is None else owns_session
+        self._mass = mass
         self.base_url = normalize_base_url(base_url)
         self.username = username
         self.password = password
@@ -70,8 +80,18 @@ class BookOrbitClient:
     def session(self) -> ClientSession:
         """Return the HTTP session (created on first use when owned)."""
         if self._session is None or (self._owns_session and self._session.closed):
-            # Own a dummy jar so the refresh cookie never leaks into a shared session.
-            self._session = ClientSession(cookie_jar=DummyCookieJar(), timeout=AIOHTTP_TIMEOUT)
+            # Isolate the refresh cookie; prefer MA's connector/UA/proxy when mass is set.
+            jar = DummyCookieJar()
+            if self._mass is not None:
+                self._session = create_clientsession(
+                    self._mass,
+                    verify_ssl=self.verify_ssl,
+                    cookie_jar=jar,
+                    timeout=AIOHTTP_TIMEOUT,
+                )
+            else:
+                self._session = ClientSession(cookie_jar=jar, timeout=AIOHTTP_TIMEOUT)
+            self._owns_session = True
         return self._session
 
     async def close(self) -> None:

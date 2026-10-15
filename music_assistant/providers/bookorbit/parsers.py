@@ -127,6 +127,7 @@ def parse_audiobook(
                 provider_instance=provider_instance_id,
                 # Store updatedAt so library sync can detect remote metadata changes.
                 details=str(book.get("updatedAt") or ""),
+                is_unique=True,
             )
         },
         publisher=book.get("publisher"),
@@ -226,6 +227,7 @@ def _parse_person(
                 provider_instance=provider_instance_id,
                 # Image path fingerprint so photo changes trigger a library refresh.
                 details=image_path or "",
+                is_unique=True,
             )
         },
         artist_type=artist_type,

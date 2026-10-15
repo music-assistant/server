@@ -200,6 +200,15 @@ def test_playback_state_update_maps_absolute_position(book_multifile: dict[str, 
     assert update.percentage == pytest.approx(150.5 / 301.0 * 100)
 
 
+def test_playback_state_update_declines_missing_asset_duration(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Manifest updates are skipped when any asset duration is unknown."""
+    manifest = manifest_from_book(book_multifile)
+    manifest["assets"][1]["durationMs"] = None
+    assert build_playback_state_update(manifest, position=150.5, fully_played=False) is None
+
+
 def test_parse_resume_from_playback_state(book_multifile: dict[str, Any]) -> None:
     """Playback-state resume reconstructs the absolute position."""
     manifest = manifest_from_book(book_multifile)
@@ -217,6 +226,22 @@ def test_parse_resume_from_playback_state(book_multifile: dict[str, Any]) -> Non
     assert fully_played is False
     assert position_ms == 110_500
     assert timestamp is not None
+
+
+def test_parse_resume_from_playback_state_rejects_unknown_preceding_duration(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Unknown preceding asset durations must not produce a wrong absolute position."""
+    manifest = manifest_from_book(book_multifile)
+    manifest["assets"][0]["durationMs"] = None
+    state = {
+        "assetId": manifest["assets"][1]["assetId"],
+        "positionMs": 10_000,
+        "percentage": 40.0,
+        "completed": False,
+    }
+    with pytest.raises(ValueError, match="unknown duration"):
+        parse_resume_position_from_playback_state(manifest, state)
 
 
 @pytest.mark.asyncio
@@ -328,6 +353,44 @@ async def test_on_played_retries_playback_state_conflict(
     )
     assert client.put_playback_state.await_count == 2
     assert client.put_playback_state.await_args.kwargs["base_revision"] == 4
+
+
+@pytest.mark.asyncio
+async def test_on_played_refetches_manifest_on_412(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """A 412 manifest mismatch reloads the manifest before retrying."""
+    stale = ClientResponseError(
+        request_info=Mock(real_url=URL("http://bo/x")),
+        history=(),
+        status=412,
+        message="precondition failed",
+    )
+    client = _client(provider)
+    first_manifest = manifest_from_book(book_multifile)
+    second_manifest = {
+        **first_manifest,
+        "revision": "rev-2",
+        "assets": [
+            {**first_manifest["assets"][0], "durationMs": 100_000},
+            {**first_manifest["assets"][1], "durationMs": 200_000},
+        ],
+        "totalDurationMs": 300_000,
+    }
+    client.get_audiobook_manifest = AsyncMock(side_effect=[first_manifest, second_manifest])
+    client.get_playback_state = AsyncMock(side_effect=[None, {"revision": 1}])
+    client.put_playback_state = AsyncMock(side_effect=[stale, {"revision": 2}])
+    await provider.on_played(
+        MediaType.AUDIOBOOK,
+        str(book_multifile["id"]),
+        fully_played=False,
+        position=10,
+        media_item=Mock(),
+        is_playing=False,
+    )
+    assert client.get_audiobook_manifest.await_count == 2
+    assert client.put_playback_state.await_count == 2
+    assert client.put_playback_state.await_args.kwargs["manifest_revision"] == "rev-2"
 
 
 @pytest.mark.asyncio

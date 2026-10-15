@@ -5,13 +5,15 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientError
+from aiohttp import ClientError, DummyCookieJar
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.bookorbit.client import BookOrbitAuthError, BookOrbitClient
 from music_assistant.providers.bookorbit.constants import (
+    AIOHTTP_TIMEOUT,
     CONF_PASSWORD,
     CONF_URL,
     CONF_USERNAME,
@@ -65,17 +67,25 @@ def _require_password(setup_data: dict[str, Any]) -> str:
     return str(password)
 
 
-async def _validate_connection(setup_data: dict[str, Any]) -> None:
+async def _validate_connection(session: SetupSession, setup_data: dict[str, Any]) -> None:
     """Log in to BookOrbit and list libraries before the provider is saved."""
     base_url = normalize_base_url(str(setup_data[CONF_URL]))
     username = str(setup_data[CONF_USERNAME])
     password = _require_password(setup_data)
     verify_ssl = bool(setup_data.get(CONF_VERIFY_SSL, True))
+    http_session = create_clientsession(
+        session.mass,
+        verify_ssl=verify_ssl,
+        cookie_jar=DummyCookieJar(),
+        timeout=AIOHTTP_TIMEOUT,
+    )
     client = BookOrbitClient(
         base_url=base_url,
         username=username,
         password=password,
         verify_ssl=verify_ssl,
+        session=http_session,
+        owns_session=True,
     )
     try:
         await _check_login(client, base_url)
@@ -156,7 +166,7 @@ async def run_setup(session: SetupSession) -> None:
         if not submitted.get(CONF_PASSWORD) and prior_username != setup_data.get(CONF_USERNAME):
             setup_data[CONF_PASSWORD] = None
         try:
-            await _validate_connection(setup_data)
+            await _validate_connection(session, setup_data)
             await session.finish(setup_data)
             return
         except SetupFlowError as err:

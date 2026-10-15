@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp import ClientError, ClientResponseError, web
+from aiohttp import ClientError, ClientResponseError, DummyCookieJar, web
 from music_assistant_models.enums import (
     ArtistType,
     ContentType,
@@ -28,11 +28,13 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.datetime import utc
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import SYNC_RUN_STATE, MusicProvider
 
 from .client import BookOrbitAuthError, BookOrbitClient
 from .constants import (
+    AIOHTTP_TIMEOUT,
     BROWSE_ITEMS_TO_PATH,
     CATALOG_TTL_SEC,
     CONF_PASSWORD,
@@ -148,8 +150,11 @@ class BookOrbitProvider(MusicProvider):
         self._catalog: dict[str, dict[str, Any]] = {}
         self._catalog_refreshed_at: float = 0.0
         self._catalog_lock = asyncio.Lock()
-        # Only assets returned by get_stream_details may be served by the proxy.
-        self._stream_assets: dict[str, set[str]] = {}
+        self._force_catalog_refresh = False
+        # book_id -> asset_id -> last access (monotonic); idle entries expire.
+        self._stream_assets: dict[str, dict[str, float]] = {}
+        self._progress_locks: dict[int, asyncio.Lock] = {}
+        self._progress_generation: dict[int, int] = {}
         self._library_names: dict[int, str] = {}
         self._library_books: dict[int, list[str]] = {}
         self._author_meta: dict[int, dict[str, Any]] = {}
@@ -157,11 +162,20 @@ class BookOrbitProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from config, log in, and register the stream proxy."""
         self.base_url = normalize_base_url(str(self.get_setup_value(CONF_URL)))
+        verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL, True))
+        http_session = create_clientsession(
+            self.mass,
+            verify_ssl=verify_ssl,
+            cookie_jar=DummyCookieJar(),
+            timeout=AIOHTTP_TIMEOUT,
+        )
         self._client = BookOrbitClient(
             base_url=self.base_url,
             username=str(self.get_setup_value(CONF_USERNAME)),
             password=str(self.get_setup_value(CONF_PASSWORD)),
-            verify_ssl=bool(self.get_setup_value(CONF_VERIFY_SSL, True)),
+            verify_ssl=verify_ssl,
+            session=http_session,
+            owns_session=True,
         )
         try:
             await self._client.login()
@@ -179,6 +193,7 @@ class BookOrbitProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider and close its BookOrbit client."""
         await super().unload(is_removed)
+        self._stream_assets.clear()
         if unregister := self._unregister_route:
             self._unregister_route = None
             unregister()
@@ -196,21 +211,27 @@ class BookOrbitProvider(MusicProvider):
             return None
 
     @property
+    def is_streaming_provider(self) -> bool:
+        """Return False: each BookOrbit instance has its own library catalog."""
+        return False
+
+    @property
     def supported_artist_types(self) -> set[ArtistType]:
         """Return the artist types this provider supports."""
         return {ArtistType.AUTHOR, ArtistType.NARRATOR}
 
     async def sync_library(self, media_type: MediaType) -> None:
-        """Refresh the BookOrbit catalog when needed, then sync library items."""
-        if media_type == MediaType.AUDIOBOOK:
-            # Force a remote refetch so metadata edits in BookOrbit are picked up.
-            await self._refresh_catalog(force=True)
-        elif media_type == MediaType.ARTIST:
-            await self._refresh_catalog()
-        await super().sync_library(media_type)
+        """Sync library items, refreshing the catalog under the active sync state."""
+        # Refresh inside get_library_* so skipped-item protection lands in SyncRunState.
+        self._force_catalog_refresh = media_type == MediaType.AUDIOBOOK
+        try:
+            await super().sync_library(media_type)
+        finally:
+            self._force_catalog_refresh = False
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Yield audiobooks from the current catalog."""
+        await self._refresh_catalog(force=self._force_catalog_refresh)
         for book in list(self._catalog.values()):
             yield parse_audiobook(
                 book, provider_instance_id=self.instance_id, base_url=self.base_url
@@ -218,6 +239,7 @@ class BookOrbitProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Yield authors and narrators from the current catalog."""
+        await self._refresh_catalog(force=self._force_catalog_refresh)
         for artist in self._catalog_artists().values():
             yield artist
 
@@ -276,7 +298,7 @@ class BookOrbitProvider(MusicProvider):
         )
         if not assets:
             raise MediaNotFoundError(f"BookOrbit book {item_id} has no audio assets")
-        self._stream_assets[str(book_id)] = {str(asset["assetId"]) for asset in assets}
+        self._register_stream_assets(str(book_id), {str(asset["assetId"]) for asset in assets})
         parts = [
             MultiPartPath(
                 path=(
@@ -351,8 +373,15 @@ class BookOrbitProvider(MusicProvider):
             book_id = int(prov_item_id)
         except ValueError:
             return
+        generation = self._progress_generation.get(book_id, 0) + 1
+        self._progress_generation[book_id] = generation
         try:
-            await self._sync_playback_state(book_id, position=position, fully_played=fully_played)
+            async with self._progress_lock_for(book_id):
+                if self._progress_generation.get(book_id) != generation:
+                    return  # a newer report superseded this one while waiting
+                await self._sync_playback_state(
+                    book_id, position=position, fully_played=fully_played
+                )
         except (ClientError, BookOrbitAuthError, MediaNotFoundError) as err:
             self.logger.warning("Updating BookOrbit progress of %s failed: %s", prov_item_id, err)
 
@@ -643,8 +672,20 @@ class BookOrbitProvider(MusicProvider):
                 )
             except ClientResponseError as err:
                 last_err = err
-                if err.status in {409, 412}:
-                    continue  # concurrent writer; reload revision and retry
+                if err.status == 409:
+                    continue  # concurrent writer; reload baseRevision and retry
+                if err.status == 412:
+                    # Manifest changed; rebuild asset/offset from a fresh manifest.
+                    manifest = await self._client.get_audiobook_manifest(book_id)
+                    update = build_playback_state_update(
+                        manifest, position=position, fully_played=fully_played
+                    )
+                    if update is None:
+                        await self._sync_audio_progress_legacy(
+                            book_id, position=position, fully_played=fully_played
+                        )
+                        return
+                    continue
                 raise
             self.logger.debug(
                 "Synced BookOrbit playback state for %s at %ss (asset %s)",
@@ -698,7 +739,7 @@ class BookOrbitProvider(MusicProvider):
             asset_id = str(request.query["asset_id"])
         except KeyError, ValueError:
             return web.Response(status=400, text="Missing or invalid book_id/asset_id")
-        if not asset_id or asset_id not in self._book_asset_ids(book_id):
+        if not asset_id or not self._touch_stream_asset(book_id, asset_id):
             return web.Response(status=404, text="Unknown asset")
         try:
             upstream = await self._client.open_file(
@@ -738,9 +779,42 @@ class BookOrbitProvider(MusicProvider):
                 self.logger.warning("BookOrbit interrupted asset %s: %s", asset_id, err)
         return response
 
-    def _book_asset_ids(self, book_id: str) -> set[str]:
-        """Return asset ids previously exposed by get_stream_details for a book."""
-        return self._stream_assets.get(book_id, set())
+    def _progress_lock_for(self, book_id: int) -> asyncio.Lock:
+        """Return the per-book lock used to serialize progress reports."""
+        if (lock := self._progress_locks.get(book_id)) is None:
+            lock = asyncio.Lock()
+            self._progress_locks[book_id] = lock
+        return lock
+
+    def _register_stream_assets(self, book_id: str, asset_ids: set[str]) -> None:
+        """Allow proxy access for assets from a fresh get_stream_details call."""
+        now = time.monotonic()
+        self._prune_stream_assets(now)
+        self._stream_assets[book_id] = dict.fromkeys(asset_ids, now)
+
+    def _touch_stream_asset(self, book_id: str, asset_id: str) -> bool:
+        """Refresh an allowlisted asset's idle timer; return whether it is still allowed."""
+        now = time.monotonic()
+        self._prune_stream_assets(now)
+        assets = self._stream_assets.get(book_id)
+        if not assets or asset_id not in assets:
+            return False
+        assets[asset_id] = now
+        return True
+
+    def _prune_stream_assets(self, now: float | None = None) -> None:
+        """Drop proxy allowlist entries that have been idle too long."""
+        now = time.monotonic() if now is None else now
+        ttl = STREAMDETAILS_EXPIRATION_S * 2
+        stale_books: list[str] = []
+        for book_id, assets in self._stream_assets.items():
+            alive = {asset_id: seen for asset_id, seen in assets.items() if now - seen < ttl}
+            if alive:
+                self._stream_assets[book_id] = alive
+            else:
+                stale_books.append(book_id)
+        for book_id in stale_books:
+            del self._stream_assets[book_id]
 
     async def _ensure_catalog(self) -> None:
         """Ensure a catalog is loaded before browse or search."""
@@ -776,7 +850,9 @@ class BookOrbitProvider(MusicProvider):
                             book = await self._client.get_book(int(card["id"]))
                         except ClientResponseError as err:
                             self.logger.warning("Skipping BookOrbit book %s: %s", book_id, err)
-                            self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
+                            # Only record skips inside an active library sync.
+                            if SYNC_RUN_STATE.get() is not None:
+                                self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
                             continue
                         if not _audio_files(book):
                             continue

@@ -23,6 +23,21 @@ from music_assistant.providers.bookorbit.constants import (
 from music_assistant.providers.bookorbit.setup_flow import _validate_connection, run_setup
 
 
+def _patch_create_clientsession() -> Any:
+    """Return a patch that builds a plain ClientSession (tests do not need MA connectors)."""
+
+    def _factory(_mass: Any, **kwargs: Any) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            cookie_jar=kwargs.get("cookie_jar") or aiohttp.DummyCookieJar(),
+            timeout=kwargs.get("timeout"),
+        )
+
+    return mock.patch(
+        "music_assistant.providers.bookorbit.setup_flow.create_clientsession",
+        side_effect=_factory,
+    )
+
+
 def _make_session(
     finish_handler: Any,
     mass: Any,
@@ -78,15 +93,19 @@ async def test_validate_connection_login_and_libraries(aiohttp_server: Any) -> N
     app.router.add_get("/api/v1/libraries", libraries)
     server = await aiohttp_server(app)
     base = str(server.make_url("/")).rstrip("/")
+    mass = mock.Mock()
+    session = _make_session(lambda *_a, **_k: {"instance_id": "x"}, mass)
 
-    await _validate_connection(
-        {
-            CONF_URL: base,
-            CONF_USERNAME: "u",
-            CONF_PASSWORD: "p",
-            CONF_VERIFY_SSL: True,
-        },
-    )
+    with _patch_create_clientsession():
+        await _validate_connection(
+            session,
+            {
+                CONF_URL: base,
+                CONF_USERNAME: "u",
+                CONF_PASSWORD: "p",
+                CONF_VERIFY_SSL: True,
+            },
+        )
 
 
 @pytest.mark.asyncio
@@ -116,18 +135,19 @@ async def test_run_setup_finishes_after_successful_validation(aiohttp_server: An
     async with aiohttp.ClientSession() as http:
         mass.http_session = http
         session = _make_session(finish, mass)
-        task = asyncio.create_task(run_setup(session))
-        await _wait_for_form(session)
-        session.handle_submit(
-            {
-                CONF_URL: base,
-                CONF_USERNAME: "u",
-                CONF_PASSWORD: "p",
-                CONF_VERIFY_SSL: True,
-            }
-        )
-        await _wait_for(lambda: session.finished)
-        await task
+        with _patch_create_clientsession():
+            task = asyncio.create_task(run_setup(session))
+            await _wait_for_form(session)
+            session.handle_submit(
+                {
+                    CONF_URL: base,
+                    CONF_USERNAME: "u",
+                    CONF_PASSWORD: "p",
+                    CONF_VERIFY_SSL: True,
+                }
+            )
+            await _wait_for(lambda: session.finished)
+            await task
 
         assert collected[CONF_USERNAME] == "u"
     assert collected[CONF_PASSWORD] == "p"
@@ -162,18 +182,19 @@ async def test_run_setup_shows_login_error_and_retries(aiohttp_server: Any) -> N
     async with aiohttp.ClientSession() as http:
         mass.http_session = http
         session = _make_session(finish, mass)
-        task = asyncio.create_task(run_setup(session))
-        await _wait_for_form(session)
-        session.handle_submit(
-            {CONF_URL: base, CONF_USERNAME: "u", CONF_PASSWORD: "wrong", CONF_VERIFY_SSL: True}
-        )
-        error_form = await _wait_for_form(session, with_errors=True)
-        assert error_form.error_translations["base"].key == "login_failed"
-        session.handle_submit(
-            {CONF_URL: base, CONF_USERNAME: "u", CONF_PASSWORD: "right", CONF_VERIFY_SSL: True}
-        )
-        await _wait_for(lambda: session.finished)
-        await task
+        with _patch_create_clientsession():
+            task = asyncio.create_task(run_setup(session))
+            await _wait_for_form(session)
+            session.handle_submit(
+                {CONF_URL: base, CONF_USERNAME: "u", CONF_PASSWORD: "wrong", CONF_VERIFY_SSL: True}
+            )
+            error_form = await _wait_for_form(session, with_errors=True)
+            assert error_form.error_translations["base"].key == "login_failed"
+            session.handle_submit(
+                {CONF_URL: base, CONF_USERNAME: "u", CONF_PASSWORD: "right", CONF_VERIFY_SSL: True}
+            )
+            await _wait_for(lambda: session.finished)
+            await task
 
         assert attempts["login"] == 2
 
@@ -181,8 +202,11 @@ async def test_run_setup_shows_login_error_and_retries(aiohttp_server: Any) -> N
 @pytest.mark.asyncio
 async def test_validate_connection_raises_setup_flow_error_on_unreachable_host() -> None:
     """Unreachable hosts surface as connection_failed."""
-    with pytest.raises(SetupFlowError) as exc:
+    mass = mock.Mock()
+    session = _make_session(lambda *_a, **_k: {"instance_id": "x"}, mass)
+    with _patch_create_clientsession(), pytest.raises(SetupFlowError) as exc:
         await _validate_connection(
+            session,
             {
                 CONF_URL: "http://127.0.0.1:1",
                 CONF_USERNAME: "u",
@@ -196,8 +220,11 @@ async def test_validate_connection_raises_setup_flow_error_on_unreachable_host()
 @pytest.mark.asyncio
 async def test_validate_connection_raises_setup_flow_error_on_empty_password() -> None:
     """First setup without a password surfaces password_required, not KeyError."""
-    with pytest.raises(SetupFlowError) as exc:
+    mass = mock.Mock()
+    session = _make_session(lambda *_a, **_k: {"instance_id": "x"}, mass)
+    with _patch_create_clientsession(), pytest.raises(SetupFlowError) as exc:
         await _validate_connection(
+            session,
             {
                 CONF_URL: "http://127.0.0.1:9",
                 CONF_USERNAME: "u",
@@ -246,17 +273,18 @@ async def test_run_setup_reconfigure_blank_password_keeps_stored_and_validates(
                 CONF_VERIFY_SSL: True,
             },
         )
-        task = asyncio.create_task(run_setup(session))
-        await _wait_for_form(session)
-        session.handle_submit(
-            {
-                CONF_URL: base,
-                CONF_USERNAME: "u",
-                CONF_PASSWORD: None,
-                CONF_VERIFY_SSL: True,
-            }
-        )
-        await _wait_for(lambda: session.finished)
-        await task
+        with _patch_create_clientsession():
+            task = asyncio.create_task(run_setup(session))
+            await _wait_for_form(session)
+            session.handle_submit(
+                {
+                    CONF_URL: base,
+                    CONF_USERNAME: "u",
+                    CONF_PASSWORD: None,
+                    CONF_VERIFY_SSL: True,
+                }
+            )
+            await _wait_for(lambda: session.finished)
+            await task
 
         assert collected[CONF_PASSWORD] == "stored-secret"
