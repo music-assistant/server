@@ -169,6 +169,10 @@ def canonical_provider_url(
         return f"https://music.apple.com/{storefront}/{kind}/{item_id}"
     if provider_domain == "ytmusic" and media_type == MediaType.ARTIST:
         return f"https://music.youtube.com/channel/{item_id}"
+    # MusicBrainz mostly stores Qobuz albums as www.qobuz.com/<locale>/album/<slug>/<id>,
+    # which an id alone cannot rebuild. A performer without a Qobuz page has its name as id.
+    if provider_domain == "qobuz" and media_type == MediaType.ARTIST and item_id.isdigit():
+        return f"https://open.qobuz.com/artist/{item_id}"
     return None
 
 
