@@ -899,6 +899,34 @@ async def test_a_malformed_inline_image_falls_back_to_the_images_endpoint(
     assert (image, used_images_endpoint) == (b"jpeg-bytes", True)
 
 
+async def test_an_oversized_api_reply_is_refused(mass: AsyncMock) -> None:
+    """A reply over the size limit is refused instead of read into memory."""
+    response = _json_response(200, _CHAT_PAYLOAD)
+    response.content_length = helpers.MAX_RESPONSE_BYTES + 1
+    mass.http_session.request = MagicMock(return_value=_response_cm(response=response))
+
+    with pytest.raises(InvalidDataError, match="larger than the download limit"):
+        await helpers.chat_completion(mass, BASE_URL, "", model="m", prompt="Hi", timeout=10)
+
+
+@pytest.mark.parametrize(
+    ("address", "public"),
+    [
+        ("93.184.215.14", True),
+        ("2606:2800:21f:cb07:6820:80da:af6b:8b2c", True),
+        ("::ffff:10.0.0.7", False),
+        ("2002:a00:7::1", False),
+        ("64:ff9b::a00:7", False),
+        ("64:ff9b::5db8:d70e", True),
+        ("::a00:7", False),
+        ("fe80::1%eth0", False),
+    ],
+)
+def test_addresses_carrying_a_local_ipv4_address_are_not_public(address: str, public: bool) -> None:
+    """An IPv6 address that routes to a local IPv4 address counts as local."""
+    assert helpers._is_public(address) is public
+
+
 async def test_an_inline_image_wrapped_over_lines_decodes() -> None:
     """Line breaks in a base64 payload are allowed."""
     encoded = base64.encodebytes(b"x" * 100).decode()
@@ -1005,7 +1033,17 @@ def _json_response(status: int, payload: dict[str, Any], *, retry_after: str = "
     response = MagicMock()
     response.status = status
     response.headers = {"Retry-After": retry_after} if retry_after else {}
-    response.read = AsyncMock(return_value=json.dumps(payload).encode())
+    response.content_length = None
+    body = json.dumps(payload).encode()
+    sent = False
+
+    async def read(_size: int = -1) -> bytes:
+        # the body, then the end of it, every time the response is read
+        nonlocal sent
+        sent = not sent
+        return body if sent else b""
+
+    response.content.read = read
     return response
 
 

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import ActionUnavailable, MediaNotFoundError
 from music_assistant_models.media_items import (
     Artist,
     MediaItemImage,
@@ -106,6 +106,8 @@ async def provider(tmp_path: Path) -> AsyncGenerator[PlaylistMetadataProvider]:
         ),
     ):
         yield provider
+    for task in _tasks(provider).values():
+        task.cancel()
 
 
 async def test_generates_and_stores_a_cover_in_place_of_the_collage(
@@ -117,7 +119,7 @@ async def test_generates_and_stores_a_cover_in_place_of_the_collage(
     fanart = MediaItemImage(type=ImageType.FANART, path="fanart.jpg", provider="spotify")
     playlist = _smart_playlist(images=[collage, fanart])
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     images = list(playlist.metadata.images or [])
     assert images[0].provider == INSTANCE_ID
@@ -132,10 +134,10 @@ async def test_generates_and_stores_a_cover_in_place_of_the_collage(
         assert cover.format == "JPEG"
 
 
-async def test_spotify_prompt_matches_the_cronicle_script(
+async def test_bold_prompt_matches_the_cronicle_script(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """The Spotify preset with the engine drawing the title reproduces the original prompt."""
+    """The Bold preset with the engine drawing the title reproduces the original prompt."""
     playlist = _smart_playlist(name="2000s Emo & Alt Rock")
     rules = {
         "seed_names": {
@@ -149,20 +151,20 @@ async def test_spotify_prompt_matches_the_cronicle_script(
     _mass(provider).get_provider("smart_playlist").get_smart_playlist_rules = AsyncMock(
         return_value=rules
     )
-    _set_config(provider, **{CONF_STYLE: "spotify"})
+    _set_config(provider, **{CONF_STYLE: "bold"})
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert _sent_prompt(provider) == (
         'Create square album cover art for a music playlist called "2000s Emo & Alt Rock". '
         "Seed songs/playlists that define the vibe: EMO Songs of the 2000s; Mid-2000s Alt Rock "
         "Swim; Are we in High School?. Era: 2000-2012, evoke that decade's look. Capture the "
         "mood of the playlist name as a striking visual scene or concept (do not depict real "
-        "artists). Style: a Spotify editorial playlist cover. One striking full-bleed image "
+        "artists). Style: a bold editorial playlist cover. One striking full-bleed image "
         "(stylized photo or bold illustration) with a vivid duotone or saturated color wash "
         "that sets the mood, simple uncluttered composition, cohesive with a series of playlist "
         'covers. Typography: the playlist title "2000s Emo & Alt Rock" as the only text, set '
-        "large in a bold modern geometric sans-serif (like Spotify's Circular or Gotham Black), "
+        "large in a bold modern geometric sans-serif (like Circular or Gotham Black), "
         "tight letter spacing, clean and crisp, high contrast against the image, placed "
         "confidently in the upper-left or lower-left area. Spell the title exactly. No other "
         "text, subtitles, logos, watermarks or artist names. Full-bleed: the art fills the "
@@ -172,7 +174,7 @@ async def test_spotify_prompt_matches_the_cronicle_script(
 
 async def test_smart_playlist_rules_shape_the_prompt(provider: PlaylistMetadataProvider) -> None:
     """Seeds, era, artists and genres of the rules all reach the prompt."""
-    await provider.get_playlist_metadata(_smart_playlist())
+    await _metadata(provider, _smart_playlist())
 
     prompt = _sent_prompt(provider)
     assert "Innerbloom – RÜFÜS DU SOL; Midnight Sun – Lane 8, Jerro" in prompt
@@ -183,10 +185,10 @@ async def test_smart_playlist_rules_shape_the_prompt(provider: PlaylistMetadataP
 @pytest.mark.parametrize(
     ("style", "expected"),
     [
-        ("spotify", "Spotify editorial playlist cover"),
+        ("bold", "bold editorial playlist cover"),
         ("music_assistant", "line-art spot illustration"),
         ("neon", "glowing neon light lines"),
-        ("apple_music", "mesh gradient"),
+        ("soft_gradient", "mesh gradient"),
         ("risograph", "two-color risograph print"),
         ("gouache", "painterly editorial illustration in gouache"),
     ],
@@ -197,7 +199,7 @@ async def test_each_style_has_its_own_prompt(
     """Every preset sends its own art direction."""
     _set_config(provider, **{CONF_STYLE: style})
 
-    await provider.get_playlist_metadata(_smart_playlist())
+    await _metadata(provider, _smart_playlist())
 
     assert expected in _sent_prompt(provider)
 
@@ -208,7 +210,7 @@ async def test_title_overlay_asks_for_artwork_without_text(
     """When the title is drawn afterwards, the engine is told to leave text out."""
     _set_config(provider, **{CONF_TITLE_OVERLAY: True})
 
-    await provider.get_playlist_metadata(_smart_playlist())
+    await _metadata(provider, _smart_playlist())
 
     prompt = _sent_prompt(provider)
     assert "No text, letters, numbers" in prompt
@@ -222,7 +224,7 @@ async def test_custom_template_fills_known_placeholders(provider: PlaylistMetada
         **{CONF_STYLE: "custom", CONF_CUSTOM_PROMPT: "Poster for {name} ({era}) {genres} {nope}"},
     )
 
-    await provider.get_playlist_metadata(_smart_playlist(name="Sunrise Trance"))
+    await _metadata(provider, _smart_playlist(name="Sunrise Trance"))
 
     assert _sent_prompt(provider) == "Poster for Sunrise Trance (2015-2019) Melodic House {nope}"
 
@@ -237,10 +239,10 @@ async def test_a_stored_cover_is_reused_without_calling_the_engine(
 ) -> None:
     """The second refresh of an unchanged playlist does not pay for a new image."""
     playlist = _smart_playlist()
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
     first = playlist.image
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert _engine_calls(provider) == 1
     assert playlist.image == first
@@ -250,12 +252,12 @@ async def test_a_stored_cover_is_reused_without_calling_the_engine(
 async def test_changing_the_style_replaces_the_cover(provider: PlaylistMetadataProvider) -> None:
     """A new style generates a new cover and removes the old one, file included."""
     playlist = _smart_playlist()
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
     old = playlist.image
     assert old is not None
 
-    _set_config(provider, **{CONF_STYLE: "apple_music"})
-    await provider.get_playlist_metadata(playlist)
+    _set_config(provider, **{CONF_STYLE: "soft_gradient"})
+    await _metadata(provider, playlist)
 
     assert _engine_calls(provider) == 2
     assert playlist.image is not None
@@ -267,10 +269,10 @@ async def test_changing_the_style_replaces_the_cover(provider: PlaylistMetadataP
 async def test_renaming_the_playlist_replaces_the_cover(provider: PlaylistMetadataProvider) -> None:
     """The title is part of the artwork, so a new name needs a new cover."""
     playlist = _smart_playlist()
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
     playlist.name = "Renamed"
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert _engine_calls(provider) == 2
 
@@ -278,16 +280,16 @@ async def test_renaming_the_playlist_replaces_the_cover(provider: PlaylistMetada
 async def test_regular_playlists_need_to_be_opted_in(provider: PlaylistMetadataProvider) -> None:
     """Only smart playlists get a cover unless a playlist is picked or all are included."""
     playlist = _playlist("builtin", item_id="42", is_editable=True)
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
     assert _engine_calls(provider) == 0
 
     _set_config(provider, **{CONF_EXTRA_PLAYLISTS: ["42"]})
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
     assert _engine_calls(provider) == 1
 
     _set_config(provider, **{CONF_EXTRA_PLAYLISTS: [], CONF_PLAYLISTS: PLAYLISTS_ALL})
     other = _playlist("builtin", item_id="43", is_editable=True)
-    await provider.get_playlist_metadata(other)
+    await _metadata(provider, other)
     assert _engine_calls(provider) == 2
 
 
@@ -297,11 +299,11 @@ async def test_a_playlist_leaving_the_scope_loses_its_cover(
     """Opting a playlist out takes its generated cover off again."""
     _set_config(provider, **{CONF_EXTRA_PLAYLISTS: ["42"]})
     playlist = _playlist("builtin", item_id="42", is_editable=True)
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
     assert playlist.image is not None
 
     _set_config(provider, **{CONF_EXTRA_PLAYLISTS: []})
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert playlist.image is None
 
@@ -312,7 +314,7 @@ async def test_builtin_playlists_that_can_not_be_edited_are_skipped(
     """Music Assistant's own generated playlists keep their static artwork."""
     _set_config(provider, **{CONF_PLAYLISTS: PLAYLISTS_ALL})
 
-    await provider.get_playlist_metadata(_playlist("builtin", is_editable=False))
+    await _metadata(provider, _playlist("builtin", is_editable=False))
 
     assert _engine_calls(provider) == 0
 
@@ -322,7 +324,7 @@ async def test_existing_artwork_is_kept(provider: PlaylistMetadataProvider) -> N
     own_cover = _image("/data/playlist_art/234_1791525935.jpg", provider="builtin")
     playlist = _smart_playlist(images=[own_cover])
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert _engine_calls(provider) == 0
     assert list(playlist.metadata.images or []) == [own_cover]
@@ -338,7 +340,7 @@ async def test_artwork_that_can_not_be_shown_is_not_kept(
     broken_cover = _image("/data/playlist_art/234_1791525935.jpg", provider="builtin")
     playlist = _smart_playlist(images=[broken_cover])
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert _engine_calls(provider) == 1
     images = list(playlist.metadata.images or [])
@@ -353,7 +355,7 @@ async def test_service_artwork_is_kept(provider: PlaylistMetadataProvider) -> No
     playlist = _playlist("spotify")
     playlist.metadata.images = UniqueList([service_cover])
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert _engine_calls(provider) == 0
     assert list(playlist.metadata.images or []) == [service_cover]
@@ -366,7 +368,7 @@ async def test_the_collage_is_used_without_the_ai_template(
     _set_config(provider, template="album_fan")
 
     with patch.object(provider, "_generate_and_write", AsyncMock(return_value=None)) as collage:
-        await provider.get_playlist_metadata(_smart_playlist())
+        await _metadata(provider, _smart_playlist())
 
     assert _engine_calls(provider) == 0
     assert collage.await_args_list[0].kwargs["template"] == "album_fan"
@@ -384,9 +386,7 @@ async def test_the_fallback_template_makes_the_collage_meanwhile(
     )
 
     with patch.object(provider, "_generate_and_write", AsyncMock(return_value=thumb)) as collage:
-        metadata = await provider.get_playlist_metadata(
-            _playlist("builtin", item_id="42", is_editable=True)
-        )
+        metadata = await _metadata(provider, _playlist("builtin", item_id="42", is_editable=True))
 
     assert _engine_calls(provider) == 0
     assert {call.kwargs["template"] for call in collage.await_args_list} == {"artist_radio"}
@@ -399,41 +399,39 @@ async def test_a_failed_generation_keeps_the_previous_cover(
 ) -> None:
     """A playlist keeps its generated cover while a new one can not be made."""
     playlist = _smart_playlist()
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
     first = playlist.image
     provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
         side_effect=RuntimeError("quota exceeded")
     )
     playlist.name = "Renamed"
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert playlist.image == first
 
 
 async def test_the_hourly_limit_postpones_generation(provider: PlaylistMetadataProvider) -> None:
-    """Covers over the limit are not generated now but scheduled for later."""
+    """Covers over the limit are not generated now, the worker waits for a free slot."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
-    await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
+    await _metadata(provider, _smart_playlist(item_id="1"))
     second = _smart_playlist(item_id="2")
 
-    await provider.get_playlist_metadata(second)
+    await _metadata(provider, second)
 
     assert _engine_calls(provider) == 1
     assert second.image is None
-    delay = _mass(provider).call_later.call_args.args[0]
-    assert 3500 < delay <= 3605
-    assert _mass(provider).call_later.call_args.args[2] == second.uri
+    assert provider._ai.waiting
 
 
 async def test_the_hourly_limit_survives_a_reload(provider: PlaylistMetadataProvider) -> None:
     """Covers generated before a reload (as a settings change causes) still count."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
-    await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
+    await _metadata(provider, _smart_playlist(item_id="1"))
 
     await provider._ai.setup()
     second = _smart_playlist(item_id="2")
-    await provider.get_playlist_metadata(second)
+    await _metadata(provider, second)
 
     assert _engine_calls(provider) == 1
     assert second.image is None
@@ -447,10 +445,10 @@ async def test_the_hourly_limit_forgets_generations_older_than_an_hour(
     with patch(
         "music_assistant.providers.playlist_metadata.ai.time.time", return_value=1_000_000.0
     ):
-        await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
+        await _metadata(provider, _smart_playlist(item_id="1"))
 
     await provider._ai.setup()
-    await provider.get_playlist_metadata(_smart_playlist(item_id="2"))
+    await _metadata(provider, _smart_playlist(item_id="2"))
 
     assert _engine_calls(provider) == 2
 
@@ -465,7 +463,7 @@ async def test_a_failing_engine_leaves_the_collage_in_place(
     collage = _image("1_1791525935_thumb.jpg", provider=INSTANCE_ID)
     playlist = _smart_playlist(images=[collage])
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert list(playlist.metadata.images or []) == [collage]
     assert list(Path(provider._images_dir).iterdir()) == []
@@ -485,7 +483,7 @@ async def test_without_an_image_engine_nothing_is_generated(tmp_path: Path) -> N
             AsyncMock(return_value=None),
         ),
     ):
-        await provider.get_playlist_metadata(_smart_playlist())
+        await _metadata(provider, _smart_playlist())
 
     assert _engine_calls(provider) == 0
 
@@ -499,7 +497,7 @@ async def test_the_prompt_engine_writes_the_visual_concept(
         return_value=' "A neon pier at dusk." '
     )
 
-    await provider.get_playlist_metadata(_smart_playlist())
+    await _metadata(provider, _smart_playlist())
 
     prompt = _sent_prompt(provider)
     assert "Visual concept: A neon pier at dusk (do not depict real artists)." in prompt
@@ -518,7 +516,7 @@ async def test_regular_playlist_context_comes_from_its_tracks(
     ]
     _mass(provider).music.playlists.tracks = MagicMock(side_effect=lambda *_: _async_iter(tracks))
 
-    await provider.get_playlist_metadata(_playlist("builtin", item_id="42", is_editable=True))
+    await _metadata(provider, _playlist("builtin", item_id="42", is_editable=True))
 
     prompt = _sent_prompt(provider)
     assert (
@@ -536,9 +534,219 @@ async def test_equally_common_genres_are_picked_in_a_stable_order(
     tracks = [_track("Vogue", "Madonna", {"Pop", "Dance", "House"})]
     _mass(provider).music.playlists.tracks = MagicMock(side_effect=lambda *_: _async_iter(tracks))
 
-    await provider.get_playlist_metadata(_playlist("builtin", item_id="42", is_editable=True))
+    await _metadata(provider, _playlist("builtin", item_id="42", is_editable=True))
 
     assert "Artists/genres: Madonna, Dance, House, Pop." in _sent_prompt(provider)
+
+
+async def test_a_metadata_refresh_never_waits_for_a_generation(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """The refresh returns at once and the worker applies the cover once it is ready."""
+    release = asyncio.Event()
+
+    async def generate(*_args: Any, **_kwargs: Any) -> bytes:
+        await release.wait()
+        return _png()
+
+    provider.test_engine.provider.ai_generate_image = AsyncMock(side_effect=generate)  # type: ignore[attr-defined]
+    playlist = _smart_playlist()
+    _register(provider, playlist)
+
+    async with asyncio.timeout(1):
+        await provider.get_playlist_metadata(playlist)
+
+    assert playlist.image is None
+    release.set()
+    await _settle(provider)
+    assert playlist.image is not None
+    assert playlist.image.provider == INSTANCE_ID
+
+
+async def test_a_blocked_cover_does_not_hold_up_other_work(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """While covers wait for the hourly limit, descriptions are still written."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1, CONF_DESCRIPTIONS: False})
+    await _metadata(provider, _smart_playlist(item_id="1"))
+    _set_config(provider, **{CONF_DESCRIPTIONS: True})
+    second = _smart_playlist(item_id="2")
+
+    await _metadata(provider, second)
+
+    assert provider._ai.waiting
+    assert second.image is None
+    assert second.metadata.description == DESCRIPTION
+
+
+async def test_a_failing_cover_backs_off_and_then_gives_up(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Each failure waits longer before the next try; after the last one it stops trying."""
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RuntimeError("content policy")
+    )
+    playlist = _smart_playlist()
+    start = time.time()
+    hour = 3600
+    for offset in (0, 10, hour + 10, 7 * hour + 20, 31 * hour + 30, 100 * hour):
+        with patch(
+            "music_assistant.providers.playlist_metadata.ai.time.time", return_value=start + offset
+        ):
+            await _metadata(provider, playlist)
+
+    # at 0, after 1h and after 6h more and after 24h more; never within a backoff or after
+    assert _engine_calls(provider) == 4
+    assert playlist.image is None
+
+    # a change to what shapes the cover is tried afresh
+    playlist.name = "Renamed"
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.time.time",
+        return_value=start + 101 * hour,
+    ):
+        await _metadata(provider, playlist)
+    assert _engine_calls(provider) == 5
+
+
+async def test_an_oversized_image_is_refused_before_decoding(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """An image with more pixels than the limit is not decoded, and counts as a failure."""
+    buffer = BytesIO()
+    Image.new("1", (5000, 5000)).save(buffer, "PNG")
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        return_value=buffer.getvalue()
+    )
+    playlist = _smart_playlist()
+
+    await _metadata(provider, playlist)
+
+    assert playlist.image is None
+    assert list(Path(provider._images_dir).iterdir()) == []
+
+
+async def test_a_description_from_elsewhere_is_kept(provider: PlaylistMetadataProvider) -> None:
+    """A playlist's own description, such as a streaming service's, is never replaced."""
+    _set_config(provider, **{CONF_PLAYLISTS: PLAYLISTS_ALL})
+    playlist = _playlist("spotify")
+    playlist.metadata.description = "The biggest songs right now."
+
+    await _metadata(provider, playlist)
+
+    assert playlist.metadata.description == "The biggest songs right now."
+    assert _text_calls(provider) == 0
+
+
+async def test_a_written_description_is_replaced_when_the_playlist_changes(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A description written here is the playlist's to update, also outside smart playlists."""
+    _set_config(provider, **{CONF_EXTRA_PLAYLISTS: ["42"]})
+    playlist = _playlist("builtin", item_id="42", is_editable=True)
+    await _metadata(provider, playlist)
+    assert playlist.metadata.description == DESCRIPTION
+    provider.test_text_engine.provider.ai_query = AsyncMock(return_value="A new one.")  # type: ignore[attr-defined]
+
+    playlist.name = "Renamed"
+    await _metadata(provider, playlist)
+
+    assert playlist.metadata.description == "A new one."
+
+
+async def test_changed_smart_playlist_rules_make_a_new_cover_and_description(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """The rules shape both, so editing them keys both anew."""
+    playlist = _smart_playlist()
+    await _metadata(provider, playlist)
+    first = playlist.image
+    rules = _mass(provider).get_provider("smart_playlist").get_smart_playlist_rules
+    rules.return_value = {**SMART_RULES, "year_from": 2001}
+    playlist.metadata.description = "[Smart Playlist] Similar to Innerbloom, from 2001"
+
+    await _metadata(provider, playlist)
+
+    assert _engine_calls(provider) == 2
+    assert _text_calls(provider) == 2
+    assert playlist.image != first
+    assert playlist.metadata.description == DESCRIPTION
+
+
+async def test_refresh_passes_do_not_overlap(provider: PlaylistMetadataProvider) -> None:
+    """A refresh asked for during one runs once after it, instead of alongside it."""
+    passes = 0
+    running = 0
+    overlapped = False
+
+    async def iter_library_items() -> AsyncGenerator[Any]:
+        nonlocal passes, running, overlapped
+        passes += 1
+        running += 1
+        overlapped = overlapped or running > 1
+        await asyncio.sleep(0.01)
+        running -= 1
+        return
+        yield
+
+    _mass(provider).music.playlists.iter_library_items = iter_library_items
+
+    await asyncio.gather(provider._ai.refresh(), provider._ai.refresh(), provider._ai.refresh())
+
+    assert passes == 2
+    assert not overlapped
+
+
+async def test_unloading_stops_the_worker(provider: PlaylistMetadataProvider) -> None:
+    """A worker waiting for the hourly limit is cancelled and its queue dropped on unload."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
+    await _metadata(provider, _smart_playlist(item_id="1"))
+    await _metadata(provider, _smart_playlist(item_id="2"))
+    assert provider._ai.waiting
+
+    await provider.unload()
+
+    _mass(provider).cancel_task.assert_any_call(f"{INSTANCE_ID}_ai_worker")
+    assert not provider._ai._pending
+
+
+async def test_preview_leaves_the_description_out_when_descriptions_are_off(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """With descriptions off, the preview spends no text request on one."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold"], CONF_DESCRIPTIONS: False},
+    )
+
+    with _no_engine_pickers():
+        entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert _text_calls(provider) == 0
+    assert CONF_PREVIEW_DESCRIPTION not in [entry.key for entry in entries or ()]
+
+
+async def test_preview_asks_for_the_visual_concept_once(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """The concept is the same for every style, so one text request serves them all."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{
+            CONF_PREVIEW_PLAYLIST: "234",
+            CONF_PREVIEW_STYLE: ["bold", "neon", "gouache"],
+            CONF_USE_PROMPT_ENGINE: True,
+            CONF_DESCRIPTIONS: False,
+        },
+    )
+
+    with _no_engine_pickers():
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert _engine_calls(provider) == 3
+    assert _text_calls(provider) == 1
 
 
 async def test_resolve_image_returns_a_stored_cover(provider: PlaylistMetadataProvider) -> None:
@@ -562,17 +770,22 @@ async def test_resolve_image_rejects_paths_outside_the_images_dir(
 async def test_scheduled_refresh_generates_missing_covers(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """The hourly pass refreshes the playlists in scope that lack their cover."""
+    """The hourly pass has the covers made that playlists in scope lack, then applies them."""
     missing = _smart_playlist(item_id="1")
     out_of_scope = _playlist("builtin", item_id="2", is_editable=True)
+    _register(provider, missing, out_of_scope)
     _mass(provider).music.playlists.iter_library_items = MagicMock(
         return_value=_async_iter([missing, out_of_scope])
     )
     _mass(provider).metadata.update_metadata = AsyncMock()
 
     await provider._ai.refresh()
+    await _settle(provider)
 
-    _mass(provider).metadata.update_metadata.assert_awaited_once_with(missing, force_refresh=True)
+    assert _engine_calls(provider) == 1
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(
+        missing.uri, force_refresh=True
+    )
 
 
 async def test_the_cleanup_keeps_covers_in_use_and_removes_orphans(
@@ -648,7 +861,7 @@ async def test_refresh_takes_the_cover_off_playlists_that_left_the_scope(
 
     await provider._ai.refresh()
 
-    _mass(provider).metadata.update_metadata.assert_awaited_once_with(left, force_refresh=True)
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(left.uri, force_refresh=True)
 
 
 async def test_refresh_puts_the_collage_back_after_switching_templates(
@@ -664,7 +877,9 @@ async def test_refresh_puts_the_collage_back_after_switching_templates(
 
     await provider._ai.refresh()
 
-    _mass(provider).metadata.update_metadata.assert_awaited_once_with(playlist, force_refresh=True)
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(
+        playlist.uri, force_refresh=True
+    )
 
 
 def test_a_long_title_is_fitted_whole() -> None:
@@ -701,7 +916,7 @@ async def test_writes_a_description_for_a_smart_playlist(
     playlist = _smart_playlist()
     playlist.metadata.description = "[Smart Playlist] Similar to Innerbloom"
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert playlist.metadata.description == DESCRIPTION
     query = str(provider.test_text_engine.provider.ai_query.await_args.args[0])  # type: ignore[attr-defined]
@@ -720,11 +935,11 @@ async def test_a_stored_description_is_reapplied_without_calling_the_engine(
     provider: PlaylistMetadataProvider,
 ) -> None:
     """A description replaced by something else is put back from the cache."""
-    await provider.get_playlist_metadata(_smart_playlist())
+    await _metadata(provider, _smart_playlist())
     playlist = _smart_playlist()
     playlist.metadata.description = "[Smart Playlist] Similar to Innerbloom"
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert playlist.metadata.description == DESCRIPTION
     assert _text_calls(provider) == 1
@@ -734,9 +949,9 @@ async def test_renaming_the_playlist_rewrites_the_description(
     provider: PlaylistMetadataProvider,
 ) -> None:
     """The stored description belongs to the playlist name it was written for."""
-    await provider.get_playlist_metadata(_smart_playlist())
+    await _metadata(provider, _smart_playlist())
 
-    await provider.get_playlist_metadata(_smart_playlist(name="Sunrise Set"))
+    await _metadata(provider, _smart_playlist(name="Sunrise Set"))
 
     assert _text_calls(provider) == 2
 
@@ -747,7 +962,7 @@ async def test_descriptions_can_be_turned_off(provider: PlaylistMetadataProvider
     playlist = _smart_playlist()
     playlist.metadata.description = "Mine"
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert playlist.metadata.description == "Mine"
     assert _text_calls(provider) == 0
@@ -756,10 +971,10 @@ async def test_descriptions_can_be_turned_off(provider: PlaylistMetadataProvider
 async def test_the_hourly_limit_postpones_descriptions(provider: PlaylistMetadataProvider) -> None:
     """Descriptions over the limit are left to a later refresh."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
-    await provider.get_playlist_metadata(_smart_playlist(item_id="1"))
+    await _metadata(provider, _smart_playlist(item_id="1"))
     second = _smart_playlist(item_id="2")
 
-    await provider.get_playlist_metadata(second)
+    await _metadata(provider, second)
 
     assert _text_calls(provider) == 1
     assert second.metadata.description is None
@@ -775,7 +990,7 @@ async def test_a_failing_text_engine_leaves_the_description_untouched(
     playlist = _smart_playlist()
     playlist.metadata.description = "Mine"
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert playlist.metadata.description == "Mine"
 
@@ -785,22 +1000,23 @@ async def test_regenerate_makes_new_covers_and_descriptions(
 ) -> None:
     """The regenerate action keys every cover and description anew, and starts a refresh."""
     first = _smart_playlist()
-    await provider.get_playlist_metadata(first)
-    _mass(provider).create_task = MagicMock(side_effect=lambda coro, **_kw: coro.close())
+    await _metadata(provider, first)
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        side_effect=lambda: _async_iter([])
+    )
 
     with patch(
         "music_assistant.providers.playlist_metadata.ai.time.time", return_value=2_000_000_000.0
     ):
         await provider.handle_config_action(CONF_ACTION_REGENERATE)
     second = _smart_playlist(images=list(first.metadata.images or []))
-    await provider.get_playlist_metadata(second)
+    await _metadata(provider, second)
 
     assert _engine_calls(provider) == 2
     assert _text_calls(provider) == 2
     assert second.image is not None
     assert first.image is not None
     assert second.image.path != first.image.path
-    _mass(provider).create_task.assert_called_once()
 
 
 async def test_regenerating_twice_within_a_second_still_regenerates(
@@ -822,12 +1038,16 @@ async def test_a_failed_write_leaves_no_cover_file(provider: PlaylistMetadataPro
     """A cover that could not be written in full is not kept, so the next refresh retries."""
     playlist = _smart_playlist()
     with patch.object(Path, "replace", side_effect=OSError("No space left on device")):
-        await provider.get_playlist_metadata(playlist)
+        await _metadata(provider, playlist)
 
     assert playlist.image is None
     assert list(Path(provider._images_dir).iterdir()) == []
 
-    await provider.get_playlist_metadata(playlist)
+    # tried again once the first backoff is over
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.time.time", return_value=time.time() + 3700
+    ):
+        await _metadata(provider, playlist)
 
     assert _engine_calls(provider) == 2
     assert playlist.image is not None
@@ -846,9 +1066,11 @@ async def test_refresh_takes_the_cover_off_a_playlist_that_got_its_own_artwork(
 
     await provider._ai.refresh()
 
-    _mass(provider).metadata.update_metadata.assert_awaited_once_with(playlist, force_refresh=True)
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(
+        playlist.uri, force_refresh=True
+    )
 
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
 
     assert list(playlist.metadata.images or []) == [own_cover]
     assert _engine_calls(provider) == 0
@@ -933,7 +1155,7 @@ async def test_preview_still_shows_the_styles_that_worked(
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(
         provider,
-        **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["type_cutout", "spotify", "gouache"]},
+        **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["type_cutout", "bold", "gouache"]},
     )
     engine = provider.test_engine.provider  # type: ignore[attr-defined]
 
@@ -947,10 +1169,10 @@ async def test_preview_still_shows_the_styles_that_worked(
     with _no_engine_pickers():
         entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
 
-    # "type_cutout" is no style (anymore), so only Spotify and Gouache were asked for
+    # "type_cutout" is no style (anymore), so only Bold and Gouache were asked for
     assert engine.ai_generate_image.await_count == 2
     assert [entry.key for entry in entries or () if entry.key.startswith(CONF_PREVIEW_IMAGE)] == [
-        f"{CONF_PREVIEW_IMAGE}_spotify"
+        f"{CONF_PREVIEW_IMAGE}_bold"
     ]
 
 
@@ -963,7 +1185,7 @@ async def test_previews_count_towards_the_hourly_limit(
         provider,
         **{
             CONF_PREVIEW_PLAYLIST: "234",
-            CONF_PREVIEW_STYLE: ["spotify", "neon"],
+            CONF_PREVIEW_STYLE: ["bold", "neon"],
             CONF_MAX_PER_HOUR: 3,
         },
     )
@@ -976,8 +1198,8 @@ async def test_previews_count_towards_the_hourly_limit(
     assert _engine_calls(provider) == 2
     # the background generation is held to the same limit
     second = _smart_playlist(item_id="2")
-    await provider.get_playlist_metadata(second)
-    await provider.get_playlist_metadata(_smart_playlist(item_id="3"))
+    await _metadata(provider, second)
+    await _metadata(provider, _smart_playlist(item_id="3"))
     assert _engine_calls(provider) == 3
 
 
@@ -990,7 +1212,7 @@ async def test_a_background_cover_can_not_take_a_slot_a_preview_reserved(
         provider,
         **{
             CONF_PREVIEW_PLAYLIST: "234",
-            CONF_PREVIEW_STYLE: ["spotify", "neon"],
+            CONF_PREVIEW_STYLE: ["bold", "neon"],
             CONF_MAX_PER_HOUR: 2,
             CONF_DESCRIPTIONS: False,
         },
@@ -1021,7 +1243,7 @@ async def test_refresh_regenerates_a_cover_whose_file_is_gone(
 ) -> None:
     """A cover still named by the playlist but deleted from disk is made again."""
     playlist = _smart_playlist()
-    await provider.get_playlist_metadata(playlist)
+    await _metadata(provider, playlist)
     assert playlist.image is not None
     Path(provider._images_dir, playlist.image.path).unlink()
     _mass(provider).music.playlists.iter_library_items = MagicMock(
@@ -1030,8 +1252,12 @@ async def test_refresh_regenerates_a_cover_whose_file_is_gone(
     _mass(provider).metadata.update_metadata = AsyncMock()
 
     await provider._ai.refresh()
+    await _settle(provider)
 
-    _mass(provider).metadata.update_metadata.assert_awaited_once_with(playlist, force_refresh=True)
+    assert _engine_calls(provider) == 2
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(
+        playlist.uri, force_refresh=True
+    )
 
 
 async def test_only_one_preview_runs_at_a_time(provider: PlaylistMetadataProvider) -> None:
@@ -1067,7 +1293,7 @@ async def test_only_one_preview_runs_at_a_time(provider: PlaylistMetadataProvide
 async def test_preview_without_a_description(provider: PlaylistMetadataProvider) -> None:
     """A text engine that fails leaves the description out and still shows the covers."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
-    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["spotify"]})
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold"]})
     provider.test_text_engine.provider.ai_query = AsyncMock(  # type: ignore[attr-defined]
         side_effect=RuntimeError("text engine down")
     )
@@ -1076,14 +1302,14 @@ async def test_preview_without_a_description(provider: PlaylistMetadataProvider)
         entries = await provider.handle_config_action(CONF_ACTION_PREVIEW)
 
     keys = [entry.key for entry in entries or ()]
-    assert f"{CONF_PREVIEW_IMAGE}_spotify" in keys
+    assert f"{CONF_PREVIEW_IMAGE}_bold" in keys
     assert CONF_PREVIEW_DESCRIPTION not in keys
 
 
 async def test_preview_fails_when_no_style_worked(provider: PlaylistMetadataProvider) -> None:
     """When every style fails, the preview reports the engine's error."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
-    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["spotify"]})
+    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold"]})
     provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
         side_effect=RuntimeError("engine down")
     )
@@ -1145,7 +1371,7 @@ async def test_scheduled_refresh_puts_back_replaced_descriptions(
 ) -> None:
     """A playlist whose cover is current is only refreshed when its description was replaced."""
     current = _smart_playlist(item_id="1")
-    await provider.get_playlist_metadata(current)
+    await _metadata(provider, current)
     replaced = _smart_playlist(item_id="1")
     replaced.metadata.images = current.metadata.images
     replaced.metadata.description = "[Smart Playlist] Similar to Innerbloom"
@@ -1155,12 +1381,18 @@ async def test_scheduled_refresh_puts_back_replaced_descriptions(
     _mass(provider).metadata.update_metadata = AsyncMock()
 
     await provider._ai.refresh()
+    await _settle(provider)
+    _mass(provider).metadata.update_metadata.assert_not_awaited()
     _mass(provider).music.playlists.iter_library_items = MagicMock(
         return_value=_async_iter([replaced])
     )
     await provider._ai.refresh()
+    await _settle(provider)
 
-    _mass(provider).metadata.update_metadata.assert_awaited_once_with(replaced, force_refresh=True)
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(
+        replaced.uri, force_refresh=True
+    )
+    assert _text_calls(provider) == 1
 
 
 def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
@@ -1193,6 +1425,8 @@ def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     provider = PlaylistMetadataProvider(mass, manifest, config, set())
     _set_config(provider)
 
+    _add_worker_fakes(provider)
+
     engine = MagicMock()
     engine.id = "ai_task.images"
     engine.uid = ENGINE_UID
@@ -1204,6 +1438,47 @@ def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     text_engine.provider.ai_query = AsyncMock(return_value=f' "{DESCRIPTION}"\n')
     provider.test_text_engine = text_engine  # type: ignore[attr-defined]
     return provider
+
+
+def _add_worker_fakes(provider: PlaylistMetadataProvider) -> None:
+    """
+    Give the mocked Music Assistant what the worker needs, behaving like the real thing.
+
+    Tasks really run, playlists are fetched from a small library, and a metadata refresh runs
+    the provider's and merges its result into the library playlist.
+    """
+    mass = _mass(provider)
+    # the library the worker fetches playlists from, filled by _metadata and _register
+    library: dict[str, Playlist] = {}
+    mass.test_library = library
+
+    async def get_library_item(item_id: str) -> Playlist:
+        if (playlist := library.get(str(item_id))) is None:
+            raise MediaNotFoundError(item_id)
+        return playlist
+
+    mass.music.playlists.get_library_item = AsyncMock(side_effect=get_library_item)
+    tasks: dict[str, asyncio.Task[Any]] = {}
+    mass.test_tasks = tasks
+
+    def create_task(target: Any, *args: Any, task_id: str | None = None, **_kwargs: Any) -> Any:
+        coro = target if asyncio.iscoroutine(target) else target(*args)
+        if task_id and (existing := tasks.get(task_id)) and not existing.done():
+            coro.close()
+            return existing
+        task = asyncio.ensure_future(coro)
+        tasks[task_id or str(id(task))] = task
+        return task
+
+    mass.create_task = MagicMock(side_effect=create_task)
+
+    async def update_metadata(item: Any, **_kwargs: Any) -> None:
+        # like the metadata controller: the provider's metadata merged into the library item
+        playlist = next(pl for pl in library.values() if item in (pl.uri, pl))
+        if metadata := await provider.get_playlist_metadata(playlist):
+            playlist.metadata.update(metadata)
+
+    mass.metadata.update_metadata = AsyncMock(side_effect=update_metadata)
 
 
 class _FakeCache:
@@ -1343,6 +1618,43 @@ def _no_engine_pickers() -> Iterator[None]:
         ),
     ):
         yield
+
+
+async def _metadata(
+    provider: PlaylistMetadataProvider, playlist: Playlist
+) -> MediaItemMetadata | None:
+    """
+    Refresh the playlist's metadata, and let the worker finish what that queued.
+
+    The worker applies what it made with another metadata refresh, as Music Assistant does.
+    """
+    _register(provider, playlist)
+    metadata = await provider.get_playlist_metadata(playlist)
+    await _settle(provider)
+    return metadata
+
+
+def _register(provider: PlaylistMetadataProvider, *playlists: Playlist) -> None:
+    """Put the playlists in the library the worker fetches them from."""
+    for playlist in playlists:
+        _mass(provider).test_library[str(playlist.item_id)] = playlist
+
+
+async def _settle(provider: PlaylistMetadataProvider) -> None:
+    """Wait until the worker is done, or waits for the hourly limit."""
+    # the worker renders and writes the covers in threads, so this waits for real time
+    for _ in range(1000):
+        tasks = [task for task in _tasks(provider).values() if not task.done()]
+        if not tasks or (provider._ai.waiting and len(tasks) == 1):
+            return
+        await asyncio.sleep(0.01)
+    msg = "the worker did not settle"
+    raise AssertionError(msg)
+
+
+def _tasks(provider: PlaylistMetadataProvider) -> dict[str, asyncio.Task[Any]]:
+    """Return the tasks the provider started."""
+    return cast("dict[str, asyncio.Task[Any]]", _mass(provider).test_tasks)
 
 
 def _mass(provider: PlaylistMetadataProvider) -> MagicMock:

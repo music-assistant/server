@@ -47,8 +47,8 @@
       "options": {
         "music_assistant": "Music Assistant",
         "neon": "Neon",
-        "spotify": "Spotify",
-        "apple_music": "Apple Music",
+        "bold": "Bold",
+        "soft_gradient": "Soft Gradient",
         "risograph": "Risograph",
         "gouache": "Gouache",
         "custom": "Custom"
@@ -56,8 +56,8 @@
       "option_descriptions": {
         "music_assistant": "A vibrant gradient in colors that match the playlist's mood, with a large white line-art illustration of its theme in the style of the Music Assistant app's icons and a bold white title.",
         "neon": "The playlist's scene drawn in glowing neon lines on a dark background, in Music Assistant blue with one accent color, with a white neon title.",
-        "spotify": "One striking full-bleed image with a vivid duotone or saturated color wash and a large, bold title.",
-        "apple_music": "A soft, blurred, vivid mesh gradient with a small white title in the bottom-left corner.",
+        "bold": "One striking full-bleed image with a vivid duotone or saturated color wash and a large, bold title.",
+        "soft_gradient": "A soft, blurred, vivid mesh gradient with a small white title in the bottom-left corner.",
         "risograph": "A two-color screen print illustration on off-white paper, with halftone dots and grain and a chunky printed title.",
         "gouache": "A warm, painted magazine-style illustration of the playlist's scene, with a clean title at the top.",
         "custom": "Your own prompt."
@@ -97,8 +97,8 @@
       "options": {
         "music_assistant": "Music Assistant",
         "neon": "Neon",
-        "spotify": "Spotify",
-        "apple_music": "Apple Music",
+        "bold": "Bold",
+        "soft_gradient": "Soft Gradient",
         "risograph": "Risograph",
         "gouache": "Gouache",
         "custom": "Custom"
@@ -121,7 +121,7 @@
     },
     "ai_descriptions": {
       "label": "Write descriptions with AI",
-      "description": "Give the playlists for AI a short, Spotify-style description written by the text engine, inspired by what you play most. It is written once per playlist and put back whenever it gets replaced."
+      "description": "Give the playlists for AI a short, editorial-style description written by the text engine, inspired by what you play most. It is written once per playlist and put back whenever it gets replaced."
     },
     "ai_playlists": {
       "label": "Playlists for AI",

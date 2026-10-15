@@ -6,7 +6,7 @@ import base64
 import binascii
 import re
 import socket
-from ipaddress import ip_address
+from ipaddress import IPv4Address, IPv6Address, IPv6Network, ip_address
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlsplit
 
@@ -40,9 +40,14 @@ IMAGE_SIZE = "1024x1024"
 # a generated image handed out by URL is downloaded whole, so cap what is read
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 IMAGE_READ_CHUNK_SIZE = 64 * 1024
+# a reply can carry an inline image as base64, so its cap leaves room for one of the size above
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+
 # redirects of an image link are followed one by one, so every hop can be checked
 MAX_IMAGE_REDIRECTS = 3
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# the well-known NAT64 prefix, whose addresses translate to the IPv4 address they end in
+NAT64_NETWORK = IPv6Network("64:ff9b::/96")
 
 # an upstream failure message is echoed into the raised error, so keep it bounded
 MAX_ERROR_DETAIL_CHARS = 200
@@ -162,6 +167,44 @@ async def image_generation(
     return await _images_endpoint_image(mass, base_url, api_key, model, prompt, timeout), True
 
 
+class LocalNetworkHostError(OSError):
+    """A host of an image link resolved to an address on a local network."""
+
+
+class PublicHostResolver(AbstractResolver):
+    """Resolve host names to public addresses only, apart from the configured endpoint's host."""
+
+    def __init__(self, endpoint_host: str) -> None:
+        """
+        Initialize the resolver.
+
+        :param endpoint_host: The host of the configured endpoint, which may be local.
+        """
+        self._resolver = ThreadedResolver()
+        self._endpoint_host = endpoint_host
+
+    async def resolve(
+        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+    ) -> list[ResolveResult]:
+        """
+        Return the addresses of a host, refusing one with any address on a local network.
+
+        :param host: The host name to resolve.
+        :param port: The port to connect to.
+        :param family: The address family to resolve for.
+        """
+        results = await self._resolver.resolve(host, port, family)
+        if host.lower() == self._endpoint_host:
+            return results
+        if not results or not all(_is_public(str(result["host"])) for result in results):
+            raise LocalNetworkHostError(host)
+        return results
+
+    async def close(self) -> None:
+        """Close the underlying resolver."""
+        await self._resolver.close()
+
+
 async def _chat_completion_image(
     mass: MusicAssistant, base_url: str, api_key: str, model: str, prompt: str, timeout: int
 ) -> bytes:
@@ -239,7 +282,11 @@ async def _download(mass: MusicAssistant, base_url: str, url: str, timeout: int)
                 ) as response:
                     status = response.status
                     location = response.headers.get("Location", "")
-                    body = b"" if status in REDIRECT_STATUSES else await _read_image(response)
+                    body = (
+                        b""
+                        if status in REDIRECT_STATUSES
+                        else await _read_limited(response, MAX_IMAGE_BYTES)
+                    )
             except (TimeoutError, aiohttp.ClientError) as err:
                 if isinstance(err, aiohttp.ClientConnectorError) and isinstance(
                     err.os_error, LocalNetworkHostError
@@ -298,67 +345,51 @@ def _check_image_link(endpoint_host: str, url: str) -> None:
     if host == endpoint_host:
         return
     try:
-        address = ip_address(host)
+        ip_address(host)
     except ValueError:
         return
-    if not address.is_global:
+    if not _is_public(host):
         msg = f"the reply carried an image link on a local network: {host}"
         raise InvalidDataError(msg)
 
 
-class LocalNetworkHostError(OSError):
-    """A host of an image link resolved to an address on a local network."""
+async def _read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
+    """
+    Return the body of a response, refusing one larger than the limit.
 
-
-class PublicHostResolver(AbstractResolver):
-    """Resolve host names to public addresses only, apart from the configured endpoint's host."""
-
-    def __init__(self, endpoint_host: str) -> None:
-        """
-        Initialize the resolver.
-
-        :param endpoint_host: The host of the configured endpoint, which may be local.
-        """
-        self._resolver = ThreadedResolver()
-        self._endpoint_host = endpoint_host
-
-    async def resolve(
-        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
-    ) -> list[ResolveResult]:
-        """
-        Return the addresses of a host, refusing one with any address on a local network.
-
-        :param host: The host name to resolve.
-        :param port: The port to connect to.
-        :param family: The address family to resolve for.
-        """
-        results = await self._resolver.resolve(host, port, family)
-        if host.lower() == self._endpoint_host:
-            return results
-        # a link-local IPv6 address carries its interface after a "%"
-        if not results or not all(
-            ip_address(str(result["host"]).split("%", 1)[0]).is_global for result in results
-        ):
-            raise LocalNetworkHostError(host)
-        return results
-
-    async def close(self) -> None:
-        """Close the underlying resolver."""
-        await self._resolver.close()
-
-
-async def _read_image(response: aiohttp.ClientResponse) -> bytes:
-    """Return the body of a downloaded image, refusing one over the size limit."""
-    too_large = "The generated image is larger than the download limit"
-    if (response.content_length or 0) > MAX_IMAGE_BYTES:
+    :param response: The response to read.
+    :param limit: The largest body accepted, in bytes.
+    """
+    too_large = "The reply is larger than the download limit"
+    if (response.content_length or 0) > limit:
         raise InvalidDataError(too_large)
     # the declared length can be absent or wrong, so cap what is actually read
     body = bytearray()
     while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
         body.extend(chunk)
-        if len(body) > MAX_IMAGE_BYTES:
+        if len(body) > limit:
             raise InvalidDataError(too_large)
     return bytes(body)
+
+
+def _is_public(address: str) -> bool:
+    """
+    Return whether an IP address is reachable from the internet, not on a local network.
+
+    An IPv6 address that carries an IPv4 one (mapped, 6to4, NAT64 or IPv4-compatible) also
+    needs that IPv4 address to be public, as it can be routed to it.
+
+    :param address: The IP address, an IPv6 one possibly with its interface after a "%".
+    """
+    ip = ip_address(address.split("%", 1)[0])
+    if not ip.is_global:
+        return False
+    if isinstance(ip, IPv6Address):
+        embedded = [ip.ipv4_mapped, ip.sixtofour]
+        if ip in NAT64_NETWORK or int(ip) >> 32 == 0:
+            embedded.append(IPv4Address(int(ip) & 0xFFFFFFFF))
+        return all(v4 is None or v4.is_global for v4 in embedded)
+    return True
 
 
 def _decode_base64(data: str) -> bytes:
@@ -392,7 +423,7 @@ async def _request(
         ) as response:
             status = response.status
             retry_after = response.headers.get("Retry-After", "")
-            body = await response.read()
+            body = await _read_limited(response, MAX_RESPONSE_BYTES)
     except TimeoutError as err:
         msg = f"Request to {url} timed out after {timeout} seconds"
         raise ProviderUnavailableError(msg) from err

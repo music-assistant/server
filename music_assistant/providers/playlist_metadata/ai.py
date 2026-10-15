@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import ActionUnavailable, MediaNotFoundError
 from music_assistant_models.media_items import MediaItemImage, Playlist, Track
 from music_assistant_models.unique_list import UniqueList
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -46,6 +46,7 @@ from music_assistant.helpers.plugin_engines import (
 from .ai_constants import (
     BASE_PROMPT,
     CACHE_CATEGORY_DESCRIPTIONS,
+    CACHE_CATEGORY_FAILURES,
     CACHE_KEEP_SECONDS,
     CACHE_KEY_DESCRIBED_AT,
     CACHE_KEY_GENERATED_AT,
@@ -76,6 +77,7 @@ from .ai_constants import (
     DEFAULT_CUSTOM_PROMPT,
     DEFAULT_MAX_PER_HOUR,
     DESCRIPTION_PROMPT,
+    FAILURE_BACKOFF_SECONDS,
     FULL_BLEED,
     IMAGE_EXTENSION,
     IMAGE_PREFIX,
@@ -86,6 +88,7 @@ from .ai_constants import (
     MAX_CONTEXT_TRACKS,
     MAX_DESCRIPTION_CHARS,
     MAX_FAVORITES,
+    MAX_SOURCE_PIXELS,
     MAX_TITLE_LINES,
     MIN_TITLE_SCALE,
     NO_TEXT_RULES,
@@ -111,6 +114,10 @@ if TYPE_CHECKING:
 SMART_PLAYLIST_DOMAIN: Final = "smart_playlist"
 BUILTIN_DOMAIN: Final = "builtin"
 THROTTLE_WINDOW_SECONDS: Final = 3600
+
+# what the worker generates for a playlist
+KIND_COVER: Final = "cover"
+KIND_DESCRIPTION: Final = "description"
 
 # the settings only read by the preview button, saved as soon as they are changed
 PREVIEW_KEYS: Final = frozenset(
@@ -154,17 +161,29 @@ class PlaylistContext:
 
 
 class AIArtwork:
-    """The AI generated covers and descriptions of the Playlist Metadata provider."""
+    """
+    The AI generated covers and descriptions of the Playlist Metadata provider.
 
-    _lock: asyncio.Lock
-    _description_lock: asyncio.Lock
+    A playlist's metadata refresh never waits for a generation: it applies what is ready and
+    queues what is missing. A single background worker generates the queued covers and
+    descriptions one playlist at a time, within the hourly limits, and then refreshes the
+    playlist so they are applied to it as it is by then.
+    """
+
     # one preview at a time, so repeated presses do not stack up paid generations
     _preview_lock: asyncio.Lock
+    # one refresh pass at a time; a pass asked for during one runs right after it
+    _refresh_lock: asyncio.Lock
+    _refresh_again: bool
     # when each cover and description of the last hour was generated, to enforce the hourly limit
     _generated_at: deque[float]
     _described_at: deque[float]
     # bumped by the regenerate action, so every cover and description is keyed anew
     _generation: int
+    # the library ids of the playlists waiting for the worker, with what each one is missing
+    _pending: dict[str, set[str]]
+    # whether the worker is waiting for the hourly limit to free a slot
+    waiting: bool
 
     def __init__(self, provider: PlaylistMetadataProvider) -> None:
         """
@@ -175,12 +194,14 @@ class AIArtwork:
         self.provider = provider
         self.mass = provider.mass
         self.logger = provider.logger
-        self._lock = asyncio.Lock()
-        self._description_lock = asyncio.Lock()
         self._preview_lock = asyncio.Lock()
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_again = False
         self._generated_at = deque()
         self._described_at = deque()
         self._generation = 0
+        self._pending = {}
+        self.waiting = False
 
     @property
     def covers_enabled(self) -> bool:
@@ -204,7 +225,7 @@ class AIArtwork:
             # covers are otherwise only made on a playlist's (infrequent) metadata refresh, so
             # this catches up on the playlists in scope that have none yet
             self.mass.tasks.register_scheduled_task(
-                task_id=f"{self.provider.instance_id}_ai_refresh",
+                task_id=self._task_id("refresh"),
                 name="AI playlist artwork",
                 handler=self.refresh,
                 schedule=TaskSchedule.hourly(),
@@ -214,21 +235,22 @@ class AIArtwork:
         # (which reload the provider) would otherwise wait for the next hourly run. This also
         # swaps the generated covers out once AI is turned off.
         self.mass.call_later(
-            CATCH_UP_DELAY_SECONDS,
-            self.refresh,
-            task_id=f"{self.provider.instance_id}_ai_catch_up",
+            CATCH_UP_DELAY_SECONDS, self.refresh, task_id=self._task_id("catch_up")
         )
 
     def stop(self, is_removed: bool = False) -> None:
         """
-        Stop the regular catch-up.
+        Stop the catch-up and the worker, and drop what is still waiting for it.
 
         :param is_removed: Whether the provider is being removed rather than reloaded.
         """
-        self.mass.cancel_timer(f"{self.provider.instance_id}_ai_catch_up")
+        self.mass.cancel_timer(self._task_id("catch_up"))
+        for name in ("catch_up", "regenerate", "worker"):
+            self.mass.cancel_task(self._task_id(name))
         self.mass.tasks.unregister_scheduled_task(
-            f"{self.provider.instance_id}_ai_refresh", clear_persisted_state=is_removed
+            self._task_id("refresh"), clear_persisted_state=is_removed
         )
+        self._pending.clear()
 
     async def config_entries(
         self, preview: tuple[ConfigEntry, ...] = ()
@@ -281,6 +303,8 @@ class AIArtwork:
                 default_value=None,
                 options=await self._preview_playlist_options(),
                 immediate_apply=True,
+                depends_on=template_key,
+                depends_on_value=TEMPLATE_AI,
             ),
             ConfigEntry(
                 key=CONF_PREVIEW_STYLE,
@@ -291,6 +315,8 @@ class AIArtwork:
                 default_value=[style.value for style in Style if style != Style.CUSTOM],
                 options=[ConfigValueOption(value=style.value) for style in Style],
                 immediate_apply=True,
+                depends_on=template_key,
+                depends_on_value=TEMPLATE_AI,
             ),
             ConfigEntry(
                 key=CONF_PREVIEW_CUSTOM_PROMPT,
@@ -299,6 +325,8 @@ class AIArtwork:
                 required=False,
                 default_value=DEFAULT_CUSTOM_PROMPT,
                 immediate_apply=True,
+                depends_on=template_key,
+                depends_on_value=TEMPLATE_AI,
             ),
             ConfigEntry(
                 key=CONF_ACTION_PREVIEW,
@@ -306,6 +334,8 @@ class AIArtwork:
                 category="ai_preview",
                 action=CONF_ACTION_PREVIEW,
                 required=False,
+                depends_on=template_key,
+                depends_on_value=TEMPLATE_AI,
             ),
             *preview,
             ConfigEntry(
@@ -375,7 +405,11 @@ class AIArtwork:
         image_engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
         if image_engine is None:
             raise ActionUnavailable("Pick an image engine first")
-        text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        text_engine = (
+            await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+            if self.descriptions_enabled
+            else None
+        )
         playlist = await self.mass.music.playlists.get_library_item(str(playlist_id))
         looks = self._preview_looks()
         if self._preview_lock.locked():
@@ -391,14 +425,17 @@ class AIArtwork:
                 )
             await self._record(self._generated_at, CACHE_KEY_GENERATED_AT, count=len(looks))
             self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
+            # what the playlist is about is the same for every style, so it is worked out once
+            context = await self._playlist_context(playlist)
+            concept = await self._concept(playlist, context)
             slots = asyncio.Semaphore(PREVIEW_CONCURRENCY)
 
             async def render(look: CoverLook) -> bytes:
                 async with slots:
-                    return await self._render(playlist, image_engine, look)
+                    return await self._render(playlist, image_engine, look, context, concept)
 
             description, results = await asyncio.gather(
-                self._preview_description(playlist, text_engine),
+                self._preview_description(playlist, text_engine, context),
                 asyncio.gather(*(render(look) for look in looks), return_exceptions=True),
             )
         entries: list[ConfigEntry] = []
@@ -454,18 +491,18 @@ class AIArtwork:
             persistent=True,
         )
         self.logger.info("Regenerating all AI covers and descriptions")
-        self.mass.create_task(
-            self.refresh(),
-            task_id=f"{self.provider.instance_id}_ai_regenerate",
-            abort_existing=True,
-        )
+        if self._refresh_lock.locked():
+            # the running pass may have checked playlists against the old keys already
+            self._refresh_again = True
+            return
+        self.mass.create_task(self.refresh(), task_id=self._task_id("regenerate"))
 
     async def cover(self, playlist: Playlist) -> MediaItemImage | None:
         """
-        Return the playlist's generated cover, generating it when needed.
+        Return the playlist's generated cover, queueing its generation when there is none yet.
 
-        Returns None when the playlist gets no generated cover. When a new cover can not be
-        generated right now, the playlist keeps the generated cover it has, if any.
+        Returns None when the playlist gets no generated cover. Until a new cover is ready,
+        the playlist keeps the generated cover it has, if any.
 
         :param playlist: The (library) playlist to return the cover for.
         """
@@ -484,35 +521,39 @@ class AIArtwork:
         if image_engine is None:
             return current
         file_name = await self._file_name(playlist, image_engine)
-        if not await asyncio.to_thread(os.path.isfile, os.path.join(self._images_dir, file_name)):
-            if not await self._generate(playlist, image_engine, file_name):
-                return current
-        return MediaItemImage(
-            type=ImageType.THUMB,
-            path=file_name,
-            provider=self.provider.instance_id,
-            remotely_accessible=False,
-        )
+        if await asyncio.to_thread(_touch, os.path.join(self._images_dir, file_name)):
+            return MediaItemImage(
+                type=ImageType.THUMB,
+                path=file_name,
+                provider=self.provider.instance_id,
+                remotely_accessible=False,
+            )
+        if not await self._backing_off(KIND_COVER, playlist, file_name):
+            self._enqueue(playlist, KIND_COVER)
+        return current
 
     async def apply_description(self, playlist: Playlist) -> None:
         """
-        Set the playlist's generated description, generating it when it has none yet.
+        Set the playlist's generated description, queueing it when there is none yet.
 
-        It is set on the playlist directly, as a returned description would not replace the
-        one the playlist already has.
+        It only replaces a description the playlist has no other source for: none at all, the
+        one written here before, or the one the smart playlist provider generates. It is set on
+        the playlist directly, as a returned description would not replace the current one.
 
         :param playlist: The (library) playlist to set the description of.
         """
         if not self.descriptions_enabled or not self.in_scope(playlist):
             return
         text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-        if text_engine is None:
+        if text_engine is None or not await self._may_describe(playlist):
             return
-        description = await self._stored_description(playlist, text_engine)
-        if description is None:
-            description = await self._generate_description(playlist, text_engine)
-        if description is not None:
+        if (description := await self._stored_description(playlist, text_engine)) is not None:
             playlist.metadata.description = description
+            await self._remember_written(playlist, description)
+            return
+        checksum = await self._description_checksum(playlist, text_engine)
+        if not await self._backing_off(KIND_DESCRIPTION, playlist, checksum):
+            self._enqueue(playlist, KIND_DESCRIPTION)
 
     def in_scope(self, playlist: Playlist) -> bool:
         """Return whether the playlist gets a generated cover and description."""
@@ -521,7 +562,7 @@ class AIArtwork:
             # generated by Music Assistant itself, with content that keeps changing
             return False
         return (
-            any(m.provider_domain == SMART_PLAYLIST_DOMAIN for m in mappings)
+            _is_smart_playlist(playlist)
             or self.provider.config.get_value(CONF_PLAYLISTS) == PLAYLISTS_ALL
             or str(playlist.item_id) in self._extra_playlists()
         )
@@ -546,12 +587,23 @@ class AIArtwork:
 
     async def refresh(self) -> None:
         """
-        Refresh the playlists that lack their generated cover or description, or lost them.
+        Queue what the playlists lack, and refresh the ones whose generated cover must go.
 
-        This also puts back a description something else replaced, such as the smart playlist
-        provider when its rules are edited, and takes generated covers off that are no longer
-        wanted, such as when the playlist got artwork of its own.
+        This catches up on covers and descriptions that are missing, also after a playlist
+        changed or something else replaced its description, and takes generated covers off
+        that are no longer wanted, such as when the playlist got artwork of its own.
         """
+        if self._refresh_lock.locked():
+            self._refresh_again = True
+            return
+        async with self._refresh_lock:
+            self._refresh_again = True
+            while self._refresh_again:
+                self._refresh_again = False
+                await self._refresh_playlists()
+
+    async def _refresh_playlists(self) -> None:
+        """Make one pass over the library playlists for the refresh."""
         image_engine = (
             await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
             if self.covers_enabled
@@ -564,37 +616,290 @@ class AIArtwork:
         )
         async for playlist in self.mass.music.playlists.iter_library_items():
             in_scope = self.in_scope(playlist)
+            has_own_artwork = await self._has_own_artwork(playlist)
             if self.own_images(playlist) and (
-                not self.covers_enabled or not in_scope or await self._has_own_artwork(playlist)
+                not self.covers_enabled or not in_scope or has_own_artwork
             ):
                 # the metadata refresh takes the generated cover off, for the playlist's own
                 # artwork or the collage
-                await self.mass.metadata.update_metadata(playlist, force_refresh=True)
+                await self._refresh_playlist(playlist)
                 continue
             if not in_scope:
                 continue
-            file_name: str | None = None
-            if image_engine is not None and not await self._has_own_artwork(playlist):
-                file_name = await self._file_name(playlist, image_engine)
-                current = playlist.image
-                if (
-                    current
-                    and self.is_own_image(current)
-                    and current.path == file_name
-                    and await asyncio.to_thread(
-                        os.path.isfile, os.path.join(self._images_dir, file_name)
+            if image_engine is not None and not has_own_artwork:
+                await self._queue_missing_cover(playlist, image_engine)
+            if text_engine is not None:
+                await self._queue_missing_description(playlist, text_engine)
+
+    async def _queue_missing_cover(self, playlist: Playlist, engine: ImageEngine) -> None:
+        """Queue the playlist's cover when it does not show the one it should."""
+        file_name = await self._file_name(playlist, engine)
+        current = playlist.image
+        if (
+            current is not None
+            and self.is_own_image(current)
+            and current.path == file_name
+            and await asyncio.to_thread(_touch, os.path.join(self._images_dir, file_name))
+        ):
+            return
+        if not await self._backing_off(KIND_COVER, playlist, file_name):
+            self._enqueue(playlist, KIND_COVER)
+
+    async def _queue_missing_description(self, playlist: Playlist, engine: AIEngine) -> None:
+        """Queue the playlist's description when it does not show the one it should."""
+        if not await self._may_describe(playlist):
+            return
+        if playlist.metadata.description == await self._stored_description(playlist, engine):
+            return
+        checksum = await self._description_checksum(playlist, engine)
+        if not await self._backing_off(KIND_DESCRIPTION, playlist, checksum):
+            self._enqueue(playlist, KIND_DESCRIPTION)
+
+    def _enqueue(self, playlist: Playlist, kind: str) -> None:
+        """Queue a cover or description of the playlist for the worker, starting it if needed."""
+        self._pending.setdefault(str(playlist.item_id), set()).add(kind)
+        # a running worker is kept, and picks the playlist up
+        self.mass.create_task(self._work(), task_id=self._task_id("worker"))
+
+    async def _work(self) -> None:
+        """Generate the queued covers and descriptions, one playlist at a time."""
+        while self._pending:
+            blocked: dict[str, set[str]] = {}
+            wait = 0
+            for item_id in list(self._pending):
+                kinds = self._pending.pop(item_id, set())
+                try:
+                    waiting_kinds, retry_in = await self._process(item_id, kinds)
+                except Exception as err:
+                    # one playlist failing must not stop the others
+                    self.logger.warning(
+                        "Could not generate for playlist %s: %s", item_id, err, exc_info=err
                     )
-                ):
-                    file_name = None
-            needs_description = text_engine is not None and (
-                playlist.metadata.description is None
-                or playlist.metadata.description
-                != await self._stored_description(playlist, text_engine)
-            )
-            if file_name is None and not needs_description:
+                    continue
+                if waiting_kinds:
+                    blocked[item_id] = waiting_kinds
+                    wait = retry_in if not wait else min(wait, retry_in)
+            for item_id, kinds in blocked.items():
+                self._pending.setdefault(item_id, set()).update(kinds)
+            if blocked and set(self._pending) <= set(blocked):
+                # everything left waits for the hourly limit to free a slot
+                self.logger.info(
+                    "Reached the hourly limit, continuing with %d playlist(s) in %d minutes",
+                    len(self._pending),
+                    wait // 60 + 1,
+                )
+                self.waiting = True
+                try:
+                    await asyncio.sleep(wait)
+                finally:
+                    self.waiting = False
+
+    async def _process(self, item_id: str, kinds: set[str]) -> tuple[set[str], int]:
+        """
+        Generate what a queued playlist is missing, and refresh it to apply what was made.
+
+        Returns what is left waiting for the hourly limit, and the seconds until a slot frees.
+
+        :param item_id: The library id of the playlist.
+        :param kinds: What to generate for it.
+        """
+        try:
+            # fetched now, so the refresh applies the result to the playlist as it is now
+            playlist = await self.mass.music.playlists.get_library_item(item_id)
+        except MediaNotFoundError:
+            return set(), 0
+        waiting: set[str] = set()
+        retry_in = 0
+        made = False
+        for kind, make in (
+            (KIND_COVER, self._make_cover),
+            (KIND_DESCRIPTION, self._make_description),
+        ):
+            if kind not in kinds:
                 continue
-            # the metadata refresh generates them and stores the result in the library
-            await self.mass.metadata.update_metadata(playlist, force_refresh=True)
+            try:
+                made = await make(playlist) or made
+            except LimitReachedError as err:
+                waiting.add(kind)
+                retry_in = max(retry_in, err.retry_in)
+        if made:
+            await self._refresh_playlist(playlist)
+        return waiting, retry_in
+
+    async def _make_cover(self, playlist: Playlist) -> bool:
+        """
+        Generate and store the playlist's cover, returning whether it has one to apply.
+
+        :raises LimitReachedError: When the hourly limit leaves no cover for now.
+        """
+        if (
+            not self.covers_enabled
+            or not self.in_scope(playlist)
+            or await self._has_own_artwork(playlist)
+        ):
+            return False
+        engine = await select_image_engine(self.provider, CONF_IMAGE_ENGINE)
+        if engine is None:
+            return False
+        file_name = await self._file_name(playlist, engine)
+        if await asyncio.to_thread(os.path.isfile, os.path.join(self._images_dir, file_name)):
+            return True
+        if await self._backing_off(KIND_COVER, playlist, file_name):
+            return False
+        await self._reserve(self._generated_at, CACHE_KEY_GENERATED_AT)
+        try:
+            context = await self._playlist_context(playlist)
+            concept = await self._concept(playlist, context)
+            cover = await self._render(playlist, engine, self._look(), context, concept)
+            await asyncio.to_thread(_write_file, self._images_dir, file_name, cover)
+        except Exception as err:
+            # an unreachable or misbehaving engine must not stop the worker
+            self.logger.warning(
+                "Could not generate a cover for '%s': %s", playlist.name, err, exc_info=err
+            )
+            await self._record_failure(KIND_COVER, playlist, file_name)
+            return False
+        self.logger.info("Generated a cover for '%s'", playlist.name)
+        return True
+
+    async def _make_description(self, playlist: Playlist) -> bool:
+        """
+        Write and store the playlist's description, returning whether it has one to apply.
+
+        :raises LimitReachedError: When the hourly limit leaves no description for now.
+        """
+        if not self.descriptions_enabled or not self.in_scope(playlist):
+            return False
+        engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+        if engine is None or not await self._may_describe(playlist):
+            return False
+        if await self._stored_description(playlist, engine) is not None:
+            return True
+        checksum = await self._description_checksum(playlist, engine)
+        if await self._backing_off(KIND_DESCRIPTION, playlist, checksum):
+            return False
+        await self._reserve(self._described_at, CACHE_KEY_DESCRIBED_AT)
+        try:
+            description = await self._write_description(playlist, engine)
+        except Exception as err:
+            self.logger.warning(
+                "Could not write a description for '%s': %s", playlist.name, err, exc_info=err
+            )
+            description = ""
+        if not description:
+            await self._record_failure(KIND_DESCRIPTION, playlist, checksum)
+            return False
+        await self.mass.cache.set(
+            self._description_key(playlist),
+            description,
+            expiration=CACHE_KEEP_SECONDS,
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_DESCRIPTIONS,
+            checksum=checksum,
+            persistent=True,
+        )
+        self.logger.info("Wrote a description for '%s': %s", playlist.name, description)
+        return True
+
+    async def _backing_off(self, kind: str, playlist: Playlist, key: str) -> bool:
+        """
+        Return whether a cover or description failed recently, or too often to try again.
+
+        :param kind: Whether it is a cover or a description.
+        :param playlist: The playlist it is for.
+        :param key: What identifies it, so a changed one is tried afresh.
+        """
+        failure = await self.mass.cache.get(
+            f"failed_{kind}_{playlist.item_id}",
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_FAILURES,
+            checksum=key,
+        )
+        if not isinstance(failure, dict):
+            return False
+        retry_at = failure.get("retry_at")
+        return not isinstance(retry_at, int | float) or time.time() < retry_at
+
+    async def _record_failure(self, kind: str, playlist: Playlist, key: str) -> None:
+        """
+        Record a failed cover or description, to wait longer after each failure.
+
+        :param kind: Whether it is a cover or a description.
+        :param playlist: The playlist it is for.
+        :param key: What identifies it, so a changed one is tried afresh.
+        """
+        cache_key = f"failed_{kind}_{playlist.item_id}"
+        previous = await self.mass.cache.get(
+            cache_key,
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_FAILURES,
+            checksum=key,
+        )
+        failures = 1
+        if isinstance(previous, dict) and isinstance(previous.get("failures"), int):
+            failures += previous["failures"]
+        retry_at: float | None = None
+        if failures <= len(FAILURE_BACKOFF_SECONDS):
+            retry_at = time.time() + FAILURE_BACKOFF_SECONDS[failures - 1]
+        else:
+            self.logger.warning(
+                "Giving up on the %s of '%s' until the playlist or the settings change",
+                kind,
+                playlist.name,
+            )
+        await self.mass.cache.set(
+            cache_key,
+            {"failures": failures, "retry_at": retry_at},
+            expiration=CACHE_KEEP_SECONDS,
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_FAILURES,
+            checksum=key,
+            persistent=True,
+        )
+
+    async def _may_describe(self, playlist: Playlist) -> bool:
+        """Return whether the playlist's description is one a generated one may replace."""
+        current = playlist.metadata.description
+        if current is None or _is_smart_playlist(playlist):
+            # the smart playlist provider writes its description from the rules
+            return True
+        written = await self.mass.cache.get(
+            self._written_key(playlist),
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_DESCRIPTIONS,
+        )
+        return isinstance(written, str) and current == written
+
+    async def _remember_written(self, playlist: Playlist, description: str) -> None:
+        """Remember the generated description put on the playlist, so it may be replaced later."""
+        key = self._written_key(playlist)
+        if (
+            await self.mass.cache.get(
+                key, provider=self.provider.instance_id, category=CACHE_CATEGORY_DESCRIPTIONS
+            )
+            == description
+        ):
+            return
+        await self.mass.cache.set(
+            key,
+            description,
+            expiration=CACHE_KEEP_SECONDS,
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_DESCRIPTIONS,
+            persistent=True,
+        )
+
+    async def _reserve(self, timestamps: deque[float], key: str) -> None:
+        """
+        Take one slot of the hourly limit, as one step with checking that one is left.
+
+        :param timestamps: When each generation of this kind ran, oldest first.
+        :param key: The cache key the timestamps are stored under.
+        :raises LimitReachedError: When no slot is left for now.
+        """
+        if (retry_in := self._throttle_delay(timestamps)) is not None:
+            raise LimitReachedError(retry_in)
+        await self._record(timestamps, key)
 
     async def _has_own_artwork(self, playlist: Playlist) -> bool:
         """Return whether the playlist has a cover of its own, which is never replaced."""
@@ -605,96 +910,30 @@ class AIArtwork:
                 return True
         return False
 
-    async def _generate(self, playlist: Playlist, engine: ImageEngine, file_name: str) -> bool:
-        """Generate and store the playlist's cover, returning whether that succeeded."""
-        async with self._lock:
-            # another refresh of this playlist may have generated it while we waited
-            if await asyncio.to_thread(os.path.isfile, os.path.join(self._images_dir, file_name)):
-                return True
-            if (retry_in := self._throttle_delay(self._generated_at)) is not None:
-                self.logger.info(
-                    "Reached the limit of covers per hour, generating '%s' in %d minutes",
-                    playlist.name,
-                    retry_in // 60 + 1,
-                )
-                self.mass.call_later(
-                    retry_in,
-                    self.mass.metadata.update_metadata,
-                    playlist.uri,
-                    force_refresh=True,
-                    task_id=f"{self.provider.instance_id}_ai_retry_{playlist.item_id}",
-                )
-                return False
-            await self._record(self._generated_at, CACHE_KEY_GENERATED_AT)
-            try:
-                cover = await self._render(playlist, engine, self._look())
-                await asyncio.to_thread(_write_file, self._images_dir, file_name, cover)
-            except Exception as err:
-                # an unreachable or misbehaving engine must not break the metadata refresh,
-                # the next refresh simply tries again
-                self.logger.warning(
-                    "Could not generate a cover for '%s': %s",
-                    playlist.name,
-                    err,
-                    exc_info=err,
-                )
-                return False
-            self.logger.info("Generated a cover for '%s'", playlist.name)
-            return True
-
-    async def _render(self, playlist: Playlist, engine: ImageEngine, look: CoverLook) -> bytes:
+    async def _render(
+        self,
+        playlist: Playlist,
+        engine: ImageEngine,
+        look: CoverLook,
+        context: PlaylistContext,
+        concept: str,
+    ) -> bytes:
         """Return a newly generated cover for the playlist, with the given look."""
-        prompt = await self._build_prompt(playlist, look)
+        prompt = _build_prompt(playlist.name, look, context, concept)
         self.logger.debug("Generating a cover for '%s': %s", playlist.name, prompt)
         async with asyncio.timeout(IMAGE_TIMEOUT_SECONDS):
             image = await engine.provider.ai_generate_image(prompt, engine_id=engine.id)
         return await asyncio.to_thread(_render_cover, image, _overlay_layout(look), playlist.name)
 
-    async def _generate_description(self, playlist: Playlist, engine: AIEngine) -> str | None:
-        """Write and store the playlist's description, returning None when that failed."""
-        async with self._description_lock:
-            # another refresh of this playlist may have written it while we waited
-            if (stored := await self._stored_description(playlist, engine)) is not None:
-                return stored
-            if self._throttle_delay(self._described_at) is not None:
-                # the hourly refresh catches up on it
-                self.logger.debug(
-                    "Reached the limit of descriptions per hour, skipping '%s'", playlist.name
-                )
-                return None
-            await self._record(self._described_at, CACHE_KEY_DESCRIBED_AT)
-            try:
-                description = await self._write_description(playlist, engine)
-            except Exception as err:
-                # the next refresh simply tries again
-                self.logger.warning(
-                    "Could not write a description for '%s': %s",
-                    playlist.name,
-                    err,
-                    exc_info=err,
-                )
-                return None
-            if not description:
-                return None
-            await self.mass.cache.set(
-                self._description_key(playlist),
-                description,
-                expiration=CACHE_KEEP_SECONDS,
-                provider=self.provider.instance_id,
-                category=CACHE_CATEGORY_DESCRIPTIONS,
-                checksum=self._description_checksum(playlist, engine),
-                persistent=True,
-            )
-            self.logger.info("Wrote a description for '%s': %s", playlist.name, description)
-            return description
-
-    async def _preview_description(self, playlist: Playlist, engine: AIEngine | None) -> str:
+    async def _preview_description(
+        self, playlist: Playlist, engine: AIEngine | None, context: PlaylistContext
+    ) -> str:
         """Return a description to preview for the playlist, empty when none could be written."""
         if engine is None or self._throttle_delay(self._described_at) is not None:
             return ""
         await self._record(self._described_at, CACHE_KEY_DESCRIBED_AT)
         try:
-            return await self._write_description(playlist, engine)
+            return await self._write_description(playlist, engine, context)
         except Exception as err:
             # the covers are still worth showing
             self.logger.warning(
@@ -705,9 +944,12 @@ class AIArtwork:
             )
             return ""
 
-    async def _write_description(self, playlist: Playlist, engine: AIEngine) -> str:
+    async def _write_description(
+        self, playlist: Playlist, engine: AIEngine, context: PlaylistContext | None = None
+    ) -> str:
         """Return a newly written description for the playlist, empty when the engine gave none."""
-        context = await self._playlist_context(playlist)
+        if context is None:
+            context = await self._playlist_context(playlist)
         query = DESCRIPTION_PROMPT.format(
             name=playlist.name,
             seeds=_description_seeds(context),
@@ -723,7 +965,7 @@ class AIArtwork:
             self._description_key(playlist),
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_DESCRIPTIONS,
-            checksum=self._description_checksum(playlist, engine),
+            checksum=await self._description_checksum(playlist, engine),
         )
         return description if isinstance(description, str) and description else None
 
@@ -731,9 +973,21 @@ class AIArtwork:
         """Return the cache key of the playlist's description."""
         return f"description_{playlist.item_id}"
 
-    def _description_checksum(self, playlist: Playlist, engine: AIEngine) -> str:
+    def _written_key(self, playlist: Playlist) -> str:
+        """Return the cache key of the generated description last put on the playlist."""
+        return f"written_{playlist.item_id}"
+
+    async def _description_checksum(self, playlist: Playlist, engine: AIEngine) -> str:
         """Return what the stored description must match to still be the playlist's."""
-        return json_dumps([playlist.name, engine.uid, self._generation])
+        return json_dumps(
+            [playlist.name, engine.uid, self._generation, await self._rules_digest(playlist)]
+        )
+
+    async def _rules_digest(self, playlist: Playlist) -> str:
+        """Return a digest of a smart playlist's rules, empty for any other playlist."""
+        if (rules := await self._smart_playlist_rules(playlist)) is None:
+            return ""
+        return hashlib.sha1(json_dumps(rules).encode(), usedforsecurity=False).hexdigest()
 
     async def _favorites(self, artists: list[str]) -> str:
         """Return the listener's most-played library tracks by the given artists."""
@@ -752,32 +1006,6 @@ class AIArtwork:
             )
             or "n/a"
         )
-
-    async def _build_prompt(self, playlist: Playlist, look: CoverLook) -> str:
-        """Return the image prompt for the playlist, with the given look."""
-        context = await self._playlist_context(playlist)
-        concept = await self._concept(playlist, context)
-        style = look.style
-        values = {
-            "name": playlist.name,
-            "title": playlist.name,
-            "context": context.describe(),
-            "concept": concept,
-            "description": concept,
-            "artists": ", ".join(context.artists[:MAX_CONTEXT_ITEMS]),
-            "genres": ", ".join(context.genres),
-            "era": context.era or "",
-        }
-        if style == Style.CUSTOM:
-            template = look.custom_prompt or DEFAULT_CUSTOM_PROMPT
-            return _format_template(template, values).strip()
-        preset = STYLE_PRESETS[style]
-        if look.title_overlay:
-            text_rules = NO_TEXT_RULES.format(area=preset.title_area)
-        else:
-            text_rules = f"{preset.typography.format(title=playlist.name)} {TITLE_RULES}"
-        values["style"] = f"{preset.art} {text_rules} {FULL_BLEED}"
-        return BASE_PROMPT.format(**values)
 
     async def _concept(self, playlist: Playlist, context: PlaylistContext) -> str:
         """Return the visual concept sentence, written by the prompt engine when one is used."""
@@ -880,6 +1108,7 @@ class AIArtwork:
                 image_engine.uid,
                 prompt_engine,
                 self._generation,
+                await self._rules_digest(playlist),
             ]
         )
         digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()
@@ -1021,10 +1250,83 @@ class AIArtwork:
             return True
         return False
 
+    async def _refresh_playlist(self, playlist: Playlist) -> None:
+        """Refresh the playlist's metadata, by reference so the refresh reads it as it is now."""
+        await self.mass.metadata.update_metadata(playlist.uri or playlist, force_refresh=True)
+
+    def _task_id(self, name: str) -> str:
+        """Return the id of one of the tasks or timers of the AI artwork."""
+        return f"{self.provider.instance_id}_ai_{name}"
+
     @property
     def _images_dir(self) -> str:
         """Return the directory the covers are kept in, shared with the collages."""
         return self.provider._images_dir
+
+
+class LimitReachedError(Exception):
+    """The hourly limit leaves no generation of a kind for now."""
+
+    def __init__(self, retry_in: int) -> None:
+        """
+        Initialize the error.
+
+        :param retry_in: The seconds until the limit frees a slot.
+        """
+        super().__init__(f"hourly limit reached, a slot frees in {retry_in} seconds")
+        self.retry_in = retry_in
+
+
+def _is_smart_playlist(playlist: Playlist) -> bool:
+    """Return whether the playlist comes from the smart playlist provider."""
+    return any(m.provider_domain == SMART_PLAYLIST_DOMAIN for m in playlist.provider_mappings)
+
+
+def _touch(path: str) -> bool:
+    """
+    Mark a cover file as just used, returning whether it exists.
+
+    The cleanup deletes files that no playlist refers to once they are a few minutes old, so a
+    file about to be referenced again is touched first.
+
+    :param path: The path of the cover file.
+    """
+    try:
+        os.utime(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _build_prompt(name: str, look: CoverLook, context: PlaylistContext, concept: str) -> str:
+    """
+    Return the image prompt for a playlist, with the given look.
+
+    :param name: The playlist name.
+    :param look: The look of the cover.
+    :param context: What the playlist is about.
+    :param concept: The visual concept sentence.
+    """
+    values = {
+        "name": name,
+        "title": name,
+        "context": context.describe(),
+        "concept": concept,
+        "description": concept,
+        "artists": ", ".join(context.artists[:MAX_CONTEXT_ITEMS]),
+        "genres": ", ".join(context.genres),
+        "era": context.era or "",
+    }
+    if look.style == Style.CUSTOM:
+        template = look.custom_prompt or DEFAULT_CUSTOM_PROMPT
+        return _format_template(template, values).strip()
+    preset = STYLE_PRESETS[look.style]
+    if look.title_overlay:
+        text_rules = NO_TEXT_RULES.format(area=preset.title_area)
+    else:
+        text_rules = f"{preset.typography.format(title=name)} {TITLE_RULES}"
+    values["style"] = f"{preset.art} {text_rules} {FULL_BLEED}"
+    return BASE_PROMPT.format(**values)
 
 
 def _context_from_rules(rules: dict[str, Any]) -> PlaylistContext:
@@ -1100,6 +1402,10 @@ def _write_file(directory: str, file_name: str, data: bytes) -> None:
 def _render_cover(image: bytes, layout: TitleLayout | None, title: str) -> bytes:
     """Return the generated image as a square JPEG cover, with the title drawn when asked."""
     with Image.open(BytesIO(image)) as source:
+        # the size is known before the pixels are decoded
+        if source.width * source.height > MAX_SOURCE_PIXELS:
+            msg = f"the engine returned an image of {source.width}x{source.height} pixels"
+            raise ValueError(msg)
         canvas = ImageOps.fit(source.convert("RGB"), (CANVAS_SIZE, CANVAS_SIZE))
     if layout is not None:
         canvas = _draw_title(canvas, layout, title)

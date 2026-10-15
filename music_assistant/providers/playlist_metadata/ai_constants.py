@@ -42,6 +42,8 @@ MAX_TITLE_LINES: Final = 3
 MIN_TITLE_SCALE: Final = 0.4
 # previews are sent to the settings page inline, so they are kept small
 PREVIEW_SIZE: Final = 512
+# an image larger than this is refused before it is decoded, as decoding takes memory per pixel
+MAX_SOURCE_PIXELS: Final = 4096 * 4096
 # the preview covers generated at the same time, to go easy on the image engine
 PREVIEW_CONCURRENCY: Final = 2
 
@@ -59,6 +61,11 @@ MAX_CONTEXT_GENRES: Final = 3
 
 # the descriptions live in the cache, kept until the playlist (or the text engine) changes
 CACHE_CATEGORY_DESCRIPTIONS: Final = 1
+# the failed attempts of a cover or description, kept until it changes
+CACHE_CATEGORY_FAILURES: Final = 2
+# a failed cover or description is tried again after these delays, and after the last one
+# only once something that shapes it changes (or everything is regenerated)
+FAILURE_BACKOFF_SECONDS: Final = (3600, 6 * 3600, 24 * 3600)
 CACHE_KEY_GENERATION: Final = "generation"
 # the times of the recent generations, so the hourly limit survives a reload or restart
 CACHE_KEY_GENERATED_AT: Final = "generated_at"
@@ -80,8 +87,8 @@ class Style(StrEnum):
 
     MUSIC_ASSISTANT = "music_assistant"
     NEON = "neon"
-    SPOTIFY = "spotify"
-    APPLE_MUSIC = "apple_music"
+    BOLD = "bold"
+    SOFT_GRADIENT = "soft_gradient"
     RISOGRAPH = "risograph"
     GOUACHE = "gouache"
     CUSTOM = "custom"
@@ -129,15 +136,15 @@ FULL_BLEED: Final = (
 )
 
 STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
-    Style.SPOTIFY: StylePreset(
+    Style.BOLD: StylePreset(
         art=(
-            "Style: a Spotify editorial playlist cover. One striking full-bleed image (stylized "
+            "Style: a bold editorial playlist cover. One striking full-bleed image (stylized "
             "photo or bold illustration) with a vivid duotone or saturated color wash that sets "
             "the mood, simple uncluttered composition, cohesive with a series of playlist covers."
         ),
         typography=(
             'Typography: the playlist title "{title}" as the only text, set large in a bold '
-            "modern geometric sans-serif (like Spotify's Circular or Gotham Black), tight letter "
+            "modern geometric sans-serif (like Circular or Gotham Black), tight letter "
             "spacing, clean and crisp, high contrast against the image, placed confidently in the "
             "upper-left or lower-left area."
         ),
@@ -185,16 +192,16 @@ STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
         title_area="lower area",
         layout=TitleLayout.BOTTOM_LEFT_SMALL,
     ),
-    Style.APPLE_MUSIC: StylePreset(
+    Style.SOFT_GRADIENT: StylePreset(
         art=(
-            "Style: an Apple Music editorial playlist cover. A soft, blurred, vivid mesh gradient "
+            "Style: a soft gradient editorial playlist cover. A soft, blurred, vivid mesh gradient "
             "of two to four rich colors that flow into each other, with an optional subtle, "
             "out-of-focus hint of the scene, smooth and luminous with fine grain, minimal and "
             "elegant, cohesive with a series of playlist covers."
         ),
         typography=(
             'Typography: the playlist title "{title}" as the only text, small, in white, set in '
-            "a clean bold sans-serif (like SF Pro Display), in the bottom-left corner over a "
+            "a clean bold sans-serif (like Inter or Helvetica Neue), in the bottom-left corner over a "
             "subtle dark vignette."
         ),
         title_area="bottom-left corner",
@@ -234,7 +241,7 @@ STYLE_PRESETS: Final[dict[Style, StylePreset]] = {
     ),
 }
 
-# custom templates have no typography of their own, so an overlay uses the Spotify layout
+# custom templates have no typography of their own, so an overlay uses the Bold layout
 CUSTOM_LAYOUT: Final = TitleLayout.TOP_LEFT_LARGE
 
 DEFAULT_CUSTOM_PROMPT: Final = (
@@ -250,7 +257,7 @@ CONCEPT_PROMPT: Final = (
     "Reply with only the description."
 )
 
-DESCRIPTION_PROMPT: Final = """You write playlist descriptions for Spotify's editorial team.
+DESCRIPTION_PROMPT: Final = """You write playlist descriptions for the editorial team of a music streaming service.
 Write the description for a personal playlist called "{name}".
 What defines it: {seeds}
 The listener's most-played songs in this lane (use for flavor, mention at most one): {favorites}
