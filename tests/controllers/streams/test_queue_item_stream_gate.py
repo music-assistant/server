@@ -49,7 +49,6 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     pq_data.session_id = SESSION_ID
     pq_data.last_requested_item_id = None
     ctrl.mass.player_queues.queue_data.return_value = pq_data
-    ctrl.mass.player_queues.queue_data_or_none.return_value = pq_data
     ctrl.mass.player_queues.is_current_window_item.return_value = item_in_window
 
     player = MagicMock()
@@ -155,8 +154,6 @@ async def test_item_falling_out_of_the_window_during_setup_is_refused() -> None:
 
     assert "not up next" in str(exc.value.reason)
     assert ctrl.mass.player_queues.is_current_window_item.call_count == 2
-    # the stale item no longer vouches for its successor, which the player's copy still holds
-    assert ctrl.mass.player_queues.queue_data.return_value.last_requested_item_id is None
 
 
 async def test_both_checks_measure_from_the_item_asked_for_before(

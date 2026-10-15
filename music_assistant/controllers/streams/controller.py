@@ -2475,8 +2475,6 @@ class StreamsController(CoreController):
         """
         Refuse (404) the request if the item fell out of the queue's playhead window.
 
-        A refused item is also dropped as the queue's last requested item.
-
         :param player: The player that requested the item.
         :param queue_id: The queue the item belongs to.
         :param queue_item: The requested queue item.
@@ -2488,11 +2486,6 @@ class StreamsController(CoreController):
             queue_id, queue_item.queue_item_id, requested_after
         ):
             return
-        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
-        if queue_data is not None and queue_data.last_requested_item_id == queue_item.queue_item_id:
-            # an item that turned stale while its request was set up no longer vouches for
-            # its successor, which the player may still ask for out of its stale copy
-            queue_data.last_requested_item_id = None
         self.logger.debug(
             "Denying stream request from %s for %s: the queue has moved on",
             player.display_name,

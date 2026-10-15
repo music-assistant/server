@@ -273,3 +273,25 @@ async def test_a_new_load_drops_what_the_old_one_fetched_and_asked_for() -> None
 
     assert data.last_served_item_id is None
     assert data.last_requested_item_id is None
+
+
+def test_a_track_asked_for_before_a_queue_edit_does_not_vouch_for_its_old_successor() -> None:
+    """
+    A track moved to play next is not skipped by requests that overlap the move.
+
+    The player asked for the track after the buffered one, then the user moved another
+    track ahead of it. The requested track is no longer up next, so the player's cached
+    track after it must be refused too, or the moved track is played over.
+    """
+    ctrl = _controller(current_index=0, index_in_buffer=1)
+    ctrl._queue_data["q1"].last_served_item_id = _item_id_at(ctrl, 1)
+    requested = _item_id_at(ctrl, 2)
+    cached_next = _item_id_at(ctrl, 3)
+    moved_up = _item_id_at(ctrl, 4)
+    assert ctrl.is_current_window_item("q1", cached_next, requested)
+
+    ctrl.move_item("q1", moved_up, pos_shift=-2)
+
+    assert _item_id_at(ctrl, 2) == moved_up
+    assert not ctrl.is_current_window_item("q1", cached_next, requested)
+    assert ctrl.is_current_window_item("q1", moved_up, requested)

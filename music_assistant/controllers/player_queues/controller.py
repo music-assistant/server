@@ -1955,8 +1955,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # a track before its stream delivered a byte asks for the one after it, which no
         # fetch ever recorded. An item the queue no longer holds (a clear or a replace) has
         # no next item
-        served_item_id = self._queue_data[queue_id].last_served_item_id
-        for from_item in (served_item_id, requested_after, queue.current_index):
+        from_items = [self._queue_data[queue_id].last_served_item_id, queue.current_index]
+        # the item asked for before only vouches for its successor while it is itself still
+        # in the window: a queue edit may have moved it away while its request was set up
+        if requested_after is not None and self.is_current_window_item(queue_id, requested_after):
+            from_items.append(requested_after)
+        for from_item in from_items:
             if from_item is None:
                 continue
             next_item = self.get_next_item(queue_id, from_item)
