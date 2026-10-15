@@ -68,6 +68,9 @@ CACHE_CATEGORY_FAILURES: Final = 2
 FAILURE_BACKOFF_SECONDS: Final = (3600, 6 * 3600, 24 * 3600)
 # an engine that could not be reached is left alone this long before the next playlist tries it
 ENGINE_RETRY_SECONDS: Final = 15 * 60
+# a playlist whose engine could not be reached this many times in a row is given up on as well,
+# as a request that keeps timing out may still be paid for (about a week at the longest wait)
+MAX_OUTAGE_RETRIES: Final = 7
 CACHE_KEY_GENERATION: Final = "generation"
 # the times of the recent generations, so the hourly limit survives a reload or restart
 CACHE_KEY_GENERATED_AT: Final = "generated_at"

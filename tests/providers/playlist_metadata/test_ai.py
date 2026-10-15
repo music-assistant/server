@@ -56,6 +56,7 @@ from music_assistant.providers.playlist_metadata.ai_constants import (
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
     CONF_USE_PROMPT_ENGINE,
+    MAX_OUTAGE_RETRIES,
     PLAYLISTS_ALL,
     PLAYLISTS_SMART,
     TEMPLATE_AI,
@@ -831,10 +832,10 @@ async def test_rule_changes_that_do_not_shape_the_prompt_keep_the_cover(
     assert _engine_calls(provider) == 1
 
 
-async def test_an_unreachable_engine_is_retried_and_never_given_up_on(
+async def test_an_unreachable_engine_is_retried_far_longer(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """An outage leaves the engine alone for a while, instead of a try per playlist."""
+    """An outage leaves the engine alone for a while, and gives up only after many tries."""
     provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
         side_effect=ProviderUnavailableError("Home Assistant is not reachable")
     )
@@ -848,19 +849,51 @@ async def test_an_unreachable_engine_is_retried_and_never_given_up_on(
     assert _engine_calls(provider) == 1
     assert provider._ai.waiting
 
-    # long after the backoff would have given up on a content failure, it is still tried
+    # tried well past where a failed generation is given up on, until the outages run out
     for _task in _tasks(provider).values():
         _task.cancel()
     provider._ai._pending.clear()
     start = time.time()
-    for offset in (3700, 7 * 3600 + 3700, 31 * 3600 + 3700, 56 * 3600 + 3700):
+    for day in range(1, 12):
         provider._ai._paused_until.clear()
         with patch(
             "music_assistant.providers.playlist_metadata.ai.time.time",
-            return_value=start + offset,
+            return_value=start + day * 25 * 3600,
         ):
             await _metadata(provider, first)
-    assert _engine_calls(provider) == 5
+    assert _engine_calls(provider) == MAX_OUTAGE_RETRIES + 1
+
+
+async def test_outages_and_failed_generations_are_counted_apart(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Outages before a failed generation do not make it give up sooner."""
+    playlist = _smart_playlist()
+    ai = provider._ai
+    for _ in range(3):
+        await ai._record_failure("cover", playlist, "key", transient=True)
+    await ai._record_failure("cover", playlist, "key")
+
+    failure = await _mass(provider).cache.get(
+        "failed_cover_234", provider=INSTANCE_ID, category=2, checksum="key"
+    )
+    assert failure["failures"] == 1
+    assert failure["outages"] == 3
+    assert failure["retry_at"] is not None
+
+
+async def test_blocked_work_does_not_wake_the_worker(provider: PlaylistMetadataProvider) -> None:
+    """Queueing a cover while covers wait for the limit leaves the worker waiting."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1, CONF_DESCRIPTIONS: False})
+    await _metadata(provider, _smart_playlist(item_id="1"))
+    await _metadata(provider, _smart_playlist(item_id="2"))
+    assert provider._ai.waiting
+
+    _register(provider, third := _smart_playlist(item_id="3"))
+    await provider.get_playlist_metadata(third)
+
+    assert not provider._ai._wakeup.is_set()
+    assert set(provider._ai._pending) == {"2", "3"}
 
 
 async def test_new_work_wakes_a_waiting_worker(provider: PlaylistMetadataProvider) -> None:

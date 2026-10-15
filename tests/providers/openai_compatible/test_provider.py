@@ -899,6 +899,22 @@ async def test_a_malformed_inline_image_falls_back_to_the_images_endpoint(
     assert (image, used_images_endpoint) == (b"jpeg-bytes", True)
 
 
+@pytest.mark.parametrize("status", [408, 500, 502, 503])
+async def test_an_unavailable_service_is_reported_as_unavailable(
+    mass: AsyncMock, status: int
+) -> None:
+    """A service that is down answers with an outage, not with a refused request."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(status, {"error": {"message": "down"}}))
+    )
+
+    with pytest.raises(ProviderUnavailableError, match="unavailable"):
+        await helpers.image_generation(mass, BASE_URL, "", model="m", prompt="A cat", timeout=10)
+
+    # the images endpoint is not asked as well, the service is down
+    assert mass.http_session.request.call_count == 1
+
+
 async def test_an_oversized_api_reply_is_refused(mass: AsyncMock) -> None:
     """A reply over the size limit is refused instead of read into memory."""
     response = _json_response(200, _CHAT_PAYLOAD)

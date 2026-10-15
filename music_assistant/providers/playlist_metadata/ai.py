@@ -96,6 +96,7 @@ from .ai_constants import (
     MAX_CONTEXT_TRACKS,
     MAX_DESCRIPTION_CHARS,
     MAX_FAVORITES,
+    MAX_OUTAGE_RETRIES,
     MAX_SOURCE_PIXELS,
     MAX_TITLE_LINES,
     MIN_TITLE_SCALE,
@@ -707,8 +708,10 @@ class AIArtwork:
         if kind in kinds:
             return
         kinds.add(kind)
-        # a running worker is kept and picks the playlist up, also when it was waiting
-        self._wakeup.set()
+        # a running worker is kept and picks the playlist up; a waiting one is only woken for
+        # work it can do now
+        if self._blocked_for(kind) is None:
+            self._wakeup.set()
         self.mass.create_task(self._work(), task_id=self._task_id("worker"))
 
     async def _work(self) -> None:
@@ -718,6 +721,14 @@ class AIArtwork:
             blocked: dict[str, set[str]] = {}
             wait = 0
             for item_id in list(self._pending):
+                kinds = self._pending.get(item_id, set())
+                waits = [self._blocked_for(kind) for kind in kinds]
+                if kinds and all(waits):
+                    # nothing of it can run yet, so it is left as it is without fetching it
+                    blocked[item_id] = set(kinds)
+                    retry_in = min(w for w in waits if w)
+                    wait = retry_in if not wait else min(wait, retry_in)
+                    continue
                 kinds = self._pending.pop(item_id, set())
                 try:
                     waiting_kinds, retry_in = await self._process(item_id, kinds)
@@ -885,8 +896,9 @@ class AIArtwork:
         """
         Handle a failed cover or description: wait longer after each failure.
 
-        An engine that could not be reached is no reason to give up on the playlist, and is
-        left alone for a while, so an outage does not take a slot of the limit per playlist.
+        An engine that could not be reached is counted apart, and given up on only after many
+        more tries. It is also left alone for a while, so an outage does not take a slot of the
+        limit per playlist.
 
         :param kind: Whether it is a cover or a description.
         :param playlist: The playlist it is for.
@@ -897,6 +909,18 @@ class AIArtwork:
         if transient:
             self._paused_until[kind] = time.time() + ENGINE_RETRY_SECONDS
         await self._record_failure(kind, playlist, key, transient=transient)
+
+    def _blocked_for(self, kind: str) -> int | None:
+        """
+        Return the seconds until a cover or description may be generated, None when it may now.
+
+        :param kind: Whether it is a cover or a description.
+        """
+        remaining = self._paused_until.get(kind, 0) - time.time()
+        paused = int(remaining) + 1 if remaining > 0 else 0
+        timestamps = self._generated_at if kind == KIND_COVER else self._described_at
+        limited = self._throttle_delay(timestamps) or 0
+        return max(paused, limited) or None
 
     def _check_paused(self, kind: str) -> None:
         """
@@ -917,7 +941,7 @@ class AIArtwork:
         :param kind: Whether it is a cover or a description.
         :param playlist: The playlist it is for.
         :param key: What identifies it, so a changed one is tried afresh.
-        :param transient: Whether it failed for a passing reason, so it is never given up on.
+        :param transient: Whether the engine could not be reached, rather than failed to make it.
         """
         cache_key = f"failed_{kind}_{playlist.item_id}"
         previous = await self.mass.cache.get(
@@ -926,17 +950,22 @@ class AIArtwork:
             category=CACHE_CATEGORY_FAILURES,
             checksum=key,
         )
-        failures = 1
-        if isinstance(previous, dict) and isinstance(previous.get("failures"), int):
-            failures += previous["failures"]
-        retry_at: float | None = None
+        record = previous if isinstance(previous, dict) else {}
+        failures = int(record.get("failures") or 0)
+        outages = int(record.get("outages") or 0)
+        # outages and failed generations are counted apart, and each gives up on its own count
         if transient:
+            outages += 1
+            attempts, give_up = outages, outages > MAX_OUTAGE_RETRIES
+        else:
+            failures += 1
+            attempts, give_up = failures, failures > len(FAILURE_BACKOFF_SECONDS)
+        retry_at: float | None = None
+        if not give_up:
             retry_at = (
                 time.time()
-                + FAILURE_BACKOFF_SECONDS[min(failures, len(FAILURE_BACKOFF_SECONDS)) - 1]
+                + FAILURE_BACKOFF_SECONDS[min(attempts, len(FAILURE_BACKOFF_SECONDS)) - 1]
             )
-        elif failures <= len(FAILURE_BACKOFF_SECONDS):
-            retry_at = time.time() + FAILURE_BACKOFF_SECONDS[failures - 1]
         else:
             self.logger.warning(
                 "Giving up on the %s of '%s' until the playlist or the settings change",
@@ -945,7 +974,7 @@ class AIArtwork:
             )
         await self.mass.cache.set(
             cache_key,
-            {"failures": failures, "retry_at": retry_at},
+            {"failures": failures, "outages": outages, "retry_at": retry_at},
             expiration=CACHE_KEEP_SECONDS,
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_FAILURES,
@@ -1347,9 +1376,6 @@ class AIArtwork:
         """Return the library playlists that can be previewed, keeping the current selection."""
         selected = self.provider.config.get_value(CONF_PREVIEW_PLAYLIST)
         options: list[ConfigValueOption] = []
-        if not self.covers_enabled:
-            # the preview is only shown with the AI template, so the library is not listed
-            return [ConfigValueOption(str(selected))] if selected else []
         try:
             async for playlist in self.mass.music.playlists.iter_library_items():
                 options.append(ConfigValueOption(str(playlist.item_id), title=playlist.name))
@@ -1389,15 +1415,15 @@ class AIArtwork:
 
 
 class LimitReachedError(Exception):
-    """The hourly limit leaves no generation of a kind for now."""
+    """No generation of a kind is allowed for now: the hourly limit, or a paused engine."""
 
     def __init__(self, retry_in: int) -> None:
         """
         Initialize the error.
 
-        :param retry_in: The seconds until the limit frees a slot.
+        :param retry_in: The seconds until a generation may be tried again.
         """
-        super().__init__(f"hourly limit reached, a slot frees in {retry_in} seconds")
+        super().__init__(f"no generation allowed for now, retry in {retry_in} seconds")
         self.retry_in = retry_in
 
 

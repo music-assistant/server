@@ -436,6 +436,10 @@ async def _request(
     if status == 429:
         msg = f"The endpoint is rate limiting us: {_error_detail(body)}"
         raise RateLimited(msg, backoff_time=int(retry_after) if retry_after.isdigit() else 0)
+    if status == 408 or status >= 500:
+        # the service is down or overloaded, rather than refusing this request
+        msg = f"The endpoint is unavailable ({status}): {_error_detail(body)}"
+        raise ProviderUnavailableError(msg)
     if status >= 400:
         msg = f"The endpoint returned an error ({status}): {_error_detail(body)}"
         raise InvalidDataError(msg)
