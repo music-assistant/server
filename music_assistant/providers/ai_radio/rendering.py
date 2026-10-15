@@ -6,10 +6,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import ContentType, StreamType, VolumeNormalizationMode
+from music_assistant_models.enums import (
+    ContentType,
+    PlaybackState,
+    StreamType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -41,6 +48,7 @@ from .constants import (
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
+    ATTR_QUEUE_DJ,
     ATTR_RENDERED_TEXT,
     ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
@@ -50,6 +58,7 @@ from .constants import (
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_TTS_LOUDNESS_BOOST,
     DEFERRED_PLACEHOLDERS,
+    FALLBACK_TRACK_SECONDS,
     LOUDNESS_MEASURE_TIMEOUT,
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
@@ -58,6 +67,7 @@ from .constants import (
     POST_LYRICS_TIMEOUT,
     POST_MIN_HEAD_SECONDS,
     POST_MIN_SECONDS,
+    RENDER_AHEAD_ITEMS,
     RENDER_COOLDOWN_SECONDS,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
@@ -144,16 +154,9 @@ class AIRadioRenderMixin:
             raise MediaNotFoundError(f"AI Radio clip {item_id} has no prompt to render")
 
         async with self._lock_for(item_id):
-            # under the lock, so a request that waited here behind a failed render of the same
-            # clip does not render it again
-            self._refuse_unrenderable(queue_item, item_id)
-            text = str(queue_item.extra_attributes.get(ATTR_RENDERED_TEXT) or "")
-            if not text:
-                text = await self._generate_script(queue_item, prompt, item_id)
-                queue_item.extra_attributes[ATTR_RENDERED_TEXT] = text
-                # the signal is what marks the items cache dirty and schedules the persist
-                self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
-            media = await self._cached_clip_media(queue_item, text, item_id)
+            media = await self._render_clip(queue_item, prompt, item_id)
+            # planned here and never ahead: the plan loads the next track's stream details,
+            # which must not happen a whole song early
             tail_overlap = (
                 await self._plan_post(queue_item, item_id, media.duration)
                 if queue_item.extra_attributes.get(ATTR_ALLOW_POST)
@@ -209,6 +212,63 @@ class AIRadioRenderMixin:
             ],
         ):
             yield chunk
+
+    def _render_ahead(self, queue_id: str) -> None:
+        """
+        Start rendering the DJ clips that air within the next few items of a playing queue.
+
+        :param queue_id: The queue to look ahead in.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None or queue.state != PlaybackState.PLAYING or queue.current_index is None:
+            return
+        render_locks = getattr(self, "_render_locks", {})
+        for queue_item in self.mass.player_queues.items(
+            queue_id, limit=RENDER_AHEAD_ITEMS, offset=queue.current_index + 1
+        ):
+            attributes = queue_item.extra_attributes
+            if (
+                not attributes.get(ATTR_QUEUE_DJ)
+                or not queue_item.available
+                or queue_item.media_item is None
+                or not (prompt := str(attributes.get(ATTR_PROMPT) or ""))
+                # a script means a render already ran, and its media is minted again on demand
+                or attributes.get(ATTR_RENDERED_TEXT)
+            ):
+                continue
+            clip_id = queue_item.media_item.item_id
+            if (lock := render_locks.get(clip_id)) is not None and lock.locked():
+                continue
+            self.logger.debug(
+                "AI Radio clip %s (%s) renders ahead of its airtime", clip_id, queue_item.name
+            )
+            self.mass.create_task(
+                self._render_clip_ahead(queue_item, prompt, clip_id),
+                task_id=f"ai_radio_render_ahead_{clip_id}",
+            )
+
+    async def _render_clip_ahead(self, queue_item: QueueItem, prompt: str, clip_id: str) -> None:
+        """Render the clip's script and media before the queue asks for them."""
+        async with self._lock_for(clip_id):
+            # a failed render is logged and leaves the clip unplayable, so the queue skips it
+            # once it is due instead of rendering it again
+            with suppress(MediaNotFoundError):
+                await self._render_clip(queue_item, prompt, clip_id)
+
+    async def _render_clip(
+        self, queue_item: QueueItem, prompt: str, clip_id: str
+    ) -> _CachedClipMedia:
+        """Return the clip's media, generating its script first when it has none yet."""
+        # the caller holds the per-clip lock, so a request that waited behind a failed render
+        # of the same clip does not render it again
+        self._refuse_unrenderable(queue_item, clip_id)
+        text = str(queue_item.extra_attributes.get(ATTR_RENDERED_TEXT) or "")
+        if not text:
+            text = await self._generate_script(queue_item, prompt, clip_id)
+            queue_item.extra_attributes[ATTR_RENDERED_TEXT] = text
+            # the signal is what marks the items cache dirty and schedules the persist
+            self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
+        return await self._cached_clip_media(queue_item, text, clip_id)
 
     def _lock_for(self, clip_id: str) -> asyncio.Lock:
         """Return the per-clip render lock, creating it on first use."""
@@ -341,7 +401,7 @@ class AIRadioRenderMixin:
     async def _generate_script(self, queue_item: QueueItem, prompt: str, clip_id: str) -> str:
         """Resolve the deferred placeholders and generate the spoken script."""
         attributes = queue_item.extra_attributes
-        deferred = await self._resolve_deferred_placeholders(prompt)
+        deferred = await self._resolve_deferred_placeholders(prompt, queue_item)
         empty_weather_tokens = [
             token
             for token in WEATHER_PLACEHOLDER_TOKENS
@@ -353,6 +413,7 @@ class AIRadioRenderMixin:
                 self.logger.warning(
                     "AI Radio clip %s (%s) skipped: %s", clip_id, queue_item.name, error
                 )
+                self._mark_unplayable(queue_item)
                 raise MediaNotFoundError(f"AI Radio clip {clip_id} has no weather data")
             # weather is optional in this clip, so the LLM must skip it rather than invent it
             for token in empty_weather_tokens:
@@ -390,15 +451,39 @@ class AIRadioRenderMixin:
         )
         return text
 
-    async def _resolve_deferred_placeholders(self, prompt: str) -> dict[str, str]:
+    async def _resolve_deferred_placeholders(
+        self, prompt: str, queue_item: QueueItem
+    ) -> dict[str, str]:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
-        values["<timestamp>"] = format_ai_radio_timestamp(self._configured_now())
+        # a clip renders a song or more before it airs, so it names the time it is due to air
+        airtime = self._configured_now() + timedelta(
+            seconds=self._seconds_until_airtime(queue_item)
+        )
+        values["<timestamp>"] = format_ai_radio_timestamp(airtime)
         # weather is the only deferred placeholder that costs a network round-trip, so it is
         # only fetched when the prompt actually references it
         if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):
             values.update(await self._prepare_weather_tokens())
         return values
+
+    def _seconds_until_airtime(self, queue_item: QueueItem) -> float:
+        """Return the estimated seconds until the clip airs, 0 when it is due now."""
+        queue_id = queue_item.queue_id
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None or queue.current_index is None:
+            return 0
+        clip_index = self.mass.player_queues.index_by_id(queue_id, queue_item.queue_item_id)
+        if clip_index is None or clip_index <= queue.current_index:
+            return 0
+        current, *between = self.mass.player_queues.items(
+            queue_id, limit=clip_index - queue.current_index, offset=queue.current_index
+        )
+        remaining = (current.duration or FALLBACK_TRACK_SECONDS) - queue.corrected_elapsed_time
+        # the queue skips an unplayable item, so it takes no airtime
+        return max(0, remaining) + sum(
+            item.duration or FALLBACK_TRACK_SECONDS for item in between if item.available
+        )
 
     async def _mint_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str

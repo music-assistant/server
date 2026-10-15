@@ -62,6 +62,8 @@ class AIRadioQueueDJMixin:
 
         def _station_id_from_source_uri(self, uri: str | None) -> str | None: ...
 
+        def _render_ahead(self, queue_id: str) -> None: ...
+
     async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
         """
         Enable, switch or disable the sticky AI DJ on a queue.
@@ -262,6 +264,8 @@ class AIRadioQueueDJMixin:
             else:
                 self._schedule_replan(queue_id)
                 await self._maybe_detach_show_dj(queue_id)
+                if queue_id in self._dj_queues:
+                    self._render_ahead(queue_id)
         # an arm-once record can outlive its DJ state (manual disable, deleted host, a failed
         # arm), so it is reconciled against the queue's current sources independently here
         self._forget_armed_show(queue_id, queue_removed=event.event == EventType.PLAYER_REMOVED)
