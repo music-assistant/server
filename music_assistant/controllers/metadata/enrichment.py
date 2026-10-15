@@ -433,7 +433,9 @@ class MetadataEnrichmentMixin:
         playlist_genres: dict[str, int] = {}
         # retrieve metadata for the playlist from the tracks (such as genres etc.)
         # TODO: retrieve style/mood ?
-        async for track in self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
+        async for track in self.mass.music.playlists.iter_tracks(
+            playlist.item_id, playlist.provider
+        ):
             if track.metadata.genres:
                 genres = track.metadata.genres
             elif (
@@ -725,10 +727,10 @@ class MetadataEnrichmentMixin:
         # the library's own albums and tracks carry the MusicBrainz ids, barcodes and ISRCs
         # the lookup keys on, so those come before anything a provider has to be asked for
         ref_albums = _identifying_first(
-            await self.mass.music.artists.albums(artist.item_id, artist.provider)
+            await self.mass.music.artists.albums(artist.item_id, artist.provider, limit=None)
         )
         ref_tracks = _identifying_first(
-            await self.mass.music.artists.tracks(artist.item_id, artist.provider)
+            await self.mass.music.artists.tracks(artist.item_id, artist.provider, limit=None)
         )
         if mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, ref_tracks):
             return mb_artist.id
@@ -738,7 +740,7 @@ class MetadataEnrichmentMixin:
             [
                 track
                 for track in await self.mass.music.artists.top_tracks(
-                    artist.item_id, artist.provider
+                    artist.item_id, artist.provider, limit=None
                 )
                 if track.uri not in tried
             ]

@@ -66,7 +66,7 @@ def soco_error(
             return cast("_ReturnFuncType[_T, _P, _R]", async_wrapper)
 
         @functools.wraps(funct)
-        def wrapper(self: _T, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
+        def wrapper(self: _T, /, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
             """Wrap for all soco UPnP exception."""
             try:
                 result = funct(self, *args, **kwargs)

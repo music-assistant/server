@@ -521,7 +521,7 @@ class StorageController(CoreController):
             try:
                 await mounter.reload(spec, self._get_password(spec))
                 if not await self._is_share_mounted(spec):
-                    raise self._share_not_mounted(spec)
+                    raise self._share_not_mounted(spec)  # noqa: TRY301 - recorded by except below
             except Exception as err:
                 self._share_errors[name] = _as_share_error(err)
                 await self.refresh()
@@ -1460,7 +1460,7 @@ class StorageController(CoreController):
             await operation(spec, self._get_password(spec))
             # the last probe of the path went to the settings that did not mount
             if not await self._is_share_mounted(spec):
-                raise self._share_not_mounted(spec)
+                raise self._share_not_mounted(spec)  # noqa: TRY301 - handled by except below
         except Exception as err:
             self.logger.warning(
                 "Unable to mount network share %s with its previous settings: %s", spec.name, err

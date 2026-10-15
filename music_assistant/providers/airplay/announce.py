@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -53,6 +52,7 @@ from .constants import (
     AIRPLAY_VOLUME_DB_PER_POINT,
     AIRPLAY_VOLUME_ECHO_GRACE_S,
 )
+from .helpers import cli_clock_time
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -193,7 +193,8 @@ async def _announce_over_live_session(
                     sent,
                 )
         started_timeout = (
-            max(0.0, at_unix_ms / 1000 - time.time()) + AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS / 1000
+            max(0.0, at_unix_ms / 1000 - cli_clock_time())
+            + AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS / 1000
         )
         acks = await asyncio.gather(
             *[
@@ -242,13 +243,13 @@ async def _announce_over_live_session(
         # read as the user reaching for the volume mid-announcement
         for member in armed:
             member.suppress_volume_reports(
-                max(0.0, latest_end_unix_ms / 1000 - time.time()) + AIRPLAY_VOLUME_ECHO_GRACE_S
+                max(0.0, latest_end_unix_ms / 1000 - cli_clock_time()) + AIRPLAY_VOLUME_ECHO_GRACE_S
             )
         # the done reports arrive while the volume timeline below runs its course
         done_task = asyncio.gather(
             *[
                 streams[member_id].wait_announce_done(
-                    max(0.0, (ack_at or at_unix_ms) / 1000 - time.time())
+                    max(0.0, (ack_at or at_unix_ms) / 1000 - cli_clock_time())
                     + (ack_duration / 1000 if ack_duration else file_seconds)
                     + AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS / 1000
                 )
@@ -355,7 +356,7 @@ def _resolve_announce_instant(
         )
     provider = cast("AirPlayProvider", player.provider)
     plans = provider._announce_plans
-    now_ms = int(time.time() * 1000)
+    now_ms = int(cli_clock_time() * 1000)
     # prune settled plans so the registry cannot grow with announcement history
     for key in [key for key, at_ms in plans.items() if at_ms <= now_ms]:
         del plans[key]
@@ -383,7 +384,7 @@ def _shared_announce_instant(streams: Iterable[AirPlayStream]) -> int:
     the shared instant sits past the largest member span plus a fan-out margin.
     """
     max_span_ms = max(_member_span_ms(stream) for stream in streams)
-    return int(time.time() * 1000) + max_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
+    return int(cli_clock_time() * 1000) + max_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
 
 
 def _owning_group_entity(player: AirPlayPlayer) -> str | None:
@@ -541,8 +542,8 @@ async def _restore_announcement_volume(player: AirPlayPlayer, bumped: dict[str, 
 
 
 async def _hold_until(unix_ms: float) -> None:
-    """Wait for the given wall-clock instant (unix ms) to arrive."""
-    await asyncio.sleep(max(0.0, unix_ms / 1000 - time.time()))
+    """Wait for the given cliairplay instant (unix ms) to arrive."""
+    await asyncio.sleep(max(0.0, unix_ms / 1000 - cli_clock_time()))
 
 
 async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat) -> str:

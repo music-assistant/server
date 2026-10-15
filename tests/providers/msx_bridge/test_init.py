@@ -10,9 +10,7 @@ from music_assistant.providers.msx_bridge import setup
 from music_assistant.providers.msx_bridge.constants import (
     CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
-    CONF_OUTPUT_FORMAT,
     DEFAULT_HTTP_PORT,
-    DEFAULT_OUTPUT_FORMAT,
     GROUP_STREAM_MODE_INDEPENDENT,
     GROUP_STREAM_MODE_REDIRECT,
 )
@@ -31,26 +29,24 @@ async def test_setup_returns_provider(
 async def test_get_config_entries(provider: MSXBridgeProvider) -> None:
     """get_config_entries() should return core config entries."""
     entries = await provider.get_config_entries()
-    assert len(entries) >= 2  # at least http_port, output_format
+    assert len(entries) == 4
 
     port_entry = entries[0]
     assert port_entry.key == CONF_HTTP_PORT
     assert port_entry.type == ConfigEntryType.INTEGER
     assert port_entry.default_value == str(DEFAULT_HTTP_PORT)
 
-    format_entry = entries[1]
-    assert format_entry.key == CONF_OUTPUT_FORMAT
-    assert format_entry.type == ConfigEntryType.STRING
-    assert format_entry.default_value == DEFAULT_OUTPUT_FORMAT
-
-    # Optional: show_stop_notification if present
-    if len(entries) >= 4:
-        show_notification_entry = entries[3]
-        assert show_notification_entry.key == "show_stop_notification"
-        assert show_notification_entry.type == ConfigEntryType.BOOLEAN
-        assert show_notification_entry.default_value is False
+    show_notification_entry = next(e for e in entries if e.key == "show_stop_notification")
+    assert show_notification_entry.type == ConfigEntryType.BOOLEAN
+    assert show_notification_entry.default_value is False
 
     assert all(e.key != "enable_player_grouping" for e in entries)
+
+
+async def test_codec_is_not_a_provider_setting(provider: MSXBridgeProvider) -> None:
+    """Codec selection belongs exclusively to each TV's Music Assistant config."""
+    entries = await provider.get_config_entries()
+    assert "output_format" not in {entry.key for entry in entries}
 
 
 async def test_sendspin_bridge_removed_from_config(provider: MSXBridgeProvider) -> None:

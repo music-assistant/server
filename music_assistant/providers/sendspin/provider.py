@@ -81,7 +81,7 @@ from music_assistant.helpers.guest_access import (
     credential_owners_for_user_id,
     is_session_scoped_owner,
 )
-from music_assistant.helpers.util import format_ip_for_url
+from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
@@ -507,9 +507,10 @@ class SendspinProvider(PlayerProvider):
                 # The device lost its half of the pairing; it plays again once re-paired.
                 self.logger.info("Client %s can no longer use its pairing", client_id)
                 self.mass.create_task(self._refresh_player(client_id))
-            # Transport lifecycle events, implemented in another PR.
-            case ClientConnectedEvent():
-                pass
+            case ClientConnectedEvent(client_id):
+                # A reconnect within aiosendspin's cleanup delay reuses the player, and this
+                # event fires before the new connection's roles are attached.
+                self.mass.loop.call_soon(self._refresh_player_state, client_id)
             case ClientDisconnectedEvent(client_id):
                 self._pending_pairing_evictions.add(client_id)
                 self.mass.call_later(
@@ -878,10 +879,20 @@ class SendspinProvider(PlayerProvider):
         await self.server_api.unpair(client_id)
         await self._refresh_player(client_id)
 
-    async def set_trusted_unpaired(self, client_id: str, enabled: bool) -> None:
-        """Approve or revoke unpaired (unauthenticated) playback for a client."""
+    async def set_trusted_unpaired(
+        self, client_id: str, enabled: bool, *, allow_input: bool = False
+    ) -> None:
+        """
+        Approve or revoke unpaired (unauthenticated) playback for a client.
+
+        :param client_id: The client to approve or revoke.
+        :param enabled: Whether the client may play without pairing.
+        :param allow_input: Whether an approved client may also send its audio input.
+        """
         if enabled:
-            await self.server_api.trust_unpaired(client_id)
+            await self.server_api.trust_unpaired(
+                client_id, approved_roles=frozenset({"source"} if allow_input else ())
+            )
         else:
             await self.server_api.untrust_unpaired(client_id)
         await self._refresh_player(client_id)
@@ -1164,28 +1175,31 @@ class SendspinProvider(PlayerProvider):
         Applies the HA display name and resolves the HA media_player entity that
         announcements are relayed to: ESPHome devices support announcements
         natively, but that capability is only reachable through the HA API.
-        Players are correlated by MAC address (the Sendspin client id).
+        Players are correlated by the MAC address they report.
         """
-        esphome_players = [
-            player for player in players if player.device_info.manufacturer == "ESPHome"
-        ]
-        if not esphome_players:
+        mac_players: list[tuple[SendspinBasePlayer, str]] = []
+        for player in players:
+            if mac_address := _reported_mac_address(player):
+                mac_players.append((player, mac_address))
+            elif isinstance(player, SendspinPlayer):
+                player.set_hass_announce_entity(None)
+        if not mac_players:
             return
         hass = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
         if hass is None or not hass.available:
-            for player in esphome_players:
+            for player, _ in mac_players:
                 if isinstance(player, SendspinPlayer):
                     player.set_hass_announce_entity(None)
             return
         try:
             device_infos = await hass.get_media_player_device_infos(
-                [player.player_id for player in esphome_players], platform="esphome"
+                [mac_address for _, mac_address in mac_players], platform="esphome"
             )
         except Exception as err:
             self.logger.warning("Failed to apply Home Assistant enrichment: %s", err)
             return
-        for player in esphome_players:
-            device_info = device_infos.get(player.player_id.lower())
+        for player, mac_address in mac_players:
+            device_info = device_infos.get(mac_address)
             if device_info is not None and device_info["name"]:
                 player._attr_name = device_info["name"]
             if isinstance(player, SendspinPlayer):
@@ -1194,12 +1208,11 @@ class SendspinProvider(PlayerProvider):
                 )
 
     async def _refresh_hass_esphome_enrichment(self) -> None:
-        """Re-apply the HA enrichment to all registered ESPHome players (in place)."""
+        """Re-apply the HA enrichment to all registered players that report a MAC address (in place)."""
         players = [
             player
             for player in self.players
-            if isinstance(player, SendspinBasePlayer)
-            and player.device_info.manufacturer == "ESPHome"
+            if isinstance(player, SendspinBasePlayer) and _reported_mac_address(player)
         ]
         if not players:
             return
@@ -1478,6 +1491,12 @@ class SendspinProvider(PlayerProvider):
         await player.on_config_updated()
         player.update_state()
 
+    def _refresh_player_state(self, client_id: str) -> None:
+        """Recalculate a registered player's state for its client's new connection."""
+        player = self.mass.players.get_player(client_id)
+        if isinstance(player, SendspinBasePlayer) and player.initialized.is_set():
+            player.update_state()
+
     def _on_user_access_revoked(self, user: User) -> None:
         """Handle a user's access being withdrawn (tokens revoked or account deleted)."""
         # Both owner forms, so the match cannot depend on the user's role at mint time.
@@ -1542,7 +1561,7 @@ class SendspinProvider(PlayerProvider):
             raise InvalidCommand(f"Client {client_id} did not register")
         return player
 
-    async def _handle_client_added(self, client_id: str, event_version: int) -> None:
+    async def _handle_client_added(self, client_id: str, event_version: int) -> None:  # noqa: PLR0915
         """Handle a new client connection asynchronously."""
         try:
             if self._unloading:
@@ -1595,6 +1614,7 @@ class SendspinProvider(PlayerProvider):
                     self.logger.debug("Client %s disconnected after unregister", client_id)
                     return
 
+            mac_player_id = await self._take_over_mac_player(client_id, sendspin_client)
             player = self._create_player(
                 client_id, sendspin_client, existing_player, bridge_hello_snapshot
             )
@@ -1613,6 +1633,12 @@ class SendspinProvider(PlayerProvider):
                     "Client %s already registered while handling add event", client_id
                 )
                 player._unsubscribe_client_callbacks()
+            else:
+                # register skips a disabled player and any player during shutdown
+                if mac_player_id and self.mass.players.get_player(client_id) is player:
+                    self.mass.players.delete_player_config(
+                        mac_player_id, replacement_player_id=client_id
+                    )
         finally:
             self._finish_client_event(client_id)
 
@@ -1639,9 +1665,9 @@ class SendspinProvider(PlayerProvider):
         """
         Approve a device that offers guest access, so it plays without any setup step.
 
-        Guest access only ever carries playback and the device stays free to withdraw it,
-        so there is nothing for the user to decide. A device whose every role needs pairing
-        (a capture-only one) gains nothing and is left to pair instead.
+        This approval only carries playback and the device stays free to withdraw it,
+        so there is nothing for the user to decide. A device with a role that needs pairing,
+        such as a line-in, is left to the setup step instead.
 
         :param client_id: The connected client to approve.
         :param sendspin_client: That client, for its hello and negotiated roles.
@@ -1655,7 +1681,7 @@ class SendspinProvider(PlayerProvider):
         security = sendspin_client.connection_security
         if security is not None and security.psk_category is PskCategory.LONG_TERM:
             return
-        if all(role_requires_pairing(role_id) for role_id in sendspin_client.negotiated_role_ids):
+        if any(role_requires_pairing(role_id) for role_id in sendspin_client.negotiated_role_ids):
             return
         if await self.server_api.pairing_store.trusted_unpaired(client_id) is not None:
             return
@@ -1853,6 +1879,51 @@ class SendspinProvider(PlayerProvider):
                 continue
             self.logger.debug("Removing orphan virtual player config %s", player_id)
             self.mass.players.delete_player_config(player_id)
+
+    async def _take_over_mac_player(
+        self, client_id: str, sendspin_client: SendspinClient
+    ) -> str | None:
+        """
+        Move a device's player from its MAC address id over to its encrypted client id.
+
+        :param client_id: The connected client.
+        :param sendspin_client: That client, for its connection and hello.
+        :return: The player id that was taken over, or None.
+        """
+        # anyone may already claim the MAC id unencrypted while that is allowed
+        if not self.server_api.allow_unencrypted:
+            return None
+        connection = sendspin_client.connection
+        info = sendspin_client.info_or_none
+        if connection is None or not connection.is_encrypted or info is None:
+            return None
+        mac_address = info.device_info.mac_address if info.device_info else None
+        if not mac_address or not is_valid_mac_address(mac_address):
+            return None
+        mac_player_id = mac_address.upper()
+        config = self.mass.config
+        if config.get_raw_player_config_value(mac_player_id, "provider") != self.instance_id:
+            return None
+        if not config.get_raw_player_config_value(mac_player_id, CONF_ENABLED, True):
+            return None
+        if (mac_client := self.server_api.get_client(mac_player_id)) and mac_client.is_connected:
+            return None
+        self.logger.info("Moving player %s over to client id %s", mac_player_id, client_id)
+        # frees the protocol slot on the parent player for the new client id
+        await self.mass.players.unregister(mac_player_id)
+        self.mass.players.carry_over_player_config(mac_player_id, client_id)
+        return mac_player_id
+
+
+def _reported_mac_address(player: SendspinBasePlayer) -> str | None:
+    """Return the lowercased MAC address a client uses as id or reports in its hello."""
+    if is_valid_mac_address(player.player_id):
+        return player.player_id.lower()
+    info = player.api.info_or_none
+    mac_address = info.device_info.mac_address if info and info.device_info else None
+    if not mac_address or not is_valid_mac_address(mac_address):
+        return None
+    return mac_address.lower()
 
 
 def _virtual_player_noop(*_args: object) -> None:

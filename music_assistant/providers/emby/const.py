@@ -1,7 +1,7 @@
 """Constants for Emby provider."""
 
 # Emby API item keys
-AUTH_ACCESS_TOKEN = "AccessToken"
+AUTH_ACCESS_TOKEN = "AccessToken"  # noqa: S105 - response field name
 AUTH_USER = "User"
 
 ITEMS = "Items"
