@@ -20,6 +20,7 @@ from music_assistant_models.queue_item import QueueItem
 
 import music_assistant.providers.web_kiosk.provider as provider_module
 from music_assistant.controllers.streams import StreamsController
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer
@@ -998,3 +999,103 @@ async def test_lyrics_are_looked_up_only_for_kiosks_showing_them(
     provider.spawn_lyrics("wk_test", 2)
     mass_mock.create_task.assert_called_once()
     provider.http_server.lyrics_requested.assert_called_with("wk_test")
+
+
+async def _replace_track_while_handler_waits(
+    mass_mock: Mock, player: WebKioskPlayer, handler: Coroutine[Any, Any, None]
+) -> None:
+    """Run handler while a replacement track loads under the playback lock."""
+    loading = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def load_replacement() -> None:
+        async with mass_mock.players.get_group_and_player_lock(player.player_id):
+            loading.set()
+            await finish.wait()
+            await player.play_media(
+                PlayerMedia(uri="new", duration=30, source_id="wk_test", queue_item_id="new")
+            )
+
+    loader = asyncio.create_task(load_replacement())
+    await loading.wait()
+    waiting = asyncio.create_task(handler)
+    await asyncio.sleep(0)
+    finish.set()
+    await asyncio.gather(loader, waiting)
+
+
+async def test_old_end_report_waiting_behind_a_track_change_does_not_advance(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """An end report validated before a replacement loads cannot skip the replacement."""
+    _playing_at_end(player)
+    old_generation = player.playback_generation
+    mass_mock.players.get_player.return_value = player
+    mass_mock.player_queues.get_active_queue.return_value = Mock(
+        queue_id="wk_test", current_index=0, current_item=Mock(queue_item_id="item-1")
+    )
+    mass_mock.player_queues.get_next_item.return_value = Mock(queue_item_id="item-2")
+    mass_mock.player_queues.index_by_id.return_value = 1
+    mass_mock.player_queues.play_index = AsyncMock()
+
+    await _replace_track_while_handler_waits(
+        mass_mock, player, provider._advance_after_track("wk_test", old_generation)
+    )
+
+    mass_mock.player_queues.play_index.assert_not_awaited()
+    mass_mock.players.cmd_stop.assert_not_awaited()
+
+
+async def test_old_failure_report_waiting_behind_a_track_change_does_not_stop(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """A failure report for the previous stream cannot stop the replacement."""
+    await player.play_media(PlayerMedia(uri="old", duration=30, source_id="wk_test"))
+    old_generation = player.playback_generation
+    mass_mock.players.get_player.return_value = player
+
+    await _replace_track_while_handler_waits(
+        mass_mock, player, provider._stop_failed_playback("wk_test", old_generation)
+    )
+
+    mass_mock.players.cmd_stop.assert_not_awaited()
+
+
+async def test_follower_fallback_plays_with_the_leader_queue_user(
+    provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """The restored item loads as the leader queue's user, then the context is restored."""
+    client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+    player.sendspin_client_id = client_id
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
+    leader = Mock(player_id="speaker", set_members=AsyncMock())
+    protocol = Mock(player_id=client_id, synced_to="speaker", group_members=[])
+    players = {player.player_id: player, client_id: protocol, "speaker": leader}
+    mass_mock.players.get_player = Mock(side_effect=lambda pid, **_: players.get(pid))
+    leader_queue = PlayerQueue(
+        queue_id="speaker",
+        active=True,
+        display_name="Speaker",
+        available=True,
+        items=1,
+        state=PlaybackState.PLAYING,
+        current_item=QueueItem(
+            queue_id="speaker", queue_item_id="item", name="Private song", duration=200
+        ),
+    )
+    mass_mock.player_queues.get_active_queue = Mock(return_value=leader_queue)
+    mass_mock.player_queues._queue_data = {"speaker": Mock(userid="owner-id")}
+    owner = Mock(user_id="owner-id")
+    mass_mock.webserver.auth.get_user = AsyncMock(
+        side_effect=lambda uid: owner if uid == "owner-id" else None
+    )
+    seen: list[object] = []
+    mass_mock.player_queues.play_media = AsyncMock(
+        side_effect=lambda *_a, **_k: seen.append(get_current_user())
+    )
+    mass_mock.player_queues.seek = AsyncMock()
+
+    await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
+
+    assert seen == [owner]
+    assert get_current_user() is None

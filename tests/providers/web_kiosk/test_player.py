@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, Mock
 
@@ -235,3 +236,36 @@ async def test_speed_is_read_from_the_dispatched_item_before_queue_advances(
     )
     player.note_seek(150)
     assert player.playback_reached_end()
+
+
+async def test_reconnect_waiting_behind_a_track_change_does_not_seek_it(
+    player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """A reconnect reads position and pause state only after a pending track change."""
+    await player.play_media(
+        PlayerMedia(uri="old", duration=180, source_id="wk_test", queue_item_id="old")
+    )
+    player.note_seek(90)
+    await player.pause()
+    mass_mock.players.cmd_seek = AsyncMock()
+    mass_mock.players.cmd_pause = AsyncMock()
+    loading = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def load_replacement() -> None:
+        async with mass_mock.players.get_group_and_player_lock(player.player_id):
+            loading.set()
+            await finish.wait()
+            await player.play_media(
+                PlayerMedia(uri="new", duration=180, source_id="wk_test", queue_item_id="new")
+            )
+
+    loader = asyncio.create_task(load_replacement())
+    await loading.wait()
+    refresh = asyncio.create_task(player.refresh_stream())
+    await asyncio.sleep(0)
+    finish.set()
+    await asyncio.gather(loader, refresh)
+
+    mass_mock.players.cmd_seek.assert_not_awaited()
+    mass_mock.players.cmd_pause.assert_not_awaited()

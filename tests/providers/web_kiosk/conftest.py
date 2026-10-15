@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -66,14 +66,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.players.cmd_pause = AsyncMock()
     mass.players.cmd_play = AsyncMock()
     mass.players.cmd_stop = AsyncMock()
-    playback_locks: dict[str, asyncio.Lock] = {}
-
-    @asynccontextmanager
-    async def playback_lock(player_id: str, **_kwargs: object) -> AsyncIterator[None]:
-        async with playback_locks.setdefault(player_id, asyncio.Lock()):
-            yield
-
-    mass.players.get_group_and_player_lock = playback_lock
+    mass.players.get_group_and_player_lock = _playback_locks()
     mass.players.get = Mock(return_value=None)
     mass.players.get_player = Mock(return_value=None)
     mass.players.register = AsyncMock()
@@ -93,6 +86,27 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.command_handlers = {}
 
     return mass
+
+
+def _playback_locks() -> Callable[..., AbstractAsyncContextManager[None]]:
+    """Return per-player playback locks, re-entrant per task like the player controller's."""
+    playback_locks: dict[str, asyncio.Lock] = {}
+    lock_owners: dict[str, asyncio.Task[Any] | None] = {}
+
+    @asynccontextmanager
+    async def playback_lock(player_id: str, **_kwargs: object) -> AsyncIterator[None]:
+        task = asyncio.current_task()
+        if lock_owners.get(player_id) is task:
+            yield
+            return
+        async with playback_locks.setdefault(player_id, asyncio.Lock()):
+            lock_owners[player_id] = task
+            try:
+                yield
+            finally:
+                lock_owners[player_id] = None
+
+    return playback_lock
 
 
 async def _empty_async_gen() -> AsyncGenerator[Any]:
