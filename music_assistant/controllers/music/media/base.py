@@ -2707,6 +2707,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
 
         async def _assemble(provider_id: str) -> Listing[T]:
+            if provider_id != "library":
+                # the pinned account dropping before the fill is raised, not answered for by
+                # another account of the service (see `mass.get_provider`)
+                self.mass.music.resolve_visible_provider(provider_id, strict=True)
             assembled = await assemble(provider_id)
             return assembled if isinstance(assembled, Listing) else Listing(list(assembled))
 

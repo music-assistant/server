@@ -16,7 +16,7 @@ from music_assistant_models.enums import (
     SortDirection,
     SortField,
 )
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -201,7 +201,11 @@ async def test_provider_artist_listings_are_assembled_once(
         return _names(await getattr(mass.music.artists, method)("artist_x", provider, **kwargs))
 
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(instance_id="qobuz_1", available=True),
+        ),
         patch.object(mass.music.artists, fetch, provider_fetch),
     ):
         assert await _listing() == default
@@ -214,6 +218,43 @@ async def test_provider_artist_listings_are_assembled_once(
     provider_fetch.assert_awaited_once()
     assert provider_fetch.await_args is not None
     assert provider_fetch.await_args.args == ("artist_x", "qobuz_1")
+
+
+@pytest.mark.parametrize(
+    ("method", "fetch"),
+    [
+        ("tracks", "get_provider_artist_tracks"),
+        ("albums", "get_provider_artist_albums"),
+        ("top_tracks", "get_provider_artist_toptracks"),
+        ("top_albums", "get_provider_artist_topalbums"),
+        ("similar_artists", "get_provider_artist_similar_artists"),
+    ],
+)
+async def test_a_provider_artist_listing_is_not_kept_from_another_account_of_a_dropped_one(
+    mass: MusicAssistant, method: str, fetch: str
+) -> None:
+    """An account dropping while its listing is read from the cache is not answered for."""
+    serving = {"instance_id": "qobuz_1"}
+    cache_get = mass.cache.get
+
+    async def _drop_during_read(*args: Any, **kwargs: Any) -> Any:
+        # like `mass.get_provider`, an unavailable instance resolves to another of its domain
+        serving["instance_id"] = "qobuz_2"
+        return await cache_get(*args, **kwargs)
+
+    provider_fetch = AsyncMock(return_value=[])
+    with (
+        patch.object(
+            mass,
+            "get_provider",
+            side_effect=lambda *_a, **_k: SimpleNamespace(available=True, **serving),
+        ),
+        patch.object(mass.cache, "get", side_effect=_drop_during_read),
+        patch.object(mass.music.artists, fetch, provider_fetch),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await getattr(mass.music.artists, method)("artist_x", "qobuz_1")
+    provider_fetch.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -384,7 +425,11 @@ async def test_provider_artist_tracks_missing_an_album_are_assembled_again(
     """Provider artist tracks one album failed to contribute to are not kept."""
     fetch = AsyncMock(return_value=Listing([_track("t1", "One")], complete=False))
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(instance_id="qobuz_1", available=True),
+        ),
         patch.object(mass.music.artists, "get_provider_artist_tracks", fetch),
     ):
         for _ in range(2):
@@ -398,7 +443,11 @@ async def test_similar_artists_page_the_listing_the_providers_are_asked_for(
     """The limit pages the similar artists; the providers are always asked for the full listing."""
     fetch = AsyncMock(return_value=_items("artist"))
     with (
-        patch.object(mass, "get_provider", return_value=SimpleNamespace(instance_id="qobuz_1")),
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(instance_id="qobuz_1", available=True),
+        ),
         patch.object(mass.music.artists, "get_provider_artist_similar_artists", fetch),
     ):
         first = await mass.music.artists.similar_artists("artist_x", "qobuz_1", limit=2)
