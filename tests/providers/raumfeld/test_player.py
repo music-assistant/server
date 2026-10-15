@@ -1100,3 +1100,21 @@ async def test_a_zone_switching_items_keeps_the_source() -> None:
     ):
         await player._poll_zone(MagicMock(), ["Bar"])
     assert player._attr_active_source == "tunein"
+
+
+def test_the_other_rooms_stay_grouped_when_spotify_takes_the_leader() -> None:
+    """Without a queue to hand over, the remaining rooms keep their group under one of them."""
+    player, mass = _taken_leader(PlaybackState.IDLE)
+    player._attr_group_members = ["raumfeld_bar", "raumfeld_bank", "raumfeld_kitchen"]
+    bank = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    bank._player_id = "raumfeld_bank"
+    bank._attr_group_members = []
+    mass.players.get_player.return_value = bank
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        synced_to.return_value = None
+        assert player._leave_group() is False
+    assert player._attr_group_members == []
+    assert bank._attr_group_members == ["raumfeld_bank", "raumfeld_kitchen"]

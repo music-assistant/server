@@ -951,7 +951,14 @@ class RaumfeldPlayer(Player):
                 self._handover_until = time.time() + QUEUE_HANDOVER_TIMEOUT
                 self.mass.create_task(self.mass.players.cmd_ungroup(self.player_id))
                 return True
+            remaining = [pid for pid in self._attr_group_members if pid != self.player_id]
             self.set_group_members([])
+            # the other rooms keep sharing a zone on the host, so they stay a group here,
+            # led by one of them
+            if len(remaining) > 1:
+                new_leader = self.mass.players.get_player(remaining[0])
+                if isinstance(new_leader, RaumfeldPlayer):
+                    new_leader.set_group_members(remaining)
             return False
         leader = self.mass.players.get_player(self.synced_to)
         if isinstance(leader, RaumfeldPlayer):
