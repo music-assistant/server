@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import re
 import time
 from typing import TYPE_CHECKING, cast
 
@@ -165,6 +166,9 @@ class RaumfeldPlayer(Player):
     _playback_changes = 0
     # until when a stop is taken as MA ending this room's queue during a handover
     _handover_until = 0.0
+    # what a zone source was playing when it was stopped, to start it again later:
+    # (current media uri, transport uri, its metadata, track number, position)
+    _resume_context: tuple[str, str, str, int, str | None] | None = None
 
     def __init__(
         self,
@@ -368,6 +372,10 @@ class RaumfeldPlayer(Player):
             # Spotify Connect plays on the room's own renderer, outside any zone
             await self._external_command("Stop")
         elif (zone := self._active_zone()) is not None:
+            if self._presented_external() is not None:
+                # MA may replay this source later (after an announcement, say), when the
+                # zone has something else loaded
+                self._resume_context = await self._read_resume_context(zone)
             try:
                 await self.raumfeld.host.async_zone_stop(zone)
                 if hard_stop:
@@ -381,17 +389,13 @@ class RaumfeldPlayer(Player):
             self._clear_external()
         if self._external_source is None:
             self._attr_active_source = None
-            self._attr_playback_state = PlaybackState.IDLE
-        elif self._announcing():
-            # MA waits for the room to go idle before it announces; the zone keeps the
-            # source loaded either way
-            self._attr_playback_state = PlaybackState.IDLE
         else:
-            # A stopped zone keeps what it was playing loaded, and can start it again. MA
-            # only offers to resume a source that is paused, so that is what it is here.
-            self._external_source.can_play_pause = True
-            self._attr_supported_features.add(PlayerFeature.PAUSE)
-            self._attr_playback_state = PlaybackState.PAUSED
+            # poll again shortly, so the loaded source shows as resumable without delay
+            self._attr_poll_interval = FAST_POLL_INTERVAL
+        # Idle for now, also for a source the zone keeps loaded: MA waits for an idle room
+        # before it switches sources or announces. The next poll reports a loaded source
+        # as paused again, so it can be resumed.
+        self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     @_changes_playback
@@ -432,10 +436,17 @@ class RaumfeldPlayer(Player):
         queue item, and the provider starts the next one itself when this one finishes.
         """
         self._drop_ended_external()
-        if media.uri.startswith(EXTERNAL_URI_SCHEME) and self._external_source is not None:
-            # MA resumes "the current media", which here is what the host still has loaded
-            await self.play()
-            return
+        if media.uri.startswith(EXTERNAL_URI_SCHEME):
+            # MA resumes "the current media", which here is an item of the host's own
+            if self._external_source is not None:
+                # still loaded on the zone
+                await self.play()
+                return
+            context = self._resume_context
+            if context is not None and context[0] == media.uri:
+                # the zone has something else loaded by now (an announcement)
+                await self._restore_zone_source(context)
+                return
         self._mark_play_started()
         # a new item supersedes the queued next one; MA enqueues the next after it again
         self._clear_next()
@@ -996,6 +1007,67 @@ class RaumfeldPlayer(Player):
         self._external_via_room = False
         self._attr_source_list = list(self._static_sources)
         self._attr_supported_features -= EXTERNAL_SOURCE_FEATURES
+
+    async def _read_resume_context(
+        self, zone: list[str]
+    ) -> tuple[str, str, str, int, str | None] | None:
+        """
+        Read what the zone plays, to start it again later, or ``None``.
+
+        :param zone: The rooms of the zone.
+        """
+        media = self._attr_current_media
+        if media is None or (location := self.raumfeld.zone_location(zone)) is None:
+            return None
+        media_info = await self._call_transport(location, "GetMediaInfo") or {}
+        position = await self._call_transport(location, "GetPositionInfo") or {}
+        transport_uri = media_info.get("CurrentURI")
+        if not isinstance(transport_uri, str) or not transport_uri:
+            return None
+        track = position.get("Track")
+        rel_time = position.get("RelTime")
+        return (
+            media.uri,
+            transport_uri,
+            str(media_info.get("CurrentURIMetaData") or ""),
+            int(track) if isinstance(track, (int, str)) and str(track).isdigit() else 1,
+            # a live stream (radio) has no length and nothing to seek back to
+            rel_time
+            if isinstance(rel_time, str) and parse_duration(position.get("TrackDuration"))
+            else None,
+        )
+
+    async def _restore_zone_source(self, context: tuple[str, str, str, int, str | None]) -> None:
+        """
+        Start a zone source again from what it played when it was stopped.
+
+        :param context: The resume context read when the source was stopped.
+        """
+        _media_uri, transport_uri, metadata, track, rel_time = context
+        self._resume_context = None
+        self._mark_play_started()
+        # a container (an album, a playlist) starts at the track it was on
+        if transport_uri.startswith("dlna-playcontainer://"):
+            if "fii=" in transport_uri:
+                transport_uri = re.sub(r"fii=\d+", f"fii={track - 1}", transport_uri)
+            else:
+                transport_uri += f"&fii={track - 1}"
+        try:
+            zone = await self._ensure_playable_zone()
+            await self._wake_rooms(zone)
+            location = self.raumfeld.zone_location(zone)
+            if location is None:
+                raise PlayerCommandFailed(f"Failed to resume {self.room}: no zone renderer")
+            await self._transport_action(
+                location, "SetAVTransportURI", CurrentURI=transport_uri, CurrentURIMetaData=metadata
+            )
+            await self._transport_action(location, "Play", Speed="1")
+            if rel_time:
+                await self._transport_action(location, "Seek", Unit="ABS_TIME", Target=rel_time)
+        except (*HOST_ERRORS, UpnpError) as err:
+            raise PlayerCommandFailed(f"Failed to resume {self.room}: {err!r}") from err
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
 
     async def _external_command(self, action_name: str, **arguments: str) -> None:
         """

@@ -769,8 +769,10 @@ async def test_stopping_a_zone_source_keeps_it_for_resume() -> None:
         await player.stop()
         stopped = (player._attr_active_source, player._attr_playback_state)
         await player.play_media(media)
-    assert stopped == ("tunein", PlaybackState.PAUSED)
-    action.assert_awaited_once_with(_ZONE, "Play", Speed="1")
+    # idle right away, so MA does not wait to switch sources or announce; the next poll
+    # reports the loaded source as paused again
+    assert stopped == ("tunein", PlaybackState.IDLE)
+    action.assert_awaited_with(_ZONE, "Play", Speed="1")
     assert player._attr_playback_state == PlaybackState.PLAYING
 
 
@@ -1277,3 +1279,64 @@ async def test_a_stop_for_an_announcement_reports_idle() -> None:
             {"TrackURI": "https://radio.example.com/stream", "TrackMetaData": ""}, ["Bar"], 0
         )
     assert player._attr_playback_state == PlaybackState.IDLE
+
+
+def _zone_transport(media_info: dict[str, str], position: dict[str, str]) -> AsyncMock:
+    """Build a zone transport that answers the resume-context reads with the given info."""
+
+    async def transport(_location: str, action: str, **_arguments: str) -> dict[str, str]:
+        return {"GetMediaInfo": media_info, "GetPositionInfo": position}.get(action, {})
+
+    return AsyncMock(side_effect=transport)
+
+
+async def _announce_and_resume(
+    media_info: dict[str, str], position: dict[str, str]
+) -> tuple[RaumfeldPlayer, AsyncMock]:
+    """Stop a zone source for an announcement, let the announcement take the zone, resume."""
+    player, host = _external_player()
+    host.async_zone_stop = AsyncMock()
+    player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    media = player._attr_current_media
+    assert media is not None
+    action = _zone_transport(media_info, position)
+    player._extra_data = {"announcement_in_progress": True}
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
+        patch.object(player, "_wake_rooms", AsyncMock()),
+        patch.object(player, "_transport_action", action),
+    ):
+        await player.stop()
+        # the announcement plays an MA stream on the zone, which ends the external source
+        player._clear_external()
+        player._extra_data = {}
+        action.reset_mock()
+        await player.play_media(media)
+    return player, action
+
+
+async def test_radio_is_restored_after_an_announcement() -> None:
+    """MA's resume after an announcement starts the station the zone played before."""
+    player, action = await _announce_and_resume(
+        {"CurrentURI": "dlna-playsingle://server?iid=station", "CurrentURIMetaData": "<DIDL/>"},
+        {"Track": "1", "RelTime": "0:00:10", "TrackDuration": "0:00:00"},
+    )
+    assert [c.args[1] for c in action.await_args_list] == ["SetAVTransportURI", "Play"]
+    assert action.await_args_list[0].kwargs == {
+        "CurrentURI": "dlna-playsingle://server?iid=station",
+        "CurrentURIMetaData": "<DIDL/>",
+    }
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+async def test_an_album_is_restored_at_its_track_and_position() -> None:
+    """An album comes back at the track and position it was stopped at."""
+    _, action = await _announce_and_resume(
+        {"CurrentURI": "dlna-playcontainer://server?cid=album&fii=0", "CurrentURIMetaData": ""},
+        {"Track": "3", "RelTime": "0:00:48", "TrackDuration": "0:04:00"},
+    )
+    assert [c.args[1] for c in action.await_args_list] == ["SetAVTransportURI", "Play", "Seek"]
+    assert action.await_args_list[0].kwargs["CurrentURI"].endswith("fii=2")
+    assert action.await_args_list[2].kwargs == {"Unit": "ABS_TIME", "Target": "0:00:48"}
