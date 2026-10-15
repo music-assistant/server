@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType, ProviderType, SortField
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    InvalidDataError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
@@ -353,8 +357,9 @@ async def test_a_podcast_a_provider_delivers_in_part_is_not_kept(mass: MusicAssi
 
 
 async def test_podcast_episodes_of_a_provider_not_loaded(mass: MusicAssistant) -> None:
-    """Without the provider there is nothing to list, and nothing is kept as the listing."""
-    assert await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE) == []
+    """Without the provider the request is refused, and nothing is kept as the listing."""
+    with pytest.raises(ProviderUnavailableError):
+        await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)
     provider = _StubPodcastProvider(_episodes(1))
     with _with_provider(mass, provider):
         assert _ids(await mass.music.podcasts.episodes(PODCAST_ID, INSTANCE)) == ["ep1"]

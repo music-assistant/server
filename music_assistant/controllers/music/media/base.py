@@ -103,6 +103,7 @@ from music_assistant.helpers.external_ids import (
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
     exact_provider,
+    has_visible_source,
     hidden_music_sources,
     visible_music_sources,
 )
@@ -279,7 +280,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             allow_impersonation=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
+            f"music/{api_base}/get",
+            self.get,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             f"music/{api_base}/get_by_external_id",
@@ -297,6 +301,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"music/{api_base}/get_{self.media_type}",
             self.get,
             required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
             alias=True,
         )
         self._register_update_command()
@@ -758,10 +763,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param allow_update_metadata: Schedule a metadata refresh on access.
             Set to False when fetching items in bulk (e.g. provider sync).
         """
-        # always prefer the full library item if we have it
-        if library_item := await self.get_library_item_by_prov_id(
-            item_id,
-            provider_instance_id_or_domain,
+        # always prefer the full library item if we have it (on a source the user may see)
+        if library_item := await self.get_visible_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
         ):
             # schedule a refresh of the metadata on access of the item
             # e.g. the item is being played or opened in the UI
@@ -769,6 +773,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 assert library_item.uri is not None
                 self.mass.metadata.schedule_update_metadata(library_item)
             return library_item
+        if provider_instance_id_or_domain == "library":
+            # a library item is either served above, or on no source the user may see
+            raise MediaNotFoundError(f"{self.media_type.value} {item_id} not found in library")
         # grab full details from the provider
         return await self.get_provider_item(
             item_id,
@@ -788,7 +795,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return await self.library_items(
                 search=search_query, limit=limit, summary=False, collapse_collections=False
             )
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+        if not (prov := self.mass.music.get_visible_provider(provider_instance_id_or_domain)):
             return []
         if prov.type != ProviderType.MUSIC:
             return []
@@ -824,7 +831,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Get a single collection."""
         name = get_collection_name_from_item_id(item_id)
         query_params: dict[str, Any] = {"collection_name": name}
-        sql_query, base_query_params = self._build_final_query([], [], summary=False)
+        query_parts: list[str] = []
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
+            )
+        query_parts.extend(self.listing_filter(query_params))
+        sql_query, base_query_params = self._build_final_query(query_parts, [], summary=False)
         for key, value in base_query_params.items():
             query_params.setdefault(key, value)
         sql_query = await self._adapt_query_for_collections(
@@ -884,6 +897,38 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_item_id=item_id,
         ):
             return item
+        return None
+
+    @final
+    async def get_visible_library_item_by_prov_id(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> ItemCls | None:
+        """
+        Return the library item for the provider item, if present on one of the user's sources.
+
+        A streaming provider stamps its domain on the items it serves, so the plain lookup
+        also finds a library copy that only another account of the service holds.
+
+        :param item_id: The item id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        """
+        library_item = await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
+        )
+        if library_item is None or self._has_visible_source(library_item):
+            return library_item
+        if provider_instance_id_or_domain == "library":
+            return None
+        # a provider item id is not unique across rows either: the first row is hidden, but
+        # another row with the same id may lie on the user's sources
+        for candidate in await self.get_library_items_by_prov_id(
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            provider_item_id=item_id,
+        ):
+            if self._has_visible_source(candidate):
+                return candidate
         return None
 
     @final
@@ -1060,10 +1105,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         external_id_type: ExternalID | None = None,
     ) -> ItemCls | None:
         """Get item by external ID, querying library then active providers."""
-        if library_item := await self.get_library_item_by_external_id(
-            external_id, external_id_type
+        # an external id is not unique, so the first library item on the user's sources wins
+        for library_item in await self.get_library_items_by_external_id(
+            external_id, external_id_type, limit=None
         ):
-            return library_item
+            if self._has_visible_source(library_item):
+                return library_item
 
         if external_id_type is None:
             return None
@@ -1097,10 +1144,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 if result:
                     if result.provider == "library":
                         return result
-                    return (
-                        await self.get_library_item_by_prov_id(result.item_id, result.provider)
-                        or result
+                    library_match = await self.get_visible_library_item_by_prov_id(
+                        result.item_id, result.provider
                     )
+                    return library_match or result
             except NotImplementedError, MediaNotFoundError:
                 continue
             except ProviderUnavailableError as err:
@@ -1252,15 +1299,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain,
-            return_unavailable=strict_provider_instance,
+        provider = self.mass.music.resolve_visible_provider(
+            provider_instance_id_or_domain, strict=strict_provider_instance
         )
-        if provider is None or (
-            strict_provider_instance
-            and (provider.instance_id != provider_instance_id_or_domain or not provider.available)
-        ):
-            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         catalog_prov = cast("MediaCatalogMixin", provider)
         with suppress(MediaNotFoundError):
             async with self.mass.cache.handle_refresh(force_refresh):
@@ -1289,7 +1330,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
         # at least we have the possibility to sort out the new id through matching logic.
-        fallback = fallback or await self.get_library_item_by_prov_id(
+        # a stored item counts only when it lies on a source the user may see
+        fallback = fallback or await self.get_visible_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if (
@@ -2652,9 +2694,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Return a listing of one of this type's items, assembled once and served from the cache.
 
-        The listing is assembled from, and kept under, the provider instance the selector
-        resolves to; when no instance answers for it, it is assembled for the selector as
-        given and not kept.
+        The listing is assembled from, and kept under, the visible provider instance the
+        selector resolves to.
 
         :param listing: The listing being served.
         :param item_id: The item id on the provider, or its library id.
@@ -2662,20 +2703,31 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param assemble: Assembles the whole listing from the given provider instance (or
             "library"): a Listing, or just its items when the assembly is always complete.
         :param item_type: The type of the items, to rebuild them from the cache.
-        :param narrowed_to: The provider instances the calling user's music sources narrow
-            the assembly to, when they do.
+        :param narrowed_to: The provider instances the assembly is narrowed to; the calling
+            user's music sources when omitted.
+        :raises InsufficientPermissions: The source is not one of the user's music sources.
+        :raises ProviderUnavailableError: No provider the user may see serves it.
         """
 
         async def _assemble(provider_id: str) -> Listing[T]:
+            if provider_id != "library":
+                # the pinned account dropping before the fill is raised, not answered for by
+                # another account of the service (see `mass.get_provider`)
+                self.mass.music.resolve_visible_provider(provider_id, strict=True)
             assembled = await assemble(provider_id)
             return assembled if isinstance(assembled, Listing) else Listing(list(assembled))
 
+        if narrowed_to is None:
+            # the assembly follows the calling user's music sources, so the listing is kept
+            # per set of them
+            narrowed_to = self._ensure_provider_filter(None)
         if provider_instance_id_or_domain == "library":
             instance_id = "library"
-        elif provider := self.mass.get_provider(provider_instance_id_or_domain):
-            instance_id = provider.instance_id
         else:
-            return (await _assemble(provider_instance_id_or_domain)).items
+            # resolved once, so the listing is assembled by and kept under one visible account
+            instance_id = self.mass.music.resolve_visible_provider(
+                provider_instance_id_or_domain
+            ).instance_id
         return await cached_listing(
             self.mass,
             listing,
@@ -2727,8 +2779,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider_instance_id_or_domain,
             assemble,
             item_type=self.item_cls,
-            # the search only covers the music sources the calling user may see
-            narrowed_to=self._ensure_provider_filter(None),
         )
         return apply_listing(
             versions,
@@ -2836,6 +2886,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Return the music sources hidden from the current user."""
         user = get_current_user()
         return hidden_music_sources(self.mass, user) if user else set()
+
+    def _has_visible_source(self, item: MediaItemType) -> bool:
+        """Return whether the current user may see one of the item's sources."""
+        return has_visible_source(self.mass, item.provider_mappings, get_current_user())
 
     @final
     async def _get_stored_metadata(self, db_id: int) -> MediaItemMetadata:
