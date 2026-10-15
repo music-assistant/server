@@ -22,6 +22,58 @@ def is_audio_format(fmt: str | None) -> bool:
     return bool(fmt) and fmt.lower() in AUDIO_FORMATS  # type: ignore[union-attr]
 
 
+def card_may_contain_audio(card: dict[str, Any]) -> bool:
+    """Return whether a BookOrbit search card lists at least one audio file."""
+    files = card.get("files") or []
+    return any(isinstance(file, dict) and is_audio_format(file.get("format")) for file in files)
+
+
+def book_with_manifest_playback_order(book: dict[str, Any], manifest: Any) -> dict[str, Any]:
+    """
+    Return a book copy whose files carry ``sortOrder`` from the manifest sequence.
+
+    BookDetail omits ``sortOrder``; playback order lives on the audiobook manifest.
+    """
+    if not isinstance(manifest, dict):
+        return book
+    by_id = {
+        int(file["id"]): dict(file)
+        for file in (book.get("files") or [])
+        if isinstance(file, dict) and file.get("id") is not None
+    }
+    if not by_id:
+        return book
+    assets = sorted(
+        (asset for asset in (manifest.get("assets") or []) if asset.get("assetId")),
+        key=lambda asset: int(asset.get("sequence") or 0),
+    )
+    ordered: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for sequence, asset in enumerate(assets):
+        file_id = asset.get("fileId")
+        if file_id is None:
+            continue
+        fid = int(file_id)
+        if fid not in by_id:
+            continue
+        file = by_id[fid]
+        file["sortOrder"] = sequence
+        ordered.append(file)
+        seen.add(fid)
+    if not ordered:
+        return book
+    for fid, file in by_id.items():
+        if fid not in seen:
+            ordered.append(file)
+    # Preserve non-dict / id-less entries after ordered audio parts.
+    extras = [
+        file
+        for file in (book.get("files") or [])
+        if not (isinstance(file, dict) and file.get("id") is not None)
+    ]
+    return {**book, "files": [*ordered, *extras]}
+
+
 def library_may_contain_audio(library: dict[str, Any]) -> bool:
     """Return whether a BookOrbit library should be queried for audiobooks."""
     # Podcast libraries reject /libraries/{id}/books with HTTP 400.

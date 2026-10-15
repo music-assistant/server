@@ -54,6 +54,7 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
 )
+from music_assistant.helpers.library_sync import REPLACE_EMPTY_METADATA
 
 from .media_capabilities import AudioStreamMixin, MediaCatalogMixin, RecommendationsMixin
 from .provider import Provider
@@ -1983,7 +1984,15 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
     ) -> _SyncItemT:
         """Update a library item during sync, honoring overwrite and empty-image clearing."""
         overwrite = self._library_sync_overwrite(library_item, prov_item)
-        updated = await controller.update_item_in_library(item_id, prov_item, overwrite=overwrite)
+        # Sync updates are authoritative: empty metadata must clear stored fields,
+        # unlike embedded album/artist stubs on track payloads.
+        token = REPLACE_EMPTY_METADATA.set(overwrite)
+        try:
+            updated = await controller.update_item_in_library(
+                item_id, prov_item, overwrite=overwrite
+            )
+        finally:
+            REPLACE_EMPTY_METADATA.reset(token)
         images = getattr(getattr(prov_item, "metadata", None), "images", None)
         # overwrite with an all-empty metadata stub does not replace images; clear ours
         if overwrite and images is not None and len(images) == 0:

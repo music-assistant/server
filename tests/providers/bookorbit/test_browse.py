@@ -19,6 +19,7 @@ from music_assistant.providers.bookorbit.helpers import (
     parse_series_index,
     series_index_sort_key,
 )
+from tests.providers.bookorbit.conftest import manifest_from_book
 
 INSTANCE = "bookorbit--test"
 
@@ -55,6 +56,13 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     prov._client.query_audiobooks = AsyncMock(side_effect=lambda library_id: books[library_id])
     details = {book_audiobook["id"]: book_audiobook, book_multifile["id"]: book_multifile}
     prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
+    manifests = {
+        book_audiobook["id"]: manifest_from_book(book_audiobook),
+        book_multifile["id"]: manifest_from_book(book_multifile),
+    }
+    prov._client.get_audiobook_manifest = AsyncMock(
+        side_effect=lambda book_id: manifests.get(book_id, {"assets": []})
+    )
     prov._client.list_authors = AsyncMock(return_value=[])
     return prov
 
@@ -201,13 +209,36 @@ async def test_search_audiobooks_merges_catalog_when_api_page_is_ebooks(
     await provider._ensure_catalog()
     client = cast("Mock", provider._client)
     # Default BookOrbit search page is 10 mixed-format hits; none are the audiobook.
-    client.search_books = AsyncMock(return_value=[{"id": i} for i in range(1000, 1010)])
-    ebook = ClientResponseError(Mock(), (), status=404)
-    client.get_book = AsyncMock(side_effect=ebook)
+    client.search_books = AsyncMock(
+        return_value=[
+            {"id": i, "files": [{"id": i, "format": "epub", "role": "primary"}]}
+            for i in range(1000, 1010)
+        ]
+    )
+    client.get_book = AsyncMock(side_effect=AssertionError("ebook search must not detail-fetch"))
     client.search_authors = AsyncMock(return_value=[])
     client.search_narrators = AsyncMock(return_value=[])
     result = await provider.search("dune", [MediaType.AUDIOBOOK], limit=5)
     assert str(book_audiobook["id"]) in {b.item_id for b in result.audiobooks}
+    client.get_book.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_artists_merges_catalog_when_api_page_is_ebook_authors(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Ebook-only metadata search pages must not hide catalog audiobook authors."""
+    await provider._ensure_catalog()
+    client = cast("Mock", provider._client)
+    author = book_audiobook["authors"][0]
+    client.search_books = AsyncMock(return_value=[])
+    # Metadata search returns other names only (ebook authors filling the page).
+    client.search_authors = AsyncMock(
+        return_value=[{"name": f"Ebook Author {i}"} for i in range(15)]
+    )
+    client.search_narrators = AsyncMock(return_value=[])
+    result = await provider.search(author["name"][:4], [MediaType.ARTIST], limit=20)
+    assert f"author:{author['id']}" in {a.item_id for a in result.artists}
 
 
 @pytest.mark.asyncio

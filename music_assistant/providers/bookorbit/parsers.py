@@ -127,7 +127,11 @@ def _parse_chapters(
 
 
 def parse_audiobook(
-    book: dict[str, Any], *, provider_instance_id: str, base_url: str
+    book: dict[str, Any],
+    *,
+    provider_instance_id: str,
+    base_url: str,
+    playback_files: list[dict[str, Any]] | None = None,
 ) -> MassAudiobook:
     """
     Translate a BookOrbit book detail payload to a Music Assistant audiobook.
@@ -135,11 +139,12 @@ def parse_audiobook(
     :param book: BookOrbit ``BookDetail`` JSON.
     :param provider_instance_id: Provider instance id for mappings and images.
     :param base_url: Normalized BookOrbit base URL for cover/image paths.
+    :param playback_files: Optional manifest-ordered audio parts for chapters/duration.
     """
     book_id = book["id"]
     item_id = str(book_id)
     audio_metadata = book.get("audioMetadata") or {}
-    audio_files = _audio_files(book)
+    audio_files = playback_files if playback_files is not None else _audio_files(book)
 
     file_durations = [file.get("durationSeconds") for file in audio_files]
     meta_duration = audio_metadata.get("durationSeconds")
@@ -238,7 +243,7 @@ def parse_audiobook(
         ]
     )
 
-    metadata.chapters = _parse_chapters(book, duration)
+    metadata.chapters = _parse_chapters(book, duration, playback_files=playback_files)
 
     if added_at := book.get("addedAt"):
         with suppress(ValueError):

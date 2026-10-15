@@ -32,6 +32,7 @@ from music_assistant.providers.bookorbit.constants import (
 )
 from music_assistant.providers.bookorbit.helpers import library_may_contain_audio
 from music_assistant.providers.bookorbit.parsers import AUTHOR_PREFIX
+from tests.providers.bookorbit.conftest import manifest_from_book
 
 
 @pytest.fixture
@@ -76,6 +77,13 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
         999: {**book_audiobook, "id": 999, "files": [{"id": 1, "format": "epub"}]},
     }
     prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
+    manifests = {
+        book_audiobook["id"]: manifest_from_book(book_audiobook),
+        book_multifile["id"]: manifest_from_book(book_multifile),
+    }
+    prov._client.get_audiobook_manifest = AsyncMock(
+        side_effect=lambda book_id: manifests.get(book_id, {"assets": []})
+    )
     prov._client.list_authors = AsyncMock(
         return_value=[
             {

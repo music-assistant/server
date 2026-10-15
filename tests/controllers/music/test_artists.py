@@ -21,6 +21,8 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.helpers.library_sync import REPLACE_EMPTY_METADATA
+from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import create_album, create_track
 
@@ -132,6 +134,31 @@ async def test_track_overwrite_keeps_other_provider_artist_mapping(mass: MusicAs
         "spotify_1",
         "tidal_1",
     }
+
+
+async def test_sync_overwrite_clears_last_artist_biography(mass: MusicAssistant) -> None:
+    """Provider sync must clear a biography when overwrite delivers empty metadata."""
+    db_artist = await mass.music.artists.add_item_to_library(_detailed_artist())
+    update = _artist_stub()
+    update.metadata.images = UniqueList([])
+
+    # Sole-provider sync overwrites; default MusicProvider keeps merge semantics.
+    provider = MagicMock()
+    provider.instance_id = "spotify_1"
+    provider._library_sync_overwrite = MagicMock(return_value=True)
+    updated = await MusicProvider._update_synced_library_item(
+        provider,
+        mass.music.artists,
+        db_artist.item_id,
+        update,
+        db_artist,
+    )
+    # Ensure the context var does not leak after the sync helper returns.
+    assert REPLACE_EMPTY_METADATA.get() is False
+
+    refreshed = await mass.music.artists.get_library_item(updated.item_id)
+    assert refreshed.metadata.description is None
+    assert not refreshed.metadata.images
 
 
 async def test_overwrite_update_replaces_artist_details(mass: MusicAssistant) -> None:

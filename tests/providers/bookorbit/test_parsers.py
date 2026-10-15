@@ -4,6 +4,7 @@ from typing import Any
 
 from music_assistant_models.enums import ArtistType, ImageType, MediaType
 
+from music_assistant.providers.bookorbit.helpers import book_with_manifest_playback_order
 from music_assistant.providers.bookorbit.parsers import (
     _parse_chapters,
     parse_audiobook,
@@ -174,6 +175,41 @@ def test_parse_chapters_playback_files_independent_of_book_files(
     assert [(c.position, c.name, c.start, c.end) for c in chapters] == [
         (1, "02.mp3", 0, 200.5),
         (2, "01.mp3", 200.5, 301.0),
+    ]
+
+
+def test_parse_audiobook_uses_manifest_order_without_sort_order(
+    book_multifile: dict[str, Any],
+) -> None:
+    """BookDetail omits sortOrder; manifest sequence must drive synthetic chapters."""
+    # Path/id order is the reverse of playback sequence.
+    book_multifile["files"] = [
+        {
+            "id": 772,
+            "filename": "02.mp3",
+            "format": "mp3",
+            "durationSeconds": 200.5,
+        },
+        {
+            "id": 771,
+            "filename": "01.mp3",
+            "format": "mp3",
+            "durationSeconds": 100.5,
+        },
+        {"id": 773, "filename": "book.epub", "format": "epub", "durationSeconds": None},
+    ]
+    manifest = {
+        "assets": [
+            {"assetId": "a1", "fileId": 771, "sequence": 0, "durationMs": 100500},
+            {"assetId": "a2", "fileId": 772, "sequence": 1, "durationMs": 200500},
+        ]
+    }
+    ordered = book_with_manifest_playback_order(book_multifile, manifest)
+    ab = parse_audiobook(ordered, provider_instance_id=INSTANCE, base_url=BASE_URL)
+    chapters = ab.metadata.chapters or []
+    assert [(c.position, c.name, c.start, c.end) for c in chapters] == [
+        (1, "01.mp3", 0, 100.5),
+        (2, "02.mp3", 100.5, 301),
     ]
 
 

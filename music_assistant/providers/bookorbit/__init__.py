@@ -54,6 +54,8 @@ from .constants import (
     BrowsePaths,
 )
 from .helpers import (
+    book_with_manifest_playback_order,
+    card_may_contain_audio,
     library_may_contain_audio,
     normalize_base_url,
     parse_browse_path,
@@ -294,7 +296,8 @@ class BookOrbitProvider(MusicProvider):
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Return a single audiobook by BookOrbit book id."""
         try:
-            book = await self._client.get_book(int(prov_audiobook_id))
+            book_id = int(prov_audiobook_id)
+            book = await self._client.get_book(book_id)
         except ValueError as err:
             raise MediaNotFoundError(f"Invalid BookOrbit book id {prov_audiobook_id}") from err
         except ClientResponseError as err:
@@ -303,6 +306,7 @@ class BookOrbitProvider(MusicProvider):
             raise
         if not _audio_files(book):
             raise MediaNotFoundError(f"BookOrbit book {prov_audiobook_id} has no audio files")
+        book = await self._book_with_playback_order(book)
         return parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -397,6 +401,7 @@ class BookOrbitProvider(MusicProvider):
                 return parse_resume_position_from_playback_state(manifest, state)
             # Fall back to legacy /audio-progress when playback-state is empty.
             book = await self._get_book(item_id, fresh=True)
+            book = book_with_manifest_playback_order(book, manifest)
             progress = await self._client.get_audio_progress(book_id)
         except (ClientError, TimeoutError, MediaNotFoundError, ValueError) as err:
             raise NotImplementedError from err
@@ -593,6 +598,13 @@ class BookOrbitProvider(MusicProvider):
     ) -> None:
         """Write progress using the legacy BookOrbit audio-progress endpoint."""
         book = await self._get_book(str(book_id), fresh=True)
+        try:
+            manifest = await self._client.get_audiobook_manifest(book_id)
+            book = book_with_manifest_playback_order(book, manifest)
+        except ClientResponseError as err:
+            self.logger.debug(
+                "BookOrbit manifest unavailable for legacy progress of %s: %s", book_id, err
+            )
         files = _audio_files(book)
         if len(files) > 1 and any(f.get("durationSeconds") is None for f in files):
             self.logger.debug(
@@ -840,6 +852,7 @@ class BookOrbitProvider(MusicProvider):
             return cached
         async with semaphore:
             book = await self._client.get_book(int(card["id"]))
+            book = await self._book_with_playback_order(book)
         await self.mass.cache.set(
             key=book_id,
             provider=self.instance_id,
@@ -849,6 +862,21 @@ class BookOrbitProvider(MusicProvider):
             checksum=str(book.get("updatedAt") or checksum or ""),
         )
         return book
+
+    async def _book_with_playback_order(self, book: dict[str, Any]) -> dict[str, Any]:
+        """Attach manifest ``sortOrder`` to multipart books when the manifest is available."""
+        if len(_audio_files(book)) <= 1:
+            return book
+        try:
+            manifest = await self._client.get_audiobook_manifest(int(book["id"]))
+        except (ClientResponseError, ValueError, TypeError) as err:
+            self.logger.debug(
+                "BookOrbit manifest unavailable for book %s playback order: %s",
+                book.get("id"),
+                err,
+            )
+            return book
+        return book_with_manifest_playback_order(book, manifest)
 
     def _enrich_author(self, author: dict[str, Any]) -> dict[str, Any]:
         """Overlay list-level author fields onto a (possibly cached) book author."""
@@ -1026,21 +1054,23 @@ class BookOrbitProvider(MusicProvider):
             self.logger.debug("BookOrbit book search failed: %s", err)
             ids = catalog_ids
         else:
-            api_ids = [str(card["id"]) for card in cards if isinstance(card, dict) and "id" in card]
-            # Keep API order, then append catalog hits that the default page omitted.
+            # Prefer cards that already list audio files; skip ebook-only detail fetches.
+            api_ids = [
+                str(card["id"])
+                for card in cards
+                if isinstance(card, dict)
+                and "id" in card
+                and (str(card["id"]) in self._catalog or card_may_contain_audio(card))
+            ]
             ids = list(dict.fromkeys([*api_ids, *catalog_ids]))
         audiobooks: list[Audiobook] = []
         for book_id in ids:
             if len(audiobooks) >= limit:
                 break
+            # Resolve from the synced catalog only — search cards are not BookDetail.
             book = self._catalog.get(book_id)
             if book is None:
-                try:
-                    book = await self._client.get_book(int(book_id))
-                except ClientResponseError, ValueError:
-                    continue
-                if not _audio_files(book):
-                    continue
+                continue
             audiobooks.append(
                 parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
             )
@@ -1049,13 +1079,14 @@ class BookOrbitProvider(MusicProvider):
     async def _search_artists(self, query: str, limit: int) -> list[Artist]:
         """Search authors and narrators known from the current catalog."""
         known = self._catalog_artists()
+        needle = query.casefold()
+        catalog_matches = [a for a in known.values() if needle in a.name.casefold()]
         try:
             authors = await self._client.search_authors(query)
             narrators = await self._client.search_narrators(query)
         except ClientResponseError as err:
             self.logger.debug("BookOrbit author/narrator search failed: %s", err)
-            needle = query.casefold()
-            return [a for a in known.values() if needle in a.name.casefold()][:limit]
+            return catalog_matches[:limit]
         found: list[Artist] = []
         for prefix, people in ((AUTHOR_PREFIX, authors), (NARRATOR_PREFIX, narrators)):
             for person in people:
@@ -1064,12 +1095,12 @@ class BookOrbitProvider(MusicProvider):
                     artist = known.get(f"{prefix}{person['id']}")
                 elif name := person.get("name"):
                     # /metadata/authors|narrators search returns name-only rows.
-                    needle = str(name).casefold()
+                    name_needle = str(name).casefold()
                     artist = next(
                         (
                             a
                             for item_id, a in known.items()
-                            if item_id.startswith(prefix) and a.name.casefold() == needle
+                            if item_id.startswith(prefix) and a.name.casefold() == name_needle
                         ),
                         None,
                     )
@@ -1077,4 +1108,7 @@ class BookOrbitProvider(MusicProvider):
                     continue
                 if artist is not None and artist not in found:
                     found.append(artist)
+        for artist in catalog_matches:
+            if artist not in found:
+                found.append(artist)
         return found[:limit]
