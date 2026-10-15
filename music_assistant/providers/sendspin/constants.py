@@ -29,8 +29,7 @@ CONNECT_METHOD_PAIR = "pair"
 CONF_SOURCE_INPUT_ACTION = "source_input_action"
 SOURCE_INPUT_PAIR = "pair"
 SOURCE_INPUT_DISMISS = "dismiss"
-# Persisted (raw player config) marker that the user declined the audio input. The older
-# "source_approval_dismissed" key is not read, since it was also set without asking.
+# Persisted (raw player config) marker that the user declined the audio input.
 CONF_SOURCE_INPUT_DECLINED = "source_input_declined"
 
 CONF_PAIRING_PIN = "pairing_pin"
