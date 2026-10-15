@@ -126,9 +126,9 @@ def test_active_source_role_clears_the_pending_state() -> None:
     assert player._source_input_pending is False
 
 
-def test_source_only_client_gets_no_consent_shortcut() -> None:
-    """A capture-only client pairs instead: unpaired consent would grant it nothing."""
+def test_source_only_client_can_be_approved_without_pairing() -> None:
+    """A capture-only client offering unpaired access gets the consent step, like any other."""
     api = _make_api(negotiated_role_ids=("source@v1",), unpaired_access=True)
     player = _make_player(api, cls=SendspinSourcePlayer)
     assert player.needs_setup is True
-    assert player._offers_unpaired_consent is False
+    assert player._offers_unpaired_consent is True

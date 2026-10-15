@@ -627,15 +627,15 @@ class SendspinBasePlayer(Player):
         self, session: SetupSession, provider: SendspinProvider, *, offer_pairing: bool
     ) -> bool:
         """Show the one-time consent step; return True when the user chose to pair instead."""
-        has_input = "source" in self._negotiated_families()
-        options = (
-            [
-                ConfigValueOption(value=CONNECT_METHOD_UNPAIRED_WITH_INPUT),
-                ConfigValueOption(value=CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT),
-            ]
-            if has_input
-            else [ConfigValueOption(value=CONNECT_METHOD_UNPAIRED)]
-        )
+        families = self._negotiated_families()
+        has_input = "source" in families
+        if not has_input:
+            options = [ConfigValueOption(value=CONNECT_METHOD_UNPAIRED)]
+        else:
+            options = [ConfigValueOption(value=CONNECT_METHOD_UNPAIRED_WITH_INPUT)]
+            # Without its input, a capture-only device would be approved for nothing.
+            if families - {"source"}:
+                options.append(ConfigValueOption(value=CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT))
         if offer_pairing:
             options.append(ConfigValueOption(value=CONNECT_METHOD_PAIR))
         entries = []
@@ -652,7 +652,7 @@ class SendspinBasePlayer(Player):
         # A device with an audio input needs its own wording; the rest of the page is shared.
         step_id = "approve_device_source" if has_input else "approve_device"
         values = await session.form(entries, step_id=step_id, last_step=True)
-        method = str(values.get(CONF_CONNECT_METHOD, CONNECT_METHOD_UNPAIRED))
+        method = str(values.get(CONF_CONNECT_METHOD, options[0].value))
         if method == CONNECT_METHOD_PAIR:
             return True
         allow_input = method == CONNECT_METHOD_UNPAIRED_WITH_INPUT
@@ -2679,8 +2679,3 @@ class SendspinSourcePlayer(SendspinBasePlayer):
 
     _attr_type = PlayerType.SOURCE
     _attr_expose_to_ha_by_default = False
-
-    @property
-    def _offers_unpaired_consent(self) -> bool:
-        """A capture-only device gains nothing from unpaired access, so it pairs instead."""
-        return False

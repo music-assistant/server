@@ -53,7 +53,7 @@ from music_assistant.providers.sendspin.constants import (
     SOURCE_INPUT_PAIR,
 )
 from music_assistant.providers.sendspin.helpers import SecurityActionError
-from music_assistant.providers.sendspin.player import SendspinBasePlayer
+from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinSourcePlayer
 from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
@@ -282,8 +282,10 @@ class _FakeProvider:
         self.api.active_roles = ("player",)
 
 
-def _make_player(api: _FakeApi, provider: _FakeProvider) -> SendspinBasePlayer:
-    player = SendspinBasePlayer.__new__(SendspinBasePlayer)
+def _make_player(
+    api: _FakeApi, provider: _FakeProvider, *, cls: type[SendspinBasePlayer] = SendspinBasePlayer
+) -> SendspinBasePlayer:
+    player = cls.__new__(cls)
     player._player_id = "client-1"
     player._provider = cast("SendspinProvider", provider)
     player.api = cast("SendspinClient", api)
@@ -645,6 +647,47 @@ async def test_consent_without_the_input_approves_playback_only() -> None:
     mass.config.set_raw_player_config_value.assert_called_once_with(
         "client-1", CONF_SOURCE_INPUT_DECLINED, True
     )
+
+
+async def test_consent_on_a_source_only_device_approves_its_input() -> None:
+    """A capture-only device is never offered a connection without its input."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
+    api.negotiated_role_ids = ["source@v1"]
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider, cls=SendspinSourcePlayer)
+    _attach_mass(player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert [option.value for option in step.entries[0].options] == [
+        CONNECT_METHOD_UNPAIRED_WITH_INPUT,
+        CONNECT_METHOD_PAIR,
+    ]
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.allow_input_calls == [True]
+
+
+async def test_consent_without_a_choice_on_a_source_only_device_approves_its_input() -> None:
+    """With nothing to pick, the single consent click still approves the input."""
+    api = _FakeApi([], unpaired_access=True)
+    api.negotiated_role_ids = ["source@v1"]
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider, cls=SendspinSourcePlayer)
+    _attach_mass(player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert step.entries == []
+    session.handle_submit({})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.allow_input_calls == [True]
 
 
 async def test_consent_opting_into_pairing_pairs_instead() -> None:
