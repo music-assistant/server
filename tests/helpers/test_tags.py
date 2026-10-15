@@ -82,6 +82,20 @@ def test_parse_tags_reports_actionable_ffprobe_error(
     assert args[args.index("-loglevel") + 1] == "error"
 
 
+def test_parse_tags_skips_tls_verify_on_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tag parsing skips certificate verification when asked."""
+    check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError):
+        tags.parse_tags("https://192.168.1.10/a.mp3", verify_ssl=False)
+
+    args = list(check_output.call_args.args[0])
+    tls_index = args.index("-tls_verify")
+    assert args[tls_index + 1] == "0"
+    assert tls_index < args.index("-i")
+
+
 def test_parse_rejects_file_without_audio_channels() -> None:
     """A file for which ffprobe reports zero channels is corrupt and must be skipped."""
     raw = {

@@ -27,7 +27,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
 from music_assistant.helpers.audio import parse_loudnorm
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream, tls_verify_args
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.tts import (
@@ -91,6 +91,7 @@ class _CachedClipMedia:
     duration: int | None
     minted_at: float
     loudness: float | None
+    verify_ssl: bool
 
 
 @dataclass(slots=True)
@@ -100,6 +101,7 @@ class _ClipAudio:
     path: str
     input_format: AudioFormat
     gain_db: float
+    verify_ssl: bool
 
 
 class AIRadioRenderMixin:
@@ -176,6 +178,7 @@ class AIRadioRenderMixin:
             # that url has left or the stream outlives the token behind it
             expiration=self._remaining_media_lifetime(media),
             tail_overlap=tail_overlap,
+            verify_ssl=media.verify_ssl,
         )
         gain_db = self._loudness_gain(queue_item.queue_id, media.loudness)
         if gain_db is not None:
@@ -185,7 +188,9 @@ class AIRadioRenderMixin:
             # core mirrors what ffmpeg reports onto this object, so it gets a copy of the
             # constant rather than a handle on the one every clip shares
             streamdetails.decoded_audio_format = replace(TTS_CLIP_PCM_FORMAT)
-            streamdetails.data = _ClipAudio(media.path, media.audio_format, gain_db)
+            streamdetails.data = _ClipAudio(
+                media.path, media.audio_format, gain_db, media.verify_ssl
+            )
         return streamdetails
 
     async def get_audio_stream(
@@ -207,6 +212,7 @@ class AIRadioRenderMixin:
                 f"volume={round(clip.gain_db, 2)}dB",
                 f"alimiter=limit={TTS_PEAK_CEILING_DB}dB:level=false:latency=true",
             ],
+            verify_ssl=clip.verify_ssl,
         ):
             yield chunk
 
@@ -248,10 +254,17 @@ class AIRadioRenderMixin:
             return cached
         # the caller holds the per-clip render lock, so of the several uncoordinated paths
         # that resolve the same clip only the first one mints; the rest hit the cache above
-        path, stream_type, audio_format, duration, loudness = await self._mint_clip_media(
-            queue_item, text, clip_id
+        (
+            path,
+            stream_type,
+            audio_format,
+            duration,
+            loudness,
+            verify_ssl,
+        ) = await self._mint_clip_media(queue_item, text, clip_id)
+        media = _CachedClipMedia(
+            path, stream_type, audio_format, duration, now, loudness, verify_ssl
         )
-        media = _CachedClipMedia(path, stream_type, audio_format, duration, now, loudness)
         # clips are minted per queue item, so without pruning the cache grows for as long as
         # the server runs. an entry past its window can never be served again anyway
         for expired_id in [
@@ -402,7 +415,7 @@ class AIRadioRenderMixin:
 
     async def _mint_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str
-    ) -> tuple[str, StreamType, AudioFormat, int | None, float | None]:
+    ) -> tuple[str, StreamType, AudioFormat, int | None, float | None, bool]:
         """Convert the script to playable audio via the configured TTS engine."""
         host = self._hosts.get(str(queue_item.extra_attributes.get(ATTR_HOST_ID) or "")) or {}
         engine_uid = str(host.get("tts_engine") or "") or None
@@ -411,11 +424,11 @@ class AIRadioRenderMixin:
         engine: TTSEngine | None = None
         try:
             engine = await self._get_tts_engine(engine_uid)
-            path, stream_type, audio_format = await self._render_tts_media(
+            path, stream_type, audio_format, verify_ssl = await self._render_tts_media(
                 text, engine, language, options
             )
             # the probe is the first fetch, so a failed render surfaces here and not in playback
-            duration = await self._probe_duration(path)
+            duration = await self._probe_duration(path, verify_ssl)
         except Exception as err:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
             # the default stands in for an unavailable host engine, so the pause names the engine
@@ -428,11 +441,13 @@ class AIRadioRenderMixin:
         # measuring costs a fetch and a decode on the just-in-time render path, so it only
         # runs where the reading has somewhere to go
         loudness = (
-            await self._reference_loudness(engine.uid, language, options, path, duration)
+            await self._reference_loudness(
+                engine.uid, language, options, path, duration, verify_ssl
+            )
             if self._wanted_loudness(queue_item.queue_id) is not None
             else None
         )
-        return path, stream_type, audio_format, duration, loudness
+        return path, stream_type, audio_format, duration, loudness, verify_ssl
 
     async def _reference_loudness(
         self,
@@ -441,6 +456,7 @@ class AIRadioRenderMixin:
         options: dict[str, Any],
         path: str,
         duration: int | None,
+        verify_ssl: bool,
     ) -> float | None:
         """Return the loudness in LUFS to level this clip against, or None when unknown."""
         if not hasattr(self, "_engine_loudness"):
@@ -450,19 +466,20 @@ class AIRadioRenderMixin:
         key = (engine_uid or "", language or "", json.dumps(options, sort_keys=True, default=str))
         if (cached := self._engine_loudness.get(key)) is not None:
             return cached
-        if (loudness := await self._measure_loudness(path)) is None:
+        if (loudness := await self._measure_loudness(path, verify_ssl)) is None:
             return None
         if (duration or 0) >= MIN_LOUDNESS_REFERENCE_SECONDS:
             self._engine_loudness[key] = loudness
         return loudness
 
-    async def _measure_loudness(self, path: str) -> float | None:
+    async def _measure_loudness(self, path: str, verify_ssl: bool = True) -> float | None:
         """Return the integrated loudness of the given audio in LUFS, or None when it fails."""
         try:
             returncode, output = await check_output(
                 "ffmpeg",
                 "-hide_banner",
                 "-nostats",
+                *tls_verify_args(path, verify_ssl),
                 "-i",
                 path,
                 # measure behind speechnorm: it is what the gain is applied on top of, and it
@@ -489,8 +506,8 @@ class AIRadioRenderMixin:
         engine: TTSEngine,
         language: str | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[str, StreamType, AudioFormat]:
-        """Ask the TTS engine for audio and return the path, stream type and format to play it."""
+    ) -> tuple[str, StreamType, AudioFormat, bool]:
+        """Ask the TTS engine for audio; return the path, stream type, format and verify_ssl."""
         stream_details = await query_tts_engine_with_language_fallback(
             engine, text, language, logger=self.logger, options=options
         )
@@ -498,12 +515,12 @@ class AIRadioRenderMixin:
         audio_format = stream_details.audio_format
         if audio_format.content_type == ContentType.UNKNOWN:
             audio_format = AudioFormat(content_type=ContentType.MP3)
-        return path, stream_type, audio_format
+        return path, stream_type, audio_format, stream_details.verify_ssl
 
-    async def _probe_duration(self, path: str) -> int | None:
+    async def _probe_duration(self, path: str, verify_ssl: bool = True) -> int | None:
         """Return the clip duration in seconds, or None when it cannot be determined."""
         try:
-            tags = await async_parse_tags(path, require_duration=True)
+            tags = await async_parse_tags(path, require_duration=True, verify_ssl=verify_ssl)
         except (InvalidDataError, OSError) as err:
             if any(marker in str(err) for marker in TTS_SERVER_ERROR_MARKERS):
                 # the engine reports no reason of its own (Home Assistant answers a failed
