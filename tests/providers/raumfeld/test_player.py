@@ -951,3 +951,22 @@ async def test_a_poll_older_than_a_play_command_is_not_applied() -> None:
         synced_to.return_value = None
         await player.poll()
     update_source.assert_not_awaited()
+
+
+async def test_a_play_command_during_the_source_read_drops_the_whole_reading() -> None:
+    """Position and end-watch data read before MA started its own item are not applied."""
+    player, _ = _external_player()
+
+    async def source_read_while_play_media_runs(*_args: object) -> None:
+        player._mark_play_started()
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_read_transport", AsyncMock(return_value={})),
+        patch.object(player, "_read_position", AsyncMock(return_value={"RelTime": "0:05:00"})),
+        patch.object(player, "_update_zone_source", side_effect=source_read_while_play_media_runs),
+        patch.object(player, "_apply_position") as apply_position,
+    ):
+        await player._poll_zone(MagicMock(), ["Bar"])
+    apply_position.assert_not_called()

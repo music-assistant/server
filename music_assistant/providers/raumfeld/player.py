@@ -590,6 +590,10 @@ class RaumfeldPlayer(Player):
 
         if position is not None:
             await self._update_zone_source(position, zone, generation)
+            if generation != self._playback_generation:
+                # a play or stop command ran while the source was being read
+                self.update_state()
+                return
             self._apply_position(position, playing)
             if playing:
                 self._near_end = _near_track_end(position)
