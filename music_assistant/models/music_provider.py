@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemBookmark,
     MediaItemImage,
     MediaItemTranscriptCue,
     MediaItemType,
@@ -721,6 +722,40 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         Returns a boolean with the fully_played status
         an integer with the resume position in ms,
         and an optional timestamp as datetime giving when this resume position was set
+        """
+        raise NotImplementedError
+
+    async def get_audiobook_bookmarks(self, prov_audiobook_id: str) -> list[MediaItemBookmark]:
+        """
+        Get the user's bookmarks of the given audiobook.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS.
+        The position of each bookmark is set by the caller.
+
+        :param prov_audiobook_id: The id of the audiobook on the provider.
+        """
+        raise NotImplementedError
+
+    async def set_audiobook_bookmark(self, prov_audiobook_id: str, start: float, name: str) -> None:
+        """
+        Add a bookmark to the given audiobook, or rename the one at the same start.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT.
+
+        :param prov_audiobook_id: The id of the audiobook on the provider.
+        :param start: Position of the bookmark in seconds.
+        :param name: Name of the bookmark.
+        """
+        raise NotImplementedError
+
+    async def remove_audiobook_bookmark(self, prov_audiobook_id: str, start: float) -> None:
+        """
+        Remove the bookmark at the given start of the given audiobook.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT.
+
+        :param prov_audiobook_id: The id of the audiobook on the provider.
+        :param start: Position of the bookmark in seconds.
         """
         raise NotImplementedError
 

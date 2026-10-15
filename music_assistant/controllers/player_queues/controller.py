@@ -552,7 +552,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command(
         "player_queues/play_media", required_scope=Scope.QUEUES_CONTROL, allow_impersonation=True
     )
-    async def play_media(
+    async def play_media(  # noqa: PLR0913
         self,
         queue_id: str,
         media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
@@ -564,6 +564,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         shuffle: bool | None = None,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
+        start_position: float | None = None,
     ) -> None:
         """
         Play media item(s) on the given queue.
@@ -586,6 +587,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param sort_field: Play an album or playlist in the order its tracks listing shows for
             this sort field, before applying start_item; the listing's default when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
+        :param start_position: Position in seconds to start an audiobook at, e.g. a bookmark,
+            instead of its resume position.
         :raises InvalidDataError: When the sort key is unknown, or an album or playlist does
             not offer the sort field.
         """
@@ -613,6 +616,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             sort_direction,
             start_from_beginning,
             shuffle,
+            start_position,
         )
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)

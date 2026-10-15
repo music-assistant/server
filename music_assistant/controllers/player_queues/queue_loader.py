@@ -773,6 +773,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         sort_direction: SortDirection | None = None,
         start_from_beginning: bool = False,
         shuffle: bool | None = None,
+        start_position: float | None = None,
     ) -> None:
         """Handle play media without acquiring the queue lock."""
         # cancel any pending play_index calls for this queue to prevent conflicts
@@ -1015,6 +1016,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         keep_preceding_items=queue.shuffle_enabled,
                         artist_tracks=artist_tracks.tracks if artist_tracks else None,
                         played_copy=played_copy,
+                        start_position=start_position,
                     )
                     media_items += resolved_items
                     if finite_parent is not None and resolved_items:

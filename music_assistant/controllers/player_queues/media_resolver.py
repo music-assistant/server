@@ -1075,7 +1075,7 @@ class MediaResolver:
                 )
         return None if failed and not listed else albums
 
-    async def _resolve_media_items(  # noqa: PLR0915
+    async def _resolve_media_items(  # noqa: PLR0913, PLR0915
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
         start_item: str | None = None,
@@ -1087,6 +1087,7 @@ class MediaResolver:
         keep_preceding_items: bool = False,
         artist_tracks: list[Track] | None = None,
         played_copy: tuple[str, str] | None = None,
+        start_position: float | None = None,
     ) -> list[ResolvedItem]:
         """
         Resolve/unwrap media items to enqueue, each with the origin it was played from.
@@ -1114,6 +1115,8 @@ class MediaResolver:
         :param played_copy: For an audiobook played on its own, the (provider instance, item id)
             of the copy the play request named, which the library item it resolved to no longer
             names.
+        :param start_position: Position in seconds to start an audiobook at, instead of its
+            resume position.
         """
         # resolve Itemmapping to full media item
         if isinstance(media_item, ItemMapping):
@@ -1162,10 +1165,13 @@ class MediaResolver:
             return self._played_from(media_item, genre_tracks, pin=False)
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
-            # ensure we grab the correct/latest resume point info
-            media_item.resume_position_ms = await self.get_audiobook_resume_point(
-                media_item, start_item, userid=userid, pinned=played_copy
-            )
+            if start_position is not None:
+                media_item.resume_position_ms = int(start_position * 1000)
+            else:
+                # ensure we grab the correct/latest resume point info
+                media_item.resume_position_ms = await self.get_audiobook_resume_point(
+                    media_item, start_item, userid=userid, pinned=played_copy
+                )
             return [ResolvedItem(media_item, self._pinned_origin(played_copy))]
         if media_item.media_type == MediaType.COLLECTION:
             collection_item_media_type = get_collection_item_media_type_from_item_id(
