@@ -409,7 +409,8 @@ class RaumfeldPlayer(Player):
     @_changes_playback
     async def seek(self, position: int) -> None:
         """Send SEEK command (only offered while an external source is playing)."""
-        hours, remainder = divmod(max(position, 0), 3600)
+        position = max(position, 0)
+        hours, remainder = divmod(position, 3600)
         target = f"{hours:02d}:{remainder // 60:02d}:{remainder % 60:02d}"
         await self._external_command("Seek", Unit="ABS_TIME", Target=target)
         self._attr_elapsed_time = float(position)
@@ -940,10 +941,12 @@ class RaumfeldPlayer(Player):
             if time.time() < self._handover_until:
                 return True
             queue = self.mass.player_queues.get_active_queue(self.player_id)
+            # a paused queue is handed over too, as MA does when a leader leaves its group:
+            # the rooms that remain keep it, with its position, to resume later
             if (
                 queue is not None
                 and queue.queue_id == self.player_id
-                and queue.state == PlaybackState.PLAYING
+                and queue.state != PlaybackState.IDLE
             ):
                 # The other rooms play on in a zone of their own, from this room's queue.
                 # Hand that queue to one of them the way MA does when a leader leaves its

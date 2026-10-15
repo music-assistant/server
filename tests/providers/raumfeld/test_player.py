@@ -1213,3 +1213,28 @@ async def test_renderer_poll_overlapping_a_command_is_not_applied() -> None:
         await player._poll_room_playback(MagicMock())
     assert player._external_source is None
     assert player._attr_playback_state == PlaybackState.IDLE
+
+
+def test_a_paused_queue_is_handed_over_too() -> None:
+    """A leader taken while its queue is paused hands that queue over, as MA does."""
+    player, mass = _taken_leader(PlaybackState.PAUSED)
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        synced_to.return_value = None
+        assert player._leave_group() is True
+    mass.players.cmd_ungroup.assert_called_once_with("raumfeld_bar")
+
+
+async def test_a_negative_seek_is_reported_as_the_start() -> None:
+    """A seek before the start goes to 0:00, and the player reports that position."""
+    player, _ = _external_player()
+    player._set_external(_SPOTIFY_META, "Seek", 315, via_room=True)
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_transport_action", AsyncMock()) as action,
+    ):
+        await player.seek(-5)
+    action.assert_awaited_once_with(_RENDERER, "Seek", Unit="ABS_TIME", Target="00:00:00")
+    assert player._attr_elapsed_time == 0.0
