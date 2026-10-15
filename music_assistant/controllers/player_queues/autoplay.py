@@ -247,6 +247,8 @@ class Autoplay:
             self.logger.debug("Unable to load artist %s, using Auto instead: %s", seed.name, err)
             return []
         played = _played_albums(tracks)
+        if anchor is not None:
+            played = [anchor if album is last.album else album for album in played]
         if album_tracks := await self._next_album_tracks(queue_data, artist, played, anchor):
             return album_tracks
         for similar in (await self._similar_artists(artist))[:ALBUM_PICK_ATTEMPTS]:
@@ -334,6 +336,7 @@ class Autoplay:
     async def _similar_artists(self, artist: Artist) -> list[Artist]:
         """Return MA's similar artists of the artist, via its library copy when in the library."""
         library_artist = await self.queues.resolve_library_artist(artist)
+        # a provider artist stored only for a saved track is not a library artist
         if (
             library_artist is not None
             and artist.provider != "library"

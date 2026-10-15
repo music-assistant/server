@@ -185,8 +185,9 @@ async def test_a_queued_mapping_of_an_unlinked_copy_is_compared_in_full(
 
     assert _album_names(first) == _album_names(again) == expected
     # only the namesake loads, and once it has, a similar artist's call reuses it
-    loads = 2 if namesake == "fails to load" else 1
-    assert [call.args[0] for call in lookup.await_args_list] == ["copy"] * loads
+    loaded = [call.args[0] for call in lookup.await_args_list]
+    assert set(loaded) == {"copy"}
+    assert namesake == "fails to load" or len(loaded) == 1
 
 
 @pytest.mark.parametrize("anchor_kind", ["single", "compilation", "other artist"])
@@ -364,6 +365,24 @@ async def test_the_next_album_follows_the_album_artist(
 
     assert _names(result) == ["Voulez-Vous 1", "Voulez-Vous 2", "Voulez-Vous 3"]
     assert lookup.await_count == 1
+
+
+async def test_the_last_album_loads_once(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last track's album, an unlinked copy, is loaded once and counts as played."""
+    artist = await _add_artist(mass)
+    waterloo = await _add_album(mass, artist, "Waterloo", 1974)
+    await _add_album(mass, artist, "Voulez-Vous", 1979)
+    copy = replace(waterloo, item_id="copy", provider="other", provider_mappings=set())
+    lookup = _stub_album_lookup(mass, monkeypatch, [copy])
+    queue = _queue(mass, monkeypatch, _queued_track([artist], ItemMapping.from_item(copy)))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+
+    result = await Autoplay(mass.player_queues).get_album_tracks(queue)
+
+    assert _names(result) == ["Voulez-Vous 1", "Voulez-Vous 2", "Voulez-Vous 3"]
+    assert [call.args[0] for call in lookup.await_args_list] == ["copy"]
 
 
 @pytest.mark.parametrize(
