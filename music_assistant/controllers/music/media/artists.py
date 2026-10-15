@@ -260,6 +260,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        favorite: bool | None = None,
     ) -> list[Track]:
         """
         Return the tracks of an artist, searched, sorted and paged.
@@ -278,6 +279,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of tracks to return; 0 returns them all.
         :param offset: Number of tracks to skip.
+        :param favorite: Only list the tracks the current user likes (True) or dislikes (False).
         :raises InvalidDataError: When the sort field is not offered for artist tracks.
         """
         # an unsupported sort is rejected before the tracks are assembled
@@ -298,6 +300,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 # library tracks follow the calling user's music sources
                 narrowed_to=self._ensure_provider_filter(None),
             )
+        if favorite is not None:
+            tracks = [track for track in tracks if track.favorite is favorite]
         return apply_listing(
             tracks,
             ListingType.ARTIST_TRACKS,
@@ -318,6 +322,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        album_types: list[AlbumType] | None = None,
+        favorite: bool | None = None,
     ) -> list[Album]:
         """
         Return the albums of an artist, searched, sorted and paged.
@@ -335,6 +341,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
+        :param album_types: Only list albums whose type is included.
+        :param favorite: Only list the albums the current user likes (True) or dislikes (False).
         :raises InvalidDataError: When the sort field is not offered for artist albums.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -351,6 +359,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                 lambda instance_id: self.get_provider_artist_albums(item_id, instance_id),
                 item_type=Album,
             )
+        if album_types:
+            albums = [album for album in albums if album.album_type in album_types]
+        if favorite is not None:
+            albums = [album for album in albums if album.favorite is favorite]
         return apply_listing(
             albums,
             ListingType.ARTIST_ALBUMS,
@@ -697,6 +709,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit: int | None = 500,
             offset: int = 0,
             *,
+            provider_filter: str | None = None,
             collapse_collections: Literal[False] = False,
         ) -> list[Audiobook]: ...
 
@@ -713,10 +726,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit: int | None = 500,
             offset: int = 0,
             *,
+            provider_filter: str | None = None,
             collapse_collections: Literal[True],
         ) -> list[Audiobook | MediaCollection[Audiobook]]: ...
 
-    async def audiobooks(
+    async def audiobooks(  # noqa: PLR0913
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
@@ -728,6 +742,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int | None = 500,
         offset: int = 0,
         *,
+        provider_filter: str | None = None,
         collapse_collections: bool = False,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
@@ -745,6 +760,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of audiobooks to return; 0 returns them all.
         :param offset: Number of audiobooks to skip.
+        :param provider_filter: Only list audiobooks from this provider instance.
         :param collapse_collections: Collapse available collections. Only applies to
             in-library items; when in_library_only is False, provider items are
             appended as plain audiobooks alongside the collapsed collections.
@@ -780,6 +796,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             return []
         if not library_artist:
+            self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
             if artist_type == ArtistType.AUTHOR:
                 return _listed(
                     await self.get_provider_author_audiobooks(
@@ -798,6 +815,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             library_artist.item_id,
             artist_type=library_artist.artist_type,
             collapse_collections=collapse_collections,
+            provider_filter=provider_filter,
         )
         result: list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]] = db_items
         if in_library_only:
@@ -812,7 +830,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                     unique_ids.add(f"{collection_item.name}.{collection_item.version}")
             else:
                 unique_ids.add(f"{item.name}.{item.version}")
-        unique_providers = self.mass.music.get_unique_providers()
+        unique_providers = (
+            [provider_filter] if provider_filter else self.mass.music.get_unique_providers()
+        )
         audiobook_method = (
             self.get_provider_author_audiobooks
             if artist_type == ArtistType.AUTHOR
@@ -861,6 +881,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist_type: ArtistType,
         *,
         collapse_collections: bool = False,
+        provider_filter: str | None = None,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """Return all in-library audiobooks for an author/ narrator."""
         db_id = int(item_id)  # ensure integer
@@ -877,6 +898,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
             collapse_collections=collapse_collections,
+            provider_filter=self._ensure_provider_filter(provider_filter),
         )
 
     async def get_provider_author_audiobooks(
