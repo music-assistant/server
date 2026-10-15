@@ -224,6 +224,16 @@ def _album_title_match(base: str, other: str) -> str:
     return " OR ".join(matches)
 
 
+# the media types whose genres are linked as soon as they are added to the library by hand
+_LINK_GENRES_ON_ADD_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset(
+    {
+        MediaType.ARTIST,
+        MediaType.ALBUM,
+        MediaType.TRACK,
+        MediaType.AUDIOBOOK,
+        MediaType.PODCAST,
+    }
+)
 # the library folders the default MusicProvider.browse lists, by their path
 _LIBRARY_FOLDERS: Final[dict[str, MediaType]] = {
     "artists": MediaType.ARTIST,
@@ -1617,9 +1627,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # a dislike needs a library row to hang on, but the item is not in the
                 # user's library on any source: no library write to a provider, and the
                 # row stays out of the library listings
-                full_item = await cast(
+                full_item, is_new = await cast(
                     "MediaControllerBase[MediaItemType]", ctrl
-                ).add_item_to_library(full_item)
+                ).add_or_update_library_item(full_item)
+                if is_new:
+                    await self._link_genres_of_new_item(full_item)
         elif (
             favorite
             and (own_mappings := self._write_target_mappings(full_item.provider_mappings))
@@ -1780,15 +1792,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # add (or overwrite) to library
         ctrl = self.get_controller(full_item.media_type)
         # ctrl is chosen by media_type, so it matches full_item's runtime type
-        library_item = await cast("MediaControllerBase[MediaItemType]", ctrl).add_item_to_library(
-            full_item, overwrite_existing
-        )
+        library_item, is_new = await cast(
+            "MediaControllerBase[MediaItemType]", ctrl
+        ).add_or_update_library_item(full_item, overwrite_existing)
         # optionally import all album tracks into the library, mirroring the behavior
         # of the library sync (which only triggers on a (scheduled) full sync run)
         if full_item.media_type == MediaType.ALBUM:
             self._import_album_tracks_if_enabled(cast("Album", library_item))
         # perform full metadata scan
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
+        if is_new:
+            # after the metadata scan, which fills in library_item, so its genres are linked too
+            await self._link_genres_of_new_item(library_item)
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
@@ -3003,6 +3018,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for allowed_player_id in player_filter:
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
+
+    async def _link_genres_of_new_item(self, library_item: MediaItemType) -> None:
+        """Link an item just added to the library by hand to the genres it carries."""
+        if (
+            library_item.media_type in _LINK_GENRES_ON_ADD_MEDIA_TYPES
+            and library_item.metadata.genres
+        ):
+            await self.genres.sync_media_item_genres(
+                library_item.media_type, library_item.item_id, set(library_item.metadata.genres)
+            )
 
     def _write_target_mappings(
         self,

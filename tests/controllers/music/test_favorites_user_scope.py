@@ -361,7 +361,7 @@ async def test_add_item_to_library_writes_only_to_the_own_source(
     controller = _controller(THREE_ACCOUNTS)
     mappings = [_mapping(MINE, "mine-42"), _mapping(THEIRS, "theirs-42")]
     item = Mock(provider="builtin", media_type=MediaType.TRACK, provider_mappings=mappings)
-    ctrl = Mock(add_item_to_library=AsyncMock(return_value=item))
+    ctrl = Mock(add_or_update_library_item=AsyncMock(return_value=(item, False)))
     controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
     controller.library_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
     controller.library_sync_back_enabled = Mock(return_value=True)  # type: ignore[method-assign]
@@ -392,14 +392,17 @@ async def test_a_dislike_on_a_provider_item_pulls_it_into_the_library(
     )
     controller.get_item = AsyncMock(return_value=prov_item)  # type: ignore[method-assign]
     controller.add_item_to_library = AsyncMock()  # type: ignore[method-assign]
-    ctrl = Mock(set_favorite=AsyncMock(), add_item_to_library=AsyncMock(return_value=library_item))
+    ctrl = Mock(
+        set_favorite=AsyncMock(),
+        add_or_update_library_item=AsyncMock(return_value=(library_item, False)),
+    )
     controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
     controller.library_favorites_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
 
     await controller.set_item_favorite(prov_item, False)
 
     # the row is written straight to the library, the source's library is left alone
-    ctrl.add_item_to_library.assert_awaited_once_with(prov_item)
+    ctrl.add_or_update_library_item.assert_awaited_once_with(prov_item)
     controller.add_item_to_library.assert_not_awaited()
     ctrl.set_favorite.assert_awaited_once_with("42", False, [ME])
     seen = controller.providers_seen  # type: ignore[attr-defined]

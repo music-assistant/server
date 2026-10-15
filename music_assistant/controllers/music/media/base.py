@@ -351,6 +351,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         overwrite_existing: bool = False,
     ) -> ItemCls:
         """Add item to library and return the new (or updated) database item."""
+        library_item, _ = await self.add_or_update_library_item(item, overwrite_existing)
+        return library_item
+
+    @final
+    async def add_or_update_library_item(
+        self,
+        item: ItemCls,
+        overwrite_existing: bool = False,
+    ) -> tuple[ItemCls, bool]:
+        """
+        Add item to library, or update the library item it matches.
+
+        :param item: The item to add.
+        :param overwrite_existing: Overwrite the details of a matching library item.
+        :return: The new (or updated) database item, and True if it was newly added.
+        """
         new_item = False
         # batch the many writes of an item add/update into a single commit
         async with self.mass.music.database.deferred_commit():
@@ -393,7 +409,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 library_item.uri,
                 library_item,
             )
-        return library_item
+        return library_item, new_item
 
     @final
     async def update_item_in_library(
