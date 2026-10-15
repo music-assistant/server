@@ -150,7 +150,7 @@ from .constants import (
 from .helpers import LibrariesHelper, LibraryHelper, NarratorHelper, ProgressGuard, SessionHelper
 
 if TYPE_CHECKING:
-    from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
+    from aioaudiobookshelf.schema.events_socket import AuthorRemoved, LibraryItemRemoved
     from aioaudiobookshelf.schema.media_progress import MediaProgress
     from aioaudiobookshelf.schema.user import User
     from music_assistant_models.provider import ProviderManifest
@@ -352,6 +352,12 @@ for more details.
             on_playlist_added=self._socket_abs_playlist_changed,
             on_playlist_updated=self._socket_abs_playlist_changed,
             on_playlist_removed=self._socket_abs_playlist_removed,
+        )
+
+        # a new author is added by the book update linking it
+        self._client_socket.set_author_callbacks(
+            on_author_updated=self._socket_abs_author_updated,
+            on_author_removed=self._socket_abs_author_removed,
         )
 
         # progress guard
@@ -1820,6 +1826,44 @@ for more details.
                     with suppress(KeyError):
                         playlist_set.remove(abs_playlist.id_)
         await self._cache_set_helper_libraries()
+
+    async def _socket_abs_author_updated(self, abs_author: AuthorExpanded) -> None:
+        mass_artist = await self.mass.music.get_library_item_by_prov_id(
+            media_type=MediaType.ARTIST,
+            item_id=abs_author.id_,
+            provider_instance_id_or_domain=self.instance_id,
+        )
+        if mass_artist is None:
+            return
+        parsed_author = parse_author(
+            abs_author=abs_author,
+            instance_id=self.instance_id,
+            domain=self.domain,
+            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
+        )
+        self.logger.debug('Updated author "%s" via socket.', abs_author.name)
+        await self.mass.music.artists.update_item_in_library(
+            mass_artist.item_id, self._socket_ensure_provider_mapping_in_library(parsed_author)
+        )
+
+    async def _socket_abs_author_removed(self, abs_author: AuthorRemoved) -> None:
+        mass_artist = await self.mass.music.get_library_item_by_prov_id(
+            media_type=MediaType.ARTIST,
+            item_id=abs_author.id_,
+            provider_instance_id_or_domain=self.instance_id,
+        )
+        if not isinstance(mass_artist, Artist):
+            return
+        # removing a linked artist also removes its audiobooks, abs doesn't always send
+        # the book updates unlinking it, so the next sync handles those
+        if await self.mass.music.artists.get_library_author_narrator_audiobooks(
+            mass_artist.item_id, mass_artist.artist_type
+        ):
+            return
+        self.logger.debug('Removed author "%s" via socket.', mass_artist.name)
+        await self.mass.music.artists.remove_provider_mapping(
+            mass_artist.item_id, self.instance_id, abs_author.id_
+        )
 
     def _socket_ensure_provider_mapping_in_library(self, updated_item: M) -> M:
         """
