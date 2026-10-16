@@ -3134,14 +3134,75 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 ORDER BY collection_title,
                 -- null case
                 CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-                -- numeric before text
-                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
-                -- order NUMERIC
-                CASE WHEN collection_sequence_is_numeric
+                -- whole-number bucket so padded TEXT (e.g. BookOrbit) interleaves
+                -- with other providers' REAL volumes instead of sorting after all numerics
+                CASE
+                    WHEN collection_sequence_is_numeric
+                        THEN CAST(collection_sequence AS INTEGER)
+                    WHEN collection_sequence GLOB '[0-9]*'
+                        OR collection_sequence GLOB '[0-9]*.[0-9]*'
+                        THEN CAST(
+                            COALESCE(
+                                NULLIF(
+                                    ltrim(
+                                        substr(
+                                            collection_sequence,
+                                            1,
+                                            CASE
+                                                WHEN instr(collection_sequence, '.') > 0
+                                                THEN instr(collection_sequence, '.') - 1
+                                                ELSE length(collection_sequence)
+                                            END
+                                        ),
+                                        '0'
+                                    ),
+                                    ''
+                                ),
+                                '0'
+                            ) AS INTEGER
+                        )
+                END,
+                -- free-text sequences after numbered ones
+                CASE
+                    WHEN collection_sequence IS NOT NULL
+                        AND NOT collection_sequence_is_numeric
+                        AND collection_sequence NOT GLOB '[0-9]*'
+                        AND collection_sequence NOT GLOB '[0-9]*.[0-9]*'
+                    THEN 1
+                    ELSE 0
+                END,
+                -- within a whole: whole-only, then dotted TEXT segments, then REAL fractions
+                CASE
+                    WHEN collection_sequence_is_numeric
+                        AND CAST(collection_sequence AS REAL)
+                            = CAST(CAST(collection_sequence AS INTEGER) AS REAL)
+                        THEN 0
+                    WHEN NOT collection_sequence_is_numeric
+                        AND instr(collection_sequence, '.') = 0
+                        AND collection_sequence GLOB '[0-9]*'
+                        THEN 0
+                    WHEN NOT collection_sequence_is_numeric
+                        AND collection_sequence GLOB '[0-9]*.[0-9]*'
+                        THEN 1
+                    WHEN collection_sequence_is_numeric THEN 2
+                    ELSE 3
+                END,
+                -- dotted TEXT segment order (zero-padded keys sort correctly here)
+                CASE
+                    WHEN NOT collection_sequence_is_numeric
+                        AND collection_sequence GLOB '[0-9]*.[0-9]*'
+                    THEN collection_sequence
+                END COLLATE NOCASE,
+                -- REAL volumes (including fractional decimals from other providers)
+                CASE
+                    WHEN collection_sequence_is_numeric
                     THEN CAST(collection_sequence AS REAL)
                 END,
-                -- order TEXT
-                CASE WHEN NOT collection_sequence_is_numeric
+                -- remaining free-text sequences
+                CASE
+                    WHEN NOT collection_sequence_is_numeric
+                        AND collection_sequence NOT GLOB '[0-9]*'
+                        AND collection_sequence NOT GLOB '[0-9]*.[0-9]*'
                     THEN collection_sequence
                 END COLLATE NOCASE,
                 -- order by media name if no sequence given

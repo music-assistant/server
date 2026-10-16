@@ -328,8 +328,16 @@ class BookOrbitClient:
             json={"username": self.username, "password": self.password},
             ssl=self.verify_ssl,
         ) as resp:
-            if resp.status >= 400:
+            # Only credential failures are permanent; 429/5xx must stay retryable.
+            if resp.status in {401, 403}:
                 raise BookOrbitAuthError(f"BookOrbit login failed: HTTP {resp.status}")
+            if resp.status >= 400:
+                raise ClientResponseError(
+                    resp.request_info,
+                    resp.history,
+                    status=resp.status,
+                    message=f"BookOrbit login failed: HTTP {resp.status}",
+                )
             data = await resp.json()
             token = data.get("accessToken") if isinstance(data, dict) else None
             if not token:

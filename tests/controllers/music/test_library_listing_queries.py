@@ -725,12 +725,14 @@ async def test_audiobook_collections_collapse_and_preserve_order(
 async def test_audiobook_collections_segment_sequence_order(
     mass: MusicAssistant,
 ) -> None:
-    """Numeric BookOrbit sequences keep ``1.10`` after ``1.2`` in library collections."""
+    """Padded BookOrbit sequences keep ``1.10`` after ``1.2`` in library collections."""
     controller = mass.music.audiobooks
     for name, raw_index in (
         ("Book 1.10", "1.10"),
         ("Book 1.2", "1.2"),
         ("Book 1", "1"),
+        ("Book 1.0", "1.0"),
+        ("Book 1.1000000001", "1.1000000001"),
         ("Book 2", "2"),
     ):
         await controller.add_item_to_library(
@@ -759,16 +761,20 @@ async def test_audiobook_collections_segment_sequence_order(
     collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
     assert [item.name for item in collections["Segment Series"].items] == [
         "Book 1",
+        "Book 1.0",
         "Book 1.2",
         "Book 1.10",
+        "Book 1.1000000001",
         "Book 2",
     ]
 
     collection = await controller.get_collection(collections["Segment Series"].item_id)
     assert [item.name for item in collection.items] == [
         "Book 1",
+        "Book 1.0",
         "Book 1.2",
         "Book 1.10",
+        "Book 1.1000000001",
         "Book 2",
     ]
 
@@ -776,9 +782,8 @@ async def test_audiobook_collections_segment_sequence_order(
 async def test_audiobook_collections_mixed_provider_sequence_order(
     mass: MusicAssistant,
 ) -> None:
-    """BookOrbit numeric sequences interleave with other providers' REAL volumes."""
+    """Padded BookOrbit TEXT sequences interleave with other providers' REAL volumes."""
     controller = mass.music.audiobooks
-    # Another provider stores plain floats; BookOrbit embeds segment order as REAL.
     for name, sequence, provider_instance in (
         ("Volume 1", 1.0, "filesystem_local--a"),
         ("Volume 3", 3.0, "filesystem_local--a"),

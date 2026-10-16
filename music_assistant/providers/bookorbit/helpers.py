@@ -163,29 +163,29 @@ def series_index_sort_key(index: str | None) -> tuple[Any, ...]:
     return (0, len(whole_n), whole_n, frac_key, index)
 
 
-# Embed the fractional integer segment in low decimal places so collection SQL's
-# CAST(... AS REAL) path keeps BookOrbit segment order interleaved with other
-# providers' numeric sequences (numeric-before-text would put padded TEXT last).
-_COLLECTION_FRAC_SCALE = 1_000_000_000
+# Pad width for library collection TEXT sort (max BookOrbit segment length).
+# Leading zeros keep the value off SQLite's json-numeric REAL path so ``1.10``
+# is not collapsed with ``1.1``. Collection SQL interleaves these with other
+# providers' REAL volumes by whole number (see media/base.py).
+_COLLECTION_SEQUENCE_PAD = _SERIES_INDEX_MAX_LENGTH
 
 
-def collection_sequence_key(value: Any) -> float | None:
+def collection_sequence_key(value: Any) -> str | None:
     """
-    Return a numeric series index that preserves BookOrbit segment order.
+    Return a TEXT-sortable series index that preserves BookOrbit segment order.
 
-    Library collection SQL sorts JSON numbers as REAL before any TEXT key.
-    Encoding ``1.10`` as ``1 + 10/1e9`` keeps segment order (``1.2`` before
-    ``1.10``) while staying on the numeric path next to other providers' volumes.
+    Zero-padded segments stay on the TEXT path (lossless for the full accepted
+    index range). Library collection ordering groups by whole number so these
+    keys interleave with other providers' numeric sequences.
     """
     index = parse_series_index(value)
     if index is None:
         return None
     whole, sep, fraction = index.partition(".")
-    whole_n = int(_normalized_integer_segment(whole))
-    if not sep:
-        return float(whole_n)
-    frac_n = int(_normalized_integer_segment(fraction))
-    return whole_n + (frac_n / _COLLECTION_FRAC_SCALE)
+    padded = _normalized_integer_segment(whole).zfill(_COLLECTION_SEQUENCE_PAD)
+    if sep:
+        padded += "." + _normalized_integer_segment(fraction).zfill(_COLLECTION_SEQUENCE_PAD)
+    return padded
 
 
 def parse_browse_path(path: str) -> tuple[int | None, list[str]]:

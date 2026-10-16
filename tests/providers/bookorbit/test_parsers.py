@@ -48,8 +48,8 @@ def test_parse_audiobook_metadata(book_audiobook: dict[str, Any]) -> None:
     assert md.release_date.year == 2007
     (collection,) = md.collections
     assert collection.title == "Dune Chronicles"
-    # Numeric encoding so library collection SQL keeps BookOrbit segment order.
-    assert collection.sequence == 1.0
+    # Zero-padded TEXT key so library collection SQL keeps BookOrbit segment order.
+    assert collection.sequence == "00000000000000000001"
 
 
 def test_parse_audiobook_cover_url(book_audiobook: dict[str, Any]) -> None:

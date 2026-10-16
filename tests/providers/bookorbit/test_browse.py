@@ -95,25 +95,28 @@ def test_series_index_uses_integer_segments_not_float() -> None:
     assert ordered == ["1", "1.2", "1.10", "2"]
 
 
-def test_collection_sequence_key_preserves_segment_order_on_numeric_path() -> None:
-    """Encoded collection sequences sort as REAL with BookOrbit segment order."""
+def test_collection_sequence_key_preserves_segment_order_as_padded_text() -> None:
+    """Padded collection sequences stay lossless TEXT with BookOrbit segment order."""
     keys = {
         value: key
-        for value in ("1.10", "1.2", "1", "2", "1.1")
+        for value in ("1.10", "1.2", "1", "2", "1.1", "1.0", "1.1000000001")
         if (key := collection_sequence_key(value)) is not None
     }
     assert sorted(keys.values()) == [
         keys["1"],
+        keys["1.0"],
         keys["1.1"],
         keys["1.2"],
         keys["1.10"],
+        keys["1.1000000001"],
         keys["2"],
     ]
-    # Stay on the numeric SQL path so other providers' REAL volumes interleave.
-    assert isinstance(keys["1.10"], float)
-    assert keys["1"] == 1.0
+    # Leading zeros keep the JSON TEXT path (not REAL-cast).
+    assert isinstance(keys["1.10"], str)
+    assert keys["1.10"] == "00000000000000000001.00000000000000000010"
+    assert keys["1"] != keys["1.0"]
     assert keys["1.1"] != keys["1.10"]
-    assert keys["1.2"] < keys["1.10"] < 1.5
+    assert keys["1.1000000001"] < keys["2"]
 
 
 @pytest.mark.asyncio

@@ -6,9 +6,10 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from aiohttp import ClientSession, DummyCookieJar, web
+from aiohttp import ClientResponseError, ClientSession, DummyCookieJar, web
 
 from music_assistant.providers.bookorbit.client import (
+    BookOrbitAuthError,
     BookOrbitClient,
     BookOrbitIncompleteError,
 )
@@ -49,6 +50,39 @@ async def test_login_stores_access_token_and_refresh_cookie(aiohttp_client: Any)
     await bo.login()
     assert bo.access_token == "access-1"
     assert bo.refresh_token == "refresh-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_login_credential_errors_are_auth_errors(aiohttp_client: Any, status: int) -> None:
+    """HTTP 401/403 login failures are permanent authentication errors."""
+
+    async def login(_: web.Request) -> web.Response:
+        return web.Response(status=status)
+
+    app = web.Application()
+    app.router.add_post("/api/v1/auth/login", login)
+    client = await aiohttp_client(app)
+
+    with pytest.raises(BookOrbitAuthError, match=str(status)):
+        await _make(client).login()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 503])
+async def test_login_temporary_http_errors_are_retryable(aiohttp_client: Any, status: int) -> None:
+    """HTTP 429/5xx login failures stay as ClientResponseError for provider retries."""
+
+    async def login(_: web.Request) -> web.Response:
+        return web.Response(status=status)
+
+    app = web.Application()
+    app.router.add_post("/api/v1/auth/login", login)
+    client = await aiohttp_client(app)
+
+    with pytest.raises(ClientResponseError) as err:
+        await _make(client).login()
+    assert err.value.status == status
 
 
 @pytest.mark.asyncio
