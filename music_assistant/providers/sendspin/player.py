@@ -1795,7 +1795,7 @@ class SendspinPlayer(SendspinBasePlayer):
         repeat, shuffle = self._queue_repeat_shuffle(self.mass.player_queues.get(queue_id))
         self._publish_repeat_shuffle(repeat, shuffle=shuffle)
 
-    async def send_current_media_metadata(self) -> None:
+    async def send_current_media_metadata(self) -> None:  # noqa: PLR0915
         """Send the current media metadata to the sendspin group."""
         if not self.available or self._content_takeover_pending:
             return
