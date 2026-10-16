@@ -66,15 +66,13 @@ def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> 
     books = {
         1: [{"id": book_audiobook["id"], "updatedAt": book_audiobook.get("updatedAt")}],
         2: [],
-        3: [
-            {"id": book_multifile["id"], "updatedAt": book_multifile.get("updatedAt")},
-            {"id": 999},
-        ],
+        3: [{"id": book_multifile["id"], "updatedAt": book_multifile.get("updatedAt")}],
     }
     prov._client.query_audiobooks = AsyncMock(side_effect=lambda library_id: books[library_id])
     details = {
         book_audiobook["id"]: book_audiobook,
         book_multifile["id"]: book_multifile,
+        # Direct lookup target for get_audiobook; not returned by query_audiobooks.
         999: {**book_audiobook, "id": 999, "files": [{"id": 1, "format": "epub"}]},
     }
     prov._client.get_book = AsyncMock(side_effect=lambda book_id: details[book_id])
@@ -147,7 +145,7 @@ async def test_refresh_catalog_skips_podcast_libraries(
 async def test_refresh_catalog_filters_libraries_and_ebooks(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
-    """Ebook-only libraries and books without audio files are skipped."""
+    """All book libraries are queried; podcast libraries are excluded elsewhere."""
     await provider._refresh_catalog()
     assert set(provider._catalog) == {str(book_audiobook["id"]), str(book_multifile["id"])}
     query_mock = cast("Mock", provider._client.query_audiobooks)
@@ -310,28 +308,52 @@ async def test_refresh_catalog_aborts_when_manifest_unmappable(
 
 
 @pytest.mark.asyncio
-async def test_refresh_catalog_reports_skipped_for_detail_without_audio(
+async def test_refresh_catalog_aborts_when_detail_has_no_audio(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
-    """Detail responses with no audio protect existing library items during sync."""
+    """
+    Audio-listed books whose detail has no audio abort the refresh.
+
+    Publishing a catalog that drops that book would omit sole authors/narrators from
+    artist sync; with deletions enabled that recursively removes linked audiobooks.
+    """
+    sole_author_book = {
+        **book_multifile,
+        "authors": [{"id": 9001, "name": "Sole Author"}],
+        "audioMetadata": {
+            **book_multifile.get("audioMetadata", {}),
+            "narrators": [],
+        },
+    }
+    previous = {
+        str(book_audiobook["id"]): book_audiobook,
+        str(book_multifile["id"]): sole_author_book,
+    }
+    provider._catalog = previous
+    provider._catalog_refreshed_at = 0.0
+    sole_author_id = f"{AUTHOR_PREFIX}9001"
+    assert sole_author_id in provider._catalog_artists()
+
     skip = Mock()
     provider.report_skipped_sync_item = skip  # type: ignore[method-assign]
 
     async def _get_book(book_id: int) -> dict[str, Any]:
         if book_id == book_multifile["id"]:
-            return {**book_multifile, "files": [{"id": 1, "format": "epub"}]}
+            return {**sole_author_book, "files": [{"id": 1, "format": "epub"}]}
         if book_id == book_audiobook["id"]:
             return book_audiobook
-        if book_id == 999:
-            return {"id": 999, "files": [{"id": 1, "format": "epub"}]}
         raise KeyError(book_id)
 
     cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
     token = SYNC_RUN_STATE.set(SyncRunState())
     try:
-        await provider._refresh_catalog(force=True)
+        with pytest.raises(ProviderUnavailableError, match="incomplete"):
+            await provider._refresh_catalog(force=True)
     finally:
         SYNC_RUN_STATE.reset(token)
+
+    assert provider._catalog is previous
+    assert sole_author_id in provider._catalog_artists()
     skipped_ids = {call.args[1] for call in skip.call_args_list}
     assert str(book_multifile["id"]) in skipped_ids
     assert all(call.args[0] is MediaType.AUDIOBOOK for call in skip.call_args_list)
@@ -651,13 +673,10 @@ async def test_refresh_catalog_uses_cache_and_concurrency(
     cache.get = AsyncMock(side_effect=_cache_get)
     await provider._refresh_catalog(force=True)
     get_book = cast("Mock", provider._client.get_book)
-    # Cached book skipped; ebook-only id 999 and multifile still fetched.
-    assert get_book.await_count == 2
-    assert {c.args[0] for c in get_book.await_args_list} == {
-        book_multifile["id"],
-        999,
-    }
-    assert cache.set.await_count == 2
+    # Cached book skipped; only the cache-miss multifile is fetched.
+    assert get_book.await_count == 1
+    assert get_book.await_args_list[0].args[0] == book_multifile["id"]
+    assert cache.set.await_count == 1
 
 
 @pytest.mark.asyncio

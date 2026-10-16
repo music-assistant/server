@@ -725,7 +725,7 @@ async def test_audiobook_collections_collapse_and_preserve_order(
 async def test_audiobook_collections_segment_sequence_order(
     mass: MusicAssistant,
 ) -> None:
-    """Zero-padded BookOrbit sequences keep ``1.10`` after ``1.2`` in library collections."""
+    """Numeric BookOrbit sequences keep ``1.10`` after ``1.2`` in library collections."""
     controller = mass.music.audiobooks
     for name, raw_index in (
         ("Book 1.10", "1.10"),
@@ -770,6 +770,59 @@ async def test_audiobook_collections_segment_sequence_order(
         "Book 1.2",
         "Book 1.10",
         "Book 2",
+    ]
+
+
+async def test_audiobook_collections_mixed_provider_sequence_order(
+    mass: MusicAssistant,
+) -> None:
+    """BookOrbit numeric sequences interleave with other providers' REAL volumes."""
+    controller = mass.music.audiobooks
+    # Another provider stores plain floats; BookOrbit embeds segment order as REAL.
+    for name, sequence, provider_instance in (
+        ("Volume 1", 1.0, "filesystem_local--a"),
+        ("Volume 3", 3.0, "filesystem_local--a"),
+        ("Volume 2", collection_sequence_key("2"), "bookorbit--test"),
+        ("Volume 1.2", collection_sequence_key("1.2"), "bookorbit--test"),
+        ("Volume 1.10", collection_sequence_key("1.10"), "bookorbit--test"),
+        ("Volume 1.5", 1.5, "filesystem_local--a"),
+    ):
+        await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping(provider_instance)},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title="Mixed Series", sequence=sequence)]
+                    )
+                ),
+            )
+        )
+
+    items = await controller.get_library_items_by_query(
+        in_library_only=True,
+        collapse_collections=True,
+    )
+    collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
+    assert [item.name for item in collections["Mixed Series"].items] == [
+        "Volume 1",
+        "Volume 1.2",
+        "Volume 1.10",
+        "Volume 1.5",
+        "Volume 2",
+        "Volume 3",
+    ]
+
+    collection = await controller.get_collection(collections["Mixed Series"].item_id)
+    assert [item.name for item in collection.items] == [
+        "Volume 1",
+        "Volume 1.2",
+        "Volume 1.10",
+        "Volume 1.5",
+        "Volume 2",
+        "Volume 3",
     ]
 
 

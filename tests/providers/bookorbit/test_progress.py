@@ -417,6 +417,48 @@ async def test_get_resume_position_legacy_fetches_fresh_book(
 
 
 @pytest.mark.asyncio
+async def test_get_resume_position_legacy_unknown_file_falls_back(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Unknown currentFileId must raise NotImplementedError for MA's saved position."""
+    _client(provider).get_playback_state.return_value = None
+    _client(provider).get_audio_progress.return_value = {
+        "currentFileId": 9999,
+        "positionSeconds": 12.0,
+        "percentage": 50.0,
+    }
+    with patch.object(provider, "_get_book", new_callable=AsyncMock) as get_book:
+        get_book.return_value = book_multifile
+        with pytest.raises(NotImplementedError):
+            await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
+async def test_get_resume_position_legacy_unknown_duration_falls_back(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Unknown preceding duration must raise NotImplementedError for MA's saved position."""
+    files = _audio_files(book_multifile)
+    broken = {
+        **book_multifile,
+        "files": [
+            {**file, "durationSeconds": None} if file.get("id") == files[0]["id"] else file
+            for file in book_multifile["files"]
+        ],
+    }
+    _client(provider).get_playback_state.return_value = None
+    _client(provider).get_audio_progress.return_value = {
+        "currentFileId": files[1]["id"],
+        "positionSeconds": 10.0,
+        "percentage": 40.0,
+    }
+    with patch.object(provider, "_get_book", new_callable=AsyncMock) as get_book:
+        get_book.return_value = broken
+        with pytest.raises(NotImplementedError):
+            await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
 async def test_on_played_puts_playback_state(
     provider: BookOrbitProvider, book_multifile: dict[str, Any]
 ) -> None:

@@ -95,8 +95,8 @@ def test_series_index_uses_integer_segments_not_float() -> None:
     assert ordered == ["1", "1.2", "1.10", "2"]
 
 
-def test_collection_sequence_key_preserves_segment_order_for_text_sort() -> None:
-    """Padded collection sequences sort as TEXT like BookOrbit segments, not floats."""
+def test_collection_sequence_key_preserves_segment_order_on_numeric_path() -> None:
+    """Encoded collection sequences sort as REAL with BookOrbit segment order."""
     keys = {
         value: key
         for value in ("1.10", "1.2", "1", "2", "1.1")
@@ -109,9 +109,11 @@ def test_collection_sequence_key_preserves_segment_order_for_text_sort() -> None
         keys["1.10"],
         keys["2"],
     ]
-    # Bare numeric strings would be REAL-cast; leading zeros keep the TEXT path.
-    assert keys["1.10"] == "00000000000000000001.00000000000000000010"
+    # Stay on the numeric SQL path so other providers' REAL volumes interleave.
+    assert isinstance(keys["1.10"], float)
+    assert keys["1"] == 1.0
     assert keys["1.1"] != keys["1.10"]
+    assert keys["1.2"] < keys["1.10"] < 1.5
 
 
 @pytest.mark.asyncio

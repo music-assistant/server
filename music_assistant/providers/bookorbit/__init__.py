@@ -410,11 +410,13 @@ class BookOrbitProvider(MusicProvider):
             book = await self._get_book(item_id, fresh=True)
             book = book_with_manifest_playback_order(book, manifest)
             progress = await self._client.get_audio_progress(book_id)
+            if not progress:
+                raise NotImplementedError  # fall back to MA's own position
+            # Keep conversion inside this block: ValueError must become NotImplementedError
+            # so MusicController can use its saved position.
+            return parse_resume_position(_audio_files(book), progress)
         except (ClientError, TimeoutError, MediaNotFoundError, TypeError, ValueError) as err:
             raise NotImplementedError from err
-        if not progress:
-            raise NotImplementedError  # fall back to MA's own position
-        return parse_resume_position(_audio_files(book), progress)
 
     async def on_played(
         self,
@@ -823,7 +825,7 @@ class BookOrbitProvider(MusicProvider):
 
         async def _load_book(
             book_id: str, card: dict[str, Any]
-        ) -> tuple[str, dict[str, Any] | None, ClientResponseError | None]:
+        ) -> tuple[str, dict[str, Any] | None, Exception | None]:
             try:
                 book = await self._get_book_detail(book_id, card, semaphore)
             except ClientResponseError as err:
@@ -833,15 +835,14 @@ class BookOrbitProvider(MusicProvider):
                     self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
                 return book_id, None, err
             if book is None or not _audio_files(book):
-                # List endpoint claimed audio; protect an existing library item from
-                # sync deletion when detail transiently has no playable files.
-                if book is not None and SYNC_RUN_STATE.get() is not None:
-                    self.report_skipped_sync_item(
-                        MediaType.AUDIOBOOK,
-                        book_id,
-                        ValueError("BookOrbit book detail has no audio files"),
-                    )
-                return book_id, None, None
+                # List claimed audio but detail has none — abort the refresh rather than
+                # publishing a catalog that drops the book (and its sole authors) while
+                # only skip-protecting the audiobook id.
+                no_audio = ValueError("BookOrbit book detail has no audio files")
+                self.logger.warning("BookOrbit book detail %s has no audio files", book_id)
+                if SYNC_RUN_STATE.get() is not None:
+                    self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, no_audio)
+                return book_id, None, no_audio
             return book_id, book, None
 
         detail_tasks = [
