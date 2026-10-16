@@ -138,6 +138,8 @@ class SendspinSourceProvider(PluginProvider):
         """Initialize the provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._clients: dict[str, _SourceClientState] = {}
+        # Playback session of the last stream released per source, to tell a retry from a selection.
+        self._released_playback_sessions: dict[str, str] = {}
         self._server_unsubscribe: Callable[[], None] | None = None
         self._unloading = False
 
@@ -300,7 +302,7 @@ class SendspinSourceProvider(PluginProvider):
                     raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
                 role = self._get_source_role(client)
                 # The reconnect handler sends the start once the reclaimed client is back.
-                if role is None and not self._request_reclaim(source_id):
+                if role is None and not self._request_reclaim(source_id, queue_session_id):
                     raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
                 state.session = _SourceSession(
                     client_id=source_id,
@@ -322,6 +324,8 @@ class SendspinSourceProvider(PluginProvider):
         # Reject stale callbacks from superseded same-queue requests.
         if session is None or session.stream_session_id != stream_session_id:
             return
+        if session.playback_session_id is not None:
+            self._released_playback_sessions[source_id] = session.playback_session_id
         await self._teardown_session(source_id)
         if (state := self._clients.get(source_id)) is not None:
             state.suppressed_autostart_claim = None
@@ -410,7 +414,12 @@ class SendspinSourceProvider(PluginProvider):
         trusted = await store.trusted_unpaired(client.client_id)
         return trusted is not None and "source" in trusted.approved_roles
 
-    def _request_reclaim(self, client_id: str) -> bool:
+    def _request_reclaim(self, client_id: str, playback_session_id: str | None) -> bool:
+        if (
+            playback_session_id is not None
+            and self._released_playback_sessions.get(client_id) == playback_session_id
+        ):
+            return False
         if (
             sendspin := self._sendspin_provider
         ) is None or not sendspin.server_api.request_client_playback_connection(client_id):

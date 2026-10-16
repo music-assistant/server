@@ -412,6 +412,27 @@ async def test_reselecting_an_input_another_server_took_reclaims_it(
     assert server_api.reclaim_requests == ["client-1"]
 
 
+async def test_a_renderer_retry_after_release_does_not_reclaim(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retried stream of a released playback session is no new selection to reclaim for."""
+    provider = await make_provider([fake_client])
+    server_api = get_server_api(provider)
+    server_api.pairing_store.trusted["client-1"] = frozenset({"source"})
+    get_players(provider).source_sessions["queue-1"] = SimpleNamespace(
+        playback_session_id="playback-1"
+    )
+    await _start_streaming(provider, fake_client, monkeypatch)
+    fake_client.is_connected = False
+    fake_client.cleanup_on_mdns_removal = True
+    fake_client.detach_roles()
+    await provider.on_source_unselected("client-1", "queue-1", "session-1")
+
+    with pytest.raises(MediaNotFoundError):
+        await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
+    assert server_api.reclaim_requests == []
+
+
 async def test_signal_watcher_arms_before_roles_attach() -> None:
     """Watching keys off negotiated roles, which are known before the instances attach."""
     client = _FakeClient("client-1", name="Turntable", connected=False)
