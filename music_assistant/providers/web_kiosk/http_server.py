@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -653,6 +654,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         # Count this socket before any await. A reload's old socket can close
         # during that await, and it must still see a live client.
         self._track_socket(player_id, ws, request, claim)
+        preparation: asyncio.Task[None] | None = None
         try:
             self._update_volume_support(player_id)
             self.provider.cancel_player_close(player_id)
@@ -686,14 +688,18 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             async with self._outbound_lock(player_id):
                 await self._ws_send(ws, welcome)
             # A reconnecting/reloaded kiosk needs the current play state, otherwise it
-            # stays silent until the next playback command.
-            await self._move_playback_to_native_output(player)
-            await self._send_snapshot(ws, player)
-
+            # stays silent until the next playback command. Preparing it can wait
+            # for the playback lock, so it runs beside the receive loop: the page's
+            # own reports (such as the end of an announcement) keep flowing.
+            preparation = asyncio.create_task(self._prepare_page(ws, player))
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     self._handle_ws_message(player_id, msg.data, ws)
         finally:
+            if preparation is not None and not preparation.done():
+                preparation.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await preparation
             self._forget_socket(player_id, ws)
             self._update_volume_support(player_id)
             self._update_output_mode(player_id)
@@ -713,6 +719,11 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             logger.debug("WebSocket client disconnected for player %s", player_id)
 
         return ws
+
+    async def _prepare_page(self, ws: web.WebSocketResponse, player: WebKioskPlayer | None) -> None:
+        """Move playback to the page's output if needed and send it the play state."""
+        await self._move_playback_to_native_output(player)
+        await self._send_snapshot(ws, player)
 
     async def _move_playback_to_native_output(self, player: WebKioskPlayer | None) -> None:
         """Move Sendspin playback to native output once an HTML5 tab needs it."""

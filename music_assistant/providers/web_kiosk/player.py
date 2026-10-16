@@ -327,23 +327,38 @@ class WebKioskPlayer(Player):
         transition and hand over the item after it.
         """
         media = self._enqueued_media
+        self._enqueued_media = None
         if media is None:
+            return False
+        # The handed-over item is a copy of the queue. Music Assistant does not
+        # withdraw it when the queue changes without a new next item (the item
+        # is deleted, the queue cleared), so ask the queue whether it would
+        # still serve this item, by the rule its stream server applies.
+        if (
+            media.source_id
+            and media.queue_item_id
+            and not self.mass.player_queues.is_current_window_item(
+                media.source_id, media.queue_item_id
+            )
+        ):
+            self.logger.debug("Handed-over item %s is no longer in the queue", media.queue_item_id)
             return False
         await self.play_media(media)
         return True
 
     async def refresh_stream(self) -> bool:
         """Rebuild a finite queued HTML5 stream at its current song position."""
+        # Other media (an announcement, a plain URL) has no queue stream to
+        # rebuild. Decide that without the playback lock: an announcement holds
+        # it until this player reports IDLE, which needs the page to play it.
+        if self._refreshable_stream() is None:
+            return False
         # Read media, position and pause state only once a pending track change
         # has finished, and keep the lock through the seek and re-pause.
         async with playback_lock(self.mass, self.player_id):
-            media = self.current_media
-            if not media or not media.queue_item_id or not media.source_id:
+            if (stream := self._refreshable_stream()) is None:
                 return False
-            duration, start = media_timeline(media)
-            position = self.corrected_elapsed_time
-            if not duration or position is None or position < 1:
-                return False
+            duration, start, position = stream
             paused = self.playback_state == PlaybackState.PAUSED
             with self.suppress_ws_notify():
                 await self.mass.players.cmd_seek(
@@ -521,6 +536,17 @@ class WebKioskPlayer(Player):
     def _skip_ws_notify(self) -> bool:
         """True while at least one suppress_ws_notify() context is active."""
         return self._skip_ws_depth > 0
+
+    def _refreshable_stream(self) -> tuple[float, float, float] | None:
+        """Return song length, stream start and position of a rebuildable queue stream."""
+        media = self.current_media
+        if not media or not media.queue_item_id or not media.source_id:
+            return None
+        duration, start = media_timeline(media)
+        position = self.corrected_elapsed_time
+        if not duration or position is None or position < 1:
+            return None
+        return duration, start, position
 
     def _served_duration(self) -> float | None:
         """

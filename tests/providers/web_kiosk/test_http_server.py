@@ -1182,3 +1182,84 @@ async def test_snapshot_is_not_interleaved_with_a_track_change(
         plays = [index for index, message in enumerate(messages) if message["type"] == "play"]
         assert messages[plays[-1]]["playback_generation"] == player.playback_generation
         assert not [m for m in messages[plays[-1] + 1 :] if m["type"] in {"seek", "pause"}]
+
+
+async def test_reload_during_an_announcement_receives_the_announcement(
+    http_client: TestClient[Any, Any],
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    player: WebKioskPlayer,
+) -> None:
+    """The announcement holds the playback lock; a reloaded page still gets it and reports."""
+    mass_mock.players.get_player.return_value = player
+    provider.spawn_wave = Mock()  # type: ignore[method-assign]
+    provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
+    await player.play_media(
+        PlayerMedia(uri="announcement", duration=4, media_type=MediaType.ANNOUNCEMENT)
+    )
+    player.note_seek(2)
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def announcement() -> None:
+        async with mass_mock.players.get_group_and_player_lock(player.player_id, strict=True):
+            held.set()
+            await release.wait()
+
+    holder = asyncio.create_task(announcement())
+    await held.wait()
+    ws = await http_client.ws_connect("/ws?device_id=test")
+    try:
+        assert (await asyncio.wait_for(ws.receive_json(), 1))["type"] == "welcome"
+        play = await asyncio.wait_for(ws.receive_json(), 1)
+        assert play["type"] == "play"
+        assert play["playback_generation"] == player.playback_generation
+    finally:
+        release.set()
+        await holder
+        await ws.close()
+
+
+async def test_page_reports_are_handled_while_its_snapshot_waits(
+    http_client: TestClient[Any, Any],
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    player: WebKioskPlayer,
+) -> None:
+    """A snapshot waiting for a playback command does not stop the page's reports."""
+    mass_mock.players.get_player.return_value = player
+    mass_mock.players.cmd_seek = AsyncMock()
+    provider.spawn_wave = Mock()  # type: ignore[method-assign]
+    provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
+    await player.play_media(
+        PlayerMedia(uri="track", duration=120, source_id="wk_test", queue_item_id="item-1")
+    )
+    player.note_seek(30)
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def command() -> None:
+        async with mass_mock.players.get_group_and_player_lock(player.player_id, strict=True):
+            held.set()
+            await release.wait()
+
+    holder = asyncio.create_task(command())
+    await held.wait()
+    processed = asyncio.Event()
+    provider.on_player_activity = Mock(side_effect=lambda _: processed.set())  # type: ignore[method-assign]
+    ws = await http_client.ws_connect("/ws?device_id=test")
+    try:
+        await asyncio.wait_for(ws.receive_json(), 1)
+        processed.clear()
+        await ws.send_json(
+            {
+                "type": "position",
+                "position": 31,
+                "playback_generation": player.playback_generation,
+            }
+        )
+        await asyncio.wait_for(processed.wait(), 1)
+    finally:
+        release.set()
+        await holder
+        await ws.close()

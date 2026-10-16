@@ -1002,3 +1002,24 @@ async def test_end_reports_do_not_wait_for_the_playback_lock(
     finally:
         release.set()
         await holder
+
+
+async def test_track_end_does_not_start_an_item_the_queue_no_longer_holds(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """A handed-over item deleted from the queue is not played; the kiosk reports IDLE."""
+    await player.play_media(
+        PlayerMedia(uri="a", duration=30, source_id="wk_test", queue_item_id="item-1")
+    )
+    player.note_seek(29)
+    mass_mock.players.get_player.return_value = player
+    deleted = PlayerMedia(uri="b", duration=30, source_id="wk_test", queue_item_id="item-2")
+    await player.enqueue_next_media(deleted)
+    # The core's own check for items a player plays from a cached copy of the queue.
+    mass_mock.player_queues.is_current_window_item = Mock(return_value=False)
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    mass_mock.player_queues.is_current_window_item.assert_called_once_with("wk_test", "item-2")
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.enqueued_media is None
