@@ -2156,6 +2156,7 @@ def _single_item_handler(
     controller.mass = mass
     controller.audio = audio
     controller._open_item_streams = {}
+    controller._ended_item_streams = {}
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.SMART_CROSSFADE)

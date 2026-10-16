@@ -279,6 +279,9 @@ class StreamsController(CoreController):
         # load the new session, and a response blocked in a write never notices
         # on its own that its session is gone
         self._open_item_streams: dict[str, list[tuple[str, web.Request]]] = {}
+        # Per queue, the session and the items whose GET requests ended in it since the
+        # player last asked for another item, which that next request checks
+        self._ended_item_streams: dict[str, tuple[str, set[str]]] = {}
         # Number of queue streams (single item or flow) actively serving a player right now,
         # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -874,15 +877,13 @@ class StreamsController(CoreController):
                 # rotated between the validation above and the registration: the
                 # sweep may already have run, so nothing else catches this one
                 raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
-            if (
-                request.method == "GET"
-                and (served_item_id := pq_data.last_served_item_id) is not None
-                and served_item_id not in self._requested_item_ids(queue_id, session_id)
-            ):
-                # nothing streams the track the player fetched last any more (this request
-                # counts, so asking for that track again keeps it): if its source still fills,
-                # the player gave up on it and it may hold the stream slot this request needs
-                await self.mass.player_queues.release_failed_item_source(queue_id, served_item_id)
+            if request.method == "GET":
+                # a track the player gave up on may still fill a source that holds the stream
+                # slot this request needs; this request counts as open, so asking for a track
+                # again keeps its source
+                await self._release_abandoned_item_sources(
+                    queue_id, session_id, pq_data.last_served_item_id
+                )
             if (
                 is_audio_source
                 and queue_item.media_item is not None
@@ -1229,20 +1230,21 @@ class StreamsController(CoreController):
                     entries.remove(stream_entry)
                 if not entries:
                     del self._open_item_streams[queue_id]
-            if (
-                request.method == "GET"
-                and pq_data.session_id == session_id
-                and newer_item_ids
-                and queue_item_id not in self._requested_item_ids(queue_id, session_id)
-            ):
-                # the player asked for another track after this one and nothing streams this
-                # one any more: if its source still fills, the player gave up on it and the
-                # newer request may wait for its stream slot. Released in the background, so a
-                # failing release cannot skip the source teardown below
-                self.mass.create_task(
-                    self.mass.player_queues.release_failed_item_source(queue_id, queue_item_id),
-                    task_name=f"release_dropped_item_source_{queue_id}",
-                )
+            if request.method == "GET" and pq_data.session_id == session_id:
+                # a request for another track that only comes in later is not open yet to
+                # count as newer here, so it finds this one in the record instead
+                self._ended_item_ids(queue_id, session_id).add(queue_item_id)
+                if newer_item_ids and queue_item_id not in self._requested_item_ids(
+                    queue_id, session_id
+                ):
+                    # the player asked for another track after this one and nothing streams
+                    # this one any more: if its source still fills, the player gave up on it
+                    # and the newer request may wait for its stream slot. Released in the
+                    # background, so a failing release cannot skip the source teardown below
+                    self.mass.create_task(
+                        self.mass.player_queues.release_failed_item_source(queue_id, queue_item_id),
+                        task_name=f"release_dropped_item_source_{queue_id}",
+                    )
             # Paired with on_source_selected — fires regardless of how streaming
             # ended (normal completion, client disconnect, exception). Lets
             # NAMED_PIPE plugins release ownership without depending on an
@@ -2524,6 +2526,43 @@ class StreamsController(CoreController):
             and request.method == "GET"
             and request.transport is not None
         }
+
+    def _ended_item_ids(self, queue_id: str, session_id: str) -> set[str]:
+        """
+        Return the items whose GET requests ended since the player last asked for another one.
+
+        :param queue_id: The queue the requests belong to.
+        :param session_id: The playback session the requests belong to; what an earlier
+            session recorded is dropped.
+        """
+        record = self._ended_item_streams.get(queue_id)
+        if record is None or record[0] != session_id:
+            record = self._ended_item_streams[queue_id] = (session_id, set())
+        return record[1]
+
+    async def _release_abandoned_item_sources(
+        self, queue_id: str, session_id: str, last_served_item_id: str | None
+    ) -> None:
+        """
+        Release the sources of the tracks a player moved away from to ask for another one.
+
+        These are the track it fetched last and the tracks whose requests ended since it last
+        asked for another one, unless an open request still streams them.
+
+        :param queue_id: The queue the player streams.
+        :param session_id: The playback session the player streams in.
+        :param last_served_item_id: The queue item whose audio the player fetched last.
+        """
+        ended_item_ids = self._ended_item_ids(queue_id, session_id)
+        candidate_ids = set(ended_item_ids)
+        if last_served_item_id is not None:
+            candidate_ids.add(last_served_item_id)
+        abandoned_item_ids = candidate_ids - self._requested_item_ids(queue_id, session_id)
+        # forgotten before the releases below suspend, so what ends meanwhile stays recorded
+        # for the next request to check
+        ended_item_ids -= abandoned_item_ids
+        for item_id in abandoned_item_ids:
+            await self.mass.player_queues.release_failed_item_source(queue_id, item_id)
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

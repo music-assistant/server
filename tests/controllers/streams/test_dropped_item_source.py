@@ -109,9 +109,11 @@ class _Harness:
         self.ctrl._log_request = Mock()
         self.ctrl._raise_if_stale_item_request = Mock()
         self.ctrl._open_item_streams = {}
+        self.ctrl._ended_item_streams = {}
         self.ctrl._active_output_streams = 0
-        # bind the real helper: the mocked self would silently swallow it otherwise
-        self.ctrl._requested_item_ids = MethodType(StreamsController._requested_item_ids, self.ctrl)
+        # bind the real helpers: the mocked self would silently swallow them otherwise
+        for helper in ("_requested_item_ids", "_ended_item_ids", "_release_abandoned_item_sources"):
+            setattr(self.ctrl, helper, MethodType(getattr(StreamsController, helper), self.ctrl))
         self.ctrl.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
         self.ctrl.mass.player_queues = player_queues
         self.ctrl.mass.players.get_player.return_value = player
@@ -127,20 +129,21 @@ class _Harness:
         self.ctrl.audio.fade_into_pending.return_value = False
 
     def start(
-        self, item_id: str, method: str = "GET"
+        self, item_id: str, method: str = "GET", session_id: str = SESSION_ID
     ) -> tuple[asyncio.Task[web.StreamResponse], _Connection]:
         """
         Let the player request the audio of a queue item.
 
         :param item_id: The queue item the player asks for.
         :param method: The HTTP method of the request.
+        :param session_id: The playback session the request's URL names.
         """
         connection = _Connection()
         request = make_mocked_request(
             method,
-            f"/single/{SESSION_ID}/{QUEUE_ID}/{item_id}/{PLAYER_ID}.flac",
+            f"/single/{session_id}/{QUEUE_ID}/{item_id}/{PLAYER_ID}.flac",
             match_info={
-                "session_id": SESSION_ID,
+                "session_id": session_id,
                 "queue_id": QUEUE_ID,
                 "queue_item_id": item_id,
                 "player_id": PLAYER_ID,
@@ -325,6 +328,52 @@ async def test_a_closed_connection_hands_its_slot_over_when_the_next_request_arr
     _buffer(dropped).clear.assert_awaited_once()
 
 
+async def test_a_track_dropped_before_its_first_audio_hands_its_slot_to_the_next_request() -> None:
+    """A track that never got audio out is not the last served one, yet it can hold the slot."""
+    dropped, upcoming = _item("dropped", LIMITED), _item("upcoming")
+    harness = _Harness(dropped, upcoming)
+    harness.details_released.set()
+    stream, player = harness.start("dropped")
+    await player.next_write()
+    # the player moved on before the first chunk reached it
+    player.drop()
+    await stream
+    await harness.settle()
+    _buffer(dropped).clear.assert_not_awaited()
+
+    with pytest.raises(web.HTTPNotFound):
+        await harness.start("upcoming")[0]
+    await harness.settle()
+
+    _buffer(dropped).clear.assert_awaited_once()
+    # freed before the requested track resolves its own audio
+    assert harness.calls == ["release:dropped", "details:upcoming"]
+
+    # what a request checked is forgotten, so the next one does not check it again
+    with pytest.raises(web.HTTPNotFound):
+        await harness.start("upcoming")[0]
+    await harness.settle()
+    assert harness.calls == ["release:dropped", "details:upcoming", "details:upcoming"]
+
+
+async def test_asking_again_for_a_track_dropped_before_its_first_audio_keeps_its_source() -> None:
+    """A reconnect after a first write that failed still needs the track's source."""
+    track = _item("track", LIMITED)
+    harness = _Harness(track)
+    first, first_player = harness.start("track")
+    await first_player.next_write()
+    first_player.drop()
+    await first
+    second, second_player = harness.start("track")
+    await _stream_first_chunk(second_player)
+
+    second_player.drop()
+    await second
+    await harness.settle()
+
+    _buffer(track).clear.assert_not_awaited()
+
+
 @pytest.mark.parametrize("asks_again_first", [False, True], ids=["after-drop", "before-drop"])
 async def test_asking_for_the_same_track_again_keeps_its_source(asks_again_first: bool) -> None:
     """A reconnect for the same track (range request, resume, seek) needs its source."""
@@ -452,6 +501,24 @@ async def test_a_session_music_assistant_moved_on_from_releases_nothing() -> Non
     harness.details_released.set()
     with pytest.raises(web.HTTPNotFound):
         await pending
+    await harness.settle()
+
+    harness.release.assert_not_awaited()
+
+
+async def test_what_ended_before_music_assistant_moved_on_releases_nothing() -> None:
+    """The queue loader hands over the sources of the session it replaces itself."""
+    dropped, upcoming = _item("dropped", LIMITED), _item("upcoming")
+    harness = _Harness(dropped, upcoming)
+    harness.details_released.set()
+    stream, player = harness.start("dropped")
+    await player.next_write()
+    player.drop()
+    await stream
+
+    harness.queue_data.session_id = "sess2"
+    with pytest.raises(web.HTTPNotFound):
+        await harness.start("upcoming", session_id="sess2")[0]
     await harness.settle()
 
     harness.release.assert_not_awaited()
