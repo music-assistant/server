@@ -51,8 +51,8 @@ class SessionHelper:
     """Helper class to store some session information."""
 
     abs_session_id: str
+    device_slot: int
     last_sync_time: float
-    failed_sync_count: int = 0
 
 
 @dataclass(kw_only=True)
