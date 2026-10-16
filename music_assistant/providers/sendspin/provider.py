@@ -378,6 +378,7 @@ class SendspinProvider(PlayerProvider):
     _virtual_players: dict[str, str]
     _held_elsewhere: set[str]
     _held_unapproved: set[str]
+    _held_paired: set[str]
     _unencrypted_clients: set[str]
     _unloading: bool
     _hass_available: bool
@@ -405,6 +406,7 @@ class SendspinProvider(PlayerProvider):
         self._virtual_players = {}
         self._held_elsewhere = set()
         self._held_unapproved = set()
+        self._held_paired = set()
         self._unencrypted_clients = set()
         self._pin_sessions: dict[str, PinPairingSession] = {}
         self._pending_pairing_evictions: set[str] = set()
@@ -776,6 +778,10 @@ class SendspinProvider(PlayerProvider):
         """Return whether another server holds this client, neither paired nor approved here."""
         return client_id in self._held_unapproved
 
+    def is_held_unpaired(self, client_id: str) -> bool:
+        """Return whether another server holds this client and this server has not paired it."""
+        return client_id in self._held_elsewhere and client_id not in self._held_paired
+
     def get_pin_session(self, client_id: str) -> PinPairingSession | None:
         """Return the in-flight or just-finished PIN pairing session for a client."""
         return self._pin_sessions.get(client_id)
@@ -791,7 +797,7 @@ class SendspinProvider(PlayerProvider):
 
     async def start_pin_pairing(self, client_id: str, *, static: bool = False) -> PinPairingSession:
         """
-        Begin (or retry in place) an operator PIN pairing attempt with a connected client.
+        Begin (or retry in place) an operator PIN pairing attempt with a connected or held client.
 
         Returns once the client has asked for the PIN, the attempt has failed, or a short
         feedback window has elapsed, so the caller's first render reflects whether the
@@ -817,7 +823,16 @@ class SendspinProvider(PlayerProvider):
             return session
         client = self.server_api.get_client(client_id)
         # A disconnected client keeps its last hello, so info alone does not prove it is connected.
-        info = client.info_or_none if client is not None and client.is_connected else None
+        # A held one is dialed for the pairing, at the address this server dialed it before.
+        info = None
+        if client is not None and (
+            client.is_connected
+            or (
+                client_id in self._held_elsewhere
+                and self.server_api.get_client_url(client_id) is not None
+            )
+        ):
+            info = client.info_or_none
         if info is None:
             raise SecurityActionError("pairing_error_not_connected")
         offered = effective_pair_methods(info, self.pairing_config_snapshot(client_id))
@@ -861,9 +876,9 @@ class SendspinProvider(PlayerProvider):
         self, client_id: str, token_value: str, owner: str | None = None
     ) -> None:
         """
-        Pair a connected client using its pasted pairing token.
+        Pair a connected or held client using its pasted pairing token.
 
-        :param client_id: The connected client to pair.
+        :param client_id: The client to pair.
         :param token_value: The client's pairing token.
         :param owner: Application-defined authorization id to bind the pairing to;
             ``None`` is a standalone pairing.
@@ -897,6 +912,9 @@ class SendspinProvider(PlayerProvider):
             raise PairingError(
                 "the token was rejected by the device; make sure it is correct"
             ) from err
+        except ValueError as err:
+            # A held device that this server has no address to dial at.
+            raise SecurityActionError("pairing_error_generic") from err
         await self._refresh_player(client_id)
 
     async def unpair_client(self, client_id: str) -> None:
@@ -1336,7 +1354,11 @@ class SendspinProvider(PlayerProvider):
         until the timeout drops the connection: the operator makes the gesture instead.
         """
         client = self.server_api.get_client(client_id)
-        if not speaks_legacy_wire(client.info_or_none if client is not None else None):
+        if (
+            client is None
+            or client.connection is None
+            or not speaks_legacy_wire(client.info_or_none)
+        ):
             return False
         opened = self.get_management_session(client_id) is None
         keep = False
@@ -1526,22 +1548,25 @@ class SendspinProvider(PlayerProvider):
             return
         self._held_elsewhere.discard(client_id)
         self._held_unapproved.discard(client_id)
+        self._held_paired.discard(client_id)
 
     async def _refresh_held_trust(self, client_id: str) -> None:
         store = self.server_api.pairing_store
-        unapproved = (
-            await store.record_by_client_id(client_id) is None
-            and await store.trusted_unpaired(client_id) is None
-        )
+        paired = await store.record_by_client_id(client_id) is not None
+        unapproved = not paired and await store.trusted_unpaired(client_id) is None
         if client_id not in self._held_elsewhere:
             return
-        if unapproved == (client_id in self._held_unapproved):
-            return
+        changed = unapproved != (client_id in self._held_unapproved) or paired != (
+            client_id in self._held_paired
+        )
+        self._held_unapproved.discard(client_id)
+        self._held_paired.discard(client_id)
         if unapproved:
             self._held_unapproved.add(client_id)
-        else:
-            self._held_unapproved.discard(client_id)
-        self._refresh_player_state(client_id)
+        if paired:
+            self._held_paired.add(client_id)
+        if changed:
+            self._refresh_player_state(client_id)
 
     def _refresh_player_state(self, client_id: str) -> None:
         """Recalculate a registered player's state for its client's new connection."""

@@ -17,7 +17,13 @@ from aiosendspin.models.management import (
     SetDynamicPairingCodeConfig,
     SetStaticPairingCodeConfig,
 )
-from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand, role_family
+from aiosendspin.models.types import (
+    PairAbortReason,
+    PairMethod,
+    PlaybackStateType,
+    PlayerCommand,
+    role_family,
+)
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.models.visualizer import BeatAvailability, BeatTiming
 from aiosendspin.noise.driver import HandshakeAbortedError
@@ -25,6 +31,7 @@ from aiosendspin.noise.pairing import (
     SERVER_FIRST_MESSAGE_TIMEOUT_S,
     SERVER_GESTURE_TIMEOUT_S,
     InvalidPairingCodeError,
+    PairingAbortError,
     PairingError,
 )
 from aiosendspin.noise.pairing_code import DYNAMIC_DIGITS, STATIC_DIGITS
@@ -286,6 +293,13 @@ def _pin_error_slug(error: Exception | None) -> str:
     return error_alert(error).key
 
 
+def _refused_as_busy(error: Exception | None) -> bool:
+    """Return whether the device refused the pairing because it is busy with another server."""
+    return (
+        isinstance(error, PairingAbortError) and error.reason is PairAbortReason.CONCURRENT_ATTEMPT
+    )
+
+
 def _pairing_abort_reason(error: Exception | None) -> str:
     """Return the setup_flow.abort reason slug for a terminal pairing failure."""
     if error is None:
@@ -446,7 +460,10 @@ class SendspinBasePlayer(Player):
             return False
         provider = cast("SendspinProvider", self.provider)
         if security is None:
-            return provider.is_held_unapproved(self.player_id)
+            return provider.is_held_unpaired(self.player_id) and (
+                provider.is_held_unapproved(self.player_id)
+                or bool(self._pairing_method_options(provider))
+            )
         if security.psk_category is PskCategory.LONG_TERM:
             return False
         # needs_setup keeps the flow reachable for a device that offers nothing at all, so
@@ -484,7 +501,7 @@ class SendspinBasePlayer(Player):
         as a side effect of the provider pairing calls;
         declining the audio input persists via the player config. Bridge/web players
         and unencrypted (legacy) connections have nothing to pair. A device another server
-        holds can only be approved, since pairing needs it connected here.
+        holds is dialed for the pairing.
 
         :param session: The setup flow session used to interact with the user.
         """
@@ -492,31 +509,32 @@ class SendspinBasePlayer(Player):
         provider = cast("SendspinProvider", self.provider)
         if self._is_bridge_or_web_player:
             raise AbortFlow("nothing_to_configure")
-        if security is None:
-            if not provider.is_held_unapproved(self.player_id):
-                raise AbortFlow("nothing_to_configure")
-            if not self._offers_unpaired_consent:
-                raise AbortFlow("held_elsewhere")
-            await self._run_consent_step(session, provider, offer_pairing=False, held=True)
-            session.finish_step_id = FINISH_STEP_SILENT
-            await session.finish({})
-            return
+        held = security is None
+        if held and not provider.is_held_unpaired(self.player_id):
+            raise AbortFlow("nothing_to_configure")
         record = await provider.server_api.pairing_store.record_by_client_id(self.player_id)
-        if security.psk_category is PskCategory.LONG_TERM and record is not None:
+        if (
+            security is not None
+            and security.psk_category is PskCategory.LONG_TERM
+            and record is not None
+        ):
             raise AbortFlow("already_paired")
         options = self._pairing_method_options(provider)
         wants_pairing = True
+        # A held device has no roles here, so an approval it already has leaves only pairing.
+        if held:
+            unapproved = provider.is_held_unapproved(self.player_id)
+            input_pending = False
+        else:
+            unapproved = not self.api.active_roles
+            input_pending = self._source_input_pending
         # A pairing record the device lost blocks guest playback until it is re-paired or removed.
-        if (
-            record is None
-            and self._offers_unpaired_consent
-            and (not self.api.active_roles or self._source_input_pending)
-        ):
+        if record is None and self._offers_unpaired_consent and (unapproved or input_pending):
             # Finishing approves guest access and settles the audio input.
             wants_pairing = await self._run_consent_step(
                 session, provider, offer_pairing=bool(options)
             )
-        elif self.api.active_roles and self._source_input_pending:
+        elif not unapproved and input_pending:
             # the device already plays, only its audio input is pending
             if await self._run_source_input_step(session, offer_pair=bool(options)):
                 session.finish_step_id = FINISH_STEP_SILENT
@@ -546,10 +564,10 @@ class SendspinBasePlayer(Player):
             )
             method = str(values[CONF_PAIRING_METHOD])
         if method == PAIR_METHOD_TOKEN:
-            await self._run_token_pairing_flow(session, provider)
+            await self._run_token_pairing_flow(session, provider, held=held)
         else:
             await self._run_pin_pairing_flow(
-                session, provider, static=method == PAIR_METHOD_STATIC_PIN
+                session, provider, static=method == PAIR_METHOD_STATIC_PIN, held=held
             )
         await session.finish({})
 
@@ -633,12 +651,7 @@ class SendspinBasePlayer(Player):
         )
 
     async def _run_consent_step(
-        self,
-        session: SetupSession,
-        provider: SendspinProvider,
-        *,
-        offer_pairing: bool,
-        held: bool = False,
+        self, session: SetupSession, provider: SendspinProvider, *, offer_pairing: bool
     ) -> bool:
         """Show the one-time consent step; return True when the user chose to pair instead."""
         families = self._negotiated_families()
@@ -665,8 +678,6 @@ class SendspinBasePlayer(Player):
             )
         # A device with an audio input needs its own wording; the rest of the page is shared.
         step_id = "approve_device_source" if has_input else "approve_device"
-        if held:
-            step_id = "approve_held_device_source" if has_input else "approve_held_device"
         values = await session.form(entries, step_id=step_id, last_step=True)
         method = str(values.get(CONF_CONNECT_METHOD, options[0].value))
         if method == CONNECT_METHOD_PAIR:
@@ -1108,6 +1119,7 @@ class SendspinBasePlayer(Player):
         provider: SendspinProvider,
         *,
         static: bool,
+        held: bool,
     ) -> None:
         """
         Pair via PIN: the device wait, PIN entry and the retry-in-place loop.
@@ -1118,6 +1130,7 @@ class SendspinBasePlayer(Player):
         still in flight - including when the flow is cancelled.
 
         :param static: Pair with the device's static PIN instead of a dynamic one.
+        :param held: Whether another server holds the device, so the attempt dials it.
         """
         succeeded = False
         errors: dict[str, str] | None = None
@@ -1136,7 +1149,9 @@ class SendspinBasePlayer(Player):
                     if await self._pairing_succeeded(provider, pin_session, previous_record):
                         succeeded = True
                         return
-                    if pin_session.can_retry:
+                    # A busy held device ends the flow, since a retry would dial it again.
+                    busy = held and _refused_as_busy(pin_session.error)
+                    if pin_session.can_retry and not busy:
                         errors = {"base": _pin_error_slug(pin_session.error)}
                         continue
                     raise AbortFlow(_pairing_abort_reason(pin_session.error))
@@ -1187,9 +1202,13 @@ class SendspinBasePlayer(Player):
                 await provider.cancel_pin_pairing(self.player_id)
 
     async def _run_token_pairing_flow(
-        self, session: SetupSession, provider: SendspinProvider
+        self, session: SetupSession, provider: SendspinProvider, *, held: bool
     ) -> None:
-        """Pair via a pasted pairing token, re-rendering the form on a recoverable failure."""
+        """
+        Pair via a pasted pairing token, re-rendering the form on a recoverable failure.
+
+        :param held: Whether another server holds the device, so the attempt dials it.
+        """
         errors: dict[str, str] | None = None
         while True:
             token_values = await session.form(
@@ -1215,6 +1234,9 @@ class SendspinBasePlayer(Player):
                 TimeoutError,
                 OSError,
             ) as err:
+                # A busy held device ends the flow, since a resubmit would dial it again.
+                if held and _refused_as_busy(err):
+                    raise AbortFlow("pairing_error_concurrent") from err
                 errors = {"base": error_alert(err).key}
                 continue
             return

@@ -86,6 +86,7 @@ def _make_provider(
     provider._running_pairing_evictions = set()
     provider._held_elsewhere = set()
     provider._held_unapproved = set()
+    provider._held_paired = set()
     provider._unencrypted_clients = set()
     refreshed: list[str] = []
 

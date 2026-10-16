@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock
 
 import pytest
-from aiosendspin.models.types import GoodbyeReason, PairMethod
+from aiosendspin.models.types import GoodbyeReason, PairAbortReason, PairMethod
 from aiosendspin.noise.keys import generate_psk, psk_id_for
+from aiosendspin.noise.pairing import RemotePairingAbortError
 from aiosendspin.noise.trust_store import (
     InMemoryServerPairingStore,
     PskCategory,
@@ -24,13 +25,15 @@ from music_assistant_models.enums import FlowStepType
 from music_assistant.models.setup_flow import AbortFlow
 from music_assistant.providers.sendspin.constants import (
     CONF_CONNECT_METHOD,
-    CONNECT_METHOD_UNPAIRED_WITH_INPUT,
-    CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
+    CONF_PAIRING_PIN,
+    CONNECT_METHOD_UNPAIRED,
 )
 from music_assistant.providers.sendspin.player import SendspinBasePlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
-from .test_pin_session import _FakeMass
+from .test_pin_session import _FakeMass, _offer
+from .test_pin_session import _FakeServerApi as _PinServerApi
+from .test_pin_session import _make_provider as _make_pin_provider
 from .test_setup_flow import (
     _attach_mass,
     _desc,
@@ -81,6 +84,7 @@ def _make_provider(api: _HeldServerApi) -> tuple[SendspinProvider, Mock]:
     provider.logger = logging.getLogger("test.sendspin.held")
     provider._held_elsewhere = set()
     provider._held_unapproved = set()
+    provider._held_paired = set()
     provider._unencrypted_clients = set()
     provider._pending_pairing_evictions = set()
     return provider, player
@@ -111,7 +115,7 @@ async def test_a_refused_device_never_approved_here_is_held_unapproved() -> None
 
 @pytest.mark.parametrize("paired", [False, True])
 async def test_a_held_device_approved_or_paired_here_stays_playable(paired: bool) -> None:
-    """Playing it reclaims it, so it needs no setup."""
+    """Playing it reclaims it, so it needs no setup, and only a guest can still be paired."""
     api = _HeldServerApi()
     if paired:
         psk = generate_psk()
@@ -127,6 +131,7 @@ async def test_a_held_device_approved_or_paired_here_stays_playable(paired: bool
     await _refuse(provider)
 
     assert not provider.is_held_unapproved("c1")
+    assert provider.is_held_unpaired("c1") is not paired
 
 
 async def test_a_held_legacy_unencrypted_device_needs_no_approval() -> None:
@@ -138,7 +143,7 @@ async def test_a_held_legacy_unencrypted_device_needs_no_approval() -> None:
     assert not provider.is_held_unapproved("c1")
 
 
-async def test_approving_a_held_device_lets_the_next_play_take_it_over() -> None:
+async def test_approving_a_held_device_clears_its_setup_state() -> None:
     """The approval is stored while the device is away, so the reclaim dial may play."""
     api = _HeldServerApi()
     provider, player = _make_provider(api)
@@ -161,13 +166,16 @@ async def test_a_device_that_reconnects_here_is_no_longer_held() -> None:
     assert not provider.is_held_unapproved("c1")
 
 
-def _held_player(*, guest: bool, roles: list[str]) -> tuple[SendspinBasePlayer, _FakeProvider]:
+def _held_player(
+    *, guest: bool, roles: list[str], approved: bool = False
+) -> tuple[SendspinBasePlayer, _FakeProvider]:
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=guest)
     api.connection_security = None
     api.is_connected = False
     api.negotiated_role_ids = roles
     provider = _FakeProvider(api)
-    provider.held_unapproved = True
+    provider.held_unapproved = not approved
+    provider.held_unpaired = True
     player = _make_player(api, provider)
     _attach_mass(player)
     return player, provider
@@ -181,33 +189,84 @@ def test_a_held_unapproved_device_needs_setup_and_offers_it() -> None:
     assert player.setup_flow_available
 
 
-async def test_setup_approves_a_held_device_with_its_input_without_pairing() -> None:
-    """Pairing needs a live connection, so only the guest choices are offered."""
-    player, provider = _held_player(guest=True, roles=["player@v1", "source@v1"])
+async def test_setup_approves_a_held_device() -> None:
+    """Approving needs no connection to the device."""
+    player, provider = _held_player(guest=True, roles=["player@v1"])
     session, _mass = _make_session(_ok_finish)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(
-        session, step_type=FlowStepType.FORM, step_id="approve_held_device_source"
-    )
-    assert [option.value for option in step.entries[0].options] == [
-        CONNECT_METHOD_UNPAIRED_WITH_INPUT,
-        CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT,
-    ]
-    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED})
 
     await _wait_for(lambda: session.finished)
     await task
     assert provider.trust_calls == [True]
-    assert provider.allow_input_calls == [True]
 
 
-async def test_setup_of_a_held_device_without_guest_access_explains_why_it_cannot_pair() -> None:
-    """A device that only pairs cannot be set up while another server holds it."""
+async def test_a_held_device_approved_here_pairs_without_asking_again() -> None:
+    """Pairing stays available as an upgrade, and the approval is not asked for twice."""
+    player, provider = _held_player(guest=True, roles=["player@v1", "source@v1"], approved=True)
+    session, _mass = _make_session(_ok_finish)
+    assert not player.needs_setup
+    assert player.setup_flow_available
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.submitted_pins == ["123456"]
+    assert provider.trust_calls == []
+
+
+def test_a_held_device_paired_here_has_nothing_to_set_up() -> None:
+    """Its pairing already lets the next play take it over."""
+    player, provider = _held_player(guest=True, roles=["player@v1"], approved=True)
+    provider.held_unpaired = False
+
+    assert not player.setup_flow_available
+
+
+async def test_pairing_a_held_device_that_is_busy_stops_instead_of_dialing_again() -> None:
+    """The device refuses while another server plays to it, so the flow does not dial again."""
     player, provider = _held_player(guest=False, roles=["player@v1"])
+    start_pin_pairing = provider.start_pin_pairing
+
+    async def _refused(client_id: str, *, static: bool = False) -> Any:
+        pin_session = await start_pin_pairing(client_id, static=static)
+        pin_session.awaiting_pin = False
+        pin_session.can_retry = True
+        pin_session.error = RemotePairingAbortError(PairAbortReason.CONCURRENT_ATTEMPT)
+        return pin_session
+
+    provider.start_pin_pairing = _refused  # type: ignore[method-assign]
     session, _mass = _make_session(_ok_finish)
 
     with pytest.raises(AbortFlow) as excinfo:
         await player.run_setup_flow(session)
-    assert excinfo.value.reason == "held_elsewhere"
-    assert provider.start_calls == 0
+    assert excinfo.value.reason == "pairing_error_concurrent"
+    assert provider.start_calls == 1
+
+
+async def test_a_held_device_is_dialed_for_pairing_without_management(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A held device is reached by the pairing dial, never over management."""
+    api = _PinServerApi(
+        _offer(PairMethod.STATIC_PAIRING_CODE),
+        await_pin=False,
+        management_capable=True,
+        legacy_wire=True,
+        connected=False,
+    )
+    cast("Any", api.get_client("c")).connection = None
+    cast("Any", api).get_client_url = lambda _client_id: "ws://device/sendspin"
+    provider, _refreshed = _make_pin_provider(api, monkeypatch)
+    provider._held_elsewhere.add("c")
+
+    pin_session = await provider.start_pin_pairing("c", static=True)
+    assert pin_session.task is not None
+    await pin_session.task
+
+    assert api.calls == ["pair"]
