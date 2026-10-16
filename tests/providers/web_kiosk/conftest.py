@@ -63,6 +63,7 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.player_queues.play_media = AsyncMock()
     mass.player_queues.items = Mock(return_value=[])
     mass.player_queues.get = Mock(return_value=None)
+    mass.player_queues.get_next_item = Mock(return_value=None)
     mass.players.cmd_pause = AsyncMock()
     mass.players.cmd_play = AsyncMock()
     mass.players.cmd_stop = AsyncMock()
@@ -170,3 +171,21 @@ async def http_client(
     await client.start_server()
     yield client
     await client.close()
+
+
+@pytest.fixture
+def queue_order(mass_mock: Mock) -> Callable[..., None]:
+    """Return a setter that makes the mocked queue name successors in the given order."""
+
+    def set_order(*queue_item_ids: str) -> None:
+        def get_next_item(_queue_id: str, current: object) -> Mock | None:
+            if not isinstance(current, str) or current not in queue_item_ids:
+                return None
+            index = queue_item_ids.index(current) + 1
+            if index == len(queue_item_ids):
+                return None
+            return Mock(queue_item_id=queue_item_ids[index])
+
+        mass_mock.player_queues.get_next_item = Mock(side_effect=get_next_item)
+
+    return set_order

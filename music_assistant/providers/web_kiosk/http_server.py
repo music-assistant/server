@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import math
@@ -14,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from aiohttp import ClientError, WSMsgType, web
+from aiohttp import ClientError, WSCloseCode, WSMsgType, web
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import MusicAssistantError
 
@@ -696,10 +695,9 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 if msg.type == WSMsgType.TEXT:
                     self._handle_ws_message(player_id, msg.data, ws)
         finally:
-            if preparation is not None and not preparation.done():
+            if preparation is not None:
                 preparation.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await preparation
+                await asyncio.gather(preparation, return_exceptions=True)
             self._forget_socket(player_id, ws)
             self._update_volume_support(player_id)
             self._update_output_mode(player_id)
@@ -722,8 +720,15 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 
     async def _prepare_page(self, ws: web.WebSocketResponse, player: WebKioskPlayer | None) -> None:
         """Move playback to the page's output if needed and send it the play state."""
-        await self._move_playback_to_native_output(player)
-        await self._send_snapshot(ws, player)
+        try:
+            await self._move_playback_to_native_output(player)
+            await self._send_snapshot(ws, player)
+        except Exception:
+            # Nothing else awaits this task. A page without its play state would
+            # stay silent, so report the failure and close the socket: the page
+            # reconnects and gets a new attempt.
+            logger.exception("Preparing the kiosk page failed")
+            await ws.close(code=WSCloseCode.INTERNAL_ERROR, message=b"Kiosk setup failed")
 
     async def _move_playback_to_native_output(self, player: WebKioskPlayer | None) -> None:
         """Move Sendspin playback to native output once an HTML5 tab needs it."""

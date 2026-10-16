@@ -331,17 +331,17 @@ class WebKioskPlayer(Player):
         if media is None:
             return False
         # The handed-over item is a copy of the queue. Music Assistant does not
-        # withdraw it when the queue changes without a new next item (the item
-        # is deleted, the queue cleared), so ask the queue whether it would
-        # still serve this item, by the rule its stream server applies.
+        # withdraw it when a change leaves no next item (the item is deleted,
+        # the queue cleared, Repeat One switched off), so play it only while
+        # the queue still names it as the item after the one that finished.
         if (
             media.source_id
             and media.queue_item_id
-            and not self.mass.player_queues.is_current_window_item(
-                media.source_id, media.queue_item_id
-            )
+            and not self._is_queue_successor(media.source_id, media.queue_item_id)
         ):
-            self.logger.debug("Handed-over item %s is no longer in the queue", media.queue_item_id)
+            self.logger.debug(
+                "Handed-over item %s no longer follows in the queue", media.queue_item_id
+            )
             return False
         await self.play_media(media)
         return True
@@ -536,6 +536,16 @@ class WebKioskPlayer(Player):
     def _skip_ws_notify(self) -> bool:
         """True while at least one suppress_ws_notify() context is active."""
         return self._skip_ws_depth > 0
+
+    def _is_queue_successor(self, queue_id: str, queue_item_id: str) -> bool:
+        """Return whether the queue still plays the given item after the current one."""
+        current = self.current_media
+        if current is None or current.source_id != queue_id or not current.queue_item_id:
+            # Without a finished queue item to count from, accept what the
+            # queue's stream server would still serve.
+            return self.mass.player_queues.is_current_window_item(queue_id, queue_item_id)
+        successor = self.mass.player_queues.get_next_item(queue_id, current.queue_item_id)
+        return successor is not None and successor.queue_item_id == queue_item_id
 
     def _refreshable_stream(self) -> tuple[float, float, float] | None:
         """Return song length, stream start and position of a rebuildable queue stream."""

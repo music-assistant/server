@@ -51,6 +51,7 @@
     var pendingHtml5Fallback = false;
     var sendspinModule = null;
     var sendspinConnecting = false;
+    var sendspinStarting = null;
     // True only while the Sendspin server is actually streaming audio here.
     var sendspinStreaming = false;
     var sendspinState = null;
@@ -1415,11 +1416,15 @@
     }
     function initSendspin() {
         if (!SENDSPIN || window.__sendspinPlayer) return;
+        // One start at a time: every welcome (also after a reconnect) shares it,
+        // so one SDK player owns the identity.
+        if (sendspinStarting) return sendspinStarting;
         sendspinConnecting = true;
         setStatus('Connecting Sendspin…');
-        return loadSendspinModule().then(function (module) {
+        sendspinStarting = loadSendspinModule().then(function (module) {
             return verifiedCodecs().then(function (codecs) { return { module:module, codecs:codecs }; });
         }).then(function (verified) {
+            if (!SENDSPIN) return;
             var module = verified.module;
             var sendspinUrl = params.get('sendspin_url') || getDefaultSendspinUrl();
             var cfg = {
@@ -1456,7 +1461,10 @@
             sendspinConnecting = false;
             useHtml5();
             document.getElementById('kiosk-sync').title = e.message || 'Sendspin unavailable';
+        }).then(function () {
+            sendspinStarting = null;
         });
+        return sendspinStarting;
     }
     function applySendspinState(state) {
         var metadata = state.serverState && state.serverState.metadata || {};

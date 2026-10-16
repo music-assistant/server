@@ -7,11 +7,12 @@ import base64
 import hashlib
 import hmac
 import json
+from collections.abc import Callable
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from aiohttp import ClientError, WSServerHandshakeError
+from aiohttp import ClientError, WSMsgType, WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
@@ -654,8 +655,10 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
     player: WebKioskPlayer,
     duration: int,
     stream_duration: int,
+    queue_order: Callable[..., None],
 ) -> None:
     """Old end messages cannot skip a short replacement track or a seek near its end."""
+    queue_order("new-item", "next", "later")
     tasks: list[asyncio.Task[None]] = []
 
     def spawn(coro: object) -> asyncio.Task[None]:
@@ -1262,4 +1265,30 @@ async def test_page_reports_are_handled_while_its_snapshot_waits(
     finally:
         release.set()
         await holder
+        await ws.close()
+
+
+async def test_failed_page_preparation_closes_the_socket_for_a_reconnect(
+    http_client: TestClient[Any, Any],
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    player: WebKioskPlayer,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A page that could not get its play state is closed, so it reconnects and retries."""
+    mass_mock.players.get_player.return_value = player
+    provider.spawn_wave = Mock()  # type: ignore[method-assign]
+    provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
+    await player.play_media(
+        PlayerMedia(uri="track", duration=120, source_id="wk_test", queue_item_id="item-1")
+    )
+    player.note_seek(30)
+    mass_mock.players.cmd_seek = AsyncMock(side_effect=RuntimeError("seek failed"))
+    ws = await http_client.ws_connect("/ws?device_id=test")
+    try:
+        assert (await asyncio.wait_for(ws.receive_json(), 1))["type"] == "welcome"
+        message = await asyncio.wait_for(ws.receive(), 1)
+        assert message.type in {WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED}
+        assert "seek failed" in caplog.text
+    finally:
         await ws.close()
