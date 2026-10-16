@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import (
     ItemMapping,
     RecommendationFolder,
@@ -409,12 +409,28 @@ async def test_get_page_content_respects_module_item_cap(
 async def test_get_page_content_keeps_embedded_items_on_extend_failure(
     recommendation_manager: TidalRecommendationManager, provider_mock: Mock
 ) -> None:
-    """A failing pages/data call keeps the embedded items and still caches the page."""
+    """A 404 on pages/data keeps the embedded items and still caches the page."""
+
+    async def _not_found(_endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        raise MediaNotFoundError("Not found")
+
+    items = await _fetch_module(
+        recommendation_manager, provider_mock, _paged_module(6, 8), _not_found
+    )
+
+    assert len(items) == 6
+    provider_mock.mass.cache.set.assert_called()
+
+
+async def test_get_page_content_propagates_extend_errors(
+    recommendation_manager: TidalRecommendationManager, provider_mock: Mock
+) -> None:
+    """Non-404 pages/data failures propagate so a degraded page is never cached."""
 
     async def _fail(_endpoint: str, **_kwargs: Any) -> dict[str, Any]:
         raise ResourceTemporarilyUnavailable("API error")
 
-    items = await _fetch_module(recommendation_manager, provider_mock, _paged_module(6, 8), _fail)
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await _fetch_module(recommendation_manager, provider_mock, _paged_module(6, 8), _fail)
 
-    assert len(items) == 6
-    provider_mock.mass.cache.set.assert_called()
+    provider_mock.mass.cache.set.assert_not_called()

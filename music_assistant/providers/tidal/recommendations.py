@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType, ProviderType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -180,7 +181,7 @@ class TidalRecommendationManager:
                 if not new_items:
                     break
                 items.extend(new_items[: target - len(items)])
-        except Exception as err:
+        except MediaNotFoundError as err:
             self.logger.warning(
                 "Could not fetch all items for Tidal module %s: %s", module.get("title"), err
             )
