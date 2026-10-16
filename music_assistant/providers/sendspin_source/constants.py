@@ -14,9 +14,10 @@ OUTPUT_CHANNELS = 2
 
 CHUNK_DURATION_MS = 25
 
-# Give up and end the stream after this long without source audio (client never
-# started, disconnected, or reports unavailable).
-SOURCE_TIMEOUT_S = 30.0
+# Give up and end the stream after this long without source audio (client
+# disconnected or reports unavailable). Outlasts the time the server needs to notice
+# a dropped connection, so a client that reconnects resumes the stream.
+SOURCE_TIMEOUT_S = 60.0
 
 # Fail the stream if the client sends nothing at all after being asked to start.
 # A source that never arrives is a failed acquisition, not a silent line-in.

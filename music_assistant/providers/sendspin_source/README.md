@@ -67,7 +67,7 @@ without acting, so a restart with the needle already down starts nothing. A
 source that is already streaming is never re-targeted, so moving it by hand
 survives the next transition. Autostop also closes a gap that exists without
 line-sense: a client keeps streaming silence after a record ends, so the
-30-second no-audio timeout never fires and the queue would otherwise sit
+no-audio timeout never fires and the queue would otherwise sit
 playing silence indefinitely.
 
 Devices without `line_sense` have no trigger to offer, so they get no setting
