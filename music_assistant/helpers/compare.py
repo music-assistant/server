@@ -408,8 +408,7 @@ def compare_track(
     """
     Compare two track items and return True if they match.
 
-    :param match_remasters: Match a remaster to the original or another remaster, also when
-        matching keeps them apart.
+    :param match_remasters: Ignore the option that keeps remastered versions apart.
     """
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):

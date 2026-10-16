@@ -938,8 +938,8 @@ class TracksController(MediaControllerBase[Track]):
         This is used to link objects of different providers/qualities together. A provider
         that supports ISRC lookups is asked for the track by ISRC before it is searched.
 
-        :param match_remasters: Match a remaster to the original or another remaster, also when
-            matching keeps them apart.
+        :param match_remasters: Ignore the option that keeps remastered versions apart. Do not
+            link such a match to the track.
         """
         if ref_albums is None:
             ref_albums = await self.albums(base_track.item_id, base_track.provider, limit=None)
@@ -2015,8 +2015,7 @@ class TracksController(MediaControllerBase[Track]):
 
         :param ref_item: Track to match.
         :param provider: Provider to search for a matching track.
-        :param match_remasters: Match a remaster to the original or another remaster, also when
-            matching keeps them apart.
+        :param match_remasters: Ignore the option that keeps remastered versions apart.
         """
         try:
             return await self.match_provider(
