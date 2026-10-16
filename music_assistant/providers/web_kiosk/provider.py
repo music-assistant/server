@@ -46,9 +46,13 @@ from .sendspin_bridge import WebKioskSendspinBridgeManager
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
 logger = logging.getLogger(__name__)
+
+# Seconds of a track a Sendspin fallback replays when its position ran past the end.
+FALLBACK_END_MARGIN = 2
 
 
 class WebKioskProvider(PlayerProvider):
@@ -440,7 +444,7 @@ class WebKioskProvider(PlayerProvider):
             if player.sendspin_claim is not claim or not was_playing or follower:
                 return
             try:
-                await self.mass.player_queues.resume(queue.queue_id)
+                await self._resume_inside_track(queue)
             except BaseException:
                 if player.sendspin_claim is claim:
                     player.sendspin_fallback = False
@@ -759,6 +763,25 @@ class WebKioskProvider(PlayerProvider):
         # player reports IDLE and the core's own end-of-queue and restore logic runs.
         if not await player.start_enqueued_media():
             await player.stop()
+
+    async def _resume_inside_track(self, queue: PlayerQueue) -> None:
+        """Resume a playing queue, starting the last seconds of a track it ran past."""
+        item = queue.current_item
+        duration = item.duration if item else None
+        # The position comes from a clock that ran on without a browser playing
+        # it. Resuming past the end would serve an empty stream; the last
+        # seconds let the track finish and the queue move on as usual.
+        if (
+            item is not None
+            and duration
+            and item.media_type != MediaType.RADIO
+            and queue.corrected_elapsed_time >= duration - FALLBACK_END_MARGIN
+        ):
+            await self.mass.player_queues.play_index(
+                queue.queue_id, item.queue_item_id, max(0, int(duration) - FALLBACK_END_MARGIN)
+            )
+            return
+        await self.mass.player_queues.resume(queue.queue_id)
 
     def _compose_kiosk_url(self) -> str:
         """Compose the base kiosk URL from the MA webserver base URL and our port."""

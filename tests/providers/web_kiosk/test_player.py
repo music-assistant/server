@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.player import PlayerMedia
 
+import music_assistant.providers.web_kiosk.player as player_module
 from music_assistant.providers.web_kiosk.player import WebKioskPlayer, media_timeline
 
 
@@ -326,3 +327,87 @@ async def test_volume_mute_keeps_volume_and_notifies_kiosk(player: WebKioskPlaye
     await player.volume_mute(False)
     assert state() == (False, 40)
     server.broadcast_mute.assert_called_with("wk_test", False)
+
+
+class _Clock:
+    """Wall and monotonic clock for the player module, moved by the test."""
+
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def time(self) -> float:
+        return self.now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    """Drive the kiosk player's clock by hand."""
+    fake = _Clock()
+    monkeypatch.setattr(player_module, "time", fake)
+    return fake
+
+
+async def _reporting_at(player: WebKioskPlayer, clock: _Clock, position: float) -> None:
+    """Start a 300 s track and let the page report the given position."""
+    await player.play_media(PlayerMedia(uri="track", duration=300))
+    clock.now += position
+    player.update_position(position)
+
+
+async def test_clock_holds_when_the_page_stops_reporting(
+    player: WebKioskPlayer, clock: _Clock
+) -> None:
+    """Without reports the position runs on for at most 10 s, then holds."""
+    await _reporting_at(player, clock, 100)
+
+    clock.now += 30
+    await player.poll()
+    held = player.elapsed_time
+    clock.now += 30
+    await player.poll()
+
+    assert held is not None
+    assert 100 <= held <= 110
+    assert player.elapsed_time == held
+    assert player.elapsed_time_last_updated == clock.now
+
+
+async def test_clock_resumes_from_a_report_after_a_hold(
+    player: WebKioskPlayer, clock: _Clock
+) -> None:
+    """A report after a hold sets the position again."""
+    await _reporting_at(player, clock, 100)
+    clock.now += 30
+    await player.poll()
+
+    clock.now += 5
+    player.update_position(135)
+
+    assert player.elapsed_time == 135
+
+
+async def test_clock_does_not_run_past_the_served_audio(
+    player: WebKioskPlayer, clock: _Clock
+) -> None:
+    """Between reports the position stops at the end of the served audio."""
+    await _reporting_at(player, clock, 299)
+
+    clock.now += 8
+    await player.poll()
+
+    assert player.elapsed_time == 300
+
+
+async def test_pause_after_silence_keeps_the_held_position(
+    player: WebKioskPlayer, clock: _Clock
+) -> None:
+    """Pausing a page that stopped reporting does not add the silent time."""
+    await _reporting_at(player, clock, 100)
+    clock.now += 60
+
+    await player.pause()
+
+    assert player.elapsed_time == 110

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
-from music_assistant_models.errors import InvalidDataError, PlayerUnavailableError
+from music_assistant_models.errors import InvalidDataError, PlayerUnavailableError, QueueEmpty
 from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
@@ -24,7 +24,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
-from music_assistant.providers.web_kiosk.player import WebKioskPlayer
+from music_assistant.providers.web_kiosk.player import WebKioskPlayer, media_timeline
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 from music_assistant.providers.web_kiosk.sendspin_bridge import WebKioskSendspinBridgeManager
 
@@ -608,6 +608,59 @@ async def test_sendspin_fallback_resumes_only_playing_queue(
     assert queue.state == queue_state
 
 
+@pytest.mark.parametrize(
+    ("position", "media_type", "duration", "play_at"),
+    [
+        (35.0, MediaType.TRACK, 25, 23),
+        (24.0, MediaType.TRACK, 25, 23),
+        (10.0, MediaType.TRACK, 25, None),
+        (35.0, MediaType.RADIO, 25, None),
+        (35.0, MediaType.TRACK, None, None),
+    ],
+)
+async def test_sendspin_fallback_resumes_inside_the_track(
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    mass_mock: Mock,
+    position: float,
+    media_type: MediaType,
+    duration: int | None,
+    play_at: int | None,
+) -> None:
+    """A queue position past the end of the track starts its last seconds instead."""
+    client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+    player.sendspin_client_id = client_id
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
+    mass_mock.players.get_player = Mock(
+        side_effect=lambda player_id, **_: player if player_id == player.player_id else None
+    )
+    queue = PlayerQueue(
+        queue_id=player.player_id,
+        active=True,
+        display_name="Test Kiosk",
+        available=True,
+        items=2,
+        state=PlaybackState.PLAYING,
+        elapsed_time=position,
+        elapsed_time_last_updated=time.time(),
+        current_item=Mock(queue_item_id="item-1", duration=duration, media_type=media_type),
+    )
+    mass_mock.player_queues.get_active_queue = Mock(return_value=queue)
+    mass_mock.player_queues.resume = AsyncMock()
+    mass_mock.player_queues.play_index = AsyncMock()
+
+    await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
+
+    if play_at is None:
+        mass_mock.player_queues.resume.assert_awaited_once_with(player.player_id)
+        mass_mock.player_queues.play_index.assert_not_awaited()
+    else:
+        mass_mock.player_queues.play_index.assert_awaited_once_with(
+            player.player_id, "item-1", play_at
+        )
+        mass_mock.player_queues.resume.assert_not_awaited()
+
+
 async def test_fast_track_end_between_position_reports_advances(
     provider: WebKioskProvider,
     mass_mock: Mock,
@@ -1023,6 +1076,10 @@ async def _kiosk_queue(
 ) -> PlayerQueuesController:
     """Give the kiosk a real Music Assistant queue that is playing its first item."""
     mass_mock.config.get_raw_core_config_value.return_value = "GLOBAL"
+    # The stream layer behind the queue's item loader: no seek, no stream length.
+    mass_mock.streams.audio.get_stream_details = AsyncMock(
+        return_value=Mock(seek_position=0, duration=None)
+    )
     queues = PlayerQueuesController(mass_mock)
     mass_mock.player_queues = queues
     await queues.on_player_register(player)
@@ -1106,6 +1163,76 @@ async def test_track_end_starts_the_successor_without_a_handover(
     assert player.current_media.queue_item_id == "item-2"
 
 
+async def test_track_end_prepares_the_successor_like_music_assistant(
+    mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
+    """Without a handover the next episode starts at its saved position and the kept speed."""
+    queues = await _kiosk_queue(mass_mock, player, "episode-1", "episode-2")
+    queues._queue_data["wk_test"].session_id = "session"
+    prepared = queues.get_item("wk_test", "episode-2")
+    assert prepared is not None
+
+    async def load_next_queue_item(queue_id: str, current_item_id: str) -> QueueItem:
+        # Music Assistant's preparation: saved resume position and the speed
+        # carried over from the previous episode.
+        assert (queue_id, current_item_id) == ("wk_test", "episode-1")
+        prepared.duration = 3000
+        prepared.streamdetails = Mock(duration=None, seek_position=600)
+        prepared.extra_attributes["playback_speed"] = 2.0
+        return prepared
+
+    queues.load_next_queue_item = load_next_queue_item  # type: ignore[method-assign]
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "episode-2"
+    assert media_timeline(player.current_media) == (3000, 600)
+    assert player.playback_speed == 2.0
+
+
+async def test_track_end_reports_idle_when_the_queue_has_nothing_to_load(
+    mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
+    """A successor that Music Assistant cannot load leaves the kiosk IDLE."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2")
+    queues._queue_data["wk_test"].session_id = "session"
+    queues.load_next_queue_item = AsyncMock(  # type: ignore[method-assign]
+        side_effect=QueueEmpty("No more (playable) tracks left in the queue.")
+    )
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.playback_state == PlaybackState.IDLE
+
+
+async def test_track_end_keeps_media_started_while_loading_fails(
+    mass_mock: Mock,
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    queue_order: Callable[..., None],
+) -> None:
+    """A failed load does not stop media that started while it ran."""
+    queue_order("item-1", "item-2")
+    await player.play_media(
+        PlayerMedia(uri="item-1", duration=30, source_id="wk_test", queue_item_id="item-1")
+    )
+    player.note_seek(29)
+    mass_mock.players.get_player.return_value = player
+    replacement = PlayerMedia(uri="other", duration=30)
+
+    async def load_fails(_queue_id: str, _item_id: str) -> QueueItem:
+        await player.play_media(replacement)
+        raise QueueEmpty("No more (playable) tracks left in the queue.")
+
+    mass_mock.player_queues.load_next_queue_item = AsyncMock(side_effect=load_fails)
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.current_media is replacement
+    assert player.playback_state == PlaybackState.PLAYING
+
+
 async def test_track_end_reports_idle_when_the_successor_cannot_be_built(
     mass_mock: Mock,
     provider: WebKioskProvider,
@@ -1118,7 +1245,7 @@ async def test_track_end_reports_idle_when_the_successor_cannot_be_built(
     await provider._advance_after_track("wk_test", player.playback_generation)
 
     assert player.playback_state == PlaybackState.IDLE
-    assert "Cannot start queue item item-2" in caplog.text
+    assert "Cannot load the next item of queue wk_test" in caplog.text
 
 
 async def test_track_end_does_not_override_media_started_meanwhile(
@@ -1141,6 +1268,7 @@ async def test_track_end_does_not_override_media_started_meanwhile(
         return PlayerMedia(uri="item-2", source_id="wk_test", queue_item_id="item-2")
 
     mass_mock.player_queues.player_media_from_queue_item = AsyncMock(side_effect=media_from_item)
+    mass_mock.player_queues.load_next_queue_item = AsyncMock(return_value=Mock())
 
     await provider._advance_after_track("wk_test", player.playback_generation)
 

@@ -13,8 +13,9 @@ from uuid import NAMESPACE_URL, uuid5
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import (
-    InvalidDataError,
+    MusicAssistantError,
     PlayerUnavailableError,
+    QueueEmpty,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.player import DeviceInfo
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
 
     from .ownership import VerifiedSendspinClaim
     from .provider import WebKioskProvider
+
+# Seconds the clock runs on without browser evidence: two position reports.
+CLOCK_HOLD_AFTER = 10.0
 
 
 def playback_lock(mass: MusicAssistant, player_id: str) -> AbstractAsyncContextManager[None]:
@@ -115,7 +119,9 @@ class WebKioskPlayer(Player):
     _accepted_position: bool = False
     _attr_elapsed_time: float | None = None
     _attr_elapsed_time_last_updated: float | None = None
-    _last_ws_position: float | None = None
+    # Monotonic time of the last browser evidence for the clock: a play start,
+    # resume, seek or position report.
+    _clock_evidence_at: float | None = None
     _ws_ever_connected: bool = False
     _track_started_at: float = 0.0
 
@@ -299,7 +305,7 @@ class WebKioskPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0.0
         self._attr_elapsed_time_last_updated = time.time()
-        self._last_ws_position = None
+        self._clock_evidence_at = time.monotonic()
         self._track_started_at = time.monotonic()
         self._accepted_position = False
         self._track_end_handled = False
@@ -358,21 +364,20 @@ class WebKioskPlayer(Player):
             # The handed-over item is a copy of the queue that a later edit can
             # leave stale, and a track can end before it arrives. Music
             # Assistant hands over a replacement a second later and skips it
-            # once the player is IDLE, so start the queue's successor here.
+            # once the player is IDLE, so ask the queue for the next item here.
             self.logger.debug(
-                "Handed-over item %s does not follow in the queue, starting %s",
+                "Handed-over item %s does not follow in the queue, loading %s",
                 media.queue_item_id if media else None,
                 successor.queue_item_id,
             )
             generation = self._playback_generation
-            try:
-                media = await self.mass.player_queues.player_media_from_queue_item(successor)
-            except (InvalidDataError, KeyError) as err:
-                self.logger.warning("Cannot start queue item %s: %s", successor.queue_item_id, err)
-                return False
+            loaded = await self._load_queue_successor(queue_id, current.queue_item_id)
             if generation != self._playback_generation:
                 # Other media started meanwhile and replaced the finished stream.
                 return True
+            if loaded is None:
+                return False
+            media = loaded
         await self.play_media(media)
         return True
 
@@ -410,17 +415,14 @@ class WebKioskPlayer(Player):
             return
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time_last_updated = time.time()
+        self._clock_evidence_at = time.monotonic()
         self.update_state()
 
     async def pause(self) -> None:
         """Handle PAUSE command — pause playback, keep stream alive for resume."""
         self.logger.info("pause on %s", self.display_name)
-        if (
-            self._attr_playback_state == PlaybackState.PLAYING
-            and self._attr_elapsed_time is not None
-            and self._attr_elapsed_time_last_updated is not None
-        ):
-            self._attr_elapsed_time += time.time() - self._attr_elapsed_time_last_updated
+        if self._attr_playback_state == PlaybackState.PLAYING:
+            self._attr_elapsed_time = self._clock_position(time.time())
         self._attr_playback_state = PlaybackState.PAUSED
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
@@ -436,7 +438,7 @@ class WebKioskPlayer(Player):
         self._attr_current_media = None
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
-        self._last_ws_position = None
+        self._clock_evidence_at = None
         self.current_stream_url = None
         self.update_state()
         cast("WebKioskProvider", self.provider).notify_play_stopped(self.player_id)
@@ -461,7 +463,7 @@ class WebKioskPlayer(Player):
         """Handle SEEK command — send seek action to the kiosk via WebSocket."""
         self._attr_elapsed_time = float(position_seconds)
         self._attr_elapsed_time_last_updated = time.time()
-        self._last_ws_position = None
+        self._clock_evidence_at = time.monotonic()
         if self._track_started_at > 0:
             self._track_started_at = time.monotonic() - float(position_seconds)
         self.update_state()
@@ -492,7 +494,7 @@ class WebKioskPlayer(Player):
         # elapsed_time_last_updated is compared against time.time() by MA core
         # (corrected_elapsed_time) — must stay wall-clock.
         self._attr_elapsed_time_last_updated = time.time()
-        self._last_ws_position = time.monotonic()
+        self._clock_evidence_at = time.monotonic()
         self.update_state()
 
     def note_seek(self, position: float) -> None:
@@ -510,9 +512,6 @@ class WebKioskPlayer(Player):
 
         Raises PlayerUnavailableError if the player was marked unavailable
         (e.g. WS disconnected while playing — kiosk likely went offline).
-
-        If a recent WebSocket position report was received (within 10s),
-        skip wall-clock increment — the WS data is more accurate.
         """
         if not self._attr_available:
             raise PlayerUnavailableError(
@@ -522,22 +521,20 @@ class WebKioskPlayer(Player):
                 translation_args=[self.display_name],
             )
         if (
-            self._attr_playback_state == PlaybackState.PLAYING
-            and self._attr_elapsed_time is not None
-            and self._attr_elapsed_time_last_updated is not None
+            self._attr_playback_state != PlaybackState.PLAYING
+            or self._attr_elapsed_time is None
+            or self._attr_elapsed_time_last_updated is None
         ):
-            # Skip wall-clock update if WS reported position recently
-            if self._last_ws_position and (time.monotonic() - self._last_ws_position) < 10:
-                return
-            now = time.time()
-            delta = now - self._attr_elapsed_time_last_updated
-            new_elapsed = max(0.0, float(self._attr_elapsed_time) + float(delta))
-            duration = self._served_duration()
-            if duration is not None:
-                new_elapsed = min(new_elapsed, duration)
-            self._attr_elapsed_time = new_elapsed
-            self._attr_elapsed_time_last_updated = now
-            self.update_state()
+            return
+        now = time.time()
+        position = self._clock_position(now)
+        running = self._attr_elapsed_time + (now - self._attr_elapsed_time_last_updated)
+        if position == running:
+            # Music Assistant extrapolates the same position from the last update.
+            return
+        self._attr_elapsed_time = position
+        self._attr_elapsed_time_last_updated = now
+        self.update_state()
 
     @contextmanager
     def suppress_ws_notify(self) -> Iterator[None]:
@@ -570,6 +567,39 @@ class WebKioskPlayer(Player):
     def _skip_ws_notify(self) -> bool:
         """True while at least one suppress_ws_notify() context is active."""
         return self._skip_ws_depth > 0
+
+    def _clock_position(self, now: float) -> float | None:
+        """Return the position at wall-clock time now, held and capped as the browser allows."""
+        if self._attr_elapsed_time is None or self._attr_elapsed_time_last_updated is None:
+            return self._attr_elapsed_time
+        running = now - self._attr_elapsed_time_last_updated
+        # The browser reports while it plays HTML5. After two missed reports
+        # (a reload, Sendspin mode, a stalled stream) the position holds until
+        # the browser reports again instead of running on with the wall clock.
+        if self._clock_evidence_at is not None:
+            silent = time.monotonic() - self._clock_evidence_at
+            running -= min(max(0.0, silent - CLOCK_HOLD_AFTER), max(0.0, running))
+        position = max(0.0, self._attr_elapsed_time + running)
+        if (duration := self._served_duration()) is not None:
+            position = min(position, duration)
+        return position
+
+    async def _load_queue_successor(
+        self, queue_id: str, finished_item_id: str
+    ) -> PlayerMedia | None:
+        """Return the next queue item as Music Assistant prepares it for a player, if any."""
+        # The queue controller owns item preparation (resume position, skipping
+        # unplayable items, playback speed across episodes). Use its loader, as
+        # its own handover does, instead of converting a bare queue item.
+        queues = self.mass.player_queues
+        try:
+            item = await queues.load_next_queue_item(queue_id, finished_item_id)
+            return await queues.player_media_from_queue_item(item)
+        except QueueEmpty:
+            return None
+        except (MusicAssistantError, KeyError) as err:
+            self.logger.warning("Cannot load the next item of queue %s: %s", queue_id, err)
+            return None
 
     def _refreshable_stream(self) -> tuple[float, float, float] | None:
         """Return song length, stream start and position of a rebuildable queue stream."""
@@ -610,7 +640,7 @@ class WebKioskPlayer(Player):
         """Resume playback after pause — tell the kiosk to unpause its audio element."""
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time_last_updated = time.time()
-        self._last_ws_position = None
+        self._clock_evidence_at = time.monotonic()
         self.update_state()
         if not self._skip_ws_notify:
             cast("WebKioskProvider", self.provider).notify_play_resumed(self.player_id)
