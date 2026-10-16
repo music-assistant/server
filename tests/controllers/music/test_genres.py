@@ -846,6 +846,56 @@ class TestSyncMediaItemGenres:
         )
         assert len(rows) == 1
 
+    @pytest.mark.parametrize("names", [{"SyncExcluded"}, {"SyncExcluded", "SyncFresh"}])
+    async def test_sync_keeps_an_excluded_genre_away(
+        self, mass: MusicAssistant, genre_ctrl: GenreController, names: set[str]
+    ) -> None:
+        """A genre the user excluded from an item is not mapped to it again by a sync."""
+        track = await _add_test_track(mass, f"Sync Track Excluded {len(names)}")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncExcluded"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE name = :name",
+            {"name": "SyncExcluded"},
+            limit=1,
+        )
+        excluded_id = int(rows[0]["item_id"])
+        await genre_ctrl.exclude_genre_from_media_item(excluded_id, MediaType.TRACK, track.item_id)
+
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, names)
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        mapped = {int(row["genre_id"]) for row in rows}
+        assert excluded_id not in mapped
+        assert len(mapped) == len(names) - 1
+
+    async def test_sync_of_an_excluded_genre_writes_nothing(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A provider still reporting an excluded genre leaves the item's mappings untouched."""
+        excluded = await genre_ctrl.add_item_to_library(_make_genre("SyncExcludedKnown"))
+        track = await _add_test_track(mass, "Sync Track Excluded Known")
+        await genre_ctrl.sync_media_item_genres(
+            MediaType.TRACK, track.item_id, {"SyncExcludedKnown"}
+        )
+        await genre_ctrl.exclude_genre_from_media_item(
+            excluded.item_id, MediaType.TRACK, track.item_id
+        )
+        genre_ctrl._sync_lookup_cache.clear()
+
+        with patch.object(
+            genre_ctrl, "_find_genres_for_alias", wraps=genre_ctrl._find_genres_for_alias
+        ) as full_path:
+            await genre_ctrl.sync_media_item_genres(
+                MediaType.TRACK, track.item_id, {"SyncExcludedKnown"}
+            )
+
+        full_path.assert_not_called()
+
     async def test_sync_skips_empty_names(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
