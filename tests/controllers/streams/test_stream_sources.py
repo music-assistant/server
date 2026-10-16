@@ -3,8 +3,9 @@ Tests for the stream source ranking.
 
 The ranking orders the copies of a media item for playback. Every level of its sort key is
 exercised on its own, with the levels above it held equal, and one set of candidates is
-ranked from shuffled input to show the order does not depend on how they come in. The
-settings the ranking runs under are read from the streams settings.
+ranked from shuffled input to show the order does not depend on how they come in. A copy
+below the upgrade quality gives way to better ones. The settings the ranking runs under are read
+from the streams settings.
 """
 
 from __future__ import annotations
@@ -18,7 +19,10 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import AudioFormat, ProviderMapping
 
-from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
+from music_assistant.controllers.streams.constants import (
+    CONF_STREAM_SOURCE_MODE,
+    CONF_UPGRADE_BELOW_QUALITY,
+)
 from music_assistant.controllers.streams.stream_sources import (
     DEFAULT_POLICY,
     ContainerListing,
@@ -26,6 +30,7 @@ from music_assistant.controllers.streams.stream_sources import (
     SourceCandidate,
     StreamSourceMode,
     StreamSourcePolicy,
+    UpgradeQuality,
     quality_tier,
     rank_provider_mappings,
     rank_stream_sources,
@@ -43,6 +48,7 @@ LOCAL = "filesystem_local--a"
 DEEZER = "deezer--a"
 # a local source that is not the filesystem: its local bonus comes from the provider cache
 PLEX = "plex--a"
+QOBUZ = "qobuz--a"
 TIDAL = "tidal--a"
 OTHER_TIDAL = "tidal--b"
 SPOTIFY = "spotify--a"
@@ -50,6 +56,7 @@ ITEM_ID = "1"
 
 PREFER_LOCAL = StreamSourcePolicy(mode=StreamSourceMode.PREFER_LOCAL)
 PER_TRACK = StreamSourcePolicy(mode=StreamSourceMode.BEST_QUALITY_PER_TRACK)
+UPGRADE_LOSSLESS = StreamSourcePolicy(upgrade_below=QualityTier.LOSSLESS)
 
 
 def _format(
@@ -109,6 +116,10 @@ def _candidate(
         provider=cast("Provider", SimpleNamespace(instance_id=instance)),
         is_streaming=is_streaming,
     )
+
+
+MP3 = _format(ContentType.MP3, bit_rate=320)
+HIRES = _format(sample_rate=96000, bit_depth=24)
 
 
 def _ids(ranked: list[SourceCandidate]) -> list[str]:
@@ -371,6 +382,163 @@ def test_reasons_name_the_decisive_level_and_the_last_candidates_quality() -> No
     )
 
 
+@pytest.mark.parametrize(
+    ("candidates", "options", "expected", "reason"),
+    [
+        (
+            [
+                _candidate(LOCAL, is_streaming=False, audio_format=MP3),
+                _candidate(TIDAL),
+            ],
+            {"pinned": (LOCAL, ITEM_ID), "policy": UPGRADE_LOSSLESS},
+            [f"{TIDAL}/1", f"{LOCAL}/1"],
+            "upgrade: lossless 44.1/16 over lossy 320 kbps",
+        ),
+        (
+            [
+                _candidate(LOCAL, is_streaming=False, audio_format=MP3),
+                _candidate(TIDAL),
+            ],
+            {
+                "policy": StreamSourcePolicy(
+                    mode=StreamSourceMode.PREFER_LOCAL, upgrade_below=QualityTier.LOSSLESS
+                )
+            },
+            [f"{TIDAL}/1", f"{LOCAL}/1"],
+            "upgrade: lossless 44.1/16 over lossy 320 kbps",
+        ),
+        (
+            [
+                _candidate(SPOTIFY, audio_format=_format(ContentType.MP3, bit_rate=128)),
+                _candidate(DEEZER, audio_format=_format(ContentType.OGG, bit_rate=320)),
+            ],
+            {"pinned": (SPOTIFY, ITEM_ID), "policy": UPGRADE_LOSSLESS},
+            [f"{DEEZER}/1", f"{SPOTIFY}/1"],
+            "upgrade: lossy 320 kbps over lossy 128 kbps",
+        ),
+        (
+            [_candidate(LOCAL, is_streaming=False), _candidate(TIDAL, audio_format=HIRES)],
+            {"pinned": (LOCAL, ITEM_ID), "policy": UPGRADE_LOSSLESS},
+            [f"{LOCAL}/1", f"{TIDAL}/1"],
+            "pinned",
+        ),
+        (
+            [
+                _candidate(LOCAL, is_streaming=False, audio_format=MP3),
+                _candidate(SPOTIFY, audio_format=_format(ContentType.OGG, bit_rate=320)),
+            ],
+            {"pinned": (LOCAL, ITEM_ID), "policy": UPGRADE_LOSSLESS},
+            [f"{LOCAL}/1", f"{SPOTIFY}/1"],
+            "pinned",
+        ),
+        (
+            [
+                _candidate(LOCAL, is_streaming=False, audio_format=MP3),
+                _candidate(TIDAL),
+            ],
+            {"pinned": (LOCAL, ITEM_ID)},
+            [f"{LOCAL}/1", f"{TIDAL}/1"],
+            "pinned",
+        ),
+        (
+            [
+                _candidate(TIDAL, audio_format=AudioFormat()),
+                _candidate(
+                    LOCAL,
+                    is_streaming=False,
+                    audio_format=_format(ContentType.MP3, bit_rate=128),
+                ),
+            ],
+            {"pinned": (TIDAL, ITEM_ID), "policy": UPGRADE_LOSSLESS},
+            [f"{TIDAL}/1", f"{LOCAL}/1"],
+            "pinned",
+        ),
+    ],
+    ids=[
+        "a better copy jumps the pin",
+        "a better copy jumps a local source when preferring local",
+        "a better copy below the upgrade quality still jumps",
+        "no jump when the first copy meets the upgrade quality",
+        "no jump for a copy of the same tier",
+        "no jump without an upgrade quality",
+        "a copy of unknown quality is not taken to be below",
+    ],
+)
+def test_rank_stream_sources_upgrade(
+    candidates: list[SourceCandidate],
+    options: dict[str, Any],
+    expected: list[str],
+    reason: str,
+) -> None:
+    """A first copy below the upgrade quality gives way to every copy of a better tier."""
+    ranked = rank_stream_sources(candidates, **options)
+
+    assert _ids(ranked) == expected
+    assert ranked[0].reason == reason
+
+
+def test_the_copies_reaching_the_upgrade_quality_go_first() -> None:
+    """Better copies that reach the upgrade quality go first, alike ones in the usual order."""
+    ranked = rank_stream_sources(
+        [
+            _candidate(LOCAL, is_streaming=False, audio_format=MP3),
+            _candidate(TIDAL),
+            _candidate(QOBUZ, audio_format=HIRES),
+            _candidate(DEEZER),
+            _candidate(SPOTIFY, audio_format=_format(ContentType.OGG, bit_rate=320)),
+        ],
+        pinned=(LOCAL, ITEM_ID),
+        preferred=[DEEZER, SPOTIFY],
+        policy=StreamSourcePolicy(upgrade_below=QualityTier.HIRES),
+    )
+
+    # the hi-res copy before the own lossless account, the own account before the other
+    # lossless copy, and the own lossy account, no better than the pinned copy, behind it
+    assert _ids(ranked) == [f"{QOBUZ}/1", f"{DEEZER}/1", f"{TIDAL}/1", f"{LOCAL}/1", f"{SPOTIFY}/1"]
+    assert [candidate.reason for candidate in ranked] == [
+        "upgrade: hi-res 96/24 over lossless 44.1/16",
+        "own account",
+        "upgrade: lossless 44.1/16 over lossy 320 kbps",
+        "pinned",
+        "lossy 320 kbps",
+    ]
+
+
+@pytest.mark.parametrize("pinned_mp3", [False, True], ids=["no pinned copy", "a pinned mp3"])
+def test_a_poorer_pinned_copy_does_not_change_the_upgrade(pinned_mp3: bool) -> None:
+    """The copy that reaches the upgrade quality plays, whether or not a poorer one is pinned."""
+    candidates = [_candidate(DEEZER), _candidate(QOBUZ, audio_format=HIRES)]
+    if pinned_mp3:
+        candidates.append(_candidate(LOCAL, is_streaming=False, audio_format=MP3))
+
+    ranked = rank_stream_sources(
+        candidates,
+        pinned=(LOCAL, ITEM_ID) if pinned_mp3 else None,
+        preferred=[DEEZER],
+        policy=StreamSourcePolicy(upgrade_below=QualityTier.HIRES),
+    )
+
+    assert _ids(ranked)[:2] == [f"{QOBUZ}/1", f"{DEEZER}/1"]
+
+
+def test_without_a_copy_reaching_the_upgrade_quality_the_closest_goes_first() -> None:
+    """Better copies that all fall short go first the closer they come to the upgrade quality."""
+    ranked = rank_stream_sources(
+        [
+            _candidate(
+                LOCAL, is_streaming=False, audio_format=_format(ContentType.MP3, bit_rate=128)
+            ),
+            _candidate(SPOTIFY, audio_format=_format(ContentType.OGG, bit_rate=320)),
+            _candidate(TIDAL),
+        ],
+        pinned=(LOCAL, ITEM_ID),
+        preferred=[SPOTIFY],
+        policy=StreamSourcePolicy(upgrade_below=QualityTier.HIRES),
+    )
+
+    assert _ids(ranked) == [f"{TIDAL}/1", f"{SPOTIFY}/1", f"{LOCAL}/1"]
+
+
 async def test_rank_provider_mappings_pins_the_streamed_copy_and_knows_local_sources() -> None:
     """Bare mappings rank under the given policy, with the streamed copy first when known."""
     plex = _mapping(PLEX, audio_format=_format(ContentType.MP3, bit_rate=320))
@@ -383,10 +551,6 @@ async def test_rank_provider_mappings_pins_the_streamed_copy_and_knows_local_sou
         assert rank_provider_mappings({plex, deezer}, policy=PREFER_LOCAL) == [plex, deezer]
     finally:
         await set_global_cache_values({"non_streaming_providers": previous})
-
-
-MP3 = _format(ContentType.MP3, bit_rate=320)
-HIRES = _format(sample_rate=96000, bit_depth=24)
 
 
 @pytest.mark.parametrize(
@@ -521,3 +685,68 @@ async def test_the_setting_offers_every_mode_and_defaults_to_best_quality(
         streams_controller.domain, {CONF_STREAM_SOURCE_MODE: "prefer_local"}
     )
     assert read_stream_source_policy(mass) == PREFER_LOCAL
+
+
+@pytest.mark.parametrize(
+    ("stored", "policy"),
+    [
+        ({CONF_UPGRADE_BELOW_QUALITY: "off"}, DEFAULT_POLICY),
+        (
+            {CONF_UPGRADE_BELOW_QUALITY: "lossy_high"},
+            StreamSourcePolicy(upgrade_below=QualityTier.LOSSY_HIGH),
+        ),
+        ({CONF_UPGRADE_BELOW_QUALITY: "lossless"}, UPGRADE_LOSSLESS),
+        (
+            {CONF_UPGRADE_BELOW_QUALITY: "hires"},
+            StreamSourcePolicy(upgrade_below=QualityTier.HIRES),
+        ),
+        ({CONF_UPGRADE_BELOW_QUALITY: "studio"}, DEFAULT_POLICY),
+        (
+            {CONF_STREAM_SOURCE_MODE: "local_first", CONF_UPGRADE_BELOW_QUALITY: "lossless"},
+            UPGRADE_LOSSLESS,
+        ),
+        (
+            {CONF_STREAM_SOURCE_MODE: "prefer_local", CONF_UPGRADE_BELOW_QUALITY: "hires"},
+            StreamSourcePolicy(mode=StreamSourceMode.PREFER_LOCAL, upgrade_below=QualityTier.HIRES),
+        ),
+    ],
+    ids=[
+        "off",
+        "high-bitrate lossy",
+        "lossless",
+        "hi-res",
+        "unknown",
+        "an unknown mode keeps the upgrade",
+        "with a mode",
+    ],
+)
+def test_read_upgrade_quality(stored: dict[str, str], policy: StreamSourcePolicy) -> None:
+    """Each upgrade quality the setting offers is read as its tier, an unknown one as off."""
+    streams = SimpleNamespace(
+        get_config_value=lambda key, default=None, **_kwargs: stored.get(key, default)
+    )
+    mass = cast("MusicAssistant", SimpleNamespace(streams=streams))
+
+    assert read_stream_source_policy(mass, "q1") == policy
+
+
+async def test_the_upgrade_setting_offers_every_quality_and_defaults_to_off(
+    streams_controller: StreamsController,
+) -> None:
+    """The streams settings offer the upgrade qualities: off until another one is saved."""
+    mass = streams_controller.mass
+    entry = next(
+        entry
+        for entry in await streams_controller.get_config_entries()
+        if entry.key == CONF_UPGRADE_BELOW_QUALITY
+    )
+
+    assert entry.category == "source_selection"
+    assert entry.default_value == UpgradeQuality.OFF
+    assert [option.value for option in entry.options] == ["off", "lossy_high", "lossless", "hires"]
+    streams_controller.config = await mass.config.get_core_config(streams_controller.domain)
+    assert read_stream_source_policy(mass).upgrade_below is None
+    await mass.config.save_core_config(
+        streams_controller.domain, {CONF_UPGRADE_BELOW_QUALITY: "lossless"}
+    )
+    assert read_stream_source_policy(mass) == UPGRADE_LOSSLESS
