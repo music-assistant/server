@@ -84,7 +84,7 @@ async def test_stream_start_opens_kiosk_in_sendspin_mode(
 
 async def test_connect_timeout_transfers_playback_back(player: WebKioskPlayer) -> None:
     """A browser that never connects loses the stream back to the HTTP player."""
-    cast("WebKioskProvider", player.provider).fallback_sendspin = AsyncMock()  # type: ignore[method-assign]
+    cast("WebKioskProvider", player.provider).request_sendspin_fallback = Mock()  # type: ignore[method-assign]
     bridge = WebKioskSendspinBridge(
         cast("WebKioskProvider", player.provider), player, Mock(), BROWSER_CLIENT_ID
     )
@@ -97,13 +97,13 @@ async def test_connect_timeout_transfers_playback_back(player: WebKioskPlayer) -
         await bridge._watch_connect()
 
     cast(
-        "AsyncMock", cast("WebKioskProvider", player.provider).fallback_sendspin
-    ).assert_awaited_once_with(player.player_id, expected_client_id=BROWSER_CLIENT_ID)
+        "Mock", cast("WebKioskProvider", player.provider).request_sendspin_fallback
+    ).assert_called_once_with(player.player_id, BROWSER_CLIENT_ID)
 
 
 async def test_connect_timeout_keeps_playback_when_client_connects(player: WebKioskPlayer) -> None:
     """A browser that connected in time keeps the synchronized stream."""
-    cast("WebKioskProvider", player.provider).fallback_sendspin = AsyncMock()  # type: ignore[method-assign]
+    cast("WebKioskProvider", player.provider).request_sendspin_fallback = Mock()  # type: ignore[method-assign]
     bridge = WebKioskSendspinBridge(
         cast("WebKioskProvider", player.provider), player, Mock(), BROWSER_CLIENT_ID
     )
@@ -116,8 +116,8 @@ async def test_connect_timeout_keeps_playback_when_client_connects(player: WebKi
         await bridge._watch_connect()
 
     cast(
-        "AsyncMock", cast("WebKioskProvider", player.provider).fallback_sendspin
-    ).assert_not_awaited()
+        "Mock", cast("WebKioskProvider", player.provider).request_sendspin_fallback
+    ).assert_not_called()
 
 
 async def test_note_sendspin_client_id_keeps_the_proven_identity(
@@ -159,7 +159,7 @@ async def test_note_sendspin_client_id_keeps_the_proven_identity(
 async def test_fallback_reports_unexpected_transfer_failures(
     player: WebKioskPlayer, mass_mock: Mock, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
-    """Expected unavailable players are logged, while a broken transfer task fails visibly."""
+    """Expected unavailable players are logged, while a broken provider fallback fails visibly."""
     monkeypatch.setattr(bridge_module, "SENDSPIN_CONNECT_TIMEOUT", 0)
     tasks: list[asyncio.Task[None]] = []
 
@@ -181,73 +181,21 @@ async def test_fallback_reports_unexpected_transfer_failures(
     player.sendspin_claim = VerifiedSendspinClaim(player.player_id, BROWSER_CLIENT_ID)
     await bridge.start()
     server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
+    await asyncio.gather(*tasks, return_exceptions=True)
     results = await asyncio.gather(*tasks, return_exceptions=True)
     await bridge.stop()
 
-    assert results == ([error] if isinstance(error, RuntimeError) else [None])
+    # The watchdog only detects the timeout; the fallback runs as provider work.
+    assert results == [None, error if isinstance(error, RuntimeError) else None]
 
 
-@pytest.mark.parametrize("replaced_watchdog", [False, True])
-async def test_stop_waits_for_fallback_cancellation_before_removing_client(
-    player: WebKioskPlayer,
-    mass_mock: Mock,
-    monkeypatch: pytest.MonkeyPatch,
-    replaced_watchdog: bool,
-) -> None:
-    """Client removal cannot overlap a fallback transfer still cleaning up."""
-    monkeypatch.setattr(bridge_module, "SENDSPIN_CONNECT_TIMEOUT", 0)
-    transfer_started = asyncio.Event()
-    cancellation_started = asyncio.Event()
-    finish_cleanup = asyncio.Event()
-    transfer_finished = asyncio.Event()
-
-    async def transfer(*_args: object, **_kwargs: object) -> None:
-        transfer_started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancellation_started.set()
-            await finish_cleanup.wait()
-            transfer_finished.set()
-
-    async def remove_client(_: str) -> None:
-        assert transfer_finished.is_set()
-
-    mass_mock.create_task.side_effect = asyncio.create_task
-    cast("WebKioskProvider", player.provider).fallback_sendspin = AsyncMock(side_effect=transfer)  # type: ignore[method-assign]
-    server = Mock()
-    server.remove_client = AsyncMock(side_effect=remove_client)
-    server.register_external_player.return_value = Mock(is_connected=False)
-    server.register_external_player.return_value.roles_by_family.return_value = []
-    player.provider.http_server = Mock()  # type: ignore[attr-defined]
-    bridge = WebKioskSendspinBridge(
-        cast("WebKioskProvider", player.provider), player, server, BROWSER_CLIENT_ID
-    )
-    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, BROWSER_CLIENT_ID)
-    await bridge.start()
-    server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
-    await asyncio.wait_for(transfer_started.wait(), 1)
-    if replaced_watchdog:
-        server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
-        await asyncio.wait_for(cancellation_started.wait(), 1)
-    stopping = asyncio.create_task(bridge.stop())
-    try:
-        await asyncio.wait_for(cancellation_started.wait(), 1)
-        assert not stopping.done()
-        server.remove_client.assert_not_awaited()
-    finally:
-        finish_cleanup.set()
-        await stopping
-    assert not bridge.is_registered
-
-
-async def test_connect_timeout_fallback_survives_removing_its_own_bridge(
+def _timeout_fallback_setup(
     provider: WebKioskProvider,
     player: WebKioskPlayer,
     mass_mock: Mock,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The watchdog's fallback removes the bridge that owns it and still resumes HTML5."""
+) -> tuple[WebKioskSendspinBridgeManager, Mock, list[asyncio.Task[None]]]:
+    """Register a not-yet-connected bridge whose stream start arms the watchdog."""
     monkeypatch.setattr(bridge_module, "SENDSPIN_CONNECT_TIMEOUT", 0)
     tasks: list[asyncio.Task[None]] = []
 
@@ -276,19 +224,69 @@ async def test_connect_timeout_fallback_survives_removing_its_own_bridge(
     server.remove_client = AsyncMock()
     server.register_external_player.return_value = Mock(is_connected=False)
     server.register_external_player.return_value.roles_by_family.return_value = []
-    provider.http_server = Mock()
+    provider.http_server = Mock(stop=AsyncMock())
     manager = WebKioskSendspinBridgeManager(provider)
     provider.bridge_manager = manager
+    return manager, server, tasks
+
+
+async def test_connect_timeout_fallback_survives_removing_its_own_bridge(
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    mass_mock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The watchdog's fallback removes the bridge that owns it and still resumes HTML5."""
+    manager, server, tasks = _timeout_fallback_setup(provider, player, mass_mock, monkeypatch)
     bridge = WebKioskSendspinBridge(provider, player, server, BROWSER_CLIENT_ID)
     await bridge.start()
     manager._bridges[player.player_id] = bridge
 
     server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
-    results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
+    while not all(task.done() for task in tasks):
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
 
-    assert results == [None]
+    assert all(task.exception() is None for task in tasks)
     assert manager.get_bridge(player.player_id) is None
     server.remove_client.assert_awaited_once_with(BROWSER_CLIENT_ID)
     assert player.sendspin_fallback
     assert player.active_output_protocol == "native"
     mass_mock.player_queues.resume.assert_awaited_once_with(player.player_id)
+
+
+async def test_unload_cancels_a_watchdog_fallback_suspended_in_resume(
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    mass_mock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timeout fallback is provider work: unload cancels it after it removed its bridge."""
+    manager, server, tasks = _timeout_fallback_setup(provider, player, mass_mock, monkeypatch)
+    resume_started = asyncio.Event()
+    resume_cancelled = asyncio.Event()
+
+    async def resume(_queue_id: str) -> None:
+        resume_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            resume_cancelled.set()
+            raise
+
+    mass_mock.player_queues.resume = AsyncMock(side_effect=resume)
+    mass_mock.players.iter_players.return_value = []
+    bridge = WebKioskSendspinBridge(provider, player, server, BROWSER_CLIENT_ID)
+    await bridge.start()
+    manager._bridges[player.player_id] = bridge
+
+    server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
+    await asyncio.wait_for(resume_started.wait(), 1)
+    assert manager.get_bridge(player.player_id) is None
+
+    try:
+        await asyncio.wait_for(provider.unload(), 1)
+        assert resume_cancelled.is_set()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

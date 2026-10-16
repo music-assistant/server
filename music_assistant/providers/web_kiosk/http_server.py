@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -103,6 +104,7 @@ class WebKioskHTTPServer:
         self._ws_claims: dict[web.WebSocketResponse, VerifiedSendspinClaim] = {}
         self._ws_peers: dict[web.WebSocketResponse, tuple[str | None, str | None]] = {}
         self._ws_lyrics: set[web.WebSocketResponse] = set()
+        self._outbound_locks: dict[str, asyncio.Lock] = {}
         self.party = PartyAdapter(provider)
         self._setup_routes()
 
@@ -130,6 +132,7 @@ class WebKioskHTTPServer:
         self._ws_clients.clear()
         self._ws_volume_support.clear()
         self._ws_claims.clear()
+        self._outbound_locks.clear()
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -166,7 +169,7 @@ class WebKioskHTTPServer:
         )
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_wave(self, player_id: str, seq: int, bins: list[float] | None) -> None:
         """Send the stored energy curve for the track that just started."""
@@ -176,7 +179,7 @@ class WebKioskHTTPServer:
         msg = json.dumps({"type": "wave", "seq": seq, "bins": bins or []})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_lyrics(self, player_id: str, seq: int, lines: list[dict[str, Any]]) -> None:
         """Send lyric lines for the track that just started."""
@@ -186,7 +189,7 @@ class WebKioskHTTPServer:
         msg = json.dumps({"type": "lyrics", "seq": seq, "lines": lines})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_player_name(self, player: WebKioskPlayer) -> None:
         """Send configured display-name changes to connected kiosk pages."""
@@ -199,7 +202,7 @@ class WebKioskHTTPServer:
         message = json.dumps({"type": "player", "custom_name": name})
         for ws in tuple(self._ws_clients.get(player.player_id, set())):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, message, player.player_id))
+                self._post(ws, message, player.player_id)
 
     def broadcast_media(self, player_id: str, seq: int, media: PlayerMedia | None) -> None:
         """Send effective track metadata without opening an HTML5 audio stream."""
@@ -215,7 +218,7 @@ class WebKioskHTTPServer:
         )
         for ws in list(self._ws_clients.get(player_id, set())):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_sendspin(self, player_id: str, url: str) -> None:
         """Notify WebSocket clients to open the kiosk in Sendspin mode."""
@@ -225,7 +228,7 @@ class WebKioskHTTPServer:
         msg = json.dumps({"type": "sendspin", "url": url, "player_id": player_id})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_pause(self, player_id: str) -> None:
         """Notify subscribed WebSocket clients to pause playback."""
@@ -235,7 +238,7 @@ class WebKioskHTTPServer:
         msg = json.dumps({"type": "pause"})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_resume(self, player_id: str) -> None:
         """Notify subscribed WebSocket clients to resume playback."""
@@ -245,7 +248,7 @@ class WebKioskHTTPServer:
         msg = json.dumps({"type": "resume"})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_stop(self, player_id: str) -> None:
         """Notify subscribed WebSocket clients to stop playback."""
@@ -262,7 +265,7 @@ class WebKioskHTTPServer:
         msg = json.dumps(payload)
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_seek(self, player_id: str, position_seconds: int) -> None:
         """Notify subscribed WebSocket clients to seek to a position."""
@@ -272,7 +275,7 @@ class WebKioskHTTPServer:
         msg = json.dumps({"type": "seek", "position": position_seconds})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_volume(self, player_id: str, volume_level: int) -> None:
         """Notify subscribed WebSocket clients of a volume change."""
@@ -282,14 +285,14 @@ class WebKioskHTTPServer:
         msg = json.dumps({"type": "volume", "level": volume_level})
         for ws in list(clients):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def broadcast_mute(self, player_id: str, muted: bool) -> None:
         """Notify subscribed WebSocket clients of a mute change."""
         msg = json.dumps({"type": "mute", "muted": muted})
         for ws in list(self._ws_clients.get(player_id, set())):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+                self._post(ws, msg, player_id)
 
     def client_count(self, player_id: str) -> int:
         """Return how many browser sockets are open for this player."""
@@ -398,7 +401,7 @@ class WebKioskHTTPServer:
         )
         for ws in self._ws_clients.get(player.player_id, set()):
             if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, message))
+                self._post(ws, message, player.player_id)
 
     def _publish_effective_media(self, player: WebKioskPlayer, *, force: bool = False) -> None:
         """Publish a new metadata generation for an active linked Sendspin output."""
@@ -665,24 +668,23 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             custom_name = player.config.name if player else None
             self._player_names[player_id] = custom_name
             self._update_output_mode(player_id)
-            await self._ws_send(
-                ws,
-                json.dumps(
-                    {
-                        "type": "welcome",
-                        "player_id": player_id,
-                        "custom_name": custom_name,
-                        "server_version": self.provider.mass.version,
-                        "device_info": {
-                            "model": player.device_info.model,
-                            "manufacturer": player.device_info.manufacturer,
-                            "software_version": player.device_info.software_version,
-                        }
-                        if player
-                        else {},
+            welcome = json.dumps(
+                {
+                    "type": "welcome",
+                    "player_id": player_id,
+                    "custom_name": custom_name,
+                    "server_version": self.provider.mass.version,
+                    "device_info": {
+                        "model": player.device_info.model,
+                        "manufacturer": player.device_info.manufacturer,
+                        "software_version": player.device_info.software_version,
                     }
-                ),
+                    if player
+                    else {},
+                }
             )
+            async with self._outbound_lock(player_id):
+                await self._ws_send(ws, welcome)
             # A reconnecting/reloaded kiosk needs the current play state, otherwise it
             # stays silent until the next playback command.
             await self._move_playback_to_native_output(player)
@@ -700,6 +702,9 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 self._player_names.pop(player_id, None)
                 self._group_signatures.pop(player_id, None)
                 self._ws_clients.pop(player_id, None)
+                lock = self._outbound_locks.get(player_id)
+                if lock is not None and not lock.locked():
+                    del self._outbound_locks[player_id]
                 offline_player = self.provider.mass.players.get_player(player_id)
                 if offline_player and isinstance(offline_player, WebKioskPlayer):
                     offline_player.on_ws_disconnected()
@@ -740,44 +745,48 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         if player.sendspin_client_id and player.active_output_protocol == player.sendspin_client_id:
             self._publish_effective_media(player, force=True)
             return
-        if player.current_media is None:
-            await self._send_volume(player, {ws})
-            return
-        refreshed = await player.refresh_stream()
-        media = cast("PlayerMedia | None", player.current_media)
-        if media is None:
-            await self._send_volume(player, {ws})
-            return
-        song_length, stream_start = media_timeline(media)
-        wave_seq = self.provider.next_wave_seq(player.player_id)
-        message = self._play_message(
-            player.player_id,
-            playback_generation=player.playback_generation,
-            title=media.title,
-            artist=media.artist,
-            image_url=media.image_url,
-            duration=song_length,
-            start=stream_start,
-            playback_speed=player.playback_speed,
-            wave_seq=wave_seq,
-        )
-        recipients = self._ws_clients.get(player.player_id, {ws}) if refreshed else {ws}
-        for client in tuple(recipients):
-            await self._ws_send(client, message)
+        refreshed = player.current_media is not None and await player.refresh_stream()
+        # Messages to the player's pages are ordered. Holding the order from the
+        # first read of the play state to the last snapshot message means a
+        # track change made meanwhile reaches every page after the snapshot,
+        # never before an obsolete part of it.
+        async with self._outbound_lock(player.player_id):
+            media = player.current_media
+            if media is None:
+                await self._send_volume(player, {ws})
+                return
+            song_length, stream_start = media_timeline(media)
+            wave_seq = self.provider.next_wave_seq(player.player_id)
+            message = self._play_message(
+                player.player_id,
+                playback_generation=player.playback_generation,
+                title=media.title,
+                artist=media.artist,
+                image_url=media.image_url,
+                duration=song_length,
+                start=stream_start,
+                playback_speed=player.playback_speed,
+                wave_seq=wave_seq,
+            )
+            recipients = self._ws_clients.get(player.player_id, {ws}) if refreshed else {ws}
+            # Position inside the served audio, including while paused. The song
+            # clock on screen is start + this value. A paused reconnect used to
+            # skip it and open the track at 0:00.
+            elapsed = player.elapsed_time
+            paused = player.playback_state == PlaybackState.PAUSED
+            for client in tuple(recipients):
+                await self._ws_send(client, message, player.player_id)
+                if elapsed is not None and elapsed >= 1:
+                    await self._ws_send(
+                        client,
+                        json.dumps({"type": "seek", "position": int(elapsed)}),
+                        player.player_id,
+                    )
+                if paused:
+                    await self._ws_send(client, json.dumps({"type": "pause"}), player.player_id)
+            await self._send_volume(player, recipients)
         self.provider.spawn_wave(player.player_id, wave_seq)
         self.provider.spawn_lyrics(player.player_id, wave_seq)
-        # Position inside the served audio, including while paused. The song
-        # clock on screen is start + this value. A paused reconnect used to
-        # skip it and open the track at 0:00.
-        if player.elapsed_time is not None and player.elapsed_time >= 1:
-            for client in tuple(recipients):
-                await self._ws_send(
-                    client, json.dumps({"type": "seek", "position": int(player.elapsed_time)})
-                )
-        if player.playback_state == PlaybackState.PAUSED:
-            for client in tuple(recipients):
-                await self._ws_send(client, json.dumps({"type": "pause"}))
-        await self._send_volume(player, recipients)
 
     async def _send_volume(
         self, player: WebKioskPlayer, recipients: set[web.WebSocketResponse]
@@ -788,10 +797,14 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         for client in tuple(recipients):
             if player.volume_level is not None:
                 await self._ws_send(
-                    client, json.dumps({"type": "volume", "level": int(player.volume_level)})
+                    client,
+                    json.dumps({"type": "volume", "level": int(player.volume_level)}),
+                    player.player_id,
                 )
             await self._ws_send(
-                client, json.dumps({"type": "mute", "muted": bool(player.volume_muted)})
+                client,
+                json.dumps({"type": "mute", "muted": bool(player.volume_muted)}),
+                player.player_id,
             )
 
     async def _handle_stream(self, request: web.Request) -> web.StreamResponse:
@@ -886,6 +899,18 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         except ClientError, TimeoutError, OSError:
             logger.exception("Music Assistant proxy failed for %s", url.split("?", 1)[0])
             return web.Response(status=502, text="Music Assistant is unreachable")
+
+    def _outbound_lock(self, player_id: str) -> asyncio.Lock:
+        """Return the lock that orders every message to the pages of one player."""
+        return self._outbound_locks.setdefault(player_id, asyncio.Lock())
+
+    def _post(self, ws: web.WebSocketResponse, text: str, player_id: str) -> None:
+        """Queue a message behind earlier messages and snapshots for the player."""
+        self.provider.mass.create_task(self._send_in_order(ws, text, player_id))
+
+    async def _send_in_order(self, ws: web.WebSocketResponse, text: str, player_id: str) -> None:
+        async with self._outbound_lock(player_id):
+            await self._ws_send(ws, text, player_id)
 
     async def _ws_send(
         self, ws: web.WebSocketResponse, text: str, player_id: str | None = None

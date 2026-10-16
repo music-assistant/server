@@ -1122,3 +1122,63 @@ async def test_reconnect_snapshot_restores_mute(
                 break
     assert message["muted"] is True
     await ws.close()
+
+
+async def test_snapshot_is_not_interleaved_with_a_track_change(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
+) -> None:
+    """A track change during a slow snapshot send reaches every tab after the whole snapshot."""
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    tabs = [Mock(closed=False), Mock(closed=False)]
+    server._ws_clients[player.player_id] = set(tabs)
+    sent: dict[object, list[dict[str, Any]]] = {tab: [] for tab in tabs}
+    blocking = False
+    first_send = asyncio.Event()
+    release = asyncio.Event()
+
+    async def send(ws: object, data: str, *_args: object) -> None:
+        sent[ws].append(json.loads(data))
+        if blocking and not first_send.is_set():
+            first_send.set()
+            await release.wait()
+
+    server._ws_send = AsyncMock(side_effect=send)  # type: ignore[method-assign]
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: object) -> asyncio.Task[None]:
+        task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
+    mass_mock.players.get_player.return_value = player
+    mass_mock.players.cmd_seek = AsyncMock()
+    mass_mock.players.cmd_pause = AsyncMock()
+    provider.spawn_wave = Mock()  # type: ignore[method-assign]
+    provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
+    await player.play_media(
+        PlayerMedia(uri="old", duration=120, source_id="wk_test", queue_item_id="old-item")
+    )
+    await asyncio.wait_for(asyncio.gather(*tasks), 1)
+    player.note_seek(30)
+    for messages in sent.values():
+        messages.clear()
+    blocking = True
+
+    # A rebuilt stream is sent to every tab of the player.
+    snapshot = asyncio.create_task(server._send_snapshot(tabs[0], player))
+    await asyncio.wait_for(first_send.wait(), 1)
+    await player.play_media(
+        PlayerMedia(uri="new", duration=120, source_id="wk_test", queue_item_id="new-item")
+    )
+    await asyncio.sleep(0.01)
+    release.set()
+    await asyncio.wait_for(snapshot, 1)
+    while not all(task.done() for task in tasks):
+        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+
+    for messages in sent.values():
+        plays = [index for index, message in enumerate(messages) if message["type"] == "play"]
+        assert messages[plays[-1]]["playback_generation"] == player.playback_generation
+        assert not [m for m in messages[plays[-1] + 1 :] if m["type"] in {"seek", "pause"}]

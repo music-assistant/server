@@ -21,7 +21,7 @@ from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
-from music_assistant_models.errors import InvalidDataError, MusicAssistantError
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -158,9 +158,8 @@ class WebKioskSendspinBridge:
 
     async def stop(self) -> None:
         """Stop and unregister the bridge."""
-        # A connect timeout falls back from inside the watchdog, and the fallback
-        # removes this bridge. That watchdog must finish its fallback instead of
-        # being cancelled or awaited by the teardown it started.
+        # Teardown never cancels or awaits the task it runs in, so a watchdog
+        # task can never wait for itself.
         current = asyncio.current_task()
         if self._connect_watchdog is not current:
             self._cancel_watchdog()
@@ -207,12 +206,9 @@ class WebKioskSendspinBridge:
             self.kiosk_player.display_name,
             SENDSPIN_CONNECT_TIMEOUT,
         )
-        try:
-            await self.provider.fallback_sendspin(
-                self.kiosk_player.player_id, expected_client_id=self.client_id
-            )
-        except MusicAssistantError, TimeoutError:
-            self.logger.warning("Fallback to the HTTP player failed", exc_info=True)
+        # The fallback removes this bridge and resumes the queue, so it runs as
+        # provider-owned work that unload cancels, not inside the bridge's watchdog.
+        self.provider.request_sendspin_fallback(self.kiosk_player.player_id, self.client_id)
 
     def _cancel_watchdog(self) -> None:
         if (
