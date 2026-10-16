@@ -314,27 +314,40 @@ class MetaDataController(
             # this shouldn't happen but just in case.
             raise RuntimeError("Metadata can only be updated for library items")
 
-        async with self._throttler:
-            if item.media_type == MediaType.ARTIST:
-                await self._update_artist_metadata(
-                    cast("Artist", item), force_refresh=force_refresh
-                )
-            if item.media_type == MediaType.ALBUM:
-                await self._update_album_metadata(cast("Album", item), force_refresh=force_refresh)
-            if item.media_type == MediaType.TRACK:
-                await self._update_track_metadata(cast("Track", item), force_refresh=force_refresh)
-            if item.media_type == MediaType.PLAYLIST:
-                await self._update_playlist_metadata(
-                    cast("Playlist", item), force_refresh=force_refresh
-                )
-            if item.media_type == MediaType.AUDIOBOOK:
-                await self._update_audiobook_metadata(
-                    cast("Audiobook", item), force_refresh=force_refresh
-                )
-            if item.media_type == MediaType.PODCAST:
-                await self._update_podcast_metadata(
-                    cast("Podcast", item), force_refresh=force_refresh
-                )
+        try:
+            async with self._throttler:
+                if item.media_type == MediaType.ARTIST:
+                    await self._update_artist_metadata(
+                        cast("Artist", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.ALBUM:
+                    await self._update_album_metadata(
+                        cast("Album", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.TRACK:
+                    await self._update_track_metadata(
+                        cast("Track", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.PLAYLIST:
+                    await self._update_playlist_metadata(
+                        cast("Playlist", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.AUDIOBOOK:
+                    await self._update_audiobook_metadata(
+                        cast("Audiobook", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.PODCAST:
+                    await self._update_podcast_metadata(
+                        cast("Podcast", item), force_refresh=force_refresh
+                    )
+        except MediaNotFoundError:
+            # the item can be removed from the library, or merged into another, while its
+            # update waits or runs
+            if await self._in_library(item):
+                raise
+            self.logger.debug(
+                "%s %s was removed from the library, skipping", item.media_type.value, item.name
+            )
         return item
 
     def schedule_update_metadata(self, item: MediaItemType) -> None:
@@ -907,6 +920,14 @@ class MetaDataController(
         # a clean scan proves the table currently holds no corrupt rows
         self._corrupt_metadata_rows.pop(table, None)
         return items
+
+    async def _in_library(self, item: MediaItemType) -> bool:
+        """Return whether the given library item still exists in the library."""
+        try:
+            await self.mass.music.get_controller(item.media_type).get_library_item(item.item_id)
+        except MediaNotFoundError:
+            return False
+        return True
 
     async def _report_corrupt_metadata_rows(self, table: str) -> None:
         """Report library rows whose metadata column holds invalid JSON."""

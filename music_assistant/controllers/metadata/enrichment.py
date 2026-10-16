@@ -618,6 +618,9 @@ class MetadataEnrichmentMixin:
                     err,
                 )
                 return True
+            except MediaNotFoundError:
+                # an item removed from the library meanwhile ends the whole update
+                raise
             except Exception as err:
                 self.logger.warning(
                     "Error linking Artist %s through MusicBrainz: %s",
@@ -660,6 +663,9 @@ class MetadataEnrichmentMixin:
                 "Album %s could not be looked up on MusicBrainz right now: %s", album.name, err
             )
             return True
+        except MediaNotFoundError:
+            # an item removed from the library meanwhile ends the whole update
+            raise
         except Exception as err:
             self.logger.warning(
                 "Error linking Album %s through MusicBrainz: %s",
@@ -696,6 +702,9 @@ class MetadataEnrichmentMixin:
                 "Track %s could not be looked up on MusicBrainz right now: %s", track.name, err
             )
             return True
+        except MediaNotFoundError:
+            # an item removed from the library meanwhile ends the whole update
+            raise
         except Exception as err:
             self.logger.warning(
                 "Error linking Track %s through MusicBrainz: %s",
