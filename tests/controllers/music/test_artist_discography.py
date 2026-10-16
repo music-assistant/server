@@ -479,6 +479,24 @@ async def test_discography_follows_the_listing_contract() -> None:
         assert await _names(harness, limit=1, offset=1) == ["OK Computer"]
 
 
+async def test_discography_count_matches_the_searchable_release_groups() -> None:
+    """The count includes every release group and honors the listing search."""
+    groups = [
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
+    ]
+    with (
+        _harness(_artist(), release_groups=groups) as harness,
+        patch.object(harness.ctrl, "albums", new_callable=AsyncMock) as albums,
+    ):
+        assert await harness.ctrl.discography_count(LIBRARY_ARTIST_ID, "library") == 3
+        albums.assert_not_awaited()
+        assert (
+            await harness.ctrl.discography_count(LIBRARY_ARTIST_ID, "library", search="karma") == 1
+        )
+
+
 async def test_discography_rejects_an_unsupported_sort_before_browsing() -> None:
     """A sort the discography does not offer fails before MusicBrainz is asked anything."""
     with _harness(_artist()) as harness, pytest.raises(InvalidDataError):
