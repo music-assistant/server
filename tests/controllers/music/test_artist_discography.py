@@ -497,6 +497,21 @@ async def test_discography_count_matches_the_searchable_release_groups() -> None
         )
 
 
+async def test_discography_keeps_musicbrainz_reference_if_provider_unloads_during_lookup() -> None:
+    """An in-flight listing uses the MusicBrainz provider instance it started with."""
+    with _harness(
+        _artist(), release_groups=[_release_group(RG_IN_RAINBOWS, "In Rainbows")]
+    ) as harness:
+        musicbrainz = harness.musicbrainz
+        harness.mass.get_provider.side_effect = lambda domain, **_kwargs: (
+            musicbrainz if domain == "musicbrainz" else None
+        )
+
+        albums = await harness.ctrl.discography(LIBRARY_ARTIST_ID, "library")
+
+    assert [album.name for album in albums] == ["In Rainbows"]
+
+
 async def test_discography_rejects_an_unsupported_sort_before_browsing() -> None:
     """A sort the discography does not offer fails before MusicBrainz is asked anything."""
     with _harness(_artist()) as harness, pytest.raises(InvalidDataError):

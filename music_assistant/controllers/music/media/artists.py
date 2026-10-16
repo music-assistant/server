@@ -598,8 +598,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         if data is None:
             return []
-        artist, library_albums, release_groups = data
-        musicbrainz = cast("MusicbrainzProvider", self.mass.get_provider("musicbrainz"))
+        artist, musicbrainz, library_albums, release_groups = data
         albums_by_release_group: dict[str, Album] = {}
         unidentified_albums: list[Album] = []
         for album in library_albums:
@@ -667,7 +666,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         data = await self._get_artist_discography_data(
             item_id, provider_instance_id_or_domain, include_library_albums=False
         )
-        return len(data[2]) if data else 0
+        return len(data[3]) if data else 0
 
     async def top_tracks(
         self,
@@ -1925,7 +1924,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
         *,
         include_library_albums: bool,
-    ) -> tuple[Artist, list[Album], list[MusicBrainzReleaseGroup]] | None:
+    ) -> (
+        tuple[
+            Artist,
+            MusicbrainzProvider,
+            list[Album],
+            list[MusicBrainzReleaseGroup],
+        ]
+        | None
+    ):
         if provider_instance_id_or_domain != "library":
             msg = "A discography is only available for library artists"
             raise InvalidDataError(msg)
@@ -1948,7 +1955,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         release_groups = await musicbrainz.browse_release_groups_by_artist(mbid)
         if not release_groups:
             return None
-        return artist, library_albums, release_groups
+        return artist, musicbrainz, library_albums, release_groups
 
     async def _get_library_artist_appears_on_query(
         self,
