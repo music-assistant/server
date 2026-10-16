@@ -112,8 +112,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     reason="prepare_next",
                     capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
                     # speculative preparation gives up softly, so it must stay cheap and
-                    # harmless: leave the cross-provider search and stopping a paused
-                    # queue to the actual playback start
+                    # harmless: leave the cross-provider search around a stream limit and
+                    # stopping a paused queue to the actual playback start
                     allow_provider_match=False,
                     stop_paused_queues=False,
                 )
