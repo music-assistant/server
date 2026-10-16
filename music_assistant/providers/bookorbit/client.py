@@ -421,23 +421,27 @@ class BookOrbitClient:
         Fetch every page of a BookOrbit list endpoint.
 
         Raises :class:`BookOrbitIncompleteError` when the safety page bound is hit
-        before the reported total (or a short final page) is reached.
+        before the reported total (or a short final page) is reached, or when a
+        page payload is not a supported list shape.
         """
         items: list[dict[str, Any]] = []
         reported_total: int | None = None
         for page in range(QUERY_MAX_PAGES):
             payload = await fetch_page(page)
-            page_items = self._extract_items(payload)
+            page_items = self._require_page_items(payload, what=what)
             items.extend(page_items)
             if isinstance(payload, dict) and payload.get("total") is not None:
                 reported_total = int(payload["total"])
-            if not page_items or not isinstance(payload, dict):
-                # Empty/malformed page ends pagination only when the reported total
-                # is met; otherwise a truncated list would drive sync deletions.
+            if not page_items:
+                # Empty page ends pagination only when the reported total is met;
+                # otherwise a truncated list would drive sync deletions.
                 if reported_total is not None and len(items) < reported_total:
                     raise BookOrbitIncompleteError(
                         f"BookOrbit {what} incomplete: got {len(items)} of {reported_total} items."
                     )
+                break
+            if not isinstance(payload, dict):
+                # Bare JSON arrays have no page size/total; a short/empty page ends above.
                 break
             page_size = int(payload.get("size") or QUERY_PAGE_SIZE)
             if reported_total is not None:
@@ -470,6 +474,24 @@ class BookOrbitClient:
             "sort": [{"field": "title", "dir": "asc"}],
             "pagination": {"page": page, "size": QUERY_PAGE_SIZE},
         }
+
+    @staticmethod
+    def _require_page_items(payload: Any, *, what: str) -> list[dict[str, Any]]:
+        """
+        Return items from a supported page payload, or raise incomplete.
+
+        Accepts a bare JSON array or an object with a list under a known key
+        (including an empty list). Rejects ``{}``, HTML/bytes, and other shapes
+        that would otherwise look like a successful empty catalog.
+        """
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in _ITEM_KEYS:
+                if isinstance(payload.get(key), list):
+                    return payload[key]  # type: ignore[no-any-return]
+            raise BookOrbitIncompleteError(f"BookOrbit {what} returned an unsupported page object.")
+        raise BookOrbitIncompleteError(f"BookOrbit {what} returned an unsupported page payload.")
 
     @staticmethod
     def _extract_items(payload: Any) -> list[dict[str, Any]]:

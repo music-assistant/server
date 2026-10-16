@@ -3134,24 +3134,51 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 ORDER BY collection_title,
                 -- null case
                 CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-                -- free-text sequences after numbered ones (before the whole-number
-                -- bucket: that CASE is NULL for names like "Appendix", and SQLite
-                -- sorts NULL before integers)
+                -- free-text after numbered (before whole bucket: NULL sorts before ints).
+                -- Digit GLOB must be exact segments only: SQLite '[0-9]*' matches "2A".
                 CASE
                     WHEN collection_sequence IS NOT NULL
                         AND NOT collection_sequence_is_numeric
-                        AND collection_sequence NOT GLOB '[0-9]*'
-                        AND collection_sequence NOT GLOB '[0-9]*.[0-9]*'
+                        AND NOT (
+                            collection_sequence != ''
+                            AND collection_sequence NOT GLOB '*[^0-9]*'
+                        )
+                        AND NOT (
+                            (length(collection_sequence)
+                                - length(replace(collection_sequence, '.', ''))) = 1
+                            AND replace(collection_sequence, '.', '') != ''
+                            AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                            AND instr(collection_sequence, '.')
+                                BETWEEN 2 AND length(collection_sequence) - 1
+                        )
                     THEN 1
                     ELSE 0
                 END,
                 -- whole-number bucket so padded TEXT (e.g. BookOrbit) interleaves
-                -- with other providers' REAL volumes instead of sorting after all numerics
+                -- with other providers' REAL volumes instead of sorting after all numerics.
+                -- Floor (not trunc-toward-zero) so negative fractions keep numeric order.
                 CASE
-                    WHEN collection_sequence_is_numeric
-                        THEN CAST(collection_sequence AS INTEGER)
-                    WHEN collection_sequence GLOB '[0-9]*'
-                        OR collection_sequence GLOB '[0-9]*.[0-9]*'
+                    WHEN collection_sequence_is_numeric THEN
+                        CASE
+                            WHEN CAST(collection_sequence AS REAL) >= 0
+                                THEN CAST(collection_sequence AS INTEGER)
+                            WHEN CAST(collection_sequence AS REAL)
+                                = CAST(CAST(collection_sequence AS INTEGER) AS REAL)
+                                THEN CAST(collection_sequence AS INTEGER)
+                            ELSE CAST(collection_sequence AS INTEGER) - 1
+                        END
+                    WHEN collection_sequence != ''
+                        AND collection_sequence NOT GLOB '*[^0-9]*'
+                        THEN CAST(
+                            COALESCE(NULLIF(ltrim(collection_sequence, '0'), ''), '0')
+                            AS INTEGER
+                        )
+                    WHEN (length(collection_sequence)
+                            - length(replace(collection_sequence, '.', ''))) = 1
+                        AND replace(collection_sequence, '.', '') != ''
+                        AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                        AND instr(collection_sequence, '.')
+                            BETWEEN 2 AND length(collection_sequence) - 1
                         THEN CAST(
                             COALESCE(
                                 NULLIF(
@@ -3159,11 +3186,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                                         substr(
                                             collection_sequence,
                                             1,
-                                            CASE
-                                                WHEN instr(collection_sequence, '.') > 0
-                                                THEN instr(collection_sequence, '.') - 1
-                                                ELSE length(collection_sequence)
-                                            END
+                                            instr(collection_sequence, '.') - 1
                                         ),
                                         '0'
                                     ),
@@ -3180,11 +3203,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             = CAST(CAST(collection_sequence AS INTEGER) AS REAL)
                         THEN 0
                     WHEN NOT collection_sequence_is_numeric
-                        AND instr(collection_sequence, '.') = 0
-                        AND collection_sequence GLOB '[0-9]*'
+                        AND collection_sequence != ''
+                        AND collection_sequence NOT GLOB '*[^0-9]*'
                         THEN 0
                     WHEN NOT collection_sequence_is_numeric
-                        AND collection_sequence GLOB '[0-9]*.[0-9]*'
+                        AND (length(collection_sequence)
+                            - length(replace(collection_sequence, '.', ''))) = 1
+                        AND replace(collection_sequence, '.', '') != ''
+                        AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                        AND instr(collection_sequence, '.')
+                            BETWEEN 2 AND length(collection_sequence) - 1
                         THEN 1
                     WHEN collection_sequence_is_numeric THEN 2
                     ELSE 3
@@ -3192,7 +3220,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 -- dotted TEXT segment order (zero-padded keys sort correctly here)
                 CASE
                     WHEN NOT collection_sequence_is_numeric
-                        AND collection_sequence GLOB '[0-9]*.[0-9]*'
+                        AND (length(collection_sequence)
+                            - length(replace(collection_sequence, '.', ''))) = 1
+                        AND replace(collection_sequence, '.', '') != ''
+                        AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                        AND instr(collection_sequence, '.')
+                            BETWEEN 2 AND length(collection_sequence) - 1
                     THEN collection_sequence
                 END COLLATE NOCASE,
                 -- REAL volumes (including fractional decimals from other providers)
@@ -3200,11 +3233,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     WHEN collection_sequence_is_numeric
                     THEN CAST(collection_sequence AS REAL)
                 END,
-                -- remaining free-text sequences
+                -- remaining free-text sequences (alphabetical)
                 CASE
                     WHEN NOT collection_sequence_is_numeric
-                        AND collection_sequence NOT GLOB '[0-9]*'
-                        AND collection_sequence NOT GLOB '[0-9]*.[0-9]*'
+                        AND NOT (
+                            collection_sequence != ''
+                            AND collection_sequence NOT GLOB '*[^0-9]*'
+                        )
+                        AND NOT (
+                            (length(collection_sequence)
+                                - length(replace(collection_sequence, '.', ''))) = 1
+                            AND replace(collection_sequence, '.', '') != ''
+                            AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                            AND instr(collection_sequence, '.')
+                                BETWEEN 2 AND length(collection_sequence) - 1
+                        )
                     THEN collection_sequence
                 END COLLATE NOCASE,
                 -- order by media name if no sequence given

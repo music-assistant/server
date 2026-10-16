@@ -252,7 +252,7 @@ async def test_query_audiobooks_raises_when_total_unmet_on_empty_page(
         page = body["pagination"]["page"]
         if page == 0:
             return web.json_response({"items": [{"id": 1}], "total": 3, "page": 0, "size": 100})
-        return web.json_response({})
+        return web.json_response({"items": [], "total": 3, "page": 1, "size": 100})
 
     app = web.Application()
     app.router.add_post("/api/v1/books/query", query)
@@ -262,6 +262,63 @@ async def test_query_audiobooks_raises_when_total_unmet_on_empty_page(
     bo.access_token = "t"
     with pytest.raises(BookOrbitIncompleteError, match="incomplete"):
         await bo.query_audiobooks()
+
+
+@pytest.mark.asyncio
+async def test_query_audiobooks_rejects_malformed_first_page_object(
+    aiohttp_client: Any,
+) -> None:
+    """A first-page ``{}`` must not publish as a successful empty catalog."""
+
+    async def query(_: web.Request) -> web.Response:
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_post("/api/v1/books/query", query)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    with pytest.raises(BookOrbitIncompleteError, match="unsupported page object"):
+        await bo.query_audiobooks()
+
+
+@pytest.mark.asyncio
+async def test_query_audiobooks_rejects_non_json_first_page(
+    aiohttp_client: Any,
+) -> None:
+    """HTTP 200 HTML/bytes must not publish as a successful empty catalog."""
+
+    async def query(_: web.Request) -> web.Response:
+        return web.Response(text="<html>nope</html>", content_type="text/html")
+
+    app = web.Application()
+    app.router.add_post("/api/v1/books/query", query)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    with pytest.raises(BookOrbitIncompleteError, match="unsupported page payload"):
+        await bo.query_audiobooks()
+
+
+@pytest.mark.asyncio
+async def test_list_authors_rejects_malformed_first_page(
+    aiohttp_client: Any,
+) -> None:
+    """Author listing also rejects unsupported first-page shapes."""
+
+    async def authors(_: web.Request) -> web.Response:
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_get("/api/v1/authors", authors)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    with pytest.raises(BookOrbitIncompleteError, match="unsupported page object"):
+        await bo.list_authors()
 
 
 @pytest.mark.asyncio

@@ -875,6 +875,80 @@ async def test_audiobook_collections_free_text_sequences_after_numbered(
     assert [item.name for item in collection.items] == expected
 
 
+async def test_audiobook_collections_digit_prefix_text_sorts_alphabetically(
+    mass: MusicAssistant,
+) -> None:
+    """Digit-leading tags like ``2A`` stay free-text and sort after pure numbers."""
+    controller = mass.music.audiobooks
+    for name, sequence in (
+        ("Part 2B", "2B"),
+        ("Part 1", 1),
+        ("Part 2A", "2A"),
+        ("Part 3", 3),
+    ):
+        await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title="Prefix Series", sequence=sequence)]
+                    )
+                ),
+            )
+        )
+
+    expected = ["Part 1", "Part 3", "Part 2A", "Part 2B"]
+    items = await controller.get_library_items_by_query(
+        in_library_only=True,
+        collapse_collections=True,
+    )
+    collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
+    assert [item.name for item in collections["Prefix Series"].items] == expected
+
+    collection = await controller.get_collection(collections["Prefix Series"].item_id)
+    assert [item.name for item in collection.items] == expected
+
+
+async def test_audiobook_collections_negative_fraction_order(
+    mass: MusicAssistant,
+) -> None:
+    """Negative REAL sequences keep floor-based numeric order in collections."""
+    controller = mass.music.audiobooks
+    for name, sequence in (
+        ("N -0.5", -0.5),
+        ("N 0", 0),
+        ("N -1.5", -1.5),
+        ("N -1", -1),
+    ):
+        await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title="Negative Series", sequence=sequence)]
+                    )
+                ),
+            )
+        )
+
+    expected = ["N -1.5", "N -1", "N -0.5", "N 0"]
+    items = await controller.get_library_items_by_query(
+        in_library_only=True,
+        collapse_collections=True,
+    )
+    collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
+    assert [item.name for item in collections["Negative Series"].items] == expected
+
+    collection = await controller.get_collection(collections["Negative Series"].item_id)
+    assert [item.name for item in collection.items] == expected
+
+
 async def test_artist_audiobooks_collapse_collections(
     mass: MusicAssistant,
 ) -> None:
