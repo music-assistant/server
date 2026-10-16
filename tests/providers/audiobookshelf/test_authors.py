@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from aioaudiobookshelf.schema.author import AuthorExpanded, AuthorMinified
 from aioaudiobookshelf.schema.events_socket import AuthorRemoved
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, ProviderType
 from music_assistant_models.media_items import Audiobook, ProviderMapping
 
 from music_assistant.providers.audiobookshelf.parsers import parse_author
@@ -17,6 +17,10 @@ from music_assistant.providers.audiobookshelf.parsers import parse_author
 from .abs_items import expanded_book
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from music_assistant_models.media_items import Artist
+
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.audiobookshelf import Audiobookshelf
 
@@ -109,6 +113,53 @@ async def test_author_removed(
         MediaType.ARTIST, "author1", provider.instance_id
     )
     assert (artist is not None) is linked
+
+
+async def test_author_removed_during_sync(
+    provider: Audiobookshelf, music_mass: MusicAssistant
+) -> None:
+    """A removal arriving during a sync waits for it, so the sync's older copy stays removed."""
+    provider.mass = music_mass
+    music_mass.streams = AsyncMock()
+    music_mass.cache = AsyncMock()
+    music_mass.cache.get.return_value = None
+    provider.manifest.type = ProviderType.MUSIC
+    await _add_book(provider, linked=False)
+    listing = asyncio.Event()
+    removal_sent = asyncio.Event()
+
+    async def library_artists() -> AsyncGenerator[Artist]:
+        listing.set()
+        await removal_sent.wait()
+        yield parse_author(
+            abs_author=AuthorMinified(id_="author1", name="Ada Lovelace"),
+            instance_id=provider.instance_id,
+            domain=provider.domain,
+            base_url="http://abs.local",
+        )
+
+    with (
+        patch.object(provider._client, "get_all_libraries", AsyncMock(return_value=[])),
+        patch.object(provider._client, "get_my_user", AsyncMock()),
+        patch.object(provider, "get_library_artists", library_artists),
+        patch.object(provider, "_set_playlog_from_user", AsyncMock()),
+    ):
+        sync = asyncio.create_task(provider.sync_library(MediaType.ARTIST))
+        await listing.wait()
+        removal = asyncio.create_task(
+            provider._socket_abs_author_removed(AuthorRemoved(id_="author1", library_id="lib1"))
+        )
+        # without the lock the removal completes here, before the sync lists the author
+        await asyncio.wait({removal}, timeout=0.5)
+        removal_sent.set()
+        await asyncio.gather(sync, removal)
+
+    assert (
+        await music_mass.music.get_library_item_by_prov_id(
+            MediaType.ARTIST, "author1", provider.instance_id
+        )
+        is None
+    )
 
 
 async def test_author_merged(provider: Audiobookshelf, music_mass: MusicAssistant) -> None:

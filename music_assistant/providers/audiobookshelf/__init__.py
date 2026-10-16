@@ -234,11 +234,11 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
     def in_library_item_order(
         method: Callable[P, Coroutine[Any, Any, None]],
     ) -> Callable[P, Coroutine[Any, Any, None]]:
-        """Decorate a socket handler to run in the arrival order of its library item events."""
+        """Decorate a sync or socket handler writing library items to run in arrival order."""
 
         @functools.wraps(method)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> None:
-            # socket events run as concurrent tasks
+            # socket events run as concurrent tasks, also alongside a sync
             async with cast("Audiobookshelf", args[0]).library_item_lock:
                 await method(*args, **kwargs)
 
@@ -485,6 +485,7 @@ for more details.
         return (RefreshTokenExpiredError,)
 
     @handle_refresh_token
+    @in_library_item_order
     async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
         libraries = await self._client.get_all_libraries()
