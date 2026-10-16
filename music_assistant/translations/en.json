@@ -2946,6 +2946,8 @@
   "provider.yousee.manifest.description": "YouSee Musik, a Danish music streaming service.",
   "provider.ytmusic.config_entries.cookie.description": "The Login cookie you grabbed from an existing session, see the documentation.",
   "provider.ytmusic.config_entries.cookie.label": "Login Cookie",
+  "provider.ytmusic.config_entries.include_videos_in_search.description": "Search YouTube Music videos as well as songs, including covers, remixes and live performances. This does not change radio or library imports.",
+  "provider.ytmusic.config_entries.include_videos_in_search.label": "Include videos in search results",
   "provider.ytmusic.config_entries.po_token_server_url.description": "The URL to the PO Token server. Can be left as default for most people. \n\n**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**",
   "provider.ytmusic.config_entries.po_token_server_url.label": "PO Token Server URL",
   "provider.ytmusic.errors.cookies_expired": "Your YouTube Music cookies have expired. Reconfigure this provider with fresh cookies.",

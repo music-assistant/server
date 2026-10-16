@@ -13,6 +13,7 @@ from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache
 from io import StringIO
+from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
@@ -20,8 +21,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 import ytmusicapi
 from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     AlbumType,
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -66,6 +69,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.helpers.util import (
     import_module_in_thread,
     infer_album_type,
@@ -103,13 +107,14 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 
+CONF_INCLUDE_VIDEOS = "include_videos_in_search"
 CONF_COOKIE = "cookie"
 CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
 DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
@@ -203,7 +208,27 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_INCLUDE_VIDEOS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+        )
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Invalidate search results when the video preference changes."""
+        await super().update_config(config, changed_keys)
+        if f"values/{CONF_INCLUDE_VIDEOS}" in changed_keys:
+            await self.mass.cache.clear(
+                category_filter=CACHE_CATEGORY_SEARCH_RESULTS,
+                provider_filter=self.instance_id,
+            )
+            await self.mass.cache.clear(
+                category_filter=CACHE_CATEGORY_SEARCH_RESULTS,
+                provider_filter=self.mass.music.domain,
+            )
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
@@ -240,71 +265,13 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    # the checksum invalidates entries cached before the search was pinned to English
-    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """
-        Perform search on musicprovider.
-
-        :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
-        :param limit: Number of items to return in the search (per type).
-        """
-        parsed_results = SearchResults()
-        ytm_filter: YTMSearchFilter | None = None
-        if len(media_types) == 1:
-            # YTM does not support multiple searchtypes, falls back to all if no type given
-            if media_types[0] == MediaType.ARTIST:
-                ytm_filter = "artists"
-            if media_types[0] == MediaType.ALBUM:
-                ytm_filter = "albums"
-            if media_types[0] == MediaType.TRACK:
-                ytm_filter = "songs"
-            if media_types[0] == MediaType.PLAYLIST:
-                ytm_filter = "playlists"
-            if media_types[0] == MediaType.PODCAST:
-                ytm_filter = "podcasts"
-            if media_types[0] == MediaType.RADIO:
-                # bit of an edge case but still good to handle
-                return parsed_results
-        results = await search(
-            query=search_query,
-            ytm_filter=ytm_filter,
-            limit=limit,
+        """Search with the configured video preference included in the cache key."""
+        return await self._search(
+            search_query, media_types, limit, bool(self.config.get_value(CONF_INCLUDE_VIDEOS))
         )
-        parsed_results = SearchResults()
-        artists: list[Artist | ItemMapping] = []
-        albums: list[Album | ItemMapping] = []
-        playlists: list[Playlist | ItemMapping] = []
-        tracks: list[Track | ItemMapping] = []
-        podcasts: list[Podcast | ItemMapping] = []
-        for result in results:
-            try:
-                if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
-                    artists.append(self._parse_artist(result))
-                elif result["resultType"] == "album" and MediaType.ALBUM in media_types:
-                    albums.append(self._parse_album(result))
-                elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
-                    playlists.append(self._parse_playlist(result))
-                elif result["resultType"] == "podcast" and MediaType.PODCAST in media_types:
-                    if podcast := self._parse_browse_podcast(result):
-                        podcasts.append(podcast)
-                elif (
-                    result["resultType"] in ("song", "video")
-                    and MediaType.TRACK in media_types
-                    and (track := self._parse_track(result))
-                ):
-                    tracks.append(track)
-            except InvalidDataError:
-                pass  # ignore invalid item
-        parsed_results.artists = artists
-        parsed_results.albums = albums
-        parsed_results.playlists = playlists
-        parsed_results.tracks = tracks
-        parsed_results.podcasts = podcasts
-        return parsed_results
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
@@ -856,6 +823,95 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if item_id == f"{self.instance_id}_mixed_for_you":
             return (await self._get_mixed_for_you_folder()).items
         return await self._recommendation_items_from_payload(item_id)
+
+    @use_cache(3600 * 24 * 7, cache_checksum="video_search_v1")
+    async def _search(
+        self, search_query: str, media_types: list[MediaType], limit: int, include_videos: bool
+    ) -> SearchResults:
+        """
+        Perform search on musicprovider.
+
+        :param search_query: Search query.
+        :param media_types: A list of media_types to include. All types if None.
+        :param limit: Number of items to return in the search (per type).
+        :param include_videos: Include video results, also separating cached search modes.
+        """
+        parsed_results = SearchResults()
+        ytm_filter: YTMSearchFilter | None = None
+        if len(media_types) == 1:
+            # YTM does not support multiple searchtypes, falls back to all if no type given
+            if media_types[0] == MediaType.ARTIST:
+                ytm_filter = "artists"
+            if media_types[0] == MediaType.ALBUM:
+                ytm_filter = "albums"
+            if media_types[0] == MediaType.TRACK:
+                ytm_filter = "songs"
+            if media_types[0] == MediaType.PLAYLIST:
+                ytm_filter = "playlists"
+            if media_types[0] == MediaType.PODCAST:
+                ytm_filter = "podcasts"
+            if media_types[0] == MediaType.RADIO:
+                # bit of an edge case but still good to handle
+                return parsed_results
+        results = await search(
+            query=search_query,
+            ytm_filter=ytm_filter,
+            limit=limit,
+        )
+        parsed_results = SearchResults()
+        artists: list[Artist | ItemMapping] = []
+        albums: list[Album | ItemMapping] = []
+        playlists: list[Playlist | ItemMapping] = []
+        tracks: list[Track | ItemMapping] = []
+        podcasts: list[Podcast | ItemMapping] = []
+        for result in results:
+            try:
+                if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
+                    artists.append(self._parse_artist(result))
+                elif result["resultType"] == "album" and MediaType.ALBUM in media_types:
+                    albums.append(self._parse_album(result))
+                elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
+                    playlists.append(self._parse_playlist(result))
+                elif result["resultType"] == "podcast" and MediaType.PODCAST in media_types:
+                    if podcast := self._parse_browse_podcast(result):
+                        podcasts.append(podcast)
+                elif (
+                    result["resultType"] in ("song", "video")
+                    and MediaType.TRACK in media_types
+                    and (track := self._parse_track(result))
+                ):
+                    tracks.append(track)
+            except InvalidDataError:
+                pass  # ignore invalid item
+        parsed_results.artists = artists
+        parsed_results.albums = albums
+        parsed_results.playlists = playlists
+        if include_videos and MediaType.TRACK in media_types:
+            tracks = await self._include_video_search_results(search_query, tracks, limit)
+        parsed_results.tracks = tracks
+        parsed_results.podcasts = podcasts
+        return parsed_results
+
+    async def _include_video_search_results(
+        self, search_query: str, tracks: list[Track | ItemMapping], limit: int
+    ) -> list[Track | ItemMapping]:
+        """Interleave song and video results without repeating a video ID."""
+        results = await search(query=search_query, ytm_filter="videos", limit=limit)
+        videos: list[Track | ItemMapping] = []
+        for result in results:
+            try:
+                if track := self._parse_track(result):
+                    videos.append(track)
+            except InvalidDataError:
+                continue
+        seen: set[str] = set()
+        combined: list[Track | ItemMapping] = []
+        for pair in zip_longest(tracks, videos):
+            for item in pair:
+                if item is not None and item.item_id not in seen:
+                    seen.add(item.item_id)
+                    combined.append(item)
+        return combined[:limit]
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch the home feed and parse its sections into recommendation folders with items."""
