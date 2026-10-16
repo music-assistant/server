@@ -270,3 +270,23 @@ async def test_a_held_device_is_dialed_for_pairing_without_management(
     await pin_session.task
 
     assert api.calls == ["pair"]
+
+
+async def test_cancelling_a_pairing_dial_before_it_attaches_withdraws_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """end_pairing cannot reach a dial that has no connection yet, so cancel stops it."""
+    api = _PinServerApi(
+        _offer(PairMethod.STATIC_PAIRING_CODE), gesture=asyncio.Event(), connected=False
+    )
+    cast("Any", api.get_client("c")).connection = None
+    cast("Any", api).get_client_url = lambda _client_id: "ws://device/sendspin"
+    provider, _refreshed = _make_pin_provider(api, monkeypatch)
+    provider._held_elsewhere.add("c")
+    pin_session = await provider.start_pin_pairing("c", static=True)
+
+    async with asyncio.timeout(1):
+        await provider.cancel_pin_pairing("c")
+
+    assert pin_session.task is not None
+    assert pin_session.task.cancelled()

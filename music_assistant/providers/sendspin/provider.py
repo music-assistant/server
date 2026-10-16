@@ -866,8 +866,11 @@ class SendspinProvider(PlayerProvider):
         self._cancel_pin_idle_timeout(client_id)
         await self._end_pairing_quietly(client_id)
         if session.task is not None:
-            with suppress(Exception):
-                await session.task
+            client = self.server_api.get_client(client_id)
+            if client is None or client.connection is None:
+                # end_pairing only reaches an attached connection, so withdraw a pairing dial.
+                session.task.cancel()
+            await asyncio.wait((session.task,))
         if session.opened_management:
             self.exit_management(client_id)
         await self._refresh_player(client_id)
