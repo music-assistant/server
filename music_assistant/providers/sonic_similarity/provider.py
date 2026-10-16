@@ -1235,14 +1235,16 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _rebuild_search_index(self) -> None:
         """Rebuild the search index from all stored analysis rows."""
-        # Snapshot the count BEFORE the rebuild: SELECT is snapshot-isolated, so rows
-        # added mid-rebuild are missed — counting after would skip the next refresh.
-        try:
-            pre_count = await self._count_analysis_rows()
-        except Exception:
-            self.logger.debug("Pre-rebuild row count failed; counter unchanged", exc_info=True)
-            pre_count = None
+        # The lock is held from the count onwards, so the periodic refresh's lock guard
+        # sees the whole rebuild, count included.
         async with self._rebuild_lock:
+            # Snapshot the count BEFORE the rebuild: SELECT is snapshot-isolated, so rows
+            # added mid-rebuild are missed — counting after would skip the next refresh.
+            try:
+                pre_count = await self._count_analysis_rows()
+            except Exception:
+                self.logger.debug("Pre-rebuild row count failed; counter unchanged", exc_info=True)
+                pre_count = None
             await self._rebuild_search_index_locked()
         if pre_count is not None:
             self._last_seen_row_count = pre_count

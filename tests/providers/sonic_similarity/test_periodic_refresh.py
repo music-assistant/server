@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -84,10 +85,38 @@ class TestPeriodicRefresh:
         plugin._rebuild_clap_index_from_database.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_skips_tick_during_the_startup_builds_row_count(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """A tick that lands while the startup build is still counting rows is skipped too."""
+        plugin = make_plugin(clap_enabled=True)
+        plugin._last_seen_row_count = 0
+        release_count = asyncio.Event()
+
+        async def _blocked_count(*_args: Any, **_kwargs: Any) -> int:
+            await release_count.wait()
+            return 5
+
+        mock_mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(
+            side_effect=_blocked_count
+        )
+        plugin._rebuild_clap_index_from_database = AsyncMock()
+
+        startup = asyncio.create_task(plugin._rebuild_indexes())
+        await asyncio.sleep(0)  # the startup build is now parked in its row count
+        await asyncio.wait_for(plugin._periodic_refresh(), timeout=1)
+
+        assert mock_mass.streams.audio_analysis.get_audio_analysis_count.await_count == 1
+        release_count.set()
+        await startup
+        assert plugin._last_seen_row_count == 5
+        plugin._rebuild_clap_index_from_database.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_retries_a_failed_character_build_while_row_count_is_unchanged(
         self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
-        """Traits succeeds, Character fails: the next tick retries Character alone and clears the error."""
+        """Traits ok, Character fails: the next tick retries Character alone and clears the error."""
         plugin = make_plugin(clap_enabled=True)
         plugin._last_seen_row_count = 0
         mock_mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=10)
