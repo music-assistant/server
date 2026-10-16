@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import pytest
 from music_assistant_models.enums import ArtistType, ImageType, MediaType
 
 from music_assistant.providers.bookorbit.helpers import book_with_manifest_playback_order
@@ -74,6 +75,21 @@ def test_parse_audiobook_authors_and_narrators(book_audiobook: dict[str, Any]) -
         ("narrator:21", "Scott Brick"),
         ("narrator:22", "Orlagh Cassidy"),
     ]
+
+
+def test_parse_audiobook_skips_name_only_people(book_audiobook: dict[str, Any]) -> None:
+    """Name-only author/narrator dicts must not raise or invent artists."""
+    book_audiobook["authors"] = [
+        {"name": "Name Only"},
+        {"id": 11, "name": "Frank Herbert", "sortName": "Herbert, Frank"},
+    ]
+    book_audiobook["audioMetadata"]["narrators"] = [
+        {"name": "Narrator Only", "displayOrder": 0},
+        {"id": 21, "name": "Scott Brick", "displayOrder": 1},
+    ]
+    ab = _parse(book_audiobook)
+    assert [(a.item_id, a.name) for a in ab.authors] == [("author:11", "Frank Herbert")]
+    assert [(n.item_id, n.name) for n in ab.narrators] == [("narrator:21", "Scott Brick")]
 
 
 def test_parse_audiobook_single_file_uses_embedded_chapters(
@@ -227,6 +243,17 @@ def test_parse_audiobook_uses_manifest_order_without_sort_order(
         (1, "01.mp3", 0, 100.5),
         (2, "02.mp3", 100.5, 301),
     ]
+
+
+def test_book_with_manifest_playback_order_requires_mappable_assets(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Unmappable manifests must not fall back to unordered BookDetail."""
+    with pytest.raises(ValueError, match="no mappable playback assets"):
+        book_with_manifest_playback_order(
+            book_multifile,
+            {"assets": [{"assetId": "a1", "fileId": 99999, "sequence": 0}]},
+        )
 
 
 def test_parse_audiobook_untitled_falls_back(book_multifile: dict[str, Any]) -> None:

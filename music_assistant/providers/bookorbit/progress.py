@@ -31,7 +31,16 @@ class PlaybackStateUpdate:
 
 def _duration(file: dict[str, Any]) -> float:
     """Return a file's duration in seconds."""
-    return float(file.get("durationSeconds") or 0)
+    duration = file.get("durationSeconds")
+    if duration is None:
+        raise ValueError("BookOrbit audio file has unknown duration")
+    return float(duration)
+
+
+def _require_known_file_durations(audio_files: list[dict[str, Any]]) -> None:
+    """Raise when any audio part duration is unknown (unsafe for absolute offsets)."""
+    if any(file.get("durationSeconds") is None for file in audio_files):
+        raise ValueError("BookOrbit audio file has unknown duration")
 
 
 def _manifest_assets(manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -55,6 +64,7 @@ def build_progress_update(
     """
     if not audio_files:
         return None
+    _require_known_file_durations(audio_files)
     total = sum(_duration(f) for f in audio_files)
     position = max(float(position), 0.0)
     if fully_played or (total and position >= total):
@@ -142,6 +152,7 @@ def parse_resume_position(
     """
     percentage = float(progress.get("percentage") or 0)
     fully_played = percentage >= FULLY_PLAYED_PERCENTAGE
+    _require_known_file_durations(audio_files)
     total = sum(_duration(f) for f in audio_files)
 
     position = None

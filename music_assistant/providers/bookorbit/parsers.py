@@ -235,11 +235,11 @@ def parse_audiobook(
         [
             parse_author(author, provider_instance_id=provider_instance_id, base_url=base_url)
             for author in book.get("authors") or []
-            if isinstance(author, dict)
+            if isinstance(author, dict) and "id" in author
         ]
     )
     narrators = sorted(
-        (n for n in audio_metadata.get("narrators") or [] if isinstance(n, dict)),
+        (n for n in audio_metadata.get("narrators") or [] if isinstance(n, dict) and "id" in n),
         key=lambda n: n.get("displayOrder", 0),
     )
     mass_audiobook.narrators.set(

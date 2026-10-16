@@ -33,16 +33,18 @@ def book_with_manifest_playback_order(book: dict[str, Any], manifest: Any) -> di
     Return a book copy whose files carry ``sortOrder`` from the manifest sequence.
 
     BookDetail omits ``sortOrder``; playback order lives on the audiobook manifest.
+    Raises ``ValueError`` when the manifest cannot establish a playback order so
+    callers do not cache or publish unordered multipart BookDetail.
     """
     if not isinstance(manifest, dict):
-        return book
+        raise TypeError("BookOrbit manifest is missing or invalid")
     by_id = {
         int(file["id"]): dict(file)
         for file in (book.get("files") or [])
         if isinstance(file, dict) and file.get("id") is not None
     }
     if not by_id:
-        return book
+        raise ValueError("BookOrbit book has no files to order from the manifest")
     assets = sorted(
         (asset for asset in (manifest.get("assets") or []) if asset.get("assetId")),
         key=lambda asset: int(asset.get("sequence") or 0),
@@ -61,7 +63,7 @@ def book_with_manifest_playback_order(book: dict[str, Any], manifest: Any) -> di
         ordered.append(file)
         seen.add(fid)
     if not ordered:
-        return book
+        raise ValueError("BookOrbit manifest has no mappable playback assets")
     for fid, file in by_id.items():
         if fid not in seen:
             ordered.append(file)

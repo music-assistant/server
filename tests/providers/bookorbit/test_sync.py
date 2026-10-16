@@ -22,7 +22,7 @@ from music_assistant_models.media_items import (
 from yarl import URL
 
 from music_assistant.controllers.music.media.base import AudiobookSyncDetails
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import SYNC_RUN_STATE, MusicProvider, SyncRunState
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.constants import (
     CONF_PASSWORD,
@@ -282,6 +282,96 @@ async def test_fetch_catalog_cancels_pending_detail_fetches_on_error(
         await provider._refresh_catalog(force=True)
     assert cancelled.is_set()
     assert provider._catalog == {}
+
+
+@pytest.mark.asyncio
+async def test_refresh_catalog_aborts_when_manifest_unmappable(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """Multipart books with no mappable manifest assets must not be cached unordered."""
+    previous = {str(book_audiobook["id"]): book_audiobook}
+    provider._catalog = previous
+    provider._catalog_refreshed_at = 0.0
+    cache_set = cast("AsyncMock", provider.mass.cache.set)
+    cache_set.reset_mock()
+
+    async def _manifest(book_id: int) -> dict[str, Any]:
+        if book_id == book_multifile["id"]:
+            return {"assets": [{"assetId": "a1", "fileId": 99999, "sequence": 0}]}
+        return manifest_from_book(book_audiobook)
+
+    cast("Any", provider._client).get_audiobook_manifest = AsyncMock(side_effect=_manifest)
+    with pytest.raises(ProviderUnavailableError, match="no mappable playback assets"):
+        await provider._refresh_catalog(force=True)
+    assert provider._catalog is previous
+    cached_ids = {call.kwargs.get("key") for call in cache_set.await_args_list}
+    assert str(book_multifile["id"]) not in cached_ids
+
+
+@pytest.mark.asyncio
+async def test_refresh_catalog_reports_skipped_for_detail_without_audio(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """Detail responses with no audio protect existing library items during sync."""
+    skip = Mock()
+    provider.report_skipped_sync_item = skip  # type: ignore[method-assign]
+
+    async def _get_book(book_id: int) -> dict[str, Any]:
+        if book_id == book_multifile["id"]:
+            return {**book_multifile, "files": [{"id": 1, "format": "epub"}]}
+        if book_id == book_audiobook["id"]:
+            return book_audiobook
+        if book_id == 999:
+            return {"id": 999, "files": [{"id": 1, "format": "epub"}]}
+        raise KeyError(book_id)
+
+    cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
+    token = SYNC_RUN_STATE.set(SyncRunState())
+    try:
+        await provider._refresh_catalog(force=True)
+    finally:
+        SYNC_RUN_STATE.reset(token)
+    skipped_ids = {call.args[1] for call in skip.call_args_list}
+    assert str(book_multifile["id"]) in skipped_ids
+    assert all(call.args[0] is MediaType.AUDIOBOOK for call in skip.call_args_list)
+    assert any(isinstance(call.args[2], ValueError) for call in skip.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_in_flight_detail_fetches(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """Unload cancels pending catalog detail tasks before closing the client."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _get_book(book_id: int) -> dict[str, Any]:
+        if book_id == book_audiobook["id"]:
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return book_audiobook
+        if book_id == book_multifile["id"]:
+            await started.wait()
+            await asyncio.sleep(3600)
+            return book_multifile
+        if book_id == 999:
+            return {"id": 999, "files": [{"id": 1, "format": "epub"}]}
+        raise KeyError(book_id)
+
+    cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
+    cast("Any", provider._client).close = AsyncMock()
+    refresh = asyncio.create_task(provider._refresh_catalog(force=True))
+    await started.wait()
+    await provider.unload()
+    with pytest.raises((asyncio.CancelledError, TimeoutError, ProviderUnavailableError)):
+        await refresh
+    assert cancelled.is_set()
+    cast("AsyncMock", provider._client.close).assert_awaited()
 
 
 @pytest.mark.asyncio

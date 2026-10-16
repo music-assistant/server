@@ -102,6 +102,23 @@ def test_update_without_files_is_none() -> None:
     assert build_progress_update([], position=5, fully_played=False) is None
 
 
+def test_update_unknown_duration_raises(book_multifile: dict[str, Any]) -> None:
+    """Legacy progress must not invent offsets when a part duration is missing."""
+    files = _audio_files(book_multifile)
+    files[0]["durationSeconds"] = None
+    with pytest.raises(ValueError, match="unknown duration"):
+        build_progress_update(files, position=10, fully_played=False)
+
+
+def test_resume_unknown_preceding_duration_raises(book_multifile: dict[str, Any]) -> None:
+    """Legacy resume must not invent an absolute position across unknown parts."""
+    files = _audio_files(book_multifile)
+    files[0]["durationSeconds"] = None
+    progress = {"currentFileId": 772, "positionSeconds": 50.0, "percentage": 50.0}
+    with pytest.raises(ValueError, match="unknown duration"):
+        parse_resume_position(files, progress)
+
+
 def test_resume_multi_file_adds_file_offset(book_multifile: dict[str, Any]) -> None:
     """Resume position is offset by the durations of the preceding files, in ms."""
     files = _audio_files(book_multifile)

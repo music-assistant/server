@@ -6,13 +6,19 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from aiohttp import web
+from aiohttp import ClientSession, DummyCookieJar, web
 
 from music_assistant.providers.bookorbit.client import (
     BookOrbitClient,
     BookOrbitIncompleteError,
 )
+from music_assistant.providers.bookorbit.constants import AIOHTTP_TIMEOUT
 from music_assistant.providers.bookorbit.helpers import is_audio_format, normalize_base_url
+
+
+async def _owned_session() -> ClientSession:
+    """Build an isolated session for tests that do not use aiohttp_client."""
+    return ClientSession(cookie_jar=DummyCookieJar(), timeout=AIOHTTP_TIMEOUT)
 
 
 def _make(client: Any) -> BookOrbitClient:
@@ -257,7 +263,7 @@ async def test_get_book_and_progress(aiohttp_client: Any) -> None:
 
 
 def test_stream_url_and_helpers() -> None:
-    """Stream url and helpers."""
+    """Stream url and helpers (no HTTP session required)."""
     bo = BookOrbitClient(
         base_url="http://host:3000/",
         username="u",
@@ -272,6 +278,13 @@ def test_stream_url_and_helpers() -> None:
     assert is_audio_format("M4B")
     assert not is_audio_format("epub")
     assert not is_audio_format(None)
+
+
+def test_session_requires_injected_session_or_mass() -> None:
+    """Lazy session creation must not fall back to a bare ClientSession."""
+    bo = BookOrbitClient(base_url="http://host:3000", username="u", password="p")
+    with pytest.raises(RuntimeError, match="injected session or Music Assistant mass"):
+        _ = bo.session
 
 
 @pytest.mark.asyncio
@@ -339,8 +352,20 @@ async def test_clients_on_same_host_keep_separate_tokens(aiohttp_server: Any) ->
     server = await aiohttp_server(app)
     base = str(server.make_url("/")).rstrip("/")
 
-    alice = BookOrbitClient(base_url=base, username="alice", password="p")
-    bob = BookOrbitClient(base_url=base, username="bob", password="p")
+    alice = BookOrbitClient(
+        base_url=base,
+        username="alice",
+        password="p",
+        session=await _owned_session(),
+        owns_session=True,
+    )
+    bob = BookOrbitClient(
+        base_url=base,
+        username="bob",
+        password="p",
+        session=await _owned_session(),
+        owns_session=True,
+    )
     try:
         await alice.login()
         await bob.login()
@@ -354,8 +379,6 @@ async def test_clients_on_same_host_keep_separate_tokens(aiohttp_server: Any) ->
     assert (alice.access_token, bob.access_token) == ("fresh-alice", "fresh-bob")
     # the refresh cookie is only sent to the refresh endpoint
     assert library_cookies == [None, None, None, None]
-    assert alice.session.closed is False  # a new session is created on demand
-    await alice.close()
 
 
 @pytest.mark.asyncio

@@ -186,6 +186,7 @@ class BookOrbitProvider(MusicProvider):
         self._library_names: dict[int, str] = {}
         self._library_books: dict[int, list[str]] = {}
         self._author_meta: dict[int, dict[str, Any]] = {}
+        self._catalog_detail_tasks: set[asyncio.Task[Any]] = set()
 
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from config, log in, and register the stream proxy."""
@@ -226,6 +227,12 @@ class BookOrbitProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider and close its BookOrbit client."""
         await super().unload(is_removed)
+        pending = list(self._catalog_detail_tasks)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._catalog_detail_tasks.clear()
         self._stream_sessions.clear()
         self._active_stream_sessions.clear()
         if unregister := self._unregister_route:
@@ -403,7 +410,7 @@ class BookOrbitProvider(MusicProvider):
             book = await self._get_book(item_id, fresh=True)
             book = book_with_manifest_playback_order(book, manifest)
             progress = await self._client.get_audio_progress(book_id)
-        except (ClientError, TimeoutError, MediaNotFoundError, ValueError) as err:
+        except (ClientError, TimeoutError, MediaNotFoundError, TypeError, ValueError) as err:
             raise NotImplementedError from err
         if not progress:
             raise NotImplementedError  # fall back to MA's own position
@@ -606,13 +613,14 @@ class BookOrbitProvider(MusicProvider):
                 "BookOrbit manifest unavailable for legacy progress of %s: %s", book_id, err
             )
         files = _audio_files(book)
-        if len(files) > 1 and any(f.get("durationSeconds") is None for f in files):
+        try:
+            legacy = build_progress_update(files, position=position, fully_played=fully_played)
+        except ValueError:
             self.logger.debug(
                 "Skipping BookOrbit progress for %s: missing durationSeconds on a file",
                 book_id,
             )
             return
-        legacy = build_progress_update(files, position=position, fully_played=fully_played)
         if legacy is None:
             return
         await self._client.upsert_audio_progress(
@@ -823,6 +831,14 @@ class BookOrbitProvider(MusicProvider):
                     self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
                 return book_id, None, err
             if book is None or not _audio_files(book):
+                # List endpoint claimed audio; protect an existing library item from
+                # sync deletion when detail transiently has no playable files.
+                if book is not None and SYNC_RUN_STATE.get() is not None:
+                    self.report_skipped_sync_item(
+                        MediaType.AUDIOBOOK,
+                        book_id,
+                        ValueError("BookOrbit book detail has no audio files"),
+                    )
                 return book_id, None, None
             return book_id, book, None
 
@@ -830,6 +846,7 @@ class BookOrbitProvider(MusicProvider):
             asyncio.create_task(_load_book(book_id, card), name=f"bookorbit-detail-{book_id}")
             for book_id, card in cards_by_id.items()
         ]
+        self._catalog_detail_tasks.update(detail_tasks)
         try:
             results = await asyncio.gather(*detail_tasks)
         except BaseException:
@@ -839,6 +856,8 @@ class BookOrbitProvider(MusicProvider):
                 task.cancel()
             await asyncio.gather(*detail_tasks, return_exceptions=True)
             raise
+        finally:
+            self._catalog_detail_tasks.difference_update(detail_tasks)
         detail_errors = [err for _, _, err in results if err is not None]
         if detail_errors:
             # Raising aborts sync before the deletion pass; a silent return would
@@ -886,10 +905,14 @@ class BookOrbitProvider(MusicProvider):
         """Attach manifest ``sortOrder`` to multipart books; propagate manifest errors."""
         if len(_audio_files(book)) <= 1:
             return book
-        # Do not cache/publish unordered BookDetail when the manifest is unavailable:
-        # BookDetail omits sortOrder, so file-id order can invent wrong chapter offsets.
+        # Do not cache/publish unordered BookDetail when the manifest is unavailable
+        # or has no mappable assets: BookDetail omits sortOrder, so file-id order can
+        # invent wrong chapter offsets.
         manifest = await self._client.get_audiobook_manifest(int(book["id"]))
-        return book_with_manifest_playback_order(book, manifest)
+        try:
+            return book_with_manifest_playback_order(book, manifest)
+        except (TypeError, ValueError) as err:
+            raise ProviderUnavailableError(str(err)) from err
 
     def _enrich_author(self, author: dict[str, Any]) -> dict[str, Any]:
         """Overlay list-level author fields onto a (possibly cached) book author."""

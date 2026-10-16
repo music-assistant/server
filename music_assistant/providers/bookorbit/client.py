@@ -84,17 +84,18 @@ class BookOrbitClient:
     def session(self) -> ClientSession:
         """Return the HTTP session (created on first use when owned)."""
         if self._session is None or (self._owns_session and self._session.closed):
-            # Isolate the refresh cookie; prefer MA's connector/UA/proxy when mass is set.
-            jar = DummyCookieJar()
-            if self._mass is not None:
-                self._session = create_clientsession(
-                    self._mass,
-                    verify_ssl=self.verify_ssl,
-                    cookie_jar=jar,
-                    timeout=AIOHTTP_TIMEOUT,
+            if self._mass is None:
+                # Never construct a bare ClientSession: it bypasses MA proxy/UA/resolver.
+                raise RuntimeError(
+                    "BookOrbitClient requires an injected session or Music Assistant mass"
                 )
-            else:
-                self._session = ClientSession(cookie_jar=jar, timeout=AIOHTTP_TIMEOUT)
+            # Isolate the refresh cookie; use MA's connector/UA/proxy.
+            self._session = create_clientsession(
+                self._mass,
+                verify_ssl=self.verify_ssl,
+                cookie_jar=DummyCookieJar(),
+                timeout=AIOHTTP_TIMEOUT,
+            )
             self._owns_session = True
         return self._session
 
