@@ -138,6 +138,8 @@ class SonicSimilarityPlugin(PluginProvider):
         # Per-label last error from fire-and-forget rebuild tasks.
         self._last_rebuild_error: dict[str, str] = {}
         self._last_seen_row_count: int = 0
+        # The thread building and saving the Traits index, kept so unload() can wait for it.
+        self._index_build: asyncio.Future[Any] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -370,7 +372,15 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister API commands; delete on-disk indexes when the provider is uninstalled."""
+        self.unloading = True
         self.mass.cancel_task(REBUILD_TASK_ID)
+        if self._index_build is not None and not self._index_build.done():
+            # cancelling the task does not stop the build thread; it stops itself on the
+            # flag above, so wait for it rather than tear down underneath a running save
+            try:
+                await self._index_build
+            except Exception as err:
+                self.logger.debug("Traits index build failed during unload: %s", err, exc_info=err)
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
@@ -1341,9 +1351,11 @@ class SonicSimilarityPlugin(PluginProvider):
             domain=AA_PROVIDER_DOMAIN, version=int(time.time() * 1000)
         )
 
-        def _build_save_and_view() -> Any:
+        def _build_save_and_view() -> Any | None:
             builder = self._make_empty_index()
             for label, features in row_entries:
+                if self.unloading:
+                    return None
                 normalized = normalize_features(features, new_corpus_means, new_corpus_stds)
                 builder.add(label, np.array(normalized, dtype=np.float32))
             save_index(builder, new_index_path)
@@ -1351,7 +1363,12 @@ class SonicSimilarityPlugin(PluginProvider):
             viewer.view(str(new_index_path))
             return viewer
 
-        new_viewer = await asyncio.to_thread(_build_save_and_view)
+        # Shielded so that cancelling the rebuild task leaves the thread's future awaitable
+        # for unload(), which waits for the build to stop before removing index files.
+        self._index_build = asyncio.ensure_future(asyncio.to_thread(_build_save_and_view))
+        new_viewer = await asyncio.shield(self._index_build)
+        if new_viewer is None:
+            return
 
         # Atomic swap: no `await` between these writes, so queries see fully old or
         # fully new state, never a half-rotated mix.

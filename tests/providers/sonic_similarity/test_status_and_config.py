@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 
 from music_assistant.providers.sonic_similarity import SonicSimilarityPlugin
 from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
+from music_assistant.providers.sonic_similarity import provider as provider_module
 from music_assistant.providers.sonic_similarity.constants import (
     ACTION_REBUILD_18DIM,
     ACTION_REBUILD_CLAP,
@@ -462,6 +464,45 @@ class TestRebuildSearchIndexLocked:
 
         # Prior state preserved — assemble_vector returned None for every row.
         assert plugin._signature_cache == {("spotify", "old"): [0.5] * 18}
+
+    @pytest.mark.asyncio
+    async def test_unload_stops_a_running_build_before_removing_the_index_files(
+        self, mock_mass: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Removing the plugin mid-build waits for the worker, which then writes no file."""
+        plugin = _build_plugin_for_init(mock_mass)
+        mock_mass.storage_path = str(tmp_path)
+        mock_mass._iter_merged_audio_analysis_rows_data = [
+            ("track_a", "spotify", _make_analysis_data()),
+            ("track_b", "tidal", _make_analysis_data()),
+        ]
+        in_worker = threading.Event()
+        release_worker = threading.Event()
+        builder = MagicMock()
+
+        def _blocking_add(*_args: Any) -> None:
+            in_worker.set()
+            release_worker.wait(timeout=5)
+
+        builder.add = MagicMock(side_effect=_blocking_add)
+        monkeypatch.setattr(plugin, "_make_empty_index", lambda: builder)
+        save_index = MagicMock()
+        monkeypatch.setattr(provider_module, "save_index", save_index)
+
+        build = asyncio.ensure_future(plugin._rebuild_search_index_locked())
+        await asyncio.get_running_loop().run_in_executor(None, in_worker.wait)
+        unload = asyncio.ensure_future(plugin.unload(is_removed=True))
+        await asyncio.sleep(0)  # unload is now waiting on the worker
+        assert not unload.done()
+        release_worker.set()
+        await unload
+        await build
+
+        assert builder.add.call_count == 1
+        save_index.assert_not_called()
+        assert plugin._search_index is None
+        assert plugin.corpus_means is None
+        assert list(tmp_path.glob("*.usearch")) == []
 
     @pytest.mark.asyncio
     async def test_happy_path_populates_state_and_writes_file(
