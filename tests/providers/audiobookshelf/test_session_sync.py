@@ -73,6 +73,24 @@ async def test_session_removed_only_when_gone(
     assert cast("AsyncMock", provider._client.update_my_media_progress).await_count == 10
 
 
+async def test_late_sync_404_keeps_replacement_session(provider: Audiobookshelf) -> None:
+    """A 404 for a session replaced while its sync was pending leaves the replacement."""
+    _install_session(provider)
+    replacement = SessionHelper(
+        abs_session_id="abs_session_2", device_slot=0, last_sync_time=time.time()
+    )
+
+    async def _replace_then_fail(**_: object) -> None:
+        provider.sessions["pod1 ep1"] = replacement
+        raise AbsSessionSyncNotFoundError
+
+    provider._client.sync_open_session = AsyncMock(side_effect=_replace_then_fail)  # type: ignore[method-assign]
+
+    await _play(provider)
+
+    assert provider.sessions["pod1 ep1"] is replacement
+
+
 @pytest.mark.parametrize(
     ("close_result", "kept"),
     [(None, False), (AbsSessionNotFoundError, False), (AbsServiceUnavailableError, True)],

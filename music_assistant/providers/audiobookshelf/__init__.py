@@ -1293,8 +1293,9 @@ for more details.
                 self.logger.debug("Synced playback session, position %s s.", position)
                 return True
             except AbsSessionSyncNotFoundError:
-                # only a session gone in abs frees its device for another session
-                self.sessions.pop(prov_item_id, None)
+                # only a session gone in abs frees its device, not a replacement opened meanwhile
+                if self.sessions.get(prov_item_id) is session_helper:
+                    del self.sessions[prov_item_id]
             except AbsSessionSyncError:
                 self.logger.debug(
                     "Unable to sync session %s, falling back to non-session approach.",
