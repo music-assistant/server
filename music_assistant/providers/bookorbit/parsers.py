@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
 )
 
 from .constants import API_PREFIX, AUDIO_FORMATS, DOMAIN
+from .helpers import collection_sequence_key
 
 AUTHOR_PREFIX = "author:"
 NARRATOR_PREFIX = "narrator:"
@@ -67,9 +68,11 @@ def _chapters_from_embedded(
     embedded: list[dict[str, Any]], duration: float
 ) -> list[MediaItemChapter]:
     """Build chapters from BookOrbit ``audioMetadata.chapters`` start offsets."""
+    # BookOrbit may return stored chapters out of order; sort before end offsets.
+    ordered = sorted(embedded, key=lambda chapter: chapter["startMs"])
     chapters: list[MediaItemChapter] = []
-    for position, chapter in enumerate(embedded, 1):
-        next_start_ms = embedded[position]["startMs"] if position < len(embedded) else None
+    for position, chapter in enumerate(ordered, 1):
+        next_start_ms = ordered[position]["startMs"] if position < len(ordered) else None
         chapters.append(
             MediaItemChapter(
                 position=position,
@@ -204,7 +207,10 @@ def parse_audiobook(
     else:
         series = []
     metadata.collections = UniqueList(
-        [MediaItemCollection(title=title, sequence=sequence) for title, sequence in series]
+        [
+            MediaItemCollection(title=title, sequence=collection_sequence_key(sequence))
+            for title, sequence in series
+        ]
     )
 
     if book.get("coverSource") or book.get("hasCover"):

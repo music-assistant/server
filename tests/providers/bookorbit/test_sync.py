@@ -253,6 +253,38 @@ async def test_refresh_catalog_cold_start_detail_error_raises(
 
 
 @pytest.mark.asyncio
+async def test_fetch_catalog_cancels_pending_detail_fetches_on_error(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """A failed detail fetch must cancel siblings before releasing the catalog lock."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _get_book(book_id: int) -> dict[str, Any]:
+        if book_id == book_audiobook["id"]:
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return book_audiobook
+        if book_id == book_multifile["id"]:
+            await started.wait()
+            raise TimeoutError("detail timeout")
+        if book_id == 999:
+            return {"id": 999, "files": [{"id": 1, "format": "epub"}]}
+        raise KeyError(book_id)
+
+    cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
+    with pytest.raises(TimeoutError, match="detail timeout"):
+        await provider._refresh_catalog(force=True)
+    assert cancelled.is_set()
+    assert provider._catalog == {}
+
+
+@pytest.mark.asyncio
 async def test_refresh_catalog_author_list_failure_preserves_author_meta(
     provider: BookOrbitProvider,
 ) -> None:

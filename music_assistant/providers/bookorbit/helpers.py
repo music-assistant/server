@@ -157,6 +157,28 @@ def series_index_sort_key(index: str | None) -> tuple[Any, ...]:
     return (0, len(whole_n), whole_n, frac_key, index)
 
 
+# Pad width for library collection TEXT sort (max BookOrbit segment length).
+_COLLECTION_SEQUENCE_PAD = _SERIES_INDEX_MAX_LENGTH
+
+
+def collection_sequence_key(value: Any) -> str | None:
+    """
+    Return a TEXT-sortable series index that preserves BookOrbit segment order.
+
+    Library collection SQL casts bare numeric strings to REAL, which collapses
+    ``1.10`` with ``1.1`` and sorts ``1.10`` before ``1.2``. Zero-padded segments
+    stay on the TEXT path and sort with BookOrbit integer-segment semantics.
+    """
+    index = parse_series_index(value)
+    if index is None:
+        return None
+    whole, sep, fraction = index.partition(".")
+    padded = _normalized_integer_segment(whole).zfill(_COLLECTION_SEQUENCE_PAD)
+    if sep:
+        padded += "." + _normalized_integer_segment(fraction).zfill(_COLLECTION_SEQUENCE_PAD)
+    return padded
+
+
 def parse_browse_path(path: str) -> tuple[int | None, list[str]]:
     """
     Split a BookOrbit browse path into library id and path segments.

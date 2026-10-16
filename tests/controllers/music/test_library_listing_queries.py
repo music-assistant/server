@@ -44,6 +44,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import LEGACY_SORT_KEYS
 from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.bookorbit.helpers import collection_sequence_key
 
 pytestmark = pytest.mark.asyncio
 
@@ -719,6 +720,57 @@ async def test_audiobook_collections_collapse_and_preserve_order(
             limit=1,
         )
     assert [item.name for item in favorites.items] == ["Alpha 2"]
+
+
+async def test_audiobook_collections_segment_sequence_order(
+    mass: MusicAssistant,
+) -> None:
+    """Zero-padded BookOrbit sequences keep ``1.10`` after ``1.2`` in library collections."""
+    controller = mass.music.audiobooks
+    for name, raw_index in (
+        ("Book 1.10", "1.10"),
+        ("Book 1.2", "1.2"),
+        ("Book 1", "1"),
+        ("Book 2", "2"),
+    ):
+        await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [
+                            MediaItemCollection(
+                                title="Segment Series",
+                                sequence=collection_sequence_key(raw_index),
+                            )
+                        ]
+                    )
+                ),
+            )
+        )
+
+    items = await controller.get_library_items_by_query(
+        in_library_only=True,
+        collapse_collections=True,
+    )
+    collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
+    assert [item.name for item in collections["Segment Series"].items] == [
+        "Book 1",
+        "Book 1.2",
+        "Book 1.10",
+        "Book 2",
+    ]
+
+    collection = await controller.get_collection(collections["Segment Series"].item_id)
+    assert [item.name for item in collection.items] == [
+        "Book 1",
+        "Book 1.2",
+        "Book 1.10",
+        "Book 2",
+    ]
 
 
 async def test_artist_audiobooks_collapse_collections(

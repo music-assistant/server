@@ -47,7 +47,8 @@ def test_parse_audiobook_metadata(book_audiobook: dict[str, Any]) -> None:
     assert md.release_date.year == 2007
     (collection,) = md.collections
     assert collection.title == "Dune Chronicles"
-    assert collection.sequence == 1
+    # Zero-padded TEXT key so library collection SQL keeps BookOrbit segment order.
+    assert collection.sequence == "00000000000000000001"
 
 
 def test_parse_audiobook_cover_url(book_audiobook: dict[str, Any]) -> None:
@@ -84,6 +85,21 @@ def test_parse_audiobook_single_file_uses_embedded_chapters(
         (1, "Opening", 0, 600),
         (2, "Part One", 600, 39000),
         (3, "Part Two", 39000, 78000.5),
+    ]
+
+
+def test_parse_audiobook_sorts_out_of_order_embedded_chapters(
+    book_audiobook: dict[str, Any],
+) -> None:
+    """Embedded chapters are sorted by startMs before deriving end offsets."""
+    book_audiobook["audioMetadata"]["chapters"] = [
+        {"title": "Later", "startMs": 120_000},
+        {"title": "Earlier", "startMs": 0},
+    ]
+    chapters = _parse(book_audiobook).metadata.chapters
+    assert [(c.position, c.name, c.start, c.end) for c in chapters] == [
+        (1, "Earlier", 0, 120),
+        (2, "Later", 120, 78000.5),
     ]
 
 

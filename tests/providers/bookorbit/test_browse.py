@@ -14,6 +14,7 @@ from music_assistant_models.media_items import BrowseFolder
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.constants import CATALOG_TTL_SEC
 from music_assistant.providers.bookorbit.helpers import (
+    collection_sequence_key,
     compare_series_indices,
     parse_browse_path,
     parse_series_index,
@@ -90,6 +91,25 @@ def test_series_index_uses_integer_segments_not_float() -> None:
     assert compare_series_indices("1", "1.2") < 0
     ordered = sorted(["1.10", "1.2", "1", "2"], key=series_index_sort_key)
     assert ordered == ["1", "1.2", "1.10", "2"]
+
+
+def test_collection_sequence_key_preserves_segment_order_for_text_sort() -> None:
+    """Padded collection sequences sort as TEXT like BookOrbit segments, not floats."""
+    keys = {
+        value: key
+        for value in ("1.10", "1.2", "1", "2", "1.1")
+        if (key := collection_sequence_key(value)) is not None
+    }
+    assert sorted(keys.values()) == [
+        keys["1"],
+        keys["1.1"],
+        keys["1.2"],
+        keys["1.10"],
+        keys["2"],
+    ]
+    # Bare numeric strings would be REAL-cast; leading zeros keep the TEXT path.
+    assert keys["1.10"] == "00000000000000000001.00000000000000000010"
+    assert keys["1.1"] != keys["1.10"]
 
 
 @pytest.mark.asyncio
