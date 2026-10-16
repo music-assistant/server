@@ -278,10 +278,15 @@ class SendspinSourceProvider(PluginProvider):
                                 err,
                             )
                 # Keep the running bridge when renderers reopen the URL for the same queue.
-                if (live := state.session) is not None and (
-                    live.player_id,
-                    live.owner_player_id,
-                ) == (player_id, owner_player_id):
+                # A new selection of an input another server took starts over to reclaim it.
+                if (
+                    (live := state.session) is not None
+                    and (live.player_id, live.owner_player_id) == (player_id, owner_player_id)
+                    and (
+                        self._get_source_role(client) is not None
+                        or live.playback_session_id == queue_session_id
+                    )
+                ):
                     live.stream_session_id = stream_session_id
                     live.playback_session_id = queue_session_id
                     live.generation += 1

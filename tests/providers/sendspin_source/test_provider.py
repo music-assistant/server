@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -388,6 +389,27 @@ async def test_a_held_input_that_stays_away_fails_to_start(
     with pytest.raises(AudioError) as err:
         await _take(provider.get_audio_stream(_stream_details()), 1)
     assert err.value.translation_key == "no_audio"
+
+
+async def test_reselecting_an_input_another_server_took_reclaims_it(
+    fake_client: _FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A renderer reopening the stream leaves the device alone, a new selection reclaims it."""
+    provider = await make_provider([fake_client])
+    server_api = get_server_api(provider)
+    server_api.pairing_store.trusted["client-1"] = frozenset({"source"})
+    await _start_streaming(provider, fake_client, monkeypatch)
+    fake_client.is_connected = False
+    fake_client.cleanup_on_mdns_removal = True
+    fake_client.detach_roles()
+
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
+    assert server_api.reclaim_requests == []
+    get_players(provider).source_sessions["queue-1"] = SimpleNamespace(
+        playback_session_id="playback-2"
+    )
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-3")
+    assert server_api.reclaim_requests == ["client-1"]
 
 
 async def test_signal_watcher_arms_before_roles_attach() -> None:
