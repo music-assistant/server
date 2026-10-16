@@ -78,7 +78,6 @@ def _queue_item(item_id: str, name: str, duration: int = 300) -> SimpleNamespace
         name=name,
         media_type=MediaType.TRACK,
         media_item=None,
-        origin=None,
         streamdetails=streamdetails,
         duration=duration,
         extra_attributes={},

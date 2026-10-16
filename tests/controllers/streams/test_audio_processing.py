@@ -1720,7 +1720,6 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         name="first",
         media_type=MediaType.TRACK,
         media_item=None,
-        origin=None,
         streamdetails=first_streamdetails,
         extra_attributes={},
     )
@@ -1751,7 +1750,6 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         name="skipped",
         media_type=MediaType.TRACK,
         media_item=None,
-        origin=None,
         streamdetails=skipped_streamdetails,
         extra_attributes={"playback_speed": 2.0},
     )

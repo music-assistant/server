@@ -422,7 +422,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
     def _plays_as_album_track(self, queue_item: QueueItem) -> bool:
         """
-        Check whether the given item plays as part of an album the user enqueued.
+        Check whether the given item plays as part of an album, rather than on its own.
 
         :param queue_item: The queue item to decide the loudness reference for.
         """
@@ -881,8 +881,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve
-                # their successor from the queue's last item instead) and to tell which of its
-                # tracks play as part of an album the user picked.
+                # their successor from the queue's last item instead).
                 # Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
                 if not isinstance(media_item, BrowseFolder) and (

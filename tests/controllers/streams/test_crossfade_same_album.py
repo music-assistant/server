@@ -162,6 +162,14 @@ def test_tracks_of_one_album_in_a_playlist_are_not_crossfaded() -> None:
     )
 
 
+def test_playlist_moving_on_to_another_album_is_crossfaded() -> None:
+    """Only an album play keeps its tracks gapless, not any container that holds them."""
+    assert _crossfade_allowed(
+        _queue_item("track-1", LIBRARY_ALBUM, origin=PLAYLIST_ORIGIN),
+        _queue_item("track-2", OTHER_PROVIDER_ALBUM, origin=PLAYLIST_ORIGIN),
+    )
+
+
 def test_item_without_an_origin_is_compared_on_its_album() -> None:
     """A track played on its own after the album it belongs to stays gapless."""
     assert not _crossfade_allowed(
