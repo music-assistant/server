@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import importlib.util
+import inspect
 import time
 from collections.abc import Callable, Coroutine
 from typing import Any, cast
@@ -1086,3 +1087,56 @@ async def test_track_end_does_not_repeat_after_repeat_one_is_switched_off(
     await provider._advance_after_track("wk_test", player.playback_generation)
 
     assert player.playback_state == PlaybackState.IDLE
+
+
+async def test_owned_work_finishes_when_its_caller_is_cancelled(
+    provider: WebKioskProvider, mass_mock: Mock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A page that goes away does not cut provider work short; a later failure is logged."""
+    mass_mock.create_task.side_effect = asyncio.create_task
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished: list[str] = []
+
+    async def work(fail: bool) -> None:
+        started.set()
+        await release.wait()
+        finished.append("done")
+        if fail:
+            raise RuntimeError("work failed")
+
+    for fail in (False, True):
+        started.clear()
+        release.clear()
+        caller = asyncio.create_task(provider.run_owned(work(fail)))
+        await started.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        release.set()
+        while provider._background_tasks:
+            await asyncio.sleep(0)
+
+    assert finished == ["done", "done"]
+    assert "work failed" in caplog.text
+
+
+async def test_unload_cancels_owned_work(provider: WebKioskProvider, mass_mock: Mock) -> None:
+    """Owned work ends with the provider, and none starts while it unloads."""
+    mass_mock.create_task.side_effect = asyncio.create_task
+    started = asyncio.Event()
+
+    async def work() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    caller = asyncio.create_task(provider.run_owned(work()))
+    await started.wait()
+    await provider.unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    late = work()
+    with pytest.raises(asyncio.CancelledError):
+        await provider.run_owned(late)
+    assert inspect.getcoroutinestate(late) == inspect.CORO_CLOSED

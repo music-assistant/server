@@ -346,6 +346,10 @@ class WebKioskPlayer(Player):
         await self.play_media(media)
         return True
 
+    def can_refresh_stream(self) -> bool:
+        """Return whether the current media is a queue stream that can be rebuilt."""
+        return self._refreshable_stream() is not None
+
     async def refresh_stream(self) -> bool:
         """Rebuild a finite queued HTML5 stream at its current song position."""
         # Other media (an announcement, a plain URL) has no queue stream to

@@ -9,6 +9,7 @@ import hmac
 import logging
 import secrets
 import time
+from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
@@ -445,6 +446,33 @@ class WebKioskProvider(PlayerProvider):
                     player.sendspin_fallback = False
                 raise
 
+    async def run_owned[T](self, coro: Coroutine[Any, Any, T]) -> T:
+        """
+        Run work that must not depend on its caller as provider work, and await it.
+
+        Cancelling the caller (a page that closes) leaves the work running to its
+        end; unload cancels it. Its failure reaches the caller, or is logged once
+        the caller is gone.
+
+        :param coro: The work to run.
+        :raises asyncio.CancelledError: When the provider is unloading.
+        """
+        task = self._own(coro)
+        if task is None:
+            raise asyncio.CancelledError
+        if not isinstance(task, asyncio.Future):
+            # The test double for mass.create_task hands the coroutine back.
+            return cast("T", await task)
+        try:
+            return cast("T", await asyncio.shield(task))
+        except asyncio.CancelledError:
+            # The caller went away; whoever finishes last reports a failure.
+            if task.done():
+                self._report_abandoned_work(task)
+            else:
+                task.add_done_callback(self._report_abandoned_work)
+            raise
+
     def request_sendspin_fallback(self, player_id: str, client_id: str) -> None:
         """
         Schedule native playback for a browser whose Sendspin output has no audio.
@@ -590,17 +618,26 @@ class WebKioskProvider(PlayerProvider):
 
     def _spawn(self, coro: Any) -> None:
         """Schedule coro as provider-owned work that unload cancels."""
-        if self._unloading:
-            coro.close()
-            return
-        task = self.mass.create_task(coro)
+        task = self._own(coro)
         # A test double that hands the coroutine back is closed.
         if asyncio.iscoroutine(task):
             task.close()
-            return
+
+    def _own(self, coro: Any) -> Any:
+        """Start coro as provider-owned work; None once the provider is unloading."""
+        if self._unloading:
+            coro.close()
+            return None
+        task = self.mass.create_task(coro)
         if isinstance(task, asyncio.Future):
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    def _report_abandoned_work(self, task: asyncio.Future[Any]) -> None:
+        """Log the failure of provider work whose caller went away."""
+        if not task.cancelled() and (error := task.exception()) is not None:
+            self.logger.error("Kiosk background work failed", exc_info=error)
 
     async def _publish_wave(
         self, player_id: str, seq: int, media: PlayerMedia | None = None

@@ -681,7 +681,7 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
     )
     first = await http_client.ws_connect("/ws?device_id=test")
     await first.receive_json()
-    old_play = await first.receive_json()
+    old_play = await _next_message(first, "play")
     await player.play_media(
         PlayerMedia(
             uri="new",
@@ -694,7 +694,7 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
     )
     second = await http_client.ws_connect("/ws?device_id=test")
     await second.receive_json()
-    new_play = await second.receive_json()
+    new_play = await _next_message(second, "play")
     following = PlayerMedia(uri="next", duration=30, source_id="wk_test", queue_item_id="next")
     later = PlayerMedia(uri="later", duration=30, source_id="wk_test", queue_item_id="later")
     await player.enqueue_next_media(following)
@@ -892,6 +892,8 @@ async def test_html5_reconnect_prepares_stream_at_current_song_position(
         await registered.pause()
 
     mass_mock.players.cmd_pause = AsyncMock(side_effect=pause_stream)
+    # The rebuilt stream reaches the other page through its own socket's queue.
+    mass_mock.create_task.side_effect = asyncio.create_task
     ws = await http_client.ws_connect("/ws?device_id=resume")
     await ws.receive_json()
     async with asyncio.timeout(1):
@@ -1292,3 +1294,78 @@ async def test_failed_page_preparation_closes_the_socket_for_a_reconnect(
         assert "seek failed" in caplog.text
     finally:
         await ws.close()
+
+
+async def test_closing_a_socket_cancels_its_pending_messages(
+    provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """Messages still waiting for a closed page are owned by its socket and cancelled."""
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: object) -> asyncio.Task[None]:
+        task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    async with TestClient(TestServer(server.app)) as http:
+        ws = await http.ws_connect("/ws?device_id=slow")
+        await ws.receive_json()
+        mass_mock.create_task.side_effect = spawn
+        started = asyncio.Event()
+
+        async def stuck_send(*_args: object) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        server._ws_send = AsyncMock(side_effect=stuck_send)  # type: ignore[method-assign]
+        server.broadcast_pause("wk_slow")
+        await asyncio.wait_for(started.wait(), 1)
+        await ws.close()
+        async with asyncio.timeout(1):
+            while not tasks[0].done():
+                await asyncio.sleep(0.01)
+        assert tasks[0].cancelled()
+
+
+async def _next_message(socket: Any, message_type: str) -> dict[str, Any]:
+    """Return the next message of a type, skipping others such as group updates."""
+    async with asyncio.timeout(1):
+        while True:
+            payload = await socket.receive_json()
+            if payload.get("type") == message_type:
+                return cast("dict[str, Any]", payload)
+
+
+async def test_closing_the_page_does_not_interrupt_its_stream_rebuild(
+    http_client: TestClient[Any, Any], provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """A paused kiosk stays paused when its page closes between the seek and the re-pause."""
+    mass_mock.create_task.side_effect = asyncio.create_task
+    registered = WebKioskPlayer(provider, "wk_rebuild", name="Rebuild")
+    registered.update_state = Mock()  # type: ignore[misc,method-assign]
+    await registered.play_media(
+        PlayerMedia(uri="track", duration=180, source_id="wk_rebuild", queue_item_id="item")
+    )
+    registered.note_seek(30)
+    await registered.pause()
+    mass_mock.players.get_player.return_value = registered
+    seeking = asyncio.Event()
+    release = asyncio.Event()
+
+    async def seek(_player_id: str, _position: int) -> None:
+        seeking.set()
+        await release.wait()
+
+    mass_mock.players.cmd_seek = AsyncMock(side_effect=seek)
+    mass_mock.players.cmd_pause = AsyncMock()
+    ws = await http_client.ws_connect("/ws?device_id=rebuild")
+    await ws.receive_json()
+    await asyncio.wait_for(seeking.wait(), 1)
+    await ws.close()
+    await asyncio.sleep(0.05)
+    release.set()
+    async with asyncio.timeout(1):
+        while not mass_mock.players.cmd_pause.await_count:
+            await asyncio.sleep(0.01)

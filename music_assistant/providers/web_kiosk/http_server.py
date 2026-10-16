@@ -104,6 +104,7 @@ class WebKioskHTTPServer:
         self._ws_claims: dict[web.WebSocketResponse, VerifiedSendspinClaim] = {}
         self._ws_peers: dict[web.WebSocketResponse, tuple[str | None, str | None]] = {}
         self._ws_lyrics: set[web.WebSocketResponse] = set()
+        self._ws_tasks: dict[web.WebSocketResponse, set[asyncio.Future[Any]]] = {}
         self._outbound_locks: dict[str, asyncio.Lock] = {}
         self.party = PartyAdapter(provider)
         self._setup_routes()
@@ -690,7 +691,7 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             # stays silent until the next playback command. Preparing it can wait
             # for the playback lock, so it runs beside the receive loop: the page's
             # own reports (such as the end of an announcement) keep flowing.
-            preparation = asyncio.create_task(self._prepare_page(ws, player))
+            preparation = self._start_page_preparation(ws, player)
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     self._handle_ws_message(player_id, msg.data, ws)
@@ -721,7 +722,10 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
     async def _prepare_page(self, ws: web.WebSocketResponse, player: WebKioskPlayer | None) -> None:
         """Move playback to the page's output if needed and send it the play state."""
         try:
-            await self._move_playback_to_native_output(player)
+            # Moving playback is provider work: it completes even if this page
+            # goes away while the queue resumes.
+            if player is not None and self._needs_native_output(player):
+                await self.provider.run_owned(self._move_playback_to_native_output(player))
             await self._send_snapshot(ws, player)
         except Exception:
             # Nothing else awaits this task. A page without its play state would
@@ -730,15 +734,18 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
             logger.exception("Preparing the kiosk page failed")
             await ws.close(code=WSCloseCode.INTERNAL_ERROR, message=b"Kiosk setup failed")
 
-    async def _move_playback_to_native_output(self, player: WebKioskPlayer | None) -> None:
+    def _needs_native_output(self, player: WebKioskPlayer) -> bool:
+        """Return whether an HTML5 tab needs playback moved off the Sendspin output."""
+        return bool(
+            player.html5_requested
+            and player.sendspin_client_id
+            and not player.sendspin_fallback
+            and player.active_output_protocol == player.sendspin_client_id
+        )
+
+    async def _move_playback_to_native_output(self, player: WebKioskPlayer) -> None:
         """Move Sendspin playback to native output once an HTML5 tab needs it."""
-        if (
-            player is None
-            or not player.html5_requested
-            or not player.sendspin_client_id
-            or player.sendspin_fallback
-            or player.active_output_protocol != player.sendspin_client_id
-        ):
+        if not self._needs_native_output(player):
             return
         try:
             # The same handover as the no-audio fallback: a running queue resumes
@@ -761,19 +768,25 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         if player.sendspin_client_id and player.active_output_protocol == player.sendspin_client_id:
             self._publish_effective_media(player, force=True)
             return
-        refreshed = player.current_media is not None and await player.refresh_stream()
+        # Rebuilding the stream seeks (and re-pauses) the player: provider work
+        # that finishes even when this page goes away meanwhile.
+        refreshed = player.can_refresh_stream() and await self.provider.run_owned(
+            player.refresh_stream()
+        )
         # Messages to the player's pages are ordered. Holding the order from the
         # first read of the play state to the last snapshot message means a
         # track change made meanwhile reaches every page after the snapshot,
         # never before an obsolete part of it.
         async with self._outbound_lock(player.player_id):
+            messages = self._volume_messages(player)
             media = player.current_media
             if media is None:
-                await self._send_volume(player, {ws})
+                for message in messages:
+                    await self._ws_send(ws, message, player.player_id)
                 return
             song_length, stream_start = media_timeline(media)
             wave_seq = self.provider.next_wave_seq(player.player_id)
-            message = self._play_message(
+            play = self._play_message(
                 player.player_id,
                 playback_generation=player.playback_generation,
                 title=media.title,
@@ -784,44 +797,36 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
                 playback_speed=player.playback_speed,
                 wave_seq=wave_seq,
             )
-            recipients = self._ws_clients.get(player.player_id, {ws}) if refreshed else {ws}
             # Position inside the served audio, including while paused. The song
             # clock on screen is start + this value. A paused reconnect used to
             # skip it and open the track at 0:00.
-            elapsed = player.elapsed_time
-            paused = player.playback_state == PlaybackState.PAUSED
-            for client in tuple(recipients):
-                await self._ws_send(client, message, player.player_id)
-                if elapsed is not None and elapsed >= 1:
-                    await self._ws_send(
-                        client,
-                        json.dumps({"type": "seek", "position": int(elapsed)}),
-                        player.player_id,
-                    )
-                if paused:
-                    await self._ws_send(client, json.dumps({"type": "pause"}), player.player_id)
-            await self._send_volume(player, recipients)
+            position = []
+            if (elapsed := player.elapsed_time) is not None and elapsed >= 1:
+                position.append(json.dumps({"type": "seek", "position": int(elapsed)}))
+            if player.playback_state == PlaybackState.PAUSED:
+                position.append(json.dumps({"type": "pause"}))
+            messages = [play, *position, *messages]
+            # A rebuilt stream replaces the one every page plays. Other pages get
+            # it through their own sockets, queued right behind this snapshot.
+            if refreshed:
+                for client in tuple(self._ws_clients.get(player.player_id, ())):
+                    if client is not ws:
+                        for message in messages:
+                            self._post(client, message, player.player_id)
+            for message in messages:
+                await self._ws_send(ws, message, player.player_id)
         self.provider.spawn_wave(player.player_id, wave_seq)
         self.provider.spawn_lyrics(player.player_id, wave_seq)
 
-    async def _send_volume(
-        self, player: WebKioskPlayer, recipients: set[web.WebSocketResponse]
-    ) -> None:
-        """Send the MA volume level and mute state to freshly connected kiosk pages."""
+    def _volume_messages(self, player: WebKioskPlayer) -> list[str]:
+        """Return the MA volume level and mute state for freshly connected pages."""
         # The slider and audio element start at 100 and unmuted. Send the real
         # state so a reconnect neither jumps the volume nor plays a muted kiosk.
-        for client in tuple(recipients):
-            if player.volume_level is not None:
-                await self._ws_send(
-                    client,
-                    json.dumps({"type": "volume", "level": int(player.volume_level)}),
-                    player.player_id,
-                )
-            await self._ws_send(
-                client,
-                json.dumps({"type": "mute", "muted": bool(player.volume_muted)}),
-                player.player_id,
-            )
+        messages = []
+        if player.volume_level is not None:
+            messages.append(json.dumps({"type": "volume", "level": int(player.volume_level)}))
+        messages.append(json.dumps({"type": "mute", "muted": bool(player.volume_muted)}))
+        return messages
 
     async def _handle_stream(self, request: web.Request) -> web.StreamResponse:
         """Redirect the kiosk audio element to the MA Streamserver URL."""
@@ -922,7 +927,25 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
 
     def _post(self, ws: web.WebSocketResponse, text: str, player_id: str) -> None:
         """Queue a message behind earlier messages and snapshots for the player."""
-        self.provider.mass.create_task(self._send_in_order(ws, text, player_id))
+        task = self.provider.mass.create_task(self._send_in_order(ws, text, player_id))
+        self._own_socket_task(ws, task)
+
+    def _start_page_preparation(
+        self, ws: web.WebSocketResponse, player: WebKioskPlayer | None
+    ) -> asyncio.Task[None]:
+        """Prepare a connected page beside its receive loop, owned by its socket."""
+        task = asyncio.create_task(self._prepare_page(ws, player))
+        self._own_socket_task(ws, task)
+        return task
+
+    def _own_socket_task(self, ws: web.WebSocketResponse, task: object) -> None:
+        """Make a task part of the socket's work, cancelled when the socket goes."""
+        # The test double for mass.create_task hands back the coroutine instead.
+        if not isinstance(task, asyncio.Future):
+            return
+        tasks = self._ws_tasks.setdefault(ws, set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
     async def _send_in_order(self, ws: web.WebSocketResponse, text: str, player_id: str) -> None:
         async with self._outbound_lock(player_id):
@@ -1169,6 +1192,11 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
         self._ws_peers.pop(ws, None)
         self._ws_lyrics.discard(ws)
         self._ws_volume_support.pop(ws, None)
+        # Work for a page ends with its socket. The handler awaits its own task.
+        current = asyncio.current_task()
+        for task in self._ws_tasks.pop(ws, set()):
+            if task is not current:
+                task.cancel()
 
     async def _register_socket_player(
         self,
