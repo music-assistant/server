@@ -429,6 +429,11 @@
                 if (sendspinStreaming && window.__sendspinPlayer && window.__sendspinPlayer.volume !== (msg.level || 0)) window.__sendspinPlayer.setVolume(msg.level || 0);
                 syncVolume(msg.level || 0);
                 break;
+            case 'mute':
+                // Mute the output only; the stored volume stays as it is.
+                audio.muted = !!msg.muted;
+                if (window.__sendspinPlayer && typeof window.__sendspinPlayer.setMuted === 'function') window.__sendspinPlayer.setMuted(!!msg.muted);
+                break;
             case 'wave':
                 if (typeof msg.seq === 'number' && msg.seq !== waveGen) {
                     pendingWave = { gen: msg.seq, bins: msg.bins };

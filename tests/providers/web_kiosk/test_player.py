@@ -6,6 +6,7 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.player import PlayerMedia
 
@@ -297,3 +298,31 @@ async def test_enqueue_next_media_is_replaced_and_cleared(player: WebKioskPlayer
     await player.enqueue_next_media(first)
     await player.stop()
     assert enqueued() is None
+
+
+@pytest.mark.parametrize("volume_control", [True, False])
+def test_kiosk_advertises_mute_independent_of_volume_control(
+    player: WebKioskPlayer, volume_control: bool
+) -> None:
+    """Muting the media element works even where the browser cannot change its volume."""
+    player.set_volume_control_supported(volume_control)
+    assert PlayerFeature.VOLUME_MUTE in player.supported_features
+    assert player.volume_muted is False
+
+
+async def test_volume_mute_keeps_volume_and_notifies_kiosk(player: WebKioskPlayer) -> None:
+    """Mute and unmute toggle the muted state and leave the volume level alone."""
+    server = Mock()
+    player.provider.http_server = server  # type: ignore[attr-defined]
+    player._attr_volume_level = 40
+
+    def state() -> tuple[bool | None, int | None]:
+        return player.volume_muted, player.volume_level
+
+    await player.volume_mute(True)
+    assert state() == (True, 40)
+    server.broadcast_mute.assert_called_with("wk_test", True)
+
+    await player.volume_mute(False)
+    assert state() == (False, 40)
+    server.broadcast_mute.assert_called_with("wk_test", False)

@@ -133,6 +133,8 @@ class WebKioskPlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.PAUSE,
             PlayerFeature.SEEK,
+            # Muting the media element works even where its volume is read-only.
+            PlayerFeature.VOLUME_MUTE,
         }
         self._attr_device_info = DeviceInfo(
             model="Web browser",
@@ -146,6 +148,7 @@ class WebKioskPlayer(Player):
         self._attr_available = True
         self._attr_powered = True
         self._attr_volume_level = 100
+        self._attr_volume_muted = False
         self._playback_speed = 1.0
         self.output_format = output_format
         self.sendspin_fallback = False
@@ -397,6 +400,13 @@ class WebKioskPlayer(Player):
         self.update_state()
         if not self._skip_ws_notify:
             cast("WebKioskProvider", self.provider).notify_volume(self.player_id, volume_level)
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Handle VOLUME_MUTE command without changing the volume level."""
+        self._attr_volume_muted = muted
+        self.update_state()
+        if not self._skip_ws_notify:
+            cast("WebKioskProvider", self.provider).notify_mute(self.player_id, muted)
 
     async def seek(self, position_seconds: int) -> None:
         """Handle SEEK command — send seek action to the kiosk via WebSocket."""

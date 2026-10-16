@@ -284,6 +284,13 @@ class WebKioskHTTPServer:
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
+    def broadcast_mute(self, player_id: str, muted: bool) -> None:
+        """Notify subscribed WebSocket clients of a mute change."""
+        msg = json.dumps({"type": "mute", "muted": muted})
+        for ws in list(self._ws_clients.get(player_id, set())):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
     def client_count(self, player_id: str) -> int:
         """Return how many browser sockets are open for this player."""
         return len(self._ws_clients.get(player_id, ()))
@@ -775,14 +782,17 @@ small {{ color: #9a9aa6; display: block; margin-top: 4px; }}
     async def _send_volume(
         self, player: WebKioskPlayer, recipients: set[web.WebSocketResponse]
     ) -> None:
-        """Send the MA volume level to freshly connected kiosk pages."""
-        # The slider and audio element start at 100. Send the real level so a
-        # reconnect neither jumps the volume on the first drag nor plays loud.
-        if player.volume_level is not None:
-            for client in tuple(recipients):
+        """Send the MA volume level and mute state to freshly connected kiosk pages."""
+        # The slider and audio element start at 100 and unmuted. Send the real
+        # state so a reconnect neither jumps the volume nor plays a muted kiosk.
+        for client in tuple(recipients):
+            if player.volume_level is not None:
                 await self._ws_send(
                     client, json.dumps({"type": "volume", "level": int(player.volume_level)})
                 )
+            await self._ws_send(
+                client, json.dumps({"type": "mute", "muted": bool(player.volume_muted)})
+            )
 
     async def _handle_stream(self, request: web.Request) -> web.StreamResponse:
         """Redirect the kiosk audio element to the MA Streamserver URL."""

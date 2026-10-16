@@ -1103,3 +1103,22 @@ async def test_closed_socket_leaves_no_per_socket_state(provider: WebKioskProvid
     }
     assert per_socket
     assert {name: value for name, value in per_socket.items() if value} == {}
+
+
+async def test_reconnect_snapshot_restores_mute(
+    http_client: TestClient[Any, Any], provider: WebKioskProvider, mass_mock: Mock
+) -> None:
+    """A tab that reloads while the kiosk is muted starts muted."""
+    registered = WebKioskPlayer(provider, "wk_muted", name="Muted")
+    registered.update_state = Mock()  # type: ignore[misc,method-assign]
+    registered._attr_volume_muted = True
+    mass_mock.players.get_player.return_value = registered
+    ws = await http_client.ws_connect("/ws?device_id=muted")
+    await ws.receive_json()
+    async with asyncio.timeout(1):
+        while True:
+            message = await ws.receive_json()
+            if message.get("type") == "mute":
+                break
+    assert message["muted"] is True
+    await ws.close()

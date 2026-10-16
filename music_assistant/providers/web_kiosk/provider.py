@@ -490,6 +490,11 @@ class WebKioskProvider(PlayerProvider):
         if self.http_server:
             self.http_server.broadcast_seek(player_id, position_seconds)
 
+    def notify_mute(self, player_id: str, muted: bool) -> None:
+        """Notify the kiosk WebSocket clients of a mute change."""
+        if self.http_server:
+            self.http_server.broadcast_mute(player_id, muted)
+
     def notify_volume(self, player_id: str, volume_level: int) -> None:
         """Notify the kiosk WebSocket client of a volume change."""
         if self.http_server:
