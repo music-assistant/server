@@ -284,6 +284,20 @@ async def test_search_falls_back_to_catalog(
 
 
 @pytest.mark.asyncio
+async def test_search_falls_back_to_catalog_on_timeout(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Timeouts and connection errors must not drop catalog search matches."""
+    client = cast("Mock", provider._client)
+    client.search_books = AsyncMock(side_effect=TimeoutError("slow"))
+    client.search_authors = AsyncMock(side_effect=TimeoutError("slow"))
+    client.search_narrators = AsyncMock(side_effect=TimeoutError("slow"))
+    title = book_audiobook["title"]
+    result = await provider.search(title[:4], [MediaType.AUDIOBOOK, MediaType.ARTIST])
+    assert str(book_audiobook["id"]) in {b.item_id for b in result.audiobooks}
+
+
+@pytest.mark.asyncio
 async def test_audiobook_items_survives_catalog_refresh_during_library_lookup(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:

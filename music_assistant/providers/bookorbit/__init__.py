@@ -1097,7 +1097,7 @@ class BookOrbitProvider(MusicProvider):
         catalog_ids = [b for b, book in self._catalog.items() if needle in _book_haystack(book)]
         try:
             cards = await self._client.search_books(query)
-        except ClientResponseError as err:
+        except (ClientError, TimeoutError) as err:
             self.logger.debug("BookOrbit book search failed: %s", err)
             ids = catalog_ids
         else:
@@ -1131,7 +1131,7 @@ class BookOrbitProvider(MusicProvider):
         try:
             authors = await self._client.search_authors(query)
             narrators = await self._client.search_narrators(query)
-        except ClientResponseError as err:
+        except (ClientError, TimeoutError) as err:
             self.logger.debug("BookOrbit author/narrator search failed: %s", err)
             return catalog_matches[:limit]
         found: list[Artist] = []
