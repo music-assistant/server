@@ -4389,35 +4389,44 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
         if not player.supports_feature(PlayerFeature.VOLUME_SET):
             return
-        stored_volume_control = self.mass.config.get_raw_player_config_value(
-            player.player_id, CONF_VOLUME_CONTROL
-        )
-        if stored_volume_control in (
-            None,
-            PLAYER_CONTROL_NATIVE,
-            PLAYER_CONTROL_PROTOCOL,
-            "auto",
-        ):
-            return
-        # Opt-in: skip when unset so upgrades do not force Softvol 100.
-        raw_level = self.mass.config.get_raw_player_config_value(
-            player.player_id,
-            CONF_NATIVE_VOLUME,
-        )
-        if raw_level is None:
-            return
-        try:
-            level = int(cast("int", raw_level))
-        except (TypeError, ValueError) as err:
-            msg = f"Invalid native volume pin for player {player.display_name}: {raw_level!r}"
-            raise InvalidDataError(msg) from err
-        if not 0 <= level <= 100:
-            msg = f"Native volume pin out of range for player {player.display_name}: {level}"
-            raise InvalidDataError(msg)
         # Serialize with cmd_volume_set / member volume so an in-flight VOLUME
-        # command cannot overwrite the Softvol pin (and vice versa).
+        # command cannot overwrite the Softvol pin (and vice versa). Re-read the
+        # stored control and pin under the lock so a config save that clears the
+        # pin or switches back to native while we waited does not send a stale level.
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.VOLUME):
-            await player.volume_set(level)
+            stored_volume_control = self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_VOLUME_CONTROL
+            )
+            if stored_volume_control in (
+                None,
+                PLAYER_CONTROL_NATIVE,
+                PLAYER_CONTROL_PROTOCOL,
+                "auto",
+            ):
+                return
+            # Opt-in: skip when unset so upgrades do not force Softvol 100.
+            raw_level = self.mass.config.get_raw_player_config_value(
+                player.player_id,
+                CONF_NATIVE_VOLUME,
+            )
+            if raw_level is None:
+                return
+            try:
+                level = int(cast("int", raw_level))
+            except (TypeError, ValueError) as err:
+                msg = f"Invalid native volume pin for player {player.display_name}: {raw_level!r}"
+                raise InvalidDataError(msg) from err
+            if not 0 <= level <= 100:
+                msg = f"Native volume pin out of range for player {player.display_name}: {level}"
+                raise InvalidDataError(msg)
+            # Match handle_player_command: keep typed MA errors, normalize other
+            # provider/device failures so register can catch PlayerCommandFailed.
+            try:
+                await player.volume_set(level)
+            except MusicAssistantError:
+                raise
+            except Exception as err:
+                raise PlayerCommandFailed(str(err)) from err
 
     async def _handle_cmd_volume_set(
         self, player_id: str, volume_level: int, *, record_target: bool = True

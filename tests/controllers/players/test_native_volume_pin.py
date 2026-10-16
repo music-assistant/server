@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +19,7 @@ from music_assistant.constants import (
     PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from tests.common import MockPlayer, MockProvider
 
 
@@ -172,8 +174,10 @@ class TestApplyNativeVolumePin:
 
         volume_set.assert_not_awaited()
 
-    async def test_volume_set_errors_propagate(self, mock_mass: MagicMock) -> None:
-        """A failing volume_set raises so config-save can roll back."""
+    async def test_volume_set_errors_normalize_to_player_command_failed(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Provider device failures become PlayerCommandFailed for config rollback."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_config_side_effect(
                 {CONF_VOLUME_CONTROL: "media_player.denon", CONF_NATIVE_VOLUME: 75}
@@ -181,10 +185,45 @@ class TestApplyNativeVolumePin:
         )
         controller = PlayerController(mock_mass)
         player, volume_set = _make_player(mock_mass)
-        volume_set.side_effect = RuntimeError("device busy")
+        volume_set.side_effect = RuntimeError("FailedCommand: device busy")
 
-        with pytest.raises(RuntimeError, match="device busy"):
+        with pytest.raises(PlayerCommandFailed, match="FailedCommand: device busy"):
             await controller._apply_native_volume_pin(player)
+
+    async def test_skips_write_when_pin_cleared_while_waiting_for_lock(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A config save that clears the pin while we wait must not send the old level."""
+        overrides: dict[str, Any] = {
+            CONF_VOLUME_CONTROL: "media_player.denon",
+            CONF_NATIVE_VOLUME: 80,
+        }
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_config_side_effect(overrides)
+        )
+        controller = PlayerController(mock_mass)
+        player, volume_set = _make_player(mock_mass)
+
+        lock_held = asyncio.Event()
+        release_lock = asyncio.Event()
+
+        async def _hold_volume_lock() -> None:
+            async with controller.get_player_lock(player.player_id, PlayerLockPurpose.VOLUME):
+                lock_held.set()
+                await release_lock.wait()
+
+        holder = asyncio.create_task(_hold_volume_lock())
+        await lock_held.wait()
+
+        apply_task = asyncio.create_task(controller._apply_native_volume_pin(player))
+        # Let the apply task block on the volume lock before clearing the pin.
+        await asyncio.sleep(0)
+        overrides[CONF_NATIVE_VOLUME] = None
+        release_lock.set()
+        await apply_task
+        await holder
+
+        volume_set.assert_not_awaited()
 
 
 class TestNativeVolumePinOnConfigChange:
@@ -292,9 +331,16 @@ class TestNativeVolumePinOnConfigChange:
 class TestNativeVolumePinOnRegister:
     """Register/reconnect callers catch expected pin failures so connect is not aborted."""
 
-    async def test_register_or_update_swallows_command_errors(self, mock_mass: MagicMock) -> None:
-        """Expected command/config errors on reconnect must not abort register_or_update."""
+    async def test_register_or_update_swallows_normalized_device_errors(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Provider device rejection during pin apply must not abort register_or_update."""
         mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_config_side_effect(
+                {CONF_VOLUME_CONTROL: "media_player.denon", CONF_NATIVE_VOLUME: 80}
+            )
+        )
         mock_mass.cache = MagicMock()
         mock_mass.cache.get = AsyncMock(return_value=None)
         queue = MagicMock()
@@ -302,22 +348,16 @@ class TestNativeVolumePinOnRegister:
         mock_mass.player_queues = MagicMock()
         mock_mass.player_queues.get = MagicMock(return_value=queue)
         controller = PlayerController(mock_mass)
-        player, _volume_set = _make_player(mock_mass)
+        player, volume_set = _make_player(mock_mass)
         player.set_initialized()
         controller._players[player.player_id] = player
+        volume_set.side_effect = RuntimeError("FailedCommand: device rejected")
 
-        with (
-            patch.object(player, "update_state"),
-            patch.object(
-                controller,
-                "_apply_native_volume_pin",
-                new_callable=AsyncMock,
-                side_effect=PlayerCommandFailed("device busy"),
-            ),
-        ):
+        with patch.object(player, "update_state"):
             await controller.register_or_update(player)
 
         assert controller._players[player.player_id] is player
+        volume_set.assert_awaited_once_with(80)
 
     async def test_register_or_update_propagates_unexpected_errors(
         self, mock_mass: MagicMock
