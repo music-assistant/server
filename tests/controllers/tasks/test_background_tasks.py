@@ -1055,7 +1055,7 @@ async def test_schedule_update_metadata_uses_managed_background_task(
     )
 
     async def fake_update_metadata(item: object, force_refresh: bool = False) -> object:
-        assert item is resolved_item
+        assert item == resolved_item.uri
         assert force_refresh is False
         lookup_started.set()
         await release_lookup.wait()

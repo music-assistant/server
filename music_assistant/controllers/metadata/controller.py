@@ -262,18 +262,19 @@ class MetaDataController(
         self, item: str | MediaItemType, force_refresh: bool = False
     ) -> MediaItemType:
         """Get/update extra/enhanced metadata for/on given MediaItem."""
-        async with self.cache.handle_refresh(force_refresh):
-            if isinstance(item, str):
-                retrieved_item = await self.mass.music.get_item_by_uri(item)
-                if isinstance(retrieved_item, BrowseFolder):
-                    raise TypeError("Cannot update metadata on a BrowseFolder item.")
-                item = retrieved_item
-
-        if item.provider != "library":
-            # this shouldn't happen but just in case.
-            raise RuntimeError("Metadata can only be updated for library items")
-
         async with self._throttler:
+            # an item given by its uri is read once it is its turn, as it may change meanwhile
+            async with self.cache.handle_refresh(force_refresh):
+                if isinstance(item, str):
+                    retrieved_item = await self.mass.music.get_item_by_uri(item)
+                    if isinstance(retrieved_item, BrowseFolder):
+                        raise TypeError("Cannot update metadata on a BrowseFolder item.")
+                    item = retrieved_item
+
+            if item.provider != "library":
+                # this shouldn't happen but just in case.
+                raise RuntimeError("Metadata can only be updated for library items")
+
             if item.media_type == MediaType.ARTIST:
                 await self._update_artist_metadata(
                     cast("Artist", item), force_refresh=force_refresh
@@ -306,19 +307,20 @@ class MetaDataController(
         if not needs_update:
             return
         assert item.uri is not None
-        task_id = self._get_metadata_lookup_task_id(item.uri)
-        _item = item
+        uri = item.uri
+        task_id = self._get_metadata_lookup_task_id(uri)
 
         self.mass.tasks.run_background_task(
             task_id=task_id,
             name=f"Update metadata for {item.name}",
-            handler=lambda: self.update_metadata(_item),
+            # the item is read again when the task runs, as it may have changed meanwhile
+            handler=lambda: self.update_metadata(uri),
             translation_key="update_metadata",
             translation_args=[item.name],
             translation_owner=self.translation_owner,
             metadata={
                 "task_domain": "metadata_lookup",
-                "item_uri": item.uri,
+                "item_uri": uri,
             },
         )
 
