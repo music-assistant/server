@@ -36,6 +36,7 @@ ACTION_REBUILD_18DIM = "rebuild_18dim_index"
 ACTION_REBUILD_CLAP = "rebuild_clap_index"
 
 PERIODIC_REFRESH_TASK_ID = "sonic_similarity_periodic_refresh"
+REBUILD_TASK_ID = "sonic_similarity_rebuild_indexes"
 PERIODIC_REFRESH_INTERVAL_HOURS = 1
 
 SUPPORTED_FEATURES = {
