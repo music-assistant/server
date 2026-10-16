@@ -93,7 +93,11 @@ class TestTextEncoderWarmsLazily:
         assert isinstance(plugin, SonicSimilarityPlugin)
         await plugin.loaded_in_mass()
 
-        mock_mass.create_task.assert_not_called()
+        # the only task scheduled at load is the index rebuild, not the encoder warm
+        assert mock_mass.create_task.call_count == 1
+        coro = mock_mass.create_task.call_args.args[0]
+        coro.close()
+        assert coro.__qualname__ == "SonicSimilarityPlugin._rebuild_indexes"
 
     @pytest.mark.asyncio
     async def test_no_warm_task_when_text_search_disabled(self, mock_mass: MagicMock) -> None:
@@ -101,7 +105,11 @@ class TestTextEncoderWarmsLazily:
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=False))
         await plugin.loaded_in_mass()
 
-        mock_mass.create_task.assert_not_called()
+        # the only task scheduled at load is the index rebuild, not the encoder warm
+        assert mock_mass.create_task.call_count == 1
+        coro = mock_mass.create_task.call_args.args[0]
+        coro.close()
+        assert coro.__qualname__ == "SonicSimilarityPlugin._rebuild_indexes"
 
 
 def _make_tensor_chain(vector: np.ndarray) -> MagicMock:
