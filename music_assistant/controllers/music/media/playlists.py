@@ -459,6 +459,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
             db_playlist_id, [track_uri], user.user_id if user else None
         )
 
+    async def remove_playlist_track(self, db_playlist_id: str | int, position: int) -> None:
+        """
+        Remove (single) item from playlist right away, without queueing a background task.
+
+        :param db_playlist_id: Library playlist id.
+        :param position: Provider playlist position of the item to remove.
+        """
+        user = get_current_user()
+        await self._handle_remove_playlist_tracks(
+            db_playlist_id, (position,), user.user_id if user else None
+        )
+
     async def remove_playlist_tracks(
         self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
     ) -> BackgroundTask:
