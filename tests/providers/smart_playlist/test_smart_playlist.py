@@ -765,6 +765,15 @@ async def test_folder_tracks_browses_recursively(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 100)
     assert len(await plugin._folder_tracks([sub])) == 100
 
+    # a parent filling the cap with explicit tracks still leaves its subfolder in
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 2)
+    explicit_tracks = [_library_track("e1"), _library_track("e2")]
+    for track in explicit_tracks:
+        track.metadata.explicit = True
+    listings[root] = [*explicit_tracks, listings[root][1]]
+    listings[sub] = [_library_track("clean")]
+    assert [t.item_id for t in await plugin._folder_tracks([root], False)] == ["clean"]
+
     # a background refresh has no user for browse to check, only the user's sources
     mass.music.browse.reset_mock()
     assert await plugin._folder_tracks([root], None, ["filesystem_local--other"]) == []

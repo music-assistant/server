@@ -1364,10 +1364,7 @@ class SmartPlaylistProvider(PluginProvider):
         tracks: dict[str, Track] = {}
         # browse each folder only once, in case a rule holds a folder and also one of its subfolders
         browsed: set[str] = set()
-        # stops at the same cap as the library queries; the subfolders are walked in random
-        # order, so each evaluation of a huge folder samples a different part of it
-        random.shuffle(pending)
-        while pending and len(tracks) < FETCH_LIMIT:
+        while pending:
             path = pending.pop()
             if path in browsed:
                 continue
@@ -1379,18 +1376,15 @@ class SmartPlaylistProvider(PluginProvider):
                 # e.g. a folder on a source hidden from the user, or one deleted or renamed
                 self.logger.debug("Skipping folder %s: %s", path, err)
                 continue
-            subfolders = []
             for item in items:
                 if isinstance(item, BrowseFolder):
                     if item.path and item.name != "..":
-                        subfolders.append(item.path)
+                        pending.append(item.path)
                 elif isinstance(item, Track) and item.provider == "library" and item.uri:
                     tracks[item.uri] = item
-            random.shuffle(subfolders)
-            pending.extend(subfolders)
         matching = _filter_by_explicit(list(tracks.values()), explicit)
-        # a single folder can hold more than the cap, which would also pass every track
-        # on to the per-track genre lookups
+        # the whole tree is walked, so a folder filling the cap leaves none of its subfolders
+        # out; the cap then bounds what reaches the per-track genre lookups
         return random.sample(matching, min(len(matching), FETCH_LIMIT))
 
     async def _tracks_from_seeds(
