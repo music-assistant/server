@@ -17,6 +17,7 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 from music_assistant_models.enums import (
+    AlbumType,
     ArtistType,
     ListingType,
     MediaType,
@@ -1807,7 +1808,12 @@ def album_is_played(
     """
     return any(
         compare_item_ids(copy, item)
-        or (isinstance(copy, Album) and isinstance(item, Album) and compare_album(copy, item))
+        or (
+            isinstance(copy, Album)
+            and isinstance(item, Album)
+            and (copy.album_type == AlbumType.SINGLE) == (item.album_type == AlbumType.SINGLE)
+            and compare_album(copy, item)
+        )
         for copy in copies
         for item in played
     )

@@ -123,6 +123,21 @@ async def test_a_queued_album_matches_its_other_copy(mass: MusicAssistant) -> No
     assert _album_names(result) == ["Album 1998"]
 
 
+async def test_a_queued_single_does_not_count_as_its_album(mass: MusicAssistant) -> None:
+    """A single named like an album, from the same year, leaves the album to play."""
+    artist, albums = await _artist_with_years(mass, 1995)
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    single = replace(
+        _streaming_album("Album 1995", 1995),
+        album_type=AlbumType.SINGLE,
+        artists=albums[1995].artists,
+    )
+
+    result = await mass.player_queues.artist_album_candidates(artist, [single], single)
+
+    assert _album_names(result) == ["Album 1995"]
+
+
 @pytest.mark.parametrize(
     ("namesake", "expected"),
     [
@@ -712,6 +727,26 @@ async def test_auto_skips_an_unlinked_copy_of_a_played_album(
     result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
 
     assert _names(result) == ["B 1", "B 2"]
+
+
+async def test_auto_plays_the_album_after_its_single(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto's single is skipped, and the album named like it plays."""
+    artist = _provider_artist()
+    album = replace(_streaming_album("A", 1970), artists=UniqueList([artist]))
+    single = replace(
+        _streaming_album("A", 1970), album_type=AlbumType.SINGLE, artists=album.artists
+    )
+    _stub_provider(mass, [album, single])
+    _stub_album_lookup(mass, monkeypatch, [album, single])
+    queue = _queue(mass, monkeypatch, _queued_track([artist], None))
+    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+    auto = [_queued_track([artist], ItemMapping.from_item(item)) for item in (single, album)]
+
+    result = await Autoplay(mass.player_queues).get_album_of_tracks(queue, auto)
+
+    assert _names(result) == ["A 1", "A 2"]
 
 
 async def test_auto_keeps_loose_tracks_when_the_mode_cant_play(
