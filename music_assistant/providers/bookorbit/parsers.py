@@ -247,7 +247,7 @@ def parse_audiobook(
 
     if added_at := book.get("addedAt"):
         with suppress(ValueError):
-            mass_audiobook.date_added = datetime.fromisoformat(added_at)
+            mass_audiobook.date_added = datetime.fromisoformat(added_at).replace(microsecond=0)
 
     return mass_audiobook
 
