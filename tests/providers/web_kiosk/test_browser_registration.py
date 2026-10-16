@@ -1074,3 +1074,79 @@ async def test_overlapping_handshakes_cannot_replace_a_proven_identity(
     finally:
         provider.cancel_all_player_closes()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_sendspin_output_returns_after_an_html5_fallback(  # noqa: PLR0915
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """Fallback releases the kiosk's own bridge; a fresh claim brings the Sendspin output back."""
+    registry, sendspin, _universal, client, tasks = browser_registry
+    native = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+    await registry.register(native)
+    provider.sendspin_bridge_enabled = True
+    provider.bridge_manager = WebKioskSendspinBridgeManager(provider)
+    server_api = cast("Mock", sendspin.server_api)
+    server = WebKioskHTTPServer(provider, 0)
+    provider.http_server = server
+    queues = PlayerQueuesController(mass_mock)
+    mass_mock.player_queues = queues
+    queues.resume = AsyncMock()  # type: ignore[method-assign]
+    unregister = registry.unregister
+    unregistered: list[str] = []
+
+    async def track_unregister(player_id: str, *args: Any, **kwargs: Any) -> None:
+        unregistered.append(player_id)
+        await unregister(player_id, *args, **kwargs)
+
+    registry.unregister = track_unregister  # type: ignore[method-assign]
+    try:
+        async with TestClient(TestServer(server.app)) as http:
+            ws = await connect_owned_ws(http, "/ws?device_id=back&sendspin_client_id=" + CLIENT_ID)
+            await ws.receive_json()
+            kiosk = registry.get_player("wk_back")
+            assert isinstance(kiosk, WebKioskPlayer)
+            await queues.on_player_register(kiosk)
+            queue = queues.get(kiosk.player_id)
+            assert queue is not None
+            queue.active = True
+            assert registry._select_best_output_protocol(kiosk)[0] is native
+
+            await provider.fallback_sendspin(kiosk.player_id, expected_client_id=CLIENT_ID)
+            assert CLIENT_ID not in unregistered
+            server_api.remove_client.assert_awaited_with(CLIENT_ID)
+            assert registry._select_best_output_protocol(kiosk)[0] is kiosk
+
+            # The Sendspin provider drops its player when the client is removed ...
+            await unregister(CLIENT_ID)
+            await ws.close()
+            await asyncio.sleep(0.05)
+            server_api.register_external_player.reset_mock()
+            server_api.get_client.side_effect = lambda _cid: None
+            server_api.register_external_player.side_effect = None
+            bridge_client = Mock(is_connected=False)
+            bridge_client.roles_by_family.return_value = []
+            server_api.register_external_player.return_value = bridge_client
+
+            # ... and the kiosk reloads in Sendspin mode with a fresh proof.
+            again = await connect_owned_ws(
+                http, "/ws?device_id=back&sendspin_client_id=" + CLIENT_ID
+            )
+            await again.receive_json()
+            assert not kiosk.sendspin_fallback
+            server_api.register_external_player.assert_called_once()
+
+            # The new client registration makes the Sendspin provider add its player again.
+            server_api.get_client.side_effect = lambda cid: client if cid == CLIENT_ID else None
+            returned = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+            await registry.register(returned)
+            assert registry._select_best_output_protocol(kiosk)[0] is returned
+            await again.close()
+    finally:
+        provider.cancel_all_player_closes()
+        await provider.bridge_manager.close()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await native.on_unload()

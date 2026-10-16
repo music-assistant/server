@@ -816,11 +816,13 @@ async def test_sendspin_fallback_of_sync_follower_leaves_the_group_like_ungroup(
     mass_mock.player_queues.resume = AsyncMock()
     mass_mock.player_queues.play_media = AsyncMock()
     mass_mock.player_queues.load = AsyncMock()
+    provider.bridge_manager = Mock(remove_bridge=AsyncMock())
 
     await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
 
     leader.set_members.assert_awaited_once_with(player_ids_to_remove=[client_id])
-    mass_mock.players.unregister.assert_awaited_once_with(client_id)
+    provider.bridge_manager.remove_bridge.assert_awaited_once_with(player.player_id)
+    mass_mock.players.unregister.assert_not_awaited()
     assert player.active_output_protocol == "native"
     mass_mock.player_queues.resume.assert_not_awaited()
     mass_mock.player_queues.play_media.assert_not_awaited()
@@ -864,7 +866,7 @@ async def test_unload_cancels_browser_fallback_in_flight(
 async def test_stop_during_fallback_teardown_is_not_undone(
     provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock
 ) -> None:
-    """A stop issued while the Sendspin output is being detached wins over the resume."""
+    """A stop issued while the Sendspin bridge is being released wins over the resume."""
     client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
     player.sendspin_client_id = client_id
     player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
@@ -885,11 +887,11 @@ async def test_stop_during_fallback_teardown_is_not_undone(
     detaching = asyncio.Event()
     release = asyncio.Event()
 
-    async def slow_unregister(_player_id: str) -> None:
+    async def slow_release(_player_id: str) -> None:
         detaching.set()
         await release.wait()
 
-    mass_mock.players.unregister = AsyncMock(side_effect=slow_unregister)
+    provider.bridge_manager = Mock(remove_bridge=AsyncMock(side_effect=slow_release))
 
     async def user_stop() -> None:
         # The player controller runs stop under the same playback lock.

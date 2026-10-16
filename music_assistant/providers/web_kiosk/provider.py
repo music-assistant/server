@@ -424,7 +424,12 @@ class WebKioskProvider(PlayerProvider):
                         )
                         assert leader is not None
                         await leader.set_members(player_ids_to_remove=[client_id])
-                    await self.mass.players.unregister(client_id)
+                    # Release the kiosk's own bridge instead of unregistering the
+                    # Sendspin provider's player: removing the client lets that
+                    # provider drop its player itself, and a later verified claim
+                    # sets the bridge up again so the provider registers it anew.
+                    if self.bridge_manager:
+                        await self.bridge_manager.remove_bridge(player_id)
                     player.set_active_output_protocol("native")
                 except BaseException:
                     player.sendspin_fallback = False
