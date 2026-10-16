@@ -23,7 +23,7 @@ from music_assistant.providers.bookorbit.constants import (
 from music_assistant.providers.bookorbit.helpers import normalize_base_url
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from music_assistant.mass import MusicAssistant
 
@@ -37,6 +37,10 @@ _ITEM_KEYS = ("items", "content", "data", "books", "results")
 
 class BookOrbitAuthError(Exception):
     """Raised when authentication against BookOrbit fails."""
+
+
+class BookOrbitIncompleteError(Exception):
+    """Raised when pagination hits the safety bound before the full result set."""
 
 
 class BookOrbitClient:
@@ -143,25 +147,11 @@ class BookOrbitClient:
             query_path = f"{API_PREFIX}/libraries/{library_id}/books"
         else:
             query_path = f"{API_PREFIX}/books/query"
-        books: list[dict[str, Any]] = []
-        for page in range(QUERY_MAX_PAGES):
-            payload = await self.request(
-                "POST",
-                query_path,
-                json=self._build_query(page),
-            )
-            items = self._extract_items(payload)
-            books.extend(items)
-            if not items or not isinstance(payload, dict):
-                break
-            total = payload.get("total")
-            page_size = int(payload.get("size") or QUERY_PAGE_SIZE)
-            if total is not None:
-                if len(books) >= int(total):
-                    break
-            elif len(items) < page_size:
-                break
-        return books
+
+        async def _fetch_page(page: int) -> Any:
+            return await self.request("POST", query_path, json=self._build_query(page))
+
+        return await self._paginate_all(_fetch_page, what="audiobook query")
 
     async def get_book(self, book_id: int) -> dict[str, Any]:
         """Return a single book detail payload."""
@@ -173,25 +163,15 @@ class BookOrbitClient:
 
     async def list_authors(self) -> list[dict[str, Any]]:
         """Return all authors, including photo fields when present."""
-        authors: list[dict[str, Any]] = []
-        for page in range(QUERY_MAX_PAGES):
-            payload = await self.request(
+
+        async def _fetch_page(page: int) -> Any:
+            return await self.request(
                 "GET",
                 f"{API_PREFIX}/authors",
                 params={"page": page, "size": QUERY_PAGE_SIZE},
             )
-            items = self._extract_items(payload)
-            authors.extend(items)
-            if not items or not isinstance(payload, dict):
-                break
-            total = payload.get("total")
-            page_size = int(payload.get("size") or QUERY_PAGE_SIZE)
-            if total is not None:
-                if len(authors) >= int(total):
-                    break
-            elif len(items) < page_size:
-                break
-        return authors
+
+        return await self._paginate_all(_fetch_page, what="author list")
 
     async def search_authors(self, query: str) -> list[dict[str, Any]]:
         """Search authors in the catalog."""
@@ -421,6 +401,38 @@ class BookOrbitClient:
             if "json" in (resp.content_type or ""):
                 return status, await resp.json()
             return status, await resp.read()
+
+    async def _paginate_all(
+        self,
+        fetch_page: Callable[[int], Awaitable[Any]],
+        *,
+        what: str,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch every page of a BookOrbit list endpoint.
+
+        Raises :class:`BookOrbitIncompleteError` when the safety page bound is hit
+        before the reported total (or a short final page) is reached.
+        """
+        items: list[dict[str, Any]] = []
+        for page in range(QUERY_MAX_PAGES):
+            payload = await fetch_page(page)
+            page_items = self._extract_items(payload)
+            items.extend(page_items)
+            if not page_items or not isinstance(payload, dict):
+                break
+            total = payload.get("total")
+            page_size = int(payload.get("size") or QUERY_PAGE_SIZE)
+            if total is not None:
+                if len(items) >= int(total):
+                    break
+            elif len(page_items) < page_size:
+                break
+        else:
+            raise BookOrbitIncompleteError(
+                f"BookOrbit {what} exceeded {QUERY_MAX_PAGES} pages ({len(items)} items collected)."
+            )
+        return items
 
     @staticmethod
     def _build_query(page: int) -> dict[str, Any]:

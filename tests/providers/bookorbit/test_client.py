@@ -3,11 +3,15 @@
 import asyncio
 import json
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from aiohttp import web
 
-from music_assistant.providers.bookorbit.client import BookOrbitClient
+from music_assistant.providers.bookorbit.client import (
+    BookOrbitClient,
+    BookOrbitIncompleteError,
+)
 from music_assistant.providers.bookorbit.helpers import is_audio_format, normalize_base_url
 
 
@@ -166,6 +170,35 @@ async def test_query_audiobooks_filters_formats_and_paginates(aiohttp_client: An
         "pagination": {"page": 0, "size": 100},
     }
     assert bodies[1]["pagination"] == {"page": 1, "size": 100}
+
+
+@pytest.mark.asyncio
+async def test_query_audiobooks_raises_when_page_bound_exhausted(aiohttp_client: Any) -> None:
+    """Hitting the pagination safety bound must not return a silent partial list."""
+
+    async def query(request: web.Request) -> web.Response:
+        body = json.loads(await request.text())
+        page = body["pagination"]["page"]
+        return web.json_response(
+            {
+                "items": [{"id": page * 100 + i} for i in range(100)],
+                "total": 1000,
+                "page": page,
+                "size": 100,
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/api/v1/books/query", query)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    with (
+        patch("music_assistant.providers.bookorbit.client.QUERY_MAX_PAGES", 2),
+        pytest.raises(BookOrbitIncompleteError, match="audiobook query"),
+    ):
+        await bo.query_audiobooks()
 
 
 @pytest.mark.asyncio
@@ -381,6 +414,37 @@ async def test_list_authors_paginates(aiohttp_client: Any) -> None:
     assert len(result) == 101
     assert result[0]["imageUrl"].endswith("/thumbnail")
     assert result[-1] == {"id": 100, "name": "A100", "coverBookId": 9}
+
+
+@pytest.mark.asyncio
+async def test_list_authors_raises_when_page_bound_exhausted(aiohttp_client: Any) -> None:
+    """Author pagination must fail closed when the safety bound is exhausted."""
+
+    async def authors(request: web.Request) -> web.Response:
+        page = int(request.query["page"])
+        size = int(request.query["size"])
+        return web.json_response(
+            {
+                "items": [
+                    {"id": page * size + i, "name": f"A{page * size + i}"} for i in range(size)
+                ],
+                "total": 1000,
+                "page": page,
+                "size": size,
+            }
+        )
+
+    app = web.Application()
+    app.router.add_get("/api/v1/authors", authors)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    with (
+        patch("music_assistant.providers.bookorbit.client.QUERY_MAX_PAGES", 2),
+        pytest.raises(BookOrbitIncompleteError, match="author list"),
+    ):
+        await bo.list_authors()
 
 
 @pytest.mark.asyncio

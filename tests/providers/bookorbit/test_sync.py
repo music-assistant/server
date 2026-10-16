@@ -197,6 +197,35 @@ async def test_refresh_catalog_aborts_on_detail_fetch_error(
 
 
 @pytest.mark.asyncio
+async def test_refresh_catalog_aborts_when_manifest_unavailable(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """Transient manifest errors must not cache unordered multipart BookDetail."""
+    previous = {str(book_audiobook["id"]): book_audiobook}
+    provider._catalog = previous
+    provider._catalog_refreshed_at = 0.0
+    cache_set = cast("AsyncMock", provider.mass.cache.set)
+    cache_set.reset_mock()
+
+    async def _manifest(book_id: int) -> dict[str, Any]:
+        if book_id == book_multifile["id"]:
+            raise ClientResponseError(
+                request_info=Mock(real_url=URL("http://bo/manifest")),
+                history=(),
+                status=503,
+                message="unavailable",
+            )
+        return manifest_from_book(book_audiobook)
+
+    cast("Any", provider._client).get_audiobook_manifest = AsyncMock(side_effect=_manifest)
+    with pytest.raises(ProviderUnavailableError, match="incomplete"):
+        await provider._refresh_catalog(force=True)
+    assert provider._catalog is previous
+    cached_ids = {call.kwargs.get("key") for call in cache_set.await_args_list}
+    assert str(book_multifile["id"]) not in cached_ids
+
+
+@pytest.mark.asyncio
 async def test_refresh_catalog_cold_start_detail_error_raises(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:

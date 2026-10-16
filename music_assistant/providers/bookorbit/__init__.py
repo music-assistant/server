@@ -33,7 +33,7 @@ from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import SYNC_RUN_STATE, MusicProvider
 
-from .client import BookOrbitAuthError, BookOrbitClient
+from .client import BookOrbitAuthError, BookOrbitClient, BookOrbitIncompleteError
 from .constants import (
     AIOHTTP_TIMEOUT,
     BROWSE_ITEMS_TO_PATH,
@@ -823,6 +823,9 @@ class BookOrbitProvider(MusicProvider):
                     author_meta[int(author["id"])] = author
         except BookOrbitAuthError as err:
             raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
+        except BookOrbitIncompleteError as err:
+            # Partial catalog/author lists must not drive sync deletions or bio clears.
+            raise ProviderUnavailableError(str(err)) from err
         except ClientResponseError:
             raise
         except ClientError as err:
@@ -864,18 +867,12 @@ class BookOrbitProvider(MusicProvider):
         return book
 
     async def _book_with_playback_order(self, book: dict[str, Any]) -> dict[str, Any]:
-        """Attach manifest ``sortOrder`` to multipart books when the manifest is available."""
+        """Attach manifest ``sortOrder`` to multipart books; propagate manifest errors."""
         if len(_audio_files(book)) <= 1:
             return book
-        try:
-            manifest = await self._client.get_audiobook_manifest(int(book["id"]))
-        except (ClientResponseError, ValueError, TypeError) as err:
-            self.logger.debug(
-                "BookOrbit manifest unavailable for book %s playback order: %s",
-                book.get("id"),
-                err,
-            )
-            return book
+        # Do not cache/publish unordered BookDetail when the manifest is unavailable:
+        # BookDetail omits sortOrder, so file-id order can invent wrong chapter offsets.
+        manifest = await self._client.get_audiobook_manifest(int(book["id"]))
         return book_with_manifest_playback_order(book, manifest)
 
     def _enrich_author(self, author: dict[str, Any]) -> dict[str, Any]:
