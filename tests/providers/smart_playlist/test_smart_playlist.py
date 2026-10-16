@@ -2112,6 +2112,39 @@ async def test_enrich_tracks_with_db_genres_adds_missing_genres() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enrich_tracks_with_db_genres_looks_up_up_to_the_cap_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The genres of more tracks than the cap are looked up a batch at a time."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 2)
+    tracks = [_library_track(str(i)) for i in range(5)]
+    rock_genre = Genre(item_id="1", provider="library", name="Rock", provider_mappings=set())
+    running = 0
+    most_running = 0
+
+    async def get_genres(_media_type: MediaType, _track_id: int) -> list[Genre]:
+        nonlocal running, most_running
+        running += 1
+        most_running = max(most_running, running)
+        await asyncio.sleep(0)
+        running -= 1
+        return [rock_genre]
+
+    mass.music.genres.get_genres_for_media_item = AsyncMock(side_effect=get_genres)
+
+    await plugin._enrich_tracks_with_db_genres(tracks)
+
+    assert all(t.metadata.genres == {"Rock"} for t in tracks)
+    assert most_running == 2
+
+
+@pytest.mark.asyncio
 async def test_enrich_tracks_with_db_genres_skips_tracks_with_existing_genres() -> None:
     """Tracks that already have genres should not be queried."""
     mass = MagicMock()

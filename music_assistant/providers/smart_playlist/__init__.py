@@ -37,6 +37,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     BrowseFolder,
+    Genre,
     ItemMapping,
     MediaItemType,
     Playlist,
@@ -1111,14 +1112,17 @@ class SmartPlaylistProvider(PluginProvider):
         if not track_id_to_tracks:
             return
 
-        # Fetch genres for all track IDs in parallel
+        # Fetch genres for the track IDs in parallel, up to the cap at a time, as the
+        # tracks of a folder rule are not capped before this
         track_ids = list(track_id_to_tracks.keys())
-        genre_results = await asyncio.gather(
-            *(
-                self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
-                for track_id in track_ids
+        genre_results: list[list[Genre]] = []
+        for start in range(0, len(track_ids), FETCH_LIMIT):
+            genre_results += await asyncio.gather(
+                *(
+                    self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
+                    for track_id in track_ids[start : start + FETCH_LIMIT]
+                )
             )
-        )
 
         # Apply genres to tracks
         for track_id, genres in zip(track_ids, genre_results, strict=True):
