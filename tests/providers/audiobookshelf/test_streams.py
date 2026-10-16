@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aioaudiobookshelf.exceptions import ServiceUnavailableError as AbsServiceUnavailableError
+from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFoundError
 from aiohttp import ClientSession, hdrs, web
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import MediaType
@@ -91,6 +92,28 @@ async def test_stream_details(stream_provider: Audiobookshelf) -> None:
     assert details.path == (
         "http://ma.local:8097/audiobookshelf--test123_part_stream?session_id=session1&part_id=0"
     )
+
+
+async def test_device_ids_reused(stream_provider: Audiobookshelf) -> None:
+    """Parallel sessions get distinct device ids, and a freed one is taken again."""
+    create = stream_provider._client.get_playback_session
+
+    def _device_id() -> str:
+        return str(create.call_args.kwargs["session_parameters"].device_info.device_id)  # type: ignore[attr-defined]
+
+    await stream_provider._get_playback_session("book1")
+    assert _device_id() == "audiobookshelf--test123_0"
+    await stream_provider._get_playback_session("book2")
+    assert _device_id() == "audiobookshelf--test123_1"
+
+    stream_provider.sessions.pop("book1")
+    await stream_provider._get_playback_session("book3")
+    assert _device_id() == "audiobookshelf--test123_0"
+
+    # a session closed by abs is reopened on its own device
+    stream_provider._client.get_open_session.side_effect = AbsSessionNotFoundError  # type: ignore[attr-defined]
+    await stream_provider._get_playback_session("book2")
+    assert _device_id() == "audiobookshelf--test123_1"
 
 
 @pytest.fixture
