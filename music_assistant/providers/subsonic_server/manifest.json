@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "stage": "experimental",
+  "domain": "subsonic_server",
+  "name": "Subsonic API",
+  "description": "Expose the Music Assistant library through the (Open)Subsonic API, so Subsonic clients can browse it and play on a Music Assistant player in jukebox mode.",
+  "codeowners": ["@ndreno"],
+  "requirements": ["py-opensonic==10.4.1"],
+  "documentation": "https://music-assistant.io/plugins/subsonic-server/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "api"
+}
