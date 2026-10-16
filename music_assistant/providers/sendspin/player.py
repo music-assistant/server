@@ -236,10 +236,6 @@ PAIR_CONFIRM_TIMEOUT = 30.0
 # Seconds a Cast-bridged member gets to report its Sendspin app ready.
 CAST_APP_READY_TIMEOUT = 30.0
 
-# Longest gap since elapsed_time_last_updated across which corrected_elapsed_time
-# is still trusted for metadata progress.
-MAX_PROGRESS_EXTRAPOLATION = 30.0
-
 # PlayerMedia fields behind MEDIA_IDENTITY_KEYS, derived so the same-item check in
 # play_media() cannot drift from what update_state() treats as a media change.
 _MEDIA_IDENTITY_FIELDS = tuple(
@@ -1790,7 +1786,7 @@ class SendspinPlayer(SendspinBasePlayer):
         repeat, shuffle = self._queue_repeat_shuffle(self.mass.player_queues.get(queue_id))
         self._publish_repeat_shuffle(repeat, shuffle=shuffle)
 
-    async def send_current_media_metadata(self) -> None:
+    async def send_current_media_metadata(self) -> None:  # noqa: PLR0915
         """Send the current media metadata to the sendspin group."""
         if not self.available or self._content_takeover_pending:
             return
@@ -1800,6 +1796,7 @@ class SendspinPlayer(SendspinBasePlayer):
             async with self._metadata_lock:
                 await self._clear_current_media_metadata(generation=generation)
             return
+        media_identity = self._media_identity()
         # check if we are playing a MA queue item
         queue_item: QueueItem | None = None
         queue: PlayerQueue | None = None
@@ -1835,6 +1832,11 @@ class SendspinPlayer(SendspinBasePlayer):
         if not self._metadata_publish_allowed(generation):
             return
 
+        # Pair the position with the playing state, which may have changed during the lookups.
+        if (
+            current_media := self.state.current_media
+        ) is None or self._media_identity() != media_identity:
+            return
         is_playing = self.state.playback_state == PlaybackState.PLAYING
         metadata = self._build_current_media_metadata(
             current_media,
@@ -2433,9 +2435,7 @@ class SendspinPlayer(SendspinBasePlayer):
             float(current_media.elapsed_time) if current_media.elapsed_time is not None else None
         )
         if is_playing and (corrected := current_media.corrected_elapsed_time) is not None:
-            # Only trust the extrapolation across a fresh window.
-            if elapsed_time is None or corrected - elapsed_time <= MAX_PROGRESS_EXTRAPOLATION:
-                elapsed_time = corrected
+            elapsed_time = corrected
         if elapsed_time is None:
             elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
         return max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
