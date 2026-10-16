@@ -42,6 +42,11 @@ if TYPE_CHECKING:
 class MediaCatalogMixin(Provider):
     """Methods of a provider that serves browsable and playable items of its own."""
 
+    @property
+    def search_cache_key(self) -> str:
+        """Return a stable key for configuration that affects search results."""
+        return ""
+
     async def search(
         self,
         search_query: str,

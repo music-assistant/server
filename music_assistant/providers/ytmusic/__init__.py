@@ -69,7 +69,6 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.helpers.util import (
     import_module_in_thread,
     infer_album_type,
@@ -217,18 +216,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             ),
         )
 
-    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
-        """Invalidate search results when the video preference changes."""
-        await super().update_config(config, changed_keys)
-        if f"values/{CONF_INCLUDE_VIDEOS}" in changed_keys:
-            await self.mass.cache.clear(
-                category_filter=CACHE_CATEGORY_SEARCH_RESULTS,
-                provider_filter=self.instance_id,
-            )
-            await self.mass.cache.clear(
-                category_filter=CACHE_CATEGORY_SEARCH_RESULTS,
-                provider_filter=self.mass.music.domain,
-            )
+    @property
+    def search_cache_key(self) -> str:
+        """Separate search results by the configured video preference."""
+        return f"include_videos={bool(self.config.get_value(CONF_INCLUDE_VIDEOS))}"
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""

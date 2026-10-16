@@ -13,7 +13,6 @@ from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicServerError
 
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ytmusic import (
     CONF_COOKIE,
@@ -837,21 +836,10 @@ async def test_artist_search_does_not_fetch_videos(provider: YoutubeMusicProvide
     backend.assert_awaited_once_with(query="query", ytm_filter="artists", limit=5)
 
 
-@pytest.mark.parametrize("changed", ["values/include_videos_in_search", "name"])
-async def test_video_preference_invalidates_controller_search_caches(
-    provider: YoutubeMusicProvider, changed: str
+@pytest.mark.parametrize("enabled", [False, True])
+def test_video_preference_versions_controller_search_cache(
+    provider: YoutubeMusicProvider, enabled: bool
 ) -> None:
-    """A setting change also evicts the controller's provider and combined results."""
-    with patch.object(MusicProvider, "update_config", AsyncMock()):
-        await provider.update_config(provider.config, {changed})
-    clear_cache = cast("AsyncMock", provider.mass.cache.clear)
-    if changed == "name":
-        clear_cache.assert_not_awaited()
-        return
-    assert clear_cache.await_count == 2
-    clear_cache.assert_any_await(
-        category_filter=CACHE_CATEGORY_SEARCH_RESULTS, provider_filter=provider.instance_id
-    )
-    clear_cache.assert_any_await(
-        category_filter=CACHE_CATEGORY_SEARCH_RESULTS, provider_filter=provider.mass.music.domain
-    )
+    """New provider instances use the saved preference to select controller caches."""
+    cast("MagicMock", provider.config.get_value).return_value = enabled
+    assert provider.search_cache_key == f"include_videos={enabled}"

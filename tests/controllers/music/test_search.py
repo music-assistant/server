@@ -71,6 +71,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
     prov = Mock(spec=MusicProvider)
     prov.instance_id = instance_id
     prov.domain = domain or instance_id
+    prov.search_cache_key = ""
     prov.name = instance_id
     prov.available = True
     prov.supported_features = {ProviderFeature.SEARCH}
@@ -724,3 +725,82 @@ async def test_search_exact_match_shortcut_skipped_for_explicit_providers() -> N
     )
 
     prov.search.assert_awaited_once()
+
+
+@pytest.mark.parametrize("combined", [False, True])
+async def test_search_preference_change_does_not_reuse_inflight_results(combined: bool) -> None:
+    """A preference change separates caches and tasks from a suspended old search."""
+    provider = _make_search_provider("ytmusic")
+    provider.search_cache_key = "include_videos=False"
+    controller = _make_controller([provider])
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def backend(*_args: Any) -> SearchResults:
+        preference = provider.search_cache_key
+        if preference == "include_videos=False":
+            started.set()
+            await release.wait()
+        return SearchResults(tracks=[_make_track(preference, "ytmusic", "Song")])
+
+    provider.search.side_effect = backend
+    entries: dict[tuple[str, str], SearchResults] = {}
+
+    async def get_cache(*, key: str, provider: str, **_kwargs: Any) -> SearchResults | None:
+        return entries.get((provider, key))
+
+    async def set_cache(*, key: str, provider: str, data: Any, **_kwargs: Any) -> None:
+        entries[provider, key] = SearchResults.from_dict(data)
+
+    cast("AsyncMock", controller.mass.cache.get).side_effect = get_cache
+    cast("AsyncMock", controller.mass.cache.set).side_effect = set_cache
+
+    async def search() -> SearchResults | None:
+        if combined:
+            return await controller.search("Song", media_types=[MediaType.TRACK])
+        return await controller._search_provider("Song", "ytmusic", [MediaType.TRACK])
+
+    old_task = asyncio.create_task(search())
+    await started.wait()
+    provider.search_cache_key = "include_videos=True"
+    current = await search()
+    assert current is not None
+    assert current.tracks[0].item_id == "include_videos=True"
+    release.set()
+    await old_task
+    repeated = await search()
+    assert repeated is not None
+    assert repeated.tracks[0].item_id == "include_videos=True"
+    assert provider.search.await_count == 2
+
+
+@pytest.mark.parametrize("combined", [False, True])
+async def test_search_reloaded_provider_uses_saved_preference(combined: bool) -> None:
+    """Editing a disabled provider cannot reuse its previous search caches."""
+    old_provider = _make_search_provider("ytmusic")
+    old_provider.search_cache_key = "include_videos=False"
+    providers = [old_provider]
+    controller = _make_controller(providers)
+    if combined:
+        await controller.search("Song", media_types=[MediaType.TRACK])
+    else:
+        await controller._search_provider("Song", "ytmusic", [MediaType.TRACK])
+    old_keys = {
+        call.kwargs["key"] for call in cast("AsyncMock", controller.mass.cache.get).await_args_list
+    }
+    cast("AsyncMock", controller.mass.cache.get).side_effect = lambda **kwargs: (
+        SearchResults() if kwargs["key"] in old_keys else None
+    )
+    reloaded = _make_search_provider("ytmusic")
+    reloaded.search_cache_key = "include_videos=True"
+    providers[:] = [reloaded]
+    cast("AsyncMock", controller.mass.cache.get).reset_mock()
+    if combined:
+        await controller.search("Song", media_types=[MediaType.TRACK])
+    else:
+        await controller._search_provider("Song", "ytmusic", [MediaType.TRACK])
+    assert all(
+        call.kwargs["key"] not in old_keys
+        for call in cast("AsyncMock", controller.mass.cache.get).await_args_list
+    )
+    reloaded.search.assert_awaited_once()

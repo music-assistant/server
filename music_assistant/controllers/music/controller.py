@@ -659,10 +659,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # use cache to avoid repeated searches; the library results are narrowed to what
         # the calling user may see, so the entry is kept per user (and role)
         user = get_current_user()
+        search_config = [
+            (instance_id, search_provider.search_cache_key)
+            for instance_id in search_providers
+            if (
+                search_provider := self.mass.get_provider(
+                    instance_id, provider_type=MediaCatalogMixin
+                )
+            )
+        ]
         cache_key = (
             f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
             f"{int(include_library)}-{','.join(search_providers)}-"
-            f"{f'{user.user_id}:{user.role}' if user else ''}"
+            f"{f'{user.user_id}:{user.role}' if user else ''}-{search_config!r}"
         )
         if cache := await self.mass.cache.get(
             key=cache_key,
@@ -3143,7 +3152,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         search_query = search_query.replace("/", " ").replace("'", "")
         # use the per-provider cache so repeated and overlapping searches
         # do not hit the provider again
-        cache_key = f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}"
+        cache_key = (
+            f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
+            f"{prov.search_cache_key}"
+        )
         if (
             cache := await self.mass.cache.get(
                 key=cache_key,
