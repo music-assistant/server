@@ -434,3 +434,24 @@ async def test_get_page_content_propagates_extend_errors(
         await _fetch_module(recommendation_manager, provider_mock, _paged_module(6, 8), _fail)
 
     provider_mock.mass.cache.set.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("title", "module_type"),
+    [("Music videos", "VIDEO_LIST"), ("Video Playlists", "PLAYLIST_LIST"), ("", "MIX_LIST")],
+)
+async def test_get_page_content_skips_extending_discarded_modules(
+    recommendation_manager: TidalRecommendationManager,
+    provider_mock: Mock,
+    title: str,
+    module_type: str,
+) -> None:
+    """Video and untitled modules are dropped later, so no pages/data call is made."""
+    calls: list[dict[str, Any]] = []
+    module = {**_paged_module(6, 8), "title": title, "type": module_type}
+    items = await _fetch_module(
+        recommendation_manager, provider_mock, module, _slicing_handler(calls)
+    )
+
+    assert len(items) == 6
+    assert calls == []
