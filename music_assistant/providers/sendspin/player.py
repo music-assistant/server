@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable
 from contextlib import suppress
 from copy import deepcopy
 from io import BytesIO
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiosendspin.models import AudioCodec, MediaCommand
 from aiosendspin.models.core import DynamicPairMethodDescriptor
@@ -1478,9 +1478,10 @@ class SendspinPlayer(SendspinBasePlayer):
             # metadata push doesn't race ahead of that debounce with a stale value.
             self.state.current_media.elapsed_time_last_updated = time.time()
         match event:
-            case GroupStateChangedEvent(state=state) if self.synced_to is None and state in (
-                PlaybackStateType.PLAYING,
-                PlaybackStateType.PAUSED,
+            case GroupStateChangedEvent(state=state) if (
+                self.synced_to is None
+                and state in (PlaybackStateType.PLAYING, PlaybackStateType.PAUSED)
+                and (state == PlaybackStateType.PAUSED or not self._protocol_parent_not_playing())
             ):
                 # Push progress explicitly: current_media's identity is unchanged across
                 # pause/resume so update_state() above won't debounce a metadata push
@@ -1493,6 +1494,23 @@ class SendspinPlayer(SendspinBasePlayer):
             case ControllerEvent() as controller_event:
                 if self.synced_to is None:
                     self.mass.create_task(self._handle_controller_event(controller_event))
+
+    def on_protocol_parent_updated(
+        self, protocol_parent: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Handle callback when the parent protocol player of the player is updated."""
+        super().on_protocol_parent_updated(protocol_parent, changed_values)
+        if self.synced_to is not None or "playback_state" not in changed_values:
+            return
+        # super() marked the state dirty, so this rebuilds from the parent's new snapshot
+        # instead of letting the push read the old one before the debounced update runs.
+        self.update_state()
+        if self.state.playback_state == PlaybackState.PLAYING:
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.player_id}",
+                abort_existing=True,
+            )
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
@@ -1587,7 +1605,12 @@ class SendspinPlayer(SendspinBasePlayer):
 
         await self.playback_session.start(media)
         self.update_state()
-        if self.synced_to is None and self._media_identity() == prev_media_identity:
+        if (
+            self.synced_to is None
+            and self._media_identity() == prev_media_identity
+            # Behind a parent that isn't playing yet, on_protocol_parent_updated pushes once it does.
+            and not self._protocol_parent_not_playing()
+        ):
             # Push progress explicitly: a seek restarts the item that is already playing,
             # so current_media's identity is unchanged and update_state() won't debounce
             # a metadata push through the normal media-changed callback. A changed
@@ -2109,6 +2132,14 @@ class SendspinPlayer(SendspinBasePlayer):
                     self.logger.exception(
                         "Error notifying bridge %s of an explicit stop", client.client_id
                     )
+
+    def _protocol_parent_not_playing(self) -> bool:
+        """Return whether this player's media comes from a protocol parent that isn't playing yet."""
+        return (
+            self.protocol_parent_id is not None
+            and (parent := self.mass.players.get_player(self.protocol_parent_id)) is not None
+            and parent.state.playback_state != PlaybackState.PLAYING
+        )
 
     def _media_identity(self) -> tuple[object, ...] | None:
         """Return the current media values that trigger on_player_media_updated when changed."""
