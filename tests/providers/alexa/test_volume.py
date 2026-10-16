@@ -291,9 +291,11 @@ async def test_poll_skips_while_a_volume_call_is_out() -> None:
     provider.get_volumes.assert_not_awaited()
 
 
-async def test_volume_zero_steps_fully_down() -> None:
-    """Volume 0 steps the Echo fully down."""
+@pytest.mark.parametrize("readback", [20, 0])
+async def test_volume_zero_steps_fully_down(readback: int) -> None:
+    """Volume 0 is always a full step down."""
     player, provider = _player()
+    provider.get_volumes.return_value = {"SERIAL": readback}
     echo = {"volume": 20}
 
     async def step(_device: object, amount: int) -> int:

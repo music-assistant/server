@@ -483,7 +483,7 @@ class AlexaPlayer(Player):
                 sent = target
                 if self._echo_volume is None:
                     await self.api.set_volume(target / 100)
-                elif target != self._echo_volume:
+                elif target == 0 or target != self._echo_volume:
                     amount = -100 if target == 0 else target - self._echo_volume
                     self._echo_volume = await provider.step_volume(self.device, amount)
                     self.logger.debug(
