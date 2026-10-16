@@ -3134,6 +3134,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 ORDER BY collection_title,
                 -- null case
                 CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+                -- free-text sequences after numbered ones (before the whole-number
+                -- bucket: that CASE is NULL for names like "Appendix", and SQLite
+                -- sorts NULL before integers)
+                CASE
+                    WHEN collection_sequence IS NOT NULL
+                        AND NOT collection_sequence_is_numeric
+                        AND collection_sequence NOT GLOB '[0-9]*'
+                        AND collection_sequence NOT GLOB '[0-9]*.[0-9]*'
+                    THEN 1
+                    ELSE 0
+                END,
                 -- whole-number bucket so padded TEXT (e.g. BookOrbit) interleaves
                 -- with other providers' REAL volumes instead of sorting after all numerics
                 CASE
@@ -3161,15 +3172,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                                 '0'
                             ) AS INTEGER
                         )
-                END,
-                -- free-text sequences after numbered ones
-                CASE
-                    WHEN collection_sequence IS NOT NULL
-                        AND NOT collection_sequence_is_numeric
-                        AND collection_sequence NOT GLOB '[0-9]*'
-                        AND collection_sequence NOT GLOB '[0-9]*.[0-9]*'
-                    THEN 1
-                    ELSE 0
                 END,
                 -- within a whole: whole-only, then dotted TEXT segments, then REAL fractions
                 CASE

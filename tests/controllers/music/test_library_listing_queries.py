@@ -831,6 +831,50 @@ async def test_audiobook_collections_mixed_provider_sequence_order(
     ]
 
 
+async def test_audiobook_collections_free_text_sequences_after_numbered(
+    mass: MusicAssistant,
+) -> None:
+    """Named sequences like ``Appendix`` sort after numbered volumes, not before."""
+    controller = mass.music.audiobooks
+    for name, sequence in (
+        ("Appendix", "Appendix"),
+        ("Volume 2", 2),
+        ("Prologue", "Prologue"),
+        ("Volume 1", 1.0),
+        ("Volume 1.10", collection_sequence_key("1.10")),
+    ):
+        await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title="Text Mix Series", sequence=sequence)]
+                    )
+                ),
+            )
+        )
+
+    expected = [
+        "Volume 1",
+        "Volume 1.10",
+        "Volume 2",
+        "Appendix",
+        "Prologue",
+    ]
+    items = await controller.get_library_items_by_query(
+        in_library_only=True,
+        collapse_collections=True,
+    )
+    collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
+    assert [item.name for item in collections["Text Mix Series"].items] == expected
+
+    collection = await controller.get_collection(collections["Text Mix Series"].item_id)
+    assert [item.name for item in collection.items] == expected
+
+
 async def test_artist_audiobooks_collapse_collections(
     mass: MusicAssistant,
 ) -> None:
