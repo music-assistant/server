@@ -27,5 +27,5 @@ def provider() -> Audiobookshelf:
     provider = Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
     provider.libraries.audiobooks["lib1"] = LibraryHelper(name="Audiobooks")
     provider._client = Mock()
-    provider.socket_item_lock = asyncio.Lock()
+    provider.library_item_lock = asyncio.Lock()
     return provider
