@@ -3,10 +3,6 @@
     "catalog_url": {
       "label": "Catalog URL",
       "description": "HTTP or HTTPS URL of one M3U, M3U8 or JSON radio catalog. Add another provider instance for another catalog."
-    },
-    "refresh_interval": {
-      "label": "Refresh interval (minutes)",
-      "description": "Refresh this catalog every 1–1440 minutes. Other instances keep their own schedules. Use the provider's name field to give this catalog a friendly name."
     }
   },
   "errors": {

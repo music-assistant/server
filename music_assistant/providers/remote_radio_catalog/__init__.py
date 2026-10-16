@@ -9,9 +9,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientTimeout
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -28,7 +26,6 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     ProviderMapping,
     Radio,
-    SearchResults,
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
@@ -44,12 +41,9 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 CONF_CATALOG_URL = "catalog_url"
-CONF_REFRESH_INTERVAL = "refresh_interval"
-DEFAULT_REFRESH_MINUTES = 30
 CACHE_KEY = "remote_radio_catalog"
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_RADIOS,
 }
 
@@ -64,38 +58,14 @@ async def setup(
 class RemoteRadioCatalogProvider(MusicProvider):
     """Subscribe to one remote catalog, without shared mutable provider state."""
 
-    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Expose the minute interval; URLs are edited through native reconfiguration."""
-        return (
-            ConfigEntry(
-                key=CONF_REFRESH_INTERVAL,
-                type=ConfigEntryType.INTEGER,
-                required=True,
-                default_value=self.get_setup_value(CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_MINUTES),
-                range=(1, 1440),
-            ),
-        )
-
     async def handle_async_init(self) -> None:
         """Restore only this instance's last good snapshot for the configured URL."""
         self._catalog: dict[str, Station] | None = None
         self._fetch_task: asyncio.Task[None] | None = None
         self._last_error: ResourceTemporarilyUnavailable | None = None
-        self._next_refresh = 0.0
-        self._timer_id = f"remote_radio_catalog.refresh.{self.instance_id}"
+        self._retry_after = 0.0
         try:
             self.catalog_url = validate_url(self.get_setup_value(CONF_CATALOG_URL))
-            interval = self.config.get_value(
-                CONF_REFRESH_INTERVAL,
-                self.get_setup_value(CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_MINUTES),
-            )
-            if (
-                not isinstance(interval, int)
-                or isinstance(interval, bool)
-                or not 1 <= interval <= 1440
-            ):
-                raise ValueError("Refresh interval must be between 1 and 1440 minutes")  # noqa: TRY301
-            self.refresh_seconds = interval * 60
         except ValueError as err:
             raise InvalidDataError(str(err)) from err
         self._checksum = hashlib.sha256(self.catalog_url.encode()).hexdigest()
@@ -107,10 +77,6 @@ class RemoteRadioCatalogProvider(MusicProvider):
                 self._catalog = parse_catalog(cached["text"], cached["base_url"])
             except KeyError, TypeError, ValueError:
                 self.logger.warning("Ignoring invalid cached radio catalog")
-
-    async def loaded_in_mass(self) -> None:
-        """Start this instance's native timer; initial library sync remains MA-owned."""
-        self._schedule_refresh(delay=0)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -130,19 +96,6 @@ class RemoteRadioCatalogProvider(MusicProvider):
     async def browse(self, path: str) -> list[Radio]:
         """Show the catalog beneath its independently named provider source."""
         return [self._radio(station) for station in (await self._get_catalog()).values()]
-
-    async def search(
-        self, search_query: str, media_types: list[MediaType], limit: int = 5
-    ) -> SearchResults:
-        """Search only the catalog belonging to this instance."""
-        result = SearchResults()
-        if MediaType.RADIO in media_types:
-            result.radio = [
-                self._radio(station)
-                for station in (await self._get_catalog()).values()
-                if search_query.casefold() in station.name.casefold()
-            ][:limit]
-        return result
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Resolve a station ID within this instance, including an offline snapshot."""
@@ -167,67 +120,29 @@ class RemoteRadioCatalogProvider(MusicProvider):
         )
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Cancel and await only our timer callback/download; MA stops library sync."""
+        """Cancel this instance's download; MA owns library-sync task cleanup."""
         self.unloading = True
-        self.mass.cancel_timer(self._timer_id)
-        pending = {
-            task
-            for task in (self.mass.get_task(self._timer_id), self._fetch_task)
-            if task is not None and not task.done()
-        }
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        # A timer already inside start_sync could have queued work during core teardown.
-        # After joining that callback, make a final native cancellation barrier.
-        await self.mass.music.unschedule_provider_sync(
-            self.instance_id, clear_persisted_state=is_removed
-        )
+        if self._fetch_task is not None and not self._fetch_task.done():
+            self._fetch_task.cancel()
+            await asyncio.gather(self._fetch_task, return_exceptions=True)
         if is_removed:
             await self.cache.delete(CACHE_KEY, provider=self.instance_id)
         self._catalog = None
-
-    def _schedule_refresh(self, delay: float | None = None) -> None:
-        """Use MA's per-instance timer API (recurring task schedules are hourly)."""
-        if not self.unloading:
-            self.mass.call_later(
-                self.refresh_seconds if delay is None else delay,
-                self._scheduled_refresh,
-                task_id=self._timer_id,
-            )
-
-    async def _scheduled_refresh(self) -> None:
-        """Refresh one source, then queue only its native library synchronization."""
-        try:
-            await self._get_catalog(for_sync=True)
-            if not self.unloading:
-                await self.mass.music.start_sync(
-                    media_types=[MediaType.RADIO], providers=[self.instance_id]
-                )
-        except ResourceTemporarilyUnavailable:
-            self.logger.warning("Catalog refresh failed; retaining the last good catalog")
-        finally:
-            self._schedule_refresh()
 
     async def _get_catalog(self, *, for_sync: bool = False) -> dict[str, Station]:
         """Serve a snapshot on outage, but fail sync so no library deletion pass runs."""
         if self.unloading:
             raise ResourceTemporarilyUnavailable("Catalog instance is unloading")
-        try:
-            if asyncio.get_running_loop().time() >= self._next_refresh:
-                await self._refresh()
-            if self._last_error is not None:
-                raise self._last_error
-        except ResourceTemporarilyUnavailable:
-            if for_sync or self._catalog is None:
-                raise
+        if for_sync or self._catalog is None:
+            await self._refresh()
         return self._catalog if self._catalog is not None else {}
 
     async def _refresh(self) -> None:
         """Join a shared in-flight request for this instance, never across instances."""
         if self.unloading:
             raise ResourceTemporarilyUnavailable("Catalog instance is unloading")
+        if self._last_error is not None and asyncio.get_running_loop().time() < self._retry_after:
+            raise self._last_error
         if self._fetch_task is None or self._fetch_task.done():
             self._fetch_task = self.mass.create_task(
                 self._download(),
@@ -250,7 +165,7 @@ class RemoteRadioCatalogProvider(MusicProvider):
                     payload.extend(chunk)
                     if len(payload) > MAX_CATALOG_BYTES:
                         raise ValueError("Radio catalog exceeds 2 MiB")  # noqa: TRY301
-                text = payload.decode("utf-8-sig")
+                text = payload.decode("utf-8-sig", errors="replace")
                 base_url = validate_url(str(response.url))
                 catalog = parse_catalog(text, base_url)
             await self.cache.set(
@@ -263,15 +178,14 @@ class RemoteRadioCatalogProvider(MusicProvider):
             )
             self._catalog = catalog
             self._last_error = None
+            self._retry_after = 0.0
         except (ClientError, TimeoutError, ValueError) as err:
             # Never expose a signed catalog URL or its query parameters in errors.
             self._last_error = ResourceTemporarilyUnavailable(
                 "Unable to retrieve a valid remote radio catalog"
             )
-            self._next_refresh = asyncio.get_running_loop().time() + self.refresh_seconds
+            self._retry_after = asyncio.get_running_loop().time() + 30
             raise self._last_error from err
-        # A cancelled download is not a successful (possibly empty) snapshot.
-        self._next_refresh = asyncio.get_running_loop().time() + self.refresh_seconds
 
     def _radio(self, station: Station) -> Radio:
         """Use native instance namespaces for media IDs, mappings and source labels."""

@@ -1,4 +1,4 @@
-"""Exercise real providers and HTTP, with controlled MA timer/config/cache boundaries."""
+"""Exercise real providers and HTTP, with controlled MA config/cache boundaries."""
 
 from __future__ import annotations
 
@@ -8,21 +8,19 @@ from collections.abc import AsyncGenerator, Coroutine
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ClientSession, web
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.helpers.compare import compare_item_ids, compare_radio
 from music_assistant.providers.remote_radio_catalog import (
     CACHE_KEY,
     CONF_CATALOG_URL,
-    CONF_REFRESH_INTERVAL,
     RemoteRadioCatalogProvider,
     setup,
 )
@@ -41,7 +39,7 @@ DOMAIN = "remote_radio_catalog"
 @pytest.fixture
 async def harness() -> AsyncGenerator[SimpleNamespace]:  # noqa: PLR0915
     """Provide real local HTTP responses and strictly instance-keyed fake MA storage."""
-    documents: dict[str, list[dict[str, str]] | int | str] = {
+    documents: dict[str, list[dict[str, str]] | int | str | bytes] = {
         "a": [{"id": "same", "name": "Radio", "url": "https://stream.example/a"}],
         "b": [{"id": "same", "name": "Radio", "url": "https://stream.example/b"}],
     }
@@ -58,6 +56,8 @@ async def harness() -> AsyncGenerator[SimpleNamespace]:  # noqa: PLR0915
             return web.Response(status=payload)
         if isinstance(payload, str):
             return web.Response(text=payload)
+        if isinstance(payload, bytes):
+            return web.Response(body=payload)
         return web.json_response(payload)
 
     app = web.Application()
@@ -117,7 +117,11 @@ async def harness() -> AsyncGenerator[SimpleNamespace]:  # noqa: PLR0915
                 decrypt_string=lambda value: value,
                 get_raw_provider_config_value=lambda _instance, _key: None,
             ),
-            music=SimpleNamespace(start_sync=AsyncMock(), unschedule_provider_sync=AsyncMock()),
+            music=SimpleNamespace(
+                start_sync=AsyncMock(),
+                unschedule_provider_sync=AsyncMock(),
+                library_supported=lambda _provider, media_type: media_type == MediaType.RADIO,
+            ),
             call_later=MagicMock(
                 side_effect=lambda delay, target, *args, task_id: timers.update(
                     {task_id: (delay, target, args)}
@@ -133,7 +137,7 @@ async def harness() -> AsyncGenerator[SimpleNamespace]:  # noqa: PLR0915
         async def make(
             instance: str = "a",
             source: str | None = None,
-            minutes: int = 5,
+            legacy_minutes: int | None = None,
             name: str | None = None,
         ) -> RemoteRadioCatalogProvider:
             source = source or instance
@@ -149,11 +153,13 @@ async def harness() -> AsyncGenerator[SimpleNamespace]:  # noqa: PLR0915
                 domain=DOMAIN,
                 instance_id=instance_id,
                 name=name,
-                values={
-                    CONF_REFRESH_INTERVAL: ConfigEntry(
-                        key=CONF_REFRESH_INTERVAL,
+                values={}
+                if legacy_minutes is None
+                else {
+                    "refresh_interval": ConfigEntry(
+                        key="refresh_interval",
                         type=ConfigEntryType.INTEGER,
-                        value=minutes,
+                        value=legacy_minutes,
                     )
                 },
             )
@@ -187,29 +193,26 @@ async def radios(provider: RemoteRadioCatalogProvider) -> list[Radio]:
     return [radio async for radio in provider.get_library_radios()]
 
 
-async def test_instances_namespaced_and_independently_scheduled(harness: SimpleNamespace) -> None:
-    """Three native configurations keep 5/30/60 minute timers and distinct mappings."""
-    first = await harness.make("a", minutes=5, name="My Icecast Stations")
-    second = await harness.make("b", minutes=30, name="Community Radio")
-    third = await harness.make("c", source="a", minutes=60, name="Personal Radio Collection")
+async def test_instances_namespaced_without_custom_scheduling(harness: SimpleNamespace) -> None:
+    """Three native configurations have distinct mappings and no provider-owned timers."""
+    first = await harness.make("a", name="My Icecast Stations")
+    second = await harness.make("b", name="Community Radio")
+    third = await harness.make("c", source="a", name="Personal Radio Collection")
     assert first.manifest.multi_instance
     assert all(not provider.is_streaming_provider for provider in (first, second, third))
-    await asyncio.gather(*(provider._scheduled_refresh() for provider in (first, second, third)))
-    assert [harness.timers[p._timer_id][0] for p in (first, second, third)] == [300, 1800, 3600]
     a, b, c = await asyncio.gather(*(radios(p) for p in (first, second, third)))
     assert a[0].item_id == b[0].item_id == c[0].item_id == "same"
     assert len({a[0].uri, b[0].uri, c[0].uri}) == 3
     assert not compare_item_ids(a[0], b[0])
-    assert not compare_radio(a[0], b[0])
+    assert all(ProviderFeature.SEARCH not in p.supported_features for p in (first, second, third))
     assert next(iter(a[0].provider_mappings)).details == "My Icecast Stations"
     assert next(iter(b[0].provider_mappings)).provider_instance == second.instance_id
     assert all(
         mapping.url is None for radio in (a[0], b[0], c[0]) for mapping in radio.provider_mappings
     )
     assert harness.counts == {"a": 2, "b": 1}
-    harness.mass.music.start_sync.assert_any_await(
-        media_types=[MediaType.RADIO], providers=[first.instance_id]
-    )
+    harness.mass.music.start_sync.assert_not_awaited()
+    harness.mass.call_later.assert_not_called()
     assert (await first.get_stream_details("same", MediaType.RADIO)).path.endswith("/a")
     assert (await second.get_stream_details("same", MediaType.RADIO)).path.endswith("/b")
 
@@ -223,28 +226,27 @@ async def test_failure_keeps_snapshot_without_deleting_or_affecting_other(
     await asyncio.gather(radios(first), radios(second))
     old_snapshot = harness.snapshots[first.instance_id, CACHE_KEY]
     harness.documents["a"] = failure
-    first._next_refresh = 0
     with pytest.raises(ResourceTemporarilyUnavailable):
         await radios(first)
     assert (await first.browse(""))[0].item_id == "same"
     assert harness.snapshots[first.instance_id, CACHE_KEY] == old_snapshot
-    assert (await radios(second))[0].item_id == "same"
+    assert (await second.browse(""))[0].item_id == "same"
     assert harness.counts == {"a": 2, "b": 1}
     harness.documents["a"] = [{"id": "new", "url": "https://stream.example/new"}]
-    first._next_refresh = 0
+    first._retry_after = 0
     assert (await radios(first))[0].item_id == "new"
-    assert (await radios(second))[0].item_id == "same"
+    assert (await second.browse(""))[0].item_id == "same"
 
 
 async def test_overlap_uses_one_http_request_and_waiter_cancellation_is_isolated(
     harness: SimpleNamespace,
 ) -> None:
-    """Library, browse and search join the same in-flight instance download."""
+    """Library and browse join the same in-flight instance download."""
     first = await harness.make()
     gate = harness.gates["a"] = asyncio.Event()
     browsing = asyncio.create_task(first.browse(""))
     syncing = asyncio.create_task(radios(first))
-    searching = asyncio.create_task(first.search("Radio", [MediaType.RADIO]))
+    resolving = asyncio.create_task(first.get_radio("same"))
     async with asyncio.timeout(2):
         while harness.counts["a"] == 0:
             await asyncio.sleep(0)
@@ -252,15 +254,15 @@ async def test_overlap_uses_one_http_request_and_waiter_cancellation_is_isolated
     with pytest.raises(asyncio.CancelledError):
         await browsing
     gate.set()
-    results, search = await asyncio.gather(syncing, searching)
-    assert results[0].item_id == search.radio[0].item_id == "same"
+    results, radio = await asyncio.gather(syncing, resolving)
+    assert results[0].item_id == radio.item_id == "same"
     assert harness.counts["a"] == 1
 
 
-async def test_unload_cancels_only_own_inflight_download_and_timer(
+async def test_unload_cancels_only_own_inflight_download(
     harness: SimpleNamespace,
 ) -> None:
-    """Unloading a blocked request cannot cancel another instance's request or timer."""
+    """Unloading a blocked request cannot cancel another instance's request."""
     first, second = await harness.make("a"), await harness.make("b")
     harness.gates["a"] = asyncio.Event()
     pending = asyncio.create_task(first.browse(""))
@@ -272,12 +274,8 @@ async def test_unload_cancels_only_own_inflight_download_and_timer(
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert first._fetch_task.cancelled()
-    assert first._timer_id not in harness.timers
-    assert second._timer_id in harness.timers
     assert (await radios(second))[0].item_id == "same"
-    harness.mass.music.unschedule_provider_sync.assert_awaited_once_with(
-        first.instance_id, clear_persisted_state=True
-    )
+    harness.mass.music.unschedule_provider_sync.assert_not_awaited()
 
 
 async def test_remove_preserves_other_cache_and_reload_recovers_offline(
@@ -298,23 +296,18 @@ async def test_remove_preserves_other_cache_and_reload_recovers_offline(
         await radios(restored)
 
 
-async def test_url_interval_and_name_changes_are_instance_local(harness: SimpleNamespace) -> None:
+async def test_url_and_name_changes_are_instance_local(harness: SimpleNamespace) -> None:
     """Native reload of an edited instance cannot reuse the previous URL's data."""
     first = await harness.make("a", name="Original")
-    second = await harness.make("b", minutes=30)
+    second = await harness.make("b")
     await asyncio.gather(radios(first), radios(second))
-    first.config.values[CONF_REFRESH_INTERVAL].value = 60
-    await first.update_config(first.config, {f"values/{CONF_REFRESH_INTERVAL}"})
-    assert f"load_provider_{first.instance_id}" in harness.timers
-    assert f"load_provider_{second.instance_id}" not in harness.timers
     await first.unload()
-    changed = await harness.make("a", source="b", minutes=60, name="Changed")
+    changed = await harness.make("a", source="b", name="Changed")
     assert changed._catalog is None
-    await changed._scheduled_refresh()
-    assert harness.timers[changed._timer_id][0] == 3600
-    assert second.refresh_seconds == 1800
     assert (await changed.get_stream_details("same", MediaType.RADIO)).path.endswith("/b")
     assert next(iter((await radios(changed))[0].provider_mappings)).details == "Changed"
+    assert next(iter((await second.browse(""))[0].provider_mappings)).details == second.name
+    assert harness.counts == {"a": 1, "b": 3}
 
 
 async def test_valid_empty_catalog_is_not_an_error(harness: SimpleNamespace) -> None:
@@ -325,32 +318,22 @@ async def test_valid_empty_catalog_is_not_an_error(harness: SimpleNamespace) -> 
     assert first._last_error is None
 
 
-async def test_native_library_name_fallback_does_not_merge_instances(
-    harness: SimpleNamespace,
-) -> None:
-    """Exercise the actual library matcher, not just different URI strings."""
-    first, second = await harness.make("a"), await harness.make("b")
-    a, b = await asyncio.gather(radios(first), radios(second))
-    controller = object.__new__(RadioController)
-    with (
-        patch.object(controller, "get_library_item_by_prov_mappings", AsyncMock(return_value=None)),
-        patch.object(controller, "get_library_items_by_query", AsyncMock(return_value=a)),
-    ):
-        assert await controller._get_library_item_by_match(b[0]) is None
-
-
 async def test_setup_uses_native_flow_and_reconfigure_only_changes_url() -> None:
-    """Multiple invocations finish independently; interval options survive URL edits."""
+    """Legacy minute settings are dropped on reconfiguration without losing the URL."""
     for kind in ("setup", "reconfigure"):
         session = SimpleNamespace(
-            context=SimpleNamespace(kind=kind, setup_data={}, values={CONF_REFRESH_INTERVAL: 60}),
+            context=SimpleNamespace(
+                kind=kind, setup_data={"refresh_interval": 5}, values={"refresh_interval": 60}
+            ),
             form=AsyncMock(return_value={CONF_CATALOG_URL: "https://example.org/radios.m3u"}),
             finish=AsyncMock(),
         )
         await run_setup(cast("SetupSession", session))
         fields = session.form.await_args.args[0]
-        assert len(fields) == (2 if kind == "setup" else 1)
-        assert session.finish.await_args.args[0][CONF_REFRESH_INTERVAL] == 60
+        assert len(fields) == 1
+        assert session.finish.await_args.args[0] == {
+            CONF_CATALOG_URL: "https://example.org/radios.m3u"
+        }
 
 
 @pytest.mark.parametrize(
@@ -389,44 +372,38 @@ def test_malformed_catalogs_are_rejected_atomically(text: str) -> None:
 async def test_refreshing_one_instance_does_not_fetch_or_sync_another(
     harness: SimpleNamespace,
 ) -> None:
-    """A timer only queues its own instance; failure also rearms only that timer."""
+    """Native sync refreshes only its source and never starts another sync."""
     first, second = await harness.make("a"), await harness.make("b")
     await asyncio.gather(radios(first), radios(second))
-    first._next_refresh = 0
-    await first._scheduled_refresh()
+    harness.documents["a"] = [
+        {"id": "same", "name": "Live sport", "url": "https://stream.example/new"}
+    ]
+    updated = await radios(first)
+    assert updated[0].name == "Live sport"
+    assert (await first.get_stream_details("same", MediaType.RADIO)).path.endswith("/new")
     assert harness.counts == {"a": 2, "b": 1}
-    harness.mass.music.start_sync.assert_awaited_once_with(
-        media_types=[MediaType.RADIO], providers=[first.instance_id]
-    )
-    harness.mass.music.start_sync.reset_mock()
     harness.documents["a"] = 503
-    first._next_refresh = 0
-    await first._scheduled_refresh()
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await radios(first)
     harness.mass.music.start_sync.assert_not_awaited()
-    assert harness.timers[first._timer_id][0] == 300
-    assert second._timer_id in harness.timers
+    harness.mass.call_later.assert_not_called()
+    assert (await second.browse(""))[0].name == "Radio"
+    assert harness.counts == {"a": 3, "b": 1}
 
 
-async def test_unload_awaits_callback_and_prevents_timer_resurrection(
+async def test_legacy_interval_does_not_change_native_sync_or_lose_cache(
     harness: SimpleNamespace,
 ) -> None:
-    """Even a callback already awaiting start_sync must stop before teardown completes."""
-    first, second = await harness.make("a"), await harness.make("b")
-    entered = asyncio.Event()
-    gate = asyncio.Event()
-
-    async def blocked_sync(**_kwargs: Any) -> None:
-        entered.set()
-        await gate.wait()
-
-    harness.mass.music.start_sync.side_effect = blocked_sync
-    callback = harness.mass.create_task(first._scheduled_refresh(), task_id=first._timer_id)
-    await asyncio.wait_for(entered.wait(), timeout=2)
+    """Old experimental configs safely use MA's defaults and retain cached stations."""
+    first = await harness.make("a", legacy_minutes=5)
+    await radios(first)
     await first.unload()
-    assert callback.cancelled()
-    assert first._timer_id not in harness.timers
-    assert second._timer_id in harness.timers
-    assert (await radios(second))[0].item_id == "same"
+    restored = await harness.make("a", legacy_minutes=5)
+    assert (await restored.browse(""))[0].item_id == "same"
+    assert harness.counts == {"a": 1, "b": 0}
+    assert await restored.get_config_entries() == ()
+    assert restored.get_default_library_sync_schedule(MediaType.RADIO).every == 12
+    harness.mass.call_later.assert_not_called()
 
 
 async def test_cancelled_fetch_is_not_cached_as_empty_success(harness: SimpleNamespace) -> None:
@@ -446,7 +423,7 @@ async def test_cancelled_fetch_is_not_cached_as_empty_success(harness: SimpleNam
 
 
 async def test_shared_service_radio_matching_still_works(harness: SimpleNamespace) -> None:
-    """The collision guard does not disable normal matching for shared radio services."""
+    """The provider leaves normal matching for shared radio services unchanged."""
     first, second = await harness.make("a"), await harness.make("b")
     a, b = await asyncio.gather(radios(first), radios(second))
     assert compare_radio(a[0], a[0])
@@ -454,3 +431,36 @@ async def test_shared_service_radio_matching_still_works(harness: SimpleNamespac
         for mapping in radio.provider_mappings:
             mapping.is_unique = False
     assert compare_radio(a[0], b[0])
+
+
+async def test_non_utf8_station_title_does_not_reject_catalog(harness: SimpleNamespace) -> None:
+    """A bad title byte is replaced without dropping an otherwise valid station list."""
+    first = await harness.make()
+    harness.documents["a"] = b"#EXTM3U\n#EXTINF:-1,Radio \xe9\nhttps://stream.example/live\n"
+    result = await radios(first)
+    assert len(result) == 1
+    assert result[0].name == "Radio \ufffd"
+    assert first._last_error is None
+
+
+async def test_failed_initial_fetch_is_throttled_per_instance(harness: SimpleNamespace) -> None:
+    """Repeated calls cannot hammer a failed source while a different one still loads."""
+    first, second = await harness.make("a"), await harness.make("b")
+    harness.documents["a"] = 503
+    for _ in range(2):
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await first.browse("")
+    assert (await radios(second))[0].name == "Radio"
+    assert harness.counts == {"a": 1, "b": 1}
+
+
+async def test_empty_snapshot_is_reused_until_native_sync(harness: SimpleNamespace) -> None:
+    """Browsing a valid empty list is not mistaken for an uncached catalog."""
+    first = await harness.make()
+    harness.documents["a"] = []
+    assert await radios(first) == []
+    assert await first.browse("") == []
+    assert await first.browse("") == []
+    assert harness.counts["a"] == 1
+    assert await radios(first) == []
+    assert harness.counts["a"] == 2
