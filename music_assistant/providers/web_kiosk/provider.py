@@ -705,10 +705,17 @@ class WebKioskProvider(PlayerProvider):
         # report, so a fast stream ending between reports still completes.
         if position is not None:
             player.update_position(position)
-        if player._track_end_handled or not player.playback_reached_end():
+        if player._track_end_handled:
             return
         # One end event per play. play_media clears this when the next item starts.
         player._track_end_handled = True
+        # The browser reports the end of the current stream only once. A stream
+        # that stops well before the song ends was cut short, so it ends like a
+        # failed playback: IDLE, with the queue left on the unfinished item.
+        if not player.playback_reached_end():
+            logger.warning("Kiosk %s stream ended before the end of the song", player_id)
+            await player.stop()
+            return
         # Music Assistant hands the next queue item over in advance and follows
         # the player's current media, so queue progression stays in the core.
         # Without a handed-over item (end of queue, announcement) the player

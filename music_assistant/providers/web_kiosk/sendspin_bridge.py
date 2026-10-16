@@ -158,8 +158,13 @@ class WebKioskSendspinBridge:
 
     async def stop(self) -> None:
         """Stop and unregister the bridge."""
-        self._cancel_watchdog()
-        tasks = tuple(self._watchdog_tasks)
+        # A connect timeout falls back from inside the watchdog, and the fallback
+        # removes this bridge. That watchdog must finish its fallback instead of
+        # being cancelled or awaited by the teardown it started.
+        current = asyncio.current_task()
+        if self._connect_watchdog is not current:
+            self._cancel_watchdog()
+        tasks = tuple(task for task in self._watchdog_tasks if task is not current)
         for task in tasks:
             if not task.cancelling():
                 task.cancel()

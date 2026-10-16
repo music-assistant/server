@@ -7,7 +7,9 @@ from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.player_queue import PlayerQueue
 
 import music_assistant.providers.web_kiosk.sendspin_bridge as bridge_module
 from music_assistant.providers.web_kiosk.constants import normalize_sendspin_client_id
@@ -237,3 +239,56 @@ async def test_stop_waits_for_fallback_cancellation_before_removing_client(
         finish_cleanup.set()
         await stopping
     assert not bridge.is_registered
+
+
+async def test_connect_timeout_fallback_survives_removing_its_own_bridge(
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    mass_mock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The watchdog's fallback removes the bridge that owns it and still resumes HTML5."""
+    monkeypatch.setattr(bridge_module, "SENDSPIN_CONNECT_TIMEOUT", 0)
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(coro: object) -> asyncio.Task[None]:
+        task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    mass_mock.create_task.side_effect = spawn
+    player.sendspin_client_id = BROWSER_CLIENT_ID
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, BROWSER_CLIENT_ID)
+    mass_mock.players.get_player = Mock(
+        side_effect=lambda player_id, **_: player if player_id == player.player_id else None
+    )
+    queue = PlayerQueue(
+        queue_id=player.player_id,
+        active=True,
+        display_name="Test Kiosk",
+        available=True,
+        items=1,
+        state=PlaybackState.PLAYING,
+    )
+    mass_mock.player_queues.get_active_queue = Mock(return_value=queue)
+    mass_mock.player_queues.resume = AsyncMock()
+    server = Mock()
+    server.remove_client = AsyncMock()
+    server.register_external_player.return_value = Mock(is_connected=False)
+    server.register_external_player.return_value.roles_by_family.return_value = []
+    provider.http_server = Mock()
+    manager = WebKioskSendspinBridgeManager(provider)
+    provider.bridge_manager = manager
+    bridge = WebKioskSendspinBridge(provider, player, server, BROWSER_CLIENT_ID)
+    await bridge.start()
+    manager._bridges[player.player_id] = bridge
+
+    server.register_external_player.call_args.kwargs["on_stream_start"](Mock())
+    results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
+
+    assert results == [None]
+    assert manager.get_bridge(player.player_id) is None
+    server.remove_client.assert_awaited_once_with(BROWSER_CLIENT_ID)
+    assert player.sendspin_fallback
+    assert player.active_output_protocol == "native"
+    mass_mock.player_queues.resume.assert_awaited_once_with(player.player_id)

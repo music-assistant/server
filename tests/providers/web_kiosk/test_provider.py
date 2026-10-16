@@ -202,24 +202,25 @@ def _playing_at_end(player: object) -> None:
     player._track_end_handled = False  # type: ignore[attr-defined]
 
 
-async def test_track_end_ignores_a_position_still_in_the_song(
-    provider: WebKioskProvider, mass_mock: Mock, player: object
+async def test_premature_track_end_reports_idle_without_advancing(
+    provider: WebKioskProvider, mass_mock: Mock, player: WebKioskPlayer
 ) -> None:
-    """A stale end signal in the middle of a new track does not skip it."""
-    player._attr_playback_state = PlaybackState.PLAYING  # type: ignore[attr-defined]
-    player._attr_current_media = Mock(duration=180, stream_duration=None)  # type: ignore[attr-defined]
-    player._attr_elapsed_time = 10  # type: ignore[attr-defined]
-    player._track_end_handled = False  # type: ignore[attr-defined]
+    """A current stream that ends well before its duration is a failed playback."""
+    await player.play_media(PlayerMedia(uri="track", duration=180, source_id="wk_test"))
+    player.update_position(10)
+    generation = player.playback_generation
     mass_mock.players.get_player.return_value = player
     mass_mock.player_queues.play_index = AsyncMock()
+    nxt = PlayerMedia(uri="next", duration=200, source_id="wk_test", queue_item_id="item-2")
+    await player.enqueue_next_media(nxt)
 
-    await provider._advance_after_track(
-        "wk_test", cast("WebKioskPlayer", player).playback_generation
-    )
+    await provider._advance_after_track("wk_test", generation)
 
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.current_media is None
+    assert player.playback_generation != generation
     mass_mock.player_queues.play_index.assert_not_awaited()
     mass_mock.players.cmd_stop.assert_not_awaited()
-    assert player._track_end_handled is False  # type: ignore[attr-defined]
 
 
 async def test_track_end_runs_once_per_play(
