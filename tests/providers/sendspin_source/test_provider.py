@@ -31,6 +31,7 @@ from music_assistant.providers.sendspin_source.provider import OUTPUT_FORMAT
 from .conftest import (
     _FakeClient,
     _FakePlayer,
+    _FakeSourceRole,
     get_config,
     get_players,
     get_queues,
@@ -335,6 +336,58 @@ async def test_cold_reconnect_re_requests_start_once_roles_are_back(
     await _settle()
     assert role is not None
     assert role.start_requests == 2
+
+
+async def test_held_inputs_are_offered_only_when_approved_here() -> None:
+    """A redialable held input is listed once paired or approved here, without dialing it."""
+    provider = await make_provider(
+        [
+            _FakeClient("paired", held=True),
+            _FakeClient("approved", held=True),
+            _FakeClient("unapproved", held=True),
+            _FakeClient("dialed-in", held=True),
+            _FakeClient("offline", connected=False),
+        ]
+    )
+    server_api = get_server_api(provider)
+    server_api.pairing_store.paired.update({"paired", "dialed-in"})
+    del server_api.client_urls["dialed-in"]
+    server_api.pairing_store.trusted["approved"] = frozenset({"source"})
+    server_api.pairing_store.trusted["unapproved"] = frozenset()
+    assert [s.item_id for s in await provider.get_audio_sources()] == ["paired", "approved"]
+    with pytest.raises(MediaNotFoundError):
+        await provider.on_source_selected("unapproved", "player-1", "queue-1", "session-1")
+    assert server_api.reclaim_requests == []
+
+
+async def test_selecting_a_held_input_takes_the_device_over() -> None:
+    """Selecting a held input reclaims the device and asks it to stream once it is back."""
+    client = _FakeClient("client-1", held=True)
+    provider = await make_provider([client])
+    server_api = get_server_api(provider)
+    server_api.pairing_store.trusted["client-1"] = frozenset({"source"})
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    assert server_api.reclaim_requests == ["client-1"]
+
+    client.is_connected = True
+    client.cleanup_on_mdns_removal = False
+    client.attach_roles(role := _FakeSourceRole())
+    server_api.emit(ClientConnectedEvent("client-1"))
+    await _settle()
+    assert role.start_requests == 1
+
+
+async def test_a_held_input_that_stays_away_fails_to_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A device the other server keeps fails with the did-not-start error."""
+    monkeypatch.setattr(provider_module, "COLD_START_TIMEOUT_S", 0.01)
+    provider = await make_provider([_FakeClient("client-1", held=True)])
+    get_server_api(provider).pairing_store.paired.add("client-1")
+    await provider.on_source_selected("client-1", "player-1", "queue-1", "session-1")
+    with pytest.raises(AudioError) as err:
+        await _take(provider.get_audio_stream(_stream_details()), 1)
+    assert err.value.translation_key == "no_audio"
 
 
 async def test_signal_watcher_arms_before_roles_attach() -> None:

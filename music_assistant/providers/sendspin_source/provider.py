@@ -2,9 +2,10 @@
 Sendspin Source provider implementation.
 
 Exposes every connected Sendspin client with an active `source` role as a Music
-Assistant AudioSource. Decoded PCM from the client is pulled through an
-occupancy-controlled clock bridge so the capture clock never has to match MA's
-consumption clock. See README.md for the design rationale.
+Assistant AudioSource, plus approved inputs that another server holds. Decoded PCM
+from the client is pulled through an occupancy-controlled clock bridge so the
+capture clock never has to match MA's consumption clock. See README.md for the
+design rationale.
 """
 
 from __future__ import annotations
@@ -166,12 +167,15 @@ class SendspinSourceProvider(PluginProvider):
         self._clients.clear()
 
     async def get_audio_sources(self) -> list[AudioSource]:
-        """Return one AudioSource per connected client with an active source role."""
+        """Return one AudioSource per connected source client or approved held input."""
         if (sendspin := self._sendspin_provider) is None:
             return []
         sources: list[AudioSource] = []
-        for client in sendspin.server_api.connected_clients:
-            if self._get_source_role(client) is None:
+        for client in sendspin.server_api.clients:
+            if client.is_connected:
+                if self._get_source_role(client) is None:
+                    continue
+            elif not await self._can_reclaim(client):
                 continue
             sources.append(
                 AudioSource(
@@ -205,7 +209,7 @@ class SendspinSourceProvider(PluginProvider):
         method on the actual stream request (never on queue preload).
         """
         client = self._get_client(item_id)
-        if client is None or self._get_source_role(client) is None:
+        if client is None or not await self._is_selectable(client):
             raise MediaNotFoundError(f"Unknown or unavailable Sendspin source: {item_id}")
         return StreamDetails(
             provider=self.instance_id,
@@ -221,8 +225,7 @@ class SendspinSourceProvider(PluginProvider):
     ) -> None:
         """Claim the source and ask the client to start streaming."""
         client = self._get_client(source_id)
-        role = self._get_source_role(client) if client else None
-        if client is None or role is None:
+        if client is None or not await self._is_selectable(client):
             raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
         state = self._clients.setdefault(source_id, _SourceClientState())
         # Capture the source's session before waiting so delayed requests keep their
@@ -233,8 +236,7 @@ class SendspinSourceProvider(PluginProvider):
             async with state.selection_lock:
                 # The client or its role may have changed while waiting for the lock.
                 client = self._get_client(source_id)
-                role = self._get_source_role(client) if client else None
-                if client is None or role is None:
+                if client is None or not await self._is_selectable(client):
                     raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
                 # Reject only the delayed request from an autostart superseded by the user.
                 if state.suppressed_autostart_claim == (owner_player_id, queue_session_id):
@@ -289,8 +291,11 @@ class SendspinSourceProvider(PluginProvider):
                     raise PlayerUnavailableError(f"Sendspin source is unloading: {source_id}")
                 # Teardown can suspend long enough for the connection role to be recreated.
                 client = self._get_client(source_id)
-                role = self._get_source_role(client) if client else None
-                if client is None or role is None:
+                if client is None or not await self._is_selectable(client):
+                    raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
+                role = self._get_source_role(client)
+                # The reconnect handler sends the start once the reclaimed client is back.
+                if role is None and not self._request_reclaim(source_id):
                     raise MediaNotFoundError(f"Sendspin source is not connected: {source_id}")
                 state.session = _SourceSession(
                     client_id=source_id,
@@ -299,7 +304,8 @@ class SendspinSourceProvider(PluginProvider):
                     stream_session_id=stream_session_id,
                     playback_session_id=queue_session_id,
                 )
-                role.request_start()
+                if role is not None:
+                    role.request_start()
         finally:
             self._drop_empty_client_state(source_id, state)
 
@@ -377,6 +383,35 @@ class SendspinSourceProvider(PluginProvider):
     def _get_source_role(client: SendspinClient) -> SourceV1Role | None:
         roles = client.roles_by_family("source")
         return cast("SourceV1Role", roles[0]) if roles else None
+
+    async def _is_selectable(self, client: SendspinClient) -> bool:
+        return self._get_source_role(client) is not None or await self._can_reclaim(client)
+
+    async def _can_reclaim(self, client: SendspinClient) -> bool:
+        """Whether this client's input is held by another server and approved on this one."""
+        # aiosendspin retains a client only after an another_server or concurrent_attempt goodbye.
+        if not client.cleanup_on_mdns_removal:
+            return False
+        if "source" not in {role_family(role_id) for role_id in client.negotiated_role_ids}:
+            return False
+        # Only a device this server dialed can be dialed again to take it over.
+        if (sendspin := self._sendspin_provider) is None or (
+            sendspin.server_api.get_client_url(client.client_id) is None
+        ):
+            return False
+        store = sendspin.server_api.pairing_store
+        if await store.record_by_client_id(client.client_id) is not None:
+            return True
+        trusted = await store.trusted_unpaired(client.client_id)
+        return trusted is not None and "source" in trusted.approved_roles
+
+    def _request_reclaim(self, client_id: str) -> bool:
+        if (
+            sendspin := self._sendspin_provider
+        ) is None or not sendspin.server_api.request_client_playback_connection(client_id):
+            return False
+        self.logger.info("Taking Sendspin source %s over from another server", client_id)
+        return True
 
     async def _await_first_audio(self, session: _SourceSession) -> None:
         """
