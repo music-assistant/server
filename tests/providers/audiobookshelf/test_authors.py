@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aioaudiobookshelf.schema.author import AuthorExpanded, AuthorMinified
@@ -12,6 +13,8 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Audiobook, ProviderMapping
 
 from music_assistant.providers.audiobookshelf.parsers import parse_author
+
+from .abs_items import expanded_book
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -80,19 +83,55 @@ async def test_author_updated(
     assert [x.path for x in artist.metadata.images or []] == expected
 
 
-@pytest.mark.parametrize("linked", [True, False])
+@pytest.mark.parametrize(("linked", "missed_link"), [(True, False), (False, False), (True, True)])
 async def test_author_removed(
-    provider: Audiobookshelf, music_mass: MusicAssistant, linked: bool
+    provider: Audiobookshelf, music_mass: MusicAssistant, linked: bool, missed_link: bool
 ) -> None:
-    """A removed author still linked to a book keeps the book, an unlinked one is removed."""
+    """
+    A removed author still linked to a book keeps the book, an unlinked one is removed.
+
+    A missed link is one a running sync adds after the handler checked for linked books.
+    """
     provider.mass = music_mass
     music_mass.streams = AsyncMock()
     await _add_book(provider, linked)
 
-    await provider._socket_abs_author_removed(AuthorRemoved(id_="author1", library_id="lib1"))
+    lookup = music_mass.music.artists.get_library_author_narrator_audiobooks
+    with patch.object(
+        music_mass.music.artists,
+        "get_library_author_narrator_audiobooks",
+        AsyncMock(return_value=[]) if missed_link else lookup,
+    ):
+        await provider._socket_abs_author_removed(AuthorRemoved(id_="author1", library_id="lib1"))
 
     assert len(await music_mass.music.audiobooks.library_items()) == 1
     artist = await music_mass.music.get_library_item_by_prov_id(
         MediaType.ARTIST, "author1", provider.instance_id
     )
     assert (artist is not None) is linked
+
+
+async def test_author_merged(provider: Audiobookshelf, music_mass: MusicAssistant) -> None:
+    """A merge relinks the book before the removal of the merged author arrives."""
+    provider.mass = music_mass
+    music_mass.streams = AsyncMock()
+    music_mass.cache = AsyncMock()
+    await _add_book(provider, linked=True)
+    book = expanded_book(authors=[{"id": "author2", "name": "Grace Hopper"}])
+    book.media.tracks = [Mock()]
+
+    with patch.object(provider, "get_setup_value", return_value="http://abs.local"):
+        # abs sends both right after another, the socket runs them as concurrent tasks
+        await asyncio.gather(
+            provider._socket_abs_item_changed(book),
+            provider._socket_abs_author_removed(AuthorRemoved(id_="author1", library_id="lib1")),
+        )
+
+    [library_book] = await music_mass.music.audiobooks.library_items()
+    assert [x.name for x in library_book.authors if not isinstance(x, str)] == ["Grace Hopper"]
+    assert (
+        await music_mass.music.get_library_item_by_prov_id(
+            MediaType.ARTIST, "author1", provider.instance_id
+        )
+        is None
+    )

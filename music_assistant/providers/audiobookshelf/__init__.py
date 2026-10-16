@@ -333,6 +333,9 @@ for more details.
         if libraries:
             self._sync_library_keys(libraries)
 
+        # socket events run as concurrent tasks, keep the library item ones in arrival order
+        self.socket_item_lock = asyncio.Lock()
+
         # set socket callbacks
         self._client_socket.set_item_callbacks(
             on_item_added=self._socket_abs_item_changed,
@@ -1635,104 +1638,109 @@ for more details.
         self, items: LibraryItemExpanded | list[LibraryItemExpanded]
     ) -> None:
         """For added and updated."""
-        abs_items = [items] if isinstance(items, LibraryItemExpanded) else items
-        for abs_item in abs_items:
-            if isinstance(abs_item, LibraryItemExpandedBook):
-                # If the book has no audiofiles, we skip -> ebook only.
-                if len(abs_item.media.tracks) == 0:
-                    continue
-                mass_audiobook = parse_audiobook(
-                    abs_audiobook=abs_item,
-                    audiobook_narrators=await self._get_audiobook_narrators(abs_item),
-                    instance_id=self.instance_id,
-                    domain=self.domain,
-                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
-                )
-                mass_audiobook = self._socket_ensure_provider_mapping_in_library(mass_audiobook)
-                if (
-                    mass_existing_audiobook := await self.mass.music.get_library_item_by_prov_id(
-                        media_type=MediaType.AUDIOBOOK,
-                        item_id=abs_item.id_,
-                        provider_instance_id_or_domain=self.instance_id,
+        async with self.socket_item_lock:
+            abs_items = [items] if isinstance(items, LibraryItemExpanded) else items
+            for abs_item in abs_items:
+                if isinstance(abs_item, LibraryItemExpandedBook):
+                    # If the book has no audiofiles, we skip -> ebook only.
+                    if len(abs_item.media.tracks) == 0:
+                        continue
+                    mass_audiobook = parse_audiobook(
+                        abs_audiobook=abs_item,
+                        audiobook_narrators=await self._get_audiobook_narrators(abs_item),
+                        instance_id=self.instance_id,
+                        domain=self.domain,
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
-                ) and isinstance(mass_existing_audiobook, Audiobook):
-                    self.logger.debug(
-                        'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
+                    mass_audiobook = self._socket_ensure_provider_mapping_in_library(mass_audiobook)
+                    if (
+                        mass_existing_audiobook
+                        := await self.mass.music.get_library_item_by_prov_id(
+                            media_type=MediaType.AUDIOBOOK,
+                            item_id=abs_item.id_,
+                            provider_instance_id_or_domain=self.instance_id,
+                        )
+                    ) and isinstance(mass_existing_audiobook, Audiobook):
+                        self.logger.debug(
+                            'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
+                        )
+                        await self.mass.music.audiobooks.update_item_in_library(
+                            mass_existing_audiobook.item_id, mass_audiobook
+                        )
+                    else:
+                        self.logger.debug(
+                            'Added book "%s" via socket.', abs_item.media.metadata.title or ""
+                        )
+                        await self.mass.music.audiobooks.add_item_to_library(mass_audiobook)
+                    lib = self.libraries.audiobooks.get(abs_item.library_id, None)
+                    if lib is not None:
+                        lib.item_ids.add(abs_item.id_)
+                elif isinstance(abs_item, LibraryItemExpandedPodcast):
+                    mass_podcast = parse_podcast(
+                        abs_podcast=abs_item,
+                        instance_id=self.instance_id,
+                        domain=self.domain,
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
-                    await self.mass.music.audiobooks.update_item_in_library(
-                        mass_existing_audiobook.item_id, mass_audiobook
-                    )
-                else:
-                    self.logger.debug(
-                        'Added book "%s" via socket.', abs_item.media.metadata.title or ""
-                    )
-                    await self.mass.music.audiobooks.add_item_to_library(mass_audiobook)
-                lib = self.libraries.audiobooks.get(abs_item.library_id, None)
-                if lib is not None:
-                    lib.item_ids.add(abs_item.id_)
-            elif isinstance(abs_item, LibraryItemExpandedPodcast):
-                mass_podcast = parse_podcast(
-                    abs_podcast=abs_item,
-                    instance_id=self.instance_id,
-                    domain=self.domain,
-                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
-                )
-                if (
-                    bool(self.config.get_value(CONF_HIDE_EMPTY_PODCASTS))
-                    and mass_podcast.total_episodes == 0
-                ):
-                    continue
-                mass_podcast = self._socket_ensure_provider_mapping_in_library(mass_podcast)
-                if (
-                    mass_existing_podcast := await self.mass.music.get_library_item_by_prov_id(
-                        media_type=MediaType.PODCAST,
-                        item_id=abs_item.id_,
-                        provider_instance_id_or_domain=self.instance_id,
-                    )
-                ) and isinstance(mass_existing_podcast, Podcast):
-                    self.logger.debug(
-                        'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
-                    )
-                    await self.mass.music.podcasts.update_item_in_library(
-                        mass_existing_podcast.item_id, mass_podcast
-                    )
-                else:
-                    self.logger.debug(
-                        'Added podcast "%s" via socket.', abs_item.media.metadata.title or ""
-                    )
-                    await self.mass.music.podcasts.add_item_to_library(mass_podcast)
-                lib = self.libraries.podcasts.get(abs_item.library_id, None)
-                if lib is not None:
-                    lib.item_ids.add(abs_item.id_)
-        await self._cache_set_helper_libraries()
+                    if (
+                        bool(self.config.get_value(CONF_HIDE_EMPTY_PODCASTS))
+                        and mass_podcast.total_episodes == 0
+                    ):
+                        continue
+                    mass_podcast = self._socket_ensure_provider_mapping_in_library(mass_podcast)
+                    if (
+                        mass_existing_podcast := await self.mass.music.get_library_item_by_prov_id(
+                            media_type=MediaType.PODCAST,
+                            item_id=abs_item.id_,
+                            provider_instance_id_or_domain=self.instance_id,
+                        )
+                    ) and isinstance(mass_existing_podcast, Podcast):
+                        self.logger.debug(
+                            'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
+                        )
+                        await self.mass.music.podcasts.update_item_in_library(
+                            mass_existing_podcast.item_id, mass_podcast
+                        )
+                    else:
+                        self.logger.debug(
+                            'Added podcast "%s" via socket.', abs_item.media.metadata.title or ""
+                        )
+                        await self.mass.music.podcasts.add_item_to_library(mass_podcast)
+                    lib = self.libraries.podcasts.get(abs_item.library_id, None)
+                    if lib is not None:
+                        lib.item_ids.add(abs_item.id_)
+            await self._cache_set_helper_libraries()
 
     async def _socket_abs_item_removed(self, item: LibraryItemRemoved) -> None:
         """Item removed."""
-        media_type: MediaType | None = None
-        for lib in self.libraries.audiobooks.values():
-            if item.id_ in lib.item_ids:
-                media_type = MediaType.AUDIOBOOK
-                lib.item_ids.remove(item.id_)
-                break
-        for lib in self.libraries.podcasts.values():
-            if item.id_ in lib.item_ids:
-                media_type = MediaType.PODCAST
-                lib.item_ids.remove(item.id_)
-                break
+        async with self.socket_item_lock:
+            media_type: MediaType | None = None
+            for lib in self.libraries.audiobooks.values():
+                if item.id_ in lib.item_ids:
+                    media_type = MediaType.AUDIOBOOK
+                    lib.item_ids.remove(item.id_)
+                    break
+            for lib in self.libraries.podcasts.values():
+                if item.id_ in lib.item_ids:
+                    media_type = MediaType.PODCAST
+                    lib.item_ids.remove(item.id_)
+                    break
 
-        if media_type is not None:
-            mass_item = await self.mass.music.get_library_item_by_prov_id(
-                media_type=media_type,
-                item_id=item.id_,
-                provider_instance_id_or_domain=self.instance_id,
-            )
-            if mass_item is not None:
-                await self.mass.music.remove_item_from_library(
-                    media_type=media_type, library_item_id=mass_item.item_id
+            if media_type is not None:
+                mass_item = await self.mass.music.get_library_item_by_prov_id(
+                    media_type=media_type,
+                    item_id=item.id_,
+                    provider_instance_id_or_domain=self.instance_id,
                 )
-                self.logger.debug('Removed %s "%s" via socket.', media_type.value, mass_item.name)
+                if mass_item is not None:
+                    await self.mass.music.remove_item_from_library(
+                        media_type=media_type, library_item_id=mass_item.item_id
+                    )
+                    self.logger.debug(
+                        'Removed %s "%s" via socket.', media_type.value, mass_item.name
+                    )
 
-        await self._cache_set_helper_libraries()
+            await self._cache_set_helper_libraries()
 
     async def _socket_abs_user_item_progress_updated(
         self, id_: str, progress: MediaProgress
@@ -1834,42 +1842,53 @@ for more details.
         await self._cache_set_helper_libraries()
 
     async def _socket_abs_author_updated(self, abs_author: AuthorExpanded) -> None:
-        mass_artist = await self.mass.music.get_library_item_by_prov_id(
-            media_type=MediaType.ARTIST,
-            item_id=abs_author.id_,
-            provider_instance_id_or_domain=self.instance_id,
-        )
-        if mass_artist is None:
-            return
-        parsed_author = parse_author(
-            abs_author=abs_author,
-            instance_id=self.instance_id,
-            domain=self.domain,
-            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
-        )
-        self.logger.debug('Updated author "%s" via socket.', abs_author.name)
-        await self.mass.music.artists.update_item_in_library(
-            mass_artist.item_id, self._socket_ensure_provider_mapping_in_library(parsed_author)
-        )
+        async with self.socket_item_lock:
+            mass_artist = await self.mass.music.get_library_item_by_prov_id(
+                media_type=MediaType.ARTIST,
+                item_id=abs_author.id_,
+                provider_instance_id_or_domain=self.instance_id,
+            )
+            if mass_artist is None:
+                return
+            parsed_author = parse_author(
+                abs_author=abs_author,
+                instance_id=self.instance_id,
+                domain=self.domain,
+                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
+            )
+            self.logger.debug('Updated author "%s" via socket.', abs_author.name)
+            await self.mass.music.artists.update_item_in_library(
+                mass_artist.item_id, self._socket_ensure_provider_mapping_in_library(parsed_author)
+            )
 
     async def _socket_abs_author_removed(self, abs_author: AuthorRemoved) -> None:
-        mass_artist = await self.mass.music.get_library_item_by_prov_id(
-            media_type=MediaType.ARTIST,
-            item_id=abs_author.id_,
-            provider_instance_id_or_domain=self.instance_id,
-        )
-        if not isinstance(mass_artist, Artist):
-            return
-        # removing a linked artist also removes its audiobooks, abs doesn't always send
-        # the book updates unlinking it, so the next sync handles those
-        if await self.mass.music.artists.get_library_author_narrator_audiobooks(
-            mass_artist.item_id, mass_artist.artist_type
-        ):
-            return
-        self.logger.debug('Removed author "%s" via socket.', mass_artist.name)
-        await self.mass.music.artists.remove_provider_mapping(
-            mass_artist.item_id, self.instance_id, abs_author.id_
-        )
+        async with self.socket_item_lock:
+            mass_artist = await self.mass.music.get_library_item_by_prov_id(
+                media_type=MediaType.ARTIST,
+                item_id=abs_author.id_,
+                provider_instance_id_or_domain=self.instance_id,
+            )
+            if not isinstance(mass_artist, Artist):
+                return
+            # removing a linked artist also removes its audiobooks, abs doesn't always send
+            # the book updates unlinking it, so the next sync handles those
+            if await self.mass.music.artists.get_library_author_narrator_audiobooks(
+                mass_artist.item_id, mass_artist.artist_type
+            ):
+                return
+            if len(mass_artist.provider_mappings) > 1:
+                await self.mass.music.artists.remove_provider_mapping(
+                    mass_artist.item_id, self.instance_id, abs_author.id_
+                )
+            else:
+                try:
+                    await self.mass.music.artists.remove_item_from_library(
+                        mass_artist.item_id, recursive=False
+                    )
+                except MusicAssistantError:
+                    # a running sync linked a book in the meantime, the artist stays
+                    return
+            self.logger.debug('Removed author "%s" via socket.', mass_artist.name)
 
     def _socket_ensure_provider_mapping_in_library(self, updated_item: M) -> M:
         """
