@@ -208,6 +208,29 @@ async def test_query_audiobooks_raises_when_page_bound_exhausted(aiohttp_client:
 
 
 @pytest.mark.asyncio
+async def test_query_audiobooks_raises_when_total_unmet_on_empty_page(
+    aiohttp_client: Any,
+) -> None:
+    """An empty mid-list page must not silently truncate below the reported total."""
+
+    async def query(request: web.Request) -> web.Response:
+        body = json.loads(await request.text())
+        page = body["pagination"]["page"]
+        if page == 0:
+            return web.json_response({"items": [{"id": 1}], "total": 3, "page": 0, "size": 100})
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_post("/api/v1/books/query", query)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    with pytest.raises(BookOrbitIncompleteError, match="incomplete"):
+        await bo.query_audiobooks()
+
+
+@pytest.mark.asyncio
 async def test_query_audiobooks_omits_library_filter_when_unset(aiohttp_client: Any) -> None:
     """Query audiobooks omits library filter when library_id is None."""
     bodies: list[dict[str, Any]] = []

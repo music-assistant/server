@@ -416,16 +416,24 @@ class BookOrbitClient:
         before the reported total (or a short final page) is reached.
         """
         items: list[dict[str, Any]] = []
+        reported_total: int | None = None
         for page in range(QUERY_MAX_PAGES):
             payload = await fetch_page(page)
             page_items = self._extract_items(payload)
             items.extend(page_items)
+            if isinstance(payload, dict) and payload.get("total") is not None:
+                reported_total = int(payload["total"])
             if not page_items or not isinstance(payload, dict):
+                # Empty/malformed page ends pagination only when the reported total
+                # is met; otherwise a truncated list would drive sync deletions.
+                if reported_total is not None and len(items) < reported_total:
+                    raise BookOrbitIncompleteError(
+                        f"BookOrbit {what} incomplete: got {len(items)} of {reported_total} items."
+                    )
                 break
-            total = payload.get("total")
             page_size = int(payload.get("size") or QUERY_PAGE_SIZE)
-            if total is not None:
-                if len(items) >= int(total):
+            if reported_total is not None:
+                if len(items) >= reported_total:
                     break
             elif len(page_items) < page_size:
                 break

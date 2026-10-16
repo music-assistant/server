@@ -747,9 +747,8 @@ class BookOrbitProvider(MusicProvider):
         return parsed if parsed else None
 
     async def _ensure_catalog(self) -> None:
-        """Ensure a catalog is loaded before browse or search."""
-        if not self._catalog:
-            await self._refresh_catalog()
+        """Ensure a catalog is loaded (and TTL-fresh) before browse or search."""
+        await self._refresh_catalog()
 
     async def _refresh_catalog(self, *, force: bool = False) -> None:
         """Refresh the in-memory catalog, coalescing concurrent callers."""
@@ -843,7 +842,11 @@ class BookOrbitProvider(MusicProvider):
             return book_id, book, None
 
         detail_tasks = [
-            asyncio.create_task(_load_book(book_id, card), name=f"bookorbit-detail-{book_id}")
+            self.mass.create_task(
+                _load_book(book_id, card),
+                task_name=f"bookorbit-detail-{book_id}",
+                log_exceptions=False,
+            )
             for book_id, card in cards_by_id.items()
         ]
         self._catalog_detail_tasks.update(detail_tasks)
@@ -1048,7 +1051,13 @@ class BookOrbitProvider(MusicProvider):
         self, book_ids: list[str], series_id: str | None = None
     ) -> Sequence[MediaItemType]:
         """Resolve book ids to library or freshly parsed audiobook items."""
-        known_ids = [book_id for book_id in book_ids if book_id in self._catalog]
+        # Snapshot before awaits: a concurrent catalog refresh can replace `_catalog`.
+        known_books = {
+            book_id: book
+            for book_id in book_ids
+            if (book := self._catalog.get(book_id)) is not None
+        }
+        known_ids = list(known_books)
         library_by_id: dict[str, Audiobook] = {}
         for offset in range(0, len(known_ids), BROWSE_LIBRARY_BATCH_SIZE):
             batch = known_ids[offset : offset + BROWSE_LIBRARY_BATCH_SIZE]
@@ -1066,8 +1075,7 @@ class BookOrbitProvider(MusicProvider):
                     ):
                         library_by_id[mapping.item_id] = library_item
         items: list[tuple[Audiobook, str | None]] = []
-        for book_id in known_ids:
-            book = self._catalog[book_id]
+        for book_id, book in known_books.items():
             item = library_by_id.get(book_id) or parse_audiobook(
                 book, provider_instance_id=self.instance_id, base_url=self.base_url
             )

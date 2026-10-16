@@ -64,6 +64,10 @@ def book_with_manifest_playback_order(book: dict[str, Any], manifest: Any) -> di
         seen.add(fid)
     if not ordered:
         raise ValueError("BookOrbit manifest has no mappable playback assets")
+    # Partial mapping invents chapter/progress offsets; require every audio part.
+    audio_ids = {fid for fid, file in by_id.items() if is_audio_format(file.get("format"))}
+    if not audio_ids <= seen:
+        raise ValueError("BookOrbit manifest is missing playback assets for some audio files")
     for fid, file in by_id.items():
         if fid not in seen:
             ordered.append(file)

@@ -256,6 +256,17 @@ def test_book_with_manifest_playback_order_requires_mappable_assets(
         )
 
 
+def test_book_with_manifest_playback_order_requires_all_audio_assets(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Partial manifest mapping must not invent leftover audio file order."""
+    with pytest.raises(ValueError, match="missing playback assets"):
+        book_with_manifest_playback_order(
+            book_multifile,
+            {"assets": [{"assetId": "a1", "fileId": 772, "sequence": 0, "durationMs": 200500}]},
+        )
+
+
 def test_parse_audiobook_untitled_falls_back(book_multifile: dict[str, Any]) -> None:
     """Missing title gets a placeholder name."""
     book_multifile["title"] = None

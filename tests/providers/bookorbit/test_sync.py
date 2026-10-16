@@ -32,13 +32,14 @@ from music_assistant.providers.bookorbit.constants import (
 )
 from music_assistant.providers.bookorbit.helpers import library_may_contain_audio
 from music_assistant.providers.bookorbit.parsers import AUTHOR_PREFIX
-from tests.providers.bookorbit.conftest import manifest_from_book
+from tests.providers.bookorbit.conftest import manifest_from_book, wire_mass_create_task
 
 
 @pytest.fixture
 def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> BookOrbitProvider:
     """Create a provider with a mocked client."""
     mass = Mock()
+    wire_mass_create_task(mass)
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     mass.music.audiobooks.get_library_items_by_prov_id = AsyncMock(return_value=[])

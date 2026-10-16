@@ -153,7 +153,6 @@ def parse_resume_position(
     percentage = float(progress.get("percentage") or 0)
     fully_played = percentage >= FULLY_PLAYED_PERCENTAGE
     _require_known_file_durations(audio_files)
-    total = sum(_duration(f) for f in audio_files)
 
     position = None
     offset = 0.0
@@ -162,8 +161,9 @@ def parse_resume_position(
             position = offset + float(progress.get("positionSeconds") or 0)
             break
         offset += _duration(file)
-    if position is None:  # stored file is gone; best effort via the percentage
-        position = percentage / 100 * total
+    if position is None:
+        # Do not invent an absolute seek from percentage when the file is gone.
+        raise ValueError("BookOrbit progress references an unknown file")
 
     timestamp: datetime | None = None
     if updated_at := progress.get("updatedAt") or progress.get("capturedAt"):
@@ -199,8 +199,8 @@ def parse_resume_position_from_playback_state(
             raise ValueError("BookOrbit manifest has an asset with unknown duration")
         absolute_ms += int(asset["durationMs"])
     if not found:
-        total_ms = int(manifest.get("totalDurationMs") or 0)
-        absolute_ms = int(percentage / 100 * total_ms) if total_ms else 0
+        # Do not invent an absolute seek from percentage when the asset is gone.
+        raise ValueError("BookOrbit playback state references an unknown asset")
     timestamp: datetime | None = None
     if captured_at := state.get("capturedAt"):
         with suppress(TypeError, ValueError):

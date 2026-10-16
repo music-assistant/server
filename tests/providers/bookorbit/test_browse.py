@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
@@ -20,7 +21,7 @@ from music_assistant.providers.bookorbit.helpers import (
     parse_series_index,
     series_index_sort_key,
 )
-from tests.providers.bookorbit.conftest import manifest_from_book
+from tests.providers.bookorbit.conftest import manifest_from_book, wire_mass_create_task
 
 INSTANCE = "bookorbit--test"
 
@@ -29,6 +30,7 @@ INSTANCE = "bookorbit--test"
 def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> BookOrbitProvider:
     """Create a provider with a mocked client and mass; library 1 holds both books."""
     mass = Mock()
+    wire_mass_create_task(mass)
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     mass.music.audiobooks.get_library_items_by_prov_id = AsyncMock(return_value=[])
@@ -194,7 +196,8 @@ async def test_browse_series_orders_by_segmented_index(
     }
     provider._library_books = {1: [str(book_audiobook["id"]), "43", "44"]}
     provider._library_names = {1: "Audio"}
-    provider._catalog_refreshed_at = 1.0
+    # Keep the injected catalog inside the TTL so browse does not refetch.
+    provider._catalog_refreshed_at = time.monotonic()
     series_books = await _browse(provider, f"{INSTANCE}://lb 1/s/7")
     assert [b.item_id for b in series_books] == [str(book_audiobook["id"]), "44", "43"]
 
@@ -281,17 +284,42 @@ async def test_search_falls_back_to_catalog(
 
 
 @pytest.mark.asyncio
-async def test_browse_and_search_reuse_loaded_catalog(provider: BookOrbitProvider) -> None:
-    """Once loaded, browse/search keep using the catalog, however old it is."""
+async def test_audiobook_items_survives_catalog_refresh_during_library_lookup(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """A concurrent catalog refresh must not KeyError mid-browse resolution."""
+    provider._catalog = {str(book_audiobook["id"]): book_audiobook}
+    provider._library_books = {1: [str(book_audiobook["id"])]}
+    provider._library_names = {1: "Audio"}
+    provider._catalog_refreshed_at = time.monotonic()
+    started = asyncio.Event()
+
+    async def _swap_catalog(*_args: Any, **_kwargs: Any) -> list[Any]:
+        started.set()
+        provider._catalog = {}
+        return []
+
+    cast("Any", provider.mass.music.audiobooks).get_library_items_by_prov_id = AsyncMock(
+        side_effect=_swap_catalog
+    )
+    items = await provider._audiobook_items([str(book_audiobook["id"])])
+    assert started.is_set()
+    assert [item.item_id for item in items] == [str(book_audiobook["id"])]
+
+
+@pytest.mark.asyncio
+async def test_browse_and_search_refresh_catalog_after_ttl(provider: BookOrbitProvider) -> None:
+    """Browse and search honor the catalog TTL instead of serving a forever-stale cache."""
     client = cast("Mock", provider._client)
     client.search_books = AsyncMock(return_value=[])
     client.search_authors = AsyncMock(return_value=[])
     client.search_narrators = AsyncMock(return_value=[])
     await _browse(provider, f"{INSTANCE}://")
+    assert client.list_libraries.await_count == 1
     provider._catalog_refreshed_at -= 10 * CATALOG_TTL_SEC
     await _browse(provider, f"{INSTANCE}://lb 1/b")
     await provider.search("dune", [MediaType.AUDIOBOOK, MediaType.ARTIST])
-    client.list_libraries.assert_awaited_once()
+    assert client.list_libraries.await_count >= 2
 
 
 @pytest.mark.asyncio

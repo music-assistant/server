@@ -1,5 +1,8 @@
 """Fixtures for BookOrbit provider tests."""
 
+from __future__ import annotations
+
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -9,6 +12,21 @@ import pytest
 from music_assistant.providers.bookorbit.parsers import _audio_files
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def wire_mass_create_task(mass: Any) -> None:
+    """Make a Mock mass.create_task return real asyncio tasks (for catalog gathers)."""
+
+    def create_task(
+        target: Any,
+        *args: Any,
+        task_name: str | None = None,
+        **_kwargs: Any,
+    ) -> asyncio.Task[Any]:
+        coro = target if asyncio.iscoroutine(target) else target(*args)
+        return asyncio.create_task(coro, name=task_name)
+
+    mass.create_task = create_task
 
 
 def _load(name: str) -> dict[str, Any]:

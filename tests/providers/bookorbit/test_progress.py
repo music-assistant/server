@@ -21,7 +21,7 @@ from music_assistant.providers.bookorbit.progress import (
     parse_resume_position,
     parse_resume_position_from_playback_state,
 )
-from tests.providers.bookorbit.conftest import manifest_from_book
+from tests.providers.bookorbit.conftest import manifest_from_book, wire_mass_create_task
 
 
 def _client(provider: BookOrbitProvider) -> Any:
@@ -32,6 +32,7 @@ def _client(provider: BookOrbitProvider) -> Any:
 def provider(book_audiobook: dict[str, Any], book_multifile: dict[str, Any]) -> BookOrbitProvider:
     """Create a provider with a mocked client."""
     mass = Mock()
+    wire_mass_create_task(mass)
     mass.streams.base_url = "http://ma:8097"
     manifest = Mock()
     manifest.domain = "bookorbit"
@@ -159,12 +160,12 @@ def test_resume_naive_updated_at_is_utc_aware(book_multifile: dict[str, Any]) ->
     assert timestamp.tzinfo == UTC
 
 
-def test_resume_unknown_file_falls_back_to_percentage(book_multifile: dict[str, Any]) -> None:
-    """If the stored file is gone, the percentage is used."""
+def test_resume_unknown_file_raises(book_multifile: dict[str, Any]) -> None:
+    """If the stored file is gone, fall back to MA resume instead of inventing a seek."""
     files = _audio_files(book_multifile)
     progress = {"currentFileId": 9999, "positionSeconds": 12.0, "percentage": 50.0}
-    _, position_ms, _ = parse_resume_position(files, progress)
-    assert position_ms == 150_500
+    with pytest.raises(ValueError, match="unknown file"):
+        parse_resume_position(files, progress)
 
 
 @pytest.mark.asyncio
@@ -327,6 +328,21 @@ def test_parse_resume_from_playback_state_rejects_unknown_preceding_duration(
         "completed": False,
     }
     with pytest.raises(ValueError, match="unknown duration"):
+        parse_resume_position_from_playback_state(manifest, state)
+
+
+def test_parse_resume_from_playback_state_rejects_unknown_asset(
+    book_multifile: dict[str, Any],
+) -> None:
+    """Missing asset ids must not invent a seek from percentage."""
+    manifest = manifest_from_book(book_multifile)
+    state = {
+        "assetId": "aud_missing",
+        "positionMs": 10_000,
+        "percentage": 40.0,
+        "completed": False,
+    }
+    with pytest.raises(ValueError, match="unknown asset"):
         parse_resume_position_from_playback_state(manifest, state)
 
 
