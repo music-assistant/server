@@ -1420,7 +1420,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = player.player_id
         if (queue := self.get(queue_id)) is None:
             return
-        if not queue.active:
+        # queue.active still holds the source from the last update. Requiring it and the
+        # live source both skips the position jump of joining or leaving a group.
+        if not queue.active or player.state.active_source not in (queue_id, None):
             return
         player_elapsed = player.state.corrected_elapsed_time
         if player_elapsed is None:
@@ -1577,15 +1579,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     async def release_failed_item_source(self, queue_id: str, queue_item_id: str) -> None:
         """
-        Cancel the still-filling source of an item the player reported it could not play.
+        Cancel the still-filling source of an item the player gave up on.
 
-        A player that gives up on a track moves on to the next one by itself, while the
-        failed track's source keeps filling its buffer and holds the provider stream slot
-        that next track needs. Safe to call for any item: only a source that still holds
+        A player that gives up on a track moves on to another one by itself, while the
+        dropped track's source keeps filling its buffer and holds the provider stream slot
+        that other track needs. Safe to call for any item: only a source that still holds
         a capped provider slot is cancelled.
 
-        :param queue_id: The queue the failed item belongs to.
-        :param queue_item_id: The queue item id the player failed to play.
+        :param queue_id: The queue the item belongs to.
+        :param queue_item_id: The queue item id the player gave up on.
         """
         if (queue_item := self.get_item(queue_id, queue_item_id)) is None:
             return

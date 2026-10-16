@@ -2130,7 +2130,9 @@ def _single_item_handler(
     )
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
-    mass.player_queues.queue_data.return_value = SimpleNamespace(session_id="session-1")
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", last_served_item_id=None
+    )
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
@@ -2154,6 +2156,7 @@ def _single_item_handler(
     controller.mass = mass
     controller.audio = audio
     controller._open_item_streams = {}
+    controller._ended_item_streams = {}
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.SMART_CROSSFADE)

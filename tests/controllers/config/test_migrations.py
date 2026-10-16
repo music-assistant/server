@@ -724,6 +724,15 @@ def test_migrate_player_setup_data_moves_credentials() -> None:
                 "values": {"password": "ENC_fk", "use_ssl": True},
             },
             "mpd1": {"player_id": "mpd1", "provider": "mpd", "values": {}},
+            "ss1": {
+                "player_id": "ss1",
+                "provider": "sendspin",
+                "values": {
+                    "source_approval_dismissed": True,
+                    "source_input_declined": True,
+                    "sendspin_static_delay": 20,
+                },
+            },
             "sonos1": {
                 "player_id": "sonos1",
                 "provider": "sonos",
@@ -744,6 +753,11 @@ def test_migrate_player_setup_data_moves_credentials() -> None:
     # fully_kiosk password moves, unrelated option stays
     assert data["players"]["fk1"]["setup_data"] == {"password": "ENC_fk"}
     assert data["players"]["fk1"]["values"] == {"use_ssl": True}
+    # the old sendspin input decline key is dropped, its replacement and options stay
+    assert data["players"]["ss1"]["values"] == {
+        "source_input_declined": True,
+        "sendspin_static_delay": 20,
+    }
     # a provider not in the map is untouched
     assert data["players"]["sonos1"]["values"] == {"password": "keepme"}
     assert "setup_data" not in data["players"]["sonos1"]

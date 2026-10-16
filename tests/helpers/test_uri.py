@@ -171,6 +171,9 @@ def test_share_url_provider_of_a_media_type(url: str, expected: str | None) -> N
         ("ytmusic", MediaType.ARTIST, None, f"https://music.youtube.com/channel/{SPOTIFY_ID}"),
         ("ytmusic", MediaType.ALBUM, None, None),
         ("qobuz", MediaType.ALBUM, None, None),
+        ("qobuz", MediaType.TRACK, None, None),
+        # a performer without a Qobuz page, stored by name
+        ("qobuz", MediaType.ARTIST, None, None),
         ("spotify", MediaType.PLAYLIST, None, None),
     ],
 )
@@ -216,6 +219,7 @@ async def test_canonical_provider_url_round_trips_through_parse_uri() -> None:
         ("tidal", MediaType.TRACK),
         ("deezer", MediaType.ARTIST),
         ("ytmusic", MediaType.ARTIST),
+        ("qobuz", MediaType.ARTIST),
     ):
         url = canonical_provider_url(domain, media_type, "1234")
         assert url is not None
