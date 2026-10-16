@@ -16,7 +16,7 @@ from contextlib import suppress
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature, SortField
+from music_assistant_models.enums import MediaType, ProviderFeature, SortField
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Playlist, Track
 
@@ -34,6 +34,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
     ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+    PROVIDER_ALBUM_SKIPPED_TYPES,
     ArtistOrder,
 )
 from music_assistant.controllers.player_queues.media_resolver import (
@@ -294,7 +295,7 @@ class Autoplay:
             played = album_is_played([album], skipped)
             # an album is looked at once, also when several of Auto's tracks come from it
             skipped.append(album)
-            if played or album.album_type == AlbumType.SINGLE:
+            if played or album.album_type in PROVIDER_ALBUM_SKIPPED_TYPES:
                 continue
             attempts += 1
             if album_tracks := await self._album_tracks_to_play(queue_data, [album]):

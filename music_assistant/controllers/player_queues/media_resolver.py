@@ -737,8 +737,7 @@ class MediaResolver:
         doesn't apply to the artist, and None when its albums can't be listed.
 
         :param artist: The artist to play.
-        :param played: The albums with a track in the queue. Mappings it loads are replaced in
-            place, so a later call with the same list reuses them.
+        :param played: The albums with a track in the queue.
         :param anchor: The album that played last, if known.
         """
         selection = await self._artist_selection(artist)
@@ -754,7 +753,7 @@ class MediaResolver:
                 (
                     album
                     for album in ordered
-                    if any(compare_album(copy, anchor) for copy in copies[album.uri])
+                    if any(same_release(copy, anchor) for copy in copies[album.uri])
                 ),
                 None,
             )
@@ -1777,8 +1776,7 @@ async def load_played_namesakes(
     Load in place each played album mapping named like one of the albums.
 
     A mapping has no year or artists to compare, so an unlinked copy of the same album on
-    another provider only matches it once loaded. A mapping that matches one of the albums by
-    ID already, or fails to load, stays as it is and matches by ID only.
+    another provider only matches it once loaded.
 
     :param played: The albums that already played.
     :param albums: The albums about to be checked against them.
@@ -1797,6 +1795,14 @@ async def load_played_namesakes(
                 logger.debug("Unable to load album %s, matching it by ID only: %s", item.name, err)
 
 
+def same_release(album: Album, other: Album) -> bool:
+    """Return whether two albums are the same release, never a single or EP and its album."""
+    short = (AlbumType.SINGLE, AlbumType.EP)
+    return (album.album_type in short) == (other.album_type in short) and bool(
+        compare_album(album, other)
+    )
+
+
 def album_is_played(
     copies: Sequence[Album | ItemMapping], played: Sequence[Album | ItemMapping]
 ) -> bool:
@@ -1808,12 +1814,7 @@ def album_is_played(
     """
     return any(
         compare_item_ids(copy, item)
-        or (
-            isinstance(copy, Album)
-            and isinstance(item, Album)
-            and (copy.album_type == AlbumType.SINGLE) == (item.album_type == AlbumType.SINGLE)
-            and compare_album(copy, item)
-        )
+        or (isinstance(copy, Album) and isinstance(item, Album) and same_release(copy, item))
         for copy in copies
         for item in played
     )

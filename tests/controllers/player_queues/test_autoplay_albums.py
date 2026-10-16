@@ -123,19 +123,29 @@ async def test_a_queued_album_matches_its_other_copy(mass: MusicAssistant) -> No
     assert _album_names(result) == ["Album 1998"]
 
 
-async def test_a_queued_single_does_not_count_as_its_album(mass: MusicAssistant) -> None:
-    """A single named like an album, from the same year, leaves the album to play."""
-    artist, albums = await _artist_with_years(mass, 1995)
+@pytest.mark.parametrize("album_type", [AlbumType.SINGLE, AlbumType.EP])
+async def test_a_single_or_ep_does_not_count_as_its_album(
+    mass: MusicAssistant, album_type: AlbumType
+) -> None:
+    """After the single or EP "Waterloo", the album "Waterloo" of that year plays next."""
+    artist = await _add_artist(mass)
+    albums = [
+        await _add_album(mass, artist, name, year)
+        for name, year in (
+            ("Ring Ring", 1973),
+            ("Waterloo", 1974),
+            ("ABBA", 1975),
+            ("Arrival", 1976),
+        )
+    ]
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-    single = replace(
-        _streaming_album("Album 1995", 1995),
-        album_type=AlbumType.SINGLE,
-        artists=albums[1995].artists,
+    release = replace(
+        _streaming_album("Waterloo", 1974), album_type=album_type, artists=albums[0].artists
     )
 
-    result = await mass.player_queues.artist_album_candidates(artist, [single], single)
+    result = await mass.player_queues.artist_album_candidates(artist, [release], release)
 
-    assert _album_names(result) == ["Album 1995"]
+    assert _album_names(result) == ["Waterloo", "ABBA", "Arrival", "Ring Ring"]
 
 
 @pytest.mark.parametrize(
@@ -178,7 +188,6 @@ async def test_a_queued_mapping_of_an_unlinked_copy_is_compared_in_full(
     again = await mass.player_queues.artist_album_candidates(artist, played, None)
 
     assert _album_names(first) == _album_names(again) == expected
-    # only the namesake loads, and once it has, a similar artist's call reuses it
     loaded = [call.args[0] for call in lookup.await_args_list]
     assert set(loaded) == {"copy"}
     assert namesake == "fails to load" or len(loaded) == 1
@@ -384,14 +393,12 @@ async def test_the_track_artist_seeds_when_the_album_has_no_artist_of_its_own(
         various = await _library_artist(mass, VARIOUS_ARTISTS_NAME)
         album = await _add_album(mass, various, "Hits", 1976, album_type=AlbumType.COMPILATION)
     if album_kind == "various artists spelled":
-        # a provider copy keeps the provider's spelling, which the library would normalise
         assert isinstance(album, Album)
         album.artists[0] = ItemMapping(
             media_type=MediaType.ARTIST, item_id="va", provider="streaming", name="various artists"
         )
         monkeypatch.setattr(mass.music.albums, "get", AsyncMock(return_value=album))
     elif album_kind == "various artists by mbid":
-        # a provider may name Various Artists its own way; its MusicBrainz ID still tells
         assert isinstance(album, Album)
         album.artists[0] = Artist(
             item_id="va", provider="streaming", name="Diverse", provider_mappings=set()
@@ -594,13 +601,14 @@ async def test_after_an_auto_track_the_albums_of_its_artist_play(
 async def test_auto_picks_the_first_album_not_played_yet(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Auto's tracks give the next album: no album, singles and played albums are skipped."""
+    """Auto's tracks give the next album: no album, singles, compilations and played ones are skipped."""
     played, picked, later = (_streaming_album(name, 1970) for name in "ABC")
     single, mapped_single = (
         replace(_streaming_album(name, 1970), album_type=AlbumType.SINGLE) for name in "ST"
     )
-    lookup = _stub_provider(mass, [played, picked, later, single, mapped_single])
-    _stub_album_lookup(mass, monkeypatch, [played, picked, later, single, mapped_single])
+    hits = replace(_streaming_album("Now 85", 2013), album_type=AlbumType.COMPILATION)
+    lookup = _stub_provider(mass, [played, picked, later, single, mapped_single, hits])
+    _stub_album_lookup(mass, monkeypatch, [played, picked, later, single, mapped_single, hits])
     artist = _provider_artist()
     queue = _queue(mass, monkeypatch, _queued_track([artist], played))
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
@@ -610,6 +618,7 @@ async def test_auto_picks_the_first_album_not_played_yet(
         # a provider often gives only a mapping, which tells no album type
         _queued_track([artist], ItemMapping.from_item(mapped_single)),
         _queued_track([artist], ItemMapping.from_item(mapped_single)),
+        _queued_track([artist], ItemMapping.from_item(hits)),
         _queued_track([artist], ItemMapping.from_item(played)),
         _queued_track([artist], ItemMapping.from_item(picked)),
         _queued_track([artist], ItemMapping.from_item(later)),
@@ -784,7 +793,6 @@ async def test_a_similar_artist_plays_next_whatever_ends_the_artist(
     if ends == "3 fail":
         for year in (1975, 1976, 1977):
             await _add_album(mass, seed, f"Broken {year}", year)
-        # a 4th album that would load: the 3 failures end the artist first
         await _add_album(mass, seed, "Good", 1978)
         copy_items = queues.album_copy_items
 

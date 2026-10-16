@@ -1849,8 +1849,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         Return the artist's albums that have not played yet, in the artist order.
 
         :param artist: The artist to play.
-        :param played: The albums with a track in the queue. Mappings it loads are replaced in
-            place, so a later call with the same list reuses them.
+        :param played: The albums with a track in the queue.
         :param anchor: The album that played last, if known.
         """
         return await self._media_resolver.artist_album_candidates(artist, played, anchor)
