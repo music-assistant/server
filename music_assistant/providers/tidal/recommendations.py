@@ -177,9 +177,11 @@ class TidalRecommendationManager:
                 if not new_items:
                     break
                 items.extend(new_items[: target - len(items)])
-        except MediaNotFoundError as err:
+        # The error text carries the request URL, sessionId included, so it is not logged
+        except MediaNotFoundError:
             self.logger.warning(
-                "Could not fetch all items for Tidal module %s: %s", module.get("title"), err
+                "Extra items for Tidal module %s not found, keeping the embedded ones",
+                module.get("title"),
             )
 
 
