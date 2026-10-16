@@ -228,9 +228,12 @@ def test_a_held_device_paired_here_has_nothing_to_set_up() -> None:
     assert not player.setup_flow_available
 
 
-async def test_pairing_a_held_device_that_is_busy_stops_instead_of_dialing_again() -> None:
-    """The device refuses while another server plays to it, so the flow does not dial again."""
-    player, provider = _held_player(guest=False, roles=["player@v1"])
+async def test_a_busy_refusal_stops_pairing_instead_of_dialing_again() -> None:
+    """A device connected here when setup began can be taken over while a form is open."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
+    provider = _FakeProvider(api)
+    player = _make_player(api, provider)
+    _attach_mass(player)
     start_pin_pairing = provider.start_pin_pairing
 
     async def _refused(client_id: str, *, static: bool = False) -> Any:

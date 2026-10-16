@@ -564,10 +564,10 @@ class SendspinBasePlayer(Player):
             )
             method = str(values[CONF_PAIRING_METHOD])
         if method == PAIR_METHOD_TOKEN:
-            await self._run_token_pairing_flow(session, provider, held=held)
+            await self._run_token_pairing_flow(session, provider)
         else:
             await self._run_pin_pairing_flow(
-                session, provider, static=method == PAIR_METHOD_STATIC_PIN, held=held
+                session, provider, static=method == PAIR_METHOD_STATIC_PIN
             )
         await session.finish({})
 
@@ -1119,7 +1119,6 @@ class SendspinBasePlayer(Player):
         provider: SendspinProvider,
         *,
         static: bool,
-        held: bool,
     ) -> None:
         """
         Pair via PIN: the device wait, PIN entry and the retry-in-place loop.
@@ -1130,7 +1129,6 @@ class SendspinBasePlayer(Player):
         still in flight - including when the flow is cancelled.
 
         :param static: Pair with the device's static PIN instead of a dynamic one.
-        :param held: Whether another server holds the device, so the attempt dials it.
         """
         succeeded = False
         errors: dict[str, str] | None = None
@@ -1149,8 +1147,8 @@ class SendspinBasePlayer(Player):
                     if await self._pairing_succeeded(provider, pin_session, previous_record):
                         succeeded = True
                         return
-                    # A busy held device ends the flow, since a retry would dial it again.
-                    busy = held and _refused_as_busy(pin_session.error)
+                    # A busy device ends the flow, since a retry would dial it again.
+                    busy = _refused_as_busy(pin_session.error)
                     if pin_session.can_retry and not busy:
                         errors = {"base": _pin_error_slug(pin_session.error)}
                         continue
@@ -1202,13 +1200,9 @@ class SendspinBasePlayer(Player):
                 await provider.cancel_pin_pairing(self.player_id)
 
     async def _run_token_pairing_flow(
-        self, session: SetupSession, provider: SendspinProvider, *, held: bool
+        self, session: SetupSession, provider: SendspinProvider
     ) -> None:
-        """
-        Pair via a pasted pairing token, re-rendering the form on a recoverable failure.
-
-        :param held: Whether another server holds the device, so the attempt dials it.
-        """
+        """Pair via a pasted pairing token, re-rendering the form on a recoverable failure."""
         errors: dict[str, str] | None = None
         while True:
             token_values = await session.form(
@@ -1234,8 +1228,8 @@ class SendspinBasePlayer(Player):
                 TimeoutError,
                 OSError,
             ) as err:
-                # A busy held device ends the flow, since a resubmit would dial it again.
-                if held and _refused_as_busy(err):
+                # A busy device ends the flow, since a resubmit would dial it again.
+                if _refused_as_busy(err):
                     raise AbortFlow("pairing_error_concurrent") from err
                 errors = {"base": error_alert(err).key}
                 continue
