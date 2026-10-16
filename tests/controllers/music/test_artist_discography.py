@@ -503,9 +503,16 @@ async def test_discography_keeps_musicbrainz_reference_if_provider_unloads_durin
         _artist(), release_groups=[_release_group(RG_IN_RAINBOWS, "In Rainbows")]
     ) as harness:
         musicbrainz = harness.musicbrainz
-        harness.mass.get_provider.side_effect = lambda domain, **_kwargs: (
-            musicbrainz if domain == "musicbrainz" else None
-        )
+
+        def _get_provider(domain: str, **_kwargs: Any) -> Any:
+            return musicbrainz if domain == "musicbrainz" else None
+
+        async def _browse_and_unload(_artist_mbid: str) -> list[MusicBrainzReleaseGroup]:
+            harness.mass.get_provider.side_effect = lambda _domain, **_kwargs: None
+            return [_release_group(RG_IN_RAINBOWS, "In Rainbows")]
+
+        harness.mass.get_provider.side_effect = _get_provider
+        musicbrainz.browse_release_groups_by_artist.side_effect = _browse_and_unload
 
         albums = await harness.ctrl.discography(LIBRARY_ARTIST_ID, "library")
 
