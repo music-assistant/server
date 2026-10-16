@@ -1052,11 +1052,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             album.metadata.description = unquote(description)
         if "isExplicit" in album_obj:
             album.metadata.explicit = album_obj["isExplicit"]
-        if "artists" in album_obj:
+        if album_artists := album_obj.get("artists"):
             album.artists = UniqueList(
                 [
                     self._get_artist_item_mapping(artist)
-                    for artist in album_obj["artists"]
+                    for artist in album_artists
                     if _artist_is_resolvable(artist)
                 ]
             )
