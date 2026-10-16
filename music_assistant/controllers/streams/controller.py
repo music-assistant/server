@@ -147,6 +147,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
@@ -881,9 +882,7 @@ class StreamsController(CoreController):
                 # a track the player gave up on may still fill a source that holds the stream
                 # slot this request needs; this request counts as open, so asking for a track
                 # again keeps its source
-                await self._release_abandoned_item_sources(
-                    queue_id, session_id, pq_data.last_served_item_id
-                )
+                await self._release_abandoned_item_sources(queue_id, session_id, pq_data)
             if (
                 is_audio_source
                 and queue_item.media_item is not None
@@ -2541,27 +2540,39 @@ class StreamsController(CoreController):
         return record[1]
 
     async def _release_abandoned_item_sources(
-        self, queue_id: str, session_id: str, last_served_item_id: str | None
+        self, queue_id: str, session_id: str, queue_data: PlayerQueueData
     ) -> None:
         """
         Release the sources of the tracks a player moved away from to ask for another one.
 
-        These are the track it fetched last and the tracks whose requests ended since it last
-        asked for another one, unless an open request still streams them.
+        These are the track it fetched last, the tracks whose requests ended since it last
+        asked for another one and the tracks it hung up on, unless an open request still
+        streams them.
 
         :param queue_id: The queue the player streams.
         :param session_id: The playback session the player streams in.
-        :param last_served_item_id: The queue item whose audio the player fetched last.
+        :param queue_data: The queue's server-side record.
         """
-        ended_item_ids = self._ended_item_ids(queue_id, session_id)
-        candidate_ids = set(ended_item_ids)
-        if last_served_item_id is not None:
-            candidate_ids.add(last_served_item_id)
-        abandoned_item_ids = candidate_ids - self._requested_item_ids(queue_id, session_id)
-        # forgotten before the releases below suspend, so what ends meanwhile stays recorded
-        # for the next request to check
-        ended_item_ids -= abandoned_item_ids
-        for item_id in abandoned_item_ids:
+        candidate_ids = set(self._ended_item_ids(queue_id, session_id))
+        if queue_data.last_served_item_id is not None:
+            candidate_ids.add(queue_data.last_served_item_id)
+        # a player that hung up before its first audio left a request that has not ended
+        # yet, while its source may already hold the slot
+        candidate_ids.update(
+            request.match_info["queue_item_id"]
+            for entry_session_id, request in self._open_item_streams.get(queue_id) or []
+            if entry_session_id == session_id
+            and request.method == "GET"
+            and request.transport is None
+        )
+        for item_id in candidate_ids:
+            # checked anew for every track, as each release suspends while the source stops
+            if queue_data.session_id != session_id:
+                return
+            if item_id in self._requested_item_ids(queue_id, session_id):
+                # still, or again, streamed: it keeps its source and stays recorded
+                continue
+            self._ended_item_ids(queue_id, session_id).discard(item_id)
             await self.mass.player_queues.release_failed_item_source(queue_id, item_id)
 
     def _log_request(self, request: web.Request) -> None:

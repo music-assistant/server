@@ -248,6 +248,39 @@ async def _source(**_kwargs: Any) -> AsyncGenerator[bytes]:
         yield b"\0" * 4
 
 
+def _hold_clears(*items: QueueItem) -> tuple[asyncio.Event, asyncio.Event]:
+    """
+    Make clearing these items' buffers wait, like a source that takes a while to stop.
+
+    :param items: The queue items whose buffer clears to hold.
+    :return: An event set once a clear started, and the gate that lets the clears finish.
+    """
+    started, gate = asyncio.Event(), asyncio.Event()
+    for queue_item in items:
+        audio_buffer = _buffer(queue_item)
+
+        async def _held_clear(audio_buffer: MagicMock = audio_buffer) -> None:
+            started.set()
+            await gate.wait()
+            audio_buffer.is_buffering = False
+
+        audio_buffer.clear.side_effect = _held_clear
+    return started, gate
+
+
+async def _end_two_requests_unnoticed(harness: _Harness) -> None:
+    """Let the player ask for "first" and "second" and break both off before any audio."""
+    first_stream, first_player = harness.start("first")
+    await first_player.next_write()
+    second_stream, second_player = harness.start("second")
+    await second_player.next_write()
+    # the later one ends first, so neither counts as newer at the other's end
+    second_player.drop()
+    await second_stream
+    first_player.drop()
+    await first_stream
+
+
 async def _stream_first_chunk(connection: _Connection) -> None:
     """Deliver the first chunk and leave the response streaming, waiting at the next one."""
     await connection.next_write()
@@ -522,3 +555,69 @@ async def test_what_ended_before_music_assistant_moved_on_releases_nothing() -> 
     await harness.settle()
 
     harness.release.assert_not_awaited()
+
+
+async def test_a_hung_up_track_hands_its_slot_to_the_next_request() -> None:
+    """A request that has not noticed its player left yet holds the slot for nothing."""
+    dropped, upcoming = _item("dropped", LIMITED), _item("upcoming")
+    harness = _Harness(dropped, upcoming)
+    harness.details_released.set()
+    stream, player = harness.start("dropped")
+    # the player hangs up while the first chunk is still on its way to it
+    await player.next_write()
+    player.close()
+
+    with pytest.raises(web.HTTPNotFound):
+        await harness.start("upcoming")[0]
+
+    # freed before the requested track resolves its own audio
+    assert harness.calls == ["release:dropped", "details:upcoming"]
+    player.drop()
+    await stream
+    await harness.settle()
+    _buffer(dropped).clear.assert_awaited_once()
+
+
+async def test_a_track_asked_for_again_during_an_earlier_release_keeps_its_source() -> None:
+    """Each release waits for its source to stop, and the player can ask for a track meanwhile."""
+    first, second, upcoming = _item("first", LIMITED), _item("second", LIMITED), _item("upcoming")
+    harness = _Harness(first, second, upcoming)
+    harness.details_released.set()
+    await _end_two_requests_unnoticed(harness)
+    started, gate = _hold_clears(first, second)
+    request, _ = harness.start("upcoming")
+    await asyncio.wait_for(started.wait(), 1)
+    released = harness.calls[-1].removeprefix("release:")
+    kept = "second" if released == "first" else "first"
+
+    again, again_player = harness.start(kept)
+    await again_player.next_write()
+    gate.set()
+    with pytest.raises(web.HTTPNotFound):
+        await request
+
+    assert f"release:{kept}" not in harness.calls
+    _buffer(first if kept == "first" else second).clear.assert_not_awaited()
+    assert kept in harness.ctrl._ended_item_streams[QUEUE_ID][1]
+    again_player.drop()
+    await again
+    await harness.settle()
+
+
+async def test_a_session_music_assistant_moves_on_during_a_release_stops_the_releases() -> None:
+    """The queue loader owns the sources once Music Assistant starts a new session."""
+    first, second, upcoming = _item("first", LIMITED), _item("second", LIMITED), _item("upcoming")
+    harness = _Harness(first, second, upcoming)
+    harness.details_released.set()
+    await _end_two_requests_unnoticed(harness)
+    started, gate = _hold_clears(first, second)
+    request, _ = harness.start("upcoming")
+    await asyncio.wait_for(started.wait(), 1)
+
+    harness.queue_data.session_id = "sess2"
+    gate.set()
+    with pytest.raises(web.HTTPNotFound):
+        await request
+    await harness.settle()
+
+    assert len([call for call in harness.calls if call.startswith("release:")]) == 1
