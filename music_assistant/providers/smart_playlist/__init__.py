@@ -1222,14 +1222,12 @@ class SmartPlaylistProvider(PluginProvider):
         # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
         if has_genre and (has_folder or len(rules.genre_ids) > 1):
             # the genres are looked up per track and a folder can hold more tracks than the cap,
-            # so they are checked a random batch at a time until enough of them match
-            random.shuffle(base_tracks)
+            # so they are checked up to the cap at a time. All of them are checked, as the later
+            # filters can still drop the tracks that matched first
             matching: list[Track] = []
             for start in range(0, len(base_tracks), FETCH_LIMIT):
                 batch = base_tracks[start : start + FETCH_LIMIT]
                 matching += await self._filter_tracks_with_all_genres(batch, rules.genre_ids)
-                if len(matching) >= min(rules.limit * 5, FETCH_LIMIT):
-                    break
             base_tracks = matching
 
         if not has_artist and not has_album:

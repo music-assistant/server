@@ -823,7 +823,7 @@ async def test_folder_rule_is_the_base_in_and_and_a_source_in_or(
     )
     assert result == [folder_track]
 
-    # the genres are looked up a batch up to the cap at a time, until enough match
+    # the genres are looked up a batch up to the cap at a time
     genres_mock = AsyncMock(
         side_effect=lambda tracks, _genre_ids: [t for t in tracks if t.favorite]
     )
@@ -833,6 +833,16 @@ async def test_folder_rule_is_the_base_in_and_and_a_source_in_or(
     )
     assert result == [folder_track]
     assert all(len(call.args[0]) == 1 for call in genres_mock.call_args_list)
+
+    # a track the artist filter keeps is found after the genre matches in earlier batches
+    genres_mock.side_effect = lambda tracks, _genre_ids: tracks
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.random.shuffle", lambda _x: None)
+    artist_track = _make_mock_track("4", uri="library://track/4", artist_ids=["7"])
+    folder_mock.return_value = [folder_track, other_folder_track, artist_track]
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, genre_ids=[1], artist_ids=[7], limit=1)
+    )
+    assert result == [artist_track]
 
 
 @pytest.mark.asyncio
