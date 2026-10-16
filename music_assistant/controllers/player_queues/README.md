@@ -19,6 +19,7 @@ docstrings.
 - [Radio and Dynamic Continuation](#radio-and-dynamic-continuation)
 - [Smart Shuffle and Smart Fades Ordering](#smart-shuffle-and-smart-fades-ordering)
 - [Track Resolution](#track-resolution)
+- [Queue Item Origin](#queue-item-origin)
 - [Play Counting and Resume](#play-counting-and-resume)
 - [Module Layout](#module-layout)
 - [Configuration](#configuration)
@@ -79,7 +80,7 @@ and the targets for playback, and coordinates with several sibling controllers:
 | `PlayerQueuesController` | The controller: owns all live `PlayerQueueData` records, exposes the API commands, and bridges player events to queue state. Subclass of `CoreController`. |
 | `PlayerQueue` (models) | The **wire snapshot** of a queue — a simplified, client-facing view that is shared with API clients over the websocket. Carries the client-relevant playback state and behaviour flags: playback state, shuffle/repeat/crossfade/autoplay, flow mode, the `sources` (as `ItemMapping`s), the current item and index, and elapsed time. It holds no server-only state and is not itself cache-serialized. |
 | `PlayerQueueData` (server) | The **complete, server-held state** of a queue (`state.py`). Wraps the wire `PlayerQueue` and adds the state that never leaves the server: the ordered `QueueItem` list, the full media items behind the dynamic `sources`, the enqueued parent items, the owning user, the transient stream-session fields, and runtime-only bookkeeping. Owns the cache (de)serialization for the pair. One per `queue_id`. |
-| `QueueItem` | A single playable entry: the media-item reference, its resolved stream details, an ordering index, and per-item `extra_attributes` (e.g. playback speed). Serializable to and from the cache. |
+| `QueueItem` | A single playable entry: the media-item reference, where it was played from (`origin`), its resolved stream details, an ordering index, and per-item `extra_attributes` (e.g. playback speed). Serializable to and from the cache. |
 | `Player` / `PlayerMedia` | `Player` is the device whose real-time state the queue is reconciled against (state, active source, corrected elapsed time, type). `PlayerMedia` is the resolved playback payload (uri, images, ...) handed to the player for a queue item. |
 | `MediaItemType` family | The source media abstractions (track, album, artist, playlist, podcast, podcast episode, audiobook, genre, browse folder, item mapping) that the controller expands/resolves into concrete tracks and `QueueItem`s before enqueueing. |
 
@@ -292,6 +293,48 @@ images.
 
 Data flow: media item → Music/Metadata controller lookups → `Track`/`QueueItem` list and
 `PlayerMedia`.
+
+## Queue Item Origin
+
+Every queue item records where it was played from in `QueueItem.origin`: the container (album,
+playlist, podcast, folder, ...) as an `ItemMapping`, and the copy that container listed for the
+item as a `(provider_instance, item_id)` pair, the pin. When the Streams Controller picks the copy
+to stream, the pinned one comes first, so an album, playlist or folder plays from its own source
+rather than from the best copy elsewhere (the streams README describes the full order and the
+settings that change it).
+
+The origin is captured at enqueue time, as the container is expanded: `MediaResolver` returns a
+`ResolvedItem(item, origin)` for every item it resolves, and `build_queue_item` stores the origin
+on the queue item. `_load_item` keeps it when it swaps in the full library track. The pins follow
+these rules (`helpers.origin_for` for a container's entries, `MediaResolver` for folders, albums
+and items played on their own):
+
+- A playlist or podcast pins each entry to its own provider copy, and so does a dynamic source
+  for the tracks it adds once the queue has run out. A library item names no copy and an entry of
+  a builtin (Music Assistant) playlist an arbitrary one, so neither is pinned; the container is
+  still recorded.
+- A folder pins each file it lists, and a library track standing in for a file to its copy under
+  that folder. An album folder, or a disc subfolder of one, records the library album as its
+  container, so it plays with album loudness like the album itself.
+- An artist, a genre or a finite radio station records itself without pinning anything.
+- An audiobook or podcast episode played on its own is pinned to the copy it was started from, so
+  its progress and resume stay on that account. A single track played on its own has no origin.
+
+**Album source.** An album plays all of its tracks from one source. `_resolve_album` asks the Music
+Controller for the album's `playback_listing` (which entry each source lists for each track),
+keeps the sources the playback user may play from, and lets `select_container_source` (in the
+streams controller's `stream_sources.py`) choose one: local sources first in the prefer-local
+mode, then the playback user's own accounts, then a source that lists every library track, then
+quality. Each track is pinned to the chosen source's entry; a track that source lacks plays as the
+album lists it. When every track is to be ranked on its own (the `best_quality_per_track` mode) no
+source is chosen and nothing is pinned, and a track outside the library plays the best entry any
+of the album's sources lists. The source is chosen at enqueue time, so a changed source mode
+applies to the albums queued after it; only `best_quality_per_track` also reaches the albums
+already queued, as it ignores their pins at playback. The upgrade threshold is applied at
+playback, so it reaches them as well.
+
+Data flow: media item → `ResolvedItem`s with their origin → `QueueItem.origin` → the pinned copy
+first when the stream is selected.
 
 ## Play Counting and Resume
 
