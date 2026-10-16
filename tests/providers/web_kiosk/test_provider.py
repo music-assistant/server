@@ -1073,6 +1073,81 @@ async def test_track_end_does_not_start_a_deleted_final_item(
     assert player.enqueued_media is None
 
 
+async def test_track_end_starts_the_item_after_a_deleted_handover(
+    mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
+    """Deleting the handed-over item just before the track ends still plays the next one."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2", "item-3")
+    queues._queue_data["wk_test"].session_id = "session"
+    await player.enqueue_next_media(
+        PlayerMedia(uri="item-2", duration=30, source_id="wk_test", queue_item_id="item-2")
+    )
+    # MA hands over the replacement a second later, and skips it once the kiosk is IDLE.
+    queues.delete_item("wk_test", "item-2")
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "item-3"
+    assert player.current_media.queue_session_id == "session"
+
+
+async def test_track_end_starts_the_successor_without_a_handover(
+    mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
+    """A track that ends before MA handed over the next item still continues the queue."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2")
+    queues._queue_data["wk_test"].session_id = "session"
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "item-2"
+
+
+async def test_track_end_reports_idle_when_the_successor_cannot_be_built(
+    mass_mock: Mock,
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A successor without a queue session cannot start; the kiosk reports IDLE and warns."""
+    await _kiosk_queue(mass_mock, player, "item-1", "item-2")
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert "Cannot start queue item item-2" in caplog.text
+
+
+async def test_track_end_does_not_override_media_started_meanwhile(
+    mass_mock: Mock,
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    queue_order: Callable[..., None],
+) -> None:
+    """Media started while the successor is looked up stays on the kiosk."""
+    queue_order("item-1", "item-2")
+    await player.play_media(
+        PlayerMedia(uri="item-1", duration=30, source_id="wk_test", queue_item_id="item-1")
+    )
+    player.note_seek(29)
+    mass_mock.players.get_player.return_value = player
+    replacement = PlayerMedia(uri="other", duration=30)
+
+    async def media_from_item(_item: object) -> PlayerMedia:
+        await player.play_media(replacement)
+        return PlayerMedia(uri="item-2", source_id="wk_test", queue_item_id="item-2")
+
+    mass_mock.player_queues.player_media_from_queue_item = AsyncMock(side_effect=media_from_item)
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.current_media is replacement
+    assert player.playback_state == PlaybackState.PLAYING
+
+
 async def test_track_end_does_not_repeat_after_repeat_one_is_switched_off(
     mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
 ) -> None:

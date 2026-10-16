@@ -755,8 +755,8 @@ class WebKioskProvider(PlayerProvider):
             return
         # Music Assistant hands the next queue item over in advance and follows
         # the player's current media, so queue progression stays in the core.
-        # Without a handed-over item (end of queue, announcement) the player
-        # reports IDLE and the core's own end-of-queue and restore logic runs.
+        # With nothing after the finished item (end of queue, announcement) the
+        # player reports IDLE and the core's own end-of-queue and restore logic runs.
         if not await player.start_enqueued_media():
             await player.stop()
 

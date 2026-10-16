@@ -12,7 +12,11 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerUnavailableError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    InvalidDataError,
+    PlayerUnavailableError,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
@@ -321,28 +325,54 @@ class WebKioskPlayer(Player):
 
     async def start_enqueued_media(self) -> bool:
         """
-        Start the queue item Music Assistant handed over, if there is one.
+        Start the queue item that follows the finished one, if there is one.
 
         Reporting it as the current media lets the queue controller follow the
-        transition and hand over the item after it.
+        transition and hand over the item after it. Returns False when nothing
+        follows, so the player can report IDLE.
         """
         media = self._enqueued_media
         self._enqueued_media = None
-        if media is None:
+        current = self.current_media
+        if current is None or not current.source_id or not current.queue_item_id:
+            # Without a finished queue item to count from, play the handover
+            # only while the queue's stream server would still serve it.
+            if media is None or (
+                media.source_id
+                and media.queue_item_id
+                and not self.mass.player_queues.is_current_window_item(
+                    media.source_id, media.queue_item_id
+                )
+            ):
+                return False
+            await self.play_media(media)
+            return True
+        queue_id = current.source_id
+        successor = self.mass.player_queues.get_next_item(queue_id, current.queue_item_id)
+        if successor is None:
             return False
-        # The handed-over item is a copy of the queue. Music Assistant does not
-        # withdraw it when a change leaves no next item (the item is deleted,
-        # the queue cleared, Repeat One switched off), so play it only while
-        # the queue still names it as the item after the one that finished.
-        if (
-            media.source_id
-            and media.queue_item_id
-            and not self._is_queue_successor(media.source_id, media.queue_item_id)
+        if media is None or (media.source_id, media.queue_item_id) != (
+            queue_id,
+            successor.queue_item_id,
         ):
+            # The handed-over item is a copy of the queue that a later edit can
+            # leave stale, and a track can end before it arrives. Music
+            # Assistant hands over a replacement a second later and skips it
+            # once the player is IDLE, so start the queue's successor here.
             self.logger.debug(
-                "Handed-over item %s no longer follows in the queue", media.queue_item_id
+                "Handed-over item %s does not follow in the queue, starting %s",
+                media.queue_item_id if media else None,
+                successor.queue_item_id,
             )
-            return False
+            generation = self._playback_generation
+            try:
+                media = await self.mass.player_queues.player_media_from_queue_item(successor)
+            except (InvalidDataError, KeyError) as err:
+                self.logger.warning("Cannot start queue item %s: %s", successor.queue_item_id, err)
+                return False
+            if generation != self._playback_generation:
+                # Other media started meanwhile and replaced the finished stream.
+                return True
         await self.play_media(media)
         return True
 
@@ -540,16 +570,6 @@ class WebKioskPlayer(Player):
     def _skip_ws_notify(self) -> bool:
         """True while at least one suppress_ws_notify() context is active."""
         return self._skip_ws_depth > 0
-
-    def _is_queue_successor(self, queue_id: str, queue_item_id: str) -> bool:
-        """Return whether the queue still plays the given item after the current one."""
-        current = self.current_media
-        if current is None or current.source_id != queue_id or not current.queue_item_id:
-            # Without a finished queue item to count from, accept what the
-            # queue's stream server would still serve.
-            return self.mass.player_queues.is_current_window_item(queue_id, queue_item_id)
-        successor = self.mass.player_queues.get_next_item(queue_id, current.queue_item_id)
-        return successor is not None and successor.queue_item_id == queue_item_id
 
     def _refreshable_stream(self) -> tuple[float, float, float] | None:
         """Return song length, stream start and position of a rebuildable queue stream."""
