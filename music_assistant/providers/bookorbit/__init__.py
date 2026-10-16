@@ -441,7 +441,7 @@ class BookOrbitProvider(MusicProvider):
                 await self._sync_playback_state(
                     book_id, position=position, fully_played=fully_played
                 )
-        except (ClientError, BookOrbitAuthError, MediaNotFoundError) as err:
+        except (ClientError, TimeoutError, BookOrbitAuthError, MediaNotFoundError) as err:
             self.logger.warning("Updating BookOrbit progress of %s failed: %s", prov_item_id, err)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -608,10 +608,13 @@ class BookOrbitProvider(MusicProvider):
         try:
             manifest = await self._client.get_audiobook_manifest(book_id)
             book = book_with_manifest_playback_order(book, manifest)
-        except ClientResponseError as err:
+        except (ClientResponseError, TypeError, ValueError) as err:
             self.logger.debug(
                 "BookOrbit manifest unavailable for legacy progress of %s: %s", book_id, err
             )
+            # Multipart BookDetail omits sortOrder; refuse unordered absolute→file mapping.
+            if len(_audio_files(book)) > 1:
+                return
         files = _audio_files(book)
         try:
             legacy = build_progress_update(files, position=position, fully_played=fully_played)

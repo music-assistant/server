@@ -514,6 +514,42 @@ async def test_on_played_ignores_other_media(provider: BookOrbitProvider) -> Non
 
 
 @pytest.mark.asyncio
+async def test_legacy_progress_skips_multipart_when_manifest_unavailable(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Legacy multipart writes must not use unordered BookDetail file order."""
+    _client(provider).get_book = AsyncMock(return_value=book_multifile)
+    _client(provider).get_audiobook_manifest = AsyncMock(
+        side_effect=ClientResponseError(
+            request_info=Mock(real_url=URL("http://bo/manifest")),
+            history=(),
+            status=503,
+            message="unavailable",
+        )
+    )
+    await provider._sync_audio_progress_legacy(
+        book_multifile["id"], position=150, fully_played=False
+    )
+    _client(provider).upsert_audio_progress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_played_swallows_timeout(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Progress timeouts are logged, not raised out of the play callback."""
+    _client(provider).get_audiobook_manifest = AsyncMock(side_effect=TimeoutError("slow"))
+    await provider.on_played(
+        MediaType.AUDIOBOOK,
+        str(book_multifile["id"]),
+        fully_played=False,
+        position=10,
+        media_item=Mock(),
+    )
+    _client(provider).put_playback_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_part_request_only_serves_assets_of_the_book(
     provider: BookOrbitProvider, book_multifile: dict[str, Any], book_audiobook: dict[str, Any]
 ) -> None:
