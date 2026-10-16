@@ -15,7 +15,13 @@ from time import time
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    AlbumType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -52,11 +58,14 @@ if TYPE_CHECKING:
     from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.media_capabilities import MusicDiscoveryMixin
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz.models import MusicBrainzRelease
 
 # how many reference albums and tracks an artist is identified on MusicBrainz through
 MAX_MUSICBRAINZ_REF_ITEMS = 3
+# how many top track titles an artist is searched on MusicBrainz by, at most
+MAX_TOP_TRACK_TITLES = 25
 _MUSICBRAINZ_ID_TYPES = {
     ExternalID.MB_ALBUM,
     ExternalID.MB_RELEASEGROUP,
@@ -729,26 +738,38 @@ class MetadataEnrichmentMixin:
         ref_albums = _identifying_first(
             await self.mass.music.artists.albums(artist.item_id, artist.provider, limit=None)
         )
-        ref_tracks = _identifying_first(
-            await self.mass.music.artists.tracks(artist.item_id, artist.provider, limit=None)
+        library_tracks = await self.mass.music.artists.tracks(
+            artist.item_id, artist.provider, limit=None
         )
+        ref_tracks = _identifying_first(library_tracks)
         if mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, ref_tracks):
             return mb_artist.id
-        # last resort for library items without identifiers: the providers' top tracks
+        # last resort for library items without identifiers: the artist's top tracks
         tried = {track.uri for track in ref_tracks}
-        top_tracks = _identifying_first(
-            [
-                track
-                for track in await self.mass.music.artists.top_tracks(
-                    artist.item_id, artist.provider, limit=None
-                )
-                if track.uri not in tried
-            ]
-        )
-        if top_tracks and (
-            mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, top_tracks)
-        ):
-            return mb_artist.id
+        # only a music provider ranks its own catalog without a search per track
+        if self._has_music_provider_top_tracks(artist):
+            top_tracks = _identifying_first(
+                [
+                    track
+                    for track in await self.mass.music.artists.top_tracks(
+                        artist.item_id, artist.provider, limit=None
+                    )
+                    if track.uri not in tried
+                ]
+            )
+            if top_tracks and (
+                mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, top_tracks)
+            ):
+                return mb_artist.id
+            tried.update(track.uri for track in top_tracks)
+        if titles := await self._top_track_titles(artist):
+            popular = _identifying_first(_tracks_named(library_tracks, titles, tried))
+            if popular and (
+                mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, popular)
+            ):
+                return mb_artist.id
+            if mb_artist := await musicbrainz.get_artist_by_track_titles(artist.name, titles):
+                return mb_artist.id
 
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
@@ -760,6 +781,37 @@ class MetadataEnrichmentMixin:
             ref_tracks_str,
         )
         return None
+
+    def _has_music_provider_top_tracks(self, artist: Artist) -> bool:
+        """Return whether a music provider of the artist ranks its top tracks."""
+        for mapping in artist.provider_mappings:
+            provider = self.mass.get_provider(
+                mapping.provider_instance, provider_type=MusicProvider
+            )
+            if provider and ProviderFeature.ARTIST_TOPTRACKS in provider.supported_features:
+                return True
+        return False
+
+    async def _top_track_titles(self, artist: Artist) -> list[str]:
+        """Return the artist's top track titles from the first metadata or plugin provider with any."""
+        for provider in self.mass.get_providers_supporting_feature(
+            ProviderFeature.ARTIST_TOPTRACKS, priority=(ProviderType.METADATA, ProviderType.PLUGIN)
+        ):
+            try:
+                titles = await cast("MusicDiscoveryMixin", provider).get_artist_toptrack_titles(
+                    artist, MAX_TOP_TRACK_TITLES
+                )
+            except MusicAssistantError as err:
+                self.logger.debug(
+                    "Unable to get top track titles for artist %s from %s: %s",
+                    artist.name,
+                    provider.name,
+                    err,
+                )
+                continue
+            if titles:
+                return titles
+        return []
 
 
 def _fill_album_from_release(
@@ -818,6 +870,30 @@ def _identifying_first[ItemT: Album | Track](items: Sequence[ItemT]) -> list[Ite
         return 2
 
     return sorted(items, key=_rank)[:MAX_MUSICBRAINZ_REF_ITEMS]
+
+
+def _tracks_named(
+    tracks: Sequence[Track], titles: Sequence[str], skip_uris: set[str | None]
+) -> list[Track]:
+    """
+    Return the tracks whose name matches one of the titles, in the order of the titles.
+
+    :param tracks: Tracks of the artist.
+    :param titles: Track titles to look for.
+    :param skip_uris: Uris of tracks to leave out.
+    """
+    named: list[Track] = []
+    seen = set(skip_uris)
+    for title in titles:
+        for track in tracks:
+            if track.uri in seen:
+                continue
+            if compare_strings(track.name, title, True) or compare_strings(
+                track.name, title, False
+            ):
+                named.append(track)
+                seen.add(track.uri)
+    return named
 
 
 def _refresh_timestamp(retry_soon: bool) -> int:
