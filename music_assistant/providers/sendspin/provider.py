@@ -20,6 +20,7 @@ from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import (
     AudioCodec,
+    GoodbyeReason,
     ManagementResult,
     PairAbortReason,
     PairingCodeFormat,
@@ -143,6 +144,9 @@ VIRTUAL_PLAYER_CLEANUP_DELAYS = (0.0, 0.5, 2.0)
 WEB_PLAYER_CONNECT_TIMEOUT = 10.0
 # Grace period so a network blip keeps the pairing record.
 SESSION_PAIRING_EVICTION_GRACE = 120.0
+HELD_ELSEWHERE_GOODBYE_REASONS = frozenset(
+    {GoodbyeReason.ANOTHER_SERVER, GoodbyeReason.CONCURRENT_ATTEMPT}
+)
 
 PIN_REQUEST_FEEDBACK_TIMEOUT = 2
 PIN_RETRY_IDLE_TIMEOUT = 300
@@ -372,6 +376,9 @@ class SendspinProvider(PlayerProvider):
     _client_event_task_counts: dict[str, int]
     _manual_ip_config: tuple[str, ...]
     _virtual_players: dict[str, str]
+    _held_elsewhere: set[str]
+    _held_unapproved: set[str]
+    _unencrypted_clients: set[str]
     _unloading: bool
     _hass_available: bool
     _server_start_failed: bool
@@ -396,6 +403,9 @@ class SendspinProvider(PlayerProvider):
         self._client_event_versions = {}
         self._client_event_task_counts = {}
         self._virtual_players = {}
+        self._held_elsewhere = set()
+        self._held_unapproved = set()
+        self._unencrypted_clients = set()
         self._pin_sessions: dict[str, PinPairingSession] = {}
         self._pending_pairing_evictions: set[str] = set()
         self._running_pairing_evictions: set[asyncio.Task[None]] = set()
@@ -498,6 +508,8 @@ class SendspinProvider(PlayerProvider):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_added(client_id, event_version))
             case ClientRemovedEvent(client_id):
+                self._set_held_elsewhere(client_id, held=False)
+                self._unencrypted_clients.discard(client_id)
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_removed(client_id, event_version))
             case ClientUpdatedEvent(client_id):
@@ -508,10 +520,19 @@ class SendspinProvider(PlayerProvider):
                 self.logger.info("Client %s can no longer use its pairing", client_id)
                 self.mass.create_task(self._refresh_player(client_id))
             case ClientConnectedEvent(client_id):
+                client = self.server_api.get_client(client_id)
+                if client is not None and client.connection_security is None:
+                    self._unencrypted_clients.add(client_id)
+                else:
+                    self._unencrypted_clients.discard(client_id)
+                self._set_held_elsewhere(client_id, held=False)
                 # A reconnect within aiosendspin's cleanup delay reuses the player, and this
                 # event fires before the new connection's roles are attached.
                 self.mass.loop.call_soon(self._refresh_player_state, client_id)
-            case ClientDisconnectedEvent(client_id):
+            case ClientDisconnectedEvent(client_id, goodbye_reason):
+                self._set_held_elsewhere(
+                    client_id, held=goodbye_reason in HELD_ELSEWHERE_GOODBYE_REASONS
+                )
                 self._pending_pairing_evictions.add(client_id)
                 self.mass.call_later(
                     SESSION_PAIRING_EVICTION_GRACE,
@@ -750,6 +771,10 @@ class SendspinProvider(PlayerProvider):
     def is_virtual_player(self, player_id: str) -> bool:
         """Return whether the given player_id belongs to a registered virtual player."""
         return player_id in self._virtual_players
+
+    def is_held_unapproved(self, client_id: str) -> bool:
+        """Return whether another server holds this client, neither paired nor approved here."""
+        return client_id in self._held_unapproved
 
     def get_pin_session(self, client_id: str) -> PinPairingSession | None:
         """Return the in-flight or just-finished PIN pairing session for a client."""
@@ -1483,6 +1508,8 @@ class SendspinProvider(PlayerProvider):
 
     async def _refresh_player(self, client_id: str) -> None:
         """Re-evaluate a registered player after a pairing/trust change (in place)."""
+        if client_id in self._held_elsewhere:
+            await self._refresh_held_trust(client_id)
         player = self.mass.players.get_player(client_id)
         if not isinstance(player, SendspinBasePlayer) or not player.initialized.is_set():
             return
@@ -1490,6 +1517,31 @@ class SendspinProvider(PlayerProvider):
         # so pushed config (preferred format, static delay) must be re-applied.
         await player.on_config_updated()
         player.update_state()
+
+    def _set_held_elsewhere(self, client_id: str, *, held: bool) -> None:
+        # A legacy unencrypted client plays without any pairing or approval.
+        if held and client_id not in self._unencrypted_clients:
+            self._held_elsewhere.add(client_id)
+            self.mass.create_task(self._refresh_held_trust(client_id))
+            return
+        self._held_elsewhere.discard(client_id)
+        self._held_unapproved.discard(client_id)
+
+    async def _refresh_held_trust(self, client_id: str) -> None:
+        store = self.server_api.pairing_store
+        unapproved = (
+            await store.record_by_client_id(client_id) is None
+            and await store.trusted_unpaired(client_id) is None
+        )
+        if client_id not in self._held_elsewhere:
+            return
+        if unapproved == (client_id in self._held_unapproved):
+            return
+        if unapproved:
+            self._held_unapproved.add(client_id)
+        else:
+            self._held_unapproved.discard(client_id)
+        self._refresh_player_state(client_id)
 
     def _refresh_player_state(self, client_id: str) -> None:
         """Recalculate a registered player's state for its client's new connection."""

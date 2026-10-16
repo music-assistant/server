@@ -410,7 +410,7 @@ class SendspinBasePlayer(Player):
     @property
     def needs_setup(self) -> bool:
         """
-        Whether the device is connected and encrypted but not yet usable for playback.
+        Whether the device is encrypted but not yet usable for playback.
 
         A device that offers neither guest access nor a completed pairing still connects,
         but the server activates no roles for it. Reporting needs_setup keeps it out of the
@@ -418,7 +418,8 @@ class SendspinBasePlayer(Player):
         A device with an undecided audio input reports it too: guest access carries a line-in
         only once approved, so the choice between approving and pairing has to be made once.
         Legacy unencrypted devices, the built-in web player, and any other device already
-        playing through guest access can play as-is.
+        playing through guest access can play as-is. A device another server holds reports
+        it while this server has neither paired nor approved it.
         """
         if self._is_bridge_or_web_player:
             return False
@@ -427,7 +428,7 @@ class SendspinBasePlayer(Player):
         # client/state, security and active roles are already valid while is_connected is not.
 
         if self.api.connection_security is None:
-            return False
+            return cast("SendspinProvider", self.provider).is_held_unapproved(self.player_id)
         # Deliberately also while the device already plays: the audio input cannot be
         # split out of the setup state, so the one-time input choice is prompted for here.
         return not self.api.active_roles or self._source_input_pending
@@ -441,11 +442,13 @@ class SendspinBasePlayer(Player):
     def setup_flow_available(self) -> bool:
         """Whether the flow would do anything but abort: pair, decide, or explain a dead end."""
         security = self.api.connection_security
-        if self._is_bridge_or_web_player or security is None:
-            return False
-        if security.psk_category is PskCategory.LONG_TERM:
+        if self._is_bridge_or_web_player:
             return False
         provider = cast("SendspinProvider", self.provider)
+        if security is None:
+            return provider.is_held_unapproved(self.player_id)
+        if security.psk_category is PskCategory.LONG_TERM:
+            return False
         # needs_setup keeps the flow reachable for a device that offers nothing at all, so
         # the abort can explain why it cannot be used rather than leaving a bare badge.
         return (
@@ -480,14 +483,24 @@ class SendspinBasePlayer(Player):
         A paired device must be unpaired before it can pair again. Pairing succeeds
         as a side effect of the provider pairing calls;
         declining the audio input persists via the player config. Bridge/web players
-        and unencrypted (legacy) connections have nothing to pair.
+        and unencrypted (legacy) connections have nothing to pair. A device another server
+        holds can only be approved, since pairing needs it connected here.
 
         :param session: The setup flow session used to interact with the user.
         """
         security = self.api.connection_security
-        if self._is_bridge_or_web_player or security is None:
-            raise AbortFlow("nothing_to_configure")
         provider = cast("SendspinProvider", self.provider)
+        if self._is_bridge_or_web_player:
+            raise AbortFlow("nothing_to_configure")
+        if security is None:
+            if not provider.is_held_unapproved(self.player_id):
+                raise AbortFlow("nothing_to_configure")
+            if not self._offers_unpaired_consent:
+                raise AbortFlow("held_elsewhere")
+            await self._run_consent_step(session, provider, offer_pairing=False, held=True)
+            session.finish_step_id = FINISH_STEP_SILENT
+            await session.finish({})
+            return
         record = await provider.server_api.pairing_store.record_by_client_id(self.player_id)
         if security.psk_category is PskCategory.LONG_TERM and record is not None:
             raise AbortFlow("already_paired")
@@ -620,7 +633,12 @@ class SendspinBasePlayer(Player):
         )
 
     async def _run_consent_step(
-        self, session: SetupSession, provider: SendspinProvider, *, offer_pairing: bool
+        self,
+        session: SetupSession,
+        provider: SendspinProvider,
+        *,
+        offer_pairing: bool,
+        held: bool = False,
     ) -> bool:
         """Show the one-time consent step; return True when the user chose to pair instead."""
         families = self._negotiated_families()
@@ -647,6 +665,8 @@ class SendspinBasePlayer(Player):
             )
         # A device with an audio input needs its own wording; the rest of the page is shared.
         step_id = "approve_device_source" if has_input else "approve_device"
+        if held:
+            step_id = "approve_held_device_source" if has_input else "approve_held_device"
         values = await session.form(entries, step_id=step_id, last_step=True)
         method = str(values.get(CONF_CONNECT_METHOD, options[0].value))
         if method == CONNECT_METHOD_PAIR:
@@ -877,6 +897,10 @@ class SendspinBasePlayer(Player):
         self, provider: SendspinProvider
     ) -> tuple[ConfigEntry | None, list[ConfigEntry]]:
         """Return the current security-status entry and the available action entries."""
+        if provider.is_held_unapproved(self.player_id):
+            return ConfigEntry(
+                key="security_status_held_unapproved", type=ConfigEntryType.LABEL
+            ), []
         if not self.api.is_connected:
             # The action dropped the connection (e.g. unpair); the client will reconnect
             return ConfigEntry(key="security_status_disconnected", type=ConfigEntryType.LABEL), []

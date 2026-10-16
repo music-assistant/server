@@ -40,6 +40,12 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
             create_task=Mock(side_effect=AssertionError("refresh must not spawn tasks")),
         ),
     )
+    provider.server_api = cast(
+        "SendspinServer", SimpleNamespace(get_client=lambda _client_id: None)
+    )
+    provider._held_elsewhere = set()
+    provider._held_unapproved = set()
+    provider._unencrypted_clients = set()
     return provider
 
 

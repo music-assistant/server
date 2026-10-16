@@ -25,6 +25,9 @@
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."
     },
+    "security_status_held_unapproved": {
+      "label": "Another server is using this device, and Music Assistant has not paired it or allowed guest access yet."
+    },
     "security_status_unencrypted": {
       "label": "This device is connected without encryption (legacy mode). Pairing is not available."
     },
@@ -240,6 +243,7 @@
     "abort": {
       "nothing_to_configure": "This player has nothing to pair. Bridge and web players, and devices connected without encryption, do not require pairing.",
       "already_paired": "This device is already securely paired. To pair it afresh, unpair it first from the player settings.",
+      "held_elsewhere": "Another server is using this device, and pairing needs a direct connection to it. It can be paired here once the other server no longer holds it.",
       "no_pair_methods": "The device does not offer any pairing method.",
       "pairing_error_concurrent": "Another pairing attempt is already in progress.",
       "pairing_error_not_connected": "The device is no longer connected.",
@@ -249,6 +253,14 @@
     "approve_device_source": {
       "title": "How do you want to connect?",
       "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection can be intercepted. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, pairing is the safer choice."
+    },
+    "approve_held_device": {
+      "title": "Connect to this device?",
+      "description": "Another server is using this device. Once you connect, playing on it here takes it over. Without pairing the connection can be intercepted. Pairing becomes available in the player settings once Music Assistant is connected to the device."
+    },
+    "approve_held_device_source": {
+      "title": "How do you want to connect?",
+      "description": "Another server is using this device. Once you connect, playing on it here takes it over. Without pairing the connection can be intercepted. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, connect without it and pair the device once Music Assistant is connected to it."
     }
   },
   "manifest": {
