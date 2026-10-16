@@ -469,7 +469,7 @@ class TestRebuildSearchIndexLocked:
     async def test_unload_stops_a_running_build_before_removing_the_index_files(
         self, mock_mass: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Removing the plugin mid-build waits for the worker, which then writes no file."""
+        """Removing the plugin mid-build cancels the task and waits for the worker to stop."""
         plugin = _build_plugin_for_init(mock_mass)
         mock_mass.storage_path = str(tmp_path)
         mock_mass._iter_merged_audio_analysis_rows_data = [
@@ -490,14 +490,18 @@ class TestRebuildSearchIndexLocked:
         monkeypatch.setattr(provider_module, "save_index", save_index)
 
         build = asyncio.ensure_future(plugin._rebuild_search_index_locked())
+        # the tracked rebuild task is cancelled by mass.cancel_task; the worker thread is not
+        mock_mass.cancel_task.side_effect = lambda _task_id: build.cancel()
         await asyncio.get_running_loop().run_in_executor(None, in_worker.wait)
         unload = asyncio.ensure_future(plugin.unload(is_removed=True))
         await asyncio.sleep(0)  # unload is now waiting on the worker
         assert not unload.done()
         release_worker.set()
         await unload
-        await build
+        with pytest.raises(asyncio.CancelledError):
+            await build
 
+        mock_mass.cancel_task.assert_called_once_with(REBUILD_TASK_ID)
         assert builder.add.call_count == 1
         save_index.assert_not_called()
         assert plugin._search_index is None
