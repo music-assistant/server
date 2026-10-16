@@ -679,14 +679,24 @@ class MetaDataController(
         """Identify a batch of library items on MusicBrainz and link them to the music providers."""
         if (musicbrainz := self._musicbrainz_provider()) is None:
             update_current_task_progress_text("The MusicBrainz provider is not loaded")
+            self.logger.debug(
+                "MusicBrainz link run skipped, the MusicBrainz provider is not loaded"
+            )
             return
         if not self.link_providers_via_musicbrainz:
             update_current_task_progress_text("Linking through MusicBrainz is disabled")
+            self.logger.debug(
+                "MusicBrainz link run skipped, linking through MusicBrainz is disabled"
+            )
             return
-        if self.mass.music.active_sync_tasks:
+        if sync_tasks := self.mass.music.active_sync_tasks:
             # a sync is still adding items and their mappings, so the run waits for the
             # completed sync to queue it again
             update_current_task_progress_text("Waiting for music sync completion")
+            self.logger.debug(
+                "MusicBrainz link run skipped, %d music sync task(s) pending or running",
+                len(sync_tasks),
+            )
             return
         linked_domains = self._refresh_musicbrainz_linked_domains()
         processed: dict[str, int] = {}
