@@ -9,6 +9,7 @@ import aiohttp
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    MediaNotFoundError,
     ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
@@ -929,6 +930,32 @@ async def test_identity_step_reports_whether_its_lookup_failed_temporarily(
     assert item.metadata.last_musicbrainz_lookup is None
     assert _logged_musicbrainz_unavailable(enrichment) is temporary
     assert _logger(enrichment).warning.called is not temporary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK])
+async def test_identity_step_passes_on_an_item_removed_from_the_library(
+    media_type: MediaType,
+) -> None:
+    """An item removed from the library while it is linked ends the update, not as a warning."""
+    recording = MusicBrainzRecording(id=RECORDING_ID, title="15 Step", isrcs=[], relations=[])
+    details = MusicBrainzArtist(id=OTHER_MBID, name="Radiohead", sort_name="Radiohead")
+    enrichment = _enrichment(_musicbrainz(release=_release(), recording=recording, artist=details))
+    item: Artist | Album | Track
+    if media_type == MediaType.ARTIST:
+        item = _artist()
+        item.mbid = OTHER_MBID
+    elif media_type == MediaType.ALBUM:
+        item = _album()
+    else:
+        item = _track()
+    controller = getattr(_mass(enrichment).music, f"{media_type.value}s")
+    controller.link_musicbrainz_mappings = AsyncMock(side_effect=MediaNotFoundError("removed"))
+
+    with pytest.raises(MediaNotFoundError):
+        await getattr(enrichment, f"_link_{media_type.value}_to_musicbrainz")(item)
+
+    _logger(enrichment).warning.assert_not_called()
 
 
 @pytest.mark.asyncio
