@@ -949,6 +949,42 @@ async def test_audiobook_collections_negative_fraction_order(
     assert [item.name for item in collection.items] == expected
 
 
+async def test_audiobook_collections_exponent_notation_sequence_order(
+    mass: MusicAssistant,
+) -> None:
+    """Numeric text like ``2e1`` sorts as 20, not as INTEGER cast ``2``."""
+    controller = mass.music.audiobooks
+    for name, sequence in (
+        ("Vol 2e1", "2e1"),
+        ("Vol 3", 3),
+        ("Vol 2", 2),
+    ):
+        await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title="Exponent Series", sequence=sequence)]
+                    )
+                ),
+            )
+        )
+
+    expected = ["Vol 2", "Vol 3", "Vol 2e1"]
+    items = await controller.get_library_items_by_query(
+        in_library_only=True,
+        collapse_collections=True,
+    )
+    collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
+    assert [item.name for item in collections["Exponent Series"].items] == expected
+
+    collection = await controller.get_collection(collections["Exponent Series"].item_id)
+    assert [item.name for item in collection.items] == expected
+
+
 async def test_artist_audiobooks_collapse_collections(
     mass: MusicAssistant,
 ) -> None:

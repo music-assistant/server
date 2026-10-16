@@ -265,6 +265,39 @@ async def test_query_audiobooks_raises_when_total_unmet_on_empty_page(
 
 
 @pytest.mark.asyncio
+async def test_list_libraries_rejects_non_list_payload(aiohttp_client: Any) -> None:
+    """HTTP 200 ``{}`` from /libraries must not publish as an empty library list."""
+
+    async def libraries(_: web.Request) -> web.Response:
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_get("/api/v1/libraries", libraries)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    with pytest.raises(BookOrbitIncompleteError, match="unsupported payload"):
+        await bo.list_libraries()
+
+
+@pytest.mark.asyncio
+async def test_list_libraries_accepts_empty_list(aiohttp_client: Any) -> None:
+    """A valid empty library array is still accepted."""
+
+    async def libraries(_: web.Request) -> web.Response:
+        return web.json_response([])
+
+    app = web.Application()
+    app.router.add_get("/api/v1/libraries", libraries)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "t"
+    assert await bo.list_libraries() == []
+
+
+@pytest.mark.asyncio
 async def test_query_audiobooks_rejects_malformed_first_page_object(
     aiohttp_client: Any,
 ) -> None:

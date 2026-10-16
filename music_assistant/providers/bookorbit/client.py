@@ -136,7 +136,14 @@ class BookOrbitClient:
 
     async def list_libraries(self) -> list[dict[str, Any]]:
         """Return all libraries."""
-        return await self.request("GET", f"{API_PREFIX}/libraries")  # type: ignore[no-any-return]
+        data = await self.request("GET", f"{API_PREFIX}/libraries")
+        # A 200 ``{}`` must not look like a successful empty library list (that
+        # would publish an empty catalog and drive sync deletions).
+        if not isinstance(data, list):
+            raise BookOrbitIncompleteError(
+                "BookOrbit library list returned an unsupported payload."
+            )
+        return data
 
     async def query_audiobooks(self, *, library_id: int | None = None) -> list[dict[str, Any]]:
         """

@@ -3160,12 +3160,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 CASE
                     WHEN collection_sequence_is_numeric THEN
                         CASE
+                            -- CAST text→INTEGER skips scientific notation ("2e1"→2);
+                            -- go through REAL first ("2e1"→20).
                             WHEN CAST(collection_sequence AS REAL) >= 0
-                                THEN CAST(collection_sequence AS INTEGER)
+                                THEN CAST(CAST(collection_sequence AS REAL) AS INTEGER)
                             WHEN CAST(collection_sequence AS REAL)
-                                = CAST(CAST(collection_sequence AS INTEGER) AS REAL)
-                                THEN CAST(collection_sequence AS INTEGER)
-                            ELSE CAST(collection_sequence AS INTEGER) - 1
+                                = CAST(
+                                    CAST(CAST(collection_sequence AS REAL) AS INTEGER) AS REAL
+                                )
+                                THEN CAST(CAST(collection_sequence AS REAL) AS INTEGER)
+                            ELSE CAST(CAST(collection_sequence AS REAL) AS INTEGER) - 1
                         END
                     WHEN collection_sequence != ''
                         AND collection_sequence NOT GLOB '*[^0-9]*'
@@ -3200,7 +3204,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 CASE
                     WHEN collection_sequence_is_numeric
                         AND CAST(collection_sequence AS REAL)
-                            = CAST(CAST(collection_sequence AS INTEGER) AS REAL)
+                            = CAST(
+                                CAST(CAST(collection_sequence AS REAL) AS INTEGER) AS REAL
+                            )
                         THEN 0
                     WHEN NOT collection_sequence_is_numeric
                         AND collection_sequence != ''
