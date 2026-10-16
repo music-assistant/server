@@ -1905,8 +1905,7 @@ def test_reverse_lookup_urls_include_the_mappings_own_public_links() -> None:
             _mapping("apple_music", "657515", "https://music.apple.com/gb/artist/radiohead/657515"),
             _mapping("soundcloud", "radiohead", "https://soundcloud.com/radiohead"),
             _mapping("bandcamp", "radiohead", "https://radiohead.bandcamp.com/"),
-            # a local server's URL, or one MusicBrainz stores differently, never goes out
-            _mapping("qobuz", "43840", "https://open.qobuz.com/artist/43840"),
+            # a local server's URL never goes out
             _mapping(
                 "plex", "1", "http://192.168.1.5:32400/library/metadata/1?X-Plex-Token=s3cret"
             ),
@@ -1919,6 +1918,49 @@ def test_reverse_lookup_urls_include_the_mappings_own_public_links() -> None:
         "https://radiohead.bandcamp.com/",
         "https://soundcloud.com/radiohead",
     ]
+
+
+def test_reverse_lookup_urls_include_qobuz_artists_only() -> None:
+    """Qobuz artists are looked up by their Qobuz page, albums and name-only performers never."""
+    artist = _artist_item(
+        mappings={_mapping("qobuz", "43840", "https://open.qobuz.com/artist/43840")}
+    )
+    album = _album_item(
+        mappings={_mapping("qobuz", "ftrty0qq43i3b", "https://open.qobuz.com/album/ftrty0qq43i3b")}
+    )
+
+    assert MusicbrainzProvider._reverse_lookup_urls(artist) == [
+        "https://open.qobuz.com/artist/43840"
+    ]
+    assert MusicbrainzProvider._reverse_lookup_urls(album) == []
+    assert (
+        MusicbrainzProvider._reverse_lookup_urls(
+            _artist_item(mappings={_mapping("qobuz", "Herbert von Karajan")})
+        )
+        == []
+    )
+    assert (
+        MusicbrainzProvider._reverse_lookup_urls(_artist_item(mappings={_mapping("qobuz", "311")}))
+        == []
+    )
+
+
+async def test_resolve_artist_by_qobuz_link() -> None:
+    """A Qobuz artist mapping is reverse-looked up through its Qobuz page."""
+    qobuz_url = "https://open.qobuz.com/artist/43840"
+    provider, get_data = _routed_provider(
+        {
+            qobuz_url: _url_lookup("artist", RADIOHEAD_MBID),
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    artist = _artist_item(mappings={_mapping("qobuz", "43840", qobuz_url)})
+
+    resolved = await provider.resolve_artist(artist, [], [])
+
+    assert resolved is not None
+    assert resolved.id == RADIOHEAD_MBID
+    assert _requested(get_data) == [qobuz_url, f"artist/{RADIOHEAD_MBID}"]
 
 
 def test_reverse_lookup_urls_are_capped_at_three() -> None:

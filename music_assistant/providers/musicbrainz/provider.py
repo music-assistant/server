@@ -1106,6 +1106,9 @@ class MusicbrainzProvider(MetadataProvider):
         for domain in REVERSE_URL_DOMAINS:
             if not (mapping := next((m for m in mappings if m.provider_domain == domain), None)):
                 continue
+            if domain == "qobuz" and not mapping.url:
+                # a performer without a Qobuz page has its name as id and no URL
+                continue
             storefront = None
             if domain == "apple_music" and mapping.url:
                 storefront = apple_storefront_from_url(mapping.url)
