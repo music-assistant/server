@@ -722,7 +722,7 @@ def _library_track(item_id: str) -> Track:
 
 
 @pytest.mark.asyncio
-async def test_folder_tracks_browses_recursively(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_folder_tracks_browses_recursively() -> None:
     """Folder tracks come from browsing the folders and their subfolders."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -761,12 +761,7 @@ async def test_folder_tracks_browses_recursively(monkeypatch: pytest.MonkeyPatch
     # the parent entry is not followed
     assert "filesystem_local--abc://" not in [c.args[0] for c in mass.music.browse.call_args_list]
 
-    # a folder holding more tracks than the cap gives only that many
-    monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 100)
-    assert len(await plugin._folder_tracks([sub])) == 100
-
-    # a parent filling the cap with explicit tracks still leaves its subfolder in
-    monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 2)
+    # a parent full of explicit tracks still leaves the clean ones of its subfolder in
     explicit_tracks = [_library_track("e1"), _library_track("e2")]
     for track in explicit_tracks:
         track.metadata.explicit = True
@@ -781,7 +776,9 @@ async def test_folder_tracks_browses_recursively(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_folder_rule_is_the_base_in_and_and_a_source_in_or() -> None:
+async def test_folder_rule_is_the_base_in_and_and_a_source_in_or(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Folder tracks are the base in AND logic and add a source in OR logic."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -818,6 +815,24 @@ async def test_folder_rule_is_the_base_in_and_and_a_source_in_or() -> None:
         "library://track/2",
         "library://track/3",
     }
+
+    # a folder holding more tracks than the cap keeps a sparse favorite
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 1)
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, favorites_only=True, limit=10)
+    )
+    assert result == [folder_track]
+
+    # the genres are looked up a batch up to the cap at a time, until enough match
+    genres_mock = AsyncMock(
+        side_effect=lambda tracks, _genre_ids: [t for t in tracks if t.favorite]
+    )
+    cast("Any", plugin)._filter_tracks_with_all_genres = genres_mock
+    result = await plugin._evaluate_and(
+        SmartPlaylistRules(folder_paths=folders, genre_ids=[1], limit=10)
+    )
+    assert result == [folder_track]
+    assert all(len(call.args[0]) == 1 for call in genres_mock.call_args_list)
 
 
 @pytest.mark.asyncio

@@ -1217,7 +1217,16 @@ class SmartPlaylistProvider(PluginProvider):
 
         # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
         if has_genre and (has_folder or len(rules.genre_ids) > 1):
-            base_tracks = await self._filter_tracks_with_all_genres(base_tracks, rules.genre_ids)
+            # the genres are looked up per track and a folder can hold more tracks than the cap,
+            # so they are checked a random batch at a time until enough of them match
+            random.shuffle(base_tracks)
+            matching: list[Track] = []
+            for start in range(0, len(base_tracks), FETCH_LIMIT):
+                batch = base_tracks[start : start + FETCH_LIMIT]
+                matching += await self._filter_tracks_with_all_genres(batch, rules.genre_ids)
+                if len(matching) >= min(rules.limit * 5, FETCH_LIMIT):
+                    break
+            base_tracks = matching
 
         if not has_artist and not has_album:
             return base_tracks
@@ -1382,10 +1391,7 @@ class SmartPlaylistProvider(PluginProvider):
                         pending.append(item.path)
                 elif isinstance(item, Track) and item.provider == "library" and item.uri:
                     tracks[item.uri] = item
-        matching = _filter_by_explicit(list(tracks.values()), explicit)
-        # the whole tree is walked, so a folder filling the cap leaves none of its subfolders
-        # out; the cap then bounds what reaches the per-track genre lookups
-        return random.sample(matching, min(len(matching), FETCH_LIMIT))
+        return _filter_by_explicit(list(tracks.values()), explicit)
 
     async def _tracks_from_seeds(
         self, seed_uris: list[str], target_size: int, is_dynamic: bool
