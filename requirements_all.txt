@@ -20,7 +20,7 @@ aiosqlite==0.22.1
 aiosxm==0.3.1
 aiovban==1.1.0
 alexapy==1.30.0
-async-upnp-client==0.48.0
+async-upnp-client==0.49.0
 audible==0.10.0
 auntie-sounds==2.0.9
 av==18.1.0
