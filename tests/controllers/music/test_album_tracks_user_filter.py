@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import AlbumType, ProviderSharing
+from music_assistant_models.enums import AlbumType, MediaType, ProviderSharing
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -97,3 +97,36 @@ async def test_album_tracks_respect_user_music_sources(mass: MusicAssistant) -> 
             db_album.item_id, "library", in_library_only=True
         )
         assert {track.name for track in filtered_library_tracks} == {"Track Local"}
+
+
+async def test_album_tracks_can_filter_to_the_current_users_favorites(
+    mass: MusicAssistant,
+) -> None:
+    """The favorite filter follows the calling user's own likes and dislikes, also from the cache."""
+    db_album = await _seed_album_with_mixed_provider_tracks(mass)
+    first, second = await mass.music.albums.tracks(db_album.item_id, "library")
+    user_a = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    user_b = User(user_id="user-b", username="user-b", role=UserRole.USER)
+    await mass.music.favorites.set(MediaType.TRACK, int(first.item_id), True, [user_a.user_id])
+    await mass.music.favorites.set(MediaType.TRACK, int(first.item_id), False, [user_b.user_id])
+    await mass.music.favorites.set(MediaType.TRACK, int(second.item_id), True, [user_b.user_id])
+
+    async def _listed_for(user: User, favorite: bool) -> list[str]:
+        with (
+            patch(
+                "music_assistant.controllers.music.media.base.get_current_user",
+                return_value=user,
+            ),
+            patch(
+                "music_assistant.controllers.music.listing_cache.get_current_user",
+                return_value=user,
+            ),
+        ):
+            listed = await mass.music.albums.tracks(db_album.item_id, "library", favorite=favorite)
+        return [track.item_id for track in listed]
+
+    assert await _listed_for(user_a, True) == [first.item_id]
+    assert await _listed_for(user_a, False) == []
+    # the listing user A assembled serves user B with user B's own state
+    assert await _listed_for(user_b, True) == [second.item_id]
+    assert await _listed_for(user_b, False) == [first.item_id]
