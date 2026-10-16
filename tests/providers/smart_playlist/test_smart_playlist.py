@@ -722,7 +722,7 @@ def _library_track(item_id: str) -> Track:
 
 
 @pytest.mark.asyncio
-async def test_folder_tracks_browses_recursively() -> None:
+async def test_folder_tracks_browses_recursively(monkeypatch: pytest.MonkeyPatch) -> None:
     """Folder tracks come from browsing the folders and their subfolders."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -760,6 +760,10 @@ async def test_folder_tracks_browses_recursively() -> None:
     assert [c.args[0] for c in mass.music.browse.call_args_list].count(sub) == 1
     # the parent entry is not followed
     assert "filesystem_local--abc://" not in [c.args[0] for c in mass.music.browse.call_args_list]
+
+    # a folder holding more tracks than the cap gives only that many
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.FETCH_LIMIT", 100)
+    assert len(await plugin._folder_tracks([sub])) == 100
 
     # a background refresh has no user for browse to check, only the user's sources
     mass.music.browse.reset_mock()

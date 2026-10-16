@@ -1388,7 +1388,10 @@ class SmartPlaylistProvider(PluginProvider):
                     tracks[item.uri] = item
             random.shuffle(subfolders)
             pending.extend(subfolders)
-        return _filter_by_explicit(list(tracks.values()), explicit)
+        matching = _filter_by_explicit(list(tracks.values()), explicit)
+        # a single folder can hold more than the cap, which would also pass every track
+        # on to the per-track genre lookups
+        return random.sample(matching, min(len(matching), FETCH_LIMIT))
 
     async def _tracks_from_seeds(
         self, seed_uris: list[str], target_size: int, is_dynamic: bool
