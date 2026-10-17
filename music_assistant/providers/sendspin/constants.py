@@ -48,3 +48,6 @@ CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE = "management_dynamic_pin_disable"
 # Declared here because only the player provider can add player config entries.
 CONF_SOURCE_AUTOSTART_TARGET = "source_autostart_target"
 SOURCE_AUTOSTART_OFF = "off"
+
+# Lets other devices use a web/app player, which is private to its own device by default.
+CONF_SHARED_PLAYER = "shared_player"

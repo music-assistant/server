@@ -567,17 +567,18 @@ class WebsocketClientHandler:
         Return whether the object is the private client player this connection announced.
 
         Binding can happen before the sendspin player registers, so the private status is
-        latched the first time an event for the bound id arrives while the player exists,
-        and kept afterwards so the owner still receives its player's removal event. A
-        shared speaker announced as the client id never latches, so it stays filtered.
+        read from the player whenever an event for the bound id arrives while it exists,
+        and the last known status is kept once it is gone so the owner still receives its
+        player's removal event. A shared speaker announced as the client id never counts
+        as private, so it stays filtered; a client player its owner shares stops counting
+        from that moment on.
 
         :param object_id: The event's object id (a player or queue id), or None.
         """
         if object_id is None or object_id != self._sendspin_player_id:
             return False
-        if not self._sendspin_player_is_private:
-            player = self.mass.players.get_player(object_id)
-            self._sendspin_player_is_private = player is not None and player.private
+        if (player := self.mass.players.get_player(object_id)) is not None:
+            self._sendspin_player_is_private = player.private
         return self._sendspin_player_is_private
 
     def _subscribe_to_events(self) -> None:
