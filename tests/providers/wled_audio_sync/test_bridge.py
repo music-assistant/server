@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 import numpy as np
 import pytest
 from aiosendspin.server.roles.visualizer.features import ExtractedFrame
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.wled_audio_sync.bridge import WledBridge
 from music_assistant.providers.wled_audio_sync.constants import SPECTRUM_BINS, ScalingMode
@@ -24,6 +25,7 @@ def _make_bridge() -> tuple[WledBridge, Mock, Mock]:
     server = SimpleNamespace(
         clock=SimpleNamespace(now_us=lambda: 1_000_000),
         register_external_player=Mock(),
+        get_client=Mock(return_value=None),
         remove_client=AsyncMock(),
     )
     sendspin_provider: Any = SimpleNamespace(server_api=server, register_bridge_player_type=Mock())
@@ -69,6 +71,58 @@ async def test_stop_removes_client_and_closes_transport() -> None:
     transport.close.assert_called_once()
 
 
+async def test_start_refuses_a_port_whose_client_is_already_registered() -> None:
+    """A second zone on the same port must not take over the live zone's client."""
+    bridge, _, _ = _make_bridge()
+    transport = Mock()
+    cast("Any", bridge.mass.loop).create_datagram_endpoint.return_value = (transport, None)
+    cast("Any", bridge.sendspin_server).get_client.return_value = Mock()
+    with pytest.raises(SetupFailedError, match="another WLED zone"):
+        await bridge.start()
+    cast("Any", bridge.sendspin_server).register_external_player.assert_not_called()
+    transport.close.assert_called_once()
+
+
+async def test_start_closes_transport_when_cleanup_fails() -> None:
+    """The socket is released even if unregistering after a failed registration raises."""
+    bridge, _, _ = _make_bridge()
+    transport = Mock()
+    cast("Any", bridge.mass.loop).create_datagram_endpoint.return_value = (transport, None)
+    bridge.register_client = Mock(side_effect=RuntimeError("register failed"))  # type: ignore[method-assign]
+    bridge.unregister_client = AsyncMock(side_effect=RuntimeError("cleanup failed"))  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await bridge.start()
+    transport.close.assert_called_once()
+
+
+async def test_stop_sends_silence_before_closing_transport() -> None:
+    """WLED keeps the last values it received, so stopping zeroes them first."""
+    bridge, _, _ = _make_bridge()
+    transport = Mock()
+    transport.is_closing.return_value = False
+    bridge._transport = transport
+    bridge._latest_loudness = 40000
+    await bridge.stop()
+    packet = transport.sendto.call_args.args[0]
+    assert packet[8:16] == bytes(8)
+    assert packet[18:34] == bytes(16)
+    assert transport.method_calls[-1] == ("close", (), {})
+
+
+def test_stream_end_sends_silence() -> None:
+    """Ending a stream leaves the lights at silence rather than the last frame."""
+    bridge, _, _ = _make_bridge()
+    transport = Mock()
+    transport.is_closing.return_value = False
+    bridge._transport = transport
+    bridge._on_stream_start()
+    bridge._latest_loudness = 40000
+    bridge._on_stream_end()
+    packet = transport.sendto.call_args.args[0]
+    assert packet[8:16] == bytes(8)
+    assert packet[18:34] == bytes(16)
+
+
 def test_frames_are_only_queued_while_streaming() -> None:
     """Frames outside a stream are ignored."""
     bridge, _, _ = _make_bridge()
@@ -101,6 +155,7 @@ def test_render_only_promotes_due_frames_and_sends_packet() -> None:
 def test_seek_and_stream_end_reset_state() -> None:
     """Seeking drops queued features; ending the stream stops the loop."""
     bridge, _, _ = _make_bridge()
+    bridge._transport = Mock()
     bridge._on_stream_start()
     bridge._on_frame(_frame(2_000_000))
     bridge._latest_loudness = 123

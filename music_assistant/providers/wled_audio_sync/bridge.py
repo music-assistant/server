@@ -10,6 +10,7 @@ from aiosendspin.models.visualizer import (
     ClientHelloVisualizerSpectrum,
     ClientHelloVisualizerSupport,
 )
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.sendspin_lights.base import SendspinLightBridge
 
@@ -100,17 +101,30 @@ class WledBridge(SendspinLightBridge):
             asyncio.DatagramProtocol, remote_addr=(WLED_MULTICAST_GROUP, self.port)
         )
         try:
+            # register_external_player() would silently take over a live zone's client
+            # for the same port, so refuse here. Nothing suspends between this check and
+            # the claim, so no other zone can load in between.
+            if self.sendspin_server.get_client(self.client_id) is not None:
+                raise SetupFailedError(
+                    f"Sendspin client '{self.client_id}' is already registered: another "
+                    f"WLED zone is using port {self.port}. Each WLED instance needs its own port."
+                )
             self.register_client()
         except Exception:
-            await self.unregister_client()
-            self._transport.close()
+            try:
+                await self.unregister_client()
+            finally:
+                self._transport.close()
             raise
         self.logger.info("WLED sync zone started on port %d", self.port)
 
     async def stop(self) -> None:
         """Remove the Sendspin client and close the UDP transport."""
-        await self.unregister_client()
-        self._transport.close()
+        self._send_silence()
+        try:
+            await self.unregister_client()
+        finally:
+            self._transport.close()
 
     def update_settings(self, latency_ms: int, gain_db: float, scaling_mode: ScalingMode) -> None:
         """
@@ -135,9 +149,10 @@ class WledBridge(SendspinLightBridge):
         self._reset_features()
 
     def _on_stream_end(self) -> None:
-        """Stop sending packets."""
+        """Stop sending packets after leaving the lights at silence."""
         self._is_streaming = False
         self._cancel_render_loop()
+        self._send_silence()
 
     def _on_frame(self, frame: ExtractedFrame) -> None:
         """Queue an extracted feature frame until its playback time."""
@@ -148,6 +163,18 @@ class WledBridge(SendspinLightBridge):
         """Send one Audio Sync packet for the features due at the current playhead."""
         # Send slightly ahead of the playhead to offset the speaker's output latency.
         self._drain_pending(self.sendspin_server.clock.now_us() + self._latency_us)
+        self._send_current_state()
+        self._peak_pending = False
+
+    def _send_silence(self) -> None:
+        """Send one all-zero packet, as WLED keeps showing the last values received."""
+        if self._transport.is_closing():
+            return
+        self._reset_features()
+        self._send_current_state()
+
+    def _send_current_state(self) -> None:
+        """Send one Audio Sync packet built from the latest cached features."""
         sample = loudness_to_sample(self._latest_loudness, self._gain_db, self._scaling_mode)
         packet = pack_audio_sync_packet(
             sample_raw=sample,
@@ -160,7 +187,6 @@ class WledBridge(SendspinLightBridge):
             fft_major_peak=float(self._latest_f_peak_freq),
         )
         self._transport.sendto(packet)
-        self._peak_pending = False
 
     def _reset_features(self) -> None:
         """Clear queued and cached features."""
