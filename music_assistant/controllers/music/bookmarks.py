@@ -9,7 +9,7 @@ the podcast copy and leave with it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.bookmarks_update import BookmarksUpdate
@@ -34,15 +34,22 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
 
-# the read and the edit feature of a provider per media type that has bookmarks
-BOOKMARK_FEATURES: dict[MediaType, tuple[ProviderFeature, ProviderFeature]] = {
-    MediaType.AUDIOBOOK: (
-        ProviderFeature.AUDIOBOOK_BOOKMARKS,
-        ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT,
+
+class BookmarkFeatures(NamedTuple):
+    """The provider features to read and to edit the bookmarks of one media type."""
+
+    read: ProviderFeature
+    edit: ProviderFeature
+
+
+BOOKMARK_FEATURES: dict[MediaType, BookmarkFeatures] = {
+    MediaType.AUDIOBOOK: BookmarkFeatures(
+        read=ProviderFeature.AUDIOBOOK_BOOKMARKS,
+        edit=ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT,
     ),
-    MediaType.PODCAST_EPISODE: (
-        ProviderFeature.PODCAST_EPISODE_BOOKMARKS,
-        ProviderFeature.PODCAST_EPISODE_BOOKMARKS_EDIT,
+    MediaType.PODCAST_EPISODE: BookmarkFeatures(
+        read=ProviderFeature.PODCAST_EPISODE_BOOKMARKS,
+        edit=ProviderFeature.PODCAST_EPISODE_BOOKMARKS_EDIT,
     ),
 }
 
@@ -111,7 +118,7 @@ class BookmarksController:
             ]
             copy_provider = exact_provider(self.mass, provider_instance_id)
             if isinstance(copy_provider, MusicProvider) and copy_provider.supports_feature(
-                features[0]
+                features.read
             ):
                 copy_bookmarks += await copy_provider.get_bookmarks(media_type, provider_item_id)
             bookmarks += sorted(copy_bookmarks, key=lambda x: x.start)
@@ -182,7 +189,7 @@ class BookmarksController:
         )
 
     @staticmethod
-    def _features(media_type: MediaType) -> tuple[ProviderFeature, ProviderFeature]:
+    def _features(media_type: MediaType) -> BookmarkFeatures:
         if media_type not in BOOKMARK_FEATURES:
             raise InvalidDataError(f"{media_type} has no bookmarks")
         return BOOKMARK_FEATURES[media_type]
@@ -197,7 +204,7 @@ class BookmarksController:
         """
         if not (user := get_current_user()):
             raise AuthenticationRequired("Bookmarks belong to a user")
-        edit_feature = self._features(media_type)[1]
+        edit_feature = self._features(media_type).edit
         visible = visible_music_sources(self.mass, user)
         if visible is not None and provider_instance_id not in visible:
             raise MediaNotFoundError(f"{provider_item_id} on {provider_instance_id} not found")
