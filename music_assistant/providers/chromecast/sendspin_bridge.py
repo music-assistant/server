@@ -643,6 +643,9 @@ class SendspinChromecastBridge:
         """Launch the Sendspin Cast Receiver app and send the server config."""
         self.cast_player.cancel_pending_app_quit()
         self._cast_app_connected = False
+        # a force-launch over a running app passes through an idle status, which must
+        # not count as the app going away; a successful launch marks it active again
+        self._cast_app_was_active = False
         try:
             # Launch the Sendspin Cast App on the Chromecast.
             # force_launch=True ensures the Cast device kills any running app

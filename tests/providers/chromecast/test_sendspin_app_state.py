@@ -44,6 +44,8 @@ def _make_bridge(
     mass = MagicMock()
     mass.loop = loop
     mass.create_task = MagicMock(side_effect=asyncio.ensure_future)
+    mass.streams.publish_ip = "192.168.1.10"
+    mass.config.get_raw_player_config_value = MagicMock(return_value=None)
 
     cast_player = MagicMock()
     cast_player.player_id = "cc_player"
@@ -275,3 +277,31 @@ async def test_stream_start_after_a_lost_connection_launches_the_app() -> None:
 
     assert not ready.done()
     assert len(launches) == 1
+
+
+async def test_idle_status_during_a_relaunch_does_not_fail_playback() -> None:
+    """The idle status a force-launch passes through is not taken for the app going away."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
+    bridge._cast_app_was_active = True
+    loop = asyncio.get_running_loop()
+    cc: Any = bridge.cast_player.cc
+
+    def launch_app(app_id: str, *, force_launch: bool, callback_function: Any) -> None:  # noqa: ARG001
+        cc.app_id = None
+        loop.call_soon_threadsafe(bridge.on_cast_status_changed, None)
+        cc.app_id = app_id
+        callback_function(True, {"type": "RECEIVER_STATUS"})
+
+    cc.socket_client.receiver_controller.launch_app = launch_app
+
+    ready = bridge.reset_cast_app_ready()
+    bridge.launch_cast_app()
+    assert bridge._launch_task is not None
+    await bridge._launch_task
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert not ready.done()
+    client.group.stop.assert_not_awaited()
+    client.ungroup.assert_not_awaited()
+    assert bridge._cast_app_was_active is True
