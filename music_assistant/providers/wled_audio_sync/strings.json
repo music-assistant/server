@@ -13,12 +13,12 @@
       "description": "Boosts the analysed audio before sending. Increase if effects look dim or flat, decrease if they are pinned at maximum."
     },
     "scaling_mode": {
-      "label": "Scaling mode",
-      "description": "Perceptual curve applied to the audio levels, matching WLED's own FFT scaling options.",
+      "label": "Light response",
+      "description": "How the lights react to quiet and loud parts of the music.",
       "options": {
-        "square_root": "Square root",
-        "linear": "Linear",
-        "logarithmic": "Logarithmic"
+        "square_root": "Balanced",
+        "linear": "Punchy",
+        "logarithmic": "Smooth"
       }
     }
   },
