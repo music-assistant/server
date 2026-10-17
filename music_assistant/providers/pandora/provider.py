@@ -53,6 +53,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ACCOUNT_FLAG_HIGH_QUALITY,
+    ADD_FEEDBACK_ENDPOINT,
     CONF_QUALITY,
     CONF_TAKEOVER_ACTION,
     LOGIN_ENDPOINT,
@@ -307,6 +308,37 @@ class PandoraProvider(MusicProvider):
             duration=duration,
             can_seek=can_seek,
             allow_seek=can_seek,
+        )
+
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Send a like or dislike on a station track to Pandora as thumbs up or thumbs down.
+
+        Pandora ties feedback to the `trackToken` it issued with the fragment that served the
+        track, so only a track still held in a retained fragment can be rated; the freshest copy
+        wins, as in `_find_track`. Clearing (None) is not sent: Pandora removes feedback by the
+        feedback id, which is not kept.
+
+        :param prov_item_id: The track's Pandora id (`TR:…`).
+        :param media_type: Media type of the item, only tracks can be rated.
+        :param favorite: True for thumbs up, False for thumbs down, None to clear (ignored).
+        """
+        if media_type != MediaType.TRACK or favorite is None:
+            return
+        track = self._find_track(prov_item_id)
+        if track is None:
+            raise MediaNotFoundError(
+                f"Track {prov_item_id} is not in any retained Pandora fragment (not playing, or "
+                "played too long ago to rate)"
+            )
+        if track.get("allowFeedback") is False:
+            raise InvalidDataError(f"Pandora does not allow feedback on track {prov_item_id}")
+        if not (token := track.get("trackToken")):
+            raise InvalidDataError(f"Pandora served track {prov_item_id} without a trackToken")
+        await self._api_request(
+            "POST", ADD_FEEDBACK_ENDPOINT, data={"trackToken": token, "isPositive": favorite}
         )
 
     async def takeover_stream(self) -> None:
