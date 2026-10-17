@@ -1753,7 +1753,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 ):
                     # a stale connection would keep add_client from launching the app
                     await bridge.refresh_cast_app_state()
-                    pending_cast.append((member_player, bridge.reset_cast_app_ready()))
+                    # the stream may have ended meanwhile, and add_client then launches nothing
+                    if self.api.group.has_active_stream:
+                        pending_cast.append((member_player, bridge.reset_cast_app_ready()))
                 await self.api.group.add_client(member_player.api)
 
             if pending_cast:
