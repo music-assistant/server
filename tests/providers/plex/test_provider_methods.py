@@ -13,10 +13,12 @@ import plexapi.exceptions
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Artist, ProviderMapping
 
 from music_assistant.providers.plex import PlexProvider
 from music_assistant.providers.plex.constants import (
     CONF_STREAM_QUALITY,
+    FAKE_ARTIST_PREFIX,
     STREAM_QUALITY_128,
     STREAM_QUALITY_ORIGINAL,
 )
@@ -1097,3 +1099,38 @@ class TestCleanupStaleLibraryMappings:
         await provider._cleanup_stale_library_mappings()
 
         provider.mass.music.get_controller.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# artist lookup / fake artist creation
+# ---------------------------------------------------------------------------
+
+
+class TestGetOrCreateArtistByName:
+    """Tests for _get_or_create_artist_by_name matching."""
+
+    @pytest.mark.asyncio
+    async def test_substring_match_returns_fake_artist(self) -> None:
+        """When query returns a substring match (e.g. 'Air Supply' for 'Air'), create a fake Artist."""
+        provider = _make_provider()
+        partial_match_artist = Artist(
+            item_id="102",
+            provider="plex_instance_1",
+            name="Air Supply",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="102",
+                    provider_domain="plex",
+                    provider_instance="plex_instance_1",
+                )
+            },
+        )
+        provider.mass.music.artists.get_library_items_by_query = AsyncMock(
+            return_value=[partial_match_artist]
+        )
+
+        result = await provider._get_or_create_artist_by_name("Air")
+
+        assert isinstance(result, Artist)
+        assert result.name == "Air"
+        assert result.item_id == f"{FAKE_ARTIST_PREFIX}Air"
