@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 import ytmusicapi
-from aiohttp import ClientError, ClientSession, DummyCookieJar
+from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.enums import (
     AlbumType,
@@ -120,6 +120,8 @@ YTM_COOKIE_DOMAIN = ".youtube.com"
 ROTATE_COOKIES_URL = "https://accounts.youtube.com/RotateCookies"
 # the interval YouTube's own pages refresh the session at
 ROTATE_COOKIES_INTERVAL = 600
+# a refresh is best effort, so a stalled one must not hold up provider setup
+ROTATE_COOKIES_TIMEOUT = 15
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 # Playlist ID's are not unique across instances for lists like 'Liked videos', 'SuperMix' etc.
@@ -243,7 +245,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 break
         else:
             self.language = "en"
-        self._rotate_session = create_clientsession(self.mass, cookie_jar=DummyCookieJar())
+        self._rotate_session = create_clientsession(
+            self.mass,
+            cookie_jar=DummyCookieJar(),
+            timeout=ClientTimeout(total=ROTATE_COOKIES_TIMEOUT),
+        )
         try:
             # a cookie that sat unused (e.g. while MA was offline) needs fresh timestamps first
             with suppress(ClientError, TimeoutError):
