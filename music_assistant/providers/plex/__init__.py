@@ -1403,7 +1403,11 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         if library_items := await self.mass.music.artists.get_library_items_by_query(
             search=artist_name, provider_filter=[self.instance_id]
         ):
-            return ItemMapping.from_item(library_items[0])
+            # Make sure it was a full match since get_library_items_by_query()
+            # matches on substrings
+            for item in library_items:
+                if item.name == artist_name:
+                    return ItemMapping.from_item(item)
 
         artist_id = FAKE_ARTIST_PREFIX + artist_name
         return Artist(
