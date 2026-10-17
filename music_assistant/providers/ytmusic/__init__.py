@@ -1440,7 +1440,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         :param updates: Cookie names and values YouTube returned.
         """
-        if not updates:
+        if not updates or self.unloading:
+            return
+        if self.get_setup_value(CONF_COOKIE) != self._cookie:
+            # the user saved a new cookie while this (old) instance was still streaming
             return
         current = dict(
             part.strip().partition("=")[::2] for part in self._cookie.split(";") if "=" in part

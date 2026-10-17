@@ -199,7 +199,10 @@ async def test_rotate_cookies_stores_refreshed_session(provider: YoutubeMusicPro
     provider._rotate_session.post = MagicMock(
         return_value=_rotate_response(200, "__Secure-1PSIDTS=new; Domain=.youtube.com")
     )
-    with patch.object(provider, "_update_setup_data") as update_setup_data:
+    with (
+        patch.object(provider, "get_setup_value", side_effect=lambda *_: provider._cookie),
+        patch.object(provider, "_update_setup_data") as update_setup_data,
+    ):
         await provider._rotate_cookies()
 
     expected = "__Secure-3PAPISID=abc; __Secure-1PSIDTS=new; SID=sid"
@@ -901,9 +904,55 @@ async def test_stream_does_not_undo_a_rotation_that_ran_meanwhile(
         YoutubeDL=_FakeYoutubeDL,
         utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
     )
-    with patch.object(provider, "_update_setup_data") as update_setup_data:
+    with (
+        # the rotation persisted its cookie, so storage holds what the instance has
+        patch.object(provider, "get_setup_value", side_effect=lambda *_: provider._cookie),
+        patch.object(provider, "_update_setup_data") as update_setup_data,
+    ):
         await provider._get_stream_format("dQw4w9WgXcQ")
 
     update_setup_data.assert_called_once_with(
         CONF_COOKIE, "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; __Secure-1PSIDTS=new; SIDCC=fresh"
     )
+
+
+@pytest.mark.parametrize("reconfigured", [True, False])
+async def test_late_stream_does_not_overwrite_reconfigured_cookie(
+    provider: YoutubeMusicProvider, reconfigured: bool
+) -> None:
+    """A stream finishing after a reconfigure or unload leaves the new cookie alone."""
+    provider._cookie = "__Secure-3PAPISID=abc; LOGIN_INFO=xyz"
+    provider._netscape_cookie = ""
+    cookiejar = [SimpleNamespace(name="LOGIN_INFO", value="xyz", domain=".youtube.com")]
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            self.cookiejar = cookiejar
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            cookiejar.append(SimpleNamespace(name="SIDCC", value="late", domain=".youtube.com"))
+            if not reconfigured:
+                provider.unloading = True
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "141"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    stored = "__Secure-3PAPISID=new; LOGIN_INFO=new" if reconfigured else provider._cookie
+    with (
+        patch.object(provider, "get_setup_value", return_value=stored),
+        patch.object(provider, "_update_setup_data") as update_setup_data,
+    ):
+        await provider._get_stream_format("dQw4w9WgXcQ")
+
+    update_setup_data.assert_not_called()
