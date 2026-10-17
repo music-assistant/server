@@ -16,10 +16,10 @@ ITEM_ID = "item1"
 PLAYER_ID = "player1"
 
 
-def _make_request() -> MagicMock:
-    """Build a GET request for the single-item stream route."""
+def _make_request(method: str = "GET") -> MagicMock:
+    """Build a request for the single-item stream route."""
     request = MagicMock()
-    request.method = "GET"
+    request.method = method
     request.match_info = {
         "queue_id": QUEUE_ID,
         "player_id": PLAYER_ID,
@@ -51,6 +51,7 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     pq_data = MagicMock()
     pq_data.session_id = SESSION_ID
     pq_data.last_served_item_id = None
+    pq_data.last_requested_item_id = None
     ctrl.mass.player_queues.queue_data.return_value = pq_data
     ctrl.mass.player_queues.is_current_window_item.return_value = item_in_window
 
@@ -59,6 +60,7 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     ctrl.mass.players.get_player.return_value = player
 
     queue_item = MagicMock()
+    queue_item.queue_item_id = ITEM_ID
     queue_item.media_item = None
     queue_item.streamdetails = None
     ctrl.mass.player_queues.get_item.return_value = queue_item
@@ -81,6 +83,7 @@ async def test_stale_item_request_is_refused_for_a_strict_player() -> None:
     assert ctrl._open_item_streams == {}
     ctrl.audio.get_stream_details.assert_not_awaited()
     ctrl.mass.player_queues.track_loaded_in_buffer.assert_not_called()
+    assert ctrl.mass.player_queues.queue_data.return_value.last_requested_item_id is None
 
 
 async def test_window_item_request_passes_the_gate() -> None:
@@ -91,6 +94,31 @@ async def test_window_item_request_passes_the_gate() -> None:
         await StreamsController.serve_queue_item_stream(ctrl, _make_request())
 
     assert "No streamdetails" in str(exc.value.reason)
+
+
+async def test_accepted_request_is_recorded_before_any_audio_goes_out() -> None:
+    """
+    An accepted GET vouches for its successor even if its stream never starts.
+
+    A player that gives up waiting on a slow item asks for the one after it, while
+    the slow item's request is still stuck in setup.
+    """
+    ctrl = _make_controller(strict_player=True, item_in_window=True)
+
+    with pytest.raises(web.HTTPNotFound):
+        await StreamsController.serve_queue_item_stream(ctrl, _make_request())
+
+    assert ctrl.mass.player_queues.queue_data.return_value.last_requested_item_id == ITEM_ID
+
+
+async def test_head_probe_is_not_recorded_as_a_request() -> None:
+    """A HEAD probe is speculative, so it must not vouch for the item after it."""
+    ctrl = _make_controller(strict_player=True, item_in_window=True)
+
+    with pytest.raises(web.HTTPNotFound):
+        await StreamsController.serve_queue_item_stream(ctrl, _make_request("HEAD"))
+
+    assert ctrl.mass.player_queues.queue_data.return_value.last_requested_item_id is None
 
 
 async def test_relaxed_player_is_served_without_a_window_check() -> None:
@@ -104,11 +132,8 @@ async def test_relaxed_player_is_served_without_a_window_check() -> None:
     ctrl.mass.player_queues.is_current_window_item.assert_not_called()
 
 
-async def test_item_falling_out_of_the_window_during_setup_is_refused() -> None:
-    """A queue edit landing while the stream is being set up must still deny the item."""
-    ctrl = _make_controller(strict_player=True, item_in_window=True)
-    # in-window at the first check, out of it by the time the response would start
-    ctrl.mass.player_queues.is_current_window_item.side_effect = [True, False]
+def _set_up_past_streamdetails(ctrl: MagicMock) -> None:
+    """Let a request run through the stream setup up to the second gate check."""
     queue_item = ctrl.mass.player_queues.get_item.return_value
     queue_item.streamdetails = MagicMock(seek_position=0)
     queue_item.name = "Track"
@@ -120,8 +145,44 @@ async def test_item_falling_out_of_the_window_during_setup_is_refused() -> None:
     player = ctrl.mass.players.get_player.return_value
     player.get_config_value.return_value = "default"
 
+
+async def test_item_falling_out_of_the_window_during_setup_is_refused() -> None:
+    """A queue edit landing while the stream is being set up must still deny the item."""
+    ctrl = _make_controller(strict_player=True, item_in_window=True)
+    # in-window at the first check, out of it by the time the response would start
+    ctrl.mass.player_queues.is_current_window_item.side_effect = [True, False]
+    _set_up_past_streamdetails(ctrl)
+
     with pytest.raises(web.HTTPNotFound) as exc:
         await StreamsController.serve_queue_item_stream(ctrl, _make_request())
 
     assert "not up next" in str(exc.value.reason)
     assert ctrl.mass.player_queues.is_current_window_item.call_count == 2
+
+
+async def test_both_checks_measure_from_the_item_asked_for_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A track admitted after a slow one passes its second check too.
+
+    Recording the request moves the last requested item onto the track itself, which
+    does not vouch for itself: measured from there, the second check would refuse it.
+    """
+    ctrl = _make_controller(strict_player=True, item_in_window=True)
+    pq_data = ctrl.mass.player_queues.queue_data.return_value
+    pq_data.last_requested_item_id = "slow-item"
+    window_check = ctrl.mass.player_queues.is_current_window_item
+    window_check.side_effect = lambda _queue_id, _item_id, after: after == "slow-item"
+    _set_up_past_streamdetails(ctrl)
+    # the response starts right after the second check: failing it there proves the
+    # request got through
+    monkeypatch.setattr(
+        web.StreamResponse, "prepare", AsyncMock(side_effect=RuntimeError("past both checks"))
+    )
+
+    with pytest.raises(RuntimeError, match="past both checks"):
+        await StreamsController.serve_queue_item_stream(ctrl, _make_request())
+
+    assert window_check.call_count == 2
+    assert pq_data.last_requested_item_id == ITEM_ID

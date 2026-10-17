@@ -817,7 +817,14 @@ class StreamsController(CoreController):
         # the player may be asking for a track out of a stale cached copy of the queue
         # (its refresh signal can get lost): refusing it makes the player re-read the
         # queue, where serving it would silently play a track the user moved away
-        self._raise_if_stale_item_request(player, queue_id, queue_item)
+        # both checks measure from what the player asked for before this request: once
+        # recorded below, this request no longer vouches for itself
+        requested_after = pq_data.last_requested_item_id
+        self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
+        if request.method == "GET":
+            # recorded before any audio goes out: a player that gives up waiting on a slow
+            # item asks for the one after it, which must not be refused as stale
+            pq_data.last_requested_item_id = queue_item_id
 
         is_audio_source = (
             queue_item.media_item is not None
@@ -1034,7 +1041,7 @@ class StreamsController(CoreController):
 
             # re-check right before audio is handed out: a queue edit landing during
             # the awaited setup above must not hand the player a stale track after all
-            self._raise_if_stale_item_request(player, queue_id, queue_item)
+            self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
 
             await resp.prepare(request)
 
@@ -2494,12 +2501,25 @@ class StreamsController(CoreController):
         resp.force_close()
 
     def _raise_if_stale_item_request(
-        self, player: Player, queue_id: str, queue_item: QueueItem
+        self,
+        player: Player,
+        queue_id: str,
+        queue_item: QueueItem,
+        requested_after: str | None,
     ) -> None:
-        """Refuse (404) the request if the item fell out of the queue's playhead window."""
+        """
+        Refuse (404) the request if the item fell out of the queue's playhead window.
+
+        :param player: The player that requested the item.
+        :param queue_id: The queue the item belongs to.
+        :param queue_item: The requested queue item.
+        :param requested_after: The queue item id the player asked for before this one.
+        """
         if not player.strict_queue_item_requests:
             return
-        if self.mass.player_queues.is_current_window_item(queue_id, queue_item.queue_item_id):
+        if self.mass.player_queues.is_current_window_item(
+            queue_id, queue_item.queue_item_id, requested_after
+        ):
             return
         self.logger.debug(
             "Denying stream request from %s for %s: the queue has moved on",
