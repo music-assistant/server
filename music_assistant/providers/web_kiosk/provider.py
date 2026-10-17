@@ -457,17 +457,12 @@ class WebKioskProvider(PlayerProvider):
                 return
             if not player.still_plays(generation):
                 return
-            # A pause during the teardown is kept: the queue resumes paused,
-            # unless another command reached the kiosk while it resumed.
-            paused = player.playback_state == PlaybackState.PAUSED
-            commands = player.command_count
+            # A pause during the teardown or the resume is kept: the queue
+            # resumes paused. The user's last command wins.
+            mark = player.transport_mark()
             try:
                 await self._resume_inside_track(queue)
-                if (
-                    paused
-                    and player.command_count == commands
-                    and player.playback_state == PlaybackState.PLAYING
-                ):
+                if player.wants_pause(mark):
                     await player.pause()
             except BaseException:
                 player.abandon_takeover(generation)

@@ -273,6 +273,30 @@ async def test_reconnect_waiting_behind_a_track_change_does_not_seek_it(
     mass_mock.players.cmd_pause.assert_not_awaited()
 
 
+async def test_pause_during_a_reconnect_seek_is_kept(
+    player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """A pause issued while the stream is rebuilt is not overwritten by the new stream."""
+    await player.play_media(
+        PlayerMedia(uri="song", duration=180, source_id="wk_test", queue_item_id="item")
+    )
+    player.note_seek(60)
+    mass_mock.players.cmd_pause = AsyncMock()
+
+    async def seek_with_a_pause(_player_id: str, _position: int) -> None:
+        # Queue pause takes no playback lock; it lands while the seek prepares.
+        await player.pause()
+        await player.play_media(
+            PlayerMedia(uri="song@60", duration=180, source_id="wk_test", queue_item_id="item")
+        )
+
+    mass_mock.players.cmd_seek = AsyncMock(side_effect=seek_with_a_pause)
+
+    await player.refresh_stream()
+
+    mass_mock.players.cmd_pause.assert_awaited_once_with("wk_test")
+
+
 def test_kiosk_advertises_enqueue_without_flow_mode(player: WebKioskPlayer) -> None:
     """Music Assistant hands the next queue item to the kiosk instead of a flow stream."""
     assert PlayerFeature.ENQUEUE in player.supported_features

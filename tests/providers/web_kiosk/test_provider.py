@@ -1353,6 +1353,31 @@ async def test_pause_while_the_successor_loads_starts_it_paused(
     assert player.playback_state == PlaybackState.PAUSED
 
 
+async def test_successor_deleted_while_it_loads_is_skipped(
+    mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
+    """An item deleted while it is prepared is not played; the one after it is."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2", "item-3")
+    queues._queue_data["wk_test"].session_id = "session"
+    load = queues.load_next_queue_item
+    deleted = False
+
+    async def load_then_delete(queue_id: str, current_item_id: str) -> QueueItem:
+        nonlocal deleted
+        item = await load(queue_id, current_item_id)
+        if not deleted:
+            deleted = True
+            queues.delete_item(queue_id, item.queue_item_id)
+        return item
+
+    queues.load_next_queue_item = load_then_delete  # type: ignore[method-assign]
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "item-3"
+
+
 async def test_successor_loaded_for_a_replaced_player_is_not_committed(
     mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
 ) -> None:

@@ -8,7 +8,7 @@ import secrets
 import time
 from collections.abc import Iterator
 from contextlib import AbstractAsyncContextManager, contextmanager
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
@@ -33,6 +33,15 @@ if TYPE_CHECKING:
 
 # Seconds the clock runs on without browser evidence: two position reports.
 CLOCK_HOLD_AFTER = 10.0
+# Loads of the next queue item before giving up when queue edits keep removing it.
+SUCCESSOR_LOAD_ATTEMPTS = 3
+
+
+class TransportMark(NamedTuple):
+    """The play, pause and stop commands the player had handled at one moment."""
+
+    commands: int
+    paused: bool
 
 
 def playback_lock(mass: MusicAssistant, player_id: str) -> AbstractAsyncContextManager[None]:
@@ -171,16 +180,12 @@ class WebKioskPlayer(Player):
         self._playback_generation = secrets.token_hex(16)
         self._enqueued_media: PlayerMedia | None = None
         self._command_count = 0
+        self._commanded_state = PlaybackState.IDLE
 
     @property
     def playback_speed(self) -> float:
         """Return the media-seconds per browser stream-second for this playback."""
         return self._playback_speed
-
-    @property
-    def command_count(self) -> int:
-        """Return how many play, pause and stop commands this player has handled."""
-        return self._command_count
 
     @property
     def playback_generation(self) -> str:
@@ -379,20 +384,45 @@ class WebKioskPlayer(Player):
             successor.queue_item_id,
         )
         generation = self._playback_generation
-        loaded = await self._load_queue_successor(queue_id, current.queue_item_id)
-        if not self.still_plays(generation):
-            # Other media replaced the finished stream, or another player
-            # instance took over this player ID; either one owns it now.
-            return True
-        if loaded is None:
+        mark = self.transport_mark()
+        for _attempt in range(SUCCESSOR_LOAD_ATTEMPTS):
+            loaded = await self._load_queue_successor(queue_id, current.queue_item_id)
+            if not self.still_plays(generation):
+                # Other media replaced the finished stream, or another player
+                # instance took over this player ID; either one owns it now.
+                return True
+            if loaded is None:
+                return False
+            # The queue can change while the item loads. A removed item has
+            # no stream to serve, so load the item that follows now.
+            if self.mass.player_queues.get_item(queue_id, loaded.queue_item_id) is not None:
+                break
+            self.logger.debug("Queue item %s was removed while it loaded", loaded.queue_item_id)
+        else:
             return False
-        # A pause takes no playback lock and may land while the item loads.
-        # Start the item and pause it, as the user asked last.
-        paused = self._attr_playback_state == PlaybackState.PAUSED
         await self.play_media(loaded)
-        if paused:
+        if self.wants_pause(mark):
             await self.pause()
         return True
+
+    def transport_mark(self) -> TransportMark:
+        """Return the play, pause and stop commands this player has handled so far."""
+        return TransportMark(self._command_count, self._attr_playback_state == PlaybackState.PAUSED)
+
+    def wants_pause(self, mark: TransportMark) -> bool:
+        """
+        Return whether playback that just started should be paused.
+
+        The last play, pause or stop since the mark decides; without one the
+        pause state at the mark does.
+
+        :param mark: The transport mark taken before the playback was prepared.
+        """
+        if self._command_count != mark.commands:
+            paused = self._commanded_state == PlaybackState.PAUSED
+        else:
+            paused = mark.paused
+        return paused and self._attr_playback_state != PlaybackState.IDLE
 
     def still_plays(self, generation: str) -> bool:
         """
@@ -459,12 +489,13 @@ class WebKioskPlayer(Player):
             if (stream := self._refreshable_stream()) is None:
                 return False
             duration, start, position = stream
-            paused = self.playback_state == PlaybackState.PAUSED
+            mark = self.transport_mark()
             with self.suppress_ws_notify():
                 await self.mass.players.cmd_seek(
                     self.player_id, min(int(start + position * self._playback_speed), int(duration))
                 )
-                if paused:
+                # A pause during the seek (queue pause takes no lock) is kept too.
+                if self.wants_pause(mark):
                     await self.mass.players.cmd_pause(self.player_id)
             return True
 
@@ -472,6 +503,7 @@ class WebKioskPlayer(Player):
         """Handle PLAY (resume) command."""
         self.logger.info("play (resume) on %s", self.display_name)
         self._command_count += 1
+        self._commanded_state = PlaybackState.PLAYING
         if self._attr_playback_state == PlaybackState.PAUSED:
             await self._resume_from_pause()
             return
@@ -484,6 +516,7 @@ class WebKioskPlayer(Player):
         """Handle PAUSE command — pause playback, keep stream alive for resume."""
         self.logger.info("pause on %s", self.display_name)
         self._command_count += 1
+        self._commanded_state = PlaybackState.PAUSED
         if self._attr_playback_state == PlaybackState.PLAYING:
             self._attr_elapsed_time = self._clock_position(time.time())
         self._attr_playback_state = PlaybackState.PAUSED
@@ -496,6 +529,7 @@ class WebKioskPlayer(Player):
         """Handle STOP command."""
         self.logger.info("stop on %s", self.display_name)
         self._command_count += 1
+        self._commanded_state = PlaybackState.IDLE
         self._playback_generation = secrets.token_hex(16)
         self._enqueued_media = None
         self._attr_playback_state = PlaybackState.IDLE

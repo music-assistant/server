@@ -897,6 +897,34 @@ async def test_fallback_keeps_a_play_issued_while_it_resumes(
         await _finish(browser_registry, native)
 
 
+async def test_pause_while_the_fallback_resumes_is_kept(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """A pause issued while the resumed stream is prepared is not overwritten by it."""
+    registry = browser_registry[0]
+    kiosk, queues, native, release = await _fallback_on_real_players(
+        provider, mass_mock, browser_registry
+    )
+    release.set()
+
+    async def pause_during_resume(queue_id: str) -> None:
+        await registry.cmd_pause(kiosk.player_id)
+        await kiosk.play_media(PlayerMedia(uri="native-stream", duration=180, source_id=queue_id))
+
+    queues.resume = AsyncMock(side_effect=pause_during_resume)  # type: ignore[method-assign]
+    try:
+        await provider.fallback_sendspin(kiosk.player_id, expected_client_id=CLIENT_ID)
+
+        assert kiosk.current_stream_url == "native-stream"
+        assert kiosk.playback_state == PlaybackState.PAUSED
+    finally:
+        await _finish(browser_registry, native)
+
+
 async def test_fallback_without_a_resume_drops_the_taken_over_playback(
     provider: WebKioskProvider,
     mass_mock: Mock,
