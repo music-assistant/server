@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -95,6 +95,16 @@ async def make_provider(
         await provider.library.close()
 
 
+async def library_items(items: Iterable[Any]) -> AsyncGenerator[Any]:
+    """
+    Yield library items the way the controllers' iter_library_items_by_prov_id does.
+
+    :param items: The library items to yield.
+    """
+    for item in items:
+        yield item
+
+
 def _mock_mass() -> MagicMock:
     """Return a mocked mass whose background tasks really run."""
     mass = MagicMock()
@@ -103,7 +113,12 @@ def _mock_mass() -> MagicMock:
         return asyncio.get_running_loop().create_task(coro)
 
     mass.create_task = MagicMock(side_effect=_create_task)
-    mass.music.database.get_rows_from_query = AsyncMock(return_value=[])
+    for controller in (mass.music.tracks, mass.music.albums, mass.music.artists):
+        controller.iter_library_items_by_prov_id = MagicMock(
+            side_effect=lambda *_args, **_kwargs: library_items([])
+        )
+        controller.remove_provider_mappings = AsyncMock()
+    mass.music.albums.get_library_album_tracks = AsyncMock(return_value=[])
     mass.music.tracks.add_item_to_library = AsyncMock(
         side_effect=lambda *_args, **_kwargs: MagicMock(item_id=1, favorite=False)
     )

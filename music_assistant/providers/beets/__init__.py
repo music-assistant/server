@@ -20,14 +20,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import (
-    DB_TABLE_ALBUM_ARTISTS,
-    DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_PROVIDER_MAPPINGS,
-    DB_TABLE_TRACK_ARTISTS,
-    VARIOUS_ARTISTS_MBID,
-    VARIOUS_ARTISTS_NAME,
-)
+from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
@@ -315,6 +308,7 @@ class BeetsProvider(MusicProvider):
             await self._stamp_art(album_rows.values())
             albums: dict[int, BeetsRow | None] = dict(album_rows)
             processed = 0
+            imported = 0
             async for batch in self.library.iter_items(ITEM_BATCH_SIZE):
                 for item in batch:
                     album = await self._album_for(item, albums)
@@ -322,6 +316,7 @@ class BeetsProvider(MusicProvider):
                     current_ids.add(item_id)
                     checksum = item_checksum(item, album, self._ctx)
                     if previous.get(item_id) != checksum:
+                        imported += 1
                         await self._import_item(
                             item, album, checksum, overwrite=item_id in previous
                         )
@@ -350,7 +345,9 @@ class BeetsProvider(MusicProvider):
             return
         if deleted_ids := set(previous) - current_ids:
             await self._process_deletions(deleted_ids)
-        await self._process_orphaned_albums_and_artists()
+        # only an import or a deletion can leave an album or artist without tracks
+        if imported or deleted_ids:
+            await self._process_orphaned_albums_and_artists()
 
     async def _album_for(
         self, item: BeetsRow, albums: dict[int, BeetsRow | None]
@@ -392,85 +389,66 @@ class BeetsProvider(MusicProvider):
 
     async def _get_previous_checksums(self) -> dict[str, str]:
         """Return the checksum stored for every beets item this instance imported before."""
-        assert self.mass.music.database
-        query = (
-            f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-            "WHERE provider_instance = :instance_id AND media_type = 'track'"
-        )
-        rows = await self.mass.music.database.get_rows_from_query(
-            query, {"instance_id": self.instance_id}, limit=0
-        )
-        return {str(row["provider_item_id"]): str(row["details"]) for row in rows}
+        checksums: dict[str, str] = {}
+        async for track in self.mass.music.tracks.iter_library_items_by_prov_id(self.instance_id):
+            for mapping in track.provider_mappings:
+                if mapping.provider_instance == self.instance_id:
+                    checksums[mapping.item_id] = mapping.details or ""
+        return checksums
 
     async def _process_deletions(self, deleted_ids: set[str]) -> None:
         """Unmap the tracks beets no longer has; the orphan pass cleans up their albums and artists."""
-        assert self.mass.music.database
         tracks = self.mass.music.tracks
         ordered_ids = sorted(deleted_ids)
-        async with self.mass.music.database.deferred_commit():
-            for start in range(0, len(ordered_ids), ITEM_BATCH_SIZE):
-                chunk = ordered_ids[start : start + ITEM_BATCH_SIZE]
-                chunk_ids = set(chunk)
-                library_items = await tracks.get_library_items_by_prov_id(
-                    provider_instance=self.instance_id,
-                    provider_item_ids=chunk,
-                    limit=len(chunk),
-                )
-                for library_item in library_items:
-                    # the library track may also hold another mapping (a re-imported beets
-                    # item merged into it, or another provider), which keeps it together with
-                    # its favorite and history
-                    for mapping in library_item.provider_mappings:
-                        if (
-                            mapping.provider_instance == self.instance_id
-                            and mapping.item_id in chunk_ids
-                        ):
-                            await tracks.remove_provider_mapping(
-                                library_item.item_id, self.instance_id, mapping.item_id
-                            )
+        for start in range(0, len(ordered_ids), ITEM_BATCH_SIZE):
+            chunk = ordered_ids[start : start + ITEM_BATCH_SIZE]
+            chunk_ids = set(chunk)
+            library_items = await tracks.get_library_items_by_prov_id(
+                provider_instance=self.instance_id,
+                provider_item_ids=chunk,
+                limit=len(chunk),
+            )
+            for library_item in library_items:
+                # the library track may also hold another mapping (another beets item merged
+                # into it, or another provider), which keeps it together with its favorite
+                # and history
+                for mapping in library_item.provider_mappings:
+                    if (
+                        mapping.provider_instance == self.instance_id
+                        and mapping.item_id in chunk_ids
+                    ):
+                        await tracks.remove_provider_mapping(
+                            library_item.item_id, self.instance_id, mapping.item_id
+                        )
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Unmap this instance from albums and artists that no longer hold any of its tracks."""
-        assert self.mass.music.database
-        params = {"instance_id": self.instance_id}
-        album_query = (
-            f"SELECT DISTINCT item_id FROM ({_mapped_ids('album')}) "
-            f"WHERE item_id NOT IN (SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} "
-            f"WHERE track_id IN ({_mapped_ids('track')}))"
-        )
-        # albums go first, so an artist only kept by an album unmapped here is unmapped too
-        artist_query = (
-            f"SELECT DISTINCT item_id FROM ({_mapped_ids('artist')}) "
-            f"WHERE item_id NOT IN (SELECT artist_id FROM {DB_TABLE_TRACK_ARTISTS} "
-            f"WHERE track_id IN ({_mapped_ids('track')})) "
-            f"AND item_id NOT IN (SELECT artist_id FROM {DB_TABLE_ALBUM_ARTISTS} "
-            f"WHERE album_id IN ({_mapped_ids('album')}))"
-        )
+        music = self.mass.music
+        # the library ids are collected before anything is unmapped, since unmapping while
+        # paging through the same items would shift the pages
+        kept_artist_ids: set[str] = set()
+        async for track in music.tracks.iter_library_items_by_prov_id(self.instance_id):
+            kept_artist_ids.update(str(artist.item_id) for artist in track.artists)
+        orphaned_album_ids: list[str] = []
+        async for album in music.albums.iter_library_items_by_prov_id(self.instance_id):
+            if await music.albums.get_library_album_tracks(
+                album.item_id, provider_filter=[self.instance_id]
+            ):
+                kept_artist_ids.update(str(artist.item_id) for artist in album.artists)
+            else:
+                orphaned_album_ids.append(album.item_id)
+        orphaned_artist_ids = [
+            artist.item_id
+            async for artist in music.artists.iter_library_items_by_prov_id(self.instance_id)
+            if str(artist.item_id) not in kept_artist_ids
+        ]
         # only this instance's mappings go; an album or artist another provider also maps (a
         # saved album, a followed artist) stays in the library with that provider's mapping,
         # and one without any other mapping is removed with its last mapping
-        database = self.mass.music.database
-        async with database.deferred_commit():
-            for row in await database.get_rows_from_query(album_query, params, limit=0):
-                await self.mass.music.albums.remove_provider_mappings(
-                    row["item_id"], self.instance_id
-                )
-            for row in await database.get_rows_from_query(artist_query, params, limit=0):
-                await self.mass.music.artists.remove_provider_mappings(
-                    row["item_id"], self.instance_id
-                )
-
-
-def _mapped_ids(media_type: str) -> str:
-    """
-    Return a subquery of the library ids of a media type that the :instance_id instance maps.
-
-    :param media_type: The media type value, as stored in the provider mappings table.
-    """
-    return (
-        f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-        f"WHERE provider_instance = :instance_id AND media_type = '{media_type}'"
-    )
+        for album_id in orphaned_album_ids:
+            await music.albums.remove_provider_mappings(album_id, self.instance_id)
+        for artist_id in orphaned_artist_ids:
+            await music.artists.remove_provider_mappings(artist_id, self.instance_id)
 
 
 def _parse_artist_id(prov_artist_id: str) -> tuple[str | None, str | None]:

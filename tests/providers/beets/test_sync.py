@@ -16,7 +16,12 @@ from music_assistant.providers.beets import BeetsProvider
 from music_assistant.providers.beets.library import BeetsRow
 from music_assistant.providers.beets.parsers import item_checksum
 from tests.providers.beets.beets_db import BeetsDb, album_fields, item_fields
-from tests.providers.beets.conftest import INSTANCE_ID, album_prov_id, track_prov_id
+from tests.providers.beets.conftest import (
+    INSTANCE_ID,
+    album_prov_id,
+    library_items,
+    track_prov_id,
+)
 
 MakeProvider = Callable[..., Awaitable[BeetsProvider]]
 REPORT_FAILURE = "music_assistant.providers.beets.report_current_task_failure"
@@ -36,6 +41,31 @@ async def _stored_checksums(provider: BeetsProvider) -> list[dict[str, str]]:
                 }
             )
     return rows
+
+
+def _set_previous(provider: BeetsProvider, rows: list[dict[str, str]]) -> None:
+    """
+    Let the library hold one track per row, mapped to this instance with the row's checksum.
+
+    :param provider: The beets provider under test.
+    :param rows: The previous provider item ids and checksums.
+    """
+    tracks = [
+        MagicMock(
+            provider_mappings={
+                ProviderMapping(
+                    item_id=row["provider_item_id"],
+                    provider_domain="beets",
+                    provider_instance=INSTANCE_ID,
+                    details=row["details"],
+                )
+            }
+        )
+        for row in rows
+    ]
+    provider.mass.music.tracks.iter_library_items_by_prov_id = MagicMock(  # type: ignore[method-assign,misc]
+        side_effect=lambda *_args, **_kwargs: library_items(tracks)
+    )
 
 
 def _mapping(item_id: str, instance_id: str) -> ProviderMapping:
@@ -114,9 +144,7 @@ async def test_only_changed_items_are_updated(
     beets_db.add_item(**item_fields(album_id=album_id))
     edited = beets_db.add_item(**item_fields(album_id=album_id, track=2, title="Two"))
     provider = await make_provider()
-    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=await _stored_checksums(provider)
-    )
+    _set_previous(provider, await _stored_checksums(provider))
     _stub_cleanup(provider)
     beets_db.update_item(edited, title="Two (edited)")
 
@@ -128,6 +156,21 @@ async def test_only_changed_items_are_updated(
     ]
 
 
+async def test_unchanged_library_skips_the_orphan_pass(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """A sync that imports and deletes nothing leaves albums and artists alone."""
+    beets_db.add_item(**item_fields())
+    provider = await make_provider()
+    _set_previous(provider, await _stored_checksums(provider))
+    _stub_cleanup(provider)
+
+    await provider.sync_library(MediaType.TRACK)
+
+    provider.mass.music.tracks.add_item_to_library.assert_not_awaited()  # type: ignore[attr-defined]
+    provider._process_orphaned_albums_and_artists.assert_not_awaited()  # type: ignore[attr-defined]
+
+
 async def test_album_and_flex_edits_resync_items(
     make_provider: MakeProvider, beets_db: BeetsDb
 ) -> None:
@@ -137,9 +180,7 @@ async def test_album_and_flex_edits_resync_items(
     second = beets_db.add_item(**item_fields(album_id=album_id, track=2))
     loose = beets_db.add_item(**item_fields(title="Loose"))
     provider = await make_provider()
-    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=await _stored_checksums(provider)
-    )
+    _set_previous(provider, await _stored_checksums(provider))
     _stub_cleanup(provider)
     beets_db.update_album(album_id, label="New Label")
     beets_db.set_item_flex(loose, "mood", "calm")
@@ -159,9 +200,7 @@ async def test_items_removed_from_beets_are_deleted(
     beets_db.add_item(**item_fields())
     gone = beets_db.add_item(**item_fields(title="Gone"))
     provider = await make_provider()
-    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=await _stored_checksums(provider)
-    )
+    _set_previous(provider, await _stored_checksums(provider))
     _stub_cleanup(provider)
     beets_db.delete_item(gone)
 
@@ -176,9 +215,7 @@ async def test_items_removed_from_beets_are_deleted(
 async def test_empty_library_does_not_delete_previous_items(make_provider: MakeProvider) -> None:
     """A beets database that suddenly has no items aborts before deleting anything."""
     provider = await make_provider()
-    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"provider_item_id": track_prov_id(1), "details": "x"}]
-    )
+    _set_previous(provider, [{"provider_item_id": track_prov_id(1), "details": "x"}])
     _stub_cleanup(provider)
 
     with patch(REPORT_FAILURE) as report:
@@ -195,11 +232,12 @@ async def test_unreadable_library_does_not_delete(
     """A locked or unreadable database aborts the sync before deleting anything."""
     beets_db.add_item(**item_fields())
     provider = await make_provider()
-    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=[
+    _set_previous(
+        provider,
+        [
             {"provider_item_id": track_prov_id(1), "details": "x"},
             {"provider_item_id": track_prov_id(2), "details": "y"},
-        ]
+        ],
     )
     _stub_cleanup(provider)
     provider.library.iter_items = MagicMock(  # type: ignore[method-assign]
@@ -221,9 +259,7 @@ async def test_read_error_after_imports_started_does_not_delete(
     first = beets_db.add_item(**item_fields(title="First"))
     beets_db.add_item(**item_fields(title="Second"))
     provider = await make_provider()
-    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"provider_item_id": track_prov_id(99), "details": "x"}]
-    )
+    _set_previous(provider, [{"provider_item_id": track_prov_id(99), "details": "x"}])
     _stub_cleanup(provider)
     async with aclosing(provider.library.iter_items(1)) as batches:
         first_batch = await anext(batches)
@@ -258,9 +294,7 @@ async def test_failing_item_is_reported_and_not_deleted(
     ok = beets_db.add_item(**item_fields())
     bad = beets_db.add_item(**item_fields(title="Bad", artists="", artist=""))
     provider = await make_provider()
-    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"provider_item_id": track_prov_id(bad), "details": "old"}]
-    )
+    _set_previous(provider, [{"provider_item_id": track_prov_id(bad), "details": "old"}])
     _stub_cleanup(provider)
 
     with patch(REPORT_FAILURE) as report:
@@ -278,9 +312,7 @@ async def test_unexpected_import_error_aborts_the_sync(
     """An error no item import is expected to raise stops the sync before any deletion."""
     beets_db.add_item(**item_fields())
     provider = await make_provider()
-    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"provider_item_id": track_prov_id(99), "details": "x"}]
-    )
+    _set_previous(provider, [{"provider_item_id": track_prov_id(99), "details": "x"}])
     _stub_cleanup(provider)
     provider.mass.music.tracks.add_item_to_library.side_effect = RuntimeError("bug")  # type: ignore[attr-defined]
 
@@ -382,21 +414,32 @@ async def test_orphaned_albums_and_artists_lose_this_instances_mappings(
     """Albums and artists of this instance without tracks lose only this instance's mappings."""
     provider = await make_provider()
     music = provider.mass.music
-    music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[[{"item_id": 3}], [{"item_id": 4}]]
+    track = MagicMock(artists=[MagicMock(item_id=5)])
+    empty_album = MagicMock(item_id=3, artists=[MagicMock(item_id=8)])
+    kept_album = MagicMock(item_id=6, artists=[MagicMock(item_id=7)])
+    artists = [MagicMock(item_id=artist_id) for artist_id in (4, 5, 7, 8)]
+    for controller, items in (
+        (music.tracks, [track]),
+        (music.albums, [empty_album, kept_album]),
+        (music.artists, artists),
+    ):
+        controller.iter_library_items_by_prov_id = MagicMock(  # type: ignore[method-assign,misc]
+            side_effect=lambda *_args, _items=items, **_kwargs: library_items(_items)
+        )
+    music.albums.get_library_album_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda album_id, **_kwargs: [track] if album_id == 6 else []
     )
-    music.albums.remove_provider_mappings = AsyncMock()  # type: ignore[method-assign,misc]
-    music.artists.remove_provider_mappings = AsyncMock()  # type: ignore[method-assign,misc]
     music.albums.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
     music.artists.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
 
     await provider._process_orphaned_albums_and_artists()
 
-    music.albums.remove_provider_mappings.assert_awaited_once_with(3, INSTANCE_ID)
-    music.artists.remove_provider_mappings.assert_awaited_once_with(4, INSTANCE_ID)
+    music.albums.remove_provider_mappings.assert_awaited_once_with(3, INSTANCE_ID)  # type: ignore[attr-defined]
+    assert [
+        call.args
+        for call in music.artists.remove_provider_mappings.await_args_list  # type: ignore[attr-defined]
+    ] == [(4, INSTANCE_ID), (8, INSTANCE_ID)]
     music.albums.remove_item_from_library.assert_not_awaited()
     music.artists.remove_item_from_library.assert_not_awaited()
-    assert all(
-        call.args[1] == {"instance_id": INSTANCE_ID}
-        for call in music.database.get_rows_from_query.await_args_list
-    )
+    for call in music.albums.get_library_album_tracks.await_args_list:
+        assert call.kwargs == {"provider_filter": [INSTANCE_ID]}
