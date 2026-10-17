@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -18,7 +19,11 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from music_assistant_models.player_queue import PlayerQueue
 
+from music_assistant.constants import DB_TABLE_ALBUMS
+from music_assistant.controllers.player_queues.helpers import build_queue_item
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
 
 PROVIDER = "test_folder_prov"
@@ -231,6 +236,33 @@ async def test_album_folder_and_its_disc_subfolder_play_as_the_album(mass: Music
     assert bonus_origin.container is not None
     assert bonus_origin.container.media_type == MediaType.FOLDER
     assert bonus_origin.container.item_id == f"{album_path}/Bonus"
+
+
+async def test_an_album_folder_play_counts_as_a_play_of_the_album(mass: MusicAssistant) -> None:
+    """The first file of an album folder to play to the end counts the album as played, once."""
+    user = await mass.webserver.auth.create_user("folderalbumcredit")
+    album = await _scanned_album(mass, "Miles Smiles", "Music/Miles Smiles")
+    album_folder = BrowseFolder(
+        item_id="Music/Miles Smiles", provider=PROVIDER, name="Miles Smiles", is_playable=True
+    )
+    files = [_file("Music/Miles Smiles/01.flac"), _file("Music/Miles Smiles/02.flac")]
+    with patch.object(mass.music, "browse", AsyncMock(return_value=files)):
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(album_folder)
+    items = [
+        build_queue_item("q1", cast("Track", entry.item), origin=entry.origin) for entry in resolved
+    ]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    queue_data = PlayerQueueData(queue=queue, items=items, userid=user.user_id)
+    tracker = mass.player_queues
+
+    credit = tracker._claim_album_credit(queue_data, items[0])
+    assert credit is not None
+    assert tracker._claim_album_credit(queue_data, items[1]) is None
+    await tracker._mark_album_played(credit, cast("Track", items[0].media_item), queue_data)
+
+    row = await mass.music.database.get_row(DB_TABLE_ALBUMS, {"item_id": album.item_id})
+    assert row is not None
+    assert row["play_count"] == 1
 
 
 async def test_a_disc_subfolder_played_by_uri_plays_as_the_album(mass: MusicAssistant) -> None:

@@ -322,7 +322,8 @@ and items played on their own):
 
 A track played from an album, or from the folder that holds one, plays as part of that album: it
 uses the album loudness, and it is not crossfaded into the next track played from the same album
-unless the streams setting `allow_crossfade_same_album` is on.
+unless the streams setting `allow_crossfade_same_album` is on. The first of those tracks to play to
+the end counts the album as played, once until the album is played again.
 
 **Album source.** An album plays all of its tracks from one source. `_resolve_album` asks the Music
 Controller for the album's `playback_listing` (which entry each source lists for each track),
