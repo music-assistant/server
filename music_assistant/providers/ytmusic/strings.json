@@ -13,7 +13,7 @@
     }
   },
   "errors": {
-    "cookies_expired": "Your YouTube Music cookies have expired. Reconfigure this provider with fresh cookies.",
+    "cookies_expired": "Your YouTube Music cookies have expired. Reconfigure this provider with fresh cookies, and close the browser window you exported them from right away.",
     "po_token_server_unreachable": "The PO Token server is not reachable. Make sure the YT Music PO Token Generator is installed and running."
   },
   "media": {
