@@ -1378,6 +1378,37 @@ async def test_successor_deleted_while_it_loads_is_skipped(
     assert player.current_media.queue_item_id == "item-3"
 
 
+async def test_successor_moved_while_it_loads_is_not_played_out_of_order(
+    mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
+    """An item moved behind another while it is prepared does not skip that item."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2", "item-3")
+    queues._queue_data["wk_test"].session_id = "session"
+    load = queues.load_next_queue_item
+    moved = False
+
+    async def load_then_move(queue_id: str, current_item_id: str) -> QueueItem:
+        nonlocal moved
+        item = await load(queue_id, current_item_id)
+        if not moved:
+            moved = True
+            # A -> B -> C becomes A -> C -> B.
+            queues.move_item(queue_id, "item-3", -1)
+        return item
+
+    queues.load_next_queue_item = load_then_move  # type: ignore[method-assign]
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert [item.queue_item_id for item in queues.items("wk_test")] == [
+        "item-1",
+        "item-3",
+        "item-2",
+    ]
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "item-3"
+
+
 async def test_successor_loaded_for_a_replaced_player_is_not_committed(
     mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
 ) -> None:

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 CLOCK_HOLD_AFTER = 10.0
 # Loads of the next queue item before giving up when queue edits keep removing it.
 SUCCESSOR_LOAD_ATTEMPTS = 3
+QUEUE_PAGE_SIZE = 500
 
 
 class TransportMark(NamedTuple):
@@ -63,6 +64,16 @@ def _positive_seconds(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
     return float(value)
+
+
+def _queue_span(order: list[str], first: str, last: str) -> list[str] | None:
+    """Return the queue item IDs from first to last, or None if they are not in that order."""
+    try:
+        start = order.index(first)
+        end = order.index(last, start + 1)
+    except ValueError:
+        return None
+    return order[start : end + 1]
 
 
 def media_timeline(media: object) -> tuple[float | None, float]:
@@ -386,6 +397,7 @@ class WebKioskPlayer(Player):
         generation = self._playback_generation
         mark = self.transport_mark()
         for _attempt in range(SUCCESSOR_LOAD_ATTEMPTS):
+            order = self._queue_order(queue_id)
             loaded = await self._load_queue_successor(queue_id, current.queue_item_id)
             if not self.still_plays(generation):
                 # Other media replaced the finished stream, or another player
@@ -393,11 +405,18 @@ class WebKioskPlayer(Player):
                 return True
             if loaded is None:
                 return False
-            # The queue can change while the item loads. A removed item has
-            # no stream to serve, so load the item that follows now.
-            if self.mass.player_queues.get_item(queue_id, loaded.queue_item_id) is not None:
+            # The queue can change while the item loads: an edit can remove the
+            # item or move another one in front of it. The loaded item still
+            # follows the finished one as the loader chose it (skipping
+            # unplayable items) only if the queue between them is unchanged.
+            if (loaded_id := loaded.queue_item_id) is None:
                 break
-            self.logger.debug("Queue item %s was removed while it loaded", loaded.queue_item_id)
+            span = _queue_span(order, current.queue_item_id, loaded_id)
+            if span is not None and span == _queue_span(
+                self._queue_order(queue_id), current.queue_item_id, loaded_id
+            ):
+                break
+            self.logger.debug("Queue changed while item %s loaded", loaded.queue_item_id)
         else:
             return False
         await self.play_media(loaded)
@@ -698,6 +717,17 @@ class WebKioskPlayer(Player):
         except (MusicAssistantError, KeyError) as err:
             self.logger.warning("Cannot load the next item of queue %s: %s", queue_id, err)
             return None
+
+    def _queue_order(self, queue_id: str) -> list[str]:
+        """Return the IDs of the queue's items in play order."""
+        order: list[str] = []
+        while page := self.mass.player_queues.items(
+            queue_id, limit=QUEUE_PAGE_SIZE, offset=len(order)
+        ):
+            order.extend(item.queue_item_id for item in page)
+            if len(page) < QUEUE_PAGE_SIZE:
+                break
+        return order
 
     def _refreshable_stream(self) -> tuple[float, float, float] | None:
         """Return song length, stream start and position of a rebuildable queue stream."""
