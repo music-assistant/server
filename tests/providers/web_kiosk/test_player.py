@@ -225,6 +225,27 @@ async def test_fast_reconnect_seeks_in_media_seconds(
     mass_mock.players.cmd_seek.assert_awaited_once_with("wk_test", 180)
 
 
+@pytest.mark.parametrize(("position", "expected"), [(299.6, 298), (300, 298), (150.7, 150)])
+async def test_reconnect_seek_leaves_the_end_of_the_track_to_play(
+    player: WebKioskPlayer, mass_mock: Mock, position: float, expected: int
+) -> None:
+    """A rebuild at the track boundary seeks a little before the end, not past the audio."""
+    await player.play_media(
+        PlayerMedia(
+            uri="track",
+            duration=300,
+            stream_duration=300,
+            source_id="wk_test",
+            queue_item_id="item",
+        )
+    )
+    player.note_seek(position)
+    mass_mock.players.cmd_seek = AsyncMock()
+    await player.pause()
+    await player.refresh_stream()
+    mass_mock.players.cmd_seek.assert_awaited_once_with("wk_test", expected)
+
+
 async def test_speed_is_read_from_the_dispatched_item_before_queue_advances(
     player: WebKioskPlayer, mass_mock: Mock
 ) -> None:

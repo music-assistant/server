@@ -41,7 +41,7 @@ from .constants import (
 from .http_server import WebKioskHTTPServer
 from .lyrics import parse_track_lyrics
 from .ownership import SendspinIdentityConflictError, VerifiedSendspinClaim
-from .player import WebKioskPlayer, playback_lock
+from .player import END_MARGIN, WebKioskPlayer, playback_lock, resume_position
 from .sendspin_bridge import WebKioskSendspinBridgeManager
 
 if TYPE_CHECKING:
@@ -50,9 +50,6 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
 logger = logging.getLogger(__name__)
-
-# Seconds of a track a Sendspin fallback replays when its position ran past the end.
-FALLBACK_END_MARGIN = 2
 
 
 class WebKioskProvider(PlayerProvider):
@@ -817,10 +814,12 @@ class WebKioskProvider(PlayerProvider):
             item is not None
             and duration
             and item.media_type != MediaType.RADIO
-            and queue.corrected_elapsed_time >= duration - FALLBACK_END_MARGIN
+            and queue.corrected_elapsed_time >= duration - END_MARGIN
         ):
             await self.mass.player_queues.play_index(
-                queue.queue_id, item.queue_item_id, max(0, int(duration) - FALLBACK_END_MARGIN)
+                queue.queue_id,
+                item.queue_item_id,
+                resume_position(duration, queue.corrected_elapsed_time),
             )
             return
         await self.mass.player_queues.resume(queue.queue_id)

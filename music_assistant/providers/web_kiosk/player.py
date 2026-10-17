@@ -42,6 +42,8 @@ CLOCK_HOLD_AFTER = 10.0
 # Loads of the next queue item before giving up when queue edits keep removing it.
 SUCCESSOR_LOAD_ATTEMPTS = 3
 QUEUE_PAGE_SIZE = 500
+# Seconds of a track left to play when playback resumes at or past its end.
+END_MARGIN = 2
 
 
 class TransportMark(NamedTuple):
@@ -99,6 +101,20 @@ def _positive_seconds(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
     return float(value)
+
+
+def resume_position(duration: float, position: float) -> int:
+    """
+    Return the whole second to resume a track at, leaving its last seconds to play.
+
+    A stream that starts at the very end of a track is empty, and the queue
+    controller then drops its seek offset; resuming a little earlier lets the
+    track finish and the queue move on as usual.
+
+    :param duration: The length of the track in seconds.
+    :param position: The position in the track to resume at, in seconds.
+    """
+    return max(0, min(int(position), int(duration) - END_MARGIN))
 
 
 def media_timeline(media: object) -> tuple[float | None, float]:
@@ -537,7 +553,8 @@ class WebKioskPlayer(Player):
             mark = self.transport_mark()
             with self.suppress_ws_notify():
                 await self.mass.players.cmd_seek(
-                    self.player_id, min(int(start + position * self._playback_speed), int(duration))
+                    self.player_id,
+                    resume_position(duration, start + position * self._playback_speed),
                 )
                 # A pause during the seek (queue pause takes no lock) is kept too.
                 if self.wants_pause(mark):
