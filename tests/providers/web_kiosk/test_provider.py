@@ -608,6 +608,37 @@ async def test_sendspin_fallback_resumes_only_playing_queue(
     assert queue.state == queue_state
 
 
+async def test_failed_fallback_teardown_returns_the_output_to_sendspin(
+    provider: WebKioskProvider, player: WebKioskPlayer, mass_mock: Mock
+) -> None:
+    """A teardown that fails leaves playback commands with the Sendspin output."""
+    client_id = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+    player.sendspin_client_id = client_id
+    player.sendspin_claim = VerifiedSendspinClaim(player.player_id, client_id)
+    player.set_active_output_protocol(client_id)
+    mass_mock.players.get_player = Mock(
+        side_effect=lambda player_id, **_: player if player_id == player.player_id else None
+    )
+    queue = PlayerQueue(
+        queue_id=player.player_id,
+        active=True,
+        display_name="Test Kiosk",
+        available=True,
+        items=1,
+        state=PlaybackState.PLAYING,
+    )
+    mass_mock.player_queues.get_active_queue = Mock(return_value=queue)
+    mass_mock.player_queues.resume = AsyncMock()
+    provider.bridge_manager = Mock(remove_bridge=AsyncMock(side_effect=RuntimeError("teardown")))
+
+    with pytest.raises(RuntimeError, match="teardown"):
+        await provider.fallback_sendspin(player.player_id, expected_client_id=client_id)
+
+    assert not player.sendspin_fallback
+    assert player.active_output_protocol == client_id
+    mass_mock.player_queues.resume.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("position", "media_type", "duration", "play_at"),
     [
@@ -1274,6 +1305,79 @@ async def test_track_end_does_not_override_media_started_meanwhile(
 
     assert player.current_media is replacement
     assert player.playback_state == PlaybackState.PLAYING
+
+
+async def _suspend_successor_load(
+    queues: PlayerQueuesController,
+) -> tuple[asyncio.Event, asyncio.Event]:
+    """Make the queue's item loader wait until released; return (loading, release)."""
+    loading = asyncio.Event()
+    release = asyncio.Event()
+    load = queues.load_next_queue_item
+
+    async def suspended_load(queue_id: str, current_item_id: str) -> QueueItem:
+        loading.set()
+        await release.wait()
+        return await load(queue_id, current_item_id)
+
+    queues.load_next_queue_item = suspended_load  # type: ignore[method-assign]
+    return loading, release
+
+
+async def test_pause_while_the_successor_loads_starts_it_paused(
+    mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
+    """A pause issued while the next item is prepared is kept: it starts paused."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2")
+    queues._queue_data["wk_test"].session_id = "session"
+
+    # The queue's pause takes no playback lock and ends in the player's own pause.
+    async def pause_player(_player_id: str) -> None:
+        await player.pause()
+
+    mass_mock.players._handle_cmd_pause = AsyncMock(side_effect=pause_player)
+    # The queue also starts a watcher that stops a long pause; not part of this test.
+    mass_mock.create_task = Mock(side_effect=lambda coro, **_: coro.close())
+    loading, release = await _suspend_successor_load(queues)
+
+    advance = asyncio.create_task(
+        provider._advance_after_track("wk_test", player.playback_generation)
+    )
+    await asyncio.wait_for(loading.wait(), 1)
+    await queues.pause("wk_test")
+    release.set()
+    await advance
+
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "item-2"
+    assert player.playback_state == PlaybackState.PAUSED
+
+
+async def test_successor_loaded_for_a_replaced_player_is_not_committed(
+    mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
+) -> None:
+    """A load that finishes after the kiosk was replaced neither plays nor stops anything."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2")
+    queues._queue_data["wk_test"].session_id = "session"
+    loading, release = await _suspend_successor_load(queues)
+    replacement = WebKioskPlayer(provider, player.player_id)
+
+    with (
+        patch.object(provider, "notify_play_started") as started,
+        patch.object(provider, "notify_play_stopped") as stopped,
+    ):
+        advance = asyncio.create_task(
+            provider._advance_after_track("wk_test", player.playback_generation)
+        )
+        await asyncio.wait_for(loading.wait(), 1)
+        mass_mock.players.get_player.return_value = replacement
+        release.set()
+        await advance
+
+    started.assert_not_called()
+    stopped.assert_not_called()
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "item-1"
 
 
 async def test_track_end_does_not_repeat_after_repeat_one_is_switched_off(

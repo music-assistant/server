@@ -170,11 +170,17 @@ class WebKioskPlayer(Player):
         self._track_end_handled = False
         self._playback_generation = secrets.token_hex(16)
         self._enqueued_media: PlayerMedia | None = None
+        self._command_count = 0
 
     @property
     def playback_speed(self) -> float:
         """Return the media-seconds per browser stream-second for this playback."""
         return self._playback_speed
+
+    @property
+    def command_count(self) -> int:
+        """Return how many play, pause and stop commands this player has handled."""
+        return self._command_count
 
     @property
     def playback_generation(self) -> str:
@@ -357,29 +363,84 @@ class WebKioskPlayer(Player):
         successor = self.mass.player_queues.get_next_item(queue_id, current.queue_item_id)
         if successor is None:
             return False
-        if media is None or (media.source_id, media.queue_item_id) != (
+        if media is not None and (media.source_id, media.queue_item_id) == (
             queue_id,
             successor.queue_item_id,
         ):
-            # The handed-over item is a copy of the queue that a later edit can
-            # leave stale, and a track can end before it arrives. Music
-            # Assistant hands over a replacement a second later and skips it
-            # once the player is IDLE, so ask the queue for the next item here.
-            self.logger.debug(
-                "Handed-over item %s does not follow in the queue, loading %s",
-                media.queue_item_id if media else None,
-                successor.queue_item_id,
-            )
-            generation = self._playback_generation
-            loaded = await self._load_queue_successor(queue_id, current.queue_item_id)
-            if generation != self._playback_generation:
-                # Other media started meanwhile and replaced the finished stream.
-                return True
-            if loaded is None:
-                return False
-            media = loaded
-        await self.play_media(media)
+            await self.play_media(media)
+            return True
+        # The handed-over item is a copy of the queue that a later edit can
+        # leave stale, and a track can end before it arrives. Music Assistant
+        # hands over a replacement a second later and skips it once the player
+        # is IDLE, so ask the queue for the next item here.
+        self.logger.debug(
+            "Handed-over item %s does not follow in the queue, loading %s",
+            media.queue_item_id if media else None,
+            successor.queue_item_id,
+        )
+        generation = self._playback_generation
+        loaded = await self._load_queue_successor(queue_id, current.queue_item_id)
+        if not self.still_plays(generation):
+            # Other media replaced the finished stream, or another player
+            # instance took over this player ID; either one owns it now.
+            return True
+        if loaded is None:
+            return False
+        # A pause takes no playback lock and may land while the item loads.
+        # Start the item and pause it, as the user asked last.
+        paused = self._attr_playback_state == PlaybackState.PAUSED
+        await self.play_media(loaded)
+        if paused:
+            await self.pause()
         return True
+
+    def still_plays(self, generation: str) -> bool:
+        """
+        Return whether this player is still registered and still runs the given playback.
+
+        :param generation: The playback generation captured before an await.
+        """
+        return (
+            generation == self._playback_generation
+            and self.mass.players.get_player(self.player_id) is self
+        )
+
+    def take_over_output(self) -> None:
+        """
+        Continue the playback of the active output protocol as this player's own.
+
+        From now on playback commands reach this player instead of the output,
+        so a command issued while the output is torn down is not lost. Starts a
+        new playback generation.
+        """
+        state = self.state
+        self._playback_generation = secrets.token_hex(16)
+        self._enqueued_media = None
+        self._attr_current_media = state.current_media
+        self._attr_playback_state = state.playback_state
+        self._attr_elapsed_time = state.elapsed_time
+        self._attr_elapsed_time_last_updated = state.elapsed_time_last_updated
+        # No browser stream plays this yet: no evidence to hold the clock on,
+        # and no start time to check reports against.
+        self._clock_evidence_at = None
+        self._track_started_at = 0.0
+        self.set_active_output_protocol("native")
+
+    def abandon_takeover(self, generation: str) -> None:
+        """
+        Drop the playback taken over from an output when no stream replaced it.
+
+        :param generation: The playback generation that take_over_output() started.
+        """
+        if not self.still_plays(generation):
+            return
+        self._playback_generation = secrets.token_hex(16)
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_current_media = None
+        self._attr_elapsed_time = None
+        self._attr_elapsed_time_last_updated = None
+        self._clock_evidence_at = None
+        self.update_state()
 
     def can_refresh_stream(self) -> bool:
         """Return whether the current media is a queue stream that can be rebuilt."""
@@ -410,6 +471,7 @@ class WebKioskPlayer(Player):
     async def play(self) -> None:
         """Handle PLAY (resume) command."""
         self.logger.info("play (resume) on %s", self.display_name)
+        self._command_count += 1
         if self._attr_playback_state == PlaybackState.PAUSED:
             await self._resume_from_pause()
             return
@@ -421,6 +483,7 @@ class WebKioskPlayer(Player):
     async def pause(self) -> None:
         """Handle PAUSE command — pause playback, keep stream alive for resume."""
         self.logger.info("pause on %s", self.display_name)
+        self._command_count += 1
         if self._attr_playback_state == PlaybackState.PLAYING:
             self._attr_elapsed_time = self._clock_position(time.time())
         self._attr_playback_state = PlaybackState.PAUSED
@@ -432,6 +495,7 @@ class WebKioskPlayer(Player):
     async def stop(self) -> None:
         """Handle STOP command."""
         self.logger.info("stop on %s", self.display_name)
+        self._command_count += 1
         self._playback_generation = secrets.token_hex(16)
         self._enqueued_media = None
         self._attr_playback_state = PlaybackState.IDLE

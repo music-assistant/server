@@ -391,9 +391,9 @@ class WebKioskProvider(PlayerProvider):
         self, player_id: str, *, expected_client_id: str | None = None
     ) -> None:
         """Resume the active MA queue through the kiosk's native HTML5 output."""
-        # MA serializes playback commands per player (and its group) with this
-        # lock. Holding it until the resume makes a stop or pause issued during
-        # the teardown run afterwards instead of being undone by the resume.
+        # MA serializes its own playback commands per player (and its group)
+        # with this lock. Queue pause and stop do not take it, so the kiosk takes
+        # over the output before the first await instead (see below).
         async with playback_lock(self.mass, player_id):
             async with self._player_lock:
                 if self._unloading:
@@ -418,7 +418,14 @@ class WebKioskProvider(PlayerProvider):
                 protocol = self.mass.players.get_player(client_id)
                 follower = bool(protocol and protocol.synced_to and protocol.synced_to != client_id)
                 claim = player.sendspin_claim
+                resume = was_playing and not follower
                 player.sendspin_fallback = True
+                if resume:
+                    # Commands issued during the teardown now reach the kiosk
+                    # itself: a pause (a stop on a Sendspin output) or a stop is
+                    # then seen below instead of being undone by the resume.
+                    player.take_over_output()
+                generation = player.playback_generation
                 try:
                     # Controller commands resolve protocol IDs back to their native
                     # parent, which would release a captured static group. Detach only
@@ -436,16 +443,34 @@ class WebKioskProvider(PlayerProvider):
                     if self.bridge_manager:
                         await self.bridge_manager.remove_bridge(player_id)
                     player.set_active_output_protocol("native")
-                except BaseException:
+                except BaseException as err:
                     player.sendspin_fallback = False
+                    if resume:
+                        await self._hand_back_output(player, client_id, generation, err)
                     raise
             # Stream preparation can take time. Release the registration lock while
             # resuming, and do not clear a newer connection's state on failure.
-            if player.sendspin_claim is not claim or not was_playing or follower:
+            if not resume:
                 return
+            if player.sendspin_claim is not claim:
+                player.abandon_takeover(generation)
+                return
+            if not player.still_plays(generation):
+                return
+            # A pause during the teardown is kept: the queue resumes paused,
+            # unless another command reached the kiosk while it resumed.
+            paused = player.playback_state == PlaybackState.PAUSED
+            commands = player.command_count
             try:
                 await self._resume_inside_track(queue)
+                if (
+                    paused
+                    and player.command_count == commands
+                    and player.playback_state == PlaybackState.PLAYING
+                ):
+                    await player.pause()
             except BaseException:
+                player.abandon_takeover(generation)
                 if player.sendspin_claim is claim:
                     player.sendspin_fallback = False
                 raise
@@ -570,7 +595,10 @@ class WebKioskProvider(PlayerProvider):
             flow_prefix = f"{self.mass.streams.base_url}/flow/"
             if stream_url.startswith(flow_prefix):
                 # MA may force flow for crossfade/overlays despite requires_flow_mode=False.
-                # Its per-item route shares the session, item and codec URL suffix.
+                # The page plays one stream per queue item, so it takes the per-item
+                # route, which shares the session, item and codec URL suffix. This
+                # leaves out crossfade and overlays until the page can follow a
+                # continuous stream.
                 return f"{self.mass.streams.base_url}/single/{stream_url.removeprefix(flow_prefix)}"
             return stream_url
         except MusicAssistantError as err:
@@ -763,6 +791,25 @@ class WebKioskProvider(PlayerProvider):
         # player reports IDLE and the core's own end-of-queue and restore logic runs.
         if not await player.start_enqueued_media():
             await player.stop()
+
+    async def _hand_back_output(
+        self, player: WebKioskPlayer, client_id: str, generation: str, err: BaseException
+    ) -> None:
+        """Return playback commands to the Sendspin output after a failed fallback teardown."""
+        commanded = (
+            not player.still_plays(generation) or player.playback_state == PlaybackState.PAUSED
+        )
+        player.abandon_takeover(generation)
+        player.set_active_output_protocol(client_id)
+        # A pause or stop reached the kiosk during the teardown, while the
+        # Sendspin output kept playing. That output has no pause, so stop it as
+        # Music Assistant would. A cancelled teardown awaits nothing more.
+        if commanded and isinstance(err, Exception):
+            if output := self.mass.players.get_player(client_id):
+                try:
+                    await output.stop()
+                except MusicAssistantError:
+                    logger.warning("Cannot stop the Sendspin output %s", client_id, exc_info=True)
 
     async def _resume_inside_track(self, queue: PlayerQueue) -> None:
         """Resume a playing queue, starting the last seconds of a track it ran past."""

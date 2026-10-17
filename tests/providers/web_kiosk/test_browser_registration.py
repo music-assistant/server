@@ -6,7 +6,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import replace
@@ -30,6 +30,7 @@ from aiosendspin.server import (
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import Track
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
@@ -746,6 +747,235 @@ async def test_html5_fallback_resumes_real_parent_queue(  # noqa: PLR0915
         await native.on_unload()
         if group:
             await registry.unregister(group.player_id)
+
+
+FallbackSetup = tuple[WebKioskPlayer, PlayerQueuesController, SendspinPlayer, asyncio.Event]
+
+
+async def _fallback_on_real_players(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+    during_release: Callable[[], Awaitable[None]] | None = None,
+) -> FallbackSetup:
+    """
+    Play a queue on a kiosk's real Sendspin output, with a bridge release that waits.
+
+    Returns the kiosk, the queue controller, the Sendspin player and the event that
+    lets the release finish. ``during_release`` runs inside the release first.
+    """
+    registry, sendspin, _universal, client, _tasks = browser_registry
+    native = SendspinPlayer(sendspin, CLIENT_ID, initial_hello=client.info)
+    await registry.register(native)
+    provider.sendspin_bridge_enabled = True
+    provider.bridge_manager = WebKioskSendspinBridgeManager(provider)
+    kiosk = await provider.get_or_register_player(
+        "wk_fallback",
+        sendspin_client_id=CLIENT_ID,
+        sendspin_claim=VerifiedSendspinClaim("wk_fallback", CLIENT_ID),
+    )
+    assert kiosk is not None
+    queues = PlayerQueuesController(mass_mock)
+    mass_mock.player_queues = queues
+    await queues.on_player_register(kiosk)
+    queues.update_items(
+        kiosk.player_id,
+        [QueueItem(queue_id=kiosk.player_id, queue_item_id="item", name="item", duration=180)],
+    )
+    queue = queues.get(kiosk.player_id)
+    assert queue is not None
+    queue.current_index = 0
+    queue.active = True
+    queue.state = PlaybackState.PLAYING
+    native.group_event_cb(client.group, GroupStateChangedEvent(PlaybackStateType.PLAYING))
+    kiosk.refresh_state()
+    assert kiosk.active_output_protocol == CLIENT_ID
+
+    async def resume(queue_id: str) -> None:
+        await kiosk.play_media(PlayerMedia(uri="native-stream", duration=180, source_id=queue_id))
+
+    queues.resume = AsyncMock(side_effect=resume)  # type: ignore[method-assign]
+    release = asyncio.Event()
+
+    async def slow_release(_player_id: str) -> None:
+        if during_release is not None:
+            await during_release()
+        await release.wait()
+
+    provider.bridge_manager = Mock(remove_bridge=AsyncMock(side_effect=slow_release))
+    return kiosk, queues, native, release
+
+
+async def _finish(
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+    native: SendspinPlayer,
+) -> None:
+    """Cancel the core's background tasks and unload the Sendspin player."""
+    tasks = browser_registry[4]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await native.on_unload()
+
+
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_command_during_fallback_teardown_is_not_undone(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+    command: str,
+) -> None:
+    """A pause or stop issued while the Sendspin output is released wins over the resume."""
+    registry = browser_registry[0]
+    releasing = asyncio.Event()
+
+    async def note_release() -> None:
+        releasing.set()
+
+    kiosk, queues, native, release = await _fallback_on_real_players(
+        provider, mass_mock, browser_registry, note_release
+    )
+    try:
+        fallback = asyncio.create_task(
+            provider.fallback_sendspin(kiosk.player_id, expected_client_id=CLIENT_ID)
+        )
+        await asyncio.wait_for(releasing.wait(), 1)
+        if command == "pause":
+            issued = asyncio.create_task(registry.cmd_pause(kiosk.player_id))
+        else:
+            issued = asyncio.create_task(queues.stop(kiosk.player_id))
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(fallback, issued), 2)
+
+        if command == "pause":
+            # The pause reaches the kiosk itself, so the queue resumes paused
+            # instead of the output turning the pause into a stop.
+            assert kiosk.current_stream_url == "native-stream"
+            assert kiosk.playback_state == PlaybackState.PAUSED
+        else:
+            assert kiosk.playback_state == PlaybackState.IDLE
+    finally:
+        release.set()
+        await _finish(browser_registry, native)
+
+
+async def test_fallback_keeps_a_play_issued_while_it_resumes(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """A pause during the teardown is not applied again over a later play."""
+    registry = browser_registry[0]
+
+    async def pause() -> None:
+        await registry.cmd_pause("wk_fallback")
+
+    kiosk, queues, native, release = await _fallback_on_real_players(
+        provider, mass_mock, browser_registry, pause
+    )
+    release.set()
+
+    async def play_during_resume(queue_id: str) -> None:
+        await kiosk.play()
+        await kiosk.play_media(PlayerMedia(uri="native-stream", duration=180, source_id=queue_id))
+
+    queues.resume = AsyncMock(side_effect=play_during_resume)  # type: ignore[method-assign]
+    try:
+        await provider.fallback_sendspin(kiosk.player_id, expected_client_id=CLIENT_ID)
+
+        assert kiosk.playback_state == PlaybackState.PLAYING
+    finally:
+        await _finish(browser_registry, native)
+
+
+async def test_fallback_without_a_resume_drops_the_taken_over_playback(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """A new Sendspin connection during the teardown leaves no made-up native playback."""
+
+    async def reconnect() -> None:
+        kiosk.sendspin_claim = VerifiedSendspinClaim("wk_fallback", CLIENT_ID)
+
+    kiosk, queues, native, release = await _fallback_on_real_players(
+        provider, mass_mock, browser_registry, reconnect
+    )
+    release.set()
+    try:
+        await provider.fallback_sendspin(kiosk.player_id, expected_client_id=CLIENT_ID)
+
+        cast("AsyncMock", queues.resume).assert_not_awaited()
+        assert kiosk.playback_state == PlaybackState.IDLE
+        assert kiosk.current_media is None
+    finally:
+        await _finish(browser_registry, native)
+
+
+async def test_failed_fallback_resume_drops_the_taken_over_playback(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+) -> None:
+    """A resume that fails leaves no native playback that nothing plays."""
+    kiosk, queues, native, release = await _fallback_on_real_players(
+        provider, mass_mock, browser_registry
+    )
+    release.set()
+    queues.resume = AsyncMock(side_effect=QueueEmpty("empty"))  # type: ignore[method-assign]
+    try:
+        with pytest.raises(QueueEmpty):
+            await provider.fallback_sendspin(kiosk.player_id, expected_client_id=CLIENT_ID)
+
+        assert kiosk.playback_state == PlaybackState.IDLE
+        assert not kiosk.sendspin_fallback
+    finally:
+        await _finish(browser_registry, native)
+
+
+@pytest.mark.parametrize("command", ["pause", "stop"])
+async def test_failed_fallback_teardown_passes_a_command_on_to_sendspin(
+    provider: WebKioskProvider,
+    mass_mock: Mock,
+    browser_registry: tuple[
+        PlayerController, SendspinProvider, UniversalPlayerProvider, Mock, list[asyncio.Task[Any]]
+    ],
+    command: str,
+) -> None:
+    """A pause or stop the kiosk took during a failed teardown stops the Sendspin output."""
+
+    async def command_then_fail() -> None:
+        await getattr(kiosk, command)()
+        raise RuntimeError("teardown")
+
+    kiosk, _queues, native, release = await _fallback_on_real_players(
+        provider, mass_mock, browser_registry, command_then_fail
+    )
+    release.set()
+    try:
+        with (
+            patch.object(native, "stop", AsyncMock()) as stop_output,
+            pytest.raises(RuntimeError, match="teardown"),
+        ):
+            await provider.fallback_sendspin(kiosk.player_id, expected_client_id=CLIENT_ID)
+
+        stop_output.assert_awaited_once()
+        assert kiosk.active_output_protocol == CLIENT_ID
+    finally:
+        await _finish(browser_registry, native)
 
 
 def _set_enabled(mass_mock: Mock, player_id: str, enabled: bool) -> PlayerConfig:
