@@ -59,6 +59,7 @@ from music_assistant.providers.sendspin.helpers import (
 )
 
 from .constants import (
+    CAST_STATUS_REFRESH_TIMEOUT,
     CONF_SENDSPIN_OPT_OUT_PENDING,
     CONF_SENDSPIN_UNSUPPORTED,
     SENDSPIN_CAST_APP_ID,
@@ -294,27 +295,22 @@ class SendspinChromecastBridge:
         self._launch_task: asyncio.Task[None] | None = None
         self._log_controller: SendspinCastController | None = None
         self._cast_app_was_active: bool = False
-        self._cast_app_connected: bool = False
         self._cast_app_ready: asyncio.Future[None] | None = None
 
     def reset_cast_app_ready(self) -> asyncio.Future[None]:
         """
         Return a fresh cast-ready future, cancelling any prior pending one.
 
-        If the Sendspin Cast app is already running (either previously
-        connected this session, or running from before MA restart), return a
-        future that's already resolved so callers don't wait 30s for a
+        If the Sendspin Cast app is running and connected to the Sendspin server,
+        return a future that's already resolved so callers don't wait 30s for a
         "connected" status that won't fire again.
         """
         prior = self._cast_app_ready
         if prior is not None and not prior.done():
             prior.cancel()
         fut: asyncio.Future[None] = self.mass.loop.create_future()
-        already_running = self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
-        if self._cast_app_connected or already_running:
+        if self.is_cast_app_serving:
             fut.set_result(None)
-            self._cast_app_ready = fut
-            return fut
         self._cast_app_ready = fut
         return fut
 
@@ -346,6 +342,70 @@ class SendspinChromecastBridge:
     def is_cast_app_active(self) -> bool:
         """Return whether the Sendspin Cast app is active on the device."""
         return self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
+
+    @property
+    def is_cast_app_serving(self) -> bool:
+        """Return whether the Sendspin Cast app runs and is connected to the Sendspin server."""
+        client = self._sendspin_client
+        return self.is_cast_app_active and client is not None and client.is_connected
+
+    async def refresh_cast_app_state(self) -> None:
+        """
+        Ask the device which app runs now, and drop a connection whose app is gone.
+
+        A speaker going into standby (e.g. Raumfeld eco mode) can kill the app without
+        a goodbye: the cached Cast status and the Sendspin connection then still say it
+        is running, and playback would go to a dead connection instead of launching it.
+        When the device does not answer, the cached state is kept.
+        """
+        if not self.cast_player.available:
+            return
+        loop = self.mass.loop
+        replied = asyncio.Event()
+        answered = False
+
+        def on_status(success: bool, _response: dict[str, Any] | None) -> None:
+            nonlocal answered
+            answered = success
+            loop.call_soon_threadsafe(replied.set)
+
+        def ask() -> None:
+            self.cast_player.cc.socket_client.receiver_controller.update_status(
+                callback_function=on_status
+            )
+
+        try:
+            await loop.run_in_executor(None, ask)
+            await asyncio.wait_for(replied.wait(), timeout=CAST_STATUS_REFRESH_TIMEOUT)
+        except Exception as err:
+            self.logger.debug(
+                "Could not refresh the Cast status of %s: %s", self.cast_player.display_name, err
+            )
+            return
+        if not answered or self.is_cast_app_active:
+            return
+        # handled here: the app-gone handler the new status may still trigger would
+        # otherwise fail the ready future of the playback that is about to start
+        self._cast_app_was_active = False
+        client = self._sendspin_client
+        if client is not None and client.is_connected:
+            self.logger.info(
+                "Sendspin Cast app no longer running on %s — dropping its stale connection",
+                self.cast_player.display_name,
+            )
+            client.detach_connection(GoodbyeReason.SHUTDOWN)
+
+    def launch_cast_app(self) -> None:
+        """
+        Launch the Sendspin Cast app ahead of a stream, unless it is running and connected.
+
+        Readiness is reported through the future returned by reset_cast_app_ready.
+        """
+        self.ensure_cast_app_ready()
+        if self.is_cast_app_serving:
+            self._resolve_cast_app_ready(None)
+            return
+        self._start_launch()
 
     async def start(self) -> None:
         """Register the Chromecast player as an external Sendspin client."""
@@ -408,7 +468,6 @@ class SendspinChromecastBridge:
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         self.cast_player.on_app_status_changed = None
-        self._cast_app_connected = False
 
         if self._cast_app_ready is not None and not self._cast_app_ready.done():
             self._cast_app_ready.cancel()
@@ -482,8 +541,7 @@ class SendspinChromecastBridge:
         self.mass.loop.call_soon_threadsafe(self._mark_cast_app_connected)
 
     def _mark_cast_app_connected(self) -> None:
-        """Mark the Cast app as connected and resolve any pending future."""
-        self._cast_app_connected = True
+        """Resolve any pending cast-ready future now that the Cast app is connected."""
         self._resolve_cast_app_ready(None)
 
     def _resolve_cast_app_ready(self, error: BaseException | None) -> None:
@@ -506,7 +564,6 @@ class SendspinChromecastBridge:
         if not self._cast_app_was_active:
             return
         self._cast_app_was_active = False
-        self._cast_app_connected = False
         self.logger.info(
             "Sendspin Cast app no longer active on %s (app_id=%s) — detaching client",
             self.cast_player.display_name,
@@ -539,15 +596,19 @@ class SendspinChromecastBridge:
             request.connection_reason,
         )
         self.ensure_cast_app_ready()
+        self._start_launch()
+
+    def _start_launch(self) -> None:
+        """Start launching the Sendspin Cast app, unless a launch is already underway."""
         if not self.cast_player.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
                 self.cast_player.display_name,
             )
             return
-        # Cancel any previous launch task
         if self._launch_task and not self._launch_task.done():
-            self._launch_task.cancel()
+            # a fresh force-launch would kill the app the running launch is starting
+            return
         self._launch_task = self.mass.create_task(self._launch_sendspin_app())
 
     async def _launch_sendspin_app(self) -> None:
