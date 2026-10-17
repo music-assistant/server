@@ -109,6 +109,19 @@ class PluginProvider(Provider):
         """
         return None
 
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """
+        Return the AudioSources that are inputs of the given player's own device, like a line-in.
+
+        They are listed in this player's source list and stay available to every
+        player: unlike get_player_audio_sources, this does not bind the plugin to players.
+
+        Sync on purpose: called from the player's (sync) state calculation.
+
+        :param player_id: The player to return the input AudioSources for.
+        """
+        return []
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for a streamable item owned by this plugin.
