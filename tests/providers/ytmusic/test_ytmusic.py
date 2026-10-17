@@ -253,6 +253,13 @@ async def test_search_does_not_use_account(provider: YoutubeMusicProvider) -> No
     assert "user" not in mock_ytmusic.call_args.kwargs
 
 
+def test_parse_album_with_null_artists(provider: YoutubeMusicProvider) -> None:
+    """An album whose artists value is None parses without artists instead of crashing."""
+    album = provider._parse_album({"title": "Test", "artists": None}, "MPREb_test")
+    assert album.name == "Test"
+    assert not album.artists
+
+
 def test_parse_thumbnails_skips_zero_height(provider: YoutubeMusicProvider) -> None:
     """A thumbnail reporting a zero height is skipped instead of crashing the parse."""
     thumbnails = [
