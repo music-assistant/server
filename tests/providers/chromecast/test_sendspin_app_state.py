@@ -178,3 +178,18 @@ async def test_stream_start_leaves_a_launch_underway_alone() -> None:
     assert not launch_task.cancelled()
     assert len(launches) == 1
     launch_task.cancel()
+
+
+async def test_stream_start_right_after_connected_does_not_relaunch() -> None:
+    """The stream start that follows the app's connected report does not launch it again."""
+    bridge, _ = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
+    launches = _block_launches(bridge)
+
+    ready = bridge.reset_cast_app_ready()
+    # the app reports connected just before the Sendspin server sees its connection
+    bridge._mark_cast_app_connected()
+    bridge._on_stream_start(MagicMock())
+    await asyncio.sleep(0)
+
+    assert ready.done()
+    assert launches == []
