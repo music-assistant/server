@@ -31,6 +31,7 @@ from aiosendspin.server import ClientRemovedEvent
 from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.errors import PlayerCommandFailed
 from pychromecast.controllers import BaseController
+from pychromecast.error import PyChromecastError
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -378,7 +379,7 @@ class SendspinChromecastBridge:
         try:
             await loop.run_in_executor(None, ask)
             await asyncio.wait_for(replied.wait(), timeout=CAST_STATUS_REFRESH_TIMEOUT)
-        except Exception as err:
+        except (TimeoutError, PyChromecastError) as err:
             self.logger.debug(
                 "Could not refresh the Cast status of %s: %s", self.cast_player.display_name, err
             )
@@ -601,6 +602,10 @@ class SendspinChromecastBridge:
             request.connection_reason,
         )
         self.ensure_cast_app_ready()
+        if self._cast_app_connected and self.is_cast_app_active:
+            # the app reports connected just before the Sendspin server sees its
+            # connection, so the stream start that follows still asks for a launch
+            return
         self._start_launch()
 
     def _start_launch(self) -> None:
@@ -613,10 +618,6 @@ class SendspinChromecastBridge:
             return
         if self._launch_task and not self._launch_task.done():
             # a fresh force-launch would kill the app the running launch is starting
-            return
-        if self._cast_app_connected and self.is_cast_app_active:
-            # the app reports connected just before the Sendspin server sees its
-            # connection, so the stream start that follows still asks for a launch
             return
         self._launch_task = self.mass.create_task(self._launch_sendspin_app())
 

@@ -15,7 +15,9 @@ import logging
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from aiosendspin.models.types import GoodbyeReason
+from pychromecast.error import NotConnected
 
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
 from music_assistant.providers.chromecast.constants import SENDSPIN_CAST_APP_ID
@@ -193,3 +195,39 @@ async def test_stream_start_right_after_connected_does_not_relaunch() -> None:
 
     assert ready.done()
     assert launches == []
+
+
+async def test_running_app_that_lost_its_connection_is_launched_again() -> None:
+    """An app that reported connected and then lost its connection is relaunched for playback."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=True)
+    launches = _block_launches(bridge)
+    bridge._mark_cast_app_connected()
+    client.is_connected = False
+
+    ready = bridge.reset_cast_app_ready()
+    bridge.launch_cast_app()
+    await asyncio.sleep(0)
+
+    assert not ready.done()
+    assert len(launches) == 1
+
+
+async def test_unexpected_status_refresh_error_is_raised() -> None:
+    """Only a timeout or a Cast transport error falls back to the cached state."""
+    bridge, _ = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=True)
+    receiver = bridge.cast_player.cc.socket_client.receiver_controller
+    receiver.update_status = MagicMock(side_effect=AttributeError("no such method"))  # type: ignore[method-assign]
+
+    with pytest.raises(AttributeError):
+        await bridge.refresh_cast_app_state()
+
+
+async def test_cast_transport_error_keeps_the_cached_state() -> None:
+    """A Cast device that can't be reached leaves its connection as it is."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=True)
+    receiver = bridge.cast_player.cc.socket_client.receiver_controller
+    receiver.update_status = MagicMock(side_effect=NotConnected("connecting"))  # type: ignore[method-assign]
+
+    await bridge.refresh_cast_app_state()
+
+    client.detach_connection.assert_not_called()
