@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 import ytmusicapi
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientSession, DummyCookieJar
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.enums import (
     AlbumType,
@@ -66,6 +66,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.util import (
     import_module_in_thread,
     infer_album_type,
@@ -116,6 +117,9 @@ DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
+ROTATE_COOKIES_URL = "https://accounts.youtube.com/RotateCookies"
+# the interval YouTube's own pages refresh the session at
+ROTATE_COOKIES_INTERVAL = 600
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 # Playlist ID's are not unique across instances for lists like 'Liked videos', 'SuperMix' etc.
@@ -195,6 +199,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _yt_user: str | None
     _cookie: str
     _yt_dlp_module = None
+    _rotate_session: ClientSession | None = None
+    _keep_alive_task: asyncio.Task[None] | None = None
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -229,6 +235,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._initialize_headers()
         self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
+        self._rotate_session = create_clientsession(self.mass, cookie_jar=DummyCookieJar())
+        # a cookie that sat unused (e.g. while MA was offline) needs fresh timestamps first
+        with suppress(ClientError, TimeoutError):
+            await self._rotate_cookies()
         # get default language (that is supported by YTM)
         mass_locale = self.mass.metadata.locale
         for lang_code in SUPPORTED_LANGUAGES:
@@ -239,6 +249,15 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             self.language = "en"
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
+        self._keep_alive_task = self.mass.create_task(self._keep_session_alive())
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        if self._keep_alive_task:
+            self._keep_alive_task.cancel()
+        if self._rotate_session and not self._rotate_session.closed:
+            await self._rotate_session.close()
+        await super().unload(is_removed)
 
     # the checksum invalidates entries cached before the search was pinned to English
     @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
@@ -1286,7 +1305,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     ) -> dict[str, Any]:
         """Figure out the stream URL to use and return the highest quality."""
 
-        def _extract_best_stream_url_format() -> dict[str, Any]:
+        def _extract_best_stream_url_format() -> tuple[dict[str, Any], dict[str, str]]:
             if self._yt_dlp_module is None:
                 self._yt_dlp_module = importlib.import_module("yt_dlp")
             yt_dlp = self._yt_dlp_module
@@ -1317,7 +1336,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 if require_login and had_login and not _has_login_cookie(ydl.cookiejar):
                     raise LoginFailed(
                         "Your YouTube Music cookies have expired. "
-                        "Please reconfigure this provider with fresh cookies.",
+                        "Please reconfigure this provider with fresh cookies, "
+                        "and close the browser window you exported them from right away.",
                         translation_key="cookies_expired",
                         translation_owner=self.translation_owner,
                     )
@@ -1327,9 +1347,18 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 )
                 if not stream_format:
                     raise UnplayableMediaError("No stream formats found")
-                return stream_format
+                rotated: dict[str, str] = {}
+                if _has_login_cookie(ydl.cookiejar):
+                    rotated = {
+                        cookie.name: cookie.value
+                        for cookie in ydl.cookiejar
+                        if cookie.domain.endswith("youtube.com")
+                    }
+                return stream_format, rotated
 
-        return await asyncio.to_thread(_extract_best_stream_url_format)
+        stream_format, rotated = await asyncio.to_thread(_extract_best_stream_url_format)
+        self._store_cookies(rotated)
+        return stream_format
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
@@ -1359,6 +1388,60 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         except (ClientError, TimeoutError) as err:
             self.logger.debug("PO Token server ping failed: %s", err)
             return False
+
+    async def _keep_session_alive(self) -> None:
+        """Keep the YouTube session from expiring while the provider is loaded."""
+        while True:
+            await asyncio.sleep(ROTATE_COOKIES_INTERVAL)
+            try:
+                await self._rotate_cookies()
+            except LoginFailed as err:
+                self.unload_with_error(err)
+                return
+            except (ClientError, TimeoutError) as err:
+                self.logger.debug("Could not refresh the YouTube session: %s", err)
+
+    async def _rotate_cookies(self) -> None:
+        """Refresh the session's short-lived cookies, like an open YouTube tab does."""
+        assert self._rotate_session is not None
+        async with self._rotate_session.post(
+            ROTATE_COOKIES_URL,
+            data='[000,"-0000000000000000000"]',
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://accounts.youtube.com",
+                "Cookie": self._cookie,
+            },
+        ) as response:
+            if response.status == 401:
+                raise LoginFailed(
+                    "Your YouTube Music cookies have expired. "
+                    "Please reconfigure this provider with fresh cookies, "
+                    "and close the browser window you exported them from right away.",
+                    translation_key="cookies_expired",
+                    translation_owner=self.translation_owner,
+                )
+            response.raise_for_status()
+            self._store_cookies({name: morsel.value for name, morsel in response.cookies.items()})
+
+    def _store_cookies(self, updates: dict[str, str]) -> None:
+        """
+        Merge cookies YouTube set into the stored cookie, so the session stays valid.
+
+        :param updates: Cookie names and values YouTube returned.
+        """
+        if not updates:
+            return
+        current = dict(
+            part.strip().partition("=")[::2] for part in self._cookie.split(";") if "=" in part
+        )
+        merged = current | updates
+        if merged == current:
+            return
+        self._cookie = "; ".join(f"{name}={value}" for name, value in merged.items())
+        self._netscape_cookie = convert_to_netscape(self._cookie, YTM_COOKIE_DOMAIN)
+        self._initialize_headers()
+        self._update_setup_data(CONF_COOKIE, self._cookie, immediate=False)
 
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""
