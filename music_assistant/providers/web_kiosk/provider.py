@@ -41,7 +41,7 @@ from .constants import (
 from .http_server import WebKioskHTTPServer
 from .lyrics import parse_track_lyrics
 from .ownership import SendspinIdentityConflictError, VerifiedSendspinClaim
-from .player import END_MARGIN, WebKioskPlayer, playback_lock, resume_position
+from .player import END_MARGIN, PlaybackClaim, WebKioskPlayer, playback_lock, resume_position
 from .sendspin_bridge import WebKioskSendspinBridgeManager
 
 if TYPE_CHECKING:
@@ -323,38 +323,6 @@ class WebKioskProvider(PlayerProvider):
         await self._handle_player_unregister(player_id, permanent=True)
         self.logger.info("Player %s removed by user", player_id)
 
-    def notify_play_started(
-        self,
-        player_id: str,
-        *,
-        playback_generation: str,
-        title: str | None = None,
-        artist: str | None = None,
-        image_url: str | None = None,
-        duration: float | None = None,
-        start: float = 0,
-        playback_speed: float = 1.0,
-        media: PlayerMedia | None = None,
-    ) -> None:
-        """Notify the kiosk WebSocket client that playback started."""
-        if self.http_server:
-            seq = self.next_wave_seq(player_id)
-            self.http_server.broadcast_play(
-                player_id,
-                playback_generation=playback_generation,
-                title=title,
-                artist=artist,
-                image_url=image_url,
-                duration=duration,
-                start=start,
-                playback_speed=playback_speed,
-                wave_seq=seq,
-            )
-            # The browser may have no Music Assistant token. The curve still
-            # belongs to the track this player is already decoding.
-            self.spawn_wave(player_id, seq, media)
-            self.spawn_lyrics(player_id, seq, media)
-
     def next_wave_seq(self, player_id: str) -> int:
         """Return the next energy-curve generation for this player."""
         seq = self._wave_seq.get(player_id, 0) + 1
@@ -414,15 +382,12 @@ class WebKioskProvider(PlayerProvider):
                 # Assistant: the leader keeps playing and nothing is carried over.
                 protocol = self.mass.players.get_player(client_id)
                 follower = bool(protocol and protocol.synced_to and protocol.synced_to != client_id)
-                claim = player.sendspin_claim
-                resume = was_playing and not follower
+                identity = player.sendspin_claim
                 player.sendspin_fallback = True
-                if resume:
-                    # Commands issued during the teardown now reach the kiosk
-                    # itself: a pause (a stop on a Sendspin output) or a stop is
-                    # then seen below instead of being undone by the resume.
-                    player.take_over_output()
-                generation = player.playback_generation
+                # Commands issued during the teardown now reach the kiosk itself:
+                # a pause (a stop on a Sendspin output) or a stop is then kept
+                # instead of being undone by the resume.
+                claim = player.claim(take_over=True) if was_playing and not follower else None
                 try:
                     # Controller commands resolve protocol IDs back to their native
                     # parent, which would release a captured static group. Detach only
@@ -442,30 +407,26 @@ class WebKioskProvider(PlayerProvider):
                     player.set_active_output_protocol("native")
                 except BaseException as err:
                     player.sendspin_fallback = False
-                    if resume:
-                        await self._hand_back_output(player, client_id, generation, err)
+                    if claim is not None:
+                        await self._hand_back_output(player, client_id, claim, err)
                     raise
             # Stream preparation can take time. Release the registration lock while
             # resuming, and do not clear a newer connection's state on failure.
-            if not resume:
+            if claim is None:
                 return
-            if player.sendspin_claim is not claim:
-                player.abandon_takeover(generation)
-                return
-            if not player.still_plays(generation):
-                return
-            # A pause during the teardown or the resume is kept: the queue
-            # resumes paused. The user's last command wins.
-            mark = player.transport_mark()
             try:
-                await self._resume_inside_track(queue)
-                if player.wants_pause(mark):
-                    await player.pause()
+                # A newer verified connection owns the output choice now.
+                if player.sendspin_claim is not identity:
+                    return
+                # A pause during the teardown or the resume is kept: the queue
+                # resumes paused. The user's last command wins.
+                await claim.start(lambda: self._resume_inside_track(queue))
             except BaseException:
-                player.abandon_takeover(generation)
-                if player.sendspin_claim is claim:
+                if player.sendspin_claim is identity:
                     player.sendspin_fallback = False
                 raise
+            finally:
+                claim.release()
 
     async def run_owned[T](self, coro: Coroutine[Any, Any, T]) -> T:
         """
@@ -503,17 +464,14 @@ class WebKioskProvider(PlayerProvider):
         """
         self._spawn(self._fallback_sendspin_safely(player_id, client_id))
 
-    def track_ended(
-        self, player_id: str, playback_generation: str, *, position: float | None = None
-    ) -> None:
+    def track_ended(self, player_id: str, playback_generation: str) -> None:
         """
-        Advance the queue after the browser finishes its audio file.
+        End the playback after the browser finished its stream.
 
         :param player_id: The kiosk player that finished playback.
         :param playback_generation: The playback instance the browser finished.
-        :param position: The final position in seconds into the served audio, if reported.
         """
-        self._spawn(self._advance_after_track(player_id, playback_generation, position))
+        self._spawn(self._finish_playback(player_id, playback_generation))
 
     def playback_failed(self, player_id: str, playback_generation: str) -> None:
         """
@@ -523,36 +481,6 @@ class WebKioskProvider(PlayerProvider):
         :param playback_generation: The playback instance that failed.
         """
         self._spawn(self._stop_failed_playback(player_id, playback_generation))
-
-    def notify_play_paused(self, player_id: str) -> None:
-        """Notify the kiosk WebSocket client that playback is paused."""
-        if self.http_server:
-            self.http_server.broadcast_pause(player_id)
-
-    def notify_play_resumed(self, player_id: str) -> None:
-        """Notify the kiosk WebSocket client that playback resumed."""
-        if self.http_server:
-            self.http_server.broadcast_resume(player_id)
-
-    def notify_play_stopped(self, player_id: str) -> None:
-        """Notify the kiosk WebSocket client that playback stopped."""
-        if self.http_server:
-            self.http_server.broadcast_stop(player_id)
-
-    def notify_seek(self, player_id: str, position_seconds: int) -> None:
-        """Notify the kiosk WebSocket client to seek to position."""
-        if self.http_server:
-            self.http_server.broadcast_seek(player_id, position_seconds)
-
-    def notify_mute(self, player_id: str, muted: bool) -> None:
-        """Notify the kiosk WebSocket clients of a mute change."""
-        if self.http_server:
-            self.http_server.broadcast_mute(player_id, muted)
-
-    def notify_volume(self, player_id: str, volume_level: int) -> None:
-        """Notify the kiosk WebSocket client of a volume change."""
-        if self.http_server:
-            self.http_server.broadcast_volume(player_id, volume_level)
 
     def get_stream_token(self, player_id: str) -> str:
         """
@@ -583,16 +511,7 @@ class WebKioskProvider(PlayerProvider):
             logger.debug("No media provided")
             return None
         try:
-            stream_url = await self.mass.streams.resolve_stream_url(player_id, media)
-            flow_prefix = f"{self.mass.streams.base_url}/flow/"
-            if stream_url.startswith(flow_prefix):
-                # MA may force flow for crossfade/overlays despite requires_flow_mode=False.
-                # The page plays one stream per queue item, so it takes the per-item
-                # route, which shares the session, item and codec URL suffix. This
-                # leaves out crossfade and overlays until the page can follow a
-                # continuous stream.
-                return f"{self.mass.streams.base_url}/single/{stream_url.removeprefix(flow_prefix)}"
-            return stream_url
+            return await self.mass.streams.resolve_stream_url(player_id, media)
         except MusicAssistantError as err:
             logger.warning("Failed to resolve MA stream URL: %s", err, exc_info=True)
             return None
@@ -748,10 +667,8 @@ class WebKioskProvider(PlayerProvider):
         # Report IDLE like a finished stream; the queue stays where it is.
         await player.stop()
 
-    async def _advance_after_track(
-        self, player_id: str, playback_generation: str, position: float | None = None
-    ) -> None:
-        """Start the handed-over queue item, or report IDLE when there is none."""
+    async def _finish_playback(self, player_id: str, playback_generation: str) -> None:
+        """Report IDLE once the browser has played its stream to the end."""
         # These reports only change the kiosk's own state and issue no Music
         # Assistant command, so they take no playback lock: an announcement holds
         # that lock until this player reports IDLE. The generation check and the
@@ -762,36 +679,18 @@ class WebKioskProvider(PlayerProvider):
             return
         if playback_generation != player.playback_generation:
             return
-        # Position reports are periodic. The final one arrives with the end
-        # report, so a fast stream ending between reports still completes.
-        if position is not None:
-            player.update_position(position)
-        if player._track_end_handled:
-            return
-        # One end event per play. play_media clears this when the next item starts.
-        player._track_end_handled = True
-        # The browser reports the end of the current stream only once. A stream
-        # that stops well before the song ends was cut short, so it ends like a
-        # failed playback: IDLE, with the queue left on the unfinished item.
-        if not player.playback_reached_end():
-            logger.warning("Kiosk %s stream ended before the end of the song", player_id)
-            await player.stop()
-            return
-        # Music Assistant hands the next queue item over in advance and follows
-        # the player's current media, so queue progression stays in the core.
-        # With nothing after the finished item (end of queue, announcement) the
-        # player reports IDLE and the core's own end-of-queue and restore logic runs.
-        if not await player.start_enqueued_media():
-            await player.stop()
+        # A queue plays as one flow stream, so its end is the end of the queue;
+        # other media (radio, an announcement) is a stream of its own. Either
+        # way the kiosk reports IDLE and Music Assistant's end-of-queue and
+        # announcement-restore handling decides what follows.
+        await player.stop()
 
     async def _hand_back_output(
-        self, player: WebKioskPlayer, client_id: str, generation: str, err: BaseException
+        self, player: WebKioskPlayer, client_id: str, claim: PlaybackClaim, err: BaseException
     ) -> None:
         """Return playback commands to the Sendspin output after a failed fallback teardown."""
-        commanded = (
-            not player.still_plays(generation) or player.playback_state == PlaybackState.PAUSED
-        )
-        player.abandon_takeover(generation)
+        commanded = not claim.owns_player or player.playback_state == PlaybackState.PAUSED
+        claim.release()
         player.set_active_output_protocol(client_id)
         # A pause or stop reached the kiosk during the teardown, while the
         # Sendspin output kept playing. That output has no pause, so stop it as

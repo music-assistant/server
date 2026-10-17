@@ -24,7 +24,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import AuthFai
 from music_assistant.helpers.api import APICommandHandler
 from music_assistant.providers.web_kiosk.http_server import WebKioskHTTPServer
 from music_assistant.providers.web_kiosk.ownership import VerifiedSendspinClaim
-from music_assistant.providers.web_kiosk.player import WebKioskPlayer
+from music_assistant.providers.web_kiosk.player import END_MARGIN, WebKioskPlayer
 from music_assistant.providers.web_kiosk.provider import WebKioskProvider
 
 
@@ -242,7 +242,15 @@ async def test_ws_welcome_carries_server_version(
     await ws.close()
 
 
-async def test_ws_ended_asks_the_provider_to_advance(
+async def test_ws_welcome_carries_the_end_margin(http_client: TestClient[Any, Any]) -> None:
+    """Page seeks leave the same last seconds of a track as the server's own resumes."""
+    ws = await http_client.ws_connect("/ws?device_id=margin-test")
+    payload = json.loads((await ws.receive()).data)
+    assert payload["end_margin"] == END_MARGIN
+    await ws.close()
+
+
+async def test_ws_ended_reports_the_stream_end_to_the_provider(
     http_client: TestClient[Any, Any], provider: WebKioskProvider
 ) -> None:
     """The browser reports track end on the player socket, without an API token."""
@@ -273,25 +281,6 @@ async def test_ws_playback_error_asks_the_provider_to_stop(
     await asyncio.sleep(0.05)
 
     provider.playback_failed.assert_called_once_with(hello["player_id"], "gen")
-    await ws.close()
-
-
-async def test_ws_ended_forwards_final_position(
-    http_client: TestClient[Any, Any], provider: WebKioskProvider
-) -> None:
-    """The final stream position sent with the end report reaches the provider."""
-    provider.track_ended = Mock()  # type: ignore[method-assign]
-    ws = await http_client.ws_connect("/ws?device_id=endpos")
-    hello = json.loads((await ws.receive()).data)
-
-    await ws.send_str(
-        json.dumps({"type": "ended", "playback_generation": "test-generation", "position": 149.5})
-    )
-    await asyncio.sleep(0.05)
-
-    provider.track_ended.assert_called_once_with(
-        hello["player_id"], "test-generation", position=149.5
-    )
     await ws.close()
 
 
@@ -647,8 +636,19 @@ async def test_ws_accepts_same_origin_or_direct_navigation(
     await ws.close()
 
 
+def _serve_flow(mass_mock: Mock, player_id: str, position: float) -> Mock:
+    """Resolve queue media to a flow stream; return the queue, at position in its item."""
+    mass_mock.streams.base_url = "http://ma.local:8097"
+    mass_mock.streams.resolve_stream_url = AsyncMock(
+        return_value=f"http://ma.local:8097/flow/session/{player_id}/item/{player_id}.mp3"
+    )
+    queue = Mock(current_item=Mock(duration=180), corrected_elapsed_time=position)
+    mass_mock.player_queues.get.return_value = queue
+    return queue
+
+
 @pytest.mark.parametrize(("duration", "stream_duration"), [(5, 5), (180, 4)])
-async def test_delayed_ended_cannot_advance_a_replacement_stream(
+async def test_delayed_ended_cannot_end_a_replacement_stream(
     http_client: TestClient[Any, Any],
     provider: WebKioskProvider,
     mass_mock: Mock,
@@ -657,7 +657,7 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
     stream_duration: int,
     queue_order: Callable[..., None],
 ) -> None:
-    """Old end messages cannot skip a short replacement track or a seek near its end."""
+    """Old end messages cannot end a short replacement track or a seek near its end."""
     queue_order("new-item", "next", "later")
     tasks: list[asyncio.Task[None]] = []
 
@@ -695,9 +695,6 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
     second = await http_client.ws_connect("/ws?device_id=test")
     await second.receive_json()
     new_play = await _next_message(second, "play")
-    following = PlayerMedia(uri="next", duration=30, source_id="wk_test", queue_item_id="next")
-    later = PlayerMedia(uri="later", duration=30, source_id="wk_test", queue_item_id="later")
-    await player.enqueue_next_media(following)
     processed = asyncio.Event()
     provider.on_player_activity = Mock(side_effect=lambda _: processed.set())  # type: ignore[method-assign]
     try:
@@ -714,15 +711,8 @@ async def test_delayed_ended_cannot_advance_a_replacement_stream(
         )
         await processed.wait()
         await asyncio.sleep(0.05)
-        assert player.current_media is following
-        await player.enqueue_next_media(later)
-        processed.clear()
-        await second.send_json(
-            {"type": "ended", "playback_generation": new_play["playback_generation"]}
-        )
-        await processed.wait()
-        await asyncio.sleep(0.05)
-        assert player.current_media is following
+        assert player.playback_state == PlaybackState.IDLE
+        assert player.current_media is None
     finally:
         await first.close()
         await second.close()
@@ -848,9 +838,10 @@ async def test_same_origin_routes_do_not_expose_wildcard_cors(
 async def test_html5_reconnect_prepares_stream_at_current_song_position(
     http_client: TestClient[Any, Any], provider: WebKioskProvider, mass_mock: Mock, paused: bool
 ) -> None:
-    """A reconnect gets a freshly sought stream rather than seeking unbuffered bytes."""
+    """A reconnect gets the flow stream rebuilt at the queue's position, not reopened."""
     registered = WebKioskPlayer(provider, "wk_resume", name="Resume")
     registered.update_state = Mock()  # type: ignore[misc,method-assign]
+    queue = _serve_flow(mass_mock, "wk_resume", 50.4)
     await registered.play_media(
         PlayerMedia(
             uri="track",
@@ -862,7 +853,6 @@ async def test_html5_reconnect_prepares_stream_at_current_song_position(
             queue_session_id="session",
         )
     )
-    registered.note_seek(30)
     if paused:
         await registered.pause()
     mass_mock.players.get_player.return_value = registered
@@ -906,11 +896,7 @@ async def test_html5_reconnect_prepares_stream_at_current_song_position(
     mass_mock.players.cmd_seek.assert_awaited_once()
     if paused:
         assert (await ws.receive_json())["type"] == "pause"
-    if paused:
-        await registered.play()
-    registered.note_seek(20)
-    if paused:
-        await registered.pause()
+    queue.corrected_elapsed_time = 70.2
     second = await http_client.ws_connect("/ws?device_id=resume")
     await second.receive_json()
 
@@ -958,7 +944,12 @@ async def test_play_broadcast_carries_playback_speed(
     server._ws_send = AsyncMock()  # type: ignore[method-assign]
     mass_mock.create_task = Mock(side_effect=lambda coro: coro)
 
-    server.broadcast_play("wk_test", playback_generation="gen", playback_speed=2.0)
+    provider.spawn_wave = Mock()  # type: ignore[method-assign]
+    provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
+    player = WebKioskPlayer(provider, "wk_test")
+    player._playback_speed = 2.0
+
+    server.broadcast_play(player)
     await mass_mock.create_task.call_args.args[0]
 
     sent = server._ws_send.await_args
@@ -1070,19 +1061,10 @@ async def test_live_and_snapshot_play_messages_share_one_contract(
         PlayerMedia(uri="x", duration=120, title="T", artist="A", image_url="img")
     )
 
-    server.broadcast_play(
-        player.player_id,
-        playback_generation=player.playback_generation,
-        title="T",
-        artist="A",
-        image_url="img",
-        duration=120,
-        start=0,
-        playback_speed=1.0,
-        wave_seq=1,
-    )
+    server.broadcast_play(player)
     await mass_mock.create_task.call_args.args[0]
-    await server._send_snapshot(ws, player)
+    # A page that connects now; the one above already received this stream.
+    await server._send_snapshot(Mock(closed=False), player)
 
     plays = [message for message in sent if message["type"] == "play"]
     assert len(plays) == 2
@@ -1281,10 +1263,10 @@ async def test_failed_page_preparation_closes_the_socket_for_a_reconnect(
     mass_mock.players.get_player.return_value = player
     provider.spawn_wave = Mock()  # type: ignore[method-assign]
     provider.spawn_lyrics = Mock()  # type: ignore[method-assign]
+    _serve_flow(mass_mock, "wk_test", 30)
     await player.play_media(
         PlayerMedia(uri="track", duration=120, source_id="wk_test", queue_item_id="item-1")
     )
-    player.note_seek(30)
     mass_mock.players.cmd_seek = AsyncMock(side_effect=RuntimeError("seek failed"))
     ws = await http_client.ws_connect("/ws?device_id=test")
     try:
@@ -1345,10 +1327,10 @@ async def test_closing_the_page_does_not_interrupt_its_stream_rebuild(
     mass_mock.create_task.side_effect = asyncio.create_task
     registered = WebKioskPlayer(provider, "wk_rebuild", name="Rebuild")
     registered.update_state = Mock()  # type: ignore[misc,method-assign]
+    _serve_flow(mass_mock, "wk_rebuild", 30)
     await registered.play_media(
         PlayerMedia(uri="track", duration=180, source_id="wk_rebuild", queue_item_id="item")
     )
-    registered.note_seek(30)
     await registered.pause()
     mass_mock.players.get_player.return_value = registered
     seeking = asyncio.Event()
@@ -1359,7 +1341,8 @@ async def test_closing_the_page_does_not_interrupt_its_stream_rebuild(
         await release.wait()
 
     mass_mock.players.cmd_seek = AsyncMock(side_effect=seek)
-    mass_mock.players.cmd_pause = AsyncMock()
+    pause = AsyncMock(side_effect=registered.pause)
+    registered.pause = pause  # type: ignore[method-assign]
     ws = await http_client.ws_connect("/ws?device_id=rebuild")
     await ws.receive_json()
     await asyncio.wait_for(seeking.wait(), 1)
@@ -1367,5 +1350,6 @@ async def test_closing_the_page_does_not_interrupt_its_stream_rebuild(
     await asyncio.sleep(0.05)
     release.set()
     async with asyncio.timeout(1):
-        while not mass_mock.players.cmd_pause.await_count:
+        while not pause.await_count:
             await asyncio.sleep(0.01)
+    assert registered.playback_state == PlaybackState.PAUSED

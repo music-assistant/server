@@ -163,7 +163,11 @@
             if (progress && typeof progress.positionMs === 'number') return progress.positionMs / 1000;
             if (waveAnchorAt) return waveAnchor + (playing ? (performance.now() - waveAnchorAt) / 1000 : 0);
         }
-        return (current.start || 0) + (audio.currentTime || 0) * (current.speed || 1);
+        // A stopped page keeps the audio element's last position; it plays nothing.
+        if (!hasTrack) return 0;
+        var t = (current.start || 0) + (audio.currentTime || 0) * (current.speed || 1);
+        // A flow stream plays on into the next song before its metadata arrives.
+        return current.duration ? Math.min(t, current.duration) : t;
     }
     function imageUrl(item) {
         var img = '';
@@ -304,7 +308,7 @@
     function reportTrackEnded() {
         if (endReported || !playbackGeneration || !audio.ended || isPrimeSource() || sendspinStreaming) return;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        sendWS({ type: 'ended', playback_generation: playbackGeneration, position: audio.currentTime });
+        sendWS({ type: 'ended', playback_generation: playbackGeneration });
         endReported = true;
     }
 
@@ -330,6 +334,7 @@
                 }).catch(function () { if (ws !== socket) return; useHtml5(); if (ws) ws.close(); });
                 break;
             case 'welcome':
+                if (typeof msg.end_margin === 'number' && msg.end_margin >= 0) endMargin = msg.end_margin;
                 if (msg.device_info && typeof msg.device_info.model === 'string') browserModel = msg.device_info.model;
                 playerId = msg.player_id;
                 customName = typeof msg.custom_name === 'string' ? msg.custom_name : '';
@@ -358,7 +363,17 @@
             case 'media':
                 if (typeof msg.wave_seq === 'number') takeServerWave(msg.wave_seq);
                 hasTrack = !!msg.title;
-                current = {title:msg.title || '', artist:msg.artist || '', image:msg.image_url || '', duration:msg.duration || 0, start:0};
+                // During an HTML5 flow stream the queue moved to its next song:
+                // start places that song on the stream clock. Sendspin reads its
+                // clock from the SDK instead.
+                current = {
+                    title: msg.title || '',
+                    artist: msg.artist || '',
+                    image: msg.image_url || '',
+                    duration: msg.duration || 0,
+                    start: typeof msg.start === 'number' ? msg.start : 0,
+                    speed: typeof msg.playback_speed === 'number' && msg.playback_speed > 0 ? msg.playback_speed : 1
+                };
                 displayHold = null;
                 renderNow();
                 sync();
@@ -466,7 +481,7 @@
             // Seconds into the served file. Music Assistant adds the seek origin.
             sendWS({ type: 'position', position: audio.currentTime, playback_generation: playbackGeneration });
         }
-    }, 5000);
+    }, 2000);
 
     function silentWavUrl() {
         if (silentUrl) return silentUrl;
@@ -1067,9 +1082,12 @@
         });
     }
 
+    var endMargin = 2;
     function seekToSong(seconds) {
         var dur = vizDuration();
-        var t = Math.max(0, dur ? Math.min(dur, seconds) : seconds);
+        // A stream that starts at the very end of a song is empty; leave its
+        // last seconds to play, as the server's own resumes do.
+        var t = Math.max(0, Math.floor(dur ? Math.min(seconds, Math.floor(dur) - endMargin) : seconds));
         displayHold = t;
         // Keep the energy window on the seek target while Sendspin has no
         // audio element to read the position from. Ignore a stale queue poll
@@ -1089,7 +1107,7 @@
         paintLyrics();
         // The queue rebuilds the stream. Do not move audio.currentTime to the
         // song position: that file starts at the seek point.
-        cmd('players/cmd/seek', { position: Math.round(t) }).catch(function () {
+        cmd('players/cmd/seek', { position: t }).catch(function () {
             displayHold = null;
             paintClock();
         });
