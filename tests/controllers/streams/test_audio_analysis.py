@@ -1300,6 +1300,27 @@ async def test_iter_merged_audio_analysis_rows_skips_unavailable_providers() -> 
 
 
 @pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_unpacks_only_the_requested_arrays() -> None:
+    """The ``arrays`` selection reaches the row parser, so unrequested arrays stay None."""
+    row = _aa_row(SONIC_ANALYSIS_DOMAIN, 1, bpm=100.0, beats=[0.5, 1.0], rms_energy=[0.25, 0.75])
+    c, _ = _stub_controller(iter_rows=[row])
+    c.mass.get_providers = MagicMock(return_value=[_aa_provider_stub(SONIC_ANALYSIS_DOMAIN)])  # type: ignore[method-assign]
+
+    result = [
+        x
+        async for x in c.iter_merged_audio_analysis_rows(
+            SONIC_ANALYSIS_DOMAIN, arrays=("rms_energy",)
+        )
+    ]
+
+    assert len(result) == 1
+    merged = result[0][2]
+    assert merged.bpm == 100.0
+    assert merged.rms_energy == pytest.approx([0.25, 0.75], abs=1e-3)
+    assert merged.beats is None
+
+
+@pytest.mark.asyncio
 async def test_iter_merged_audio_analysis_rows_groups_by_item_provider() -> None:
     """Rows from different (item_id, provider) pairs are emitted as separate entries."""
     rows: list[dict[str, Any]] = [

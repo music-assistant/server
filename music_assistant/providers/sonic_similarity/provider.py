@@ -89,6 +89,7 @@ from music_assistant.providers.sonic_similarity.similarity import (
     merge_union_results,
 )
 from music_assistant.providers.sonic_similarity.vectors import (
+    VECTOR_ARRAY_FIELDS,
     VECTOR_DIMENSIONS,
     assemble_vector,
     build_debug_breakdown,
@@ -1289,6 +1290,7 @@ class SonicSimilarityPlugin(PluginProvider):
             # value from loudness_analysis) plus smart_fades' bpm/key/mode; sonic wins
             # the shared loudness_integrated/loudness_range fields.
             priority=(AA_PROVIDER_DOMAIN, SMART_FADES_ANALYSIS_DOMAIN),
+            arrays=VECTOR_ARRAY_FIELDS,
         ):
             total_merged_rows += 1
             if len(sampled_for_diag) < 3:
@@ -1628,7 +1630,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 seen.add(key)
                 if self._clap_index.contains(row["provider"], row["item_id"]):
                     continue
-                analysis = _parse_row(row)
+                analysis = _parse_row(row, arrays=("clap_embedding",))
                 if analysis is None:
                     continue
                 emb = _parse_clap_embedding(analysis.clap_embedding)
