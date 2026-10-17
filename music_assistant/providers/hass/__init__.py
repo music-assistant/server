@@ -12,13 +12,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 from functools import partial
 from itertools import batched
 from sys import intern
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, TypedDict, cast
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
+from aiohttp import ClientResponseError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import get_websocket_url
@@ -47,13 +49,14 @@ from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError, match_tts_language
 from music_assistant.helpers.util import lock, try_parse_int
-from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
+from music_assistant.models.plugin import AIEngine, ImageEngine, PluginProvider, TTSEngine
 
 from .constants import (
     CONF_MUTE_CONTROLS,
     CONF_POWER_CONTROLS,
     CONF_VOLUME_CONTROLS,
     OFF_STATES,
+    AITaskEntityFeature,
     MediaPlayerEntityFeature,
     parse_supported_features,
 )
@@ -110,6 +113,8 @@ IMAGE_PATH_PREFIXES: Final = (
     "/api/image/serve/",
     "/local/",
 )
+# where Home Assistant serves the images an AI Task generated, behind a signed link
+AI_TASK_IMAGE_PATH_PREFIX: Final = "/ai_task/image/"
 IMAGE_MAX_BYTES: Final = 10 * 1024 * 1024
 IMAGE_READ_CHUNK_SIZE: Final = 64 * 1024
 
@@ -180,6 +185,7 @@ class HomeAssistantProvider(PluginProvider):
     _unsubscribe_entity_registry: Callable[[], None] | None = None
     _engine_refresh_task: asyncio.Task[None] | None = None
     _ai_engines: list[AIEngine]
+    _image_engines: list[ImageEngine]
     _tts_engines: list[TTSEngine]
     # languages per TTS entity, as Home Assistant reports them; an entity whose list could
     # not be read is absent and gets the requested language passed through unchanged
@@ -262,6 +268,7 @@ class HomeAssistantProvider(PluginProvider):
         self._wanted_controls = None
         self._control_reconcile_lock = asyncio.Lock()
         self._ai_engines = []
+        self._image_engines = []
         self._tts_engines = []
         self._tts_languages = {}
         url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
@@ -630,28 +637,17 @@ class HomeAssistantProvider(PluginProvider):
         :raises FileNotFoundError: When the path is not an HA image path, or HA does not
             answer with an image within the size limit.
         """
-        # the HTTP client resolves percent-encoded dot segments, so check the decoded form
-        path_segments = unquote(path.split("?", 1)[0]).split("/")
-        if not path.startswith(IMAGE_PATH_PREFIXES) or ".." in path_segments:
+        if not path.startswith(IMAGE_PATH_PREFIXES):
             raise FileNotFoundError("Image not found")
-        ha_url, headers, http_session = self._get_ha_http()
-        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
-            response.raise_for_status()
-            if not response.content_type.startswith("image/"):
-                raise FileNotFoundError("Image not found")
-            if (response.content_length or 0) > IMAGE_MAX_BYTES:
-                raise FileNotFoundError("Image too large")
-            # the declared length can be absent or wrong, so cap what is actually read
-            data = bytearray()
-            while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
-                data.extend(chunk)
-                if len(data) > IMAGE_MAX_BYTES:
-                    raise FileNotFoundError("Image too large")
-            return bytes(data)
+        return await self._fetch_image(path)
 
     async def get_ai_engines(self) -> list[AIEngine]:
         """Return the Home Assistant AI Task entities as AI engines."""
         return self._ai_engines
+
+    async def get_image_engines(self) -> list[ImageEngine]:
+        """Return the Home Assistant AI Task entities that generate images as image engines."""
+        return self._image_engines
 
     async def get_tts_engines(self) -> list[TTSEngine]:
         """Return the Home Assistant TTS entities as TTS engines."""
@@ -679,6 +675,46 @@ class HomeAssistantProvider(PluginProvider):
             msg = f"AI Task returned no data in response: {result}"
             raise MusicAssistantError(msg)
         return str(data)
+
+    async def ai_generate_image(self, prompt: str, engine_id: str | None = None) -> bytes:
+        """Generate an image via Home Assistant's ai_task service."""
+        entity_id = engine_id or next((engine.id for engine in self._image_engines), None)
+        if entity_id is None:
+            raise UnsupportedFeaturedException("No AI Task entity that generates images")
+        result = await self.hass.send_command(
+            "call_service",
+            domain="ai_task",
+            service="generate_image",
+            service_data={
+                # Home Assistant names the stored image after the task and the current second,
+                # so images generated at the same time need their own task name
+                "task_name": f"music_assistant_{secrets.token_hex(4)}",
+                "instructions": prompt,
+                "entity_id": entity_id,
+            },
+            return_response=True,
+        )
+        response = result.get("response", {}) if isinstance(result, dict) else {}
+        # a signed link to the image Home Assistant stored in its media source
+        url = response.get("url") if isinstance(response, dict) else None
+        if not isinstance(url, str) or not url:
+            msg = f"AI Task returned no image in response: {result}"
+            raise MusicAssistantError(msg)
+        # the link may be prefixed with a Home Assistant URL we can not reach, so only its
+        # (signed) path is fetched from the URL we are connected to
+        parts = urlsplit(url)
+        # the query carries the signature, so it is never put in an error message
+        if not parts.path.startswith(AI_TASK_IMAGE_PATH_PREFIX):
+            msg = f"AI Task returned an unexpected image link: {parts.path}"
+            raise MusicAssistantError(msg)
+        try:
+            return await self._fetch_image(
+                f"{parts.path}?{parts.query}" if parts.query else parts.path
+            )
+        except ClientResponseError as err:
+            # its message names the full (signed) URL
+            msg = f"Home Assistant answered the image request with {err.status}"
+            raise MusicAssistantError(msg) from None
 
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """
@@ -1001,6 +1037,31 @@ class HomeAssistantProvider(PluginProvider):
             for entity_id, compressed_state in compressed_states.items()
         ]
 
+    async def _fetch_image(self, path: str) -> bytes:
+        """
+        Fetch an image from the connected Home Assistant instance.
+
+        :param path: The HA-relative image path.
+        :raises FileNotFoundError: When HA does not answer with an image within the size limit.
+        """
+        # the HTTP client resolves percent-encoded dot segments, so check the decoded form
+        if ".." in unquote(path.split("?", 1)[0]).split("/"):
+            raise FileNotFoundError("Image not found")
+        ha_url, headers, http_session = self._get_ha_http()
+        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
+            response.raise_for_status()
+            if not response.content_type.startswith("image/"):
+                raise FileNotFoundError("Image not found")
+            if (response.content_length or 0) > IMAGE_MAX_BYTES:
+                raise FileNotFoundError("Image too large")
+            # the declared length can be absent or wrong, so cap what is actually read
+            data = bytearray()
+            while chunk := await response.content.read(IMAGE_READ_CHUNK_SIZE):
+                data.extend(chunk)
+                if len(data) > IMAGE_MAX_BYTES:
+                    raise FileNotFoundError("Image too large")
+            return bytes(data)
+
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
         ha_url = cast("str", self.get_setup_value(CONF_URL)).rstrip("/")
@@ -1113,9 +1174,10 @@ class HomeAssistantProvider(PluginProvider):
                 await asyncio.gather(feature_task, return_exceptions=True)
 
     async def _refresh_engines(self) -> None:
-        """Rebuild the TTS/AI engine lists from the Home Assistant feature entities."""
+        """Rebuild the TTS/AI/image engine lists from the Home Assistant feature entities."""
         tts_engines: list[TTSEngine] = []
         ai_engines: list[AIEngine] = []
+        image_engines: list[ImageEngine] = []
         for state in await self.get_states(domains=FEATURE_DOMAINS):
             entity_id = state["entity_id"]
             entity_platform = entity_id.split(".", 1)[0]
@@ -1127,18 +1189,26 @@ class HomeAssistantProvider(PluginProvider):
                 tts_engines.append(TTSEngine(id=entity_id, name=name, provider=self))
             elif entity_platform == "ai_task":
                 ai_engines.append(AIEngine(id=entity_id, name=name, provider=self))
+                if _supports_image_generation(state):
+                    image_engines.append(ImageEngine(id=entity_id, name=name, provider=self))
         tts_engines.sort(key=lambda engine: engine.name)
         ai_engines.sort(key=lambda engine: engine.name)
+        image_engines.sort(key=lambda engine: engine.name)
         tts_languages = await self._fetch_tts_languages() if tts_engines else {}
-        changed = (self._tts_engines, self._ai_engines) != (tts_engines, ai_engines)
+        changed = (self._tts_engines, self._ai_engines, self._image_engines) != (
+            tts_engines,
+            ai_engines,
+            image_engines,
+        )
         self._tts_engines = tts_engines
         self._tts_languages = tts_languages
         self._ai_engines = ai_engines
+        self._image_engines = image_engines
         self._supported_features.discard(ProviderFeature.TTS)
         self._supported_features.discard(ProviderFeature.AI_QUERY)
         if tts_engines:
             self._supported_features.add(ProviderFeature.TTS)
-        if ai_engines:
+        if ai_engines or image_engines:
             self._supported_features.add(ProviderFeature.AI_QUERY)
         # the entities can come and go without this provider (un)loading, so tell the
         # consumers of our engines that their selection may need re-evaluating. They read
@@ -1255,6 +1325,14 @@ class HomeAssistantProvider(PluginProvider):
         # use_cache rebuilds the cached value from this return annotation, which rules out
         # the Area TypedDict; get_area_registry restores the type for callers
         return {area["area_id"]: area for area in await self.hass.get_area_registry()}
+
+
+def _supports_image_generation(state: State) -> bool:
+    """Return whether an ai_task entity state advertises image generation."""
+    raw_value = state["attributes"].get("supported_features")
+    if not isinstance(raw_value, int) or isinstance(raw_value, bool):
+        return False
+    return AITaskEntityFeature.GENERATE_IMAGE in AITaskEntityFeature(raw_value)
 
 
 def _affects_mirrored_registry(data: Mapping[str, Any]) -> bool:

@@ -44,6 +44,7 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
@@ -114,6 +115,17 @@ class TrackProviderEnrichment:
     ambiguous_providers: tuple[str, ...]
     failed_providers: tuple[str, ...]
     used_library_item: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TrackPlayCount:
+    """Library track with the number of times it was played."""
+
+    item_id: int
+    name: str
+    # the artist the track was selected by
+    artist: str
+    play_count: int
 
 
 class TracksController(MediaControllerBase[Track]):
@@ -704,6 +716,45 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_params={"track_id": db_id},
             in_library_only=True,
         )
+
+    async def most_played_by_artists(
+        self, artist_names: Iterable[str], limit: int = 10
+    ) -> list[TrackPlayCount]:
+        """
+        Return the most-played library tracks by any of the given artists, most played first.
+
+        Tracks that were never played are left out.
+
+        :param artist_names: Names of the library artists to include.
+        :param limit: Maximum number of tracks to return.
+        """
+        names = list(dict.fromkeys(artist_names))
+        if not names or limit <= 0:
+            return []
+        query = (
+            f"SELECT {DB_TABLE_TRACKS}.item_id AS item_id, {DB_TABLE_TRACKS}.name AS name, "
+            f"{DB_TABLE_ARTISTS}.name AS artist, {DB_TABLE_TRACKS}.play_count AS play_count "
+            f"FROM {DB_TABLE_TRACKS} "
+            f"JOIN {DB_TABLE_TRACK_ARTISTS} "
+            f"ON {DB_TABLE_TRACK_ARTISTS}.track_id = {DB_TABLE_TRACKS}.item_id "
+            f"JOIN {DB_TABLE_ARTISTS} "
+            f"ON {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id "
+            f"WHERE {DB_TABLE_ARTISTS}.name IN :artists AND {DB_TABLE_TRACKS}.play_count > 0 "
+            f"GROUP BY {DB_TABLE_TRACKS}.item_id "
+            f"ORDER BY play_count DESC, {DB_TABLE_TRACKS}.item_id"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, {"artists": names}, limit=limit
+        )
+        return [
+            TrackPlayCount(
+                item_id=int(row["item_id"]),
+                name=str(row["name"]),
+                artist=str(row["artist"]),
+                play_count=int(row["play_count"]),
+            )
+            for row in rows
+        ]
 
     async def get_library_match(self, item: Track) -> Track | None:
         """
