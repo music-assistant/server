@@ -1,0 +1,22 @@
+{
+  "config_entries": {
+    "jukebox_player": {
+      "label": "Jukebox player",
+      "description": "The player that Subsonic clients control in jukebox mode. Leave empty to disable jukebox mode.",
+      "options": {
+        "__none__": "None (jukebox disabled)"
+      }
+    },
+    "app_password": {
+      "label": "Subsonic password for {0}",
+      "description": "Use this password, together with the Music Assistant username, to log in from a Subsonic client. The server address is the Music Assistant address."
+    },
+    "regenerate_passwords": {
+      "label": "Regenerate all Subsonic passwords",
+      "description": "Issue new Subsonic passwords for every user. Clients that use the old passwords stop working until they are updated."
+    }
+  },
+  "manifest": {
+    "description": "Expose the Music Assistant library through the (Open)Subsonic API, so Subsonic clients can browse it and play on a Music Assistant player in jukebox mode."
+  }
+}
