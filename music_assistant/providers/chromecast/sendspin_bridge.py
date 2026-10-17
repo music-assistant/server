@@ -313,6 +313,9 @@ class SendspinChromecastBridge:
         fut: asyncio.Future[None] = self.mass.loop.create_future()
         if self.is_cast_app_serving:
             fut.set_result(None)
+        else:
+            # only a connected report after this reset may skip a launch
+            self._cast_app_connected = False
         self._cast_app_ready = fut
         return fut
 
@@ -362,33 +365,22 @@ class SendspinChromecastBridge:
         """
         if not self.cast_player.available:
             return
-        loop = self.mass.loop
-        replied = asyncio.Event()
-        answered = False
-
-        def on_status(success: bool, _response: dict[str, Any] | None) -> None:
-            nonlocal answered
-            answered = success
-            loop.call_soon_threadsafe(replied.set)
-
-        def ask() -> None:
-            self.cast_player.cc.socket_client.receiver_controller.update_status(
-                callback_function=on_status
-            )
-
-        try:
-            await loop.run_in_executor(None, ask)
-            await asyncio.wait_for(replied.wait(), timeout=CAST_STATUS_REFRESH_TIMEOUT)
-        except (TimeoutError, PyChromecastError) as err:
-            self.logger.debug(
-                "Could not refresh the Cast status of %s: %s", self.cast_player.display_name, err
-            )
-            return
-        if not answered or self.is_cast_app_active:
-            return
-        # handled here: the app-gone handler the new status may still trigger would
-        # otherwise fail the ready future of the playback that is about to start
+        was_active = self._cast_app_was_active
+        # The refreshed status reaches the app-gone handler before this method resumes,
+        # and its teardown (stop or ungroup) would hit the playback about to start, so
+        # it is held off while asking and an app found gone is handled here instead.
         self._cast_app_was_active = False
+        try:
+            answered = await self._request_cast_status()
+        except BaseException:
+            self._cast_app_was_active = was_active
+            raise
+        if not answered or self.is_cast_app_active:
+            self._cast_app_was_active = was_active
+            if was_active and not self.is_cast_app_active:
+                # gone while the device didn't answer: the usual handling applies
+                self._handle_cast_app_gone(self.cast_player.cc.app_id)
+            return
         self._cast_app_connected = False
         client = self._sendspin_client
         if client is not None and client.is_connected:
@@ -620,6 +612,32 @@ class SendspinChromecastBridge:
             # a fresh force-launch would kill the app the running launch is starting
             return
         self._launch_task = self.mass.create_task(self._launch_sendspin_app())
+
+    async def _request_cast_status(self) -> bool:
+        """Ask the device for its current status; return whether it answered."""
+        loop = self.mass.loop
+        replied = asyncio.Event()
+        answered = False
+
+        def on_status(success: bool, _response: dict[str, Any] | None) -> None:
+            nonlocal answered
+            answered = success
+            loop.call_soon_threadsafe(replied.set)
+
+        def ask() -> None:
+            self.cast_player.cc.socket_client.receiver_controller.update_status(
+                callback_function=on_status
+            )
+
+        try:
+            await loop.run_in_executor(None, ask)
+            await asyncio.wait_for(replied.wait(), timeout=CAST_STATUS_REFRESH_TIMEOUT)
+        except (TimeoutError, PyChromecastError) as err:
+            self.logger.debug(
+                "Could not refresh the Cast status of %s: %s", self.cast_player.display_name, err
+            )
+            return False
+        return answered
 
     async def _launch_sendspin_app(self) -> None:
         """Launch the Sendspin Cast Receiver app and send the server config."""

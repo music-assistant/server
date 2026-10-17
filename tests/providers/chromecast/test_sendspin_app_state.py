@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiosendspin.models.types import GoodbyeReason
@@ -55,6 +55,9 @@ def _make_bridge(
         if not answers:
             return
         cast_player.cc.app_id = reported_app_id
+        # as on a real device: the status listener is scheduled before the request's
+        # callback, and passes the new app on to the bridge from the event loop
+        loop.call_soon_threadsafe(bridge.on_cast_status_changed, reported_app_id)
         callback_function(True, {"type": "RECEIVER_STATUS"})
 
     cast_player.cc.socket_client.receiver_controller.update_status = update_status
@@ -65,6 +68,9 @@ def _make_bridge(
     bridge = SendspinChromecastBridge(provider, cast_player, MagicMock(), "spb_aabbccddeeff")
     client = MagicMock()
     client.is_connected = client_connected
+    client.group.clients = [client]
+    client.group.stop = AsyncMock()
+    client.ungroup = AsyncMock()
     client.detach_connection = MagicMock(
         side_effect=lambda _reason: setattr(client, "is_connected", False)
     )
@@ -123,18 +129,41 @@ async def test_cached_state_is_kept_when_the_device_does_not_answer() -> None:
     client.detach_connection.assert_not_called()
 
 
-async def test_late_app_gone_report_does_not_fail_the_next_playback() -> None:
-    """The app-gone handler triggered by the refreshed status leaves the new future alone."""
-    bridge, _ = _make_bridge(
+async def test_refresh_finding_the_app_gone_keeps_the_group() -> None:
+    """An app found gone by the refresh is not torn down (stopped or ungrouped) as well."""
+    bridge, client = _make_bridge(
         app_id=SENDSPIN_CAST_APP_ID, reported_app_id=None, client_connected=True
     )
     bridge._cast_app_was_active = True
 
     await bridge.refresh_cast_app_state()
     ready = bridge.reset_cast_app_ready()
-    bridge._handle_cast_app_gone(None)
+    for _ in range(5):
+        await asyncio.sleep(0)
 
+    client.detach_connection.assert_called_once_with(GoodbyeReason.SHUTDOWN)
+    client.ungroup.assert_not_awaited()
+    client.group.stop.assert_not_awaited()
     assert not ready.done()
+
+
+async def test_app_gone_while_the_device_does_not_answer_is_still_handled() -> None:
+    """An app reported gone during an unanswered refresh gets the usual app-gone handling."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, answers=False, client_connected=True)
+    bridge._cast_app_was_active = True
+
+    async def app_goes_away() -> None:
+        await asyncio.sleep(0)
+        bridge.cast_player.cc.app_id = None  # type: ignore[misc]
+        bridge.on_cast_status_changed(None)
+
+    with patch.object(bridge_module, "CAST_STATUS_REFRESH_TIMEOUT", 0.01):
+        await asyncio.gather(bridge.refresh_cast_app_state(), app_goes_away())
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client.detach_connection.assert_called_once_with(GoodbyeReason.SHUTDOWN)
+    client.group.stop.assert_awaited_once()
 
 
 async def test_running_app_without_a_connection_is_not_ready() -> None:
@@ -231,3 +260,18 @@ async def test_cast_transport_error_keeps_the_cached_state() -> None:
     await bridge.refresh_cast_app_state()
 
     client.detach_connection.assert_not_called()
+
+
+async def test_stream_start_after_a_lost_connection_launches_the_app() -> None:
+    """A connected report from before the reset does not keep a stream start from launching."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=True)
+    launches = _block_launches(bridge)
+    bridge._mark_cast_app_connected()
+    client.is_connected = False
+
+    ready = bridge.reset_cast_app_ready()
+    bridge._on_stream_start(MagicMock())
+    await asyncio.sleep(0)
+
+    assert not ready.done()
+    assert len(launches) == 1
