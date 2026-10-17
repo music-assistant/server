@@ -152,3 +152,69 @@ async def test_new_media_is_set_only_after_the_status_refresh() -> None:
     assert calls[0] == "refresh (track-0)"
     assert player._attr_current_media is not None
     assert player._attr_current_media.uri == "track-1"
+
+
+async def test_stop_during_the_launch_does_not_start_playback() -> None:
+    """A stop while the Cast app launches ends the wait without starting playback."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    player, session, _, calls = _player(ready)
+
+    call = asyncio.create_task(_play_media(player))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert calls[-1] == "launch"
+
+    SendspinPlayer._abort_pending_cast_start(player)
+    await call
+
+    session.start.assert_not_awaited()
+    assert ready.cancelled()
+
+
+async def test_stop_as_the_app_reports_ready_does_not_start_playback() -> None:
+    """A stop that lands right as the app reports ready still keeps playback from starting."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    player, session, _, _ = _player(ready)
+
+    call = asyncio.create_task(_play_media(player))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    ready.set_result(None)
+    SendspinPlayer._abort_pending_cast_start(player)
+    await call
+
+    session.start.assert_not_awaited()
+
+
+async def test_newer_play_media_replaces_one_waiting_for_the_app() -> None:
+    """A play_media replaced while it waits returns quietly and leaves the session alone."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    player, session, _, calls = _player(ready)
+
+    call = asyncio.create_task(_play_media(player))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # what a newer play_media does: bump the generation, and reset_cast_app_ready
+    # cancels the future the older call waits on
+    player._play_generation += 1
+    ready.cancel()
+    await call
+
+    session.start.assert_not_awaited()
+    assert "cancel" not in calls[calls.index("launch") :]
+
+
+async def test_group_stop_aborts_a_pending_cast_start() -> None:
+    """The group stopping, for instance by a stop from another member, aborts the wait."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    player, session, _, _ = _player(ready)
+    session.playback_task = None
+
+    call = asyncio.create_task(_play_media(player))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    with patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        SendspinPlayer._on_group_stopped(player)
+    await call
+
+    session.start.assert_not_awaited()
