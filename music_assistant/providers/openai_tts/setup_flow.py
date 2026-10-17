@@ -21,6 +21,7 @@ from . import (
     DEFAULT_RESPONSE_FORMAT,
     DEFAULT_VOICES,
     RESPONSE_FORMATS,
+    SPEECH_TIMEOUT_SECONDS,
     fetch_backend_voices,
     normalize_base_url,
     parse_voices,
@@ -33,8 +34,9 @@ if TYPE_CHECKING:
 
 # short throwaway phrase, only rendered to verify the endpoint and credentials
 VALIDATION_MESSAGE = "Hello"
-# the user is waiting on the form, so do not sit on an unresponsive endpoint
-VALIDATION_TIMEOUT = ClientTimeout(total=30)
+# the user is waiting on the form, so an unreachable endpoint fails fast, while a reachable
+# server gets as long as a real render to load its model on the first request
+VALIDATION_TIMEOUT = ClientTimeout(total=SPEECH_TIMEOUT_SECONDS, connect=10)
 # the errors of a test render the server accepted but could not complete
 RENDER_ERRORS = ("render_failed", "render_incomplete")
 
@@ -184,7 +186,14 @@ async def _validate_credentials(
     except ClientPayloadError as err:
         # some servers (mlx-audio) answer 200 OK and then abort the body when rendering fails
         raise SetupFlowError(f"Speech request aborted: {err}", "render_incomplete") from err
-    except (ClientError, TimeoutError) as err:
+    except ClientError as err:
+        # includes the connect timeout, so only a slow render reaches the TimeoutError below
         raise SetupFlowError(f"Connection failed: {err}", "cannot_connect") from err
+    except TimeoutError as err:
+        raise SetupFlowError(
+            f"Speech request timed out after {SPEECH_TIMEOUT_SECONDS}s",
+            "render_timeout",
+            [SPEECH_TIMEOUT_SECONDS],
+        ) from err
     if not audio_data:
         raise SetupFlowError("Speech request returned no audio", "render_incomplete")
