@@ -1115,8 +1115,8 @@ class MediaResolver:
         :param played_copy: For an audiobook played on its own, the (provider instance, item id)
             of the copy the play request named, which the library item it resolved to no longer
             names.
-        :param start_position: Position in seconds to start an audiobook at, instead of its
-            resume position.
+        :param start_position: Position in seconds to start an audiobook or episode at, instead
+            of its resume position.
         """
         # resolve Itemmapping to full media item
         if isinstance(media_item, ItemMapping):
@@ -1209,11 +1209,15 @@ class MediaResolver:
             return self._played_from(media_item, episodes)
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
+            episodes = await self.get_next_podcast_episodes(
+                None, media_item, userid=userid, start_from_beginning=start_from_beginning
+            )
+            if start_position is not None and episodes:
+                episodes[0].fully_played = False
+                episodes[0].resume_position_ms = int(start_position * 1000)
             return [
                 ResolvedItem(episode, self._pinned_origin(self._own_copy(episode)))
-                for episode in await self.get_next_podcast_episodes(
-                    None, media_item, userid=userid, start_from_beginning=start_from_beginning
-                )
+                for episode in episodes
             ]
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)

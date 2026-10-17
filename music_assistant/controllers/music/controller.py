@@ -73,6 +73,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
+from music_assistant.controllers.music.bookmarks import BookmarksController
 from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
@@ -406,6 +407,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.recommendations = RecommendationsController(self.mass)
         self.recency = RecencyEngine(self.mass)
         self.favorites = FavoritesStore(self.mass)
+        self.bookmarks = BookmarksController(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         # a sync ran that MUSIC_SYNC_COMPLETED has not announced yet

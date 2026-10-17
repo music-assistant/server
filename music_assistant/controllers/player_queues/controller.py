@@ -587,8 +587,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param sort_field: Play an album or playlist in the order its tracks listing shows for
             this sort field, before applying start_item; the listing's default when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
-        :param start_position: Position in seconds to start an audiobook at, e.g. a bookmark,
-            instead of its resume position.
+        :param start_position: Position in seconds to start an audiobook or episode at, e.g. a
+            bookmark, instead of its resume position.
         :raises InvalidDataError: When the sort key is unknown, or an album or playlist does
             not offer the sort field.
         """

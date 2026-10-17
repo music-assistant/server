@@ -1,4 +1,4 @@
-"""Tests for the user's audiobook bookmarks: where each is stored and which copies list it."""
+"""Tests for the user's bookmarks: where each is stored and which copies list it."""
 
 from __future__ import annotations
 
@@ -8,9 +8,16 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import ProviderFeature, ProviderSharing
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Audiobook, MediaItemBookmark, ProviderMapping
+from music_assistant_models.media_items import (
+    Audiobook,
+    ItemMapping,
+    MediaItemBookmark,
+    Podcast,
+    PodcastEpisode,
+    ProviderMapping,
+)
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.models.music_provider import MusicProvider
@@ -22,7 +29,9 @@ if TYPE_CHECKING:
 ABS = "audiobookshelf--abs"
 LOCAL = "filesystem_local--nas"
 LISTENER = User(user_id="listener", username="listener", role=UserRole.USER)
-EXACT_PROVIDER = "music_assistant.controllers.music.media.audiobooks.exact_provider"
+EXACT_PROVIDER = "music_assistant.controllers.music.bookmarks.exact_provider"
+AUDIOBOOK = MediaType.AUDIOBOOK
+EPISODE = MediaType.PODCAST_EPISODE
 READ = ProviderFeature.AUDIOBOOK_BOOKMARKS
 EDIT = ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT
 
@@ -31,9 +40,10 @@ def _provider(features: set[ProviderFeature]) -> Mock:
     """Build a provider with the given bookmark features, keeping its bookmarks in a dict."""
     stored: dict[float, str] = {}
     provider = Mock(spec=MusicProvider)
+    provider.instance_id = ABS
     provider.supports_feature.side_effect = lambda feature: feature in features
-    provider.get_audiobook_bookmarks = AsyncMock(
-        side_effect=lambda item_id: [
+    provider.get_bookmarks = AsyncMock(
+        side_effect=lambda _media_type, item_id: [
             MediaItemBookmark(
                 name=name,
                 start=start,
@@ -43,8 +53,24 @@ def _provider(features: set[ProviderFeature]) -> Mock:
             for start, name in stored.items()
         ]
     )
-    provider.set_audiobook_bookmark = AsyncMock(
-        side_effect=lambda _item_id, start, name: stored.__setitem__(start, name)
+    provider.set_bookmark = AsyncMock(
+        side_effect=lambda _media_type, _item_id, start, name: stored.__setitem__(start, name)
+    )
+    provider.get_podcast_episode = AsyncMock(
+        return_value=PodcastEpisode(
+            item_id="episode1",
+            provider=ABS,
+            name="Episode",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="episode1", provider_domain="audiobookshelf", provider_instance=ABS
+                )
+            },
+            position=1,
+            podcast=ItemMapping(
+                media_type=MediaType.PODCAST, item_id="show1", provider=ABS, name="Show"
+            ),
+        )
     )
     return provider
 
@@ -94,9 +120,9 @@ async def test_bookmark_goes_to_the_provider_only_when_it_may_edit(
     )
     book = await _library_book(music_mass)
 
-    await music_mass.music.audiobooks.set_bookmark(ABS, "book1", 754.5, "Arrakis")
+    await music_mass.music.bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 754.5, "Arrakis")
 
-    assert await music_mass.music.audiobooks.bookmarks(book.item_id, "library") == [
+    assert await music_mass.music.bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == [
         MediaItemBookmark(
             name="Arrakis",
             start=754.5,
@@ -116,19 +142,20 @@ async def test_bookmarks_stored_by_music_assistant(
     monkeypatch.setattr(EXACT_PROVIDER, lambda _mass, _instance_id: _provider(set()))
     book = await _library_book(mass)
     audiobooks = mass.music.audiobooks
+    bookmarks = mass.music.bookmarks
 
-    await audiobooks.set_bookmark(LOCAL, "dune.m4b", 90.0, "Later")
-    await audiobooks.set_bookmark(LOCAL, "dune.m4b", 30.0, "Typo")
-    await audiobooks.set_bookmark(LOCAL, "dune.m4b", 30.0, "Earlier")
-    await audiobooks.set_bookmark(LOCAL, "dune.m4b", 60.0, "Removed")
-    await audiobooks.set_bookmark(ABS, "book1", 30.0, "Other copy")
-    await audiobooks.remove_bookmark(LOCAL, "dune.m4b", 60.0)
+    await bookmarks.set_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 90.0, "Later")
+    await bookmarks.set_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 30.0, "Typo")
+    await bookmarks.set_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 30.0, "Earlier")
+    await bookmarks.set_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 60.0, "Removed")
+    await bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 30.0, "Other copy")
+    await bookmarks.remove_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 60.0)
     with pytest.raises(MediaNotFoundError):
-        await audiobooks.remove_bookmark(LOCAL, "dune.m4b", 60.0)
+        await bookmarks.remove_bookmark(AUDIOBOOK, LOCAL, "dune.m4b", 60.0)
 
     listed = [
         (x.provider_instance_id, x.start, x.name)
-        for x in await audiobooks.bookmarks(book.item_id, "library")
+        for x in await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library")
     ]
     assert listed == [
         (ABS, 30.0, "Other copy"),
@@ -137,7 +164,7 @@ async def test_bookmarks_stored_by_music_assistant(
     ]
 
     set_current_user(User(user_id="other", username="other", role=UserRole.USER))
-    assert await audiobooks.bookmarks(book.item_id, "library") == []
+    assert await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == []
 
     set_current_user(LISTENER)
     await audiobooks.remove_provider_mapping(book.item_id, LOCAL, "dune.m4b")
@@ -150,7 +177,43 @@ async def test_bookmarks_stored_by_music_assistant(
             )
         ],
     )
-    assert [x.name for x in await audiobooks.bookmarks(book.item_id, "library")] == ["Other copy"]
+    listed_names = [x.name for x in await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library")]
+    assert listed_names == ["Other copy"]
+
+
+async def test_episode_bookmarks_leave_with_the_podcast(
+    music_mass_with_audio_analysis: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An episode is bookmarked only in a library podcast, and loses its bookmarks with it."""
+    mass = music_mass_with_audio_analysis
+    set_current_user(LISTENER)
+    provider = _provider(set())
+    monkeypatch.setattr(EXACT_PROVIDER, lambda _mass, _instance_id: provider)
+    monkeypatch.setattr(mass, "get_provider", lambda *_args, **_kwargs: provider)
+    bookmarks = mass.music.bookmarks
+    with pytest.raises(MediaNotFoundError):
+        await bookmarks.set_bookmark(EPISODE, ABS, "episode1", 30.0, "Not in the library")
+    podcast = await mass.music.podcasts.add_item_to_library(
+        Podcast(
+            item_id="0",
+            provider="library",
+            name="Show",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="show1", provider_domain="audiobookshelf", provider_instance=ABS
+                )
+            },
+        )
+    )
+
+    await bookmarks.set_bookmark(EPISODE, ABS, "episode1", 30.0, "Intro")
+    await bookmarks.set_bookmark(EPISODE, ABS, "episode1", 60.0, "Removed")
+    await bookmarks.remove_bookmark(EPISODE, ABS, "episode1", 60.0)
+    assert [x.name for x in await bookmarks.bookmarks(EPISODE, "episode1", ABS)] == ["Intro"]
+
+    await mass.music.podcasts.remove_provider_mapping(podcast.item_id, ABS, "show1")
+    await mass.music._cleanup_database()
+    assert await bookmarks.bookmarks(EPISODE, "episode1", ABS) == []
 
 
 async def test_bookmarks_of_a_hidden_copy(
@@ -160,12 +223,13 @@ async def test_bookmarks_of_a_hidden_copy(
     set_current_user(LISTENER)
     monkeypatch.setattr(EXACT_PROVIDER, lambda _mass, _instance_id: _provider(set()))
     book = await _library_book(music_mass)
-    await music_mass.music.audiobooks.set_bookmark(ABS, "book1", 30.0, "Before hiding")
+    bookmarks = music_mass.music.bookmarks
+    await bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 30.0, "Before hiding")
     set_music_source_access(
         music_mass,
         {ABS: ProviderAccess(owner="other", sharing=ProviderSharing.PRIVATE), LOCAL: None},
     )
 
-    assert await music_mass.music.audiobooks.bookmarks(book.item_id, "library") == []
+    assert await bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == []
     with pytest.raises(MediaNotFoundError):
-        await music_mass.music.audiobooks.set_bookmark(ABS, "book1", 60.0, "Hidden")
+        await bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 60.0, "Hidden")

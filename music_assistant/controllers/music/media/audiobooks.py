@@ -14,11 +14,6 @@ from music_assistant_models.enums import (
     SortDirection,
     SortField,
 )
-from music_assistant_models.errors import (
-    AuthenticationRequired,
-    MediaNotFoundError,
-    ProviderUnavailableError,
-)
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Artist,
@@ -27,7 +22,6 @@ from music_assistant_models.media_items import (
     ItemMapping,
     ItemMappingSummary,
     MediaCollection,
-    MediaItemBookmark,
     ProviderMapping,
     UniqueList,
 )
@@ -35,7 +29,6 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
-    DB_TABLE_AUDIOBOOK_BOOKMARKS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -49,7 +42,6 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.helpers.provider_access import exact_provider, visible_music_sources
 from music_assistant.helpers.util import parse_optional_bool
 from music_assistant.models.music_provider import MusicProvider
 
@@ -78,17 +70,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         api_base = self.api_base
         self.mass.register_api_command(
             f"music/{api_base}/audiobook_versions", self.versions, required_scope=Scope.LIBRARY_READ
-        )
-        self.mass.register_api_command(
-            f"music/{api_base}/bookmarks", self.bookmarks, required_scope=Scope.LIBRARY_READ
-        )
-        self.mass.register_api_command(
-            f"music/{api_base}/set_bookmark", self.set_bookmark, required_scope=Scope.LIBRARY_WRITE
-        )
-        self.mass.register_api_command(
-            f"music/{api_base}/remove_bookmark",
-            self.remove_bookmark,
-            required_scope=Scope.LIBRARY_WRITE,
         )
 
     @property
@@ -354,91 +335,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             limit=limit,
             offset=offset,
         )
-
-    async def bookmarks(
-        self, item_id: str, provider_instance_id_or_domain: str
-    ) -> list[MediaItemBookmark]:
-        """
-        Return the user's bookmarks of an audiobook, for each copy the user may see.
-
-        :param item_id: The audiobook id on the provider, or its library id.
-        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
-        """
-        if not (user := get_current_user()):
-            raise AuthenticationRequired("Bookmarks belong to a user")
-        audiobook = await self.get(
-            item_id, provider_instance_id_or_domain, allow_update_metadata=False
-        )
-        visible = visible_music_sources(self.mass, user)
-        bookmarks: list[MediaItemBookmark] = []
-        for mapping in sorted(
-            audiobook.provider_mappings, key=lambda x: (x.provider_instance, x.item_id)
-        ):
-            if visible is not None and mapping.provider_instance not in visible:
-                continue
-            copy_bookmarks = [
-                MediaItemBookmark(
-                    name=row["name"],
-                    start=row["start"],
-                    provider_instance_id=mapping.provider_instance,
-                    provider_item_id=mapping.item_id,
-                    stored_by_music_assistant=True,
-                )
-                for row in await self.mass.music.database.get_rows(
-                    DB_TABLE_AUDIOBOOK_BOOKMARKS,
-                    {
-                        "user_id": user.user_id,
-                        "provider_instance": mapping.provider_instance,
-                        "provider_item_id": mapping.item_id,
-                    },
-                    limit=0,
-                )
-            ]
-            provider = exact_provider(self.mass, mapping.provider_instance)
-            if isinstance(provider, MusicProvider) and provider.supports_feature(
-                ProviderFeature.AUDIOBOOK_BOOKMARKS
-            ):
-                copy_bookmarks += await provider.get_audiobook_bookmarks(mapping.item_id)
-            bookmarks += sorted(copy_bookmarks, key=lambda x: x.start)
-        return bookmarks
-
-    async def set_bookmark(
-        self, provider_instance_id: str, provider_item_id: str, start: float, name: str
-    ) -> None:
-        """
-        Add a bookmark of the user to a library copy of an audiobook, or rename the one at start.
-
-        :param provider_instance_id: The provider instance of the copy.
-        :param provider_item_id: The id of the copy on the provider.
-        :param start: Position of the bookmark in seconds.
-        :param name: Name of the bookmark.
-        """
-        key, provider = await self._bookmark_storage(provider_instance_id, provider_item_id)
-        if provider:
-            await provider.set_audiobook_bookmark(provider_item_id, start, name)
-            return
-        await self.mass.music.database.insert_or_replace(
-            DB_TABLE_AUDIOBOOK_BOOKMARKS, {**key, "start": start, "name": name}
-        )
-
-    async def remove_bookmark(
-        self, provider_instance_id: str, provider_item_id: str, start: float
-    ) -> None:
-        """
-        Remove a bookmark of the user from a library copy of an audiobook.
-
-        :param provider_instance_id: The provider instance of the copy.
-        :param provider_item_id: The id of the copy on the provider.
-        :param start: Position of the bookmark in seconds.
-        """
-        key, provider = await self._bookmark_storage(provider_instance_id, provider_item_id)
-        if provider:
-            await provider.remove_audiobook_bookmark(provider_item_id, start)
-            return
-        match = {**key, "start": start}
-        if not await self.mass.music.database.get_row(DB_TABLE_AUDIOBOOK_BOOKMARKS, match):
-            raise MediaNotFoundError(f"No bookmark at {start}s on {provider_item_id}")
-        await self.mass.music.database.delete(DB_TABLE_AUDIOBOOK_BOOKMARKS, match)
 
     async def match_provider(
         self, db_audiobook: Audiobook, provider: MusicProvider, strict: bool = True
@@ -901,42 +797,3 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         item.authors = UniqueList(authors or json_loads(db_row["authors"] or "[]"))
         item.narrators = UniqueList(narrators or json_loads(db_row["narrators"] or "[]"))
         return item
-
-    async def _bookmark_storage(
-        self, provider_instance_id: str, provider_item_id: str
-    ) -> tuple[dict[str, str], MusicProvider | None]:
-        """
-        Return the user's row key of a library copy and the provider storing its bookmarks.
-
-        The provider is None when Music Assistant stores the bookmarks of the copy.
-        """
-        if not (user := get_current_user()):
-            raise AuthenticationRequired("Bookmarks belong to a user")
-        visible = visible_music_sources(self.mass, user)
-        audiobook = await self.get_library_item_by_prov_id(provider_item_id, provider_instance_id)
-        mapping = next(
-            (
-                x
-                for x in (audiobook.provider_mappings if audiobook else ())
-                if x.provider_instance == provider_instance_id and x.item_id == provider_item_id
-            ),
-            None,
-        )
-        if mapping is None or (visible is not None and provider_instance_id not in visible):
-            raise MediaNotFoundError(
-                f"Audiobook {provider_item_id} on {provider_instance_id} is not in the library"
-            )
-        provider = exact_provider(self.mass, provider_instance_id)
-        if not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError(f"Provider {provider_instance_id} is not available")
-        key = {
-            "user_id": user.user_id,
-            "provider_instance": provider_instance_id,
-            "provider_item_id": provider_item_id,
-        }
-        # bookmarks only go to an account the user may write to, otherwise MA keeps them
-        if provider.supports_feature(
-            ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT
-        ) and self.mass.music._write_target_mappings([mapping]):
-            return key, provider
-        return key, None
