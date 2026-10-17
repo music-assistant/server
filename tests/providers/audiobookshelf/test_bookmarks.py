@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 from aioaudiobookshelf.schema.audio import AudioBookmark
 from aioaudiobookshelf.schema.user import User
+from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import MediaItemBookmark
 
 from music_assistant.providers.audiobookshelf import Audiobookshelf
@@ -20,7 +21,7 @@ async def test_bookmarks_of_the_book_are_read_from_the_user(provider: Audiobooks
     ]
     provider._client.get_my_user = AsyncMock(return_value=user)  # type: ignore[method-assign]
 
-    assert await provider.get_audiobook_bookmarks("book1") == [
+    assert await provider.get_bookmarks(MediaType.AUDIOBOOK, "book1") == [
         MediaItemBookmark(
             name="Arrakis",
             start=754.5,

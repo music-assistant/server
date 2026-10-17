@@ -792,7 +792,9 @@ for more details.
         return await self._recommendation_items_from_payload(item_id)
 
     @handle_refresh_token
-    async def get_audiobook_bookmarks(self, prov_audiobook_id: str) -> list[MediaItemBookmark]:
+    async def get_bookmarks(
+        self, media_type: MediaType, prov_item_id: str
+    ) -> list[MediaItemBookmark]:
         """Get the user's bookmarks of the given audiobook."""
         # the user payload carries the bookmarks of every abs version, /me/bookmarks/:id not
         user = await self._client.get_my_user()
@@ -801,21 +803,23 @@ for more details.
                 name=bookmark.title,
                 start=bookmark.time,
                 provider_instance_id=self.instance_id,
-                provider_item_id=prov_audiobook_id,
+                provider_item_id=prov_item_id,
             )
             for bookmark in user.bookmarks
-            if bookmark.library_item_id == prov_audiobook_id
+            if bookmark.library_item_id == prov_item_id
         ]
 
     @handle_refresh_token
-    async def set_audiobook_bookmark(self, prov_audiobook_id: str, start: float, name: str) -> None:
+    async def set_bookmark(
+        self, media_type: MediaType, prov_item_id: str, start: float, name: str
+    ) -> None:
         """Add a bookmark to the given audiobook, or rename the one at the same start."""
-        await self._client.create_my_bookmark(item_id=prov_audiobook_id, time=start, title=name)
+        await self._client.create_my_bookmark(item_id=prov_item_id, time=start, title=name)
 
     @handle_refresh_token
-    async def remove_audiobook_bookmark(self, prov_audiobook_id: str, start: float) -> None:
+    async def remove_bookmark(self, media_type: MediaType, prov_item_id: str, start: float) -> None:
         """Remove the bookmark at the given start of the given audiobook."""
-        await self._client.remove_my_bookmark(item_id=prov_audiobook_id, time=start)
+        await self._client.remove_my_bookmark(item_id=prov_item_id, time=start)
 
     @handle_refresh_token
     async def _get_abs_expanded_podcast(
