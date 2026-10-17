@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     EventType,
     ImageType,
@@ -52,7 +54,7 @@ from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
@@ -63,6 +65,15 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 # seconds the silence nudge waits for the audio pipe's consumer to reattach
 AUDIO_PIPE_READER_TIMEOUT = 1.0
+
+# Added by shairport-sync to the playback latency the AirPlay sender requests
+# (about 2 s for Apple devices). A negative value hands audio to Music Assistant
+# earlier, which compensates for the fixed delay of the player behind the receiver.
+CONF_LATENCY_OFFSET_MS = "latency_offset_ms"
+DEFAULT_LATENCY_OFFSET_MS = 0
+# the pipe backend releases audio 1 s ahead of its play time: with the ~2 s an
+# Apple sender asks for, below -1000 ms audio would be due before it has arrived
+LATENCY_OFFSET_MS_RANGE = (-1000, 1000)
 
 
 def airplay_receiver_ports(instance_id: str, player_ids: Iterable[str]) -> dict[str, int]:
@@ -206,6 +217,14 @@ class AirPlayReceiverProvider(PluginProvider):
                 self.mass, cast("list[str]", self.get_config_value(CONF_CONNECTED_PLAYERS) or [])
             ),
             create_publish_name_template_entry(self.get_config_value(CONF_PUBLISH_NAME_TEMPLATE)),
+            ConfigEntry(
+                key=CONF_LATENCY_OFFSET_MS,
+                type=ConfigEntryType.INTEGER,
+                range=LATENCY_OFFSET_MS_RANGE,
+                default_value=DEFAULT_LATENCY_OFFSET_MS,
+                required=False,
+                advanced=True,
+            ),
         )
 
     async def handle_async_init(self) -> None:
@@ -710,6 +729,12 @@ class AirPlayReceiverProvider(PluginProvider):
         config_content = config_content.replace("{PORT}", str(daemon.port))
         config_content = config_content.replace(
             "{INTERFACE_LINE}", await self._get_mdns_interface_line()
+        )
+        latency_offset_ms = self.get_config_value(
+            CONF_LATENCY_OFFSET_MS, DEFAULT_LATENCY_OFFSET_MS, return_type=int
+        )
+        config_content = config_content.replace(
+            "{LATENCY_OFFSET_SECONDS}", f"{latency_offset_ms / 1000:.3f}"
         )
 
         # Set default volume based on the connected player's current volume if available
