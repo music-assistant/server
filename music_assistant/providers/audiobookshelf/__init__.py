@@ -30,6 +30,9 @@ from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFo
 from aioaudiobookshelf.exceptions import (
     SessionSyncError as AbsSessionSyncError,
 )
+from aioaudiobookshelf.exceptions import (
+    SessionSyncNotFoundError as AbsSessionSyncNotFoundError,
+)
 from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_items import (
     PlaybackSessionParameters as AbsPlaybackSessionParameters,
@@ -1005,10 +1008,14 @@ for more details.
             abs_item_id = item_ids[0]
             episode_id = item_ids[1] if len(item_ids) == 2 else None
 
-            # Abs allows a single session per device id.
+            # Abs allows a single session per device id, and never deletes a device.
+            used_slots = {x.device_slot for key, x in self.sessions.items() if key != mass_item_id}
+            device_slot = 0
+            while device_slot in used_slots:
+                device_slot += 1
 
             client_name = f"Music Assistant {self.instance_id}"
-            device_id = f"{self.instance_id}_{mass_item_id}"
+            device_id = f"{self.instance_id}_{device_slot}"
             device_info = AbsDeviceInfo(
                 device_id=device_id,
                 client_name=client_name,
@@ -1037,6 +1044,7 @@ for more details.
 
             self.sessions[mass_item_id] = SessionHelper(
                 abs_session_id=session.id_,
+                device_slot=device_slot,
                 last_sync_time=time.time(),
             )
             return session
@@ -1282,19 +1290,17 @@ for more details.
                     ),
                 )
                 session_helper.last_sync_time = now
-                session_helper.failed_sync_count = 0
                 self.logger.debug("Synced playback session, position %s s.", position)
                 return True
+            except AbsSessionSyncNotFoundError:
+                # only a session gone in abs frees its device, not a replacement opened meanwhile
+                if self.sessions.get(prov_item_id) is session_helper:
+                    del self.sessions[prov_item_id]
             except AbsSessionSyncError:
-                session_helper.failed_sync_count += 1
-                if session_helper.failed_sync_count >= 5:
-                    self.logger.warning(
-                        "Unable to sync session %s after %s attempts - "
-                        "falling back to non-session approach.",
-                        session_helper.abs_session_id,
-                        session_helper.failed_sync_count,
-                    )
-                    self.sessions.pop(prov_item_id, None)
+                self.logger.debug(
+                    "Unable to sync session %s, falling back to non-session approach.",
+                    session_helper.abs_session_id,
+                )
             return False
 
         if media_type == MediaType.PODCAST_EPISODE:
@@ -2165,17 +2171,18 @@ for more details.
                 )
 
                 for (session_key, session), result in zip(sessions_to_close, results, strict=True):
-                    if isinstance(result, Exception):
+                    if isinstance(result, Exception) and not isinstance(
+                        result, AbsSessionNotFoundError
+                    ):
+                        # Keep it to retry, its device must not go to another session while open.
                         self.logger.warning(
                             "Failed to close session %s: %s",
                             session.abs_session_id,
                             result,
                         )
-                    else:
-                        self.logger.debug(
-                            "Closed session %s",
-                            session.abs_session_id,
-                        )
-                    # We do not try again after a failure. _get_playback_session verifies if a session
-                    # exists.
+                        continue
+                    self.logger.debug(
+                        "Closed session %s",
+                        session.abs_session_id,
+                    )
                     self.sessions.pop(session_key, None)
