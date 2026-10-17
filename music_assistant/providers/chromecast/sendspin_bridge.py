@@ -297,6 +297,7 @@ class SendspinChromecastBridge:
         self._log_controller: SendspinCastController | None = None
         self._cast_app_was_active: bool = False
         self._cast_app_connected: bool = False
+        self._status_refreshes: int = 0
         self._event_unsub: Callable[[], None] | None = None
         self._cast_app_ready: asyncio.Future[None] | None = None
 
@@ -371,23 +372,23 @@ class SendspinChromecastBridge:
         """
         if not self.cast_player.available:
             return
-        was_active = self._cast_app_was_active
         # The refreshed status reaches the app-gone handler before this method resumes,
         # and its teardown (stop or ungroup) would hit the playback about to start, so
         # it is held off while asking and an app found gone is handled here instead.
-        self._cast_app_was_active = False
+        self._status_refreshes += 1
         try:
             answered = await self._request_cast_status()
-        except BaseException:
-            self._cast_app_was_active = was_active
-            raise
+        finally:
+            self._status_refreshes -= 1
         if not answered or self.is_cast_app_active:
-            self._cast_app_was_active = was_active
-            if was_active and not (self.cast_player.available and self.is_cast_app_active):
+            if self._cast_app_was_active and not (
+                self.cast_player.available and self.is_cast_app_active
+            ):
                 # gone or disconnected while the device didn't answer: the usual
                 # handling applies (a lost connection leaves the cached app id as is)
                 self._handle_cast_app_gone(self.cast_player.cc.app_id)
             return
+        self._cast_app_was_active = False
         self._cast_app_connected = False
         client = self._sendspin_client
         if client is not None and client.is_connected:
@@ -575,7 +576,8 @@ class SendspinChromecastBridge:
 
     def _handle_cast_app_gone(self, app_id: str | None) -> None:
         """Process Cast app disappearance on the event loop."""
-        if not self._cast_app_was_active:
+        if not self._cast_app_was_active or self._status_refreshes:
+            # a status refresh in progress handles it once the device answered
             return
         self._cast_app_was_active = False
         self._cast_app_connected = False

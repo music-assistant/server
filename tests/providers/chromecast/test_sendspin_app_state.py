@@ -364,3 +364,30 @@ async def test_another_clients_disconnect_keeps_the_connected_report() -> None:
     await asyncio.sleep(0)
 
     assert launches == []
+
+
+async def test_launch_finishing_during_a_refresh_keeps_the_app_tracked() -> None:
+    """A launch completing while a refresh waits stays tracked, so the app exiting later is handled."""
+    bridge, client = _make_bridge(app_id=None, reported_app_id=SENDSPIN_CAST_APP_ID)
+    loop = asyncio.get_running_loop()
+    receiver = bridge.cast_player.cc.socket_client.receiver_controller
+
+    def update_status(*, callback_function: Any) -> None:
+        # the launch started earlier completes while the device answers the refresh
+        bridge.cast_player.cc.app_id = SENDSPIN_CAST_APP_ID  # type: ignore[misc]
+        loop.call_soon_threadsafe(setattr, bridge, "_cast_app_was_active", True)
+        callback_function(True, {"type": "RECEIVER_STATUS"})
+
+    receiver.update_status = update_status  # type: ignore[method-assign,assignment]
+
+    await bridge.refresh_cast_app_state()
+    assert bridge._cast_app_was_active is True
+
+    client.is_connected = True
+    bridge.cast_player.cc.app_id = None  # type: ignore[misc]
+    bridge.on_cast_status_changed(None)
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client.detach_connection.assert_called_once_with(GoodbyeReason.SHUTDOWN)
+    client.group.stop.assert_awaited_once()
