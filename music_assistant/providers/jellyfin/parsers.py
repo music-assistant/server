@@ -30,6 +30,7 @@ from .const import (
     ITEM_KEY_ALBUM_ARTIST,
     ITEM_KEY_ALBUM_ARTISTS,
     ITEM_KEY_ALBUM_ID,
+    ITEM_KEY_ALBUM_NORMALIZATION_GAIN,
     ITEM_KEY_ARTIST_ITEMS,
     ITEM_KEY_CAN_DOWNLOAD,
     ITEM_KEY_CONTAINER,
@@ -52,6 +53,7 @@ from .const import (
     ITEM_KEY_PROVIDER_IDS,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_SORT_NAME,
+    ITEM_KEY_TRACK_NORMALIZATION_GAIN,
     ITEM_KEY_USER_DATA,
     MEDIA_IMAGE_TYPES,
     USER_DATA_KEY_IS_FAVORITE,
@@ -204,6 +206,14 @@ def audio_format(track: JellyTrack) -> AudioFormat:
     )
 
 
+def parse_loudness(jellyfin_track: JellyTrack) -> tuple[float, float | None] | None:
+    """Return track and optional album loudness in LUFS from Jellyfin's ReplayGain fields."""
+    track_loudness = _gain_to_loudness(jellyfin_track.get(ITEM_KEY_TRACK_NORMALIZATION_GAIN))
+    if track_loudness is None:
+        return None
+    return track_loudness, _gain_to_loudness(jellyfin_track.get(ITEM_KEY_ALBUM_NORMALIZATION_GAIN))
+
+
 def parse_track(
     logger: Logger, instance_id: str, client: Connection, jellyfin_track: JellyTrack
 ) -> Track:
@@ -340,3 +350,11 @@ def _get_artwork(
             )
 
     return images
+
+
+def _gain_to_loudness(value: object) -> float | None:
+    """Convert a Jellyfin normalization gain in dB to loudness in LUFS."""
+    if not isinstance(value, (int, float)):
+        return None
+    # Jellyfin's gain targets the ReplayGain 2.0 reference level of -18 LUFS
+    return -18.0 - float(value)
