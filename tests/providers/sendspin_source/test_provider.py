@@ -182,11 +182,30 @@ async def test_reconnect_refreshes_the_player_listing_the_line_in() -> None:
     provider = await make_provider([client])
     players = get_players(provider)
     players.players["client-1"].protocol_parent_id = "visible-1"
+    players.updated.clear()
     role = client.detach_roles()
     get_server_api(provider).emit(ClientConnectedEvent("client-1"))
     client.attach_roles(role)
     await _settle()
     assert players.updated == ["visible-1"]
+
+
+async def test_load_refreshes_the_players_listing_a_line_in() -> None:
+    """Players already connected when the plugin loads get their line-in listed."""
+    speaker = _FakeClient("speaker", has_player_role=True)
+    capture_only = _FakeClient("capture-only")
+    provider = await make_provider([speaker, capture_only])
+    assert get_players(provider).updated == ["speaker"]
+
+
+async def test_unload_drops_the_line_in_from_its_player() -> None:
+    """Unloading the plugin rebuilds the player's source list without the line-in."""
+    provider = await make_provider([_FakeClient("speaker", has_player_role=True)])
+    players = get_players(provider)
+    players.updated.clear()
+    await provider.unload()
+    assert players.updated == ["speaker"]
+    assert provider.get_player_input_sources("speaker") == []
 
 
 async def test_stream_details_rejects_unknown_source() -> None:
