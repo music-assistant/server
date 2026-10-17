@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
@@ -349,6 +349,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param search: Apply the artist track search.
         :param favorite: Only include the calling user's likes or dislikes.
         """
+        # the listing search also matches album and artist names, which the SQL search does
+        # not, and a provider artist has no library rows: both count the cached listing
         if provider_instance_id_or_domain != "library" or search:
             return len(
                 await self.tracks(
@@ -454,6 +456,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param album_types: Restrict the count to these album types.
         :param favorite: Only include the calling user's likes or dislikes.
         """
+        # the listing search also matches artist names, which the SQL search does not, and a
+        # provider artist has no library rows: both count the cached listing
         if provider_instance_id_or_domain != "library" or search:
             return len(
                 await self.albums(
@@ -544,6 +548,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         if provider_instance_id_or_domain != "library":
             return 0
+        # the listing search also matches artist names, which the SQL search does not
         if search:
             return len(
                 await self.appears_on(
@@ -654,6 +659,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param provider_instance_id_or_domain: Must be ``library``.
         :param search: Apply the discography search.
         """
+        # the search runs over the assembled listing; without one only the release groups count
         if search:
             return len(
                 await self.discography(
@@ -666,7 +672,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         data = await self._get_artist_discography_data(
             item_id, provider_instance_id_or_domain, include_library_albums=False
         )
-        return len(data[3]) if data else 0
+        return len(data.release_groups) if data else 0
 
     async def top_tracks(
         self,
@@ -1924,15 +1930,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
         *,
         include_library_albums: bool,
-    ) -> (
-        tuple[
-            Artist,
-            MusicbrainzProvider,
-            list[Album],
-            list[MusicBrainzReleaseGroup],
-        ]
-        | None
-    ):
+    ) -> _DiscographyData | None:
         if provider_instance_id_or_domain != "library":
             msg = "A discography is only available for library artists"
             raise InvalidDataError(msg)
@@ -1955,7 +1953,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         release_groups = await musicbrainz.browse_release_groups_by_artist(mbid)
         if not release_groups:
             return None
-        return artist, musicbrainz, library_albums, release_groups
+        return _DiscographyData(artist, musicbrainz, library_albums, release_groups)
 
     async def _get_library_artist_appears_on_query(
         self,
@@ -1994,6 +1992,15 @@ class ArtistsController(MediaControllerBase[Artist]):
 
 
 _SHORT_FORM_TYPES = {AlbumType.SINGLE, AlbumType.EP}
+
+
+class _DiscographyData(NamedTuple):
+    """The pieces a library artist's discography is assembled from."""
+
+    artist: Artist
+    musicbrainz: MusicbrainzProvider
+    library_albums: list[Album]
+    release_groups: list[MusicBrainzReleaseGroup]
 
 
 def _release_group_of(
