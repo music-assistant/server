@@ -1960,6 +1960,55 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for db_row in db_rows
         ]
 
+    async def get_library_items_count_by_query(
+        self,
+        favorite: bool | None = None,
+        search: str | None = None,
+        provider_filter: list[str] | None = None,
+        extra_query_parts: list[str] | None = None,
+        extra_query_params: dict[str, Any] | None = None,
+        extra_join_parts: list[str] | None = None,
+        genre_ids: int | list[int] | None = None,
+        played_only: bool = False,
+        in_library_only: bool = False,
+        *,
+        reachable_via: list[str] | None = None,
+    ) -> int:
+        """
+        Return the number of library items matching the listing filters.
+
+        :param favorite: Only include the calling user's likes or dislikes.
+        :param search: Filter by the same normalized listing search.
+        :param provider_filter: Restrict to items mapped to these provider instances.
+        :param extra_query_parts: Additional listing-specific WHERE conditions.
+        :param extra_query_params: Bound values for the additional conditions.
+        :param extra_join_parts: Additional joins used by the listing query.
+        :param genre_ids: Restrict to items mapped to these genres.
+        :param played_only: Restrict to items with a play history.
+        :param in_library_only: Require an in-library provider mapping.
+        :param reachable_via: Restrict to items playable through these providers.
+        """
+        query_params = dict(extra_query_params) if extra_query_params else {}
+        query_parts = list(extra_query_parts) if extra_query_parts else []
+        join_parts = list(extra_join_parts) if extra_join_parts else []
+        self._apply_filters(
+            query_parts=query_parts,
+            query_params=query_params,
+            favorite=favorite,
+            search=self._preprocess_search(search),
+            genre_ids=self._preprocess_genre_ids(genre_ids),
+            provider_filter=provider_filter,
+            played_only=played_only,
+            in_library_only=in_library_only,
+            reachable_via=reachable_via,
+        )
+        sql_query = f"SELECT DISTINCT {self.db_table}.item_id FROM {self.db_table}"
+        if join_parts:
+            sql_query += f" {' '.join(join_parts)}"
+        if query_parts:
+            sql_query += f" WHERE {' AND '.join(self._clean_query_parts(query_parts))}"
+        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
+
     def _register_update_command(self) -> None:
         """
         Register the API command that updates a library item.

@@ -70,7 +70,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
-from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.provider_access import playback_sources, resolve_playback_user
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
@@ -373,9 +372,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             elif album:
                 # Restore original album if we have no better alternative from the library
                 queue_item.media_item.album = album
-        # decided once the album above is resolved: a queue item can hold a slim mapping of its
-        # album, which carries none of the provider ids the enqueued album is matched on
-        playing_album_tracks = self._plays_as_album_track(queue_item)
         if is_start:
             # a track skip should hand its source slot to the item the user is starting
             await self._abort_superseded_source_buffers(queue_item)
@@ -385,7 +381,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
-            prefer_album_loudness=playing_album_tracks,
+            prefer_album_loudness=self._plays_as_album_track(queue_item),
         )
         if (origin := queue_item.origin) is not None:
             self.logger.debug(
@@ -426,7 +422,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
     def _plays_as_album_track(self, queue_item: QueueItem) -> bool:
         """
-        Check whether the given item plays as part of an album the user enqueued.
+        Check whether the given item plays as part of an album, rather than on its own.
 
         :param queue_item: The queue item to decide the loudness reference for.
         """
@@ -436,18 +432,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return False
         origin = queue_item.origin
         # played from an album, or from the folder that holds one
-        if origin and origin.container and origin.container.media_type == MediaType.ALBUM:
-            return True
-        album = getattr(queue_item.media_item, "album", None)
-        if album is None:
-            return False
-        # the album the user pressed play on keeps the shape of the listing it was picked from,
-        # while the queue's tracks carry the library album. Matching on the provider mappings
-        # recognises both shapes, plain item_id equality does not.
-        return any(
-            isinstance(item, Album) and compare_item_ids(item, album)
-            for item in queue_data.enqueued_media_items
-        )
+        return bool(origin and origin.container and origin.container.media_type == MediaType.ALBUM)
 
     def _reset_enqueued_media_items(self, queue_data: PlayerQueueData) -> None:
         """
@@ -896,8 +881,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve
-                # their successor from the queue's last item instead) and to tell which of its
-                # tracks play as part of an album the user picked.
+                # their successor from the queue's last item instead).
                 # Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
                 if not isinstance(media_item, BrowseFolder) and (

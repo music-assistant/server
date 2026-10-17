@@ -929,19 +929,26 @@ class TracksController(MediaControllerBase[Track]):
         provider: MusicProvider,
         strict: bool = True,
         ref_albums: list[Album] | None = None,
+        *,
+        match_remasters: bool = False,
     ) -> list[ProviderMapping]:
         """
         Try to find match on (streaming) provider for the provided track.
 
         This is used to link objects of different providers/qualities together. A provider
         that supports ISRC lookups is asked for the track by ISRC before it is searched.
+
+        :param match_remasters: Ignore the option that keeps remastered versions apart. Do not
+            link such a match to the track.
         """
         if ref_albums is None:
             ref_albums = await self.albums(base_track.item_id, base_track.provider, limit=None)
         self.logger.debug("Trying to match track %s on provider %s", base_track.name, provider.name)
         matches: list[ProviderMapping] = []
         if ProviderFeature.TRACK_BY_EXTERNAL_ID in provider.supported_features:
-            matches = await self._match_provider_by_isrc(base_track, provider, strict, ref_albums)
+            matches = await self._match_provider_by_isrc(
+                base_track, provider, strict, ref_albums, match_remasters
+            )
         for artist in base_track.artists:
             if matches:
                 break
@@ -959,7 +966,13 @@ class TracksController(MediaControllerBase[Track]):
                     search_result_item.provider,
                     fallback=search_result_item,
                 )
-                if compare_track(base_track, prov_track, strict=strict, track_albums=ref_albums):
+                if compare_track(
+                    base_track,
+                    prov_track,
+                    strict=strict,
+                    track_albums=ref_albums,
+                    match_remasters=match_remasters,
+                ):
                     matches.extend(prov_track.provider_mappings)
 
         if not matches:
@@ -1007,6 +1020,7 @@ class TracksController(MediaControllerBase[Track]):
         provider: MusicProvider,
         strict: bool,
         ref_albums: list[Album],
+        match_remasters: bool,
     ) -> list[ProviderMapping]:
         """Return the mappings of the provider track one of the base track's ISRCs resolves to."""
         # the order only makes the choice of looked-up ISRCs deterministic
@@ -1043,7 +1057,13 @@ class TracksController(MediaControllerBase[Track]):
             )
             if not compare_media_item(base_track, candidate, strict=False):
                 continue
-            if compare_track(base_track, prov_track, strict=strict, track_albums=ref_albums):
+            if compare_track(
+                base_track,
+                prov_track,
+                strict=strict,
+                track_albums=ref_albums,
+                match_remasters=match_remasters,
+            ):
                 return list(prov_track.provider_mappings)
         return []
 
@@ -1985,7 +2005,7 @@ class TracksController(MediaControllerBase[Track]):
         return result, None
 
     async def _match_similar_tracks_provider(
-        self, ref_item: Track, provider: MusicProvider
+        self, ref_item: Track, provider: MusicProvider, *, match_remasters: bool = False
     ) -> tuple[
         list[ProviderMapping] | None,
         MusicAssistantError | ClientError | OSError | TimeoutError | None,
@@ -1995,9 +2015,12 @@ class TracksController(MediaControllerBase[Track]):
 
         :param ref_item: Track to match.
         :param provider: Provider to search for a matching track.
+        :param match_remasters: Ignore the option that keeps remastered versions apart.
         """
         try:
-            return await self.match_provider(ref_item, provider), None
+            return await self.match_provider(
+                ref_item, provider, match_remasters=match_remasters
+            ), None
         except (MusicAssistantError, ClientError, OSError, TimeoutError) as err:
             self.logger.warning(
                 "Failed to match %s on provider %s for similar tracks: %s",
@@ -2037,14 +2060,21 @@ class TracksController(MediaControllerBase[Track]):
         provider_responded = False
         for provider in providers:
             mappings, error = await self._match_similar_tracks_provider(ref_item, provider)
+            if mappings:
+                if ref_item.provider == "library":
+                    await self.add_provider_mappings(ref_item.item_id, mappings)
+                ref_item.provider_mappings.update(mappings)
+            elif error is None and get_keep_remasters_apart():
+                # a remaster kept apart from the track is not linked to it, but may still seed
+                # its similar tracks
+                mappings, error = await self._match_similar_tracks_provider(
+                    ref_item, provider, match_remasters=True
+                )
             if error is not None:
                 last_error = error
                 continue
             if not mappings:
                 continue
-            if ref_item.provider == "library":
-                await self.add_provider_mappings(ref_item.item_id, mappings)
-            ref_item.provider_mappings.update(mappings)
             result, error = await self._get_similar_tracks_from_provider(
                 provider, ref_item, limit, provider_track_id=mappings[0].item_id
             )
