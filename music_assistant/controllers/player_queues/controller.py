@@ -43,6 +43,8 @@ from music_assistant_models.errors import (
     QueueEmpty,
 )
 from music_assistant_models.media_items import (
+    Album,
+    Artist,
     Audiobook,
     ItemMapping,
     MediaItemType,
@@ -84,7 +86,7 @@ from music_assistant.controllers.player_queues.helpers import (
     is_finite_radio,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
-from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
@@ -101,7 +103,7 @@ from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from music_assistant_models import BackgroundTask
     from music_assistant_models.config_entries import (
@@ -1839,6 +1841,41 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param item: The dynamic playlist or radio station to fetch the next batch for.
         """
         return await self._media_resolver.get_dynamic_source_tracks(item)
+
+    async def artist_album_candidates(
+        self,
+        artist: Artist,
+        played: list[Album | ItemMapping],
+        anchor: Album | None,
+    ) -> list[list[Album]] | None:
+        """
+        Return the artist's albums that have not played yet, in the artist order.
+
+        :param artist: The artist to play.
+        :param played: The albums with a track in the queue.
+        :param anchor: The album that played last, if known.
+        """
+        return await self._media_resolver.artist_album_candidates(artist, played, anchor)
+
+    async def resolve_library_artist(self, artist: Artist) -> Artist | None:
+        """
+        Resolve the in-library artist for the given (possibly provider) artist item.
+
+        :param artist: The artist item, which may be a library or a provider item.
+        """
+        return await self._media_resolver._resolve_library_artist(artist)
+
+    async def album_copy_items(
+        self, copies: Sequence[Album], userid: str | None, queue_id: str | None
+    ) -> list[ResolvedItem]:
+        """
+        Return the first copy of an album with tracks to play, resolved as when played on its own.
+
+        :param copies: The album's copies, in the order to try them.
+        :param userid: Optional user the playback is for.
+        :param queue_id: Optional queue the playback is requested for.
+        """
+        return await self._media_resolver.album_copy_items(copies, userid, queue_id)
 
     def recency_windows(self) -> RecencyWindows:
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""

@@ -237,13 +237,17 @@ Two distinct refill paths share the same "running low" trigger:
   the `radio_playlist` provider.
 - **Autoplay** is the single "keep going" switch; what it appends is dispatched on the media type of
   the queue's last item, since that is the item the appended ones follow. Music continues with the
-  per-queue configured mode, owned by `autoplay.py`: similar tracks (seeded from the enqueued items),
-  an infinite library mix (genre-biased, least-played), a chosen playlist, or an automatic mode that
-  tries similar first and falls back to the library mix. The mode is read from the per-queue config;
-  the playlist for playlist-mode is a per-queue config value. A podcast episode or audiobook instead
-  continues with its own successor — the next episode of the podcast, the next book in the collection
-  — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live sources
-  (radio, audio source) have no natural end, so Autoplay does not apply to them at all.
+  per-queue configured mode, owned by `autoplay.py`: similar tracks (seeded from the enqueued
+  items), an infinite library mix (genre-biased, least-played), a chosen playlist, whole albums by
+  the last track's artist in the artist order (only with an album artist order; when the artist has
+  no album left or none can load, the next album of MA's first similar artist with one left plays,
+  else the automatic mode picks a track and its whole album plays, and its loose tracks only when
+  none of them gives an album), or an automatic mode that tries similar first and falls back to the
+  library mix. The mode is read from the per-queue
+  config; the playlist for playlist-mode is a per-queue config value. A podcast episode or audiobook
+  instead continues with its own successor — the next episode of the podcast, the next book in the
+  collection — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live
+  sources (radio, audio source) have no natural end, so Autoplay does not apply to them at all.
 
 Repeat ONE/ALL temporarily masks the effective autoplay flag off. The queue keeps its saved
 autoplay preference — either a pinned per-queue override or the current global default — so turning

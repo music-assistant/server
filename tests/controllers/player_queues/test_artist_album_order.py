@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
@@ -532,7 +532,10 @@ async def test_an_album_on_two_providers_plays_once(mass: MusicAssistant) -> Non
     assert _names(result) == ["Arrival 1", "Arrival 2"]
 
 
-async def test_an_album_plays_from_its_other_copy_when_one_fails(mass: MusicAssistant) -> None:
+@pytest.mark.parametrize("error", [MediaNotFoundError, LoginFailed])
+async def test_an_album_plays_from_its_other_copy_when_one_fails(
+    mass: MusicAssistant, error: type[Exception]
+) -> None:
     """When one copy of an album on two providers can't be fetched, the other copy plays."""
     artist = await _add_artist(mass)
     first = _streaming_album("Arrival", 1976, "streaming")
@@ -544,7 +547,7 @@ async def test_an_album_plays_from_its_other_copy_when_one_fails(mass: MusicAssi
 
     def _tracks(item_id: str, *args: object, **kwargs: object) -> list[Track]:
         if item_id == first.item_id:
-            raise MediaNotFoundError("provider is offline")
+            raise error("provider is offline")
         return provider_tracks(item_id, *args, **kwargs)  # type: ignore[no-any-return]
 
     lookup.side_effect = _tracks
@@ -720,7 +723,10 @@ async def test_album_lookups_run_in_small_batches(mass: MusicAssistant) -> None:
     assert _names(result)[::2] == [f"Album {index:02} 1" for index in range(12)]
 
 
-async def test_a_failing_provider_keeps_the_albums_of_the_others(mass: MusicAssistant) -> None:
+@pytest.mark.parametrize("error", [MediaNotFoundError, LoginFailed])
+async def test_a_failing_provider_keeps_the_albums_of_the_others(
+    mass: MusicAssistant, error: type[Exception]
+) -> None:
     """When one provider can't list the artist's albums, those of its other providers play."""
     artist = Artist(
         item_id="abba",
@@ -735,7 +741,7 @@ async def test_a_failing_provider_keeps_the_albums_of_the_others(mass: MusicAssi
 
     async def _albums(_item_id: str, provider: str, *_: object, **__: object) -> list[Album]:
         if provider == "offline":
-            raise MediaNotFoundError("provider is offline")
+            raise error("provider is offline")
         return [arrival]
 
     _stub_providers(mass, {"offline": "up", "streaming": "up"})

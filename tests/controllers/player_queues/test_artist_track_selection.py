@@ -158,6 +158,7 @@ def _fake_queues(selection: str) -> MagicMock:
     fake._album_order_applies = MagicMock(return_value=False)
     # the real resolution under the shuffled order
     fake.resolve_artist_tracks = partial(MediaResolver.resolve_artist_tracks, fake)
+    fake._artist_selection = partial(MediaResolver._artist_selection, fake)
     fake._shuffled_artist_tracks = partial(MediaResolver._shuffled_artist_tracks, fake)
     return fake
 

@@ -37,6 +37,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.player_queues.autoplay import (
     AUTOPLAY_MODE_DEFAULT_VALUE,
     AutoplayMode,
+    albums_mode_available,
 )
 from music_assistant.controllers.player_queues.constants import (
     CLICK_ACTION_BROWSE,
@@ -382,6 +383,7 @@ def _autoplay_entries(
         ConfigValueOption(AutoplayMode.SIMILAR.value, disabled=not similar_available),
         ConfigValueOption(AutoplayMode.LIBRARY.value),
         ConfigValueOption(AutoplayMode.PLAYLIST.value),
+        ConfigValueOption(AutoplayMode.ALBUMS.value, disabled=not albums_mode_available(mass)),
     ]
     if per_queue:
         mode_options.append(ConfigValueOption(CONF_VALUE_GLOBAL))

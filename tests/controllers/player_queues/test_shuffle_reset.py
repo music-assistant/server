@@ -204,6 +204,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl._media_resolver._album_order_applies = partial(
         MediaResolver._album_order_applies, ctrl._media_resolver
     )
+    ctrl._media_resolver._artist_selection = partial(
+        MediaResolver._artist_selection, ctrl._media_resolver
+    )
     ctrl._media_resolver._artist_albums = AsyncMock(return_value=[[_album()]])
     ctrl._media_resolver._album_tracks_in_turn = AsyncMock(
         side_effect=lambda *_args: [_track(item_id) for item_id in ALBUM_TRACKS]

@@ -19,13 +19,16 @@
         "similar": "Similar to what you played",
         "library": "Infinite mix from your library",
         "playlist": "Tracks from a playlist",
+        "albums": "Whole albums, same artist first",
         "global": "Global"
       },
       "option_descriptions": {
+        "albums": "Plays the next album of the last track's artist, in the artist order. When the artist has no album left, a similar artist's album plays, else Auto picks one. Turn off shuffle so each album plays in order.",
         "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {
-        "similar": "No music or metadata provider that can supply similar tracks is currently available."
+        "similar": "No music or metadata provider that can supply similar tracks is currently available.",
+        "albums": "Needs an album artist order (albums by release or random albums) and an artist selection other than top tracks."
       }
     },
     "autoplay_playlist": {

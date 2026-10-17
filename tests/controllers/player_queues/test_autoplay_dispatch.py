@@ -30,9 +30,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemCollection, MediaItemMetadata
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
+from music_assistant_models.queue_item import QueueItemOrigin
 
 from music_assistant.controllers.player_queues.autoplay import AutoplayMode
-from music_assistant.controllers.player_queues.media_resolver import MediaResolver
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.helpers.collections import get_collection_item_id
@@ -529,6 +530,12 @@ def _stop_states(prev_item: Any) -> tuple[CompareState, CompareState]:
     return cast("CompareState", prev_state), cast("CompareState", {"state": PlaybackState.IDLE})
 
 
+def _album_entries(*item_ids: str) -> list[ResolvedItem]:
+    """Build an album's tracks as Autoplay returns them, with the album as their origin."""
+    album = ItemMapping(media_type=MediaType.ALBUM, item_id="al1", provider="library", name="A")
+    return [ResolvedItem(_track(item_id), QueueItemOrigin(container=album)) for item_id in item_ids]
+
+
 def _tracker() -> Any:
     """Build a playback tracker stand-in for a single non-flow queue."""
     tracker = MagicMock()
@@ -723,6 +730,75 @@ async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
     )
 
     assert [x.media_item.item_id for x in loaded] == ["allowed"]
+
+
+@pytest.mark.parametrize("shuffle", [False, True])
+async def test_an_album_batch_is_added_whole_without_the_recency_gate(shuffle: bool) -> None:
+    """
+    The albums mode adds the album as it is: no recency gate, no second dislike filter.
+
+    Under queue shuffle the album is shuffled in, as any added album.
+    """
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader.get.return_value.shuffle_enabled = shuffle
+    loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
+    loader._autoplay.get_album_tracks = AsyncMock(return_value=_album_entries("a1", "a2"))
+    loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
+
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.queue_loader.gate_tracks", return_value=[]
+        ) as gate,
+        patch(
+            "music_assistant.controllers.player_queues.queue_loader.without_disliked_tracks"
+        ) as dislikes,
+    ):
+        await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
+
+    dislikes.assert_not_called()
+    gate.assert_not_called()
+    loaded = loader.load.await_args.args[1]
+    assert [item.media_item.item_id for item in loaded] == ["a1", "a2"]
+    # played from the album, so at the album's loudness
+    assert all(item.origin.container.media_type == MediaType.ALBUM for item in loaded)
+    assert loader.load.await_args.kwargs["shuffle"] is shuffle
+
+
+@pytest.mark.parametrize(("auto_album", "expected"), [(["a1", "a2"], ["a1", "a2"]), ([], ["s1"])])
+async def test_without_an_album_auto_picks_the_next_album(
+    auto_album: list[str], expected: list[str]
+) -> None:
+    """
+    Without an album of the artist, Auto's gated pick gives the album, or loose tracks.
+
+    Under queue shuffle only an album is shuffled in; loose tracks keep Auto's order.
+    """
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader.get.return_value.shuffle_enabled = True
+    loader._autoplay.resolve_mode.return_value = AutoplayMode.ALBUMS
+    loader._autoplay.get_album_tracks = AsyncMock(return_value=[])
+    loader._autoplay.get_album_of_tracks = AsyncMock(return_value=_album_entries(*auto_album))
+    loader._get_similar_tracks = AsyncMock(return_value=[_track("s1"), _track("s2")])
+    loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
+
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.queue_loader.gate_tracks",
+            side_effect=lambda tracks, *_: tracks[:1],
+        ) as gate,
+        patch(
+            "music_assistant.controllers.player_queues.queue_loader.without_disliked_tracks",
+            AsyncMock(side_effect=lambda _mass, _userid, tracks: tracks),
+        ),
+    ):
+        await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
+
+    gate.assert_called_once()
+    picked_from = loader._autoplay.get_album_of_tracks.await_args.args[1]
+    assert [track.item_id for track in picked_from] == ["s1"]
+    loaded = loader.load.await_args.args[1]
+    assert [item.media_item.item_id for item in loaded] == expected
+    assert loader.load.await_args.kwargs["shuffle"] is bool(auto_album)
 
 
 async def test_the_end_of_queue_refill_plays_the_tracks_from_their_source() -> None:
