@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
@@ -104,12 +104,32 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
+            f"music/{api_base}/artist_tracks_count",
+            self.tracks_count,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_albums_count",
+            self.albums_count,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/artist_appears_on",
             self.appears_on,
             required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
+            f"music/{api_base}/artist_appears_on_count",
+            self.appears_on_count,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/discography", self.discography, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/discography_count",
+            self.discography_count,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             f"music/{api_base}/top_tracks", self.top_tracks, required_scope=Scope.LIBRARY_READ
@@ -312,6 +332,50 @@ class ArtistsController(MediaControllerBase[Artist]):
             offset=offset,
         )
 
+    async def tracks_count(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+        search: str | None = None,
+        favorite: bool | None = None,
+    ) -> int:
+        """
+        Return the number of tracks in an artist listing.
+
+        :param item_id: The artist item ID.
+        :param provider_instance_id_or_domain: The artist's provider or ``library``.
+        :param provider_filter: Restrict library tracks to this provider instance.
+        :param search: Apply the artist track search.
+        :param favorite: Only include the calling user's likes or dislikes.
+        """
+        # the listing search also matches album and artist names, which the SQL search does
+        # not, and a provider artist has no library rows: both count the cached listing
+        if provider_instance_id_or_domain != "library" or search:
+            return len(
+                await self.tracks(
+                    item_id,
+                    provider_instance_id_or_domain,
+                    provider_filter=provider_filter,
+                    search=search,
+                    limit=0,
+                    favorite=favorite,
+                )
+            )
+        artist = await self.get_library_item(item_id)
+        if artist.artist_type != ArtistType.SINGER:
+            return 0
+        return await self.mass.music.tracks.get_library_items_count_by_query(
+            favorite=favorite,
+            provider_filter=self._ensure_provider_filter(provider_filter),
+            extra_query_parts=[
+                f"tracks.item_id in (select track_id from {DB_TABLE_TRACK_ARTISTS} "
+                "where artist_id = :artist_id)"
+            ],
+            extra_query_params={"artist_id": int(item_id)},
+            in_library_only=True,
+        )
+
     async def albums(
         self,
         item_id: str,
@@ -373,6 +437,58 @@ class ArtistsController(MediaControllerBase[Artist]):
             offset=offset,
         )
 
+    async def albums_count(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+        search: str | None = None,
+        album_types: list[AlbumType] | None = None,
+        favorite: bool | None = None,
+    ) -> int:
+        """
+        Return the number of albums in an artist listing.
+
+        :param item_id: The artist item ID.
+        :param provider_instance_id_or_domain: The artist's provider or ``library``.
+        :param provider_filter: Restrict library albums to this provider instance.
+        :param search: Apply the artist album search.
+        :param album_types: Restrict the count to these album types.
+        :param favorite: Only include the calling user's likes or dislikes.
+        """
+        # the listing search also matches artist names, which the SQL search does not, and a
+        # provider artist has no library rows: both count the cached listing
+        if provider_instance_id_or_domain != "library" or search:
+            return len(
+                await self.albums(
+                    item_id,
+                    provider_instance_id_or_domain,
+                    provider_filter=provider_filter,
+                    search=search,
+                    limit=0,
+                    album_types=album_types,
+                    favorite=favorite,
+                )
+            )
+        artist = await self.get_library_item(item_id)
+        if artist.artist_type != ArtistType.SINGER:
+            return 0
+        query_parts = [
+            f"albums.item_id in (select album_id from {DB_TABLE_ALBUM_ARTISTS} "
+            "where artist_id = :artist_id)"
+        ]
+        query_params: dict[str, Any] = {"artist_id": int(item_id)}
+        if album_types:
+            query_parts.append("albums.album_type in :album_types")
+            query_params["album_types"] = [album_type.value for album_type in album_types]
+        return await self.mass.music.albums.get_library_items_count_by_query(
+            favorite=favorite,
+            provider_filter=self._ensure_provider_filter(provider_filter),
+            extra_query_parts=query_parts,
+            extra_query_params=query_params,
+            in_library_only=True,
+        )
+
     async def appears_on(
         self,
         item_id: str,
@@ -415,6 +531,43 @@ class ArtistsController(MediaControllerBase[Artist]):
             offset=offset,
         )
 
+    async def appears_on_count(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+        search: str | None = None,
+    ) -> int:
+        """
+        Return the number of albums an artist appears on without being an album artist.
+
+        :param item_id: The artist item ID.
+        :param provider_instance_id_or_domain: The artist's provider or ``library``.
+        :param provider_filter: Restrict to tracks from this provider instance.
+        :param search: Apply the appears-on album search.
+        """
+        if provider_instance_id_or_domain != "library":
+            return 0
+        # the listing search also matches artist names, which the SQL search does not
+        if search:
+            return len(
+                await self.appears_on(
+                    item_id,
+                    provider_instance_id_or_domain,
+                    provider_filter=provider_filter,
+                    search=search,
+                    limit=0,
+                )
+            )
+        query = await self._get_library_artist_appears_on_query(item_id, provider_filter)
+        if query is None:
+            return 0
+        query_parts, query_params = query
+        return await self.mass.music.albums.get_library_items_count_by_query(
+            extra_query_parts=query_parts,
+            extra_query_params=query_params,
+        )
+
     async def discography(
         self,
         item_id: str,
@@ -445,26 +598,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.ARTIST_DISCOGRAPHY, sort_field, sort_direction
         )
-        if provider_instance_id_or_domain != "library":
-            msg = "A discography is only available for library artists"
-            raise InvalidDataError(msg)
-        artist = await self.get_library_item(item_id)
-        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
-        if musicbrainz is None:
+        data = await self._get_artist_discography_data(
+            item_id, provider_instance_id_or_domain, include_library_albums=True
+        )
+        if data is None:
             return []
-        library_albums = await self.albums(item_id, "library", limit=None)
-        mbid = artist.mbid
-        if not mbid:
-            # an artist not yet identified on MusicBrainz is identified for this listing only;
-            # storing the id is left to the background linking, a read writes nothing
-            mb_artist = await musicbrainz.resolve_artist(artist, library_albums, [])
-            mbid = mb_artist.id if mb_artist else None
-        # the Various Artists entity is nobody's discography
-        if not mbid or mbid == VARIOUS_ARTISTS_MBID:
-            return []
-        release_groups = await musicbrainz.browse_release_groups_by_artist(mbid)
-        if not release_groups:
-            return []
+        artist, musicbrainz, library_albums, release_groups = data
         albums_by_release_group: dict[str, Album] = {}
         unidentified_albums: list[Album] = []
         for album in library_albums:
@@ -506,6 +645,34 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
         )
+
+    async def discography_count(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        search: str | None = None,
+    ) -> int:
+        """
+        Return the number of releases in a library artist's discography.
+
+        :param item_id: The library artist ID.
+        :param provider_instance_id_or_domain: Must be ``library``.
+        :param search: Apply the discography search.
+        """
+        # the search runs over the assembled listing; without one only the release groups count
+        if search:
+            return len(
+                await self.discography(
+                    item_id,
+                    provider_instance_id_or_domain,
+                    search=search,
+                    limit=0,
+                )
+            )
+        data = await self._get_artist_discography_data(
+            item_id, provider_instance_id_or_domain, include_library_albums=False
+        )
+        return len(data.release_groups) if data else 0
 
     async def top_tracks(
         self,
@@ -1227,36 +1394,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID to limit the tracks to.
         """
-        db_id = int(item_id)  # ensure integer
-        library_item = await self.get_library_item(db_id)
-        if library_item.artist_type != ArtistType.SINGER:
-            self.logger.debug("Albums only available for artists of type ARTIST")
+        query = await self._get_library_artist_appears_on_query(item_id, provider_filter)
+        if query is None:
             return []
-        query_params: dict[str, Any] = {"artist_id": db_id}
-        track_mapping_conditions = [
-            f"{DB_TABLE_PROVIDER_MAPPINGS}.item_id = {DB_TABLE_ALBUM_TRACKS}.track_id",
-            f"{DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{MediaType.TRACK.value}'",
-            f"{DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1",
-        ]
-        if provider_instances := self._ensure_provider_filter(provider_filter):
-            track_mapping_conditions.append(
-                f"{DB_TABLE_PROVIDER_MAPPINGS}.provider_instance IN :provider_instances"
-            )
-            query_params["provider_instances"] = provider_instances
-        track_albums = (
-            f"SELECT {DB_TABLE_ALBUM_TRACKS}.album_id FROM {DB_TABLE_ALBUM_TRACKS} "
-            f"JOIN {DB_TABLE_TRACK_ARTISTS} "
-            f"ON {DB_TABLE_TRACK_ARTISTS}.track_id = {DB_TABLE_ALBUM_TRACKS}.track_id "
-            f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id "
-            f"AND EXISTS(SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-            f"WHERE {' AND '.join(track_mapping_conditions)})"
-        )
-        own_albums = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
+        query_parts, query_params = query
         return await self.mass.music.albums.get_library_items_by_query(
-            extra_query_parts=[
-                f"albums.item_id IN ({track_albums})",
-                f"albums.item_id NOT IN ({own_albums})",
-            ],
+            extra_query_parts=query_parts,
             extra_query_params=query_params,
             limit=0,  # no limit, the full list is returned
             sort_field=SortField.YEAR,
@@ -1781,8 +1924,83 @@ class ArtistsController(MediaControllerBase[Artist]):
         item.artist_type = ArtistType(db_row["artist_type"])
         return item
 
+    async def _get_artist_discography_data(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        *,
+        include_library_albums: bool,
+    ) -> _DiscographyData | None:
+        if provider_instance_id_or_domain != "library":
+            msg = "A discography is only available for library artists"
+            raise InvalidDataError(msg)
+        artist = await self.get_library_item(item_id)
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            return None
+        library_albums = (
+            await self.albums(item_id, "library", limit=None)
+            if include_library_albums or not artist.mbid
+            else []
+        )
+        mbid = artist.mbid
+        if not mbid:
+            # An unidentified artist is resolved against its library albums without storing it.
+            mb_artist = await musicbrainz.resolve_artist(artist, library_albums, [])
+            mbid = mb_artist.id if mb_artist else None
+        if not mbid or mbid == VARIOUS_ARTISTS_MBID:
+            return None
+        release_groups = await musicbrainz.browse_release_groups_by_artist(mbid)
+        if not release_groups:
+            return None
+        return _DiscographyData(artist, musicbrainz, library_albums, release_groups)
+
+    async def _get_library_artist_appears_on_query(
+        self,
+        item_id: str | int,
+        provider_filter: str | None,
+    ) -> tuple[list[str], dict[str, Any]] | None:
+        db_id = int(item_id)
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != ArtistType.SINGER:
+            self.logger.debug("Albums only available for artists of type ARTIST")
+            return None
+        query_params: dict[str, Any] = {"artist_id": db_id}
+        track_mapping_conditions = [
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.item_id = {DB_TABLE_ALBUM_TRACKS}.track_id",
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{MediaType.TRACK.value}'",
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1",
+        ]
+        if provider_instances := self._ensure_provider_filter(provider_filter):
+            track_mapping_conditions.append(
+                f"{DB_TABLE_PROVIDER_MAPPINGS}.provider_instance IN :provider_instances"
+            )
+            query_params["provider_instances"] = provider_instances
+        track_albums = (
+            f"SELECT {DB_TABLE_ALBUM_TRACKS}.album_id FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"JOIN {DB_TABLE_TRACK_ARTISTS} "
+            f"ON {DB_TABLE_TRACK_ARTISTS}.track_id = {DB_TABLE_ALBUM_TRACKS}.track_id "
+            f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id "
+            f"AND EXISTS(SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE {' AND '.join(track_mapping_conditions)})"
+        )
+        own_albums = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
+        return [
+            f"albums.item_id IN ({track_albums})",
+            f"albums.item_id NOT IN ({own_albums})",
+        ], query_params
+
 
 _SHORT_FORM_TYPES = {AlbumType.SINGLE, AlbumType.EP}
+
+
+class _DiscographyData(NamedTuple):
+    """The pieces a library artist's discography is assembled from."""
+
+    artist: Artist
+    musicbrainz: MusicbrainzProvider
+    library_albums: list[Album]
+    release_groups: list[MusicBrainzReleaseGroup]
 
 
 def _release_group_of(
