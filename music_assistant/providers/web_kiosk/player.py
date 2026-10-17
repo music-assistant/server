@@ -11,7 +11,13 @@ from contextlib import AbstractAsyncContextManager, contextmanager
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from uuid import NAMESPACE_URL, uuid5
 
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    RepeatMode,
+)
 from music_assistant_models.errors import (
     MusicAssistantError,
     PlayerUnavailableError,
@@ -45,6 +51,35 @@ class TransportMark(NamedTuple):
     paused: bool
 
 
+class QueueWalk(NamedTuple):
+    """The queue state that decides which item follows another."""
+
+    repeat_mode: RepeatMode | None
+    order: list[str]
+
+    def span(self, first: str, last: str) -> tuple[RepeatMode | None, list[str]] | None:
+        """
+        Return the repeat mode and the item IDs played from first to last.
+
+        The walk wraps past the end of the queue, as Repeat All does; a last item
+        equal to the first is the single-item walk of Repeat One. Returns None when
+        either item is not in the queue.
+
+        :param first: The queue item ID the walk starts from.
+        :param last: The queue item ID the walk ends at.
+        """
+        try:
+            start = self.order.index(first)
+        except ValueError:
+            return None
+        ring = self.order[start:] + self.order[:start]
+        try:
+            end = ring.index(last)
+        except ValueError:
+            return None
+        return self.repeat_mode, ring[: end + 1]
+
+
 def playback_lock(mass: MusicAssistant, player_id: str) -> AbstractAsyncContextManager[None]:
     """
     Return the strict playback lock for state checks followed by playback commands.
@@ -64,16 +99,6 @@ def _positive_seconds(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
     return float(value)
-
-
-def _queue_span(order: list[str], first: str, last: str) -> list[str] | None:
-    """Return the queue item IDs from first to last, or None if they are not in that order."""
-    try:
-        start = order.index(first)
-        end = order.index(last, start + 1)
-    except ValueError:
-        return None
-    return order[start : end + 1]
 
 
 def media_timeline(media: object) -> tuple[float | None, float]:
@@ -397,7 +422,7 @@ class WebKioskPlayer(Player):
         generation = self._playback_generation
         mark = self.transport_mark()
         for _attempt in range(SUCCESSOR_LOAD_ATTEMPTS):
-            order = self._queue_order(queue_id)
+            walk = self._queue_walk(queue_id)
             loaded = await self._load_queue_successor(queue_id, current.queue_item_id)
             if not self.still_plays(generation):
                 # Other media replaced the finished stream, or another player
@@ -406,14 +431,15 @@ class WebKioskPlayer(Player):
             if loaded is None:
                 return False
             # The queue can change while the item loads: an edit can remove the
-            # item or move another one in front of it. The loaded item still
-            # follows the finished one as the loader chose it (skipping
-            # unplayable items) only if the queue between them is unchanged.
+            # item, move another one in front of it, or change the repeat mode.
+            # The loaded item still follows the finished one as the loader chose
+            # it (skipping unplayable items, repeating) only if the repeat mode
+            # and the queue between them are unchanged.
             if (loaded_id := loaded.queue_item_id) is None:
                 break
-            span = _queue_span(order, current.queue_item_id, loaded_id)
-            if span is not None and span == _queue_span(
-                self._queue_order(queue_id), current.queue_item_id, loaded_id
+            span = walk.span(current.queue_item_id, loaded_id)
+            if span is not None and span == self._queue_walk(queue_id).span(
+                current.queue_item_id, loaded_id
             ):
                 break
             self.logger.debug("Queue changed while item %s loaded", loaded.queue_item_id)
@@ -718,8 +744,9 @@ class WebKioskPlayer(Player):
             self.logger.warning("Cannot load the next item of queue %s: %s", queue_id, err)
             return None
 
-    def _queue_order(self, queue_id: str) -> list[str]:
-        """Return the IDs of the queue's items in play order."""
+    def _queue_walk(self, queue_id: str) -> QueueWalk:
+        """Return the queue's repeat mode and the IDs of its items in play order."""
+        queue = self.mass.player_queues.get(queue_id)
         order: list[str] = []
         while page := self.mass.player_queues.items(
             queue_id, limit=QUEUE_PAGE_SIZE, offset=len(order)
@@ -727,7 +754,7 @@ class WebKioskPlayer(Player):
             order.extend(item.queue_item_id for item in page)
             if len(page) < QUEUE_PAGE_SIZE:
                 break
-        return order
+        return QueueWalk(queue.repeat_mode if queue else None, order)
 
     def _refreshable_stream(self) -> tuple[float, float, float] | None:
         """Return song length, stream start and position of a rebuildable queue stream."""

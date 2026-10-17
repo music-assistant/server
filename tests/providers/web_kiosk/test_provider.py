@@ -1409,6 +1409,84 @@ async def test_successor_moved_while_it_loads_is_not_played_out_of_order(
     assert player.current_media.queue_item_id == "item-3"
 
 
+@pytest.mark.parametrize(
+    ("repeat", "finished", "expected"),
+    [(RepeatMode.ONE, "item-1", "item-1"), (RepeatMode.ALL, "item-2", "item-1")],
+    ids=["repeat-one", "repeat-all-wraparound"],
+)
+async def test_track_end_without_a_handover_follows_the_repeat_mode(
+    mass_mock: Mock,
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    repeat: RepeatMode,
+    finished: str,
+    expected: str,
+) -> None:
+    """Without a handover the loaded repeat (the same item, or the queue start) plays."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2")
+    queues._queue_data["wk_test"].session_id = "session"
+    await queues.set_repeat("wk_test", repeat)
+    queue = queues.get("wk_test")
+    assert queue is not None
+    queue.current_index = queues.index_by_id("wk_test", finished)
+    await player.play_media(
+        PlayerMedia(uri=finished, duration=30, source_id="wk_test", queue_item_id=finished)
+    )
+    player.note_seek(29)
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == expected
+
+
+@pytest.mark.parametrize(
+    ("repeat", "finished", "expected"),
+    [(RepeatMode.ONE, "item-1", "item-2"), (RepeatMode.ALL, "item-2", None)],
+    ids=["repeat-one", "repeat-all-wraparound"],
+)
+async def test_repeat_switched_off_while_the_successor_loads_is_followed(
+    mass_mock: Mock,
+    provider: WebKioskProvider,
+    player: WebKioskPlayer,
+    repeat: RepeatMode,
+    finished: str,
+    expected: str | None,
+) -> None:
+    """A repeat loaded before repeat was switched off is not played; the queue goes on or ends."""
+    queues = await _kiosk_queue(mass_mock, player, "item-1", "item-2")
+    queues._queue_data["wk_test"].session_id = "session"
+    await queues.set_repeat("wk_test", repeat)
+    queue = queues.get("wk_test")
+    assert queue is not None
+    queue.current_index = queues.index_by_id("wk_test", finished)
+    await player.play_media(
+        PlayerMedia(uri=finished, duration=30, source_id="wk_test", queue_item_id=finished)
+    )
+    player.note_seek(29)
+    load = queues.load_next_queue_item
+    switched = False
+
+    async def load_then_switch(queue_id: str, current_item_id: str) -> QueueItem:
+        nonlocal switched
+        item = await load(queue_id, current_item_id)
+        if not switched:
+            switched = True
+            await queues.set_repeat(queue_id, RepeatMode.OFF)
+        return item
+
+    queues.load_next_queue_item = load_then_switch  # type: ignore[method-assign]
+
+    await provider._advance_after_track("wk_test", player.playback_generation)
+
+    if expected is None:
+        assert player.playback_state == PlaybackState.IDLE
+    else:
+        assert player.current_media is not None
+        assert player.current_media.queue_item_id == expected
+
+
 async def test_successor_loaded_for_a_replaced_player_is_not_committed(
     mass_mock: Mock, provider: WebKioskProvider, player: WebKioskPlayer
 ) -> None:
