@@ -12,7 +12,7 @@ import posixpath
 import secrets
 import stat
 import urllib.parse
-from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Iterator, Sequence
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -136,6 +136,7 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
+    CONF_STALE_REFS_PRUNE_DONE,
     CUE_EXTENSIONS,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
@@ -181,6 +182,8 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.controllers.music.media.albums import AlbumsController
+    from music_assistant.controllers.music.media.artists import ArtistsController
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -778,6 +781,13 @@ class LocalFileSystemProvider(MusicProvider):
             deleted_files = await self._without_unreachable_files(prev_filenames - cur_filenames)
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
+            if (
+                not self.mass.config.get_raw_provider_config_value(
+                    self.instance_id, CONF_STALE_REFS_PRUNE_DONE, False
+                )
+                and await self._prune_all_missing_local_refs()
+            ):
+                self._update_config_value(CONF_STALE_REFS_PRUNE_DONE, True, immediate=True)
 
         # disable a full rescan after promoting authors/ narrators to artists once the scan completed without errors
         if self._force_full_reparse and not scan_errors.incomplete:
@@ -2408,6 +2418,15 @@ class LocalFileSystemProvider(MusicProvider):
         """Return whether the storage backing this provider can be read."""
         return await self.mass.storage.is_available(self.base_path)
 
+    async def _storage_reachable(self) -> bool:
+        """Return whether the root of this source and every location mounted below it can be read."""
+        if not await self._is_reachable():
+            return False
+        try:
+            return not await self._unreachable_folders()
+        except ActionUnavailable:
+            return False
+
     async def _unreachable_folders(self) -> list[str]:
         """Return the folders below the root, relative to it, whose storage can not be read."""
         locations = await self.mass.storage.get_unavailable_locations(self.base_path)
@@ -2626,6 +2645,41 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             await self.mass.music.artists.remove_item_from_library(db_row["item_id"])
 
+    async def _prune_all_missing_local_refs(self) -> bool:
+        """
+        Prune the mappings and images of all albums and artists that point to missing files.
+
+        :return: False when references were kept because the storage can not be read right now.
+        """
+        # run only once per source: every mapping and image costs a stat on possibly
+        # remote storage, and the deletion pass keeps new cases clean
+        assert self.mass.music.database
+        query = (
+            f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{self.instance_id}' AND media_type = "
+        )
+        album_ids = [
+            db_row["item_id"]
+            for db_row in await self.mass.music.database.get_rows_from_query(
+                f"{query}'album'", limit=0
+            )
+        ]
+        artist_ids = [
+            db_row["item_id"]
+            for db_row in await self.mass.music.database.get_rows_from_query(
+                f"{query}'artist'", limit=0
+            )
+        ]
+        self.logger.info(
+            "Checking %d albums and %d artists of %s for missing files",
+            len(album_ids),
+            len(artist_ids),
+            self.name,
+        )
+        return await self._prune_missing_local_refs(
+            self.mass.music.albums, album_ids
+        ) and await self._prune_missing_local_refs(self.mass.music.artists, artist_ids)
+
     async def _without_unreachable_files(self, deleted_files: set[str]) -> set[str]:
         """
         Return the ids/paths to delete, leaving out those in a folder whose storage is gone.
@@ -2661,8 +2715,13 @@ class LocalFileSystemProvider(MusicProvider):
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
         # process deleted tracks/playlists
-        album_ids = set()
-        artist_ids = set()
+        album_ids: set[str] = set()
+        artist_ids: set[str] = set()
+        # a moved file is matched to its library track before its old path is removed
+        # here, so the album and artists of a track that keeps another mapping are no
+        # orphans but may still reference the old folder
+        kept_album_ids: set[str] = set()
+        kept_artist_ids: set[str] = set()
         for file_path in deleted_files:
             if self.media_content_type == "podcasts":
                 # a podcast is tracked by its folder
@@ -2694,23 +2753,20 @@ class LocalFileSystemProvider(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                is_last_mapping = all(
-                    x.provider_instance == self.instance_id and x.item_id == file_path
-                    for x in library_item.provider_mappings
-                )
-                # a track that is kept via another provider still references its
-                # album and artists, so those need no orphan check
-                if is_track(library_item) and is_last_mapping:
-                    if library_item.album:
-                        album_ids.add(library_item.album.item_id)
-                        # need to fetch the library album to resolve the itemmapping
-                        db_album = await self.mass.music.albums.get_library_item(
-                            library_item.album.item_id
-                        )
-                        for artist in db_album.artists:
-                            artist_ids.add(artist.item_id)
-                    for artist in library_item.artists:
-                        artist_ids.add(artist.item_id)
+                if is_track(library_item):
+                    is_last_mapping = all(
+                        x.provider_instance == self.instance_id and x.item_id == file_path
+                        for x in library_item.provider_mappings
+                    )
+                    track_album_ids, track_artist_ids = await self._album_and_artist_ids(
+                        library_item
+                    )
+                    if is_last_mapping:
+                        album_ids |= track_album_ids
+                        artist_ids |= track_artist_ids
+                    else:
+                        kept_album_ids |= track_album_ids
+                        kept_artist_ids |= track_artist_ids
                 # the library item may also be mapped to other providers,
                 # so only drop this file's mapping
                 await controller.remove_provider_mapping(
@@ -2723,12 +2779,80 @@ class LocalFileSystemProvider(MusicProvider):
                 album_tracks = await self.mass.music.albums.tracks(album_id, "library", limit=1)
             if not album_tracks:
                 await self.mass.music.albums.remove_item_from_library(album_id)
+                kept_album_ids.discard(album_id)
+            else:
+                kept_album_ids.add(album_id)
+        if kept_album_ids:
+            await self._prune_missing_local_refs(self.mass.music.albums, kept_album_ids)
         # check if any artists need to be cleaned up
         for artist_id in artist_ids:
             artist_albums = await self.mass.music.artists.albums(artist_id, "library", limit=1)
             artist_tracks = await self.mass.music.artists.tracks(artist_id, "library", limit=1)
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
+                kept_artist_ids.discard(artist_id)
+            else:
+                kept_artist_ids.add(artist_id)
+        if kept_artist_ids:
+            await self._prune_missing_local_refs(self.mass.music.artists, kept_artist_ids)
+
+    async def _album_and_artist_ids(self, track: Track) -> tuple[set[str], set[str]]:
+        """Return the library ids of a track's album and of its album and track artists."""
+        album_ids: set[str] = set()
+        artist_ids = {artist.item_id for artist in track.artists}
+        if track.album:
+            album_ids.add(track.album.item_id)
+            # need to fetch the library album to resolve the itemmapping
+            db_album = await self.mass.music.albums.get_library_item(track.album.item_id)
+            artist_ids.update(artist.item_id for artist in db_album.artists)
+        return album_ids, artist_ids
+
+    async def _prune_missing_local_refs(
+        self, controller: AlbumsController | ArtistsController, item_ids: Iterable[str | int]
+    ) -> bool:
+        """
+        Drop mappings and images of library items that point to files or folders missing from disk.
+
+        :param controller: The controller of the items.
+        :param item_ids: The library ids of the items to check.
+        :return: False when nothing was dropped because the storage can not be read right now.
+        """
+        stale_mappings: list[tuple[str | int, str]] = []
+        stale_images: dict[str | int, set[str]] = {}
+        for item_id in item_ids:
+            library_item = await controller.get_library_item(item_id)
+            missing = [
+                mapping.item_id
+                for mapping in library_item.provider_mappings
+                if mapping.provider_instance == self.instance_id
+                and mapping.url
+                and not await self.exists(mapping.url)
+            ]
+            # the item still has library tracks, so never drop its last mapping
+            stale_mappings.extend(
+                (item_id, prov_item_id)
+                for prov_item_id in missing[: len(library_item.provider_mappings) - 1]
+            )
+            if missing_images := {
+                image.path
+                for image in library_item.metadata.images or []
+                if image.provider == self.instance_id
+                and not await self.exists(image.path.split("?cs=", 1)[0])
+            }:
+                stale_images[item_id] = missing_images
+        if not (stale_mappings or stale_images):
+            return True
+        # storage that dropped during the checks reads as missing files, its files are still there
+        if not await self._storage_reachable():
+            self.logger.warning(
+                "Keeping the references of %s to files that can not be read right now", self.name
+            )
+            return False
+        for item_id, prov_item_id in stale_mappings:
+            await controller.remove_provider_mapping(item_id, self.instance_id, prov_item_id)
+        for item_id, paths in stale_images.items():
+            await controller.remove_provider_images(item_id, self.instance_id, paths)
+        return True
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""

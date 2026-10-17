@@ -1,5 +1,6 @@
 """Tests for the filesystem provider's deletion pass."""
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -80,6 +81,65 @@ async def test_folder_id_removed_as_main_media_type(
     controller.remove_provider_mapping.assert_awaited_once_with(
         "1", "filesystem_local--test", "Music"
     )
+
+
+async def test_process_deletions_prunes_survivors_not_removed_albums() -> None:
+    """A surviving album is pruned; an album emptied by the same deletion is removed instead."""
+    provider, controllers = _create_provider()
+    prune = AsyncMock()
+    provider._prune_missing_local_refs = prune  # type: ignore[method-assign]
+    album_by_path = {"Artist/Survivor/01.mp3": "10", "Artist/Removed/01.mp3": "20"}
+    controllers[MediaType.TRACK].get_library_item_by_prov_id = AsyncMock(
+        side_effect=lambda file_path, _instance: MagicMock(
+            media_type=MediaType.TRACK,
+            item_id="1",
+            album=MagicMock(item_id=album_by_path[file_path]),
+            artists=[],
+            provider_mappings=[],
+        )
+    )
+    albums = cast("MagicMock", provider.mass.music.albums)
+    albums.get_library_item = AsyncMock(return_value=MagicMock(artists=[]))
+    albums.tracks = AsyncMock(side_effect=lambda album_id, _lib: [] if album_id == "20" else [1])
+    albums.remove_item_from_library = AsyncMock()
+
+    await provider._process_deletions(set(album_by_path))
+
+    albums.remove_item_from_library.assert_awaited_once_with("20")
+    prune.assert_awaited_once_with(albums, {"10"})
+
+
+async def test_moved_track_still_gets_its_album_pruned() -> None:
+    """A moved file matched to its library track before the old path is deleted still prunes."""
+    provider, controllers = _create_provider()
+    prune = AsyncMock()
+    provider._prune_missing_local_refs = prune  # type: ignore[method-assign]
+    old_path, new_path = "Artist/Old/01.mp3", "Artist/New/01.mp3"
+    controllers[MediaType.TRACK].get_library_item_by_prov_id = AsyncMock(
+        return_value=MagicMock(
+            media_type=MediaType.TRACK,
+            item_id="1",
+            album=MagicMock(item_id="10"),
+            artists=[],
+            provider_mappings=[
+                ProviderMapping(
+                    item_id=path,
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--test",
+                )
+                for path in (old_path, new_path)
+            ],
+        )
+    )
+    albums = cast("MagicMock", provider.mass.music.albums)
+    albums.get_library_item = AsyncMock(return_value=MagicMock(artists=[]))
+    albums.tracks = AsyncMock(return_value=[1])
+    albums.remove_item_from_library = AsyncMock()
+
+    await provider._process_deletions({old_path})
+
+    albums.remove_item_from_library.assert_not_called()
+    prune.assert_awaited_once_with(albums, {"10"})
 
 
 async def test_empty_id_is_skipped() -> None:
