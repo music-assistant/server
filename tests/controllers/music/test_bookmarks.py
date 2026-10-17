@@ -139,7 +139,7 @@ async def test_bookmark_goes_to_the_provider_only_when_it_may_edit(
     with pytest.raises(InsufficientPermissions) if refused else nullcontext():
         await music_mass.music.bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 754.5, "Arrakis")
 
-    # every client hears of it, each one applies it for its own user only
+    # the event names the copy and the user whose bookmarks changed
     assert events == (
         []
         if refused
