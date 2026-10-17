@@ -258,3 +258,21 @@ async def test_regrouping_during_the_launch_does_not_start_playback() -> None:
 
     session.start.assert_not_awaited()
     assert ready.cancelled()
+
+
+async def test_regrouping_while_the_old_playback_is_cancelled_launches_nothing() -> None:
+    """A request invalidated while the outgoing playback is cancelled doesn't launch the app."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    player, session, bridge, _ = _player(ready)
+
+    async def cancel(_reason: str, *, keep_stream: bool = False) -> None:
+        if not keep_stream:
+            # what a regroup does while the cancel is awaited
+            SendspinPlayer._abort_pending_cast_start(player)
+
+    session.cancel = AsyncMock(side_effect=cancel)
+
+    await _play_media(player)
+
+    bridge.launch_cast_app.assert_not_called()
+    session.start.assert_not_awaited()

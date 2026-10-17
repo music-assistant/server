@@ -1624,6 +1624,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 # the device isn't receiving it, its progress would run on under the new
                 # media while the app launches, and a failed launch would leave it open.
                 await self.playback_session.cancel("new media requested")
+                if generation != self._play_generation:
+                    # stopped or regrouped during the cancel: don't launch for it
+                    return
                 bridge.launch_cast_app()
             if not await self._wait_for_cast_app(cast_app_ready, generation):
                 return
