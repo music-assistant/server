@@ -99,7 +99,12 @@ class WledBridge(SendspinLightBridge):
         self._transport, _ = await self.mass.loop.create_datagram_endpoint(
             asyncio.DatagramProtocol, remote_addr=(WLED_MULTICAST_GROUP, self.port)
         )
-        self.register_client()
+        try:
+            self.register_client()
+        except Exception:
+            await self.unregister_client()
+            self._transport.close()
+            raise
         self.logger.info("WLED sync zone started on port %d", self.port)
 
     async def stop(self) -> None:
