@@ -36,10 +36,13 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     ctrl.logger = Mock()
     ctrl._log_request = Mock()
     ctrl._open_item_streams = {}
+    ctrl._ended_item_streams = {}
     # bind the real gate helper: the mocked self would silently swallow it otherwise
     ctrl._raise_if_stale_item_request = MethodType(
         StreamsController._raise_if_stale_item_request, ctrl
     )
+    for helper in ("_requested_item_ids", "_ended_item_ids", "_release_abandoned_item_sources"):
+        setattr(ctrl, helper, MethodType(getattr(StreamsController, helper), ctrl))
     ctrl.mass = MagicMock()
 
     queue = MagicMock()
@@ -47,6 +50,7 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     ctrl.mass.player_queues.get.return_value = queue
     pq_data = MagicMock()
     pq_data.session_id = SESSION_ID
+    pq_data.last_served_item_id = None
     ctrl.mass.player_queues.queue_data.return_value = pq_data
     ctrl.mass.player_queues.is_current_window_item.return_value = item_in_window
 
