@@ -1,0 +1,18 @@
+{
+  "packages": {
+    "@sendspin/sendspin-js": "5.0.0",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@noble/ciphers": "1.3.0"
+  },
+  "esbuild": "0.28.2",
+  "format": "iife",
+  "target": [
+    "chrome67",
+    "safari15",
+    "firefox68"
+  ],
+  "sha256": "9f9f8ec36b9fc067c31e1b08c0bf0204640dcfc7ccbd03ed0ae57e379ad37806",
+  "opusFallback": false,
+  "licensePlacement": "bundle-header"
+}
