@@ -1587,22 +1587,31 @@ class SendspinPlayer(SendspinBasePlayer):
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
+        # Cast-only: launch the Sendspin Cast app and wait for it before start(). The
+        # stream would otherwise run on while the app launches (several seconds), and
+        # the device would miss the start of the track. The fresh future also cancels
+        # any stale pending one from a previous timed-out attempt.
+        bridge = (
+            mgr.get_bridge_by_client_id(self.player_id)
+            if (mgr := self._get_cast_bridge_manager())
+            else None
+        )
+        cast_app_ready: asyncio.Future[None] | None = None
+        if bridge is not None:
+            await bridge.refresh_cast_app_state()
+            cast_app_ready = bridge.reset_cast_app_ready()
+
         prev_media_identity = self._media_identity()
         self._attr_current_media = media
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
 
-        # Cast-only: launch the Sendspin Cast app and wait for it before start(). The
-        # stream would otherwise run on while the app launches (several seconds), and
-        # the device would miss the start of the track. The fresh future also cancels
-        # any stale pending one from a previous timed-out attempt. Waited for before the
-        # current playback is cancelled, so a failed launch still ends that playback.
-        if (mgr := self._get_cast_bridge_manager()) and (
-            bridge := mgr.get_bridge_by_client_id(self.player_id)
-        ):
-            await bridge.refresh_cast_app_state()
-            cast_app_ready = bridge.reset_cast_app_ready()
+        if bridge is not None and cast_app_ready is not None:
             if not cast_app_ready.done():
+                # End the current playback rather than keep its stream for a successor:
+                # the device isn't receiving it, its progress would run on under the new
+                # media while the app launches, and a failed launch would leave it open.
+                await self.playback_session.cancel("new media requested")
                 bridge.launch_cast_app()
             await self._wait_for_cast_app(cast_app_ready)
 

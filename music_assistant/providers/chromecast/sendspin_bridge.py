@@ -27,7 +27,7 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, GoodbyeReason
-from aiosendspin.server import ClientRemovedEvent
+from aiosendspin.server import ClientDisconnectedEvent, ClientRemovedEvent
 from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.errors import PlayerCommandFailed
 from pychromecast.controllers import BaseController
@@ -297,6 +297,7 @@ class SendspinChromecastBridge:
         self._log_controller: SendspinCastController | None = None
         self._cast_app_was_active: bool = False
         self._cast_app_connected: bool = False
+        self._event_unsub: Callable[[], None] | None = None
         self._cast_app_ready: asyncio.Future[None] | None = None
 
     def reset_cast_app_ready(self) -> asyncio.Future[None]:
@@ -439,6 +440,7 @@ class SendspinChromecastBridge:
         self._sendspin_client = self.sendspin_server.register_external_player(
             hello, on_stream_start=self._on_stream_start
         )
+        self._event_unsub = self.sendspin_server.add_event_listener(self._on_sendspin_event)
 
         # Role is created by register_external_player via the factory registry.
         # Retrieve it and set up audio requirements so the server considers
@@ -485,6 +487,10 @@ class SendspinChromecastBridge:
                 await self._launch_task
             self._launch_task = None
 
+        if self._event_unsub is not None:
+            self._event_unsub()
+            self._event_unsub = None
+
         if self._sendspin_client:
             await self.sendspin_server.remove_client(self._bridge_client_id)
             self._sendspin_client = None
@@ -507,6 +513,11 @@ class SendspinChromecastBridge:
     async def push_runtime_config_update(self) -> None:
         """Push updated runtime config to active Cast app."""
         await self._send_sendspin_config_with_retry()
+
+    def _on_sendspin_event(self, _server: SendspinServer, event: SendspinEvent) -> None:
+        """Forget the app's connected report once its Sendspin connection drops."""
+        if isinstance(event, ClientDisconnectedEvent) and event.client_id == self._bridge_client_id:
+            self._cast_app_connected = False
 
     def _on_cast_fatal_audio_error(self) -> None:
         """Handle fatal audio error from Cast receiver (called from socket thread)."""

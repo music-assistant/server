@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiosendspin.models.types import GoodbyeReason
+from aiosendspin.server import ClientDisconnectedEvent
 from pychromecast.error import NotConnected
 
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
@@ -330,3 +331,36 @@ async def test_cast_disconnect_during_the_refresh_is_handled() -> None:
 
     client.detach_connection.assert_called_once_with(GoodbyeReason.SHUTDOWN)
     assert not ready.done()
+
+
+async def test_stream_start_after_a_disconnect_without_reset_launches_the_app() -> None:
+    """A group start that doesn't reset readiness still relaunches an app that lost its connection."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=True)
+    launches = _block_launches(bridge)
+    bridge.reset_cast_app_ready()
+    bridge._mark_cast_app_connected()
+
+    client.is_connected = False
+    bridge._on_sendspin_event(
+        MagicMock(), ClientDisconnectedEvent(client_id="spb_aabbccddeeff", goodbye_reason=None)
+    )
+    bridge._on_stream_start(MagicMock())
+    await asyncio.sleep(0)
+
+    assert len(launches) == 1
+
+
+async def test_another_clients_disconnect_keeps_the_connected_report() -> None:
+    """Only this device's own disconnect cancels its connected report."""
+    bridge, _ = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=False)
+    launches = _block_launches(bridge)
+    bridge.reset_cast_app_ready()
+    bridge._mark_cast_app_connected()
+
+    bridge._on_sendspin_event(
+        MagicMock(), ClientDisconnectedEvent(client_id="spb_ffeeddccbbaa", goodbye_reason=None)
+    )
+    bridge._on_stream_start(MagicMock())
+    await asyncio.sleep(0)
+
+    assert launches == []

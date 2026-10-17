@@ -42,7 +42,12 @@ def _player(ready: asyncio.Future[None]) -> tuple[SendspinPlayer, Mock, Mock, li
     )
     player.playback_session = session
     bridge = Mock()
-    bridge.refresh_cast_app_state = AsyncMock(side_effect=lambda: calls.append("refresh"))
+
+    async def refresh_cast_app_state() -> None:
+        current = player._attr_current_media
+        calls.append(f"refresh ({current.uri})" if current else "refresh")
+
+    bridge.refresh_cast_app_state = AsyncMock(side_effect=refresh_cast_app_state)
 
     def reset_cast_app_ready() -> asyncio.Future[None]:
         calls.append("reset")
@@ -54,6 +59,7 @@ def _player(ready: asyncio.Future[None]) -> tuple[SendspinPlayer, Mock, Mock, li
     manager.get_bridge_by_client_id.return_value = bridge
     player._get_cast_bridge_manager = Mock(return_value=manager)  # type: ignore[method-assign]
     player._state = SimpleNamespace(current_media=None)  # type: ignore[assignment]
+    player._attr_current_media = None
     player.update_state = Mock()  # type: ignore[method-assign,misc]
     player.mass = Mock(create_task=Mock(side_effect=lambda coro, **_kwargs: coro.close()))
     return player, session, bridge, calls
@@ -92,13 +98,14 @@ async def test_waits_for_the_cast_app_before_starting_the_stream() -> None:
     for _ in range(5):
         await asyncio.sleep(0)
 
-    assert calls == ["refresh", "reset", "launch"]
+    # the current playback is ended before the launch, not kept running meanwhile
+    assert calls == ["refresh", "reset", "cancel", "launch"]
     session.start.assert_not_awaited()
 
     ready.set_result(None)
     await call
 
-    assert calls == ["refresh", "reset", "launch", "cancel (keep stream)", "start"]
+    assert calls == ["refresh", "reset", "cancel", "launch", "cancel (keep stream)", "start"]
 
 
 async def test_running_cast_app_is_not_launched_again() -> None:
@@ -127,5 +134,21 @@ async def test_failed_launch_never_starts_the_stream() -> None:
 
     session.start.assert_not_awaited()
     # the playback being replaced is ended, not kept for a successor that never comes
-    assert calls == ["refresh", "reset", "launch", "cancel"]
-    session.cancel.assert_awaited_once_with("cast app readiness failed")
+    assert calls == ["refresh", "reset", "cancel", "launch", "cancel"]
+    session.cancel.assert_awaited_with("cast app readiness failed")
+
+
+async def test_new_media_is_set_only_after_the_status_refresh() -> None:
+    """The playback still running during the refresh keeps reporting under its own media."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    ready.set_result(None)
+    player, _, _, calls = _player(ready)
+    previous = _media()
+    previous.uri = "track-0"
+    player._attr_current_media = previous
+
+    await _play_media(player)
+
+    assert calls[0] == "refresh (track-0)"
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.uri == "track-1"
