@@ -12,7 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.bookmarks_update import BookmarksUpdate
+from music_assistant_models.enums import EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     AuthenticationRequired,
     InsufficientPermissions,
@@ -20,6 +21,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import MediaItemBookmark
 
 from music_assistant.constants import DB_TABLE_BOOKMARKS
@@ -137,10 +139,11 @@ class BookmarksController:
         )
         if provider:
             await provider.set_bookmark(media_type, provider_item_id, start, name)
-            return
-        await self.mass.music.database.insert_or_replace(
-            DB_TABLE_BOOKMARKS, {**row, "start": start, "name": name}
-        )
+        else:
+            await self.mass.music.database.insert_or_replace(
+                DB_TABLE_BOOKMARKS, {**row, "start": start, "name": name}
+            )
+        self._signal_updated(row)
 
     async def remove_bookmark(
         self, media_type: MediaType, provider_instance_id: str, provider_item_id: str, start: float
@@ -158,11 +161,25 @@ class BookmarksController:
         )
         if provider:
             await provider.remove_bookmark(media_type, provider_item_id, start)
-            return
-        match = {**row, "start": start}
-        if not await self.mass.music.database.get_row(DB_TABLE_BOOKMARKS, match):
-            raise MediaNotFoundError(f"No bookmark at {start}s on {provider_item_id}")
-        await self.mass.music.database.delete(DB_TABLE_BOOKMARKS, match)
+        else:
+            match = {**row, "start": start}
+            if not await self.mass.music.database.get_row(DB_TABLE_BOOKMARKS, match):
+                raise MediaNotFoundError(f"No bookmark at {start}s on {provider_item_id}")
+            await self.mass.music.database.delete(DB_TABLE_BOOKMARKS, match)
+        self._signal_updated(row)
+
+    def _signal_updated(self, row: dict[str, Any]) -> None:
+        media_type = MediaType(row["media_type"])
+        self.mass.signal_event(
+            EventType.BOOKMARKS_UPDATED,
+            create_uri(media_type, row["provider_instance"], row["provider_item_id"]),
+            BookmarksUpdate(
+                media_type=media_type,
+                provider_instance_id=row["provider_instance"],
+                provider_item_id=row["provider_item_id"],
+                user_id=row["user_id"],
+            ),
+        )
 
     @staticmethod
     def _features(media_type: MediaType) -> tuple[ProviderFeature, ProviderFeature]:
