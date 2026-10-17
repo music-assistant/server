@@ -1273,8 +1273,9 @@ class SendspinPlayer(SendspinBasePlayer):
     # Queue item the current poller is targeting (so a track switch cancels it).
     _beat_retry_queue_item_id: str | None = None
     _metadata_generation: int = 0
-    # Bumped by every play_media and stop, so a start still waiting for the Cast app
-    # can tell it was stopped or replaced meanwhile.
+    # Bumped by every play_media and stop command, so a start still waiting for the Cast
+    # app can tell it was stopped or replaced meanwhile. A group stop is left out: the
+    # outgoing session's natural end stops the group too, and must not drop a new start.
     _play_generation: int = 0
     _pending_cast_app_ready: asyncio.Future[None] | None = None
     _content_takeover_pending: bool = False
@@ -2047,7 +2048,6 @@ class SendspinPlayer(SendspinBasePlayer):
         """Cancel playback session when group stops and we are the leader."""
         if self.synced_to is not None:
             return
-        self._abort_pending_cast_start()
         # Bind the cancel to the session task that is live right now: by the time
         # the deferred task below runs, play_media may already have started a fresh
         # session, which must not be torn down by this stale group-stopped event.

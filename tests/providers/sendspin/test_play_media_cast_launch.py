@@ -204,17 +204,21 @@ async def test_newer_play_media_replaces_one_waiting_for_the_app() -> None:
     assert "cancel" not in calls[calls.index("launch") :]
 
 
-async def test_group_stop_aborts_a_pending_cast_start() -> None:
-    """The group stopping, for instance by a stop from another member, aborts the wait."""
+async def test_previous_playback_ending_during_the_refresh_keeps_the_new_start() -> None:
+    """The outgoing playback ending by itself (which stops the group) doesn't drop the new start."""
     ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-    player, session, _, _ = _player(ready)
+    ready.set_result(None)
+    player, session, bridge, _ = _player(ready)
     session.playback_task = None
 
-    call = asyncio.create_task(_play_media(player))
-    for _ in range(5):
-        await asyncio.sleep(0)
-    with patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
-        SendspinPlayer._on_group_stopped(player)
-    await call
+    async def refresh_while_the_previous_track_ends() -> None:
+        with patch.object(
+            SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=None
+        ):
+            SendspinPlayer._on_group_stopped(player)
 
-    session.start.assert_not_awaited()
+    bridge.refresh_cast_app_state = AsyncMock(side_effect=refresh_while_the_previous_track_ends)
+
+    await _play_media(player)
+
+    session.start.assert_awaited_once()
