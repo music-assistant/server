@@ -17,7 +17,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -100,7 +100,7 @@ async def _add_playlog_row(
 ) -> None:
     """Seed one playlog row for a podcast episode."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": PROVIDER_ID,
@@ -127,7 +127,7 @@ def count_playlog_queries_fixture(
 
         async def _wrapper(table: str, *args: Any, **kwargs: Any) -> Any:
             nonlocal calls
-            if table == DB_TABLE_PLAYLOG:
+            if table == DB_TABLE_MEDIA_PROGRESS:
                 calls += 1
             return await original(table, *args, **kwargs)
 
@@ -209,7 +209,7 @@ async def _explain_resume_query(mass: MusicAssistant, user: User | None) -> list
     original = database._db.execute_fetchall
 
     async def _spy(sql: str, params: Any = None) -> Any:
-        if DB_TABLE_PLAYLOG in sql and sql.startswith("SELECT"):
+        if DB_TABLE_MEDIA_PROGRESS in sql and sql.startswith("SELECT"):
             captured["sql"], captured["params"] = sql, params
         return await original(sql, params)
 
@@ -324,9 +324,9 @@ async def test_resume_query_uses_the_provider_media_type_index(mass: MusicAssist
 
     details = await _explain_resume_query(mass, user)
 
-    assert any(f"USING INDEX {DB_TABLE_PLAYLOG}_provider_media_type_idx" in x for x in details), (
-        details
-    )
+    assert any(
+        f"USING INDEX {DB_TABLE_MEDIA_PROGRESS}_provider_media_type_idx" in x for x in details
+    ), details
     # with userid in the filter the equality prefix reaches timestamp, so the index satisfies
     # the ORDER BY on its own. That part does not survive userid dropping out of the filter -
     # the test below covers what still holds there
@@ -349,9 +349,9 @@ async def test_resume_query_uses_the_index_without_a_session_user(mass: MusicAss
     ):
         details = await _explain_resume_query(mass, None)
 
-    assert any(f"USING INDEX {DB_TABLE_PLAYLOG}_provider_media_type_idx" in x for x in details), (
-        details
-    )
+    assert any(
+        f"USING INDEX {DB_TABLE_MEDIA_PROGRESS}_provider_media_type_idx" in x for x in details
+    ), details
 
 
 async def test_without_a_session_user_the_newest_progress_wins(mass: MusicAssistant) -> None:

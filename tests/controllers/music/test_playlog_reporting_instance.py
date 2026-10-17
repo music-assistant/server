@@ -14,7 +14,7 @@ from music_assistant_models.enums import MediaType, ProviderSharing
 from music_assistant_models.media_items import Artist, AudioFormat, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
@@ -74,7 +74,7 @@ async def _setup(mass: MusicAssistant, name: str) -> tuple[User, User, Track]:
 
 async def _playlog_row(mass: MusicAssistant, track: Track, userid: str) -> dict[str, Any] | None:
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": track.item_id,
             "provider": "library",

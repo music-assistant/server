@@ -2076,7 +2076,12 @@ def _native_stream_handler_context(
         overlay_enabled=False,
         overlay_source=None,
     )
-    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    queue_data = SimpleNamespace(
+        session_id="session-1",
+        flow_mode_stream_log=[],
+        last_served_item_id=None,
+        last_requested_item_id=None,
+    )
     mass.player_queues.get.return_value = queue
     mass.player_queues.queue_data.return_value = queue_data
     mass.player_queues.flow_stream_finished.return_value = False
@@ -2102,6 +2107,7 @@ def _native_stream_handler_context(
 
     controller = cast("Any", object.__new__(StreamsController))
     controller._open_item_streams = {}
+    controller._ended_item_streams = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()
@@ -2109,6 +2115,7 @@ def _native_stream_handler_context(
     controller._update_audio_processing_context = MagicMock()
     controller._active_output_streams = 0
     controller._flow_mode_owners = {}
+    controller._boundary_mix_owners = {}
 
     response = MagicMock()
     response.prepare = AsyncMock()

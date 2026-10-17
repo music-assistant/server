@@ -1900,6 +1900,7 @@ async def test_get_track_audio_metadata_prefers_smart_fades() -> None:
     assert result is not None
     assert result.bpm == 128.0
     assert result.musical_key == "F# minor"
+    assert result.camelot_key == "11A"
 
 
 @pytest.mark.asyncio
@@ -1910,6 +1911,7 @@ async def test_get_track_audio_metadata_key_without_mode() -> None:
     assert result is not None
     assert result.bpm is None
     assert result.musical_key == "C"
+    assert result.camelot_key is None
 
 
 @pytest.mark.asyncio

@@ -112,6 +112,10 @@ LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
 }
 
 
+class NothingToSync(Exception):
+    """Raised from sync_library when the provider found nothing changed since its last sync."""
+
+
 @dataclass
 class SyncRunState:
     """
@@ -1883,7 +1887,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             # episodes does not make the podcast result set incomplete
             try:
                 # precache podcast episodes
-                async for _ in self.mass.music.podcasts.episodes(str(db_id), "library"):
+                async for _ in self.mass.music.podcasts.iter_episodes(str(db_id), "library"):
                     await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
@@ -1911,21 +1915,25 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                    elif prov_item.is_dynamic and (
-                        not library_item.is_dynamic
+                    elif (prov_item.is_dynamic or not prov_item.is_endless) and (
+                        prov_item.is_dynamic != library_item.is_dynamic
+                        or prov_item.is_endless != library_item.is_endless
                         or prov_item.name != library_item.name
                         or prov_item.metadata.images != library_item.metadata.images
                     ):
-                        # must overwrite: merging keeps mappings that serve the wrong tracks
+                        # a tracklisted station is provider-owned, so it must overwrite:
+                        # merging keeps mappings that serve the wrong tracks
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True  # overwrite re-inserts the rows
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
                         )
                     elif self._library_item_needs_update(library_item, prov_item) or (
-                        library_item.is_dynamic and not prov_item.is_dynamic
+                        (not prov_item.is_dynamic and prov_item.is_endless)
+                        and (library_item.is_dynamic or not library_item.is_endless)
                     ):
-                        # a station leaving dynamic mode is no longer provider-owned, so merge
+                        # a station that became a plain stream again is no longer
+                        # provider-owned, so merge
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )

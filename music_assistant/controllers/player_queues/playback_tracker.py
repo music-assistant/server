@@ -47,6 +47,7 @@ from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
     find_dynamic_source,
     get_current_playback_speed,
+    origin_for,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
@@ -393,6 +394,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     track_sec_skipped = queue_item.streamdetails.seek_position
                 else:
                     track_sec_skipped = 0
+                # Each repeat shares a QueueItem, but buffered audio from the previous
+                # playback still needs the offset captured before the repeat was loaded.
+                if play_log_entry.seek_position is not None:
+                    track_sec_skipped = play_log_entry.seek_position
                 # stream-time within this entry, scaled to media-time using the
                 # speed of the entry we broke on (queue.current_item may still be
                 # the previous entry during a transition)
@@ -555,7 +560,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         return
                     if dynamic_tracks:
                         queue_items = [
-                            build_queue_item(queue.queue_id, x)
+                            build_queue_item(
+                                queue.queue_id, x, origin=origin_for(dynamic_source, x)
+                            )
                             for x in dynamic_tracks
                             if x.available
                         ]

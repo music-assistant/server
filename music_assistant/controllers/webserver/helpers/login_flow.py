@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import hmac
 import re
 import secrets
@@ -13,6 +11,8 @@ from enum import StrEnum
 from typing import Final, Literal
 
 from music_assistant_models.errors import RateLimited
+
+from music_assistant.helpers.pkce import pkce_challenge
 
 # Seconds a sign-in may take, and how many may be pending at once
 PENDING_LOGIN_TTL: Final = 600
@@ -114,16 +114,6 @@ class PendingLoginStore:
         if pending is None or pending.expires_at <= time.monotonic():
             return None
         return pending
-
-
-def pkce_challenge(code_verifier: str) -> str:
-    """
-    Return the PKCE S256 code challenge for a code verifier.
-
-    :param code_verifier: The code verifier the token request will carry.
-    """
-    digest = hashlib.sha256(code_verifier.encode()).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
 
 def verify_pkce(code_verifier: str, code_challenge: str) -> bool:

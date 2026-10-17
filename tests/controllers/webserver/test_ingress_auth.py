@@ -38,6 +38,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
+    AuthFailure,
     AuthResult,
     HomeAssistantOAuthProvider,
     HomeAssistantProviderConfig,
@@ -48,6 +49,7 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     AuthTransport,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
+from music_assistant.helpers.pkce import pkce_challenge
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1001,7 +1003,7 @@ async def test_ha_login_exchange_refuses_a_user_that_may_not_sign_in(
         AuthTransport.REMOTE,
         "https://app.music-assistant.io/auth/callback/",
         redirect_target="app",
-        client_code_challenge=login_flow.pkce_challenge(verifier),
+        client_code_challenge=pkce_challenge(verifier),
         idp_code_verifier="ha_verifier",
     )
     hass_provider = _ready_hass_provider(
@@ -1018,8 +1020,9 @@ async def test_ha_login_exchange_refuses_a_user_that_may_not_sign_in(
     ):
         result = await auth_manager.exchange_authorization_code(pending.state, "ha_code", verifier)
 
-    assert result["success"] is False
-    assert result["translation_key"] == translation_key
+    assert isinstance(result, AuthFailure)
+    assert result.success is False
+    assert result.translation_key == translation_key
     get_token.assert_awaited_once_with(
         "http://ha.local:8123",
         "ha_code",

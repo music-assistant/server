@@ -315,6 +315,18 @@ def cap_native_thread_pools() -> int:
     return budget
 
 
+def set_model_cache_dirs(cache_dir: str) -> None:
+    """
+    Point the torch and Hugging Face model caches into the Music Assistant cache dir.
+
+    Must be called before huggingface_hub is imported, as it reads HF_HOME at import time.
+    Operator-supplied values are kept.
+    """
+    # The default ~/.cache is unwritable when the container runs as a non-root user.
+    os.environ.setdefault("TORCH_HOME", os.path.join(cache_dir, "torch"))
+    os.environ.setdefault("HF_HOME", os.path.join(cache_dir, "huggingface"))
+
+
 async def verify_system_meets_requirements(
     *,
     feature_name: str,
@@ -857,6 +869,14 @@ def infer_album_type(title: str, version: str) -> AlbumType:
         if re.search(pat, combined):
             return AlbumType.SOUNDTRACK
     return AlbumType.UNKNOWN
+
+
+_DISC_DIR_RE = re.compile(r"^(?:disc|disk|cd|dvd|vol(?:ume)?)[\s._-]*\d+\b", re.IGNORECASE)
+
+
+def is_disc_dir(name: str) -> bool:
+    """Return True when a folder name looks like a disc subfolder (e.g. ``Disc 1``, ``CD2``)."""
+    return bool(_DISC_DIR_RE.match(name.strip()))
 
 
 def strip_ads(line: str) -> str:

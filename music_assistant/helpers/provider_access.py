@@ -240,7 +240,20 @@ async def playback_sources(
     :param mass: The MusicAssistant instance.
     :param queue_id: The queue the playback belongs to.
     """
-    user = await resolve_playback_user(mass, queue_id)
+    return playback_sources_for(mass, await resolve_playback_user(mass, queue_id))
+
+
+def playback_sources_for(
+    mass: MusicAssistant, user: User | None
+) -> tuple[list[str] | None, list[str]]:
+    """
+    Return the (allowed, preferred) music sources for the given playback user.
+
+    The sources :func:`playback_sources` returns once a queue plays for this user.
+
+    :param mass: The MusicAssistant instance.
+    :param user: The user the playback is for; None for anonymous playback.
+    """
     return visible_playback_sources(mass, user), _own_enabled_sources(mass, user)
 
 
