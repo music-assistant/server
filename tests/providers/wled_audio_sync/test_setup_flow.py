@@ -20,9 +20,7 @@ def _session(used_ports: list[int], setup_data: dict[str, int] | None = None) ->
     session.mass.config.get_provider_setup_value = MagicMock(
         side_effect=lambda instance_id, _key: ports[instance_id]
     )
-    session.form = AsyncMock(
-        side_effect=lambda entries, **_kw: {CONF_PORT: entries[0].default_value}
-    )
+    session.form = AsyncMock(side_effect=lambda entries, **_kw: {CONF_PORT: entries[0].value})
     session.finish = AsyncMock()
     return session
 
@@ -48,11 +46,20 @@ async def test_reconfigure_prefills_stored_port() -> None:
     session.finish.assert_awaited_once_with({CONF_PORT: DEFAULT_PORT + 5})
 
 
+async def test_suggested_port_is_the_form_value() -> None:
+    """The suggested port is the prefilled value; the generic default stays unchanged."""
+    session = _session([DEFAULT_PORT])
+    await run_setup(session)
+    entry = session.form.await_args.args[0][0]
+    assert entry.value == DEFAULT_PORT + 1
+    assert entry.default_value == DEFAULT_PORT
+
+
 async def test_finish_error_reshows_form() -> None:
-    """A rejected port shows the error and lets the user retry."""
+    """A rejected port passes the error through whole, keeping its translation data."""
     session = _session([])
     err = SetupFlowError("boom")
     session.finish = AsyncMock(side_effect=[err, None])
     await run_setup(session)
     assert session.form.await_count == 2
-    assert session.form.await_args.kwargs["errors"] == {"base": err.translation_key or "boom"}
+    assert session.form.await_args.kwargs["errors"] == {"base": err}

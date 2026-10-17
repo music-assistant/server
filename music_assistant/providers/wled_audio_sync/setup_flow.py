@@ -23,14 +23,15 @@ async def run_setup(session: SetupSession) -> None:
     :param session: The setup session driving the flow.
     """
     suggested_port = session.context.setup_data.get(CONF_PORT) or await _next_free_port(session)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
                 ConfigEntry(
                     key=CONF_PORT,
                     type=ConfigEntryType.INTEGER,
-                    default_value=suggested_port,
+                    default_value=DEFAULT_PORT,
+                    value=suggested_port,
                     range=(1024, 65535),
                 )
             ],
@@ -42,7 +43,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(values)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _next_free_port(session: SetupSession) -> int:
