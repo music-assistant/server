@@ -10,6 +10,7 @@ import pytest
 from aiosendspin.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server import (
     ClientConnectedEvent,
+    ClientDisconnectedEvent,
     SignalState,
     SourceSignalChangedEvent,
     SourceStreamEndedEvent,
@@ -187,6 +188,19 @@ async def test_reconnect_refreshes_the_player_listing_the_line_in() -> None:
     get_server_api(provider).emit(ClientConnectedEvent("client-1"))
     client.attach_roles(role)
     await _settle()
+    assert players.updated == ["visible-1"]
+
+
+async def test_disconnect_refreshes_the_player_listing_the_line_in() -> None:
+    """The visible player drops the line-in once the client's connection is gone."""
+    client = _FakeClient("client-1", has_player_role=True)
+    provider = await make_provider([client])
+    players = get_players(provider)
+    players.players["client-1"].protocol_parent_id = "visible-1"
+    players.updated.clear()
+    client.is_connected = False
+    client.connection = None
+    get_server_api(provider).emit(ClientDisconnectedEvent("client-1", goodbye_reason=None))
     assert players.updated == ["visible-1"]
 
 

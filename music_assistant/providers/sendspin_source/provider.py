@@ -496,6 +496,7 @@ class SendspinSourceProvider(PluginProvider):
                         state.unwatch()
                         state.unwatch = None
                     self._drop_empty_client_state(client_id, state)
+                self._refresh_player_listing(client_id)
 
     async def _on_client_connected(self, client_id: str) -> None:
         """Re-arm watching and streaming for a client that just (re)connected."""
