@@ -12,15 +12,17 @@ from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
 from music_assistant_models import helpers as models_helpers
-from zeroconf.asyncio import AsyncZeroconf
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.mass import MusicAssistant
 from tests.common import (
+    adopt_bound_sendspin_port,
     suppress_auto_loaded_providers,
     suppress_initial_library_sync,
     use_ephemeral_server_ports,
@@ -80,6 +82,24 @@ def isolate_models_global_cache() -> Generator[None]:
     """
     yield
     models_helpers._global_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def isolate_matching_options() -> Generator[None]:
+    """
+    Reset the library matching options between tests.
+
+    The music controller hands its matching options to the compare helpers as module-level
+    state, which a test that turns one on would otherwise leave on for later tests.
+    """
+    yield
+    set_keep_remasters_apart(False)
+
+
+@pytest.fixture
+def keep_remasters_apart() -> None:
+    """Turn on the matching option that keeps remastered versions apart."""
+    set_keep_remasters_apart(True)
 
 
 @pytest.fixture(name="caplog")
@@ -154,6 +174,13 @@ async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssis
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=mock_browser,
         ),
+        # the Sendspin server runs its own zeroconf instance: keep it off the network,
+        # its mDNS probing alone also holds up every boot for over a second
+        patch("aiosendspin.server.server.AsyncZeroconf", return_value=_create_mock_zeroconf()),
+        patch(
+            "aiosendspin.server.server.AsyncServiceBrowser",
+            return_value=MagicMock(spec=AsyncServiceBrowser),
+        ),
         # Booting the server runs an ffmpeg presence check; mock it so tests can boot
         # without the binary. Tests that actually spawn ffmpeg still use the real one.
         patch(
@@ -169,6 +196,7 @@ async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssis
         try:
             await mass_instance.start()
             await wait_for_boot_to_settle(mass_instance)
+            adopt_bound_sendspin_port(mass_instance)
             yield mass_instance
         finally:
             # also stop after a failed boot: pytest holds on to the setup traceback,
@@ -189,6 +217,17 @@ async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]
     :param tmp_path: Temporary directory for test data.
     """
     async with _minimal_mass_context(tmp_path) as mass_instance:
+        yield mass_instance
+
+
+@pytest.fixture
+async def music_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+    """
+    Create a Music Assistant instance with only library storage and a fresh database.
+
+    :param tmp_path: Temporary directory for test data.
+    """
+    async with _music_mass_context(tmp_path) as mass_instance:
         yield mass_instance
 
 

@@ -8,8 +8,17 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp.server.auth import AccessToken
 
-from music_assistant.providers.fastmcp_server.auth import MASTokenVerifier
+from music_assistant.providers.fastmcp_server.auth import (
+    LOOKUP_FAILURE_CLIENT_ID,
+    MASTokenVerifier,
+    request_identity_holds,
+)
+from music_assistant.providers.fastmcp_server.token_identity import (
+    TokenIdentity,
+    TokenIdentityRegistry,
+)
 
 
 def _make_jwt(payload: dict[str, object]) -> str:
@@ -28,6 +37,7 @@ def _make_jwt(payload: dict[str, object]) -> str:
 async def test_valid_token_returns_access_token(mock_mass: MagicMock, mock_user: MagicMock) -> None:
     """A valid token yields an AccessToken bound to the canonical resource URI."""
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(return_value="exact-token-id")
     verifier = MASTokenVerifier(
         mock_mass,
         base_url="http://localhost:8095",
@@ -37,10 +47,102 @@ async def test_valid_token_returns_access_token(mock_mass: MagicMock, mock_user:
     token = await verifier.verify_token("valid-token")
 
     assert token is not None
-    assert token.client_id == "u1"
+    assert token.client_id == "exact-token-id"
     assert token.scopes == []
     assert token.resource == "http://localhost:8095/mcp/v1"
     assert token.token == "valid-token"
+
+
+@pytest.mark.asyncio
+async def test_two_tokens_for_one_user_have_distinct_exact_client_ids(
+    mock_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """FastMCP identity remains exact-token scoped even when MA users match."""
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(
+        side_effect=["token-id-a", "token-id-b"]
+    )
+    verifier = MASTokenVerifier(mock_mass)
+
+    first = await verifier.verify_token("bearer-a")
+    second = await verifier.verify_token("bearer-b")
+
+    assert first is not None
+    assert second is not None
+    assert first.client_id == "token-id-a"
+    assert second.client_id == "token-id-b"
+    assert first.client_id != second.client_id
+
+
+@pytest.mark.asyncio
+async def test_non_authoritative_client_ids_do_not_use_user_or_application_identity(
+    mock_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """A vanished or failed token-id lookup uses the safe lookup-failure client ID."""
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(
+        side_effect=[None, RuntimeError("lookup unavailable")]
+    )
+    registry = TokenIdentityRegistry()
+    verifier = MASTokenVerifier(mock_mass, identity_registry=registry)
+
+    vanished = await verifier.verify_token("revoked-mid-verify")
+    failed = await verifier.verify_token("failed")
+
+    assert vanished is not None
+    assert failed is not None
+    assert vanished.client_id == LOOKUP_FAILURE_CLIENT_ID
+    assert failed.client_id == LOOKUP_FAILURE_CLIENT_ID
+    assert registry.lookup("revoked-mid-verify") is None
+
+
+def test_request_identity_holds_for_exact_binding() -> None:
+    """Command and resource paths share one identity comparison."""
+    token = AccessToken(token="bearer", client_id="tid-1", scopes=[])
+    user = MagicMock(user_id="user-1", enabled=True)
+    identity = TokenIdentity(user_id="user-1", token_id="tid-1")
+
+    assert request_identity_holds(token, user, identity, live_token_id="tid-1") is True
+    assert request_identity_holds(token, user, None, live_token_id="tid-1") is False
+    assert request_identity_holds(token, user, identity, lookup_failed=True) is False
+
+
+def test_exact_binding_fails_closed_when_the_live_token_id_disappears() -> None:
+    """A revoked token whose live id lookup now returns nothing cannot keep its exact binding."""
+    token = AccessToken(token="bearer", client_id="tid-1", scopes=[])
+    user = MagicMock(user_id="user-1", enabled=True)
+    identity = TokenIdentity(user_id="user-1", token_id="tid-1")
+
+    assert request_identity_holds(token, user, identity, live_token_id=None) is False
+    assert request_identity_holds(token, user, identity) is True
+
+
+def test_binding_without_a_token_id_never_holds() -> None:
+    """MA resolves a token id for every valid token, so an id-less binding is not trusted."""
+    token = AccessToken(token="bearer", client_id=LOOKUP_FAILURE_CLIENT_ID, scopes=[])
+    user = MagicMock(user_id="user-1", enabled=True)
+    identity = TokenIdentity(user_id="user-1", token_id=None)
+
+    assert request_identity_holds(token, user, identity, live_token_id=None) is False
+    assert request_identity_holds(token, user, identity) is False
+
+
+@pytest.mark.asyncio
+async def test_token_resolution_failures_are_counted_without_identity_details(
+    mock_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """Lookup exceptions and malformed IDs increment one aggregate diagnostic counter."""
+    registry = TokenIdentityRegistry()
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(
+        side_effect=[RuntimeError("secret lookup detail"), "invalid token id with spaces"]
+    )
+    verifier = MASTokenVerifier(mock_mass, identity_registry=registry)
+
+    assert await verifier.verify_token("first-secret-bearer") is not None
+    assert await verifier.verify_token("second-secret-bearer") is not None
+
+    assert registry.token_resolution_failures == 2
 
 
 @pytest.mark.asyncio
@@ -107,6 +209,71 @@ async def test_legacy_token_passes_in_soft_mode(mock_mass: MagicMock, mock_user:
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
     verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=False)
     assert await verifier.verify_token("legacy-hash-token") is not None
+
+
+@pytest.mark.asyncio
+async def test_soft_mode_audience_mismatch_warns_once(
+    mock_mass: MagicMock, mock_user: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Repeated soft-mode audience mismatches log one warning, then only debug."""
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=False)
+    first = _make_jwt({"sub": "u1", "aud": "music-assistant"})
+    second = _make_jwt({"sub": "u2", "aud": "http://other.example/api"})
+
+    with caplog.at_level(logging.DEBUG):
+        for token in (first, first, second, first):
+            assert await verifier.verify_token(token) is not None
+
+    mismatches = [r for r in caplog.records if "does not match resource URI" in r.getMessage()]
+    assert [r.levelno for r in mismatches] == [
+        logging.WARNING,
+        logging.DEBUG,
+        logging.DEBUG,
+        logging.DEBUG,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_token_does_not_consume_mismatch_warning(
+    mock_mass: MagicMock, mock_user: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A forged JWT that fails authentication cannot silence the operator warning."""
+    forged = _make_jwt({"sub": "attacker", "aud": "http://other.example/api"})
+    valid = _make_jwt({"sub": "u1", "aud": "music-assistant"})
+
+    async def authenticate(token: str) -> MagicMock | None:
+        return mock_user if token == valid else None
+
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(side_effect=authenticate)
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=False)
+
+    with caplog.at_level(logging.DEBUG):
+        assert await verifier.verify_token(forged) is None
+        assert await verifier.verify_token(forged) is None
+        assert await verifier.verify_token(valid) is not None
+        assert await verifier.verify_token(valid) is not None
+
+    mismatches = [r for r in caplog.records if "does not match resource URI" in r.getMessage()]
+    assert [r.levelno for r in mismatches] == [logging.WARNING, logging.DEBUG]
+    assert "music-assistant" in mismatches[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_audience_rejections_always_warn(
+    mock_mass: MagicMock, mock_user: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every strict-mode rejection stays visible at warning level."""
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True)
+    token = _make_jwt({"sub": "u1", "aud": "music-assistant"})
+
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(3):
+            assert await verifier.verify_token(token) is None
+
+    rejections = [r for r in caplog.records if r.getMessage().startswith("Rejected token")]
+    assert [r.levelno for r in rejections] == [logging.WARNING] * 3
 
 
 @pytest.mark.asyncio

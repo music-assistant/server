@@ -178,7 +178,10 @@ def test_the_event_and_the_hook_receive_the_same_report() -> None:
     tracker = SimpleNamespace(
         _queue_data={
             QUEUE_ID: SimpleNamespace(
-                userid="user-1", enqueued_media_items=[], credited_albums=set()
+                userid="user-1",
+                enqueued_media_items=[],
+                credited_albums=set(),
+                served_item_ids={"qi-1"},
             )
         },
         get_item=Mock(return_value=item),

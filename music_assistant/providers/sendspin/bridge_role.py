@@ -29,7 +29,7 @@ from music_assistant.mass import LOGGER
 if TYPE_CHECKING:
     from aiosendspin.models.core import ServerStatePayload
     from aiosendspin.models.types import ServerMessage
-    from aiosendspin.models.visualizer import BeatTiming, ClientHelloVisualizerSupport
+    from aiosendspin.models.visualizer import BeatTiming, VisualizerStatePayload
     from aiosendspin.server import SendspinClient
     from aiosendspin.server.roles import AudioChunk
     from aiosendspin.server.roles.visualizer.features import ExtractedFrame
@@ -293,7 +293,7 @@ class BridgeVisualizerRole(Role):
         :param client: The Sendspin client this role belongs to.
         """
         self._client = client
-        self._support: ClientHelloVisualizerSupport | None = None
+        self._request: VisualizerStatePayload | None = None
         self._extractor: VisualizerFeatureExtractor | None = None
         self._beat_availability = BeatAvailability.PENDING
         self._on_frame_cb: Callable[[ExtractedFrame], None] | None = None
@@ -330,13 +330,13 @@ class BridgeVisualizerRole(Role):
         self._on_stream_clear_cb = on_stream_clear
         self._on_stream_end_cb = on_stream_end
 
-    def setup_visualizer(self, support: ClientHelloVisualizerSupport) -> None:
+    def setup_visualizer(self, request: VisualizerStatePayload) -> None:
         """
-        Configure feature extraction from the registered hello's support object.
+        Configure feature extraction for the stream the bridge requests.
 
-        :param support: The visualizer support object from the client hello.
+        :param request: The visualizer stream configuration, as a client/state would carry it.
         """
-        self._support = support
+        self._request = request
 
     @property
     def role_id(self) -> str:
@@ -373,8 +373,8 @@ class BridgeVisualizerRole(Role):
     def wants_beats(self) -> bool:
         """True if the bridge requested beats and beats are not unavailable."""
         return (
-            self._support is not None
-            and "beat" in self._support.types
+            self._request is not None
+            and "beat" in self._request.types
             and self._beat_availability is not BeatAvailability.UNAVAILABLE
         )
 
@@ -404,12 +404,12 @@ class BridgeVisualizerRole(Role):
 
     def on_stream_start(self) -> None:
         """Build a fresh extractor for the new stream and notify the bridge."""
-        if self._support is not None:
+        if self._request is not None:
             req = self.get_audio_requirements()
             self._extractor = VisualizerFeatureExtractor(
                 sample_rate=req.sample_rate,
                 channels=req.channels,
-                config=StreamStartVisualizer.from_support(self._support),
+                config=StreamStartVisualizer.from_request(self._request),
             )
         LOGGER.debug("BridgeVisualizerRole stream started for client %s", self._client.client_id)
         if self._on_stream_start_cb:

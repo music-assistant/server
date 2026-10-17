@@ -870,5 +870,7 @@ class TestTopologyRefreshDebounce:
         mock_provider.mass.create_task.assert_called_once()
         kwargs = mock_provider.mass.create_task.call_args.kwargs
         assert kwargs["task_id"] == f"wiim_topology_{player.player_id}"
-        assert kwargs["force"] is True
         assert kwargs.get("abort_existing", False) is False
+        # the coroutine is built at the call site, so the forced read is already recorded
+        mock_provider.native_groups.refresh_leader.assert_called_once_with(player, force=True)
+        mock_provider.mass.create_task.call_args.args[0].close()

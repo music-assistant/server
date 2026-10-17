@@ -59,6 +59,8 @@ SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 # Such a track does still advertise plain mp3 transcodings, but requesting one of those returns
 # a 404, so the presence of an encrypted protocol is what tells us the track is unplayable.
 DRM_PROTOCOL_MARKER = "encrypted"
+# 30 second previews (policy SNIP) are served from their own CDN, even for a progressive mp3
+PREVIEW_CDN_HOST = "cf-preview-media.sndcdn.com"
 
 
 class DrmProtectedTrackError(MediaNotFoundError):
@@ -328,12 +330,14 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._soundcloud.get_user_details(prov_artist_id)
+        msg = f"Soundcloud artist {prov_artist_id} is not available"
+        if not artist_obj:
+            raise MediaNotFoundError(msg)
         try:
-            if artist_obj:
-                artist = await self._parse_artist(artist_obj)
+            return await self._parse_artist(artist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug("Skipping artist %s: %s", prov_artist_id, describe_sync_error(error))
-        return artist
+            raise MediaNotFoundError(msg) from error
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_track(self, prov_track_id: str) -> Track:
@@ -351,12 +355,13 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get full playlist details by id."""
         playlist_obj = await self._get_playlist_object(prov_playlist_id)
         try:
-            playlist = await self._parse_playlist(playlist_obj)
+            return await self._parse_playlist(playlist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug(
                 "Skipping playlist %s: %s", prov_playlist_id, describe_sync_error(error)
             )
-        return playlist
+            msg = f"Soundcloud playlist {prov_playlist_id} is not available"
+            raise MediaNotFoundError(msg) from error
 
     async def _get_playlist_object(self, prov_playlist_id: str) -> dict[str, Any]:
         """Get playlist object from Soundcloud API based on playlist ID type."""
@@ -384,7 +389,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         for index, item in enumerate(playlist_obj["tracks"], 1):
             try:
                 # Skip some ugly "tracks" entries, example:
-                # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}
+                # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}  # noqa: ERA001
                 if "title" in item:
                     if track := await self._parse_track(item, index):
                         result.append(track)
@@ -516,23 +521,30 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not track_auth:
             return None
         transcodings = track_info.get("media", {}).get("transcodings", [])
-        # Two passes: prefer progressive mp3, fall back to any mp3 (which may be HLS)
-        for preferred_protocol in ("progressive", None):
-            for transcoding in transcodings:
-                preset = transcoding.get("preset", "")
-                protocol = transcoding.get("format", {}).get("protocol", "")
-                if not preset.startswith("mp3"):
-                    continue
-                if preferred_protocol is not None and protocol != preferred_protocol:
-                    continue
-                stream_url = (
-                    f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
-                    f"&track_authorization={track_auth}"
-                )
-                req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
-                if isinstance(req, dict) and "url" in req:
-                    return str(req["url"])
-        return None
+        # a 30 second preview is only used when the track has no full stream at all
+        preview_url: str | None = None
+        # prefer progressive mp3, then any other mp3 or aac (which may be HLS)
+        for transcoding in sorted(
+            transcodings,
+            key=lambda item: item.get("format", {}).get("protocol") != "progressive",
+        ):
+            if not transcoding.get("preset", "").startswith(("mp3", "aac")):
+                continue
+            if preview_url and transcoding.get("snipped"):
+                continue
+            stream_url = (
+                f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
+                f"&track_authorization={track_auth}"
+            )
+            req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
+            if not isinstance(req, dict) or "url" not in req:
+                continue
+            url = str(req["url"])
+            if transcoding.get("snipped") or urlparse(url).hostname == PREVIEW_CDN_HOST:
+                preview_url = preview_url or url
+                continue
+            return url
+        return preview_url
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -550,7 +562,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         # that makes a fresh HTTP request to the stored URL, which may have expired.
         expiration = 30  # conservative default if expiry cannot be determined
         if parsed_qs := parse_qs(urlparse(url).query):
-            for param in ("Expires", "expire"):
+            for param in ("Expires", "expires", "expire"):
                 if expire_ts := parsed_qs.get(param, [None])[0]:
                     expiration = max(30, int(expire_ts) - int(time.time()) - 10)
                     break
@@ -563,7 +575,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 content_type=ContentType.UNKNOWN,
             ),
             stream_type=StreamType.HLS
-            if url.startswith("https://cf-hls-media.sndcdn.com")
+            if (
+                url.startswith("https://cf-hls-media.sndcdn.com")
+                or urlparse(url).path.endswith(".m3u8")
+            )
             else StreamType.HTTP,
             path=url,
             can_seek=True,

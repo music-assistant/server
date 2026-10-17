@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from copy import deepcopy
 from dataclasses import dataclass
@@ -14,7 +16,15 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import async_json_loads, json_dumps
 
-from .constants import DEFAULT_LLM_INSTRUCTIONS, MERGE_SECTION_PROMPT
+from .constants import (
+    DEFAULT_LLM_INSTRUCTIONS,
+    EVENT_HOSTS_UPDATED,
+    MERGE_SECTION_PROMPT,
+    NEWS_BULLETIN_PROMPT,
+    SHARED_HOST_RULES,
+    SONG_TRANSITION_PROMPT,
+    WEATHER_UPDATE_PROMPT,
+)
 from .helpers import slugify
 
 if TYPE_CHECKING:
@@ -57,31 +67,24 @@ class _PresetHost:
     segments: tuple[_PresetSegment, ...]
 
 
-SONG_TRANSITION_PROMPT = (
-    "The previous track was <prev_songinfo> and the next track is <next_songinfo>. "
-    "Create a natural radio transition that connects both songs, sounds informed "
-    "but concise, and avoids filler or repetition."
-)
-
 PRESET_HOSTS: tuple[_PresetHost, ...] = (
     _PresetHost(
         host_id="morning_show",
         name="Morning show",
         instructions=(
-            "Host personality: warm, energetic, upbeat morning-show host who sounds "
-            "fully awake and glad to be on air. Program instructions: write for spoken "
-            "delivery, keep segments concise, avoid bullet-point phrasing, avoid "
-            "cliches, mention concrete details when available, and maintain a "
-            "believable radio flow between sections."
+            "You are a warm, energetic morning-show host who sounds fully awake and glad to be on "
+            "air. Keep segments brief, skip cliches and filler, use concrete details when you "
+            "have them, and keep a believable flow from one segment into the next. "
+            f"{SHARED_HOST_RULES}"
         ),
         segments=(
             _PresetSegment(
                 segment_id="intro",
                 name="Intro",
                 prompt=(
-                    "The next track is <next_songinfo>. Open the morning show like a "
-                    "warm, upbeat host: brief good-morning greeting, one concrete hook "
-                    "about the song or artist, and a clean handoff into the music."
+                    "The next track is <next_songinfo>. Open the morning show: a brief "
+                    "good-morning greeting, one concrete hook about the song or artist, then hand "
+                    "off by naming the artist and title once."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -92,9 +95,10 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 name="Transition",
                 prompt=(
                     "The previous track was <prev_songinfo> and the next track is "
-                    "<next_songinfo>. Create a natural, energetic morning-show "
-                    "transition that connects both songs, sounds informed but concise, "
-                    "and avoids filler or repetition."
+                    "<next_songinfo>. Link the two songs with upbeat morning energy, such as a "
+                    "shared mood, era or a playful contrast, then hand off by naming the next "
+                    "artist and title once. No filler, and mention the previous track at most in "
+                    "passing."
                 ),
                 web_search="allow",
                 max_chars=650,
@@ -103,11 +107,7 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
             _PresetSegment(
                 segment_id="weather",
                 name="Weather",
-                prompt=(
-                    "Using <weather_hourly> and <timestamp>, deliver a short spoken "
-                    "weather update with the current outlook, a useful next-hours "
-                    "summary, and smooth morning-show phrasing."
-                ),
+                prompt=WEATHER_UPDATE_PROMPT,
                 web_search="disabled",
                 max_chars=500,
                 plays=_Plays("every_n_min", 60),
@@ -115,12 +115,7 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
             _PresetSegment(
                 segment_id="news",
                 name="News",
-                prompt=(
-                    "Create a short global news bulletin anchored to <timestamp>. Use "
-                    "web search. Include two or three current items that are broadly "
-                    "relevant, clearly separated, fact-focused, and written for spoken "
-                    "delivery."
-                ),
+                prompt=NEWS_BULLETIN_PROMPT,
                 web_search="force",
                 max_chars=700,
                 plays=_Plays("every_n_min", 60),
@@ -129,9 +124,9 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 segment_id="sign_off",
                 name="Sign-off",
                 prompt=(
-                    "The last track played was <prev_songinfo>. Close the morning show "
-                    "with a memorable sign-off: brief reflection, warm farewell, and "
-                    "language that sounds like the end of a real radio segment."
+                    "The last track played was <prev_songinfo>. Close the morning show: one short "
+                    "reflection on the set or that last track, a warm farewell, and a line that "
+                    "sounds like the real end of a radio segment. Do not announce another track."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -143,9 +138,8 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
         host_id="minimal_dj",
         name="Minimal DJ",
         instructions=(
-            "Host personality: minimal, calm, understated DJ who lets the music lead. "
-            "Program instructions: keep every segment brief, avoid small talk, avoid "
-            "cliches, and never overshadow the songs with unnecessary commentary."
+            "You are a calm, understated DJ who lets the music lead. Keep every segment to one or "
+            f"two short sentences, with no small talk and no cliches. {SHARED_HOST_RULES}"
         ),
         segments=(
             _PresetSegment(
@@ -153,8 +147,8 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 name="Transition",
                 prompt=(
                     "The previous track was <prev_songinfo> and the next track is "
-                    "<next_songinfo>. Give a short, minimal DJ transition: one or two "
-                    "sentences, calm tone, no filler, just enough to bridge the songs."
+                    "<next_songinfo>. One or two calm sentences that bridge the songs and name "
+                    "the next artist and title once. Nothing more."
                 ),
                 web_search="disabled",
                 max_chars=300,
@@ -166,19 +160,19 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
         host_id="music_nerd",
         name="Music nerd",
         instructions=(
-            "Host personality: knowledgeable, enthusiastic music nerd who loves sharing "
-            "context without lecturing. Program instructions: write for spoken delivery, "
-            "keep segments concise, favor concrete facts over generic praise, avoid "
-            "cliches, and maintain a believable radio flow between sections."
+            "You are an enthusiastic, knowledgeable music nerd who shares context without "
+            "lecturing. Keep segments concise, favor specific facts over generic praise, skip "
+            "cliches, and keep a believable flow from one segment into the next. "
+            f"{SHARED_HOST_RULES}"
         ),
         segments=(
             _PresetSegment(
                 segment_id="intro",
                 name="Intro",
                 prompt=(
-                    "The next track is <next_songinfo>. Open the program like a "
-                    "knowledgeable music host: brief welcome, one genuinely interesting "
-                    "detail about the artist or genre, and a clean handoff into the music."
+                    "The next track is <next_songinfo>. Open the program: a brief welcome, one "
+                    "genuinely interesting detail about the artist, the record or the genre, then "
+                    "hand off by naming the artist and title once."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -188,9 +182,10 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 segment_id="artist_fact",
                 name="Artist fact",
                 prompt=(
-                    "The next track is <next_songinfo>. Share one specific, "
-                    "well-researched fact about the artist, the recording, or its "
-                    "influence. Keep it precise and avoid generic trivia."
+                    "The next track is <next_songinfo>. Share one specific, verifiable fact about "
+                    "the artist, the recording or its influence, in two to four spoken sentences. "
+                    "No generic trivia and no 'did you know' framing. If no solid fact is "
+                    "available, say less rather than guess."
                 ),
                 web_search="allow",
                 max_chars=500,
@@ -210,19 +205,18 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
         host_id="party_host",
         name="Party host",
         instructions=(
-            "Host personality: high-energy, confident party host who keeps the crowd "
-            "hyped. Program instructions: write for spoken delivery, keep segments "
-            "concise, avoid bullet-point phrasing, avoid cliches, and maintain a "
-            "believable, energetic radio flow between sections."
+            "You are a high-energy, confident party host who keeps the crowd hyped. Keep segments "
+            "brief and punchy, skip cliches and filler, and keep the energy flowing from one "
+            f"segment into the next. {SHARED_HOST_RULES}"
         ),
         segments=(
             _PresetSegment(
                 segment_id="hype_intro",
                 name="Hype intro",
                 prompt=(
-                    "The next track is <next_songinfo>. Open the party like a hype "
-                    "radio host: high energy, one confident line about the song or "
-                    "artist, and a clean handoff that gets people moving."
+                    "The next track is <next_songinfo>. Kick off the party: high energy, one "
+                    "confident line about the song or artist, then hand off by naming the artist "
+                    "and title once and getting people moving."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -233,9 +227,9 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 name="Shout-out",
                 prompt=(
                     "The previous track was <prev_songinfo> and the next track is "
-                    "<next_songinfo>. Deliver a high-energy party transition with a "
-                    "quick shout-out vibe: keep it fun, confident, and concise, and "
-                    "avoid filler or repetition."
+                    "<next_songinfo>. Deliver a high-energy party transition: a quick shout-out "
+                    "to the room, one line that links the two songs, and a hand-off naming the "
+                    "next artist and title once. Keep it fun, confident and tight."
                 ),
                 web_search="allow",
                 max_chars=650,
@@ -245,9 +239,9 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
                 segment_id="sign_off",
                 name="Sign-off",
                 prompt=(
-                    "The last track played was <prev_songinfo>. Close the party with a "
-                    "memorable, high-energy sign-off: brief hype recap, warm farewell, "
-                    "and language that sounds like the end of a real party set."
+                    "The last track played was <prev_songinfo>. Close the party: a quick "
+                    "high-energy recap of the set, a warm thank-you and farewell, and a line that "
+                    "sounds like the real end of a party set. Do not announce another track."
                 ),
                 web_search="disabled",
                 max_chars=650,
@@ -256,6 +250,10 @@ PRESET_HOSTS: tuple[_PresetHost, ...] = (
         ),
     ),
 )
+_PRESETS_BY_ID = {preset.host_id: preset for preset in PRESET_HOSTS}
+
+# host keys that make up a preset copy's content; name, voice and id stay the user's
+_PRESET_CONTENT_KEYS = ("instructions", "section_ids", "section_order", "merge_section_id")
 
 
 class AIRadioHostsMixin:
@@ -305,6 +303,7 @@ class AIRadioHostsMixin:
             "hosts": sorted(self._hosts.values(), key=lambda item: item["name"]),
         }
         await self._write_json_file(self._hosts_file, payload)
+        self.signal_provider_event({"event": EVENT_HOSTS_UPDATED})
 
     async def _seed_preset_hosts(self) -> None:
         """Seed the bundled preset hosts, but only on a fresh (never configured) install."""
@@ -318,6 +317,55 @@ class AIRadioHostsMixin:
         await self._write_sections()
         await self._write_hosts()
         self.logger.info("Seeded %d preset hosts on this fresh install", len(PRESET_HOSTS))
+
+    async def _refresh_preset_hosts(self) -> None:
+        """Bring untouched preset copies up to the bundled wording and untag edited ones."""
+        hosts_changed = False
+        sections_changed = False
+        for host in self._hosts.values():
+            if "preset_id" not in host:
+                continue
+            preset = _PRESETS_BY_ID.get(host["preset_id"])
+            if preset is None:
+                self.logger.info(
+                    "Host %s comes from a preset that is no longer bundled, keeping it as is",
+                    host["id"],
+                )
+                _strip_preset_tag(host)
+                hosts_changed = True
+                continue
+            fresh_host, fresh_sections = _compile_preset_host(preset, host["id"])
+            current_hash = _preset_content_hash(host, self._sections)
+            if current_hash == fresh_host["preset_hash"]:
+                if host["preset_hash"] != current_hash:
+                    host["preset_hash"] = current_hash
+                    hosts_changed = True
+                continue
+            if current_hash != host["preset_hash"]:
+                self.logger.info(
+                    "Host %s was edited, it no longer follows preset %s", host["id"], preset.host_id
+                )
+                _strip_preset_tag(host)
+                hosts_changed = True
+                continue
+
+            old_section_ids = host["section_ids"]
+            for key in (*_PRESET_CONTENT_KEYS, "preset_hash"):
+                host[key] = fresh_host[key]
+            for section in fresh_sections:
+                if self._sections.get(section["id"]) != section:
+                    self._sections[section["id"]] = section
+                    sections_changed = True
+            in_use = {sid for item in self._hosts.values() for sid in item["section_ids"]}
+            for section_id in set(old_section_ids) - in_use:
+                if self._sections.pop(section_id, None) is not None:
+                    sections_changed = True
+            hosts_changed = True
+            self.logger.info("Refreshed host %s to the bundled preset wording", host["id"])
+        if sections_changed:
+            await self._write_sections()
+        if hosts_changed:
+            await self._write_hosts()
 
     def _normalize_host(
         self,
@@ -372,7 +420,7 @@ class AIRadioHostsMixin:
             if not merge_section or str(merge_section.get("type", "")).strip().lower() != "ai_meta":
                 raise InvalidDataError("merge_section_id must reference an ai_meta section")
 
-        return {
+        normalized = {
             "id": host_id,
             "name": name,
             "instructions": instructions,
@@ -383,6 +431,28 @@ class AIRadioHostsMixin:
             "section_order": deepcopy(raw_section_order),
             "merge_section_id": merge_section_id,
         }
+        preset_id = str(host.get("preset_id") or "").strip()
+        preset_hash = str(host.get("preset_hash") or "").strip()
+        if preset_id and preset_hash:
+            normalized["preset_id"] = preset_id
+            normalized["preset_hash"] = preset_hash
+        return normalized
+
+    def _resolve_preset_tag(self, host: dict[str, Any]) -> None:
+        """Keep the preset tag of a normalized host only while its content is untouched."""
+        if "preset_id" not in host:
+            return
+        preset = _PRESETS_BY_ID.get(host["preset_id"])
+        if preset is None:
+            _strip_preset_tag(host)
+            return
+        current_hash = _preset_content_hash(host, self._sections)
+        bundle_hash = _compile_preset_host(preset, host["id"])[0]["preset_hash"]
+        if current_hash == bundle_hash:
+            host["preset_hash"] = bundle_hash
+        # matching only the carried hash means an untouched copy of an older bundle
+        elif current_hash != host["preset_hash"]:
+            _strip_preset_tag(host)
 
     def _default_host_template(self) -> dict[str, Any]:
         """Return the built-in host template."""
@@ -511,8 +581,11 @@ class AIRadioHostsMixin:
                 )
 
 
-def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _compile_preset_host(
+    preset: _PresetHost, host_id: str | None = None
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Build a host profile plus its sections from a preset, exactly as the frontend does."""
+    host_id = host_id or preset.host_id
     sections: list[dict[str, Any]] = []
     start_flow: list[dict[str, Any]] = []
     between_flow: list[dict[str, Any]] = []
@@ -520,7 +593,7 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
     for segment in preset.segments:
         # host-scoped id: sections live in one flat library, so two hosts must not
         # collide on e.g. both having an "intro"
-        section_id = slugify(f"{preset.host_id}_{segment.segment_id}")
+        section_id = slugify(f"{host_id}_{segment.segment_id}")
         sections.append(
             {
                 "id": section_id,
@@ -549,7 +622,7 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
     if end_flow:
         section_order.append({"when": "end_of_playlist", "flow": end_flow})
 
-    merge_section_id = f"{preset.host_id}_smoother"
+    merge_section_id = f"{host_id}_smoother"
     sections.append(
         {
             "id": merge_section_id,
@@ -558,8 +631,8 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
             "prompt": MERGE_SECTION_PROMPT,
         }
     )
-    host = {
-        "id": preset.host_id,
+    host: dict[str, Any] = {
+        "id": host_id,
         "name": preset.name,
         "instructions": preset.instructions,
         "tts_engine": "",
@@ -568,8 +641,26 @@ def _compile_preset_host(preset: _PresetHost) -> tuple[dict[str, Any], list[dict
         "section_ids": [section["id"] for section in sections],
         "section_order": section_order,
         "merge_section_id": merge_section_id,
+        "preset_id": preset.host_id,
     }
+    host["preset_hash"] = _preset_content_hash(
+        host, {section["id"]: section for section in sections}
+    )
     return host, sections
+
+
+def _preset_content_hash(host: dict[str, Any], sections_map: dict[str, dict[str, Any]]) -> str:
+    """Return a short fingerprint of a host's spoken content and the sections it uses."""
+    payload = {key: host[key] for key in _PRESET_CONTENT_KEYS}
+    payload["sections"] = [sections_map[section_id] for section_id in host["section_ids"]]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]
+
+
+def _strip_preset_tag(host: dict[str, Any]) -> None:
+    """Turn a preset copy into a custom host."""
+    host.pop("preset_id", None)
+    host.pop("preset_hash", None)
 
 
 def _optional_flow_item(section_id: str, segment: _PresetSegment) -> dict[str, Any]:

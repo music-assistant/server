@@ -48,6 +48,9 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
+from music_assistant.helpers.podcast_parsers import get_publisher_number
+
 from .constants import (
     API_DEFAULT_RESOURCE_VERSION,
     API_ENCRYPTION_IV,
@@ -129,6 +132,8 @@ class StorytelHelper:
         self.provider_domain = provider_domain
         self._kids_mode = kids_mode
         self._languages = languages or {}
+        self._available_languages: dict[str, str] = {}
+        self._default_languages: dict[str, str] = {}
         self._resource_version: str | None = None
         self._revalidate_lock = Lock()
         self.logger = logger or logging.getLogger("storytel_helper")
@@ -144,12 +149,31 @@ class StorytelHelper:
         return self._session
 
     @property
+    def languages(self) -> dict[str, str]:
+        """Return the currently selected content languages, mapping name to ISO value."""
+        return self._languages
+
+    @languages.setter
+    def languages(self, value: dict[str, str]) -> None:
+        self._languages = value
+
+    @property
     def languages_query(self) -> str:
         """Return comma-separated ISO language codes for API queries."""
         if not self._languages:
             return "en"
         iso_values = sorted(self._languages.values())
         return ",".join(iso_values)
+
+    @property
+    def available_languages(self) -> dict[str, str]:
+        """Return the account's available content languages, mapping name to ISO value."""
+        return self._available_languages
+
+    @property
+    def default_languages(self) -> dict[str, str]:
+        """Return the account's own default-checked content languages, mapping name to ISO value."""
+        return self._default_languages
 
     @property
     def kids_mode_query(self) -> str:
@@ -213,6 +237,7 @@ class StorytelHelper:
             msg = data.get("message") or "Invalid credentials"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
+        self._available_languages, self._default_languages = self._parse_languages(acc)
         return self._auth
 
     async def revalidate_account(self) -> StorytelAuth:
@@ -239,6 +264,8 @@ class StorytelHelper:
             msg = data.get("message") or "Revalidation failed"
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
+        self._available_languages, self._default_languages = self._parse_languages(acc)
+        self._reconcile_languages()
         return self._auth
 
     async def get_library(self) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -478,7 +505,6 @@ class StorytelHelper:
                     provider_instance=self.provider_id,
                 )
             },
-            favorite=False,
             total_episodes=episode_count,
         )
 
@@ -492,8 +518,7 @@ class StorytelHelper:
         if language:
             podcast.metadata.languages = UniqueList([language])
         genre = list_metadata.get("genre") or ""
-        if genre:
-            podcast.metadata.genres = {genre}
+        podcast.metadata.genres = {genre} if genre else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         podcast.metadata.performers = set(hosts)
         latest_episode_date_text = (list_metadata.get("followingInfo") or {}).get(
             "newestItemReleaseDate"
@@ -819,7 +844,7 @@ class StorytelHelper:
                 stream_url = (response.get("result") or {}).get("signedUrl") or ""
                 if stream_url == "":
                     self.logger.error("No signed URL returned for %s", item_id)
-                    raise MediaNotFoundError("No signed URL returned")
+                    raise MediaNotFoundError("No signed URL returned")  # noqa: TRY301 - re-raised by except below
                 headers.pop("authorization", None)
                 headers["range"] = "bytes=0-1"
                 current_stream_url = URL(stream_url, encoded=True)
@@ -851,7 +876,9 @@ class StorytelHelper:
                         resolved_stream_url = str(current_stream_url)
                         break
                 else:
-                    raise UnplayableMediaError("Too many redirects while resolving Storytel stream")
+                    raise UnplayableMediaError(  # noqa: TRY301 - re-raised by except below
+                        "Too many redirects while resolving Storytel stream"
+                    )
         except (
             ClientError,
             ConnectionError,
@@ -1051,6 +1078,58 @@ class StorytelHelper:
         enc: bytes = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
         return enc.hex()
 
+    @staticmethod
+    def _parse_languages(acc: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
+        """
+        Parse the account's language lists from a login/revalidation response.
+
+        Returns a ``(available, default)`` pair, each mapping name to ISO value: every
+        language the account has access to, and the subset it checks by default (mirroring
+        the official app's own defaults).
+
+        :param acc: the ``accountInfo`` dict from a login or revalidation response.
+        """
+        available: dict[str, str] = {}
+        default: dict[str, str] = {}
+        for entry in acc.get("allLanguageObjects") or []:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            iso_value = entry.get("isoValue")
+            if not (isinstance(name, str) and name and isinstance(iso_value, str) and iso_value):
+                continue
+            available[name] = iso_value
+            if entry.get("checkedByDefault"):
+                default[name] = iso_value
+        return available, default
+
+    def _reconcile_languages(self) -> None:
+        """
+        Drop any selected languages no longer available to the account.
+
+        Falls back to the account's own default-checked languages, or else any available
+        language.
+        """
+        if not self._available_languages:
+            return
+        valid_selection = {
+            name: iso_value
+            for name, iso_value in self._languages.items()
+            if self._available_languages.get(name) == iso_value
+        }
+        if valid_selection:
+            self._languages = valid_selection
+            return
+        fallback = {
+            name: iso_value
+            for name, iso_value in self._default_languages.items()
+            if self._available_languages.get(name) == iso_value
+        }
+        if not fallback:
+            first_name, first_iso = next(iter(self._available_languages.items()))
+            fallback = {first_name: first_iso}
+        self._languages = fallback
+
     def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
         for format_data in formats_data:
             if format_data.get("type") != "abook":
@@ -1132,6 +1211,7 @@ class StorytelHelper:
             name=title,
             duration=duration_seconds,
             position=0,
+            episode_number=get_publisher_number(episode_number),
             provider_mappings={
                 ProviderMapping(
                     item_id=consumable_id,
@@ -1166,7 +1246,6 @@ class StorytelHelper:
                 )
             },
             publisher=publisher,
-            favorite=False,
         )
         chapters = await self._fetch_chapters(consumable_id=consumable_id)
         chapters_list = self._parse_chapters(chapters)
@@ -1227,7 +1306,6 @@ class StorytelHelper:
                     provider_instance=self.provider_id,
                 )
             },
-            favorite=False,
         )
         if authors:
             media_item.authors.set(authors)
@@ -1267,6 +1345,7 @@ class StorytelHelper:
                 )
             },
         )
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         cover_url = (
             (item_data.get("cover") or {}).get("url")
             if isinstance(item_data.get("cover"), dict)

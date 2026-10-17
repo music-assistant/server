@@ -17,6 +17,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
+    MediaItemTranscriptCue,
     MediaItemType,
     Podcast,
     PodcastEpisode,
@@ -28,6 +29,7 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
+    get_episode_transcript,
     rank_episodes_by_date,
 )
 from music_assistant.models.music_provider import MusicProvider
@@ -40,7 +42,12 @@ from .constants import (
     CONF_API_SECRET,
     CONF_STORED_PODCASTS,
 )
-from .helpers import make_api_request, parse_episode_from_data, parse_podcast_from_feed
+from .helpers import (
+    get_episode_transcripts_from_data,
+    make_api_request,
+    parse_episode_from_data,
+    parse_podcast_from_feed,
+)
 
 
 class PodcastIndexProvider(MusicProvider):
@@ -346,6 +353,21 @@ class PodcastIndexProvider(MusicProvider):
         )
         return episode
 
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """Get the transcript for a podcast episode."""
+        try:
+            _, episode_id = prov_episode_id.split("|", 1)
+            transcripts = await self._get_episode_transcripts(episode_id)
+        except ValueError, ProviderUnavailableError, InvalidDataError:
+            return None, None
+        return await get_episode_transcript(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            transcripts=transcripts,
+        )
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Get stream details for a podcast episode.
@@ -414,6 +436,12 @@ class PodcastIndexProvider(MusicProvider):
         return await make_api_request(
             self.mass, self.api_key, self.api_secret, endpoint, params, logger=self.logger
         )
+
+    @use_cache(43200)  # Cache for 12 hours
+    async def _get_episode_transcripts(self, episode_id: str) -> list[dict[str, Any]]:
+        """Return the transcript entries of an episode, empty when it has none."""
+        response = await self._api_request("episodes/byid", params={"id": episode_id})
+        return get_episode_transcripts_from_data(response.get("episode") or {}) or []
 
     async def _get_feed_url_for_podcast(self, podcast_id: str) -> str | None:
         """Get RSS feed URL for a podcast ID."""

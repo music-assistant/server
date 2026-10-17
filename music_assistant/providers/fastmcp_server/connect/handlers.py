@@ -4,7 +4,7 @@ HTTP handlers backing the Connect Wizard endpoints.
 Five endpoints are mounted under ``<mount_path>/connect``:
 
 * ``GET  /connect``           — serves the single-page HTML wizard.
-* ``GET  /connect/info``      — meta JSON (URLs, version, enabled permissions, clients).
+* ``GET  /connect/info``      — meta JSON (URLs, default policy, clients).
 * ``POST /connect/exchange``  — exchanges a bootstrap token for a session token.
 * ``POST /connect/login``     — username/password login fallback.
 * ``POST /connect/token``     — mints a per-client long-lived token.
@@ -12,8 +12,10 @@ Five endpoints are mounted under ``<mount_path>/connect``:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -37,7 +39,7 @@ class WizardContext:
 
     mass: MusicAssistant
     mount_path: str
-    enabled_tags_provider: Callable[[], list[str]]
+    default_profile_provider: Callable[[], str]
     origin_check: Callable[[web.Request], bool]
     # When True, a trusted reverse proxy's ``X-Forwarded-Proto: https`` (or
     # ``X-Forwarded-Scheme: https``) is accepted as proof the public hop was
@@ -45,6 +47,7 @@ class WizardContext:
     # headers are forgeable by any client that can reach MA directly, so this
     # is only safe behind a proxy that sets the header and strips client copies.
     trust_forwarded_proto: bool = False
+    identity_binder: Callable[[str, str, str | None], None] | None = None
 
 
 def _origin_guard(ctx: WizardContext, request: web.Request) -> web.Response | None:
@@ -86,19 +89,12 @@ def _is_request_via_ha_ingress(request: web.Request) -> bool:
     transport on MA's side is plain HTTP — but the bytes never crossed the
     public network. MA's ``is_request_from_ingress`` helper verifies that
     by checking the trusted ingress socket; we mirror its
-    ``ImportError → fail closed`` / ``unexpected → log and fail closed``
-    contract here (same pattern as :func:`provider.origins.is_origin_allowed_for_request`).
+    by checking the trusted ingress socket and fails closed when it raises.
     """
-    try:
-        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
-            is_request_from_ingress,
-        )
-    except ImportError, ModuleNotFoundError:
-        # Bare provider venv — MA helper unavailable. Fail closed without noise.
-        return False
-    except Exception:
-        LOGGER.exception("Connect Wizard: unexpected error importing ingress helper")
-        return False
+    from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+        is_request_from_ingress,
+    )
+
     try:
         return bool(is_request_from_ingress(request))
     except Exception:
@@ -239,17 +235,17 @@ def make_info(ctx: WizardContext) -> Callable[[web.Request], Any]:
         well_known = "/.well-known/oauth-protected-resource" + mount
 
         try:
-            permissions = list(ctx.enabled_tags_provider() or [])
-        except Exception:
-            LOGGER.exception("Connect Wizard: enabled_tags_provider raised")
-            permissions = []
+            profile = str(ctx.default_profile_provider())
+        except AttributeError, RuntimeError, TypeError, ValueError:
+            LOGGER.warning("Connect Wizard: default policy provider failed")
+            profile = "Safe queries"
 
         return web.json_response(
             {
                 "mount_path": ctx.mount_path,
                 "mcp_url_loopback": loopback,
                 "mcp_url_advertised": advertised,
-                "permissions": permissions,
+                "default_policy": {"profile": profile},
                 "clients": clients_to_json(),
                 "well_known_url": well_known,
             },
@@ -282,17 +278,15 @@ def make_exchange(ctx: WizardContext) -> Callable[[web.Request], Any]:
             return web.json_response({"error": "invalid bootstrap"}, status=401)
 
         # Make the bootstrap single-use: revoke it BEFORE minting the session
-        # so a partial failure (revoke ok, mint fails) cannot leave both the
-        # bootstrap and a session valid. ``get_token_id_from_token`` handles
-        # both JWTs and legacy hash tokens; if it cannot resolve a token_id
-        # we skip the revoke — no regression vs prior behaviour.
+        # and fail closed when it cannot be resolved or revoked, so a session
+        # is never issued while the reusable bootstrap stays valid.
         try:
             bootstrap_id = await ctx.mass.webserver.auth.get_token_id_from_token(bootstrap)
         except Exception:
             LOGGER.exception("Connect Wizard: get_token_id_from_token raised for bootstrap")
             bootstrap_id = None
-        if bootstrap_id:
-            await revoke_token_by_id(ctx.mass, user, bootstrap_id)
+        if not bootstrap_id or not await revoke_token_by_id(ctx.mass, user, bootstrap_id):
+            return web.json_response({"error": "bootstrap revoke failed"}, status=500)
 
         try:
             session = await ctx.mass.webserver.auth.create_token(
@@ -304,6 +298,7 @@ def make_exchange(ctx: WizardContext) -> Callable[[web.Request], Any]:
             LOGGER.exception("Connect Wizard: session token mint failed")
             return web.json_response({"error": "mint failed"}, status=500)
 
+        await _bind_request_identity(ctx, session, user)
         return web.json_response(
             {
                 "session_token": session,
@@ -353,11 +348,28 @@ def make_login(ctx: WizardContext) -> Callable[[web.Request], Any]:
             err = _get("error", "invalid credentials")
             return web.json_response({"success": False, "error": str(err)}, status=401)
 
+        session_token = _get("access_token")
+        public_user = _get("user", {})
+        user_id = (
+            public_user.get("user_id")
+            if isinstance(public_user, dict)
+            else getattr(public_user, "user_id", "")
+        )
+        if session_token and not user_id:
+            try:
+                live_user = await ctx.mass.webserver.auth.authenticate_with_token(
+                    str(session_token)
+                )
+            except Exception:
+                live_user = None
+            user_id = str(getattr(live_user, "user_id", "") or "")
+        if session_token and user_id:
+            await _bind_request_identity(ctx, str(session_token), SimpleNamespace(user_id=user_id))
         return web.json_response(
             {
                 "success": True,
-                "session_token": _get("access_token"),
-                "user": _get("user", {}),
+                "session_token": session_token,
+                "user": public_user,
             }
         )
 
@@ -394,14 +406,16 @@ def make_mint_token(ctx: WizardContext) -> Callable[[web.Request], Any]:
         new_name = f"MCP — {spec.label}"
 
         # Server-side dedup: revoke any existing tokens with this exact
-        # client-token name for the session user, via the sanctioned
-        # auth.get_user_tokens / auth.revoke_token API. Yields typed
-        # AuthToken dataclasses — no raw sqlite rows leak in. Idempotent
-        # across browser/server restarts: a stale `MCP — <Client>` row
-        # from any prior wizard session is reclaimed before the new mint.
-        for tok in await list_user_tokens(ctx.mass, user):
-            if tok.name == new_name:
-                await revoke_token_by_id(ctx.mass, user, tok.token_id)
+        # client-token name for the session user before minting, so a stale
+        # `MCP — <Client>` row from any prior wizard session is reclaimed.
+        # Abort when listing or revoking fails: minting anyway would leave
+        # two long-lived credentials for the same client.
+        existing = await list_user_tokens(ctx.mass, user)
+        if existing is None:
+            return web.json_response({"error": "token dedup failed"}, status=500)
+        for tok in existing:
+            if tok.name == new_name and not await revoke_token_by_id(ctx.mass, user, tok.token_id):
+                return web.json_response({"error": "token dedup failed"}, status=500)
 
         try:
             token = await ctx.mass.webserver.auth.create_token(
@@ -413,9 +427,28 @@ def make_mint_token(ctx: WizardContext) -> Callable[[web.Request], Any]:
             LOGGER.exception("Connect Wizard: per-client token mint failed")
             return web.json_response({"error": "mint failed"}, status=500)
 
+        await _bind_request_identity(ctx, token, user)
         return web.json_response({"token": token})
 
     return handler
+
+
+async def _bind_request_identity(ctx: WizardContext, bearer: object, user: Any) -> None:
+    """Bind one minted bearer when the runtime supplied an identity registry."""
+    if ctx.identity_binder is None or not bearer:
+        return
+    token_id = None
+    getter = getattr(ctx.mass.webserver.auth, "get_token_id_from_token", None)
+    if callable(getter):
+        try:
+            resolved = getter(str(bearer))
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+        except Exception:
+            resolved = None
+        if resolved:
+            token_id = str(resolved)
+    ctx.identity_binder(str(bearer), str(getattr(user, "user_id", "")), token_id)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

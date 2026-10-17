@@ -279,7 +279,9 @@ class QueueCommandsMixin:
                 await self._create_plex_playqueue_from_ma()
                 self._remember_synced_queue(player_id)
 
-            self.provider.mass.create_task(_apply_shuffle_deferred())
+            self.provider.mass.create_task(
+                _apply_shuffle_deferred(), task_name=f"plex_apply_shuffle_{player_id}"
+            )
             return True
         except Exception as e:
             LOGGER.debug(f"Could not resolve source for shuffled queue, falling back: {e}")
@@ -334,7 +336,7 @@ class QueueCommandsMixin:
 
             queue_id_match = re.search(r"/playQueues/(\d+)", container_key)
             if not queue_id_match:
-                raise ValueError(f"Invalid container_key format: {container_key}")
+                raise ValueError(f"Invalid container_key format: {container_key}")  # noqa: TRY301 - handled by except below
 
             queue_id = queue_id_match.group(1)
 

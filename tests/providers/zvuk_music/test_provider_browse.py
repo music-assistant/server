@@ -9,7 +9,6 @@ import pytest
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.media_items import BrowseFolder, Playlist
 
-from music_assistant.providers.zvuk_music.constants import PLAYLIST_TRACK_FETCH_LIMIT
 from music_assistant.providers.zvuk_music.provider import ZvukMusicProvider
 
 # ---------------------------------------------------------------------------
@@ -50,6 +49,9 @@ def _make_provider() -> Any:
     provider.remove_playlist_tracks = ZvukMusicProvider.remove_playlist_tracks.__get__(
         provider, ZvukMusicProvider
     )
+    provider._get_playlist_track_ids = ZvukMusicProvider._get_playlist_track_ids.__get__(
+        provider, ZvukMusicProvider
+    )
     provider.browse = ZvukMusicProvider.browse.__get__(provider, ZvukMusicProvider)
     return provider
 
@@ -62,43 +64,40 @@ def _make_provider() -> Any:
 class TestRemovePlaylistTracks:
     """Tests for ZvukMusicProvider.remove_playlist_tracks()."""
 
+    @staticmethod
+    def _playlist(*track_ids: int) -> Mock:
+        playlist = Mock()
+        playlist.tracks = [_make_track_mock(tid) for tid in track_ids]
+        return playlist
+
     @pytest.mark.asyncio
     async def test_removes_correct_positions_and_calls_update(self) -> None:
-        """Tracks at specified positions are excluded; remaining IDs are passed to update."""
+        """Tracks at the given 1-based positions are excluded; the rest are kept in order."""
         provider = _make_provider()
-        tracks = [
-            _make_track_mock(10),
-            _make_track_mock(20),
-            _make_track_mock(30),
-            _make_track_mock(40),
-        ]
-        provider.client.get_playlist_tracks = AsyncMock(return_value=tracks)
+        provider.client.get_playlist = AsyncMock(return_value=self._playlist(10, 20, 30, 40))
         provider.client.update_playlist = AsyncMock()
 
-        # Remove positions 0 and 2 → keep tracks at positions 1 (id=20) and 3 (id=40)
-        await provider.remove_playlist_tracks("playlist-1", (0, 2))
+        # Remove positions 1 and 3 -> keep id=20 and id=40
+        await provider.remove_playlist_tracks("playlist-1", (1, 3))
 
         provider.client.update_playlist.assert_awaited_once_with("playlist-1", ["20", "40"])
 
     @pytest.mark.asyncio
-    async def test_get_playlist_tracks_called_with_fetch_limit(self) -> None:
-        """get_playlist_tracks is always called with limit=PLAYLIST_TRACK_FETCH_LIMIT."""
+    async def test_reads_current_tracks_from_playlist(self) -> None:
+        """The current track order is read from the playlist itself."""
         provider = _make_provider()
-        provider.client.get_playlist_tracks = AsyncMock(return_value=[])
+        provider.client.get_playlist = AsyncMock(return_value=self._playlist())
         provider.client.update_playlist = AsyncMock()
 
         await provider.remove_playlist_tracks("playlist-2", ())
 
-        provider.client.get_playlist_tracks.assert_awaited_once_with(
-            "playlist-2", limit=PLAYLIST_TRACK_FETCH_LIMIT
-        )
+        provider.client.get_playlist.assert_awaited_once_with("playlist-2")
 
     @pytest.mark.asyncio
     async def test_no_positions_keeps_all_tracks(self) -> None:
         """Removing no positions keeps all track IDs intact."""
         provider = _make_provider()
-        tracks = [_make_track_mock(11), _make_track_mock(22)]
-        provider.client.get_playlist_tracks = AsyncMock(return_value=tracks)
+        provider.client.get_playlist = AsyncMock(return_value=self._playlist(11, 22))
         provider.client.update_playlist = AsyncMock()
 
         await provider.remove_playlist_tracks("playlist-3", ())

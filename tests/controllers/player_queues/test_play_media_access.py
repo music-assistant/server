@@ -27,6 +27,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from tests.common import set_music_source_access
 
@@ -75,7 +76,7 @@ def _controller() -> Any:
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
@@ -86,7 +87,7 @@ def _controller() -> Any:
     ctrl._smart_shuffle.is_enabled = Mock(return_value=False)
     ctrl._media_resolver = Mock()
     ctrl._media_resolver._resolve_media_items = AsyncMock(
-        side_effect=lambda media_item, *_args, **_kwargs: [media_item]
+        side_effect=lambda media_item, *_args, **_kwargs: [ResolvedItem(media_item)]
     )
     # the real access check, over the sources configured by each test
     music = MusicController.__new__(MusicController)

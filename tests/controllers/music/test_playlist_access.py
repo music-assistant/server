@@ -59,6 +59,9 @@ async def playlists(
     )
     # the database-only server runs no cache database
     monkeypatch.setattr(music_mass_module.cache, "delete", AsyncMock())
+    # remove_item_from_library routes audio analysis cleanup through the AA controller
+    music_mass_module.streams = MagicMock()
+    music_mass_module.streams.audio_analysis.delete_audio_analysis = AsyncMock()
     return music_mass_module.music.playlists
 
 
@@ -206,13 +209,15 @@ async def test_get_and_tracks_hide_a_playlist_the_caller_may_not_see(
 
     with _as_user(OWNER):
         assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
-        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+        assert await playlists.tracks(builtin_id, "builtin") == []
+        assert [x async for x in playlists.iter_tracks(builtin_id, "builtin")] == []
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await playlists.get(added.item_id, "library")
-    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
-        _ = [x async for x in playlists.tracks(added.item_id, "library")]
-    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
-        _ = [x async for x in playlists.tracks(builtin_id, "builtin")]
+    for item_id, provider in ((added.item_id, "library"), (builtin_id, "builtin")):
+        with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+            await playlists.tracks(item_id, provider)
+        with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+            _ = [x async for x in playlists.iter_tracks(item_id, provider)]
 
 
 async def test_internal_callers_see_every_playlist(playlists: PlaylistController) -> None:
@@ -222,7 +227,7 @@ async def test_internal_callers_see_every_playlist(playlists: PlaylistController
 
     with _as_user(None):
         assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
-        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+        assert await playlists.tracks(builtin_id, "builtin") == []
         playlists.check_removal_allowed(added)
 
 
@@ -317,17 +322,17 @@ async def test_search_results_are_cached_per_user(
 async def test_favorite_removal_hides_hidden_playlists(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:
-    """The shared favorite flag of a playlist is only changed by someone who may see it."""
+    """The favorite of a playlist is only changed by someone who may see it."""
     added = await _add(playlists, _playlist("Favorite", PlaylistAccess(owner=OWNER.user_id)))
-    await playlists.set_favorite(added.item_id, True)
+    await playlists.set_favorite(added.item_id, True, [OWNER.user_id])
     remove = music_mass_module.music.remove_item_from_favorites
 
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await remove(MediaType.PLAYLIST, added.item_id)
-    assert (await playlists.get_library_item(added.item_id)).favorite is True
     with _as_user(OWNER):
+        assert (await playlists.get_library_item(added.item_id)).favorite is True
         await remove(MediaType.PLAYLIST, added.item_id)
-    assert (await playlists.get_library_item(added.item_id)).favorite is False
+        assert (await playlists.get_library_item(added.item_id)).favorite is None
 
 
 async def test_sync_lookups_stay_unfiltered(playlists: PlaylistController) -> None:
@@ -372,6 +377,30 @@ async def test_create_playlist_records_the_creator_as_owner(
         created = await playlists.create_playlist("Created", media_types=[MediaType.TRACK])
 
     assert created.access == expected
+
+
+@pytest.mark.parametrize("name", ["AC/DC Mix", "Rock... Mix", "Back\\slash"])
+async def test_create_playlist_accepts_path_characters_in_the_name(
+    playlists: PlaylistController, music_mass_module: MusicAssistant, name: str
+) -> None:
+    """A playlist name may contain slashes and dots; the provider receives it unchanged."""
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.name = "Music Assistant"
+    provider.supported_features = {
+        ProviderFeature.PLAYLIST_CREATE_TRACKS,
+        ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    }
+    provider.create_playlist = AsyncMock(return_value=_playlist(name))
+
+    with (
+        _as_user(None),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+    ):
+        await playlists.create_playlist(name, media_types=[MediaType.TRACK])
+
+    provider.create_playlist.assert_awaited_once_with(name, media_types={MediaType.TRACK})
 
 
 async def test_owner_shares_its_playlist(

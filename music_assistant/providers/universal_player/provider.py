@@ -32,7 +32,7 @@ from .constants import (
     CONF_DEVICE_INFO,
     UNIVERSAL_PLAYER_PREFIX,
 )
-from .player import UniversalPlayer
+from .player import UniversalPlayer, get_clean_player_name
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -237,7 +237,7 @@ class UniversalPlayerProvider(PlayerProvider):
                 members = self._first_player_per_domain(unassigned)
                 target = await self.create_universal_player(
                     player_id=self.mint_player_id(),
-                    name=self._get_clean_player_name(members),
+                    name=get_clean_player_name(members) or members[0].display_name,
                     device_info=self._aggregate_device_info(members),
                     protocol_player_ids=[p.player_id for p in members],
                 )
@@ -284,20 +284,26 @@ class UniversalPlayerProvider(PlayerProvider):
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a universal player and clean up any stale protocol player configs."""
-        if player := self.get_universal_player(player_id):
-            # Clean up configs for protocol players tracked by this universal player
-            # that are not currently registered (unavailable/stale).
-            # Available protocol players are handled by _cleanup_protocol_links
-            # in the player controller (clears parent + schedules re-evaluation).
-            for protocol_id in list(player._protocol_player_ids):
-                if not self.mass.players.get_player(protocol_id):
-                    self.logger.info(
-                        "Cleaning up stale protocol config %s from universal player %s",
-                        protocol_id,
-                        player_id,
-                    )
-                    self.mass.players.delete_player_config(protocol_id)
+        player = self.get_universal_player(player_id)
+        # Clean up configs for protocol players tracked by this universal player
+        # that are not currently registered (unavailable/stale).
+        # Available protocol players are handled by _cleanup_protocol_links
+        # in the player controller (clears parent + schedules re-evaluation).
+        # The configs are deleted after the removal, as deleting the last one first
+        # would already unregister the emptied universal player.
+        stale_protocol_ids = [
+            protocol_id
+            for protocol_id in (player._protocol_player_ids if player else [])
+            if not self.mass.players.get_player(protocol_id)
+        ]
         await self.remove_universal_player(player_id)
+        for protocol_id in stale_protocol_ids:
+            self.logger.info(
+                "Cleaning up stale protocol config %s from universal player %s",
+                protocol_id,
+                player_id,
+            )
+            self.mass.players.delete_player_config(protocol_id)
 
     async def _restore_player(self, player_id: str) -> None:
         """
@@ -348,9 +354,16 @@ class UniversalPlayerProvider(PlayerProvider):
                 if other_config.get("provider") == "universal_player":
                     continue
                 other_values = other_config.get("values") or {}
-                if protocol_id in (other_values.get(CONF_LINKED_PROTOCOL_IDS) or []):
-                    native_claims[protocol_id] = other_player_id
-                    break
+                if protocol_id not in (other_values.get(CONF_LINKED_PROTOCOL_IDS) or []):
+                    continue
+                # A native that already owns a protocol of the same domain can't take
+                # ours as well (one output per domain), so its entry is a stale leftover.
+                if self._owns_domain_of_protocols(
+                    other_player_id, valid_protocol_ids, all_player_configs
+                ):
+                    continue
+                native_claims[protocol_id] = other_player_id
+                break
         if native_claims:
             # Members are same-device by construction, so members not claimed by
             # any native follow the first claimer (keeps the cascade-disable
@@ -495,6 +508,27 @@ class UniversalPlayerProvider(PlayerProvider):
             )
         return valid_protocol_ids
 
+    def _owns_domain_of_protocols(
+        self,
+        native_id: str,
+        protocol_ids: list[str],
+        all_player_configs: dict[str, dict[str, Any]],
+    ) -> bool:
+        """Check if a native player already owns a protocol from one of these protocols' domains."""
+        domains = {
+            str(config.get("provider", "")).split("--", 1)[0]
+            for protocol_id in protocol_ids
+            if (config := all_player_configs.get(protocol_id)) and config.get("provider")
+        }
+        for player_id, config in all_player_configs.items():
+            if player_id in protocol_ids or config.get("player_type") != "protocol":
+                continue
+            if (config.get("values") or {}).get(CONF_PROTOCOL_PARENT_ID) != native_id:
+                continue
+            if str(config.get("provider", "")).split("--", 1)[0] in domains:
+                return True
+        return False
+
     async def _reparent_protocols_to_native(
         self, native_parent_id: str, protocol_ids: list[str]
     ) -> None:
@@ -579,7 +613,7 @@ class UniversalPlayerProvider(PlayerProvider):
         """
         return await self.create_universal_player(
             player_id=self.mint_player_id(),
-            name=self._get_clean_player_name([protocol_player]),
+            name=get_clean_player_name([protocol_player]) or protocol_player.display_name,
             device_info=self._aggregate_device_info([protocol_player]),
             protocol_player_ids=[protocol_player.player_id],
         )
@@ -642,54 +676,3 @@ class UniversalPlayerProvider(PlayerProvider):
             for conn_type, value in player.device_info.identifiers.items():
                 device_info.add_identifier(conn_type, value)
         return device_info
-
-    def _get_clean_player_name(self, protocol_players: list[Player]) -> str:
-        """
-        Get the best display name from protocol players.
-
-        Prefers names from protocols that typically provide user-friendly names
-        (Chromecast, DLNA, AirPlay) over those that may use technical identifiers
-        (Squeezelite, SendSpin). Filters out names that look like MAC addresses,
-        UUIDs, or player IDs.
-        """
-        # Protocol priority for name selection (higher priority = better names typically)
-        # Chromecast and DLNA usually have good user-configured names
-        # AirPlay also provides sensible names
-        # Squeezelite and SendSpin may use MAC addresses or technical IDs
-        name_priority = {
-            "chromecast": 1,
-            "airplay": 2,
-            "dlna": 3,
-            "squeezelite": 4,
-            "sendspin": 5,
-        }
-
-        def is_valid_name(name: str) -> bool:
-            """Check if a name looks like a real user-friendly name, not a technical ID."""
-            if not name or len(name) < 2:
-                return False
-            name_lower = name.lower().replace(":", "").replace("-", "").replace("_", "")
-            # Filter out names that look like MAC addresses (12 hex chars)
-            if len(name_lower) == 12 and all(c in "0123456789abcdef" for c in name_lower):
-                return False
-            # Filter out names that look like UUIDs
-            if len(name_lower) >= 32 and all(c in "0123456789abcdef" for c in name_lower[:32]):
-                return False
-            # Filter out names that start with common player ID prefixes
-            return not name_lower.startswith(
-                ("ap_", "cc_", "dlna_", "sq_", "sendspin_", "universal_")
-            )
-
-        # Sort players by protocol priority, then find the first valid name
-        sorted_players = sorted(
-            protocol_players,
-            key=lambda p: name_priority.get(p.provider.domain, 10),
-        )
-
-        for player in sorted_players:
-            player_name = player.state.name
-            if is_valid_name(player_name):
-                return player_name
-
-        # Fallback to first player's name if no valid name found
-        return protocol_players[0].display_name

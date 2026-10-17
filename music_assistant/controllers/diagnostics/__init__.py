@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.auth import Scope
 
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.app_vars import has_bundled_app_vars
 from music_assistant.helpers.datetime import from_utc_timestamp, utc
 from music_assistant.helpers.diagnostics import (
     REDACTION_NOTICE,
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 7
 # maximum time one section contributor may take before it is dropped from the report
 SECTION_TIMEOUT = 2.0
 
@@ -58,6 +59,7 @@ CORE_CONTROLLER_ATTRS = (
     "music",
     "player_queues",
     "players",
+    "storage",
     "streams",
     "tasks",
     "translations",
@@ -167,6 +169,9 @@ class DiagnosticsController(CoreController):
             "platform": platform.platform(),
             "machine": platform.machine(),
             "hass_addon": self.mass.running_as_hass_addon,
+            "unsupported_install": self.mass.unsupported_install,
+            "bundled_app_vars": has_bundled_app_vars(),
+            "build_info": self.mass.build_info,
             "safe_mode": self.mass.safe_mode,
             "uptime_seconds": round(time.monotonic() - self._started_at),
             "event_loop_lag_ms": await self._measure_loop_lag(),
@@ -308,9 +313,9 @@ class DiagnosticsController(CoreController):
         for provider in sorted(self.mass.providers, key=lambda prov: prov.instance_id):
             if type(provider).get_diagnostics is Provider.get_diagnostics:
                 continue
-            producers.append(
-                (f"provider.{provider.instance_id}", provider.get_diagnostics, SECTION_TIMEOUT)
-            )
+            # the domain makes a source readable whose id comes from another provider
+            name = f"provider.{provider.domain}.{provider.instance_id}"
+            producers.append((name, provider.get_diagnostics, SECTION_TIMEOUT))
         producers.extend(
             (name, callback, SECTION_TIMEOUT if timeout is None else timeout)
             for name, (callback, timeout) in self._sections.items()

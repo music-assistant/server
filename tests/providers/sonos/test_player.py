@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +16,7 @@ from aiosonos.exceptions import CannotConnect, FailedCommand
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, RepeatMode
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
@@ -43,6 +44,8 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._wol_mac = None
     player._marked_asleep = False
     player._woken_from_sleep = False
+    player.cloud_queue_id = None
+    player.cloud_queue_item_generation = 0
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -84,6 +87,13 @@ def _playback_error(**fields: object) -> PlaybackErrorEvent:
         },
     )
     return PlaybackErrorEvent(SonosEventType.PLAYBACK_ERROR, "group1", body)
+
+
+def _scheduled_tasks(mass: MagicMock) -> list[Coroutine[Any, Any, None]]:
+    """Collect the coroutines the player schedules on the given mass instead of running them."""
+    scheduled: list[Coroutine[Any, Any, None]] = []
+    mass.create_task.side_effect = lambda coro, **_kwargs: scheduled.append(coro)
+    return scheduled
 
 
 async def _connect_player(player: SonosPlayer, client: MagicMock) -> None:
@@ -223,6 +233,33 @@ async def test_on_unload_cancels_an_airplay_group_restore_that_already_started(
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test a Sendspin bridge riding on the AirPlay output also schedules the group restore."""
+    player, client = _bind_player(timer_mass)
+    player._attr_name = "Sonos Player"
+    client.player.is_coordinator = True
+    client.player.group_members = [player.player_id, "sonos_player_2"]
+    airplay_player = MagicMock()
+    airplay_player.provider.domain = "airplay"
+    timer_mass.players = MagicMock()
+    timer_mass.players.get_player.side_effect = lambda pid: (
+        airplay_player if pid == "airplay_player" else None
+    )
+    output_protocol = OutputProtocol(
+        output_protocol_id="sendspin_bridge",
+        name="Sendspin",
+        protocol_domain="sendspin",
+        derived_from="airplay_player",
+    )
+
+    await player.on_protocol_playback(output_protocol)
+
+    assert f"restore_airplay_group_{player.player_id}" in timer_mass._tracked_timers
 
 
 @pytest.mark.asyncio
@@ -590,6 +627,77 @@ def test_a_group_member_leaves_reporting_playback_errors_to_the_coordinator(
     assert not caplog.records
 
 
+@pytest.mark.parametrize("item_id", ["abc@3", "abc"], ids=["current load", "legacy bare id"])
+async def test_a_failed_track_hands_its_source_to_the_track_the_speaker_moves_on_to(
+    item_id: str,
+) -> None:
+    """Test the queue is asked to release the failed track's source, by its bare item id."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 3
+    mass = cast("MagicMock", player.mass)
+    mass.player_queues.release_failed_item_source = AsyncMock()
+    scheduled = _scheduled_tasks(mass)
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId=item_id))
+
+    assert len(scheduled) == 1
+    await scheduled[0]
+    mass.player_queues.release_failed_item_source.assert_awaited_once_with("queue1", "abc")
+
+
+def test_a_failure_of_an_earlier_load_of_a_track_leaves_its_fresh_source_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    Test a delayed report about the load a reload replaced is ignored.
+
+    A seek or replay serves the same track under a new generation, and the source the queue
+    item holds then belongs to that load; the old load's failure must not cancel it.
+    """
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    player.cloud_queue_item_generation = 4
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(_playback_error(reason="ERROR_BUFFERING", itemId="abc@3"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+    assert "Ignoring the failure of abc@3" in caplog.text
+
+
+def test_a_track_refused_by_our_stream_server_has_no_source_to_release() -> None:
+    """Test our own 404 never started a source for the track, so there is nothing to free."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+
+    player._on_playback_error(_playback_error(httpStatus=404, serviceName="192.168.1.10:9097"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+
+
+def test_a_group_member_leaves_releasing_a_failed_track_to_the_coordinator() -> None:
+    """Test a speaker synced to another one does not act on the group's failure."""
+    player = _make_named_player("Kantoor")
+    player.cloud_queue_id = "queue1"
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "coordinator"
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+
+
+def test_a_failure_outside_a_cloud_queue_releases_nothing() -> None:
+    """Test a failure while the speaker plays another source has no queue item behind it."""
+    player = _make_named_player("Kantoor")
+
+    player._on_playback_error(_playback_error(reason="ERROR_BUFFERING"))
+
+    cast("MagicMock", player.mass).create_task.assert_not_called()
+
+
 def _report_paused_qobuz(group: MagicMock) -> None:
     """Let the given group report a paused session of a service we did not map."""
     group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
@@ -898,3 +1006,42 @@ def test_is_wakeable_reads_the_advertised_device_features(
     """Test the WAKEABLE device feature is read defensively from the discovery info."""
     device: dict[str, Any] = {} if features is None else {"deviceFeatures": features}
     assert _is_wakeable(cast("Any", {"device": device})) is expected
+
+
+@pytest.mark.asyncio
+async def test_set_members_returns_once_the_sonos_group_reports_the_new_member(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test set_members waits for the Sonos group event before returning."""
+    player, client = _bind_player(timer_mass)
+    client.player.group_members = [player.player_id]
+
+    def _apply_new_member(**_kwargs: Any) -> None:
+        asyncio.get_running_loop().call_later(
+            0.3,
+            lambda: setattr(client.player, "group_members", [player.player_id, "sonos_player_2"]),
+        )
+
+    client.player.group.modify_group_members = AsyncMock(side_effect=_apply_new_member)
+
+    await player.set_members(player_ids_to_add=["sonos_player_2"])
+
+    assert "sonos_player_2" in client.player.group_members
+
+
+@pytest.mark.asyncio
+async def test_set_members_gives_up_when_the_sonos_group_never_reports_the_member(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test set_members returns without raising if the group never reports the new member."""
+    player, client = _bind_player(timer_mass)
+    client.player.group_members = [player.player_id]
+    client.player.group.modify_group_members = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.sonos.player.asyncio.timeout",
+        return_value=asyncio.timeout(0.2),
+    ):
+        await player.set_members(player_ids_to_add=["sonos_player_2"])
+
+    assert client.player.group_members == [player.player_id]

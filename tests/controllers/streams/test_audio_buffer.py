@@ -5,37 +5,47 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager, suppress
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState, StreamType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 import music_assistant.controllers.streams.audio as audio_mod
+import music_assistant.controllers.streams.audio_buffer as audio_buffer_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import (
     AudioBuffer,
     AudioBufferDiscarded,
     AudioBufferEOF,
     _new_buffer,
+    _queue_playback_position,
 )
 from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
     DSD_BUFFER_MAX_BYTES,
+    PLAYED_AUDIO_RETENTION,
     RADIO_BUFFER_SIZE,
+    REALTIME_COLD_START_BANK,
     SEEK_WAIT_THRESHOLD,
     BufferMode,
     BufferSize,
 )
+from music_assistant.helpers.ffmpeg import FFMpegStreamInfo
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 # Standard test PCM format: 44100Hz, 16-bit, stereo
 TEST_PCM_FORMAT = AudioFormat(
@@ -96,7 +106,11 @@ def _make_mass_for_get_buffer(
     start_analysis = AsyncMock(return_value=None)
     mass.streams = SimpleNamespace(
         audio_analysis=SimpleNamespace(start_analysis=start_analysis),
-        audio=SimpleNamespace(get_media_stream=_get_media_stream),
+        audio=SimpleNamespace(
+            get_media_stream=_get_media_stream,
+            # these sources are not local files, so they are opened by their path
+            open_local_files=AsyncMock(side_effect=lambda _details, paths: (paths, ())),
+        ),
     )
     scheduled_tasks: list[asyncio.Task[None]] = []
 
@@ -160,7 +174,7 @@ async def test_dsd_byte_limit_allows_startup_seek_and_continued_playback(
 ) -> None:
     """A seek beyond retention starts at the source and a full buffer keeps draining."""
     mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer(
-        queue=SimpleNamespace(crossfade_enabled=True)
+        queue=SimpleNamespace(crossfade_enabled=True, active=False)
     )
     details = _make_stream_details(
         MediaType.TRACK, duration=600, allow_seek=True, queue_id="queue_a"
@@ -384,6 +398,24 @@ async def test_fill_sets_eof() -> None:
     buf.fill(_make_source(3), source_name="test")
     await asyncio.sleep(0.1)
     assert buf._eof_received
+
+
+@pytest.mark.asyncio
+async def test_fill_reads_the_source_with_playback_priority() -> None:
+    """The producer reads its source with playback priority, the caller keeps its own."""
+    seen: list[RequestPriority] = []
+
+    async def _source() -> AsyncGenerator[bytes]:
+        seen.append(current_priority())
+        yield _make_chunk(0)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    with request_priority(RequestPriority.NORMAL):
+        buf.fill(_source(), source_name="test")
+        assert current_priority() is RequestPriority.NORMAL
+    await asyncio.sleep(0.1)
+
+    assert seen == [RequestPriority.HIGH]
 
 
 @pytest.mark.asyncio
@@ -651,8 +683,30 @@ async def test_get_buffer_skips_analysis_for_non_analyzed_types(media_type: Medi
 
 
 @pytest.mark.asyncio
-async def test_get_buffer_fill_completion_prepares_the_next_item() -> None:
-    """A realtime track's finished fill frees its slot and starts the next item's fetch."""
+async def test_get_buffer_signals_when_the_fill_completes() -> None:
+    """The completion callback runs once the source has delivered all of its audio."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(
+        MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
+    )
+    on_complete = MagicMock()
+
+    buffer = await AudioBuffer.get_buffer(
+        mass, streamdetails, reason="test", on_complete=on_complete
+    )
+    await asyncio.sleep(0.1)
+
+    assert buffer.eof
+    on_complete.assert_called_once_with()
+    # the buffer itself leaves the reaction to the caller
+    mass.player_queues.prepare_next_audio_buffer.assert_not_called()
+    await asyncio.gather(*scheduled_tasks)
+    await buffer.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_fills_without_a_completion_callback() -> None:
+    """A caller that needs no completion signal gets a fully filled buffer all the same."""
     mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
     streamdetails = _make_stream_details(
         MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
@@ -662,23 +716,8 @@ async def test_get_buffer_fill_completion_prepares_the_next_item() -> None:
     buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
     await asyncio.sleep(0.1)
 
-    mass.player_queues.prepare_next_audio_buffer.assert_called_once_with("queue_a")
-    await asyncio.gather(*scheduled_tasks)
-    await buffer.clear()
-
-
-@pytest.mark.asyncio
-async def test_get_buffer_fill_completion_is_ignored_for_non_realtime_sources() -> None:
-    """A source that delivers faster than playback frees no slot worth chaining on."""
-    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
-    streamdetails = _make_stream_details(
-        MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
-    )
-
-    buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
-    await asyncio.sleep(0.1)
-
-    mass.player_queues.prepare_next_audio_buffer.assert_not_called()
+    assert buffer.eof
+    assert not buffer.has_error
     await asyncio.gather(*scheduled_tasks)
     await buffer.clear()
 
@@ -695,6 +734,55 @@ async def test_get_buffer_still_starts_analysis_for_track() -> None:
     await asyncio.gather(*scheduled_tasks)
     start_analysis.assert_awaited_once()
     await buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("reason", "seek_position_ms", "slots", "expected"),
+    [
+        ("prepare", 264_000, 1, REALTIME_COLD_START_BANK),
+        ("prepare", 0, 1, 1),
+        ("prepare_next", 264_000, 1, 1),
+        ("streaming", 264_000, 1, 1),
+        ("prepare", 264_000, 3, 1),
+    ],
+)
+async def test_realtime_session_start_banks_a_lead_for_a_short_first_item(
+    reason: str, seek_position_ms: int, slots: int, expected: int
+) -> None:
+    """
+    Only a session start on a single-slot realtime item with little left to play banks a lead.
+
+    A full first track builds its own lead before the first boundary, a boundary preload
+    never banks because the source's slot is still held by the playing item, and a source
+    with spare slots prewarms its next item so its boundary has no gap to bridge.
+    """
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = slots
+    mass.get_provider = MagicMock(return_value=provider)
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=289, allow_seek=True)
+    streamdetails.is_realtime = True
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, seek_position_ms, reason=reason)
+    try:
+        assert buffer._ready_threshold == expected
+        assert buffer._ready_at_chunk == seek_position_ms // 1000 + expected
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+async def test_cold_start_bank_is_realtime_only() -> None:
+    """A source that fills the buffer faster than playback needs no bank at all."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=289, allow_seek=True)
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, 264_000, reason="prepare")
+    try:
+        assert buffer._ready_threshold == 2
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
 
 
 @pytest.mark.asyncio
@@ -963,7 +1051,7 @@ async def test_read_chunk_for_analysis_raises_discarded_when_evicted() -> None:
     """Requesting a chunk that has been evicted from the window raises AudioBufferDiscarded."""
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
     await buf._put(_make_chunk(0))
-    # Simulate the playback consumer sliding the window past chunk 0.
+    # Simulate the window sliding past chunk 0.
     buf._chunks.popleft()
     buf._discarded_chunks += 1
     assert buf.first_buffered_chunk == 1
@@ -1031,23 +1119,266 @@ async def test_rolling_buffer_drained_surfaces_producer_error() -> None:
 
 @pytest.mark.asyncio
 async def test_seekable_buffer_backpressure() -> None:
-    """SEEKABLE mode waits on put when full, consumer frees space on get."""
+    """SEEKABLE mode waits on put when full until playback moves past the retained audio."""
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
     max_size = buf.max_size_seconds
+    retain = buf._retain_seconds
 
-    # use fill() so there's an active producer task (eviction only happens
-    # when the producer is running and needs space)
     buf.fill(_make_source(max_size + 5), source_name="test")
     async with asyncio.timeout(5):
         async with buf._data_available:
             await buf._data_available.wait_for(lambda: buf.size_seconds == max_size)
 
+    # reading within the retained seconds leaves the producer waiting
+    assert await buf._get(chunk_number=retain) == _make_chunk(retain)
+    await asyncio.sleep(0.05)
+    assert buf._discarded_chunks == 0
     assert buf.size_seconds == max_size
 
-    # reading from a full buffer frees space for the producer
-    chunk = await buf._get(chunk_number=0)
-    assert chunk == _make_chunk(0)
-    assert buf._discarded_chunks == 1
+    # one second further lets the producer evict the oldest chunk and add one
+    assert await buf._get(chunk_number=retain + 1) == _make_chunk(retain + 1)
+    async with asyncio.timeout(5):
+        async with buf._data_available:
+            await buf._data_available.wait_for(lambda: buf._discarded_chunks == 1)
+    assert buf.size_seconds == max_size
+
+
+@pytest.mark.asyncio
+async def test_seekable_buffer_keeps_played_audio_for_a_skip_back() -> None:
+    """A full window keeps the retained seconds behind playback and fills the rest ahead."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.BALANCED)
+    max_size = buf.max_size_seconds
+    assert buf._retain_seconds == PLAYED_AUDIO_RETENTION
+
+    buf.fill(_make_source(max_size * 3), source_name="test")
+    position = max_size
+    async with asyncio.timeout(5):
+        await buf._get(chunk_number=position)
+        async with buf._data_available:
+            await buf._data_available.wait_for(
+                lambda: buf._discarded_chunks == position - PLAYED_AUDIO_RETENTION
+            )
+    await asyncio.sleep(0.05)
+
+    assert buf.size_seconds == max_size
+    assert buf.first_buffered_chunk == position - PLAYED_AUDIO_RETENTION
+    assert buf.is_valid((position - PLAYED_AUDIO_RETENTION) * 1000)
+    assert not buf.is_valid((position - PLAYED_AUDIO_RETENTION - 1) * 1000)
+    # the rest of the window is audio ahead of playback
+    ahead = buf.first_buffered_chunk + buf.size_seconds - position
+    assert ahead == max_size - PLAYED_AUDIO_RETENTION
+    await buf.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_reuses_the_buffer_on_a_skip_back_within_retention() -> None:
+    """A skip back into the retained audio is served without fetching the source again."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    source_seeks: list[int] = []
+
+    def _get_media_stream(*_args: Any, seek_position: int, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        source_seeks.append(seek_position)
+        return _make_source(1000)
+
+    mass.streams.audio.get_media_stream = _get_media_stream
+    details = _make_stream_details(MediaType.TRACK, duration=1000, allow_seek=True)
+    buf = await AudioBuffer.get_buffer(mass, details, wait_ready=True)
+    position = buf.max_size_seconds
+    async with asyncio.timeout(5):
+        await buf._get(chunk_number=position)
+        async with buf._data_available:
+            await buf._data_available.wait_for(
+                lambda: buf._discarded_chunks == position - PLAYED_AUDIO_RETENTION
+            )
+
+    skip_back_ms = (position - 30) * 1000
+    assert await AudioBuffer.get_buffer(mass, details, skip_back_ms) is buf
+    assert source_seeks == [0]
+    await asyncio.gather(*scheduled_tasks)
+    await buf.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("preset", "max_size"),
+    [(preset, BUFFER_SIZE_MAP[preset]) for preset in BufferSize] + [(BufferSize.MINIMAL, 3)],
+)
+# None lags playback a full window behind the reader
+@pytest.mark.parametrize("playback_lag", [0, 30, None])
+async def test_seekable_retention_stays_within_the_window(
+    preset: BufferSize, max_size: int, playback_lag: int | None
+) -> None:
+    """Retention leaves room ahead of playback and the window never grows past its size."""
+    lag = max_size if playback_lag is None else playback_lag
+
+    async def _tiny_source() -> AsyncGenerator[bytes]:
+        for i in range(max_size * 3):
+            yield bytes([i % 256])
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=preset)
+    buf.max_size_seconds = max_size
+    buf.playback_position = lambda b: max(0, b._read_position - lag)
+    assert 0 <= buf._retain_seconds < max_size
+
+    buf.fill(_tiny_source(), source_name="test")
+    chunk_number = 0
+    async with asyncio.timeout(10):
+        async for chunk in buf.get_raw_stream():
+            assert chunk == bytes([chunk_number % 256])
+            assert buf.size_seconds <= max_size
+            chunk_number += 1
+    assert chunk_number == max_size * 3
+
+
+@pytest.mark.asyncio
+async def test_seekable_reader_beyond_a_full_window_is_not_blocked() -> None:
+    """A reader asking for audio past a full window gets it once the producer makes room."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    max_size = buf.max_size_seconds
+    buf.fill(_make_source(max_size + 20), source_name="test")
+    async with asyncio.timeout(5):
+        async with buf._data_available:
+            await buf._data_available.wait_for(lambda: buf.size_seconds == max_size)
+        assert await buf._get(chunk_number=max_size + 10) == _make_chunk(max_size + 10)
+    assert buf.size_seconds <= max_size
+    await buf.clear()
+
+
+@pytest.mark.asyncio
+async def test_seekable_retention_is_measured_from_playback() -> None:
+    """Played audio is kept behind what the listener hears, not behind the reader."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.BALANCED)
+    position = buf.max_size_seconds
+    buf.playback_position = lambda _buf: float(position)
+    buf.fill(_make_source(buf.max_size_seconds * 3), source_name="test")
+    async with asyncio.timeout(5):
+        await buf._get(chunk_number=position + 40)
+        async with buf._data_available:
+            await buf._data_available.wait_for(
+                lambda: buf._discarded_chunks == position - PLAYED_AUDIO_RETENTION
+            )
+    await asyncio.sleep(0.05)
+
+    assert buf.first_buffered_chunk == position - PLAYED_AUDIO_RETENTION
+    assert buf.is_valid((position - PLAYED_AUDIO_RETENTION) * 1000)
+    await buf.clear()
+
+
+@pytest.mark.asyncio
+async def test_seekable_reader_far_ahead_of_playback_is_not_blocked() -> None:
+    """A reader running a full window ahead of playback still gets its audio."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    max_size = buf.max_size_seconds
+    buf.playback_position = lambda _buf: 0.0
+    buf.fill(_make_source(max_size + 20), source_name="test")
+    async with asyncio.timeout(5):
+        assert await buf._get(chunk_number=max_size + 10) == _make_chunk(max_size + 10)
+    assert buf.size_seconds <= max_size
+    await buf.clear()
+
+
+@pytest.mark.asyncio
+async def test_seekable_retention_without_playback_position_follows_the_reader() -> None:
+    """An unknown playback position keeps the retained seconds behind the reader."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.BALANCED)
+    position = buf.max_size_seconds
+    buf.playback_position = lambda _buf: None
+    buf.fill(_make_source(buf.max_size_seconds * 3), source_name="test")
+    async with asyncio.timeout(5):
+        await buf._get(chunk_number=position)
+        async with buf._data_available:
+            await buf._data_available.wait_for(
+                lambda: buf._discarded_chunks == position - PLAYED_AUDIO_RETENTION
+            )
+    await asyncio.sleep(0.05)
+
+    assert buf.first_buffered_chunk == position - PLAYED_AUDIO_RETENTION
+    await buf.clear()
+
+
+def _mass_with_queue(buffer: AudioBuffer | None, **queue_fields: Any) -> MagicMock:
+    """Build a mass stub whose queue plays the given buffer."""
+    fields: dict[str, Any] = {
+        "active": True,
+        "state": PlaybackState.PLAYING,
+        "corrected_elapsed_time": 42.5,
+        "current_item": SimpleNamespace(streamdetails=SimpleNamespace(buffer=buffer)),
+    }
+    fields.update(queue_fields)
+    mass = MagicMock()
+    mass.player_queues.get.return_value = SimpleNamespace(**fields)
+    return mass
+
+
+@pytest.mark.parametrize("state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+def test_queue_playback_position_of_the_playing_buffer(state: PlaybackState) -> None:
+    """The queue's elapsed time is reported for the buffer it is playing."""
+    buf = AudioBuffer(TEST_PCM_FORMAT)
+    mass = _mass_with_queue(buf, state=state)
+    assert _queue_playback_position(mass, "queue_a", buf) == 42.5
+    mass.player_queues.get.assert_called_once_with("queue_a")
+
+
+@pytest.mark.parametrize(
+    "queue_fields",
+    [
+        {"active": False},
+        {"state": PlaybackState.IDLE},
+        {"current_item": None},
+        {"current_item": SimpleNamespace(streamdetails=None)},
+    ],
+)
+def test_queue_playback_position_unknown_when_not_playing(queue_fields: dict[str, Any]) -> None:
+    """No position is reported while the queue is not playing anything."""
+    buf = AudioBuffer(TEST_PCM_FORMAT)
+    assert _queue_playback_position(_mass_with_queue(buf, **queue_fields), "q", buf) is None
+
+
+def test_queue_playback_position_unknown_for_another_items_buffer() -> None:
+    """No position is reported for a buffer the queue is not playing."""
+    buf = AudioBuffer(TEST_PCM_FORMAT)
+    other = AudioBuffer(TEST_PCM_FORMAT)
+    assert _queue_playback_position(_mass_with_queue(other), "q", buf) is None
+
+
+def test_queue_playback_position_unknown_without_queue() -> None:
+    """No position is reported when the queue no longer exists."""
+    buf = AudioBuffer(TEST_PCM_FORMAT)
+    mass = MagicMock()
+    mass.player_queues.get.return_value = None
+    assert _queue_playback_position(mass, "q", buf) is None
+
+
+@pytest.mark.asyncio
+async def test_new_buffer_follows_the_queue_playback_position() -> None:
+    """A buffer created for a queue reports that queue's playback position."""
+    details = _make_stream_details(
+        MediaType.TRACK, duration=600, allow_seek=True, queue_id="queue_a"
+    )
+    queue = SimpleNamespace(
+        active=True,
+        state=PlaybackState.PLAYING,
+        corrected_elapsed_time=12.0,
+        crossfade_enabled=False,
+        current_item=SimpleNamespace(streamdetails=details),
+    )
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer(queue=queue)
+    buffer, _seek = _new_buffer(mass, details, 0, "test")
+    await asyncio.gather(*scheduled_tasks)
+
+    assert buffer.playback_position is not None
+    assert buffer.playback_position(buffer) == 12.0
+
+
+@pytest.mark.asyncio
+async def test_new_buffer_without_queue_has_no_playback_position() -> None:
+    """A buffer not created for a queue has no playback position."""
+    details = _make_stream_details(MediaType.TRACK, duration=600, allow_seek=True)
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    buffer, _seek = _new_buffer(mass, details, 0, "test")
+    await asyncio.gather(*scheduled_tasks)
+
+    assert buffer.playback_position is None
 
 
 @pytest.mark.asyncio
@@ -1239,8 +1570,11 @@ async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
     """Extend the base fixture with the player_queues/streams stand-ins get_queue_item_stream needs."""
     mass_minimal.player_queues = SimpleNamespace(  # type: ignore[assignment]
         get_active_queue=lambda _queue_id: None,
-        prepare_next_audio_buffer=lambda _queue_id: None,
+        get_next_item=lambda _queue_id, _item_id: None,
+        prepare_next_audio_buffer=lambda _queue_id, _item_id: None,
+        track_fully_buffered=lambda _queue_id, _item_id: None,
         queue_data_or_none=lambda _queue_id: None,
+        has_paused_stream_slot_holder=lambda _provider_instance, _queue_id: False,
     )
     mass_minimal.streams = MagicMock()
     return mass_minimal
@@ -1267,16 +1601,19 @@ async def _stream_until_prebuffer_window(
     next_item_media_type: MediaType,
     queue_id: str,
     is_realtime: bool = False,
-) -> None:
+) -> list[str]:
     """
     Drive get_queue_item_stream for a 90s current TRACK item past the pre-buffer trigger point.
 
-    Sets up a queue whose next item has ``next_item_media_type`` and streams the current
-    item to completion, so the pre-buffer trigger condition (evaluated once more than
-    duration - 60 seconds of PCM has been yielded) gets a chance to fire.
+    Sets up a queue in which the streamed item is followed by an item of
+    ``next_item_media_type`` and streams the current item to completion, so the pre-buffer
+    trigger condition (evaluated once more than duration - 60 seconds of PCM has been
+    yielded) gets a chance to fire. The queue's audible next item still points at the
+    streamed item, as it does while the player's lead spans a track boundary.
 
     :param is_realtime: Whether the current item's source hands over its audio
-        just-in-time, which moves the trigger to the source itself.
+        just-in-time.
+    :return: The item ids the successor was looked up for.
     """
     streamdetails = _make_stream_details(MediaType.TRACK, duration=90, allow_seek=True)
     streamdetails.is_realtime = is_realtime
@@ -1289,36 +1626,44 @@ async def _stream_until_prebuffer_window(
         streamdetails=streamdetails,
     )
     next_item = SimpleNamespace(queue_item_id="next", media_type=next_item_media_type)
-    queue = SimpleNamespace(next_item=next_item)
+    queue = SimpleNamespace(next_item=current_item)
     mass.player_queues.get_active_queue = lambda _player_id: queue  # type: ignore[method-assign, assignment, return-value]
+    looked_up: list[str] = []
+
+    def _get_next_item(_queue_id: str, item_id: str) -> SimpleNamespace:
+        looked_up.append(item_id)
+        return next_item
+
+    mass.player_queues.get_next_item = _get_next_item  # type: ignore[method-assign, assignment]
 
     controller = StreamsAudio(mass)
     with patch.object(audio_mod, "AudioBuffer", _FakeAudioBuffer):
         async for _chunk in controller.get_queue_item_stream(current_item, TEST_PCM_FORMAT):
             pass
+    return looked_up
 
 
 @pytest.mark.asyncio
 async def test_sound_effect_next_item_triggers_prebuffer(mass_minimal: MusicAssistant) -> None:
     """A SOUND_EFFECT next item is pre-buffered like a track."""
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id: calls.append(queue_id)
+        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
         mass_minimal, next_item_media_type=MediaType.SOUND_EFFECT, queue_id="player_a"
     )
 
-    assert calls == ["player_a"]
+    assert calls == [("player_a", "current")]
 
 
 @pytest.mark.asyncio
 async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssistant) -> None:
     """A live AUDIO_SOURCE next item is still excluded from pre-buffering."""
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id: calls.append(queue_id)
+        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
@@ -1335,13 +1680,12 @@ async def test_realtime_source_also_gets_the_fallback_prebuffer_trigger(
     """
     A realtime track keeps the read-side trigger as its fallback.
 
-    Its slot usually frees (and prepares the next item) when an earlier fill
-    completes, but once the lead spans a whole item that moment has no next
-    item yet - this trigger is what starts it then.
+    The fill-complete signal usually prepares the next item first, but a fill that
+    completed before the player fetched the item left that to this trigger.
     """
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
-        lambda queue_id: calls.append(queue_id)
+        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
     )
 
     await _stream_until_prebuffer_window(
@@ -1351,7 +1695,23 @@ async def test_realtime_source_also_gets_the_fallback_prebuffer_trigger(
         is_realtime=True,
     )
 
-    assert calls == ["player_a"]
+    assert calls == [("player_a", "current")]
+
+
+@pytest.mark.asyncio
+async def test_prebuffer_trigger_follows_the_streamed_item(mass_minimal: MusicAssistant) -> None:
+    """The item after the streamed one is prepared while the audible next item lags behind."""
+    calls: list[tuple[str, str]] = []
+    mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
+        lambda queue_id, queue_item_id: calls.append((queue_id, queue_item_id))
+    )
+
+    looked_up = await _stream_until_prebuffer_window(
+        mass_minimal, next_item_media_type=MediaType.TRACK, queue_id="player_a"
+    )
+
+    assert looked_up == ["current"]
+    assert calls == [("player_a", "current")]
 
 
 @pytest.mark.asyncio
@@ -1443,3 +1803,254 @@ async def test_audio_source_stream_error_reset_on_retry(mass_minimal: MusicAssis
 
 
 # -- Provider-filled buffers --
+
+
+# -- Format probe --
+
+PROBED_FLAC = FFMpegStreamInfo(codec=ContentType.FLAC, sample_rate=48000, bit_depth=24, channels=2)
+
+
+def _make_unknown_format_details() -> StreamDetails:
+    """Build stream details for a track whose provider did not declare its format."""
+    details = _make_stream_details(MediaType.TRACK, duration=600, allow_seek=True)
+    details.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
+    return details
+
+
+def _make_slot_limited_provider(
+    acquire_stream_slot: Callable[[float | None], Any],
+) -> MagicMock:
+    """Build a slot-limited music provider that hands out slots as given."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Test"
+    provider.instance_id = "test--1"
+    provider.max_concurrent_streams = 1
+    provider.acquire_stream_slot = acquire_stream_slot
+    return provider
+
+
+async def test_get_buffer_decodes_an_unknown_source_at_its_probed_format() -> None:
+    """A source without a declared format is buffered at the format it turns out to have."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    requested_formats: list[AudioFormat] = []
+
+    def _get_media_stream(
+        _details: StreamDetails, pcm_format: AudioFormat, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        requested_formats.append(pcm_format)
+        return _make_source(1)
+
+    mass.streams.audio.get_media_stream = _get_media_stream
+    details = _make_unknown_format_details()
+    details.extra_input_args = ["-user_agent", "test"]
+    details.verify_ssl = False
+
+    with patch.object(
+        audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=PROBED_FLAC)
+    ) as probe:
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
+    try:
+        probe.assert_awaited_once_with(
+            details.path, ["-user_agent", "test"], pass_fds=(), verify_ssl=False
+        )
+        assert buffer.pcm_format.content_type == ContentType.PCM_S24LE
+        assert (buffer.pcm_format.sample_rate, buffer.pcm_format.bit_depth) == (48000, 24)
+        assert requested_formats == [buffer.pcm_format]
+        assert details.audio_format.content_type == ContentType.FLAC
+        assert details.audio_format.codec_type == ContentType.FLAC
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+def _declare_format(details: StreamDetails) -> None:
+    details.audio_format = AudioFormat(content_type=ContentType.FLAC)
+
+
+def _declare_codec(details: StreamDetails) -> None:
+    details.audio_format = AudioFormat(
+        content_type=ContentType.UNKNOWN, codec_type=ContentType.FLAC
+    )
+
+
+def _declare_decoded_format(details: StreamDetails) -> None:
+    details.decoded_audio_format = AudioFormat(content_type=ContentType.PCM_S32LE, bit_depth=32)
+
+
+def _make_radio(details: StreamDetails) -> None:
+    details.media_type = MediaType.RADIO
+
+
+def _make_realtime(details: StreamDetails) -> None:
+    details.is_realtime = True
+
+
+def _make_custom(details: StreamDetails) -> None:
+    details.stream_type = StreamType.CUSTOM
+
+
+def _make_multipart(details: StreamDetails) -> None:
+    details.path = [MultiPartPath(path="http://example.com/part1.mp3")]
+
+
+def _make_dff(details: StreamDetails) -> None:
+    details.stream_type = StreamType.LOCAL_FILE
+    details.path = "/music/track.dff"
+
+
+@pytest.mark.parametrize(
+    "adjust",
+    [
+        _declare_format,
+        _declare_codec,
+        _declare_decoded_format,
+        _make_radio,
+        _make_realtime,
+        _make_custom,
+        _make_multipart,
+        _make_dff,
+    ],
+    ids=["known", "codec", "decoded", "radio", "realtime", "custom", "multipart", "dff"],
+)
+async def test_get_buffer_only_probes_an_unknown_on_demand_source(
+    adjust: Callable[[StreamDetails], None],
+) -> None:
+    """Known formats and sources that can not be opened twice are not probed."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    details = _make_unknown_format_details()
+    adjust(details)
+
+    with patch.object(audio_buffer_mod, "probe_audio_stream", AsyncMock()) as probe:
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
+    try:
+        probe.assert_not_awaited()
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+async def test_get_buffer_keeps_the_defaults_when_the_probe_fails() -> None:
+    """A source that can not be probed is still played, at the default format."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    details = _make_unknown_format_details()
+
+    with patch.object(audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=None)):
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
+    try:
+        assert (buffer.pcm_format.sample_rate, buffer.pcm_format.bit_depth) == (44100, 16)
+        assert details.audio_format == AudioFormat(content_type=ContentType.UNKNOWN)
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+async def test_get_buffer_probes_while_holding_a_source_stream_slot() -> None:
+    """The probe opens the source, so it is charged a slot on the issuing provider."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    slot_waits: list[float | None] = []
+    slot_held = False
+
+    @asynccontextmanager
+    async def _acquire_stream_slot(wait_timeout: float | None) -> AsyncGenerator[None]:
+        nonlocal slot_held
+        slot_waits.append(wait_timeout)
+        slot_held = True
+        try:
+            yield
+        finally:
+            slot_held = False
+
+    mass.get_provider.return_value = _make_slot_limited_provider(_acquire_stream_slot)
+    held_during_probe: list[bool] = []
+
+    async def _probe(*_args: Any, **_kwargs: Any) -> FFMpegStreamInfo:
+        held_during_probe.append(slot_held)
+        return PROBED_FLAC
+
+    details = _make_unknown_format_details()
+    with patch.object(audio_buffer_mod, "probe_audio_stream", _probe):
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test", source_wait_timeout=7.0)
+    try:
+        mass.get_provider.assert_called_with(details.provider, return_unavailable=True)
+        assert held_during_probe == [True]
+        assert slot_waits == [7.0]
+        assert not slot_held
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+async def test_get_buffer_surfaces_a_saturated_provider_before_probing() -> None:
+    """Without a free slot the typed capacity error surfaces, as it would from the producer."""
+    mass, _start_analysis, _scheduled_tasks = _make_mass_for_get_buffer()
+    provider = _make_slot_limited_provider(MagicMock())
+    provider.acquire_stream_slot.return_value.__aenter__.side_effect = ProviderStreamLimitError(
+        provider, 0
+    )
+    mass.get_provider.return_value = provider
+    details = _make_unknown_format_details()
+
+    with (
+        patch.object(audio_buffer_mod, "probe_audio_stream", AsyncMock()) as probe,
+        pytest.raises(ProviderStreamLimitError),
+    ):
+        await AudioBuffer.get_buffer(mass, details, reason="test", source_wait_timeout=0)
+
+    provider.acquire_stream_slot.assert_called_once_with(0)
+    probe.assert_not_awaited()
+    assert details.buffer is None
+
+
+async def test_get_buffer_probes_a_source_only_once() -> None:
+    """A later buffer for the same source, e.g. after a seek, reuses the probed format."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    details = _make_unknown_format_details()
+
+    with patch.object(
+        audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=PROBED_FLAC)
+    ) as probe:
+        first = await AudioBuffer.get_buffer(mass, details, reason="test")
+        await first.clear()
+        details.buffer = None
+        second = await AudioBuffer.get_buffer(mass, details, 120_000, reason="test")
+    try:
+        probe.assert_awaited_once()
+        assert second.pcm_format == first.pcm_format
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await second.clear()
+
+
+@pytest.mark.parametrize("resolves", [True, False], ids=["resolved", "unreachable"])
+async def test_get_buffer_probes_the_hls_substream_the_producer_plays(resolves: bool) -> None:
+    """An HLS source is probed on the substream it is decoded from, or not at all."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    mass.streams.audio.get_hls_substream = AsyncMock(
+        return_value=SimpleNamespace(path="https://cdn.example.com/variant.m3u8")
+        if resolves
+        else None,
+        side_effect=None if resolves else AudioError("playlist unavailable"),
+    )
+    details = _make_unknown_format_details()
+    details.stream_type = StreamType.HLS
+    details.path = "https://example.com/master.m3u8"
+
+    with patch.object(
+        audio_buffer_mod, "probe_audio_stream", AsyncMock(return_value=PROBED_FLAC)
+    ) as probe:
+        buffer = await AudioBuffer.get_buffer(mass, details, reason="test")
+    try:
+        mass.streams.audio.get_hls_substream.assert_awaited_once_with(
+            "https://example.com/master.m3u8"
+        )
+        if resolves:
+            probe.assert_awaited_once_with(
+                "https://cdn.example.com/variant.m3u8", [], pass_fds=(), verify_ssl=True
+            )
+            assert buffer.pcm_format.sample_rate == 48000
+        else:
+            probe.assert_not_awaited()
+            assert buffer.pcm_format.sample_rate == 44100
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()

@@ -6,7 +6,6 @@ import base64
 import hashlib
 import json
 from contextlib import suppress
-from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -150,14 +149,6 @@ class TidalStreamingManager:
             channels=2,
         )
 
-        # Never block or fail playback on DB issues.
-        self.mass.create_task(
-            self._async_update_provider_mapping_audio_format(
-                provider_track_id=track.item_id,
-                resolved_audio_format=resolved_audio_format,
-            )
-        )
-
         self.provider.play_reporting.register_stream(
             item_id=track.item_id,
             quality=stream_data.get("audioQuality", "LOSSLESS"),
@@ -193,17 +184,16 @@ class TidalStreamingManager:
 
     async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:
         """Fetch the (unofficial) playback info for a track."""
-        async with self.api.throttler.bypass():
-            stream_data = await self.api.get(
-                f"tracks/{track_id}/playbackinfopostpaywall",
-                params={
-                    "playbackmode": "STREAM",
-                    "assetpresentation": "FULL",
-                    "audioquality": quality,
-                    # MA has no surround pipeline, so never ask for the Atmos asset.
-                    "immersiveaudio": "false",
-                },
-            )
+        stream_data = await self.api.get(
+            f"tracks/{track_id}/playbackinfopostpaywall",
+            params={
+                "playbackmode": "STREAM",
+                "assetpresentation": "FULL",
+                "audioquality": quality,
+                # MA has no surround pipeline, so never ask for the Atmos asset.
+                "immersiveaudio": "false",
+            },
+        )
         self.provider.logger.debug(
             "Playback info for track %s: audioQuality=%s, audioMode=%s, manifestMimeType=%s",
             track_id,
@@ -212,53 +202,6 @@ class TidalStreamingManager:
             stream_data.get("manifestMimeType"),
         )
         return stream_data
-
-    async def _async_update_provider_mapping_audio_format(
-        self,
-        provider_track_id: str,
-        resolved_audio_format: AudioFormat,
-    ) -> None:
-        """Persist resolved audio format on the provider mapping (best-effort)."""
-        try:
-            lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
-                provider_track_id, self.provider.instance_id
-            )
-            if not lib_track:
-                return
-
-            cur_mapping = next(
-                (
-                    m
-                    for m in lib_track.provider_mappings
-                    if m.provider_instance == self.provider.instance_id
-                    and m.item_id == provider_track_id
-                ),
-                None,
-            )
-            if not cur_mapping or cur_mapping.audio_format == resolved_audio_format:
-                return
-
-            await self.mass.music.tracks.update_provider_mapping(
-                item_id=lib_track.item_id,
-                provider_instance_id=self.provider.instance_id,
-                provider_item_id=provider_track_id,
-                audio_format=resolved_audio_format,
-            )
-        except (MediaNotFoundError, OperationalError, AssertionError) as err:
-            self.provider.logger.debug(
-                "Failed to persist audio_format on provider mapping for Tidal track %s "
-                "(provider_instance=%s): %s",
-                provider_track_id,
-                self.provider.instance_id,
-                err,
-            )
-        except Exception:
-            self.provider.logger.exception(
-                "Unexpected error while persisting audio_format on provider mapping for "
-                "Tidal track %s (provider_instance=%s)",
-                provider_track_id,
-                self.provider.instance_id,
-            )
 
     def _remove_dash_route(self, route_path: str) -> None:
         """Remove a DASH manifest route from the stream server."""

@@ -7,8 +7,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Track
+
+from music_assistant.controllers.cache import use_cache
 
 from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
@@ -26,8 +28,7 @@ _TRACK_PAGE_SIZE = 100
 # Detail lookups for weak-mapped library tracks go out in batches of this many ids.
 _DETAIL_BATCH_SIZE = 100
 
-# Catalog enrichment batch size: 300 (the documented max) returns a 504, so cap at 150. This also
-# bounds the in-flight window, keeping a ~100k library from being materialized at once.
+# Ratings batch and yield window of the track sync, so a ~100k library is never held at once.
 _TRACK_SYNC_WINDOW = 150
 
 # Limit search fallback attempts per window to avoid rate limits/latency when many IDs are deprecated.
@@ -40,6 +41,9 @@ class AppleMusicLibraryManager:
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize library manager."""
         self.provider = provider
+        self.mass = provider.mass
+        self.domain = provider.domain
+        self.instance_id = provider.instance_id
         self.api = provider.api_client
         self.logger = provider.logger
 
@@ -74,8 +78,10 @@ class AppleMusicLibraryManager:
         rating_library_response = await self.api.get_ratings(
             album_library_item_ids, MediaType.ALBUM
         )
-        for item in album_items:
-            if item and item["id"]:
+        for listing_item in album_items:
+            if listing_item and listing_item["id"]:
+                if (item := await self._with_song_catalog_album(listing_item)) is None:
+                    continue
                 is_favourite = (
                     rating_catalog_response.get(item["id"])
                     if not is_library_id(item["id"])
@@ -91,11 +97,14 @@ class AppleMusicLibraryManager:
         # Enrich and yield in bounded windows so the full library is never held in memory at once.
         catalog_items: dict[str, dict[str, Any]] = {}
         library_only_items: list[dict[str, Any]] = []
+        # include[songs] nests each catalog song's artists and albums under its catalog relationship
+        params: dict[str, Any] = {
+            "include": "catalog,albums,artists",
+            "include[songs]": "artists,albums",
+            "extend": "dateAdded",
+        }
         async for item in self.api.iter_all_items(
-            "me/library/songs",
-            include="catalog,albums,artists",
-            extend="dateAdded",
-            page_size=_TRACK_PAGE_SIZE,
+            "me/library/songs", page_size=_TRACK_PAGE_SIZE, **params
         ):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
@@ -115,37 +124,6 @@ class AppleMusicLibraryManager:
         async for track in self._flush_library_only_tracks(library_only_items):
             yield track
 
-    def _track_has_weak_album_mapping(self, track: Track) -> bool:
-        """Return True for missing or name-only album mapping."""
-        if not track.album:
-            return True
-        album_item_id = track.album.item_id
-        return (
-            album_item_id == track.album.name
-            and not is_library_id(album_item_id)
-            and not is_catalog_id(album_item_id)
-        )
-
-    def _apply_album_detail(
-        self,
-        item: dict[str, Any],
-        parsed_track: Track,
-        detail: dict[str, Any],
-        is_favourite: bool | None,
-    ) -> Track:
-        """Return the detail-based track when it resolves the album the listing lacked."""
-        detailed_track = parse_track(self.provider, detail, is_favourite)
-        if self._track_has_weak_album_mapping(detailed_track):
-            # Keep detail album fallback if list had no album.
-            if not parsed_track.album and detailed_track.album:
-                return detailed_track
-            self.logger.debug(
-                "Library song %s still has no resolvable album mapping after detail fetch",
-                item["id"],
-            )
-            return parsed_track
-        return detailed_track
-
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider."""
         endpoint = "me/library/playlists"
@@ -159,7 +137,7 @@ class AppleMusicLibraryManager:
             playlist_library_item_ids, MediaType.PLAYLIST
         )
         for item in playlist_items:
-            is_favourite = rating_library_response.get(item["id"], False)
+            is_favourite = rating_library_response.get(item["id"])
             # Fetch catalog metadata, but keep library ID for write operations.
             if item["attributes"]["hasCatalog"]:
                 playlist = await self.provider.media_manager.get_playlist(
@@ -175,6 +153,63 @@ class AppleMusicLibraryManager:
                 playlist = parse_playlist(self.provider, item, is_favourite)
                 _set_date_added(playlist, item)
                 yield playlist
+
+    async def get_sync_marker(self, media_type: MediaType) -> str:
+        """
+        Return a marker that changes when the library artists, albums or tracks change.
+
+        :param media_type: The media type to get the marker for.
+        """
+        if media_type == MediaType.TRACK:
+            response = await self.api.get_data("me/library/songs", limit=1, sort="-dateAdded")
+            first = (response.get("data") or [{}])[0]
+            return f"{response['meta']['total']}|{first.get('id', '')}"
+        if media_type not in (MediaType.ARTIST, MediaType.ALBUM):
+            raise NotImplementedError(f"No sync marker for {media_type.value}")
+        response = await self.api.get_data(f"me/library/{media_type.value}s", limit=1)
+        marker = str(response["meta"]["total"])
+        if media_type == MediaType.ARTIST:
+            return marker
+        # the album tracks setting changes what an album sync imports
+        album_tracks = self.provider.library_sync_album_tracks_enabled()
+        return f"{marker}|{await self._get_recently_added_marker()}|{album_tracks}"
+
+    async def get_favourites_marker(self) -> str:
+        """Return a marker that changes when a song is rated in any Apple Music app."""
+        playlists = await self.api.get_all_items("me/library/playlists")
+        # the favourites playlist has a localised name and no fixed id, so take every playlist
+        # like it; the purchased music playlist also matches but rarely moves
+        return ",".join(
+            sorted(
+                f"{item['id']}={item['attributes'].get('lastModifiedDate', '')}"
+                for item in playlists
+                if not item["attributes"].get("canEdit")
+                and not item["attributes"].get("hasCatalog")
+            )
+        )
+
+    async def refresh_favourites(self, media_type: MediaType) -> None:
+        """
+        Record the current Apple Music ratings of the library tracks or albums of this provider.
+
+        :param media_type: MediaType.TRACK or MediaType.ALBUM.
+        """
+        controller = (
+            self.mass.music.tracks if media_type == MediaType.TRACK else self.mass.music.albums
+        )
+        db_ids: dict[str, int] = {}
+        async for item in controller.iter_library_items_by_prov_id(self.instance_id):
+            for mapping in item.provider_mappings:
+                if mapping.provider_instance == self.instance_id and mapping.in_library:
+                    db_ids[mapping.item_id] = int(item.item_id)
+        library_ids = [item_id for item_id in db_ids if is_library_id(item_id)]
+        catalog_ids = [item_id for item_id in db_ids if not is_library_id(item_id)]
+        ratings = await self.api.get_ratings(catalog_ids, media_type)
+        ratings.update(await self.api.get_ratings(library_ids, media_type))
+        for prov_item_id, favorite in ratings.items():
+            await self.mass.music.favorites.record_from_provider(
+                self.instance_id, media_type, db_ids[prov_item_id], favorite
+            )
 
     async def library_add(self, item: MediaItemType) -> None:
         """Add item to library."""
@@ -222,45 +257,57 @@ class AppleMusicLibraryManager:
         )
         raise MusicAssistantError(message)
 
-    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
-        """Set the favorite status of an item."""
-        data = {
-            "type": "ratings",
-            "attributes": {"value": 1 if favorite else -1},
-        }
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Set the favorite status of an item.
+
+        :param prov_item_id: The Apple Music item id to rate.
+        :param media_type: Media type of the item.
+        :param favorite: True to rate it up, False to rate it down, None to drop the rating.
+        """
         item_type = translate_media_type_to_apple_type(media_type)
         if is_catalog_id(prov_item_id):
             endpoint = f"me/ratings/{item_type}/{prov_item_id}"
         else:
             endpoint = f"me/ratings/library-{item_type}/{prov_item_id}"
+        if favorite is None:
+            # an item that was never rated has no rating to delete
+            with suppress(MediaNotFoundError):
+                await self.api.delete_data(endpoint)
+            return
+        data = {
+            "type": "ratings",
+            "attributes": {"value": 1 if favorite else -1},
+        }
         await self.api.put_data(endpoint, data=data)
 
     async def _flush_catalog_tracks(
         self, library_items_by_catalog_id: dict[str, dict[str, Any]]
     ) -> AsyncGenerator[Track]:
-        """Enrich one window of catalog-backed library tracks with catalog detail and yield them."""
+        """Parse one window of catalog-backed library tracks from their catalog song and yield them."""
         if not library_items_by_catalog_id:
             return
         catalog_ids = list(library_items_by_catalog_id)
-        catalog_endpoint = f"catalog/{self.provider._storefront}/songs"
-        response = await self.api.get_data(
-            catalog_endpoint, ids=",".join(catalog_ids), include="artists,albums"
-        )
         rating_response = await self.api.get_ratings(catalog_ids, MediaType.TRACK)
         returned_catalog_ids: set[str] = set()
-        for item in response.get("data", []):
-            returned_catalog_ids.add(item["id"])
-            is_favourite = rating_response.get(item["id"])
-            parsed_track = parse_track(self.provider, item, is_favourite)
-            if library_item := library_items_by_catalog_id.get(item["id"]):
-                # the catalog resource has no dateAdded, so carry it over from the library row
-                _set_date_added(parsed_track, library_item)
-                if self._track_has_weak_album_mapping(parsed_track):
-                    parsed_library_track = parse_track(self.provider, library_item, is_favourite)
-                    if parsed_library_track.album and not self._track_has_weak_album_mapping(
-                        parsed_library_track
-                    ):
-                        parsed_track.album = parsed_library_track.album
+        for catalog_id, listing_item in library_items_by_catalog_id.items():
+            catalog_songs = listing_item.get("relationships", {}).get("catalog", {}).get("data")
+            if not catalog_songs:
+                # Apple leaves the catalog relationship empty for a withdrawn catalog id
+                continue
+            returned_catalog_ids.add(catalog_id)
+            is_favourite = rating_response.get(catalog_id)
+            parsed_track = parse_track(self.provider, catalog_songs[0], is_favourite)
+            # the catalog resource has no dateAdded, so carry it over from the library row
+            _set_date_added(parsed_track, listing_item)
+            if self._track_has_weak_album_mapping(parsed_track):
+                parsed_library_track = parse_track(self.provider, listing_item, is_favourite)
+                if parsed_library_track.album and not self._track_has_weak_album_mapping(
+                    parsed_library_track
+                ):
+                    parsed_track.album = parsed_library_track.album
             yield parsed_track
         # Handle deprecated catalog IDs: search replacement with per-window limit
         search_attempts = 0
@@ -360,7 +407,7 @@ class AppleMusicLibraryManager:
                         continue
 
                 # Found a match! Update favorite status and return
-                track.favorite = is_favourite or False
+                track.favorite = is_favourite
                 self.logger.debug(
                     "Found replacement catalog track %s for deprecated library track %s",
                     track.item_id,
@@ -432,6 +479,90 @@ class AppleMusicLibraryManager:
                 {item["id"]: item for item in response.get("data", []) if item.get("id")}
             )
         return details
+
+    async def _with_song_catalog_album(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        """Return the album linked to its songs' catalog album, or None when nothing is playable."""
+        album_catalog = item.get("relationships", {}).get("catalog", {}).get("data")
+        if item.get("type") != "library-albums" or album_catalog:
+            return item
+        try:
+            catalog_albums = await self._get_song_catalog_albums(item["id"])
+        except MusicAssistantError as err:
+            self.logger.debug("Unable to check the songs of library album %s: %s", item["id"], err)
+            return item
+        if catalog_albums is None:
+            # Apple keeps listing these, but there is nothing left on them to play
+            self.logger.debug(
+                "Skipping library album %s: all its songs point at withdrawn catalog ids",
+                item["id"],
+            )
+            return None
+        if not catalog_albums:
+            return item
+        # without it the bare listing row duplicates the catalog album the songs sync onto
+        catalog = {"data": catalog_albums}
+        return {**item, "relationships": {**item.get("relationships", {}), "catalog": catalog}}
+
+    @use_cache(3600 * 24 * 7)
+    async def _get_song_catalog_albums(self, album_id: str) -> list[dict[str, Any]] | None:
+        """Return the catalog album its songs share, [] to keep the listing row, None to skip it."""
+        has_songs = False
+        catalog_albums: dict[str, dict[str, Any]] = {}
+        # include[songs] nests each catalog song's album under its catalog relationship
+        params: dict[str, Any] = {"include": "catalog", "include[songs]": "albums"}
+        async for song in self.api.iter_all_items(f"me/library/albums/{album_id}/tracks", **params):
+            has_songs = True
+            # uploads never had a catalog version, so only a catalog id that no longer
+            # resolves marks a song as withdrawn
+            if not song.get("attributes", {}).get("playParams", {}).get("catalogId"):
+                return []
+            song_catalog = song.get("relationships", {}).get("catalog", {}).get("data")
+            if not song_catalog:
+                continue
+            song_albums = song_catalog[0].get("relationships", {}).get("albums", {}).get("data")
+            if not song_albums:
+                return []
+            catalog_albums[song_albums[0]["id"]] = song_albums[0]
+        if has_songs and not catalog_albums:
+            return None
+        return list(catalog_albums.values()) if len(catalog_albums) == 1 else []
+
+    async def _get_recently_added_marker(self) -> str:
+        """Return the id and date added of the most recently added library album or playlist."""
+        response = await self.api.get_data("me/library/recently-added", limit=1)
+        first = (response.get("data") or [{}])[0]
+        return f"{first.get('id', '')}|{first.get('attributes', {}).get('dateAdded', '')}"
+
+    def _track_has_weak_album_mapping(self, track: Track) -> bool:
+        """Return True for missing or name-only album mapping."""
+        if not track.album:
+            return True
+        album_item_id = track.album.item_id
+        return (
+            album_item_id == track.album.name
+            and not is_library_id(album_item_id)
+            and not is_catalog_id(album_item_id)
+        )
+
+    def _apply_album_detail(
+        self,
+        item: dict[str, Any],
+        parsed_track: Track,
+        detail: dict[str, Any],
+        is_favourite: bool | None,
+    ) -> Track:
+        """Return the detail-based track when it resolves the album the listing lacked."""
+        detailed_track = parse_track(self.provider, detail, is_favourite)
+        if self._track_has_weak_album_mapping(detailed_track):
+            # Keep detail album fallback if list had no album.
+            if not parsed_track.album and detailed_track.album:
+                return detailed_track
+            self.logger.debug(
+                "Library song %s still has no resolvable album mapping after detail fetch",
+                item["id"],
+            )
+            return parsed_track
+        return detailed_track
 
 
 def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:

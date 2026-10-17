@@ -5,8 +5,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.media_items import AudioFormat, ItemMapping, ProviderMapping, Track
+from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues.smart_fade_ordering import (
@@ -253,7 +254,7 @@ async def test_fixed_queue_considers_tracks_beyond_first_few_positions(
         mass,
         [*bad_tracks, good],
         get_track=lambda track: track,
-        preceding_track=anchor,
+        preceding_item=anchor,
     )
 
     assert ordered[0] is good
@@ -276,6 +277,54 @@ async def test_analysis_lookup_happens_once_per_distinct_track() -> None:
     await order_tracks(mass, tracks, preceding_track=anchor)
 
     assert all(count == 1 for count in calls.values())
+
+
+@pytest.mark.asyncio
+async def test_analysis_is_read_for_the_copy_an_item_streams_from() -> None:
+    """An item that already resolved its stream reads that copy's analysis, not the best one's."""
+    streamed = _track("streamed")
+    streamed.provider_mappings = {
+        ProviderMapping(
+            item_id="hifi",
+            provider_domain="tidal",
+            provider_instance="tidal",
+            audio_format=AudioFormat(content_type=ContentType.FLAC),
+        ),
+        ProviderMapping(
+            item_id="lofi",
+            provider_domain="spotify",
+            provider_instance="spotify",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+        ),
+    }
+    streamdetails = {
+        streamed: StreamDetails(
+            provider="spotify",
+            item_id="lofi",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.TRACK,
+            stream_type=StreamType.HTTP,
+            path="http://test.invalid/lofi.mp3",
+        )
+    }
+    calls: list[tuple[str, str]] = []
+
+    async def lookup(item_id: str, provider: str, **_kwargs: object) -> AudioAnalysisData:
+        calls.append((item_id, provider))
+        return _analysis()
+
+    mass = MagicMock()
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(side_effect=lookup)
+
+    await order_queue_items(
+        mass,
+        [streamed, _track("other")],
+        get_track=lambda track: track,
+        get_streamdetails=streamdetails.get,
+    )
+
+    assert ("lofi", "spotify") in calls
+    assert ("hifi", "tidal") not in calls
 
 
 @pytest.mark.asyncio

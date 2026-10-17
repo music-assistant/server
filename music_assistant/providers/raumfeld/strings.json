@@ -1,0 +1,18 @@
+{
+  "config_entries": {
+    "ip_address": {
+      "label": "Raumfeld host",
+      "description": "IP address of the device running the Raumfeld host service (a physical Raumfeld device or the Raumfeld app acting as host)."
+    },
+    "port": {
+      "label": "Raumfeld host port",
+      "description": "Port of the Raumfeld host webservice. Only change this if you run the host on a non-default port."
+    }
+  },
+  "manifest": {
+    "description": "Stream music to Teufel Raumfeld (Smart Speaker) multiroom devices."
+  },
+  "errors": {
+    "no_host_found": "No Raumfeld host found at the given address. Check the IP address and port, and make sure a Raumfeld device or the Raumfeld host app is running."
+  }
+}

@@ -22,7 +22,7 @@ from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import load_json_dict
-from music_assistant.models.core_controller import CoreController
+from music_assistant.models.core_controller import CORE_DOCS_URL, CoreController
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
@@ -49,6 +49,7 @@ class TranslationController(CoreController):
         super().__init__(mass)
         self.manifest.name = "Translations"
         self.manifest.description = "Translation strings for server-provided objects."
+        self.manifest.documentation = CORE_DOCS_URL
         # FQ key -> English source string (eager, always loaded)
         self._source: dict[str, str] = {}
         # locale -> {FQ key -> translated string} (lazy, populated on first use)

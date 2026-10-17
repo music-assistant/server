@@ -1,0 +1,416 @@
+"""
+Ranking of the sources a media item can be streamed from.
+
+A library item often has several copies: a local file, the same track on one or more
+streaming services, another account of the same service. This module decides the order those
+copies are tried in, and the one source the tracks of an album are all played from. The
+caller expands the mappings to the provider instances that may serve them and applies the
+access rules, this module only sorts. The source selection settings it sorts under are read
+from the streams settings.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Collection, Iterable, Sequence
+from dataclasses import dataclass, replace
+from enum import IntEnum, StrEnum
+from operator import itemgetter
+from statistics import median
+from typing import TYPE_CHECKING, cast
+
+from music_assistant_models.enums import ContentType
+from music_assistant_models.helpers import get_global_cache_value
+
+from music_assistant.controllers.streams.constants import (
+    CONF_STREAM_SOURCE_MODE,
+    CONF_UPGRADE_BELOW_QUALITY,
+)
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat, ProviderMapping
+
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.models.provider import Provider
+
+# a lossy copy counts as high quality from this bit rate (kbps) on
+LOSSY_HIGH_MIN_BIT_RATE = 256
+# a lossy copy without a known bit rate counts as this one, like its quality score does
+_ASSUMED_BIT_RATE = 320
+
+
+class QualityTier(IntEnum):
+    """Coarse quality classes of an audio format, best last."""
+
+    UNKNOWN = 0
+    LOSSY_LOW = 1
+    LOSSY_HIGH = 2
+    LOSSLESS = 3
+    HIRES = 4
+
+
+class StreamSourceMode(StrEnum):
+    """Which copy of a media item plays when it is available from several sources."""
+
+    BEST_QUALITY = "best_quality"
+    PREFER_LOCAL = "prefer_local"
+    BEST_QUALITY_PER_TRACK = "best_quality_per_track"
+
+
+class UpgradeQuality(StrEnum):
+    """The quality below which the chosen copy of a media item gives way to a better one."""
+
+    OFF = "off"
+    LOSSY_HIGH = "lossy_high"
+    LOSSLESS = "lossless"
+    HIRES = "hires"
+
+
+@dataclass(frozen=True, slots=True)
+class StreamSourcePolicy:
+    """The source selection settings a ranking runs under."""
+
+    mode: StreamSourceMode = StreamSourceMode.BEST_QUALITY
+    # a chosen copy below this tier gives way to a better one, even a pinned or local copy;
+    # None upgrades nothing
+    upgrade_below: QualityTier | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceCandidate:
+    """One copy of a media item on one provider instance that may serve it."""
+
+    mapping: ProviderMapping
+    provider: Provider
+    # an account of a streaming service, as opposed to a library of its own
+    is_streaming: bool
+    # why the candidate ranks where it does, filled in by the ranking
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ContainerListing:
+    """What one provider instance lists of a container, such as an album."""
+
+    instance_id: str
+    # an account of a streaming service, as opposed to a library of its own
+    is_streaming: bool
+    # the copy the instance serves of each track it lists
+    copies: Sequence[ProviderMapping]
+    # whether it lists every track of the container that is in the library
+    complete: bool
+
+
+DEFAULT_POLICY = StreamSourcePolicy()
+
+# the tier each upgrade setting stands for; off, or a setting this version does not know,
+# upgrades nothing
+_UPGRADE_TIERS: dict[str, QualityTier] = {
+    UpgradeQuality.LOSSY_HIGH: QualityTier.LOSSY_HIGH,
+    UpgradeQuality.LOSSLESS: QualityTier.LOSSLESS,
+    UpgradeQuality.HIRES: QualityTier.HIRES,
+}
+
+_SortKey = tuple[bool, bool, bool, int, int, bool, str, str]
+
+# what each level of the sort key stands for; the quality levels name what decided
+_LEVEL_REASONS: tuple[str | None, ...] = (
+    "pinned",
+    "local source",
+    "own account",
+    None,
+    None,
+    "mapped instance",
+    "tie-break",
+    "tie-break",
+)
+_SCORE_LEVEL = 4
+
+
+def quality_tier(audio_format: AudioFormat) -> QualityTier:
+    """
+    Return the quality tier of an audio format.
+
+    A copy is lossless when its container or its codec is, and hi-res when it is lossless
+    above 48 kHz or above 16 bit. A lossy copy without a known bit rate counts as 320 kbps.
+
+    :param audio_format: The audio format to classify.
+    """
+    if audio_format.content_type.is_lossless() or audio_format.codec_type.is_lossless():
+        if audio_format.sample_rate > 48000 or audio_format.bit_depth > 16:
+            return QualityTier.HIRES
+        return QualityTier.LOSSLESS
+    if (
+        audio_format.content_type == ContentType.UNKNOWN
+        and audio_format.codec_type == ContentType.UNKNOWN
+    ):
+        return QualityTier.UNKNOWN
+    if (audio_format.bit_rate or _ASSUMED_BIT_RATE) >= LOSSY_HIGH_MIN_BIT_RATE:
+        return QualityTier.LOSSY_HIGH
+    return QualityTier.LOSSY_LOW
+
+
+def below_upgrade_quality(audio_format: AudioFormat, policy: StreamSourcePolicy) -> bool:
+    """
+    Return whether a copy of the given format is below the policy's upgrade quality.
+
+    A copy of unknown quality is not taken to be below it.
+
+    :param audio_format: The audio format of the copy.
+    :param policy: The source selection settings to judge by.
+    """
+    return (
+        policy.upgrade_below is not None
+        and QualityTier.UNKNOWN < quality_tier(audio_format) < policy.upgrade_below
+    )
+
+
+def rank_stream_sources(
+    candidates: Iterable[SourceCandidate],
+    *,
+    pinned: tuple[str, str] | None = None,
+    preferred: Collection[str] = (),
+    policy: StreamSourcePolicy = DEFAULT_POLICY,
+) -> list[SourceCandidate]:
+    """
+    Return the candidates in the order they are to be tried, each with its reason.
+
+    The pinned copy comes first (unless the policy ranks every track on its own), then local
+    sources when the policy prefers them, then the playback user's own accounts, then the
+    best quality by tier and by the mapping's quality score, which favours local and
+    in-library copies. Ties fall to the candidate's own instance and item id, so equal copies
+    are tried in the same order at every selection. When the copy that comes first is known
+    to be below the policy's upgrade quality, every copy of a better tier goes ahead of it:
+    first those that reach the upgrade quality, then the others, the closer to it the sooner.
+    Copies alike keep the order above among themselves.
+
+    :param candidates: The copies that may serve the item, already narrowed to what the
+        playback user may use.
+    :param pinned: The (provider instance, item id) the item is to be played from, if any.
+    :param preferred: The provider instances the playback user owns.
+    :param policy: The source selection settings to rank under.
+    """
+    keyed = sorted(
+        (
+            (
+                _sort_key(
+                    candidate.provider.instance_id,
+                    candidate.mapping,
+                    candidate.is_streaming,
+                    pinned,
+                    preferred,
+                    policy,
+                ),
+                candidate,
+            )
+            for candidate in candidates
+        ),
+        key=itemgetter(0),
+    )
+    if (
+        keyed
+        and policy.upgrade_below is not None
+        and below_upgrade_quality(keyed[0][1].mapping.audio_format, policy)
+    ):
+        winner_tier = quality_tier(keyed[0][1].mapping.audio_format)
+        upgrade_below = policy.upgrade_below
+        # the sort is stable, so copies that fall short alike keep the order of their keys
+        keyed.sort(
+            key=lambda entry: _upgrade_shortfall(
+                entry[1].mapping.audio_format, winner_tier, upgrade_below
+            )
+        )
+    ranked: list[SourceCandidate] = []
+    for index, (key, candidate) in enumerate(keyed):
+        following = keyed[index + 1] if index + 1 < len(keyed) else None
+        ranked.append(replace(candidate, reason=_reason(candidate, key, following)))
+    return ranked
+
+
+def rank_provider_mappings(
+    mappings: Iterable[ProviderMapping],
+    *,
+    pinned: tuple[str, str] | None = None,
+    policy: StreamSourcePolicy = DEFAULT_POLICY,
+) -> list[ProviderMapping]:
+    """
+    Return a media item's own mappings in the order the policy ranks them.
+
+    For callers that look up data per copy outside a playback: there is no playback user to
+    steer to and no copy to upgrade, only the copy actually streamed, when known, comes first.
+    Whether a mapping's instance is a streaming service is read off the loaded providers.
+
+    :param mappings: The media item's provider mappings.
+    :param pinned: The (provider instance, item id) the item is streamed from, if known.
+    :param policy: The source selection settings to rank under.
+    """
+    non_streaming = cast("set[str]", get_global_cache_value("non_streaming_providers") or set())
+    return sorted(
+        mappings,
+        key=lambda mapping: _sort_key(
+            mapping.provider_instance,
+            mapping,
+            mapping.provider_instance not in non_streaming,
+            pinned,
+            (),
+            policy,
+        ),
+    )
+
+
+def select_container_source(
+    listed: Iterable[ContainerListing],
+    preferred: Collection[str] = (),
+    policy: StreamSourcePolicy = DEFAULT_POLICY,
+) -> str | None:
+    """
+    Return the provider instance every track of a container is to be played from, if any.
+
+    Local sources come first when the policy prefers them, then the playback user's own
+    accounts, then an instance that lists every track the container has in the library, then
+    the best quality: the lowest tier among its copies, then their median score. Ties fall to
+    a local source, then to the instance id. Nothing is chosen when the policy ranks every
+    track on its own.
+
+    :param listed: What each instance the playback user may play from lists of the container.
+    :param preferred: The provider instances the playback user owns.
+    :param policy: The source selection settings to choose under.
+    """
+    if policy.mode == StreamSourceMode.BEST_QUALITY_PER_TRACK:
+        return None
+    best = min(
+        (listing for listing in listed if listing.copies),
+        key=lambda listing: _container_key(listing, preferred, policy),
+        default=None,
+    )
+    return best.instance_id if best else None
+
+
+def read_stream_source_policy(
+    mass: MusicAssistant,
+    queue_id: str | None = None,  # noqa: ARG001 - the hook for a per-queue override
+) -> StreamSourcePolicy:
+    """
+    Return the source selection settings a playback runs under.
+
+    A mode the settings do not know falls back to the default, an upgrade quality they do not
+    know to no upgrade.
+
+    :param mass: The MusicAssistant instance.
+    :param queue_id: The queue the playback is for; the settings apply to every queue for now.
+    """
+    try:
+        mode = StreamSourceMode(
+            mass.streams.get_config_value(CONF_STREAM_SOURCE_MODE, return_type=str)
+        )
+    except ValueError:
+        mode = DEFAULT_POLICY.mode
+    upgrade_below = _UPGRADE_TIERS.get(
+        mass.streams.get_config_value(CONF_UPGRADE_BELOW_QUALITY, return_type=str)
+    )
+    return StreamSourcePolicy(mode=mode, upgrade_below=upgrade_below)
+
+
+def _sort_key(
+    instance_id: str,
+    mapping: ProviderMapping,
+    is_streaming: bool,
+    pinned: tuple[str, str] | None,
+    preferred: Collection[str],
+    policy: StreamSourcePolicy,
+) -> _SortKey:
+    """Return the ranking key of one copy on one instance; the lowest key is tried first."""
+    is_pinned = (instance_id, mapping.item_id) == pinned
+    return (
+        policy.mode != StreamSourceMode.BEST_QUALITY_PER_TRACK and not is_pinned,
+        policy.mode == StreamSourceMode.PREFER_LOCAL and is_streaming,
+        instance_id not in preferred,
+        -quality_tier(mapping.audio_format),
+        # the mapping's score carries the local and in-library bonus
+        -mapping.quality,
+        # the instance the item is mapped on, before an account standing in for it
+        instance_id != mapping.provider_instance,
+        instance_id,
+        mapping.item_id,
+    )
+
+
+def _container_key(
+    listing: ContainerListing, preferred: Collection[str], policy: StreamSourcePolicy
+) -> tuple[bool, bool, bool, int, float, bool, str]:
+    """Return the ranking key of one instance's listing of a container; the lowest is chosen."""
+    return (
+        policy.mode == StreamSourceMode.PREFER_LOCAL and listing.is_streaming,
+        listing.instance_id not in preferred,
+        not listing.complete,
+        # a container plays as well as its poorest copy, then as its typical one
+        -min(quality_tier(copy.audio_format) for copy in listing.copies),
+        -median(copy.quality for copy in listing.copies),
+        listing.is_streaming,
+        listing.instance_id,
+    )
+
+
+def _upgrade_shortfall(
+    audio_format: AudioFormat, winner_tier: QualityTier, upgrade_below: QualityTier
+) -> int:
+    """
+    Return how far a copy falls short of the upgrade quality, none when it reaches it.
+
+    A copy no better than the copy that came first falls short as far as that one, so it stays
+    behind every better copy.
+
+    :param audio_format: The audio format of the copy.
+    :param winner_tier: The quality tier of the copy that came first.
+    :param upgrade_below: The upgrade quality.
+    """
+    return max(upgrade_below - max(quality_tier(audio_format), winner_tier), 0)
+
+
+def _reason(
+    candidate: SourceCandidate,
+    key: _SortKey,
+    following: tuple[_SortKey, SourceCandidate] | None,
+) -> str:
+    """Return what puts a candidate ahead of the next one; the last one states its quality."""
+    audio_format = candidate.mapping.audio_format
+    if following is None:
+        return _quality_label(audio_format)
+    next_key, next_candidate = following
+    if key > next_key:
+        # the keys ascend everywhere except where the upgrade moved a better copy ahead
+        return (
+            f"upgrade: {_quality_label(audio_format)} over "
+            f"{_quality_label(next_candidate.mapping.audio_format)}"
+        )
+    for level, (own, other) in enumerate(zip(key, next_key, strict=True)):
+        if own == other:
+            continue
+        # a copy that ranks ahead on score without a better format did so on the local or
+        # in-library bonus the mapping's score carries
+        if (
+            level == _SCORE_LEVEL
+            and audio_format.quality <= next_candidate.mapping.audio_format.quality
+        ):
+            return _bonus_reason(candidate, next_candidate)
+        return _LEVEL_REASONS[level] or _quality_label(audio_format)
+    return _quality_label(audio_format)
+
+
+def _bonus_reason(candidate: SourceCandidate, next_candidate: SourceCandidate) -> str:
+    """Return which bonus put a candidate ahead of the next one at an equal format."""
+    if not candidate.is_streaming and next_candidate.is_streaming:
+        return "local source"
+    if candidate.mapping.in_library and not next_candidate.mapping.in_library:
+        return "in library"
+    return "local source"
+
+
+def _quality_label(audio_format: AudioFormat) -> str:
+    """Return a short description of an audio format's quality, such as ``hi-res 96/24``."""
+    tier = quality_tier(audio_format)
+    if tier == QualityTier.UNKNOWN:
+        return "unknown quality"
+    if tier < QualityTier.LOSSLESS:
+        return f"lossy {audio_format.bit_rate} kbps" if audio_format.bit_rate else "lossy"
+    label = "hi-res" if tier == QualityTier.HIRES else "lossless"
+    return f"{label} {audio_format.sample_rate / 1000:g}/{audio_format.bit_depth}"

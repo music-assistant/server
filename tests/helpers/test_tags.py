@@ -1,25 +1,34 @@
 """Tests for parsing audio file tags (ID3, MP4/AAC, Vorbis, APEv2, etc.)."""
 
+import os
 import pathlib
 import shutil
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mutagen
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 from music_assistant_models.errors import InvalidDataError
-from mutagen.id3 import ID3, TDOR, TDRC, UFID
+from mutagen.apev2 import APEv2
+from mutagen.flac import FLAC
+from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TXXX, UFID
 from mutagen.mp4 import MP4, MP4FreeForm
+from PIL import Image
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.tags import (
     _parse_apev2_tags,
     _parse_id3_tags,
     _parse_mp4_tags,
     _parse_vorbis_tags,
     clean_mbid,
+    get_embedded_image,
     parse_tags_mutagen,
     split_artists,
     write_replaygain_track_gain,
@@ -58,14 +67,33 @@ def test_parse_tags_reports_actionable_ffprobe_error(
     )
     check_output = MagicMock(side_effect=process_error)
     monkeypatch.setattr(subprocess, "check_output", check_output)
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
+    monkeypatch.setenv("HASSIO_TOKEN", "secret")
 
     with pytest.raises(InvalidDataError) as err:
         tags.parse_tags("broken.ogg")
 
     assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
-    assert check_output.call_args.kwargs == {"stderr": subprocess.PIPE}
+    kwargs = check_output.call_args.kwargs
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert "SUPERVISOR_TOKEN" not in kwargs["env"]
+    assert "HASSIO_TOKEN" not in kwargs["env"]
     args = check_output.call_args.args[0]
     assert args[args.index("-loglevel") + 1] == "error"
+
+
+def test_parse_tags_skips_tls_verify_on_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tag parsing skips certificate verification when asked."""
+    check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError):
+        tags.parse_tags("https://192.168.1.10/a.mp3", verify_ssl=False)
+
+    args = list(check_output.call_args.args[0])
+    tls_index = args.index("-tls_verify")
+    assert args[tls_index + 1] == "0"
+    assert tls_index < args.index("-i")
 
 
 def test_parse_rejects_file_without_audio_channels() -> None:
@@ -452,6 +480,7 @@ def test_parse_vorbis_tags_musicbrainz_ids() -> None:
             "MUSICBRAINZ_ARTISTID": ["mb-id-1", "mb-id-2"],
             "MUSICBRAINZ_ALBUMID": ["mb-album-id"],
             "MUSICBRAINZ_TRACKID": ["mb-track-id"],
+            "MUSICBRAINZ_RELEASETRACKID": ["mb-release-track-id"],
         }
     )
 
@@ -460,6 +489,9 @@ def test_parse_vorbis_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzartistid") == ["mb-id-1", "mb-id-2"]
     assert result.get("musicbrainzalbumid") == "mb-album-id"
     assert result.get("musicbrainzrecordingid") == "mb-track-id"
+    assert result.get("musicbrainzreleasetrackid") == "mb-release-track-id"
+    # ffprobe keeps the recording id under this name, which must not be overwritten
+    assert "musicbrainztrackid" not in result
 
 
 def test_parse_vorbis_multi_value_releasetype() -> None:
@@ -508,6 +540,7 @@ def test_parse_apev2_tags_musicbrainz_ids() -> None:
             "MUSICBRAINZ_ARTISTID": "mb-id-1\x00mb-id-2",  # Multi-value
             "MUSICBRAINZ_ALBUMID": "mb-album-id",
             "MUSICBRAINZ_TRACKID": "mb-track-id",  # Recording ID in APEv2
+            "MUSICBRAINZ_RELEASETRACKID": "mb-release-track-id",
             "MUSICBRAINZ_RELEASEGROUPID": "mb-rg-id",
         }
     )
@@ -517,6 +550,7 @@ def test_parse_apev2_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzartistid") == ["mb-id-1", "mb-id-2"]
     assert result.get("musicbrainzalbumid") == "mb-album-id"
     assert result.get("musicbrainzrecordingid") == "mb-track-id"
+    assert result.get("musicbrainzreleasetrackid") == "mb-release-track-id"
     assert result.get("musicbrainzreleasegroupid") == "mb-rg-id"
 
 
@@ -933,6 +967,86 @@ async def test_parse_ufid_frame_with_dirty_payload(tmp_path: pathlib.Path) -> No
     assert clean_mbid(_tags.musicbrainz_recordingid) == VALID_MBID
 
 
+RELEASE_TRACK_MBID = "0a2a7b1e-5c9d-4f6e-8b3a-1d4c7e9f2b5a"
+
+
+def _tag_flac_musicbrainz_ids(path: str, release_track: bool) -> None:
+    """Write the recording id, and optionally the release-track id, as Picard does in FLAC."""
+    flac = FLAC(path)  # type: ignore[no-untyped-call]
+    flac["MUSICBRAINZ_TRACKID"] = VALID_MBID
+    if release_track:
+        flac["MUSICBRAINZ_RELEASETRACKID"] = RELEASE_TRACK_MBID
+    flac.save()
+
+
+def _tag_mp3_musicbrainz_ids(path: str, release_track: bool) -> None:
+    """Write the recording id, and optionally the release-track id, as Picard does in ID3."""
+    id3 = ID3(path)  # type: ignore[no-untyped-call]
+    id3.add(UFID(owner="http://musicbrainz.org", data=VALID_MBID.encode()))  # type: ignore[no-untyped-call]
+    id3.delall("TXXX:MusicBrainz Release Track Id")  # type: ignore[no-untyped-call]
+    if release_track:
+        id3.add(  # type: ignore[no-untyped-call]
+            TXXX(encoding=3, desc="MusicBrainz Release Track Id", text=[RELEASE_TRACK_MBID])  # type: ignore[no-untyped-call]
+        )
+    id3.save()
+
+
+def _tag_m4a_musicbrainz_ids(path: str, release_track: bool) -> None:
+    """Write the recording id, and optionally the release-track id, as Picard does in MP4."""
+    mp4 = MP4(path)  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:MusicBrainz Track Id"] = [MP4FreeForm(VALID_MBID.encode())]  # type: ignore[no-untyped-call]
+    if release_track:
+        mp4["----:com.apple.iTunes:MusicBrainz Release Track Id"] = [
+            MP4FreeForm(RELEASE_TRACK_MBID.encode())  # type: ignore[no-untyped-call]
+        ]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+
+@pytest.mark.parametrize("release_track", [True, False], ids=["release_track", "recording_only"])
+@pytest.mark.parametrize(
+    ("source", "write_ids"),
+    [
+        (FILE_FLAC, _tag_flac_musicbrainz_ids),
+        (FILE_MP3, _tag_mp3_musicbrainz_ids),
+        (FILE_M4A, _tag_m4a_musicbrainz_ids),
+    ],
+    ids=["flac", "mp3", "m4a"],
+)
+async def test_release_track_id_is_told_apart_from_the_recording_id(
+    tmp_path: pathlib.Path, source: str, write_ids: Callable[[str, bool], None], release_track: bool
+) -> None:
+    """Each tag format names the two ids differently; neither is ever taken for the other."""
+    dest = tmp_path / pathlib.Path(source).name
+    shutil.copy(source, dest)
+    write_ids(str(dest), release_track)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.musicbrainz_recordingid == VALID_MBID
+    assert _tags.musicbrainz_releasetrackid == (RELEASE_TRACK_MBID if release_track else None)
+
+
+def test_release_track_id_is_read_from_a_wavpack_file(tmp_path: pathlib.Path) -> None:
+    """
+    APEv2 names the recording id MUSICBRAINZ_TRACKID, like Vorbis comments.
+
+    Uses parse_tags_mutagen directly since the minimal WavPack fixture
+    does not contain valid audio data for ffprobe to parse.
+    """
+    dest = tmp_path / "track.wv"
+    shutil.copy(FILE_WV, dest)
+    ape = APEv2(str(dest))  # type: ignore[no-untyped-call]
+    ape["MUSICBRAINZ_TRACKID"] = VALID_MBID
+    ape["MUSICBRAINZ_RELEASETRACKID"] = RELEASE_TRACK_MBID
+    ape.save(str(dest))
+
+    result = parse_tags_mutagen(str(dest))
+
+    assert result.get("musicbrainzrecordingid") == VALID_MBID
+    assert result.get("musicbrainzreleasetrackid") == RELEASE_TRACK_MBID
+    assert "musicbrainztrackid" not in result
+
+
 def _tags_with(raw_tags: dict[str, str]) -> tags.AudioTags:
     """Build an AudioTags instance carrying the given raw tags."""
     return tags.AudioTags(
@@ -1037,3 +1151,327 @@ async def test_original_release_date_is_read_from_an_m4a_file(tmp_path: pathlib.
 
     assert _tags.release_date == datetime(1978, 6, 1, tzinfo=UTC)
     assert _tags.year == 2015
+
+
+async def test_audiobook_credits_are_read_from_an_m4b_file(tmp_path: pathlib.Path) -> None:
+    """The narrator and writer atoms of an m4b name every person, not just the first."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:NARRATOR"] = [
+        MP4FreeForm(b"Jane Reader"),  # type: ignore[no-untyped-call]
+        MP4FreeForm(b"John Voice"),  # type: ignore[no-untyped-call]
+    ]
+    mp4["----:com.apple.iTunes:WRITER"] = [
+        MP4FreeForm(b"Jane Austen"),  # type: ignore[no-untyped-call]
+        MP4FreeForm(b"John Writer"),  # type: ignore[no-untyped-call]
+    ]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.authors == ("Jane Austen", "John Writer")
+    assert _tags.narrators == ("Jane Reader", "John Voice")
+
+
+async def test_audiobook_narrator_falls_back_to_the_composer_atom(tmp_path: pathlib.Path) -> None:
+    """Audible style m4b files name the narrator in the composer atom."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["\xa9wrt"] = ["Jane Reader", "John Voice"]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.narrators == ("Jane Reader", "John Voice")
+
+
+async def test_audiobook_credits_are_read_from_an_mp3_file(tmp_path: pathlib.Path) -> None:
+    """A narrator frame wins over the composer frame, and both names survive."""
+    dest = tmp_path / "book.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.add(TXXX(encoding=3, desc="NARRATOR", text=["Jane Reader", "John Voice"]))  # type: ignore[no-untyped-call]
+    id3.add(TXXX(encoding=3, desc="WRITER", text=["Jane Austen", "John Writer"]))  # type: ignore[no-untyped-call]
+    id3.add(TCOM(encoding=3, text=["Someone Else"]))  # type: ignore[no-untyped-call]
+    id3.save(v2_version=4)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.authors == ("Jane Austen", "John Writer")
+    assert _tags.narrators == ("Jane Reader", "John Voice")
+
+
+async def test_audiobook_narrator_falls_back_to_the_composer_frame(tmp_path: pathlib.Path) -> None:
+    """The composer frame is null separated, so both narrators have to come through."""
+    dest = tmp_path / "book.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.add(TCOM(encoding=3, text=["Jane Reader", "John Voice"]))  # type: ignore[no-untyped-call]
+    id3.save(v2_version=4)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.narrators == ("Jane Reader", "John Voice")
+
+
+async def test_audiobook_credits_are_read_from_a_flac_file(tmp_path: pathlib.Path) -> None:
+    """Vorbis comments repeat a field per name."""
+    dest = tmp_path / "book.flac"
+    shutil.copy(FILE_FLAC, dest)
+    flac = FLAC(str(dest))  # type: ignore[no-untyped-call]
+    flac["NARRATOR"] = ["Jane Reader", "John Voice"]
+    flac["WRITER"] = ["Jane Austen", "John Writer"]
+    flac.save()
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.authors == ("Jane Austen", "John Writer")
+    assert _tags.narrators == ("Jane Reader", "John Voice")
+
+
+def test_audiobook_credits_are_read_from_a_wavpack_file(tmp_path: pathlib.Path) -> None:
+    """
+    APEv2 separates the names with a null byte.
+
+    Uses parse_tags_mutagen directly since the minimal WavPack fixture
+    does not contain valid audio data for ffprobe to parse.
+    """
+    dest = tmp_path / "book.wv"
+    shutil.copy(FILE_WV, dest)
+    ape = APEv2(str(dest))  # type: ignore[no-untyped-call]
+    ape["NARRATOR"] = ["Jane Reader", "John Voice"]
+    ape["WRITER"] = ["Jane Austen", "John Writer"]
+    ape.save(str(dest))
+
+    result = parse_tags_mutagen(str(dest))
+
+    assert result.get("narrators") == ["Jane Reader", "John Voice"]
+    assert result.get("writers") == ["Jane Austen", "John Writer"]
+
+
+def test_parse_tags_mutagen_through_a_descriptor_keeps_the_format(tmp_path: pathlib.Path) -> None:
+    """A FLAC file with an ID3 header in front is read as FLAC, also through its descriptor."""
+    dest = tmp_path / "id3-in-front.flac"
+    shutil.copy(FILE_FLAC, dest)
+    id3 = ID3()  # type: ignore[no-untyped-call]
+    id3.add(TCOM(encoding=3, text="Composer"))  # type: ignore[no-untyped-call]
+    id3.save(str(dest))
+    expected = parse_tags_mutagen(str(dest))
+
+    fd = os.open(dest, os.O_RDONLY)
+    try:
+        result = parse_tags_mutagen(str(dest), fd)
+    finally:
+        os.close(fd)
+
+    assert expected
+    assert result == expected
+
+
+async def test_audiobook_author_falls_back_to_the_album_artist(tmp_path: pathlib.Path) -> None:
+    """Taggers without a writer field reach for the album artist."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.authors == ("MyArtist",)
+    assert _tags.narrators == ()
+
+
+async def test_audiobook_author_is_not_invented_from_the_filename() -> None:
+    """An author becomes a real artist, so an untagged book may not name one."""
+    filename = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle without Tags.mp3"))
+
+    _tags = await tags.async_parse_tags(filename)
+
+    assert _tags.artists == ("MyArtist",)
+    assert _tags.authors == ()
+
+
+async def test_audiobook_author_is_never_the_unknown_artist() -> None:
+    """The unknown artist placeholder may not end up in the library as an author."""
+    filename = str(RESOURCES_DIR.joinpath("test.mp3"))
+
+    _tags = await tags.async_parse_tags(filename)
+
+    assert _tags.artists == (UNKNOWN_ARTIST,)
+    assert _tags.authors == ()
+
+
+async def test_audiobook_series_is_read_from_an_m4b_file(tmp_path: pathlib.Path) -> None:
+    """The series atoms of an m4b are freeform, which ffprobe only sometimes surfaces."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series"] = [MP4FreeForm(b"The Expanse")]  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series-Part"] = [MP4FreeForm(b"3")]  # type: ignore[no-untyped-call]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert (_tags.series, _tags.series_part) == ("The Expanse", 3.0)
+
+
+async def test_audiobook_series_is_read_from_an_mp3_file(tmp_path: pathlib.Path) -> None:
+    """MP3 keeps the series in user defined frames."""
+    dest = tmp_path / "book.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.add(TXXX(encoding=3, desc="SERIES", text=["The Expanse"]))  # type: ignore[no-untyped-call]
+    id3.add(TXXX(encoding=3, desc="SERIES-PART", text=["3"]))  # type: ignore[no-untyped-call]
+    id3.save(v2_version=4)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert (_tags.series, _tags.series_part) == ("The Expanse", 3.0)
+
+
+async def test_audiobook_series_is_read_from_a_flac_file(tmp_path: pathlib.Path) -> None:
+    """Vorbis comments name the series fields directly."""
+    dest = tmp_path / "book.flac"
+    shutil.copy(FILE_FLAC, dest)
+    flac = FLAC(str(dest))  # type: ignore[no-untyped-call]
+    flac["SERIES"] = ["The Expanse"]
+    flac["SERIES-PART"] = ["3"]
+    flac.save()
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert (_tags.series, _tags.series_part) == ("The Expanse", 3.0)
+
+
+def test_audiobook_series_is_read_from_a_wavpack_file(tmp_path: pathlib.Path) -> None:
+    """
+    APEv2 names the series fields directly too.
+
+    Uses parse_tags_mutagen directly since the minimal WavPack fixture
+    does not contain valid audio data for ffprobe to parse.
+    """
+    dest = tmp_path / "book.wv"
+    shutil.copy(FILE_WV, dest)
+    ape = APEv2(str(dest))  # type: ignore[no-untyped-call]
+    ape["SERIES"] = "The Expanse"
+    ape["SERIES-PART"] = "3"
+    ape.save(str(dest))
+
+    result = parse_tags_mutagen(str(dest))
+
+    assert result.get("series") == "The Expanse"
+    assert result.get("seriespart") == "3"
+
+
+async def test_audiobook_series_sequence_may_be_fractional(tmp_path: pathlib.Path) -> None:
+    """A novella between two books is tagged 1.5."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series"] = [MP4FreeForm(b"The Expanse")]  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series-Part"] = [MP4FreeForm(b"1.5")]  # type: ignore[no-untyped-call]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.series_part == 1.5
+
+
+async def test_audiobook_series_sequence_keeps_a_non_numeric_value(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Not every tagger numbers the parts."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series"] = [MP4FreeForm(b"Discworld")]  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series-Part"] = [MP4FreeForm(b"Guards")]  # type: ignore[no-untyped-call]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.series_part == "Guards"
+
+
+async def test_audiobook_without_a_series_tag_has_none() -> None:
+    """No series tag must not end up clearing what is stored."""
+    _tags = await tags.async_parse_tags(FILE_M4A)
+
+    assert (_tags.series, _tags.series_part) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "input_file",
+    [
+        "concat:/etc/passwd|/etc/hosts",
+        "rtsp://host/x",
+        "https://host/cover.jpg\r\nX-Injected: 1\r\n",
+    ],
+)
+async def test_get_embedded_image_refuses_non_file_input(input_file: str) -> None:
+    """Anything other than an existing local file or a clean http(s) URL never reaches ffmpeg."""
+    with patch("music_assistant.helpers.tags.AsyncProcess") as mock_process:
+        assert await get_embedded_image(input_file) is None
+    mock_process.assert_not_called()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@pytest.mark.parametrize("over_http", [False, True], ids=["local", "http"])
+async def test_get_embedded_image_extracts_cover_with_protocol_whitelist(
+    tmp_path: pathlib.Path, over_http: bool
+) -> None:
+    """Embedded art is extracted with ffmpeg restricted to the protocols of its source."""
+    track_path = str(tmp_path / "track.mp3")
+    _create_mp3_with_cover(tmp_path, track_path)
+
+    with patch("music_assistant.helpers.tags.AsyncProcess", wraps=AsyncProcess) as spy:
+        if over_http:
+            app = web.Application()
+            app.router.add_static("/", str(tmp_path))
+            async with TestServer(app) as server:
+                img_data = await get_embedded_image(str(server.make_url("/track.mp3")))
+        else:
+            img_data = await get_embedded_image(track_path)
+
+    assert img_data
+    assert img_data.startswith(b"\xff\xd8")
+    args = spy.call_args.args[0]
+    assert args.index("-protocol_whitelist") < args.index("-i")
+    expected_whitelist = "http,https,tcp,tls" if over_http else "file"
+    assert args[args.index("-protocol_whitelist") + 1] == expected_whitelist
+
+
+def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:
+    """Create a short mp3 file with a generated cover image embedded."""
+    cover_path = str(tmp_path / "cover.png")
+    Image.new("RGB", (32, 32), (255, 0, 0)).save(cover_path, "PNG")
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-t",
+            "0.1",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-i",
+            cover_path,
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:a",
+            "libmp3lame",
+            "-c:v",
+            "mjpeg",
+            "-id3v2_version",
+            "3",
+            track_path,
+        ],
+        check=True,
+        capture_output=True,
+    )

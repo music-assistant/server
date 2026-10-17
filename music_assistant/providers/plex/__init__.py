@@ -70,6 +70,7 @@ from plexapi.server import PlexServer
 
 from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     UNKNOWN_ARTIST,
 )
@@ -102,6 +103,7 @@ from music_assistant.providers.plex.constants import (
     ERR_INVALID_CREDENTIALS,
     ERR_ITEM_NOT_FOUND,
     ERR_NO_ARTIST_FOR_TRACK,
+    ERR_SERVER_ACCESS_DENIED,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
     MAX_TOP_TRACKS,
@@ -125,6 +127,8 @@ from music_assistant.providers.plex.helpers import (
     LIBRARY_TYPE_TO_MEDIA_TYPES,
     PODCAST_FEATURES,
     SUPPORTED_FEATURES,
+    PlexServerAccessError,
+    configure_plex_identity,
     extract_library_name,
     get_explicit,
     get_favorite_from_rating,
@@ -132,6 +136,7 @@ from music_assistant.providers.plex.helpers import (
     get_thumbnail_images,
     is_library_scan_finished,
     parse_plex_lyrics_payload,
+    resolve_server_auth_token,
 )
 
 # Public surface of the provider package. With mypy's no_implicit_reexport,
@@ -176,6 +181,7 @@ async def setup(
     if not (config.setup_data.get(CONF_AUTH_TOKEN) or config.get_value(CONF_AUTH_TOKEN)):
         raise LoginFailed(ERR_INVALID_CREDENTIALS)
 
+    configure_plex_identity(mass.server_id)
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -199,6 +205,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     _unsubscribe_sync_completed: Callable[[], None] | None = None
     _content_changed_at: str | None = None
     _recheck_after_sync: bool = False
+    _verify_ssl: bool = True
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -325,6 +332,12 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
 
         library_name = extract_library_name(str(self.get_setup_value(CONF_LIBRARY_ID)))
+        # an http local server has nothing to verify
+        self._verify_ssl = (
+            bool(self.get_setup_value(CONF_LOCAL_SERVER_VERIFY_CERT))
+            if self.get_setup_value(CONF_LOCAL_SERVER_SSL)
+            else True
+        )
 
         def connect() -> PlexServer:
             try:
@@ -333,15 +346,6 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                     bool(self.get_setup_value(CONF_LOCAL_SERVER_VERIFY_CERT))
                     if self.get_setup_value(CONF_LOCAL_SERVER_SSL)
                     else False
-                )
-                # Add Music Assistant client identification headers
-                session.headers.update(
-                    {
-                        "X-Plex-Client-Identifier": self.instance_id,
-                        "X-Plex-Product": "Music Assistant",
-                        "X-Plex-Platform": "Music Assistant",
-                        "X-Plex-Version": self.mass.version,
-                    }
                 )
                 local_server_protocol = (
                     "https" if self.get_setup_value(CONF_LOCAL_SERVER_SSL) else "http"
@@ -362,14 +366,24 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                         # Doing local connection, not via plex.tv.
                         plex_server = PlexServer(plex_url, session=session)
                     else:
+                        # the account token only authenticates against servers this account
+                        # owns; a server shared via Plex Home needs its own access token
+                        server_token = resolve_server_auth_token(
+                            str(token),
+                            plex_url,
+                            session,
+                            myplex_account=self._myplex_account,
+                        )
                         plex_server = PlexServer(
                             plex_url,
-                            token,
+                            server_token,
                             session=session,
                         )
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
                 self._baseurl = plex_server._baseurl
 
+            except PlexServerAccessError as err:
+                raise LoginFailed(ERR_SERVER_ACCESS_DENIED.format(reason=err)) from err
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
                     # the stored token is invalid; surface an auth failure so the user is
@@ -1059,6 +1073,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             data=plex_track,
             can_seek=True,
             allow_seek=True,
+            verify_ssl=self._verify_ssl,
         )
         if loudness:
             stream_details.loudness, stream_details.loudness_album = loudness
@@ -1091,7 +1106,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                 stream_details.audio_format.bit_depth = audio_stream.bitDepth
 
         else:
-            media_info = await async_parse_tags(download_url)
+            media_info = await async_parse_tags(download_url, verify_ssl=self._verify_ssl)
             stream_details.path = download_url
             stream_details.audio_format.channels = media_info.channels
             stream_details.audio_format.content_type = ContentType.try_parse(media_info.format)
@@ -1114,13 +1129,21 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
         return await asyncio.to_thread(_refresh_plex_token)
 
-    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
-        """Set favorite status by setting rating in Plex."""
-        if favorite:
-            # Set like rating
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Set favorite status by setting rating in Plex.
+
+        :param prov_item_id: The Plex item id to rate.
+        :param media_type: Media type of the item.
+        :param favorite: True for the like rating, False for the unlike rating, None to
+            clear the rating altogether.
+        """
+        rating: float | None = None
+        if favorite is True:
             rating = cast("float", self.config.get_value(CONF_PLEX_LIKE_RATING))
-        else:
-            # Set unlike rating
+        elif favorite is False:
             rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
 
         if media_type == MediaType.TRACK:
@@ -1129,6 +1152,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             plex_item = await self._get_data(prov_item_id, PlexAlbum)
         else:
             return
+        # plexapi resets the item's rating when it is given none
         await self._run_async(plex_item.rate, rating)
         self.logger.debug(
             "Set Plex rating to %s for %s with ID %s (ratingKey: %s)",
@@ -1506,7 +1530,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         # Check if album rating meets the configured threshold for favorites
         favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        if (favorite := get_favorite_from_rating(plex_album, favorite_threshold)) is not None:
+        unlike_rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
+        if (
+            favorite := get_favorite_from_rating(plex_album, favorite_threshold, unlike_rating)
+        ) is not None:
             album.favorite = favorite
 
         if plex_album.year:
@@ -1594,8 +1621,18 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
-        if images := get_thumbnail_images(plex_playlist, self.instance_id):
-            playlist.metadata.images = images
+        # plexapi aliases Playlist.thumb to the generated composite, which hides a custom poster
+        if thumb := plex_playlist._data.attrib.get("thumb") or plex_playlist.composite:
+            playlist.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=thumb,
+                        provider=self.instance_id,
+                        remotely_accessible=False,
+                    )
+                ]
+            )
         playlist.is_editable = not plex_playlist.smart
         return playlist
 
@@ -1740,7 +1777,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         # Check if track rating meets the configured threshold for favorites
         favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        if (favorite := get_favorite_from_rating(plex_track, favorite_threshold)) is not None:
+        unlike_rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
+        if (
+            favorite := get_favorite_from_rating(plex_track, favorite_threshold, unlike_rating)
+        ) is not None:
             track.favorite = favorite
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
@@ -1906,6 +1946,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             podcast.metadata.images = images
+        podcast.metadata.genres = {genre.tag for genre in plex_album.genres or [] if genre.tag} or {
+            DEFAULT_AUDIOBOOK_PODCAST_GENRE
+        }
         if include_episodes:
             podcast.total_episodes = await self._count_podcast_episodes(plex_album)
         return podcast
@@ -2098,6 +2141,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                 path=self._get_transcode_url(plex_track, quality_bitrate),
                 can_seek=True,
                 allow_seek=True,
+                verify_ssl=self._verify_ssl,
             )
 
         return StreamDetails(
@@ -2110,6 +2154,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             path=parts[0].path if len(parts) == 1 else parts,
             can_seek=True,
             allow_seek=True,
+            verify_ssl=self._verify_ssl,
         )
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
@@ -2359,6 +2404,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             path=download_url,
             can_seek=True,
             allow_seek=True,
+            verify_ssl=self._verify_ssl,
         )
 
 

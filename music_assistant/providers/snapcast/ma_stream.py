@@ -591,7 +591,7 @@ class SnapcastMAStream:
             found within 20 attempts (extremely rare; the range has 201 values).
         """
         for _ in range(20):
-            port = random.randint(4953, 4953 + 200)
+            port = random.randint(4953, 4953 + 200)  # noqa: S311 - port pick
             if port not in used:
                 return port
         return None
@@ -723,7 +723,7 @@ class SnapcastMAStream:
         uri = self.snap_stream._stream.get("uri", {})
         uri_host = uri.get("host", "")
         stream_path = self.snap_stream.path or f"tcp://{uri_host}"
-        return stream_path.replace("0.0.0.0", self._provider._snapcast_server_host)
+        return stream_path.replace("0.0.0.0", self._provider._snapcast_server_host)  # noqa: S104 - string replace, not a bind
 
     def _snap_on_stream_update(self, stream: SnapstreamProto | None = None) -> None:
         """Handle Snapcast stream updates and trigger group member refresh."""

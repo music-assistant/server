@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
@@ -77,8 +82,8 @@ def _fake_image_provider(instance_id: str, resolved_path: str) -> LocalFileSyste
     """
     Build a bare filesystem provider that resolves any image path to `resolved_path`.
 
-    A real provider instance is used rather than a mock because the image helpers narrow
-    on the concrete provider types before calling `resolve_image`.
+    A real provider instance is used rather than a mock so the image helpers resolve the
+    path through the provider's own `resolve_image`.
 
     :param instance_id: Instance id to register the provider under.
     :param resolved_path: Absolute path every image path resolves to.
@@ -599,6 +604,28 @@ async def test_serve_thumbnail_sets_csp_for_svg(
     assert "X-Content-Type-Options" not in jpg_resp.headers
 
 
+async def test_serve_thumbnail_logs_an_upstream_outage_without_a_trace(
+    metadata_controller: MetaDataController,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An image source that is temporarily down is a one-line warning and a 404, no trace."""
+
+    async def _fake_resolve(*_args: object, **_kwargs: object) -> tuple[bytes, str]:
+        raise RetriesExhausted("failed after 2 attempts")
+
+    monkeypatch.setattr(metadata_controller, "_resolve_thumbnail", _fake_resolve)
+    caplog.set_level(logging.DEBUG)
+
+    resp = await metadata_controller._serve_thumbnail("mbid", "coverartarchive", 256, "jpg")
+
+    assert resp.status == 404
+    records = [r for r in caplog.records if "Error while fetching image" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+
+
 async def test_invalidate_image_cache_end_to_end(
     metadata_controller: MetaDataController, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -722,7 +749,7 @@ async def test_absolute_path_is_read_without_its_provider(
     """
     An absolute image path stays readable while its provider is unavailable.
 
-    Providers that write their own image files (playlist artwork, collages) pair an
+    Providers that write their own image files (such as playlist artwork) pair an
     absolute path with their instance id, and such a file needs no provider to be read.
     """
     mass = metadata_controller.mass

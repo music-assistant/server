@@ -13,11 +13,14 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import (
     Audiobook,
+    ItemMapping,
     MediaCollection,
+    Playlist,
     Podcast,
     PodcastEpisode,
     Radio,
@@ -133,7 +136,7 @@ async def test_next_podcast_episode_follows_the_played_one() -> None:
     resolver, queues = _resolver()
     podcast = _podcast()
     played = _episode("ep1", 1, podcast)
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter(
             [_episode("ep1", 1, podcast), _episode("ep2", 2, podcast), _episode("ep3", 3, podcast)]
         )
@@ -151,7 +154,7 @@ async def test_next_podcast_episode_skips_fully_played() -> None:
     """An episode the user already finished is passed over."""
     resolver, queues = _resolver()
     podcast = _podcast()
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter(
             [
                 _episode("ep1", 1, podcast),
@@ -172,7 +175,7 @@ async def test_next_podcast_episode_at_end_of_feed() -> None:
     """The last episode of a podcast has no successor, so playback stops there."""
     resolver, queues = _resolver()
     podcast = _podcast()
-    queues.mass.music.podcasts.episodes = MagicMock(
+    queues.mass.music.podcasts.iter_episodes = MagicMock(
         return_value=_aiter([_episode("ep1", 1, podcast), _episode("ep2", 2, podcast)])
     )
 
@@ -529,7 +532,8 @@ def _stop_states(prev_item: Any) -> tuple[CompareState, CompareState]:
 def _tracker() -> Any:
     """Build a playback tracker stand-in for a single non-flow queue."""
     tracker = MagicMock()
-    tracker._queue_data = {"q1": SimpleNamespace(flow_mode_stream_log=[])}
+    # the item the player stopped on ("i1" in the stop states) had its audio served
+    tracker._queue_data = {"q1": SimpleNamespace(flow_mode_stream_log=[], served_item_ids={"i1"})}
     return tracker
 
 
@@ -630,3 +634,107 @@ async def test_settle_task_skips_finish_when_the_queue_vanishes_during_fetch() -
         await settle_coro
 
     tracker._finish_queue.assert_not_called()
+
+
+def _prov_track(item_id: str) -> Track:
+    """Build a track of the Spotify instance the dynamic source below lists."""
+    return Track(
+        item_id=item_id,
+        provider="spotify--1",
+        name=item_id,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id, provider_domain="spotify", provider_instance="spotify--1"
+            )
+        },
+    )
+
+
+def _dynamic_playlist() -> Playlist:
+    """Build the dynamic playlist a queue was started from."""
+    return Playlist(
+        item_id="mix",
+        provider="spotify--1",
+        name="Daily Mix",
+        is_dynamic=True,
+        provider_mappings={
+            ProviderMapping(
+                item_id="mix", provider_domain="spotify", provider_instance="spotify--1"
+            )
+        },
+    )
+
+
+async def _refill_from_dynamic_source(tracker: Any, source: Playlist, tracks: list[Track]) -> Any:
+    """
+    Settle a queue that ran out while started from the given dynamic source.
+
+    :param tracker: The playback tracker stand-in.
+    :param source: The dynamic source the queue was started from.
+    :param tracks: The tracks that source hands back for the refill.
+    :return: The queue items the refill loaded.
+    """
+    tracker.load = AsyncMock()
+    tracker.play_index = AsyncMock()
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    queue = cast(
+        "PlayerQueue",
+        SimpleNamespace(
+            queue_id="q1",
+            next_item=None,
+            flow_mode=False,
+            state=PlaybackState.IDLE,
+            current_index=None,
+            display_name="Q1",
+        ),
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+    tracker._media_resolver.get_dynamic_source_tracks = AsyncMock(return_value=tracks)
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep",
+            AsyncMock(),
+        ),
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.find_dynamic_source",
+            return_value=source,
+        ),
+    ):
+        await settle_coro
+    return tracker.load.await_args.args[1]
+
+
+async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
+    """The refill of a queue started from a dynamic source drops what its user disliked."""
+    tracker = _tracker()
+    tracker._queue_data["q1"].userid = "user-a"
+    tracker.mass.webserver.auth.get_user = AsyncMock(
+        return_value=User(user_id="user-a", username="a", role=UserRole.USER)
+    )
+    tracker.mass.music.favorites.disliked_track_keys = AsyncMock(
+        return_value=(set(), {(MediaType.TRACK, "spotify--1", "disliked")})
+    )
+
+    loaded = await _refill_from_dynamic_source(
+        tracker, _dynamic_playlist(), [_prov_track("disliked"), _prov_track("allowed")]
+    )
+
+    assert [x.media_item.item_id for x in loaded] == ["allowed"]
+
+
+async def test_the_end_of_queue_refill_plays_the_tracks_from_their_source() -> None:
+    """The refilled tracks record the dynamic source as their origin, pinned to its listing."""
+    tracker = _tracker()
+    tracker._queue_data["q1"].userid = None
+    tracker.mass.music.favorites.disliked_track_keys = AsyncMock(return_value=(set(), set()))
+    source = _dynamic_playlist()
+
+    loaded = await _refill_from_dynamic_source(tracker, source, [_prov_track("fresh")])
+
+    origin = loaded[0].origin
+    assert origin is not None
+    assert origin.container == ItemMapping.from_item(source)
+    assert (origin.provider_instance, origin.item_id) == ("spotify--1", "fresh")

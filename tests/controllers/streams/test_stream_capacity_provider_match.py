@@ -119,6 +119,7 @@ def _mass(
     mass.providers = list(providers.values())
     mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
+    mass.player_queues.has_paused_stream_slot_holder.return_value = False
     if access is not None:
         mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
@@ -128,7 +129,9 @@ def _mass(
     mass.streams.get_config_value.return_value = -17
     mass.music.providers = list(providers.values())
     mass.music.tracks.match_provider = AsyncMock(return_value=[])
-    mass.music.tracks.add_provider_mappings = AsyncMock()
+    mass.music.tracks.add_unclaimed_provider_mappings = AsyncMock()
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
 
     def _schedule(coro: Any, *_args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
         task = asyncio.get_running_loop().create_task(coro)
@@ -173,7 +176,7 @@ async def test_saturated_single_mapping_is_rescued_by_a_cross_provider_match(
     # strictness is what prevents ever playing the wrong track
     assert mass.music.tracks.match_provider.await_args.kwargs["strict"] is True
     # a non-library track keeps the mapping in memory only
-    mass.music.tracks.add_provider_mappings.assert_not_awaited()
+    mass.music.tracks.add_unclaimed_provider_mappings.assert_not_awaited()
 
 
 async def test_a_match_on_a_blocked_source_is_never_searched(
@@ -263,6 +266,8 @@ async def test_a_matchless_search_falls_back_to_the_blocking_wait(
     assert waits[0] == 0
     assert waits[1] > 0
     assert get_buffer.await_args_list[1].kwargs["streamdetails"].provider == BUSY_INSTANCE
+    # only a library track has an id to remember the miss on
+    mass.cache.set.assert_not_awaited()
 
 
 async def test_a_matchless_search_still_raises_when_the_slot_never_frees(
@@ -321,7 +326,7 @@ async def test_disallowed_provider_match_is_never_attempted(
 async def test_a_library_track_persists_the_discovered_mapping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A match for a library track is written back to the library."""
+    """A match for a library track is written back, never merging library items."""
     queue_item = _queue_item(
         _mapping(BUSY_INSTANCE, quality=ContentType.FLAC), provider="library", item_id="42"
     )
@@ -343,7 +348,36 @@ async def test_a_library_track_persists_the_discovered_mapping(
     assert result is expected_buffer
     # the write-back runs as a background task, detached from this playback request
     await asyncio.sleep(0)
-    mass.music.tracks.add_provider_mappings.assert_awaited_once_with("42", [matched_mapping])
+    mass.music.tracks.add_unclaimed_provider_mappings.assert_awaited_once_with(
+        "42", [matched_mapping]
+    )
+
+
+async def test_a_library_track_is_not_searched_on_a_service_without_a_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A service that recently had no match for a library track is not searched for it again."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, quality=ContentType.FLAC), provider="library", item_id="42"
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        MATCH_INSTANCE: _music_provider(MATCH_INSTANCE),
+    }
+    mass = _mass(providers)
+    mass.cache.get = AsyncMock(return_value=True)
+    audio = StreamsAudio(mass)
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    mass.music.tracks.match_provider.assert_not_awaited()
+    # without a service to search, the known source gets the blocking wait
+    assert get_buffer.await_args_list[1].kwargs["streamdetails"].provider == BUSY_INSTANCE
 
 
 async def test_one_failing_provider_does_not_end_the_search(
@@ -392,7 +426,7 @@ async def test_a_failed_mapping_write_back_does_not_fail_the_rescue(
     mass.music.tracks.match_provider = AsyncMock(
         return_value=[_mapping(MATCH_INSTANCE, item_id=MATCHED_ITEM_ID)]
     )
-    mass.music.tracks.add_provider_mappings = AsyncMock(
+    mass.music.tracks.add_unclaimed_provider_mappings = AsyncMock(
         side_effect=MediaNotFoundError("Track not found: 42")
     )
     audio = StreamsAudio(mass)
@@ -406,7 +440,7 @@ async def test_a_failed_mapping_write_back_does_not_fail_the_rescue(
     assert queue_item.streamdetails is not None
     assert queue_item.streamdetails.provider == MATCH_INSTANCE
     await asyncio.sleep(0)
-    mass.music.tracks.add_provider_mappings.assert_awaited_once()
+    mass.music.tracks.add_unclaimed_provider_mappings.assert_awaited_once()
 
 
 async def test_discovery_runs_at_most_once_per_buffer_request(

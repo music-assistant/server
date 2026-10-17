@@ -252,6 +252,18 @@ async def test_transfer_queue_carries_the_source_shuffle() -> None:
     assert fake.get("tgt").shuffle_enabled is True
 
 
+async def test_transfer_queue_carries_where_the_smart_fades_ordering_ended() -> None:
+    """The target keeps ordering Smart Fades batches behind the same item as the source did."""
+    fake = _shuffle_controller(source_shuffle_enabled=True)
+    fake._queue_data["src"].fade_ordered_until = "item-24"
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake._queue_data["tgt"].fade_ordered_until == "item-24"
+
+
 async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:
     """The shuffle imposed by a dynamic source follows it to the target queue."""
     fake = _shuffle_controller(source_shuffle_enabled=True, source_is_dynamic=True)

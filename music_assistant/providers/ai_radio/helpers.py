@@ -9,16 +9,15 @@ from typing import Any
 
 from music_assistant_models.errors import InsufficientPermissions, MusicAssistantError
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
-from music_assistant.helpers.datetime import utc
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    has_player_access as user_has_player_access,
+)
 
-from .constants import EMPTY_SECTION_ID
+from .constants import EMPTY_SECTION_ID, FALLBACK_TRACK_SECONDS
 from .models import Slot
-
-
-def utc_now_iso() -> str:
-    """Return a UTC ISO timestamp."""
-    return utc().isoformat()
 
 
 def format_ai_radio_timestamp(moment: datetime.datetime) -> str:
@@ -81,7 +80,11 @@ def build_slots(tracks: list[dict[str, Any]]) -> list[Slot]:
     total = 0.0
     for track in tracks:
         duration = track.get("duration")
-        seconds = float(duration) if isinstance(duration, (int, float)) and duration > 0 else 210.0
+        seconds = (
+            float(duration)
+            if isinstance(duration, (int, float)) and duration > 0
+            else float(FALLBACK_TRACK_SECONDS)
+        )
         total += seconds / 60.0
         cumulative_minutes.append(total)
 
@@ -167,9 +170,9 @@ def has_player_access(*player_ids: str | None) -> bool:
     :param player_ids: The players or queues to check, None entries are skipped.
     """
     user = get_current_user()
-    if not user or not user.player_filter:
-        return True
-    return all(player_id in user.player_filter for player_id in player_ids if player_id is not None)
+    return all(
+        user_has_player_access(user, player_id) for player_id in player_ids if player_id is not None
+    )
 
 
 def check_player_access(*player_ids: str | None) -> None:

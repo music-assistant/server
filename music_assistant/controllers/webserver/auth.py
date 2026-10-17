@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
+import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
@@ -23,14 +24,17 @@ from music_assistant_models.auth import (
     UserRole,
 )
 from music_assistant_models.errors import (
+    AuthenticationFailed,
     AuthenticationRequired,
     InsufficientPermissions,
     InvalidDataError,
+    RateLimited,
 )
 
 from music_assistant.constants import (
     CONF_PLAYERS,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     HOMEASSISTANT_SYSTEM_USER,
     MASS_LOGGER_NAME,
 )
@@ -46,6 +50,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_custom_role_scopes,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
+    AuthFailure,
     AuthResult,
     BuiltinLoginProvider,
     HomeAssistantOAuthProvider,
@@ -54,15 +59,26 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     LoginRateLimiter,
     normalize_username,
 )
+from music_assistant.controllers.webserver.helpers.login_flow import (
+    AUTH_CODE_RE,
+    PKCE_CHALLENGE_RE,
+    AuthTransport,
+    PendingLogin,
+    PendingLoginStore,
+    RedirectTarget,
+    verify_pkce,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
+from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
+    from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
     from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
@@ -85,8 +101,8 @@ TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
 # Max number of (newest first) tokens returned by the auth/tokens command
 TOKEN_LIST_LIMIT = 100
 
-HA_TOKEN_SETTING_KEY = "ha_integration_token"
-HA_TOKEN_NAME = "Home Assistant Integration"
+HA_TOKEN_SETTING_KEY = "ha_integration_token"  # noqa: S105 - config key
+HA_TOKEN_NAME = "Home Assistant Integration"  # noqa: S105 - display name
 
 # English names of the builtin user roles, in the order the roles are listed
 BUILTIN_ROLE_NAMES = {
@@ -96,6 +112,7 @@ BUILTIN_ROLE_NAMES = {
     UserRole.SERVICE: "Service",
 }
 ROLE_NAME_MAX_LENGTH = 50
+USERNAME_MIN_LENGTH = 2
 
 # Join code constants (short codes for QR/link-based login)
 JOIN_CODE_LENGTH = 12
@@ -139,6 +156,8 @@ class AuthenticationManager:
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
+        self.pending_logins = PendingLoginStore()
+        self._auth_exchange_rate_limiter = LoginRateLimiter(subject="client")
         # Serialises the read-modify-write of the user access filters
         self._user_filter_lock = asyncio.Lock()
         self._custom_roles: dict[str, Role] = {}
@@ -319,14 +338,15 @@ class AuthenticationManager:
             return with_derived_provider_filter(self.mass, user)
         return None
 
-    async def get_user(self, user_id: str) -> User | None:
+    async def get_user(self, user_id: str, *, include_disabled: bool = False) -> User | None:
         """
-        Get user by ID, or None if it does not exist or is disabled.
+        Get user by ID, or None if it does not exist (or is disabled, unless included).
 
         :param user_id: The user ID.
+        :param include_disabled: Also return a disabled user.
         """
         user_row = await self.database.get_row("users", {"user_id": user_id})
-        if not user_row or not user_row["enabled"]:
+        if not user_row or not (user_row["enabled"] or include_disabled):
             return None
 
         return User(
@@ -341,11 +361,14 @@ class AuthenticationManager:
             player_filter=json_loads(user_row["player_filter"]),
         )
 
-    async def get_user_by_username(self, username: str) -> User | None:
+    async def get_user_by_username(
+        self, username: str, *, include_disabled: bool = False
+    ) -> User | None:
         """
         Get user by username.
 
         :param username: The username.
+        :param include_disabled: Also return a disabled user.
         :return: User object or None if not found.
         """
         username = normalize_username(username)
@@ -354,16 +377,21 @@ class AuthenticationManager:
         if not user_row:
             return None
 
-        return await self.get_user(user_row["user_id"])
+        return await self.get_user(user_row["user_id"], include_disabled=include_disabled)
 
     async def get_user_by_provider_link(
-        self, provider_type: AuthProviderType, provider_user_id: str
+        self,
+        provider_type: AuthProviderType,
+        provider_user_id: str,
+        *,
+        include_disabled: bool = False,
     ) -> User | None:
         """
         Get user by their provider link.
 
         :param provider_type: The auth provider type.
         :param provider_user_id: The user ID from the provider.
+        :param include_disabled: Also return a disabled user.
         """
         link_row = await self.database.get_row(
             "user_auth_providers",
@@ -375,7 +403,7 @@ class AuthenticationManager:
         if not link_row:
             return None
 
-        return await self.get_user(link_row["user_id"])
+        return await self.get_user(link_row["user_id"], include_disabled=include_disabled)
 
     async def create_user(
         self,
@@ -803,7 +831,8 @@ class AuthenticationManager:
         actual token usage by up to an hour.
 
         :param user_id: Optional user ID to get tokens for (admin only).
-        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT.
+        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT, with an empty
+            token_hash.
         """
         current_user = get_current_user()
         if not current_user:
@@ -826,7 +855,7 @@ class AuthenticationManager:
             order_by="created_at DESC",
             limit=TOKEN_LIST_LIMIT,
         )
-        return [AuthToken.from_dict(dict(row)) for row in token_rows]
+        return [AuthToken.from_dict({**dict(row), "token_hash": ""}) for row in token_rows]
 
     @api_command("auth/users", required_scope=Scope.USERS_READ)
     async def list_users(self) -> list[User]:
@@ -969,12 +998,14 @@ class AuthenticationManager:
         await self._sync_ha_oauth_provider()
 
         providers = []
-        for provider_id, provider in self.login_providers.items():
+        # a concurrent listing can add or remove the HA provider while this one awaits
+        for provider_id, provider in list(self.login_providers.items()):
             providers.append(
                 {
                     "provider_id": provider_id,
                     "provider_type": provider.provider_type.value,
                     "requires_redirect": provider.requires_redirect,
+                    "supports_remote_app": await provider.supports_remote_app(),
                 }
             )
         return providers
@@ -987,7 +1018,7 @@ class AuthenticationManager:
         provider_id: str = "builtin",
         device_name: str | None = None,
         **extra_credentials: Any,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | AuthFailure:
         """
         Authenticate user with credentials via WebSocket.
 
@@ -1017,16 +1048,12 @@ class AuthenticationManager:
                 username or "<not provided>",
                 provider_id,
             )
-            return {
-                "success": False,
-                "error": auth_result.error or "Authentication failed",
-            }
+            return AuthFailure(
+                auth_result.error or "Authentication failed", auth_result.translation_key
+            )
 
         if not auth_result.user:
-            return {
-                "success": False,
-                "error": "Authentication failed: no user returned",
-            }
+            return AuthFailure("Authentication failed: no user returned")
 
         # Create short-lived access token with device name if provided
         token_name = device_name or f"WebSocket Session - {auth_result.user.username}"
@@ -1059,7 +1086,8 @@ class AuthenticationManager:
         Get list of available authentication providers.
 
         Returns information about all available login providers including
-        whether they require OAuth redirect flow.
+        whether they require OAuth redirect flow and whether a sign-in can
+        return to the remote app.
         """
         return await self.get_login_providers()
 
@@ -1068,6 +1096,9 @@ class AuthenticationManager:
         self,
         provider_id: str,
         return_url: str | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        redirect_target: str = "server",
     ) -> dict[str, str | None]:
         """
         Get OAuth authorization URL for authentication.
@@ -1077,52 +1108,208 @@ class AuthenticationManager:
 
         :param provider_id: The provider ID (e.g., "hass").
         :param return_url: URL to redirect to after OAuth completes.
-        :return: Dictionary with authorization_url.
+        :param code_challenge: PKCE code challenge (unpadded base64url SHA-256) of the
+            client's code verifier, which auth/exchange checks; only with redirect_target "app".
+        :param code_challenge_method: Method of code_challenge, only "S256" is supported.
+        :param redirect_target: Where the browser returns to: "server" (default), or "app"
+            for the remote app, which is only allowed over Remote Access, requires a
+            code_challenge and is completed with auth/exchange.
+        :return: Dictionary with authorization_url, the state of the sign-in and when it
+            expires (ISO 8601), or authorization_url None plus an error when the request is
+            invalid or the provider does not support it.
+        :raises RateLimited: If too many sign-ins are pending.
         """
-        auth_url = await self.get_authorization_url(provider_id, return_url)
-        if not auth_url:
+        if return_url:
+            is_valid, _ = is_allowed_redirect_url(
+                return_url,
+                base_url=self.webserver.base_url,
+                external_url=self.webserver.external_url,
+            )
+            if not is_valid:
+                return {"authorization_url": None, "error": "Invalid return_url"}
+        if (code_challenge or code_challenge_method) and (
+            code_challenge_method != "S256" or not PKCE_CHALLENGE_RE.fullmatch(code_challenge or "")
+        ):
+            return {"authorization_url": None, "error": "Invalid code_challenge"}
+        if redirect_target not in ("server", "app"):
+            return {"authorization_url": None, "error": "Invalid redirect_target"}
+        if code_challenge and redirect_target != "app":
+            return {
+                "authorization_url": None,
+                "error": "code_challenge is only supported with redirect_target app",
+            }
+
+        client = self._get_calling_client()
+        transport = client.auth_transport if client else AuthTransport.DIRECT
+        if redirect_target == "app":
+            if transport is not AuthTransport.REMOTE or not code_challenge:
+                return {
+                    "authorization_url": None,
+                    "error": "redirect_target app requires Remote Access and a code_challenge",
+                }
+            provider = self.login_providers.get(provider_id)
+            if not provider or not await provider.supports_remote_app():
+                return {
+                    "authorization_url": None,
+                    "error": "Provider does not support the remote app",
+                }
+
+        started = await self.get_authorization_url(
+            provider_id,
+            return_url,
+            transport=transport,
+            request_host=client.request_host if client else None,
+            redirect_target=cast("RedirectTarget", redirect_target),
+            code_challenge=code_challenge,
+        )
+        if not started:
             return {
                 "authorization_url": None,
                 "error": "Provider does not support OAuth or does not exist",
             }
-
+        auth_url, pending = started
         return {
             "authorization_url": auth_url,
+            "state": pending.state,
+            "expires_at": (
+                utc() + timedelta(seconds=max(0.0, pending.expires_at - time.monotonic()))
+            ).isoformat(),
         }
 
     async def get_authorization_url(
-        self, provider_id: str, return_url: str | None = None
-    ) -> str | None:
+        self,
+        provider_id: str,
+        return_url: str | None = None,
+        *,
+        transport: AuthTransport = AuthTransport.DIRECT,
+        request_host: str | None = None,
+        redirect_target: RedirectTarget = "server",
+        code_challenge: str | None = None,
+    ) -> tuple[str, PendingLogin] | None:
         """
-        Get OAuth authorization URL for a provider.
+        Start a sign-in with a redirect provider and return its authorization URL.
 
         :param provider_id: The provider ID.
-        :param return_url: Optional URL to redirect to after successful login.
+        :param return_url: Optional (validated) URL to redirect to after successful login.
+        :param transport: How the client that starts the sign-in reaches the server.
+        :param request_host: The host (and any port) the client used to reach the server.
+        :param redirect_target: Where the browser returns to; "app" must be validated first.
+        :param code_challenge: The client's (validated) PKCE S256 code challenge, if any.
+        :return: The authorization URL and the started sign-in, or None when the provider
+            does not exist, needs no redirect or is not reachable.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         provider = self.login_providers.get(provider_id)
         if not provider or not provider.requires_redirect:
             return None
 
-        # Build callback redirect_uri
-        redirect_uri = f"{self.webserver.base_url}/auth/callback?provider_id={provider_id}"
-        return await provider.get_authorization_url(redirect_uri, return_url)
+        callback_base_url = self.webserver.get_auth_callback_base(
+            transport,
+            redirect_target=redirect_target,
+            return_url=return_url,
+            request_host=request_host,
+        )
+        if transport is AuthTransport.REMOTE and redirect_target == "app":
+            # the provider is found from the state, as the app callback serves every provider
+            redirect_uri = f"{callback_base_url}/auth/callback/"
+        else:
+            redirect_uri = f"{callback_base_url}/auth/callback?provider_id={provider_id}"
+        pending = self.pending_logins.start(
+            provider_id,
+            transport,
+            redirect_uri,
+            redirect_target=redirect_target,
+            return_url=return_url,
+            client_code_challenge=code_challenge,
+            idp_code_verifier=secrets.token_urlsafe(64),
+        )
+        auth_url = None
+        try:
+            auth_url = await provider.build_authorization_url(pending)
+        finally:
+            if not auth_url:
+                self.pending_logins.pop(pending.state)
+        return (auth_url, pending) if auth_url else None
 
-    async def handle_oauth_callback(
-        self, provider_id: str, code: str, state: str, redirect_uri: str
-    ) -> AuthResult:
+    async def handle_oauth_callback(self, provider_id: str, code: str, state: str) -> AuthResult:
         """
         Handle OAuth callback.
 
         :param provider_id: The provider ID.
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
-        :param redirect_uri: The callback URL.
         """
         provider = self.login_providers.get(provider_id)
         if not provider:
             return AuthResult(success=False, error="Invalid provider")
 
-        return await provider.handle_oauth_callback(code, state, redirect_uri)
+        pending = self.pending_logins.pop(state)
+        # a sign-in that returns to the app is completed by the app itself (auth/exchange)
+        if not pending or pending.provider_id != provider_id or pending.redirect_target != "server":
+            return AuthResult(success=False, error="Invalid or expired state parameter")
+        if not AUTH_CODE_RE.fullmatch(code):
+            return AuthResult(success=False, error="Invalid authorization code")
+        try:
+            user = await provider.complete_authorization(pending, {"code": code})
+        except AuthenticationFailed as err:
+            return AuthResult(success=False, error=str(err))
+        return AuthResult(success=True, user=user, return_url=pending.return_url)
+
+    @api_command("auth/exchange", authenticated=False)
+    async def exchange_authorization_code(
+        self, state: str, code: str, code_verifier: str, device_name: str | None = None
+    ) -> dict[str, Any] | AuthFailure:
+        """
+        Complete a sign-in that returned to the remote app, for an access token.
+
+        :param state: The state of the sign-in, as returned by auth/authorization_url.
+        :param code: The authorization code the browser returned with.
+        :param code_verifier: The PKCE code verifier of the code_challenge the sign-in was
+            started with.
+        :param device_name: Optional device name for the token (e.g., "iPhone 15").
+        :return: The same result as auth/login on success, else success False with an error
+            and its translation_key.
+        """
+        rate_limit_key, key_is_exclusive = _client_rate_limit_key()
+        allowed, remaining_delay = await self._auth_exchange_rate_limiter.check_rate_limit(
+            rate_limit_key
+        )
+        if not allowed:
+            self.logger.warning(
+                "Sign-in exchange throttled (client=%s). %d seconds remaining.",
+                rate_limit_key,
+                remaining_delay,
+            )
+            return AuthFailure(
+                f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                RateLimited.translation_key,
+            )
+
+        try:
+            user = await self._complete_app_sign_in(
+                self.pending_logins.pop(state), code, code_verifier
+            )
+        except AuthenticationFailed as err:
+            await self._auth_exchange_rate_limiter.record_failed_attempt(rate_limit_key)
+            self.logger.warning("Sign-in exchange failed: %s", err)
+            return AuthFailure(str(err), err.translation_key, err.translation_args)
+        if key_is_exclusive:
+            await self._auth_exchange_rate_limiter.clear_attempts(rate_limit_key)
+
+        token = await self.create_token(
+            user, is_long_lived=False, name=device_name or f"WebSocket Session - {user.username}"
+        )
+        self.logger.info("User '%s' signed in through the remote app", user.username)
+        return {
+            "success": True,
+            "access_token": token,
+            "user": {
+                "user_id": user.user_id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "role": user.role,
+            },
+        }
 
     @api_command("auth/token/create")
     async def create_long_lived_token(self, name: str, user_id: str | None = None) -> str:
@@ -1180,7 +1367,7 @@ class AuthenticationManager:
         """
         Create a new user with built-in authentication (admin only).
 
-        :param username: The username (minimum 2 characters).
+        :param username: The username (minimum 2 characters, must not be in use).
         :param password: The password (minimum 8 characters).
         :param role: The id of the (builtin or custom) role to assign (default: "user").
         :param display_name: Optional display name.
@@ -1189,8 +1376,7 @@ class AuthenticationManager:
         :return: Created user object.
         """
         # Validation
-        if not username or len(username) < 2:
-            raise InvalidDataError("Username must be at least 2 characters")
+        await self._ensure_valid_username(username)
 
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")
@@ -1248,6 +1434,8 @@ class AuthenticationManager:
         # key enforcement is off on our connections, so remove those rows here.
         for table in ("auth_tokens", "join_codes", "user_auth_providers"):
             await self.database.delete(table, {"user_id": user_id})
+        await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
+        await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
@@ -1266,6 +1454,8 @@ class AuthenticationManager:
         # the playlists it owned or was given access to outlive it as well; this comes last
         # so the sockets of the user are gone before the deletion first awaits
         await self.mass.music.playlists.release_user_playlists(user_id)
+        # its favorites and dislikes do not outlive it
+        await self.mass.music.favorites.release_user(user_id)
 
         self.logger.info(
             "User '%s' deleted by admin '%s'",
@@ -1517,7 +1707,7 @@ class AuthenticationManager:
         The username, role and password of the Home Assistant system user can not be changed.
 
         :param user_id: User ID to update (optional, defaults to current user).
-        :param username: New username (optional).
+        :param username: New username (optional, minimum 2 characters, must not be in use).
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
@@ -1547,6 +1737,8 @@ class AuthenticationManager:
 
         if username is not None or password or role:
             _refuse_system_user(target_user.username)
+        if username is not None:
+            await self._ensure_valid_username(username, target_user.user_id)
 
         # Update role (requires the users.manage scope)
         if role:
@@ -1625,7 +1817,7 @@ class AuthenticationManager:
         """
         Get current user's linked authentication providers.
 
-        :return: List of provider links.
+        :return: List of provider links, the builtin link with an empty provider_user_id.
         """
         user = get_current_user()
         if not user:
@@ -1634,6 +1826,10 @@ class AuthenticationManager:
         # Get provider links from database
         rows = await self.database.get_rows("user_auth_providers", {"user_id": user.user_id})
         providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
+        for provider in providers:
+            # the builtin link stores the password hash as its provider user id
+            if provider.provider_type == AuthProviderType.BUILTIN:
+                provider.provider_user_id = ""
         return [p.to_dict() for p in providers]
 
     @api_command("auth/user/unlink_provider", required_scope=Scope.USERS_MANAGE)
@@ -1780,7 +1976,7 @@ class AuthenticationManager:
         return datetime.fromisoformat(str(row["expires_at"])) if row else None
 
     @api_command("auth/join_code/exchange", authenticated=False)
-    async def exchange_join_code(self, code: str) -> dict[str, Any]:
+    async def exchange_join_code(self, code: str) -> dict[str, Any] | AuthFailure:
         """
         Exchange a join code for an access token (public API).
 
@@ -1790,7 +1986,7 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        rate_limit_key, key_is_exclusive = _join_code_rate_limit_key()
+        rate_limit_key, key_is_exclusive = _client_rate_limit_key()
         async with self._join_code_exchange_lock:
             if throttled := await self._check_join_code_rate_limit(rate_limit_key):
                 return throttled
@@ -1802,10 +1998,7 @@ class AuthenticationManager:
                 await self._join_code_global_rate_limiter.record_failed_attempt(
                     JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
                 )
-                return {
-                    "success": False,
-                    "error": "Invalid or expired join code",
-                }
+                return AuthFailure("Invalid or expired join code", "join_code_invalid")
 
             # A bucket is only cleared when it belongs to one caller alone, so presenting a
             # valid code never lifts the throttle for anyone else.
@@ -1825,10 +2018,7 @@ class AuthenticationManager:
                 },
             }
         except pyjwt.InvalidTokenError:
-            return {
-                "success": False,
-                "error": "Failed to create access token",
-            }
+            return AuthFailure("Failed to create access token")
 
     @api_command("auth/join_codes", required_scope=Scope.USERS_MANAGE)
     async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
@@ -2233,6 +2423,30 @@ class AuthenticationManager:
             )
         return name
 
+    async def _ensure_valid_username(self, username: str, user_id: str | None = None) -> None:
+        """
+        Raise when the given username is too short, reserved or held by another user.
+
+        A disabled user still holds its name, and a user can always keep its own.
+
+        :param username: The username to check.
+        :param user_id: The id of the user the name is for, None for a new user.
+        """
+        username = normalize_username(username)
+        user_row = await self.database.get_row("users", {"username": username})
+        if user_row and user_row["user_id"] == user_id:
+            return
+        if len(username) < USERNAME_MIN_LENGTH:
+            raise InvalidDataError(
+                f"Username must be at least {USERNAME_MIN_LENGTH} characters",
+                translation_key="username_too_short",
+                translation_args=[USERNAME_MIN_LENGTH],
+            )
+        if user_row or username == HOMEASSISTANT_SYSTEM_USER:
+            raise InvalidDataError(
+                f"The username {username} is already in use", translation_key="username_taken"
+            )
+
     async def _ensure_not_last_admin(self, user_row: Mapping[str, Any]) -> None:
         """
         Raise when the given user is the last enabled administrator.
@@ -2347,7 +2561,7 @@ class AuthenticationManager:
         try:
             # Update all playlog entries with NULL userid to this user
             await self.mass.music.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
+                f"UPDATE {DB_TABLE_MEDIA_PROGRESS} SET userid = :userid WHERE userid IS NULL",
                 {"userid": user_id},
             )
             await self.mass.music.database.commit()
@@ -2382,7 +2596,7 @@ class AuthenticationManager:
         else:
             self.logger.info("Password changed for user %s", target_user.username)
 
-    async def _check_join_code_rate_limit(self, key: str) -> dict[str, Any] | None:
+    async def _check_join_code_rate_limit(self, key: str) -> AuthFailure | None:
         """
         Check the join code exchange throttles that apply to the calling client.
 
@@ -2412,12 +2626,10 @@ class AuthenticationManager:
                 ),
                 remaining_delay,
             )
-            return {
-                "success": False,
-                "error": (
-                    f"Too many failed attempts. Please try again in {remaining_delay} seconds."
-                ),
-            }
+            return AuthFailure(
+                f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                RateLimited.translation_key,
+            )
         return None
 
     async def _exchange_join_code(self, code: str) -> str | None:
@@ -2576,10 +2788,41 @@ class AuthenticationManager:
         for callback in list(self._access_revoked_callbacks):
             self.mass.loop.call_soon(callback, user)
 
+    def _get_calling_client(self) -> WebsocketClientHandler | None:
+        """Return the websocket connection the current command came in on, if any."""
+        client_id = get_current_client_id()
+        return next((c for c in self.webserver.clients if c.client_id == client_id), None)
 
-def _join_code_rate_limit_key() -> tuple[str, bool]:
+    async def _complete_app_sign_in(
+        self, pending: PendingLogin | None, code: str, code_verifier: str
+    ) -> User:
+        """
+        Complete a sign-in that returned to the remote app and return its user.
+
+        :param pending: The sign-in the exchange is for, None when unknown or expired.
+        :param code: The authorization code the browser returned with.
+        :param code_verifier: The client's PKCE code verifier.
+        :raises AuthenticationFailed: If the sign-in can not be completed.
+        """
+        if pending is None:
+            raise AuthenticationFailed(
+                "This sign-in is invalid or has expired", translation_key="sign_in_expired"
+            )
+        if not AUTH_CODE_RE.fullmatch(code):
+            raise AuthenticationFailed("Invalid authorization code")
+        if pending.redirect_target != "app" or not pending.client_code_challenge:
+            raise AuthenticationFailed("This sign-in can not be completed with auth/exchange")
+        if not verify_pkce(code_verifier, pending.client_code_challenge):
+            raise AuthenticationFailed("The code_verifier does not match the code_challenge")
+        provider = self.login_providers.get(pending.provider_id)
+        if not provider:
+            raise AuthenticationFailed("The login provider of this sign-in is not available")
+        return await provider.complete_authorization(pending, {"code": code})
+
+
+def _client_rate_limit_key() -> tuple[str, bool]:
     """
-    Work out which bucket the calling client's failed join code exchanges belong to.
+    Work out which bucket the calling client's failed attempts belong to.
 
     :return: The rate limit key, and whether that key identifies a single caller
         exclusively (a shared key must never be cleared on a successful exchange).
