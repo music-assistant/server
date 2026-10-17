@@ -8,19 +8,21 @@ import pathlib
 import threading
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import UserRole
 
-from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.constants import CONF_PROVIDERS, DB_TABLE_SETTINGS
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.music.constants import PENDING_SHORTCUT_REWRITES_KEY
 from music_assistant.controllers.music.controller import MusicController
 from music_assistant.controllers.webserver.auth import (
     PREF_SIDEBAR_SHORTCUTS,
     AuthenticationManager,
 )
 from music_assistant.controllers.webserver.controller import WebserverController
+from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.mass import MusicAssistant
 
@@ -313,3 +315,59 @@ async def test_sweep_failure_never_aborts_startup(
     await music.cleanup_stale_provider_shortcuts()
 
     assert await _get_shortcuts(auth, user.user_id) == uris
+
+
+@pytest.fixture
+async def music_with_settings(
+    mass_minimal: MusicAssistant, tmp_path: pathlib.Path
+) -> AsyncGenerator[MusicController]:
+    """Return a MusicController backed by a library database with only a settings table."""
+    music = _music_controller(mass_minimal, library_hit=False)
+    music._database = DatabaseConnection(str(tmp_path / "library.db"))
+    await music.database.setup()
+    await music.database.execute(
+        f"CREATE TABLE {DB_TABLE_SETTINGS}([key] TEXT PRIMARY KEY, [value] TEXT, [type] TEXT)"
+    )
+    try:
+        yield music
+    finally:
+        await music.database.close()
+
+
+async def test_parked_shortcut_rewrites_are_applied_once(
+    music_with_settings: MusicController, auth: AuthenticationManager
+) -> None:
+    """Parked rewrites move matching shortcuts to their new URI and are then cleared."""
+    user = await auth.create_user(username="judy", role=UserRole.USER)
+    await _set_shortcuts(
+        auth, user.user_id, ["library://playlist/5", "library://album/3", "spotify://playlist/x"]
+    )
+    await music_with_settings.database.insert_or_replace(
+        DB_TABLE_SETTINGS,
+        {
+            "key": PENDING_SHORTCUT_REWRITES_KEY,
+            "value": json_dumps({"library://playlist/5": "library://radio/11"}),
+            "type": "json",
+        },
+    )
+
+    await music_with_settings.settle_pending_shortcut_rewrites()
+
+    assert await _get_shortcuts(auth, user.user_id) == [
+        "library://radio/11",
+        "library://album/3",
+        "spotify://playlist/x",
+    ]
+    assert not await music_with_settings.database.get_row(
+        DB_TABLE_SETTINGS, {"key": PENDING_SHORTCUT_REWRITES_KEY}
+    )
+
+
+async def test_no_parked_shortcut_rewrites_leaves_shortcuts_alone(
+    music_with_settings: MusicController, auth: AuthenticationManager
+) -> None:
+    """Without parked rewrites the users' shortcuts are not touched."""
+    with patch.object(auth, "cleanup_user_shortcuts", AsyncMock()) as cleanup:
+        await music_with_settings.settle_pending_shortcut_rewrites()
+
+    cleanup.assert_not_called()

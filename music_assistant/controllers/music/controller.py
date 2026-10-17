@@ -52,6 +52,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     RecommendationFolder,
     SearchResults,
     SoundEffect,
@@ -69,6 +70,7 @@ from music_assistant.constants import (
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
@@ -85,6 +87,7 @@ from music_assistant.controllers.music.constants import (
     DB_SCHEMA_VERSION,
     INITIAL_SYNC_DELAY,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
+    PENDING_SHORTCUT_REWRITES_KEY,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     SEARCH_CACHE_EXPIRATION_COMBINED,
     SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
@@ -2624,6 +2627,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
 
+    async def settle_pending_shortcut_rewrites(self) -> None:
+        """Apply the sidebar shortcut rewrites a library migration parked to all users."""
+        if not (
+            row := await self.database.get_row(
+                DB_TABLE_SETTINGS, {"key": PENDING_SHORTCUT_REWRITES_KEY}
+            )
+        ):
+            return
+        rewrites: dict[tuple[MediaType, str, str], str] = {
+            await parse_uri(old_uri): new_uri
+            for old_uri, new_uri in json_loads(row["value"]).items()
+        }
+
+        async def _rewrite(uri: str) -> str | None:
+            try:
+                return rewrites.get(await parse_uri(uri), uri)
+            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+                return uri
+
+        await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
+        await self.database.delete(DB_TABLE_SETTINGS, {"key": PENDING_SHORTCUT_REWRITES_KEY})
+
     async def schedule_provider_sync(self, provider_instance_id: str) -> None:
         """Schedule Library sync for given provider."""
         if not (
@@ -3100,6 +3125,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return SearchResults(audiobooks=[cast("Audiobook", item)])
         if media_type == MediaType.PODCAST:
             return SearchResults(podcasts=[cast("Podcast", item)])
+        if media_type == MediaType.RADIO:
+            return SearchResults(radio=[cast("Radio", item)])
         return SearchResults()
 
     async def _search_provider(
