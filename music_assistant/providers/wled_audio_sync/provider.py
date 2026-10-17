@@ -63,10 +63,7 @@ class WledProvider(PluginProvider):
                 key=CONF_SCALING_MODE,
                 type=ConfigEntryType.STRING,
                 default_value=DEFAULT_SCALING_MODE,
-                options=[
-                    ConfigValueOption(mode.value, mode.value.replace("_", " ").capitalize())
-                    for mode in ScalingMode
-                ],
+                options=[ConfigValueOption(mode.value) for mode in ScalingMode],
                 immediate_apply=True,
                 category="settings",
             ),

@@ -72,3 +72,12 @@ async def test_other_changes_reload() -> None:
     with patch("music_assistant.models.plugin.PluginProvider.update_config", AsyncMock()) as sup:
         await provider.update_config(MagicMock(), {"values/other"})
     sup.assert_awaited_once()
+
+
+async def test_scaling_mode_options_leave_titles_to_translations() -> None:
+    """Fixed options carry no title, so their translated names are shown."""
+    entries = await _make_provider().get_config_entries()
+    scaling = next(entry for entry in entries if entry.key == CONF_SCALING_MODE)
+    assert scaling.options
+    assert [option.value for option in scaling.options] == [mode.value for mode in ScalingMode]
+    assert all(option.title is None for option in scaling.options)
