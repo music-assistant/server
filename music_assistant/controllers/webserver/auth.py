@@ -69,6 +69,7 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     RedirectTarget,
     verify_pkce,
 )
+from music_assistant.controllers.webserver.helpers.oidc import OIDC_AUTH_CODE_RE
 from music_assistant.controllers.webserver.helpers.oidc_provider import (
     CONF_OIDC_ALLOW_SELF_REGISTRATION,
     CONF_OIDC_CLIENT_ID,
@@ -1287,7 +1288,8 @@ class AuthenticationManager:
         # a sign-in that returns to the app is completed by the app itself (auth/exchange)
         if not pending or pending.provider_id != provider_id or pending.redirect_target != "server":
             return AuthResult(success=False, error="Invalid or expired state parameter")
-        if not AUTH_CODE_RE.fullmatch(code):
+        code_pattern = OIDC_AUTH_CODE_RE if provider_id == OIDC_PROVIDER_ID else AUTH_CODE_RE
+        if not code_pattern.fullmatch(code):
             return AuthResult(success=False, error="Invalid authorization code")
         try:
             user = await provider.complete_authorization(pending, {"code": code})

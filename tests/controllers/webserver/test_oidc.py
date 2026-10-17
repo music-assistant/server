@@ -520,8 +520,13 @@ async def test_oidc_links_survive_a_restart_without_a_schema_migration(
     assert admin.role == UserRole.ADMIN
 
 
+@pytest.mark.parametrize(
+    "code",
+    ["valid-code", "opaque+code/with=padding", "c" * 1024],
+    ids=["url-safe", "opaque-base64", "long-code"],
+)
 async def test_browser_start_callback_and_replay_protection(
-    provider: OIDCLoginProvider, idp: IdentityProvider
+    provider: OIDCLoginProvider, idp: IdentityProvider, code: str
 ) -> None:
     """A real HTTPS code exchange succeeds only in the initiating browser, once."""
     auth = provider.auth_manager
@@ -547,7 +552,7 @@ async def test_browser_start_callback_and_replay_protection(
     assert cookie_name.startswith("__Host-")
     assert cookie["path"] == "/"
     assert not cookie["domain"]
-    callback_url = f"/auth/callback?provider_id=oidc&code=valid-code&state={state}"
+    callback_url = str(URL("/auth/callback").with_query(provider_id="oidc", code=code, state=state))
     # Sharing a callback URL with another browser must not sign that browser in.
     refused = await auth.webserver._handle_auth_callback(make_mocked_request("GET", callback_url))
     assert refused.status == 400
@@ -561,9 +566,22 @@ async def test_browser_start_callback_and_replay_protection(
     assert accepted.cookies[cookie_name]["max-age"] == "0"
     assert accepted.cookies[cookie_name]["secure"]
     assert idp.token_requests == 1
+    assert idp.last_token_form["code"] == code
     replay = await auth.webserver._handle_auth_callback(request)
     assert replay.status == 400
     assert idp.token_requests == 1
+
+
+@pytest.mark.parametrize("code", ["", "non-ascii-\u00e9", "line\nbreak", "c" * 4097])
+async def test_invalid_codes_are_rejected_before_contacting_the_provider(
+    provider: OIDCLoginProvider, idp: IdentityProvider, code: str
+) -> None:
+    """Reject control characters, non-ASCII and unbounded authorization codes locally."""
+    started = await provider.auth_manager.get_authorization_url("oidc")
+    assert started is not None
+    result = await provider.auth_manager.handle_oauth_callback("oidc", code, started[1].state)
+    assert not result.success
+    assert idp.token_requests == 0
 
 
 async def test_bad_oidc_configuration_or_outage_does_not_disable_local_login(

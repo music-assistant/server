@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hmac
+import re
 import time
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import quote_plus
@@ -30,6 +31,9 @@ SIGNING_ALGORITHMS: Final = frozenset(
     {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
 )
 TOKEN_AUTH_METHODS: Final = ("client_secret_basic", "client_secret_post", "none")
+# RFC 6749 Appendix A.11 permits all visible ASCII, including spaces and base64 padding.
+# Bound the opaque value before forwarding it to the provider in a form-encoded request.
+OIDC_AUTH_CODE_RE: Final = re.compile(r"[\x20-\x7e]{1,4096}")
 
 
 def validate_oidc_url(value: str, *, issuer: bool = False) -> bool:

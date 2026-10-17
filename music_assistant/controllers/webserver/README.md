@@ -190,6 +190,37 @@ UV_NO_SYNC=1 .venv/bin/pre-commit run --all-files
 Using `uv run` without `UV_NO_SYNC=1`, or rerunning setup, restores the released package pins;
 reinstall the two local packages afterwards when testing the unreleased feature.
 
+#### Community implementation comparison
+
+[Immich](https://github.com/immich-app/immich/blob/main/server/src/repositories/oauth.repository.ts)
+and [Audiobookshelf](https://github.com/advplyr/audiobookshelf/blob/master/server/auth/OidcAuthStrategy.js)
+use Node's `openid-client`. Their configurable sign-in labels, discovery and optional registration
+are useful precedents. [Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx/blob/dev/docs/advanced_usage.md#openid-connect-and-social-authentication)
+uses Django's `django-allauth` and lets an already authenticated user explicitly link a social
+identity from their profile. An equivalent authenticated linking flow would be a useful future
+addition here; matching an unverified username or email must not substitute for it.
+
+Those libraries also own more OIDC protocol validation than PyJWT. Reusing Music Assistant's
+existing transport avoids a second HTTP client, but leaves this implementation responsible for
+discovery, nonce, authorized-party and token-hash checks. This is a maintenance tradeoff, not a
+claim that fewer dependencies make authentication safer. Keep the HTTPS provider integration
+tests and evaluate a maintained aiohttp-compatible OIDC client if one becomes suitable.
+
+[Navidrome's externalized authentication](https://www.navidrome.org/docs/usage/admin/security/#externalized-authentication)
+instead trusts identity headers from configured proxy sources. That approach has a different
+trust boundary and does not make arbitrary speaker or Subsonic clients OIDC clients. Music
+Assistant's native OIDC sign-in continues to issue its existing application sessions, so player
+and music-provider authentication remain separate from browser sign-in.
+
+Review identified a callback compatibility issue: Home Assistant's URL-safe authorization-code
+validator rejected opaque OIDC codes containing base64 punctuation or more than 512 characters.
+OIDC now accepts the visible ASCII syntax in
+[RFC 6749 Appendix A.11](https://www.rfc-editor.org/rfc/rfc6749.html#appendix-A.11), with a local
+4096-character bound, and forwards it through form encoding. Home Assistant's existing validator
+is unchanged. Callback regression tests cover punctuation, longer codes, invalid values and
+single-use browser binding. A real Authentik pilot and coordinated models/frontend releases are
+still needed before production rollout; the local test IdP is not an interoperability certification.
+
 ### 3. RemoteAccessManager ([remote_access/](remote_access/))
 
 Manages WebRTC-based remote access for external connectivity:
