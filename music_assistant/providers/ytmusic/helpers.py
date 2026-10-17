@@ -18,7 +18,12 @@ from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 
+from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
+
+# Searches are anonymous, so all instances share a conservative local budget.
+# YouTube does not publish a numeric search quota; this is not an upstream limit.
+_SEARCH_THROTTLER = Throttler(rate_limit=1, period=1)
 
 # subset of ytmusicapi's accepted search filters that we use
 YTMSearchFilter = Literal["artists", "albums", "songs", "videos", "playlists", "podcasts"]
@@ -408,7 +413,8 @@ async def search(
                     del result["browseId"]
         return results[:limit]
 
-    return await _run_ytmusic(_search)
+    async with _SEARCH_THROTTLER:
+        return await _run_ytmusic(_search)
 
 
 def get_playlist_checksum(playlist_obj: dict[str, Any]) -> str:

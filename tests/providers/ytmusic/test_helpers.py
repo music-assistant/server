@@ -1,7 +1,9 @@
 """Test the ytmusicapi call wrapper's handling of a signed-out session."""
 
+import asyncio
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import ytmusicapi
@@ -9,6 +11,8 @@ from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicServerError
 
+from music_assistant.helpers import throttle_retry
+from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.providers.ytmusic import helpers
 
 # A trimmed but realistic nav() KeyError: YouTube answered with its signed-out
@@ -151,3 +155,29 @@ async def test_rate_track_passes_auth_headers_and_user() -> None:
         )
     mock_ytmusic.assert_called_once_with(auth=headers, user="123")
     mock_ytm.rate_song.assert_called_once_with(videoId="video", rating=LikeStatus.DISLIKE)
+
+
+async def test_song_and_video_searches_share_rate_budget() -> None:
+    """Different search modes and queries must wait for the same search budget."""
+    now = 0.0
+    dispatch_times: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        nonlocal now
+        now += delay
+
+    async def run_search(_func: Any) -> list[dict[str, Any]]:
+        dispatch_times.append(now)
+        return []
+
+    with (
+        patch.object(helpers, "_SEARCH_THROTTLER", Throttler(rate_limit=1, period=1)),
+        patch.object(throttle_retry, "time", SimpleNamespace(monotonic=lambda: now)),
+        patch.object(asyncio, "sleep", AsyncMock(side_effect=sleep)) as wait,
+        patch.object(helpers, "_run_ytmusic", side_effect=run_search),
+    ):
+        await helpers.search(query="first song", ytm_filter="songs")
+        await helpers.search(query="another video", ytm_filter="videos")
+
+    assert dispatch_times == [0.0, 1.0]
+    wait.assert_awaited_once_with(1.0)
