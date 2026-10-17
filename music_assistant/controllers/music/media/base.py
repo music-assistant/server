@@ -962,7 +962,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'provider_instance', pm.provider_instance,
                         'available', pm.available,
                         'in_library', pm.in_library,
-                        'is_unique', pm.is_unique
+                        'is_unique', pm.is_unique,
+                        'details', pm.details
                     )) FROM provider_mappings pm WHERE pm.item_id = {self.db_table}.item_id
                         AND pm.media_type = '{self.media_type.value}') AS provider_mappings
                 {extra_columns}
@@ -2976,6 +2977,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_domain=raw_mapping["provider_domain"],
                 provider_instance=raw_mapping["provider_instance"],
                 available=bool(raw_mapping["available"]),
+                details=raw_mapping.get("details"),
                 in_library=parse_optional_bool(raw_mapping["in_library"]),
                 is_unique=parse_optional_bool(raw_mapping["is_unique"]),
             )
@@ -3181,14 +3183,126 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 ORDER BY collection_title,
                 -- null case
                 CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-                -- numeric before text
-                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
-                -- order NUMERIC
-                CASE WHEN collection_sequence_is_numeric
+                -- free-text after numbered (before whole bucket: NULL sorts before ints).
+                -- Digit GLOB must be exact segments only: SQLite '[0-9]*' matches "2A".
+                CASE
+                    WHEN collection_sequence IS NOT NULL
+                        AND NOT collection_sequence_is_numeric
+                        AND NOT (
+                            collection_sequence != ''
+                            AND collection_sequence NOT GLOB '*[^0-9]*'
+                        )
+                        AND NOT (
+                            (length(collection_sequence)
+                                - length(replace(collection_sequence, '.', ''))) = 1
+                            AND replace(collection_sequence, '.', '') != ''
+                            AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                            AND instr(collection_sequence, '.')
+                                BETWEEN 2 AND length(collection_sequence) - 1
+                        )
+                    THEN 1
+                    ELSE 0
+                END,
+                -- whole-number bucket so padded TEXT (e.g. BookOrbit) interleaves
+                -- with other providers' REAL volumes instead of sorting after all numerics.
+                -- Floor (not trunc-toward-zero) so negative fractions keep numeric order.
+                CASE
+                    WHEN collection_sequence_is_numeric THEN
+                        CASE
+                            -- CAST text→INTEGER skips scientific notation ("2e1"→2);
+                            -- go through REAL first ("2e1"→20).
+                            WHEN CAST(collection_sequence AS REAL) >= 0
+                                THEN CAST(CAST(collection_sequence AS REAL) AS INTEGER)
+                            WHEN CAST(collection_sequence AS REAL)
+                                = CAST(
+                                    CAST(CAST(collection_sequence AS REAL) AS INTEGER) AS REAL
+                                )
+                                THEN CAST(CAST(collection_sequence AS REAL) AS INTEGER)
+                            ELSE CAST(CAST(collection_sequence AS REAL) AS INTEGER) - 1
+                        END
+                    WHEN collection_sequence != ''
+                        AND collection_sequence NOT GLOB '*[^0-9]*'
+                        THEN CAST(
+                            COALESCE(NULLIF(ltrim(collection_sequence, '0'), ''), '0')
+                            AS INTEGER
+                        )
+                    WHEN (length(collection_sequence)
+                            - length(replace(collection_sequence, '.', ''))) = 1
+                        AND replace(collection_sequence, '.', '') != ''
+                        AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                        AND instr(collection_sequence, '.')
+                            BETWEEN 2 AND length(collection_sequence) - 1
+                        THEN CAST(
+                            COALESCE(
+                                NULLIF(
+                                    ltrim(
+                                        substr(
+                                            collection_sequence,
+                                            1,
+                                            instr(collection_sequence, '.') - 1
+                                        ),
+                                        '0'
+                                    ),
+                                    ''
+                                ),
+                                '0'
+                            ) AS INTEGER
+                        )
+                END,
+                -- within a whole: whole-only, then dotted TEXT segments, then REAL fractions
+                CASE
+                    WHEN collection_sequence_is_numeric
+                        AND CAST(collection_sequence AS REAL)
+                            = CAST(
+                                CAST(CAST(collection_sequence AS REAL) AS INTEGER) AS REAL
+                            )
+                        THEN 0
+                    WHEN NOT collection_sequence_is_numeric
+                        AND collection_sequence != ''
+                        AND collection_sequence NOT GLOB '*[^0-9]*'
+                        THEN 0
+                    WHEN NOT collection_sequence_is_numeric
+                        AND (length(collection_sequence)
+                            - length(replace(collection_sequence, '.', ''))) = 1
+                        AND replace(collection_sequence, '.', '') != ''
+                        AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                        AND instr(collection_sequence, '.')
+                            BETWEEN 2 AND length(collection_sequence) - 1
+                        THEN 1
+                    WHEN collection_sequence_is_numeric THEN 2
+                    ELSE 3
+                END,
+                -- dotted TEXT segment order (zero-padded keys sort correctly here)
+                CASE
+                    WHEN NOT collection_sequence_is_numeric
+                        AND (length(collection_sequence)
+                            - length(replace(collection_sequence, '.', ''))) = 1
+                        AND replace(collection_sequence, '.', '') != ''
+                        AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                        AND instr(collection_sequence, '.')
+                            BETWEEN 2 AND length(collection_sequence) - 1
+                    THEN collection_sequence
+                END COLLATE NOCASE,
+                -- REAL volumes (including fractional decimals from other providers)
+                CASE
+                    WHEN collection_sequence_is_numeric
                     THEN CAST(collection_sequence AS REAL)
                 END,
-                -- order TEXT
-                CASE WHEN NOT collection_sequence_is_numeric
+                -- remaining free-text sequences (alphabetical)
+                CASE
+                    WHEN NOT collection_sequence_is_numeric
+                        AND NOT (
+                            collection_sequence != ''
+                            AND collection_sequence NOT GLOB '*[^0-9]*'
+                        )
+                        AND NOT (
+                            (length(collection_sequence)
+                                - length(replace(collection_sequence, '.', ''))) = 1
+                            AND replace(collection_sequence, '.', '') != ''
+                            AND replace(collection_sequence, '.', '') NOT GLOB '*[^0-9]*'
+                            AND instr(collection_sequence, '.')
+                                BETWEEN 2 AND length(collection_sequence) - 1
+                        )
                     THEN collection_sequence
                 END COLLATE NOCASE,
                 -- order by media name if no sequence given
