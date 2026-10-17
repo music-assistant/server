@@ -77,7 +77,9 @@ def _make_provider(api: _HeldServerApi) -> tuple[SendspinProvider, Mock]:
     player = Mock(spec=SendspinBasePlayer)
     player.initialized.is_set.return_value = True
     mass = _FakeMass(asyncio.get_running_loop())
-    mass.players = SimpleNamespace(get_player=lambda _client_id: player)  # type: ignore[attr-defined]
+    mass.players = SimpleNamespace(  # type: ignore[attr-defined]
+        get_player=lambda _client_id: player, trigger_player_update=Mock()
+    )
     provider = SendspinProvider.__new__(SendspinProvider)
     provider.mass = cast("MusicAssistant", mass)
     provider.server_api = cast("SendspinServer", api)
