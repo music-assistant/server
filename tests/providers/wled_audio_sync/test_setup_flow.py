@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant.constants import CONF_PORT
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.wled.constants import DEFAULT_PORT
-from music_assistant.providers.wled.setup_flow import run_setup
+from music_assistant.providers.wled_audio_sync.constants import DEFAULT_PORT
+from music_assistant.providers.wled_audio_sync.setup_flow import run_setup
 
 
 def _session(used_ports: list[int], setup_data: dict[str, int] | None = None) -> MagicMock:
     session = MagicMock()
-    session.context.domain = "wled"
+    session.context.domain = "wled_audio_sync"
     session.context.setup_data = setup_data or {}
     siblings = [MagicMock(instance_id=f"wled{i}") for i in range(len(used_ports))]
     ports = {f"wled{i}": port for i, port in enumerate(used_ports)}

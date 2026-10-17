@@ -9,13 +9,13 @@ import pytest
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PORT
-from music_assistant.providers.wled.constants import (
+from music_assistant.providers.wled_audio_sync.constants import (
     CONF_GAIN_DB,
     CONF_LATENCY_MS,
     CONF_SCALING_MODE,
     ScalingMode,
 )
-from music_assistant.providers.wled.provider import WledProvider
+from music_assistant.providers.wled_audio_sync.provider import WledProvider
 
 
 def _make_provider(
@@ -24,7 +24,7 @@ def _make_provider(
     mass = MagicMock()
     config = MagicMock(instance_id="wled_a")
     config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
-    provider = WledProvider(mass, MagicMock(domain="wled"), config, set())
+    provider = WledProvider(mass, MagicMock(domain="wled_audio_sync"), config, set())
     ports = {"wled_a": own_port, **(sibling_ports or {})}
     mass.config.get_provider_configs = AsyncMock(
         return_value=[MagicMock(instance_id=instance_id) for instance_id in ports]
@@ -47,7 +47,7 @@ async def test_rejects_a_sibling_on_the_same_port() -> None:
 async def test_starts_bridge_on_a_free_port() -> None:
     """A unique port starts the bridge."""
     provider = _make_provider(11988, {"wled_b": 11989})
-    with patch("music_assistant.providers.wled.provider.WledBridge") as bridge_cls:
+    with patch("music_assistant.providers.wled_audio_sync.provider.WledBridge") as bridge_cls:
         bridge_cls.return_value.start = AsyncMock()
         await provider.handle_async_init()
     bridge_cls.return_value.start.assert_awaited_once()

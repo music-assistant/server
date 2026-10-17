@@ -7,8 +7,8 @@ import struct
 
 import pytest
 
-from music_assistant.providers.wled.constants import DEFAULT_GAIN_DB, ScalingMode
-from music_assistant.providers.wled.packet import (
+from music_assistant.providers.wled_audio_sync.constants import DEFAULT_GAIN_DB, ScalingMode
+from music_assistant.providers.wled_audio_sync.packet import (
     FFT_MAGNITUDE_SCALE,
     NOISE_GATE,
     PACKET_SIZE,

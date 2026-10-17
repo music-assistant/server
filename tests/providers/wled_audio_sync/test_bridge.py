@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 from aiosendspin.server.roles.visualizer.features import ExtractedFrame
 
-from music_assistant.providers.wled.bridge import WledBridge
-from music_assistant.providers.wled.constants import SPECTRUM_BINS, ScalingMode
+from music_assistant.providers.wled_audio_sync.bridge import WledBridge
+from music_assistant.providers.wled_audio_sync.constants import SPECTRUM_BINS, ScalingMode
 
 
 def _make_bridge() -> tuple[WledBridge, Mock, Mock]:
