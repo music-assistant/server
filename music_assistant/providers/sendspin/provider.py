@@ -1489,6 +1489,8 @@ class SendspinProvider(PlayerProvider):
         # so pushed config (preferred format, static delay) must be re-applied.
         await player.on_config_updated()
         player.update_state()
+        # The visible player derives state from the active roles too.
+        self.mass.players.trigger_player_update(player.protocol_parent_id or client_id)
 
     def _refresh_player_state(self, client_id: str) -> None:
         """Recalculate a registered player's state for its client's new connection."""
