@@ -1789,6 +1789,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self._import_album_tracks_if_enabled(cast("Album", library_item))
         # perform full metadata scan
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
+        if isinstance(library_item, Artist):
+            library_item = await self.artists.get_merged_library_item(library_item)
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
@@ -1900,6 +1902,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        if isinstance(library_item, Artist):
+            library_item = await self.artists.get_merged_library_item(library_item)
         # the item's listings (album tracks, ...) are assembled anew from here on, after
         # every change the refresh made
         await invalidate_listings(self.mass, library_item)
