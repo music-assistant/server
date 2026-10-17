@@ -6,7 +6,7 @@ import hmac
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, Literal
 
@@ -50,6 +50,7 @@ class PendingLogin:
     idp_code_verifier: str
     return_url: str | None = None
     client_code_challenge: str | None = None  # S256 only
+    idp_nonce: str = field(default_factory=lambda: secrets.token_urlsafe(32))
 
 
 class PendingLoginStore:
@@ -114,6 +115,21 @@ class PendingLoginStore:
         if pending is None or pending.expires_at <= time.monotonic():
             return None
         return pending
+
+    def get(self, state: str) -> PendingLogin | None:
+        """Return a live pending sign-in without consuming it."""
+        pending = self._pending.get(state)
+        if pending is not None and pending.expires_at <= time.monotonic():
+            self._pending.pop(state)
+            return None
+        return pending
+
+    def discard_provider(self, provider_id: str) -> None:
+        """Invalidate pending sign-ins when a provider's configuration changes."""
+        for state in [
+            key for key, entry in self._pending.items() if entry.provider_id == provider_id
+        ]:
+            del self._pending[state]
 
 
 def verify_pkce(code_verifier: str, code_challenge: str) -> bool:

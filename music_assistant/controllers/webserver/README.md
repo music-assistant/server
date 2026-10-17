@@ -59,6 +59,7 @@ Handles all authentication and user management:
 **Authentication Providers:**
 - **Built-in Provider** - Username/password authentication with PBKDF2-HMAC-SHA256 hashing
 - **Home Assistant OAuth** - OAuth2 flow for Home Assistant users (auto-enabled when HA provider is configured)
+- **OpenID Connect** - Optional discovery-based authorization code flow with PKCE, for providers such as Authentik, Keycloak and Authelia. Disabled by default.
 
 **Token Types:**
 - **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window capped at 90 days from creation (for user sessions)
@@ -96,6 +97,98 @@ the server itself (`users.manage`, `users.impersonate`, `library.manage`,
 role. The live sessions of a user are closed when its role, or the
 scopes of its custom role, change, so its clients reconnect with the new scopes. The last
 enabled admin can not lose the admin role.
+
+### OpenID Connect setup and design
+
+Create the local administrator first and keep its credentials for recovery. In the webserver
+settings enable OpenID Connect, enter a provider name, exact HTTPS issuer, client ID and client
+secret. The settings use the existing core configuration system; the client secret is a
+`SECURE_STRING`, encrypted by the same mechanism as other secrets. No existing settings, rows,
+schema versions or authentication methods need to be migrated.
+
+Register an authorization code client with PKCE S256 at the identity provider. For a server
+at `https://music.example`, register this exact redirect URI, including its query:
+
+```
+https://music.example/auth/callback?provider_id=oidc
+```
+
+If both an Internal URL and External URL serve browser sign-ins, register both callbacks.
+Serve the Music Assistant UI over HTTPS in production. Match the token endpoint authentication
+method to the registered client: `client_secret_basic` (default), `client_secret_post`, or
+`none` for a public PKCE client. Discovery must advertise code flow, PKCE S256 and one of the
+supported asymmetric ID token signing algorithms. The requested scopes are `openid profile`.
+
+For Authentik use a confidential OAuth2/OpenID provider, a signing key, the default per-provider
+issuer mode and the profile scope mapping. An example issuer is
+`https://auth.example/application/o/music-assistant/`. Copy the `issuer` value exactly,
+including its trailing slash; its discovery document is below
+`.well-known/openid-configuration`. Authentik's global issuer mode uses a different discovery
+location and is not supported by this issuer-based discovery configuration.
+
+Self-registration is a separate, opt-in OIDC setting. An approved, previously unlinked identity
+creates a regular `user` account; Music Assistant administrators manage its role and player
+access as usual. An existing identity keeps its local role, display settings and restrictions.
+Identities are keyed by the exact `(issuer, sub)` pair, hashed with `oidc_identity_id` in
+[oidc_provider.py](helpers/oidc_provider.py) and stored with provider type `oidc` in the existing
+`user_auth_providers` table. Matching usernames or emails never link to a local or Home Assistant
+account. A username collision creates a distinct username. Disabled Music Assistant users
+cannot sign in. Restrict access to the application at the identity provider before enabling
+self-registration for a wider directory.
+
+The existing Home Assistant username-linking path also excludes OIDC-linked accounts. If an
+OIDC user registered the name before a Home Assistant user signs in for the first time, the
+Home Assistant identity gets its own account and a distinct username. Its role still comes
+from Home Assistant. Existing Home Assistant-to-local-account matching remains unchanged.
+
+Clients start through the usual `auth/authorization_url` command or `/auth/authorize` endpoint.
+For OIDC, the returned URL is the server's `/auth/oidc/start` browser entry point. That endpoint
+creates fresh, expiring, single-use state and a distinct nonce and sets an HttpOnly, SameSite=Lax
+cookie before redirecting to the identity provider. HTTPS callbacks use a Secure cookie with
+the `__Host-` prefix to prevent sibling domains from overwriting browser state.
+Callbacks must arrive in the initiating browser; concurrent sign-ins use distinct cookies.
+The code exchange uses the pending sign-in's exact redirect URI and PKCE verifier. Signed ID
+tokens must pass issuer, audience, timestamps, subject, nonce and authorized-party checks;
+token/code hashes are checked when present. UserInfo profile data is accepted only for the
+verified subject. Responses and JWKS fetches are bounded, time out, verify TLS and refuse
+redirects. Discovery and keys are cached, with limited refreshes for signing-key rotation.
+
+The implementation reuses `aiohttp`, the shared HTTP session, existing PKCE/pending-login
+helpers, PyJWT and the current Music Assistant session/token lifecycle. Authlib was considered;
+its current supported async client uses HTTPX2 rather than aiohttp, adding another transport and
+session lifecycle. PyJWT performs the cryptography and standard JWT claim validation; the OIDC
+client supplies the additional protocol checks. See the primary references:
+[Authlib clients](https://docs.authlib.org/en/stable/oauth2/client/http/index.html),
+[PyJWT validation](https://pyjwt.readthedocs.io/en/stable/api.html),
+[OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation),
+[OAuth security BCP](https://www.rfc-editor.org/rfc/rfc9700.html), and
+[Authentik provider configuration](https://docs.goauthentik.io/add-secure-apps/providers/oauth2/).
+
+OIDC discovery is lazy: an identity provider outage cannot prevent server startup or built-in
+or Home Assistant login. Remote Access can use OIDC only when a browser can reach the server's
+External URL; the remote-app-only callback is not advertised. Logout and revocation retain
+Music Assistant's current semantics: signing out revokes the local session, and disabling an
+account at the IdP prevents future OIDC logins but does not revoke already issued Music
+Assistant sessions. OIDC back-channel/single logout and group-to-role mapping are not included.
+
+The shared models need the additive `AuthProviderType.OIDC` enum member and the frontend needs
+the optional OIDC button. Test/build with the matching models and frontend changes; publish
+those packages and update the server pins as part of releasing the feature. Older server
+versions do not understand OIDC provider links, so back up `auth.db` before testing a downgrade
+after OIDC accounts have been created.
+
+For sibling development checkouts named `music-assistant-models`, `music-assistant-frontend`
+and `music-assistant-server`, build the frontend with `pnpm build`. Then, from the server
+checkout, install the matching local packages without replacing the other pinned dependencies:
+
+```sh
+uv pip install --python .venv/bin/python --no-deps ../music-assistant-models ../music-assistant-frontend
+.venv/bin/pytest tests/controllers/webserver tests/test_webserver_auth.py tests/helpers/test_jwt_auth.py
+UV_NO_SYNC=1 .venv/bin/pre-commit run --all-files
+```
+
+Using `uv run` without `UV_NO_SYNC=1`, or rerunning setup, restores the released package pins;
+reinstall the two local packages afterwards when testing the unreleased feature.
 
 ### 3. RemoteAccessManager ([remote_access/](remote_access/))
 

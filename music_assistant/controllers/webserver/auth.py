@@ -30,6 +30,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     RateLimited,
 )
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_PLAYERS,
@@ -67,6 +68,18 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     PendingLoginStore,
     RedirectTarget,
     verify_pkce,
+)
+from music_assistant.controllers.webserver.helpers.oidc_provider import (
+    CONF_OIDC_ALLOW_SELF_REGISTRATION,
+    CONF_OIDC_CLIENT_ID,
+    CONF_OIDC_CLIENT_SECRET,
+    CONF_OIDC_ENABLED,
+    CONF_OIDC_ISSUER,
+    CONF_OIDC_NAME,
+    CONF_OIDC_TOKEN_AUTH_METHOD,
+    OIDC_PROVIDER_ID,
+    OIDCLoginProvider,
+    OIDCProviderConfig,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
@@ -1008,6 +1021,8 @@ class AuthenticationManager:
                     "supports_remote_app": await provider.supports_remote_app(),
                 }
             )
+            if isinstance(provider, OIDCLoginProvider):
+                providers[-1]["name"] = provider.name
         return providers
 
     @api_command("auth/login", authenticated=False)
@@ -1154,6 +1169,15 @@ class AuthenticationManager:
                     "error": "Provider does not support the remote app",
                 }
 
+        if provider_id == OIDC_PROVIDER_ID:
+            return {
+                "authorization_url": self.get_oidc_start_url(
+                    return_url,
+                    transport=transport,
+                    request_host=client.request_host if client else None,
+                )
+            }
+
         started = await self.get_authorization_url(
             provider_id,
             return_url,
@@ -1175,6 +1199,22 @@ class AuthenticationManager:
                 utc() + timedelta(seconds=max(0.0, pending.expires_at - time.monotonic()))
             ).isoformat(),
         }
+
+    def get_oidc_start_url(
+        self,
+        return_url: str | None = None,
+        *,
+        transport: AuthTransport = AuthTransport.DIRECT,
+        request_host: str | None = None,
+    ) -> str | None:
+        """Return the browser entry point that starts OIDC with a browser-bound state cookie."""
+        if OIDC_PROVIDER_ID not in self.login_providers:
+            return None
+        base = self.webserver.get_auth_callback_base(
+            transport, return_url=return_url, request_host=request_host
+        )
+        url = URL(f"{base}/auth/oidc/start")
+        return str(url.with_query(return_url=return_url)) if return_url else str(url)
 
     async def get_authorization_url(
         self,
@@ -2275,6 +2315,7 @@ class AuthenticationManager:
         """Set up available login providers based on configuration."""
         # Always enable built-in provider
         self.login_providers["builtin"] = BuiltinLoginProvider(self.mass, "builtin", {})
+        self._setup_oidc_provider()
 
         # Home Assistant OAuth provider
         # Automatically enabled if HA provider (plugin) is configured
@@ -2301,6 +2342,32 @@ class AuthenticationManager:
                 "Home Assistant OAuth provider enabled (using URL from HA provider: %s)",
                 ha_url,
             )
+
+    def _setup_oidc_provider(self) -> None:
+        """Configure optional OIDC independently of built-in and Home Assistant sign-in."""
+        self.login_providers.pop(OIDC_PROVIDER_ID, None)
+        self.pending_logins.discard_provider(OIDC_PROVIDER_ID)
+        if not self.webserver.get_config_value(CONF_OIDC_ENABLED, False):
+            return
+        config = OIDCProviderConfig(
+            issuer=str(self.webserver.get_config_value(CONF_OIDC_ISSUER, "") or "").strip(),
+            client_id=str(self.webserver.get_config_value(CONF_OIDC_CLIENT_ID, "") or "").strip(),
+            client_secret=str(self.webserver.get_config_value(CONF_OIDC_CLIENT_SECRET, "") or ""),
+            token_auth_method=str(
+                self.webserver.get_config_value(CONF_OIDC_TOKEN_AUTH_METHOD, "client_secret_basic")
+            ),
+            name=str(
+                self.webserver.get_config_value(CONF_OIDC_NAME, "OpenID Connect")
+                or "OpenID Connect"
+            ).strip(),
+            allow_self_registration=bool(
+                self.webserver.get_config_value(CONF_OIDC_ALLOW_SELF_REGISTRATION, False)
+            ),
+        )
+        try:
+            self.login_providers[OIDC_PROVIDER_ID] = OIDCLoginProvider(self.mass, config)
+        except ValueError:
+            self.logger.error("Invalid OpenID Connect configuration; OIDC sign-in is disabled")
 
     async def _sync_ha_oauth_provider(self) -> None:
         """

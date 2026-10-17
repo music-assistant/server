@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import secrets
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
@@ -144,9 +145,10 @@ async def get_or_create_ha_user(
     """
     Get the user of a Home Assistant account, linking or creating it as needed.
 
-    A user not yet linked to the Home Assistant account is matched by username. An enabled
-    user gets its display name and avatar refreshed from the given details, a disabled user
-    is returned untouched for the caller to refuse.
+    A user not yet linked to the Home Assistant account is matched by username, except for
+    an OIDC-linked account, which stays separate. An enabled user gets its display name and
+    avatar refreshed from the given details, a disabled user is returned untouched for the
+    caller to refuse.
 
     :param mass: MusicAssistant instance.
     :param ha_user_id: Home Assistant user ID.
@@ -167,6 +169,15 @@ async def get_or_create_ha_user(
     if not user:
         # Check if a user with this username already exists (from built-in provider)
         user = await auth.get_user_by_username(username, include_disabled=True)
+        if user and await auth.database.get_row(
+            "user_auth_providers",
+            {"user_id": user.user_id, "provider_type": AuthProviderType.OIDC.value},
+        ):
+            # OIDC profile names are not proof that the HA user owns that account.
+            # Keep HA's existing local-account linking, but give this HA identity a
+            # distinct username when an OIDC user claimed the name first.
+            username = f"{normalize_username(username)}-ha-{secrets.token_hex(8)}"
+            user = None
     if user:
         # A disabled user is left untouched, the caller refuses its sign-in
         if not user.enabled:
