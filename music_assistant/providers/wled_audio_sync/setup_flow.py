@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
@@ -39,6 +39,7 @@ async def run_setup(session: SetupSession) -> None:
             errors=errors,
             last_step=True,
         )
+        suggested_port = cast("int", values[CONF_PORT])
         try:
             await session.finish(values)
             return

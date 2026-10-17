@@ -63,3 +63,14 @@ async def test_finish_error_reshows_form() -> None:
     await run_setup(session)
     assert session.form.await_count == 2
     assert session.form.await_args.kwargs["errors"] == {"base": err}
+
+
+async def test_retry_keeps_the_submitted_port() -> None:
+    """After a rejected port the form is shown again with the port the user entered."""
+    session = _session([])
+    session.form = AsyncMock(side_effect=[{CONF_PORT: 12000}, {CONF_PORT: 12001}])
+    session.finish = AsyncMock(side_effect=[SetupFlowError("in use"), None])
+    await run_setup(session)
+    retry_entry = session.form.await_args_list[1].args[0][0]
+    assert retry_entry.value == 12000
+    session.finish.assert_awaited_with({CONF_PORT: 12001})
