@@ -120,11 +120,13 @@ class WledBridge(SendspinLightBridge):
 
     async def stop(self) -> None:
         """Remove the Sendspin client and close the UDP transport."""
-        self._send_silence()
         try:
-            await self.unregister_client()
+            self._send_silence()
         finally:
-            self._transport.close()
+            try:
+                await self.unregister_client()
+            finally:
+                self._transport.close()
 
     def update_settings(self, latency_ms: int, gain_db: float, scaling_mode: ScalingMode) -> None:
         """
