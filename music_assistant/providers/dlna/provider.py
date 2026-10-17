@@ -2,13 +2,13 @@
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, CONF_PLAYERS
 from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -33,7 +33,15 @@ class DLNAPlayerProvider(PlayerProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return ()
+        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
+
+    @property
+    def upnp_manual_discovery_addresses(self) -> list[str]:
+        """Return manually configured IP addresses for unicast UPNP/SSDP discovery."""
+        return cast(
+            "list[str]",
+            self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key) or [],
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
