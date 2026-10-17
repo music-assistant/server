@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
+from aiosendspin.models.types import PlaybackStateType
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
@@ -222,3 +223,38 @@ async def test_previous_playback_ending_during_the_refresh_keeps_the_new_start()
     await _play_media(player)
 
     session.start.assert_awaited_once()
+
+
+async def test_group_stop_during_the_launch_does_not_start_playback() -> None:
+    """A group stop while the Cast app launches ends the wait without starting playback."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    player, session, _, _ = _player(ready)
+    session.playback_task = None
+
+    call = asyncio.create_task(_play_media(player))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    with patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        SendspinPlayer._on_group_stopped(player)
+    await call
+
+    session.start.assert_not_awaited()
+    assert ready.cancelled()
+
+
+async def test_regrouping_during_the_launch_does_not_start_playback() -> None:
+    """A player moved to another group while its Cast app launches doesn't start there."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    player, session, _, _ = _player(ready)
+
+    call = asyncio.create_task(_play_media(player))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    with patch.object(
+        SendspinPlayer, "_controller_role", new_callable=PropertyMock, return_value=None
+    ):
+        SendspinPlayer._on_group_changed(player, Mock(state=PlaybackStateType.STOPPED))
+    await call
+
+    session.start.assert_not_awaited()
+    assert ready.cancelled()
