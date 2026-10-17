@@ -414,7 +414,7 @@ async def test_setup_tells_a_slow_render_apart_from_an_unreachable_server(
     error: Exception, expected: str
 ) -> None:
     """A server that connects but renders too slowly is not reported as unreachable."""
-    session, _ = create_setup_session(
+    session, http_session = create_setup_session(
         {"object": "list", "data": []}, [create_speech_response(error)], {}
     )
     task = asyncio.create_task(run_setup(session))
@@ -432,6 +432,10 @@ async def test_setup_tells_a_slow_render_apart_from_an_unreachable_server(
         assert step.error_translations["base"].args == [SPEECH_TIMEOUT_SECONDS]
     # neither points at a missing voice, so the voices field stays closed
     assert CONF_VOICES not in step.error_translations
+    # a render may take as long as at runtime, but connecting may not
+    timeout = http_session.post.call_args.kwargs["timeout"]
+    assert timeout.total == SPEECH_TIMEOUT_SECONDS
+    assert 0 < timeout.connect < timeout.total
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
