@@ -25,7 +25,7 @@ from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
@@ -103,6 +103,35 @@ _CANDIDATE_KEYS_BATCH_SIZE = 5000
 # Item ids per audio-metadata lookup query, well below SQLite's bound-variable limit.
 _AUDIO_METADATA_BATCH_SIZE = 500
 
+# Scalar AudioAnalysisData fields exported by audio_analysis/features, as
+# (AudioAnalysisData attribute, client-facing key). Arrays (envelopes, embeddings) are left
+# out to keep responses small; beats are opt-in. The level fields are renamed on export
+# because under the export priority they come from Sonic Analysis, which writes
+# approximations rather than EBU R128 values: rms_db is the mean RMS level (dBFS),
+# rms_range_db the spread of the RMS level (dB), sample_peak_db the sample peak (dBFS).
+FEATURE_EXPORT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("duration", "duration"),
+    ("loudness_integrated", "rms_db"),
+    ("loudness_range", "rms_range_db"),
+    ("true_peak", "sample_peak_db"),
+    ("bpm", "bpm"),
+    ("beats_per_bar", "beats_per_bar"),
+    ("key", "key"),
+    ("mode", "mode"),
+    ("energy", "energy"),
+    ("danceability", "danceability"),
+    ("valence", "valence"),
+    ("arousal", "arousal"),
+    ("speechiness", "speechiness"),
+    ("instrumentalness", "instrumentalness"),
+    ("acousticness", "acousticness"),
+    ("brightness", "brightness"),
+    ("harmonic_complexity", "harmonic_complexity"),
+    ("roughness", "roughness"),
+    ("rhythmic_regularity", "rhythmic_regularity"),
+)
+FEATURES_BATCH_MAX_ITEMS = 100
+
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 
 if TYPE_CHECKING:
@@ -122,6 +151,29 @@ def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
         return row[key]
     except IndexError, KeyError, TypeError:
         return None
+
+
+def _features_from_analysis(
+    analysis: AudioAnalysisData, include_beats: bool = False
+) -> dict[str, Any]:
+    """
+    Build the client-facing feature dict for audio_analysis/features.
+
+    :param analysis: Merged analysis for one track.
+    :param include_beats: Also include the beat and downbeat timestamp lists.
+    """
+    features: dict[str, Any] = {}
+    for attr, key in FEATURE_EXPORT_FIELDS:
+        value = getattr(analysis, attr)
+        if isinstance(value, float) and not isfinite(value):
+            value = None
+        features[key] = value
+    if include_beats:
+        features["beats"] = [float(v) for v in analysis.beats] if analysis.beats else None
+        features["downbeats"] = (
+            [float(v) for v in analysis.downbeats] if analysis.downbeats else None
+        )
+    return features
 
 
 def _parse_row(
@@ -788,6 +840,129 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         if analysis is None or analysis.rms_energy is None:
             return None
         return [float(value) for value in analysis.rms_energy]
+
+    @api_command("audio_analysis/features")
+    async def get_features(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        include_beats: bool = False,
+    ) -> dict[str, Any] | None:
+        """
+        Return the stored scalar audio features for a track, or None when it was never analyzed.
+
+        Exposes what the audio analysis providers already computed (rhythm and key from Smart
+        Fades, descriptors such as energy and valence from Sonic Analysis) so clients can sort,
+        filter or visualize tracks without re-analyzing audio. Fields a provider did not write
+        are None. The 1800-bin envelopes and the CLAP embedding are never included; use
+        audio_analysis/wave_form for the energy envelope.
+
+        The level fields are Sonic Analysis approximations, not EBU R128 measurements:
+        rms_db is the mean RMS level (dBFS), rms_range_db the spread of the RMS level (dB)
+        and sample_peak_db the sample peak (dBFS).
+
+        :param item_id: Provider-native item ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param include_beats: Also return the beat and downbeat timestamps (seconds).
+        """
+        analysis = await self.get_audio_analysis(
+            item_id,
+            provider_instance_id_or_domain,
+            priority=TRACK_EXPORT_AA_PRIORITY,
+        )
+        if analysis is None:
+            return None
+        return _features_from_analysis(analysis, include_beats=include_beats)
+
+    @api_command("audio_analysis/features/batch")
+    async def get_features_batch(
+        self,
+        items: list[dict[str, str]],
+    ) -> list[dict[str, Any] | None]:
+        """
+        Return the scalar audio features for several tracks, in request order.
+
+        Each entry is an object with item_id and provider_instance_id_or_domain. The result
+        holds one entry per request entry: the features, or None when not analyzed. A
+        malformed entry rejects the whole request with an error naming its index.
+
+        Rows are fetched with one query per music provider in the request rather than one
+        per track.
+
+        :param items: Tracks to look up, at most FEATURES_BATCH_MAX_ITEMS.
+        """
+        # entries arrive as untyped JSON, so validate each one rather than trust the hint
+        raw_items: list[Any] = list(items)
+        if len(raw_items) > FEATURES_BATCH_MAX_ITEMS:
+            msg = f"At most {FEATURES_BATCH_MAX_ITEMS} items per request"
+            raise InvalidDataError(msg)
+        requests: list[tuple[str, str]] = []
+        for index, item in enumerate(raw_items):
+            if not isinstance(item, Mapping):
+                msg = f"items[{index}]: expected an object"
+                raise InvalidDataError(msg)
+            for field in ("item_id", "provider_instance_id_or_domain"):
+                value = item.get(field)
+                if not isinstance(value, str) or not value:
+                    msg = f"items[{index}]: missing or invalid {field}"
+                    raise InvalidDataError(msg)
+            requests.append((item["item_id"], item["provider_instance_id_or_domain"]))
+        results: list[dict[str, Any] | None] = [None] * len(requests)
+        if not self._database_ready or not requests:
+            return results
+
+        # resolve each submitted provider once to the key analysis rows are stored under
+        prov_keys: dict[str, str | None] = {}
+        for _item_id, submitted in requests:
+            if submitted not in prov_keys:
+                provider = self.mass.get_provider(submitted)
+                prov_keys[submitted] = (
+                    (provider.domain if provider.is_streaming_provider else provider.instance_id)
+                    if isinstance(provider, MusicProvider)
+                    else None
+                )
+        wanted: dict[str, set[str]] = {}
+        for item_id, submitted in requests:
+            if (prov_key := prov_keys[submitted]) is not None:
+                wanted.setdefault(prov_key, set()).add(item_id)
+
+        # one query per provider key (bounded by the batch cap), merged in memory
+        rows_by_track: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+        for prov_key, item_ids in wanted.items():
+            ids = sorted(item_ids)
+            params: dict[str, Any] = {"provider": prov_key, "media_type": MediaType.TRACK.value}
+            placeholders = []
+            for idx, item_id in enumerate(ids):
+                params[f"item_id_{idx}"] = item_id
+                placeholders.append(f":item_id_{idx}")
+            rows = await self.database.get_rows_from_query(
+                f"SELECT id, item_id, aa_provider_domain, CAST(header AS BLOB) AS header, "
+                f"payload FROM {AA_TABLE_ANALYSIS} "
+                f"WHERE provider = :provider AND media_type = :media_type "
+                f"AND item_id IN ({', '.join(placeholders)}) "
+                "ORDER BY timestamp_created ASC",
+                params,
+                limit=0,
+            )
+            for row in rows:
+                rows_by_track.setdefault((prov_key, str(row["item_id"])), []).append(row)
+
+        available_aa_domains = self._available_aa_domains()
+        unparsable_ids: list[Any] = []
+        merged_by_track: dict[tuple[str, str], AudioAnalysisData | None] = {
+            key: _merged_from_rows(
+                track_rows, available_aa_domains, TRACK_EXPORT_AA_PRIORITY, unparsable_ids
+            )
+            for key, track_rows in rows_by_track.items()
+        }
+        for row_id in unparsable_ids:
+            await self.database.delete(AA_TABLE_ANALYSIS, {"id": row_id})
+        for index, (item_id, submitted) in enumerate(requests):
+            if (prov_key := prov_keys[submitted]) is None:
+                continue
+            if (analysis := merged_by_track.get((prov_key, item_id))) is not None:
+                results[index] = _features_from_analysis(analysis)
+        return results
 
     async def set_track_loudness(
         self,
