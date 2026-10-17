@@ -402,8 +402,14 @@ def compare_track(
     compare_item: Track,
     strict: bool = True,
     track_albums: list[Album] | None = None,
+    *,
+    match_remasters: bool = False,
 ) -> bool:
-    """Compare two track items and return True if they match."""
+    """
+    Compare two track items and return True if they match.
+
+    :param match_remasters: Ignore the option that keeps remastered versions apart.
+    """
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
@@ -420,8 +426,10 @@ def compare_track(
         return False
     # a remaster shares the original's recording id, so its version is checked first; a loose
     # compare (e.g. one corroborating an artist) still takes it for the same recording
-    if strict and _remasters_kept_apart(
-        base_item, compare_item, base_item.album, compare_item.album
+    if (
+        strict
+        and not match_remasters
+        and _remasters_kept_apart(base_item, compare_item, base_item.album, compare_item.album)
     ):
         return False
     # return early on (un)matched primary/unique external id
