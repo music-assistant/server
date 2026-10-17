@@ -10,6 +10,7 @@ import pytest
 from aiosendspin.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server import (
     ClientConnectedEvent,
+    ClientDisconnectedEvent,
     SignalState,
     SourceSignalChangedEvent,
     SourceStreamEndedEvent,
@@ -141,6 +142,84 @@ async def test_source_name_falls_back_to_the_device_name(fake_client: _FakeClien
     provider = await make_provider([fake_client])
     get_players(provider).players.clear()
     assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Turntable)"]
+
+
+async def test_line_in_is_listed_on_its_own_player_while_connected() -> None:
+    """A speaker's line-in stays in its own source list between streams until it disconnects."""
+    client = _FakeClient("client-1", name="Cast Pro", has_player_role=True)
+    provider = await make_provider([client])
+    assert [s.item_id for s in provider.get_player_input_sources("client-1")] == ["client-1"]
+    await provider.on_source_selected("client-1", "client-1", "client-1", "session-1")
+    await provider.on_source_unselected("client-1", "client-1", "session-1")
+    assert [s.item_id for s in provider.get_player_input_sources("client-1")] == ["client-1"]
+    client.is_connected = False
+    client.connection = None
+    assert provider.get_player_input_sources("client-1") == []
+
+
+async def test_line_in_is_listed_before_the_reconnect_handshake_completes() -> None:
+    """The reconnect refresh runs before the first client/state marks the client connected."""
+    client = _FakeClient("client-1", name="Cast Pro", has_player_role=True)
+    provider = await make_provider([client])
+    client.is_connected = False
+    assert [s.item_id for s in provider.get_player_input_sources("client-1")] == ["client-1"]
+
+
+async def test_capture_only_client_lists_no_input(fake_client: _FakeClient) -> None:
+    """A client without a player role has no source list of its own to appear in."""
+    provider = await make_provider([fake_client])
+    assert provider.get_player_input_sources("client-1") == []
+
+
+async def test_line_in_stays_available_to_every_player(fake_client: _FakeClient) -> None:
+    """The plugin never binds its sources to players, so every speaker can play the line-in."""
+    provider = await make_provider([fake_client])
+    assert provider.get_player_audio_sources("client-1") is None
+
+
+async def test_reconnect_refreshes_the_player_listing_the_line_in() -> None:
+    """The visible player rebuilds its source list once the source role is back."""
+    client = _FakeClient("client-1", name="Cast Pro", has_player_role=True)
+    provider = await make_provider([client])
+    players = get_players(provider)
+    players.players["client-1"].protocol_parent_id = "visible-1"
+    players.updated.clear()
+    role = client.detach_roles()
+    get_server_api(provider).emit(ClientConnectedEvent("client-1"))
+    client.attach_roles(role)
+    await _settle()
+    assert players.updated == ["visible-1"]
+
+
+async def test_disconnect_refreshes_the_player_listing_the_line_in() -> None:
+    """The visible player drops the line-in once the client's connection is gone."""
+    client = _FakeClient("client-1", has_player_role=True)
+    provider = await make_provider([client])
+    players = get_players(provider)
+    players.players["client-1"].protocol_parent_id = "visible-1"
+    players.updated.clear()
+    client.is_connected = False
+    client.connection = None
+    get_server_api(provider).emit(ClientDisconnectedEvent("client-1", goodbye_reason=None))
+    assert players.updated == ["visible-1"]
+
+
+async def test_load_refreshes_the_players_listing_a_line_in() -> None:
+    """Players already connected when the plugin loads get their line-in listed."""
+    speaker = _FakeClient("speaker", has_player_role=True)
+    capture_only = _FakeClient("capture-only")
+    provider = await make_provider([speaker, capture_only])
+    assert get_players(provider).updated == ["speaker"]
+
+
+async def test_unload_drops_the_line_in_from_its_player() -> None:
+    """Unloading the plugin rebuilds the player's source list without the line-in."""
+    provider = await make_provider([_FakeClient("speaker", has_player_role=True)])
+    players = get_players(provider)
+    players.updated.clear()
+    await provider.unload()
+    assert players.updated == ["speaker"]
+    assert provider.get_player_input_sources("speaker") == []
 
 
 async def test_stream_details_rejects_unknown_source() -> None:

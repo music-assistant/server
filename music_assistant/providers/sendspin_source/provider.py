@@ -152,9 +152,19 @@ class SendspinSourceProvider(PluginProvider):
         self._server_unsubscribe = sendspin.server_api.add_event_listener(self._on_server_event)
         for client in sendspin.server_api.connected_clients:
             self._watch_client(client)
+        for client in sendspin.server_api.clients:
+            if self.get_player_input_sources(client.client_id):
+                self._refresh_player_listing(client.client_id)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        sendspin = self._sendspin_provider
+        clients = sendspin.server_api.clients if sendspin is not None else []
+        listed_client_ids = [
+            client.client_id
+            for client in clients
+            if self.get_player_input_sources(client.client_id)
+        ]
         self._unloading = True
         if self._server_unsubscribe is not None:
             self._server_unsubscribe()
@@ -167,6 +177,8 @@ class SendspinSourceProvider(PluginProvider):
                 state.unwatch = None
             await self._teardown_session(client_id)
         self._clients.clear()
+        for client_id in listed_client_ids:
+            self._refresh_player_listing(client_id)
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return one AudioSource per connected source client or approved held input."""
@@ -179,28 +191,24 @@ class SendspinSourceProvider(PluginProvider):
                     continue
             elif not await self._can_reclaim(client):
                 continue
-            sources.append(
-                AudioSource(
-                    item_id=client.client_id,
-                    provider=self.instance_id,
-                    name=self._source_name(client.client_id),
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id=client.client_id,
-                            provider_domain=self.domain,
-                            provider_instance=self.instance_id,
-                            audio_format=OUTPUT_FORMAT,
-                        )
-                    },
-                    can_play_pause=False,
-                    can_seek=False,
-                    can_next_previous=False,
-                    exclusive=True,
-                    allow_external_trigger=True,
-                    can_initiate=True,
-                )
-            )
+            sources.append(self._audio_source(client))
         return sources
+
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the line-in of a connected client that is also a player, on that player."""
+        if self._unloading:
+            return []
+        client = self._get_client(player_id)
+        # Checks the connection, not is_connected: that only turns True on the first
+        # client/state, which can arrive after the reconnect refresh reads this.
+        if (
+            client is None
+            or client.connection is None
+            or self._get_source_role(client) is None
+            or "player" not in {role_family(role_id) for role_id in client.negotiated_role_ids}
+        ):
+            return []
+        return [self._audio_source(client)]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -393,6 +401,27 @@ class SendspinSourceProvider(PluginProvider):
         roles = client.roles_by_family("source")
         return cast("SourceV1Role", roles[0]) if roles else None
 
+    def _audio_source(self, client: SendspinClient) -> AudioSource:
+        return AudioSource(
+            item_id=client.client_id,
+            provider=self.instance_id,
+            name=self._source_name(client.client_id),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=client.client_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=OUTPUT_FORMAT,
+                )
+            },
+            can_play_pause=False,
+            can_seek=False,
+            can_next_previous=False,
+            exclusive=True,
+            allow_external_trigger=True,
+            can_initiate=True,
+        )
+
     async def _is_selectable(self, client: SendspinClient) -> bool:
         return self._get_source_role(client) is not None or await self._can_reclaim(client)
 
@@ -467,6 +496,7 @@ class SendspinSourceProvider(PluginProvider):
                         state.unwatch()
                         state.unwatch = None
                     self._drop_empty_client_state(client_id, state)
+                self._refresh_player_listing(client_id)
 
     async def _on_client_connected(self, client_id: str) -> None:
         """Re-arm watching and streaming for a client that just (re)connected."""
@@ -476,6 +506,8 @@ class SendspinSourceProvider(PluginProvider):
         if client is None:
             return
         self._watch_client(client)
+        # The player's source list depends on the source role, which only attached now.
+        self._refresh_player_listing(client_id)
         # A reconnect clears the client's start request, so ask again.
         if self._get_session(client_id) is None:
             return
@@ -484,6 +516,11 @@ class SendspinSourceProvider(PluginProvider):
             return
         self.logger.debug("Re-requesting stream start from %s", client_id)
         role.request_start()
+
+    def _refresh_player_listing(self, client_id: str) -> None:
+        """Rebuild the source list of the visible player that lists this client's line-in."""
+        if (player := self.mass.players.get_player(client_id)) is not None:
+            self.mass.players.trigger_player_update(player.protocol_parent_id or client_id)
 
     def _watch_client(self, client: SendspinClient) -> None:
         """Subscribe to a source client's events, for signal presence while idle."""
