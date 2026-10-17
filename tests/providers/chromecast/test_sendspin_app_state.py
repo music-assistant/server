@@ -305,3 +305,28 @@ async def test_idle_status_during_a_relaunch_does_not_fail_playback() -> None:
     client.group.stop.assert_not_awaited()
     client.ungroup.assert_not_awaited()
     assert bridge._cast_app_was_active is True
+
+
+async def test_cast_disconnect_during_the_refresh_is_handled() -> None:
+    """A Cast connection lost during the refresh counts as the app going away."""
+    bridge, client = _make_bridge(app_id=SENDSPIN_CAST_APP_ID, client_connected=True)
+    bridge._cast_app_was_active = True
+    loop = asyncio.get_running_loop()
+    cast_player: Any = bridge.cast_player
+
+    def update_status(*, callback_function: Any) -> None:
+        # a lost connection leaves the cached app id and fails the pending request
+        cast_player.available = False
+        loop.call_soon_threadsafe(bridge.on_cast_status_changed, None)
+        callback_function(False, None)
+
+    receiver = cast_player.cc.socket_client.receiver_controller
+    receiver.update_status = update_status
+
+    await bridge.refresh_cast_app_state()
+    ready = bridge.reset_cast_app_ready()
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client.detach_connection.assert_called_once_with(GoodbyeReason.SHUTDOWN)
+    assert not ready.done()

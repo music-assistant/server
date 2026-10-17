@@ -352,7 +352,12 @@ class SendspinChromecastBridge:
     def is_cast_app_serving(self) -> bool:
         """Return whether the Sendspin Cast app runs and is connected to the Sendspin server."""
         client = self._sendspin_client
-        return self.is_cast_app_active and client is not None and client.is_connected
+        return (
+            self.cast_player.available
+            and self.is_cast_app_active
+            and client is not None
+            and client.is_connected
+        )
 
     async def refresh_cast_app_state(self) -> None:
         """
@@ -377,8 +382,9 @@ class SendspinChromecastBridge:
             raise
         if not answered or self.is_cast_app_active:
             self._cast_app_was_active = was_active
-            if was_active and not self.is_cast_app_active:
-                # gone while the device didn't answer: the usual handling applies
+            if was_active and not (self.cast_player.available and self.is_cast_app_active):
+                # gone or disconnected while the device didn't answer: the usual
+                # handling applies (a lost connection leaves the cached app id as is)
                 self._handle_cast_app_gone(self.cast_player.cc.app_id)
             return
         self._cast_app_connected = False

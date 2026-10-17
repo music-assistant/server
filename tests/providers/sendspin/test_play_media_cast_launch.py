@@ -32,8 +32,12 @@ def _player(ready: asyncio.Future[None]) -> tuple[SendspinPlayer, Mock, Mock, li
     player = object.__new__(SendspinPlayer)
     player._player_id = "p1"
     player.logger = Mock()
+
+    async def cancel(_reason: str, *, keep_stream: bool = False) -> None:
+        calls.append("cancel (keep stream)" if keep_stream else "cancel")
+
     session = Mock(
-        cancel=AsyncMock(),
+        cancel=AsyncMock(side_effect=cancel),
         start=AsyncMock(side_effect=lambda _media: calls.append("start")),
     )
     player.playback_session = session
@@ -94,7 +98,7 @@ async def test_waits_for_the_cast_app_before_starting_the_stream() -> None:
     ready.set_result(None)
     await call
 
-    assert calls == ["refresh", "reset", "launch", "start"]
+    assert calls == ["refresh", "reset", "launch", "cancel (keep stream)", "start"]
 
 
 async def test_running_cast_app_is_not_launched_again() -> None:
@@ -106,13 +110,13 @@ async def test_running_cast_app_is_not_launched_again() -> None:
     await _play_media(player)
 
     bridge.launch_cast_app.assert_not_called()
-    assert calls == ["refresh", "reset", "start"]
+    assert calls == ["refresh", "reset", "cancel (keep stream)", "start"]
 
 
 async def test_failed_launch_never_starts_the_stream() -> None:
     """A Cast app that fails to start fails the command without streaming to the device."""
     ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-    player, session, _, _ = _player(ready)
+    player, session, _, calls = _player(ready)
 
     call = asyncio.create_task(_play_media(player))
     await asyncio.sleep(0)
@@ -122,4 +126,6 @@ async def test_failed_launch_never_starts_the_stream() -> None:
         await call
 
     session.start.assert_not_awaited()
-    session.cancel.assert_awaited_with("cast app readiness failed")
+    # the playback being replaced is ended, not kept for a successor that never comes
+    assert calls == ["refresh", "reset", "launch", "cancel"]
+    session.cancel.assert_awaited_once_with("cast app readiness failed")

@@ -1592,13 +1592,11 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
 
-        # The spec reserves stream/end for queue-empty, not track changes.
-        await self.playback_session.cancel("new media requested", keep_stream=True)
-
         # Cast-only: launch the Sendspin Cast app and wait for it before start(). The
         # stream would otherwise run on while the app launches (several seconds), and
         # the device would miss the start of the track. The fresh future also cancels
-        # any stale pending one from a previous timed-out attempt.
+        # any stale pending one from a previous timed-out attempt. Waited for before the
+        # current playback is cancelled, so a failed launch still ends that playback.
         if (mgr := self._get_cast_bridge_manager()) and (
             bridge := mgr.get_bridge_by_client_id(self.player_id)
         ):
@@ -1608,6 +1606,8 @@ class SendspinPlayer(SendspinBasePlayer):
                 bridge.launch_cast_app()
             await self._wait_for_cast_app(cast_app_ready)
 
+        # The spec reserves stream/end for queue-empty, not track changes.
+        await self.playback_session.cancel("new media requested", keep_stream=True)
         await self.playback_session.start(media)
         self.update_state()
         if (
