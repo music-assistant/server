@@ -126,7 +126,7 @@ async def test_add_item_to_library_sets_in_library_true() -> None:
 
     mass = Mock()
     ctrl_mock = AsyncMock()
-    ctrl_mock.add_item_to_library = AsyncMock(return_value=album)
+    ctrl_mock.add_or_update_library_item = AsyncMock(return_value=(album, False))
 
     provider_mock = Mock()
     provider_mock.type = ProviderType.MUSIC
@@ -159,7 +159,7 @@ async def test_add_item_to_library_sets_in_library_even_when_sync_back_disabled(
 
     mass = Mock()
     ctrl_mock = AsyncMock()
-    ctrl_mock.add_item_to_library = AsyncMock(return_value=album)
+    ctrl_mock.add_or_update_library_item = AsyncMock(return_value=(album, False))
 
     provider_mock = Mock()
     provider_mock.type = ProviderType.MUSIC
@@ -193,7 +193,7 @@ async def test_add_item_to_library_sets_in_library_even_when_edit_not_supported(
 
     mass = Mock()
     ctrl_mock = AsyncMock()
-    ctrl_mock.add_item_to_library = AsyncMock(return_value=album)
+    ctrl_mock.add_or_update_library_item = AsyncMock(return_value=(album, False))
 
     provider_mock = Mock()
     provider_mock.type = ProviderType.MUSIC
@@ -229,7 +229,7 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
 
     mass = Mock()
     ctrl_mock = AsyncMock()
-    ctrl_mock.add_item_to_library = AsyncMock(return_value=album)
+    ctrl_mock.add_or_update_library_item = AsyncMock(return_value=(album, False))
 
     provider_mock = Mock(spec=MusicProvider)
     provider_mock.type = ProviderType.MUSIC
@@ -262,7 +262,7 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
 
     mass = Mock()
     ctrl_mock = AsyncMock()
-    ctrl_mock.add_item_to_library = AsyncMock(return_value=album)
+    ctrl_mock.add_or_update_library_item = AsyncMock(return_value=(album, False))
 
     provider_mock = Mock(spec=MusicProvider)
     provider_mock.type = ProviderType.MUSIC
@@ -309,7 +309,7 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
 
     mass = Mock()
     ctrl_mock = AsyncMock()
-    ctrl_mock.add_item_to_library = AsyncMock(return_value=library_album)
+    ctrl_mock.add_or_update_library_item = AsyncMock(return_value=(library_album, False))
 
     provider_mock = Mock(spec=MusicProvider)
     provider_mock.type = ProviderType.MUSIC
@@ -1379,6 +1379,7 @@ def _create_event_capture_controller(
     ctrl._update_library_item = AsyncMock()
     ctrl.get_library_item = AsyncMock(return_value=library_item)
     ctrl.add_item_to_library = MediaControllerBase.add_item_to_library.__get__(ctrl)
+    ctrl.add_or_update_library_item = MediaControllerBase.add_or_update_library_item.__get__(ctrl)
     ctrl.update_item_in_library = MediaControllerBase.update_item_in_library.__get__(ctrl)
     return ctrl, mass
 

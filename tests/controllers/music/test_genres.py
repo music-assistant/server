@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
@@ -24,6 +24,7 @@ from music_assistant_models.media_items import (
     Artist,
     Genre,
     GenreSummary,
+    Playlist,
     Podcast,
     ProviderMapping,
     Track,
@@ -1005,6 +1006,77 @@ class TestSyncMediaItemGenres:
             limit=0,
         )
         assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
+
+
+class TestAddItemLinksGenres:
+    """Tests for the genre links made when an item is added to the library by hand."""
+
+    async def test_new_item_links_its_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A new item added by hand is linked to the genres it carries."""
+        album = _genre_album("Added Genre Album", {"AddedGenreA", "AddedGenreB"})
+        library_album = await _add_by_hand(mass, album)
+        assert await _linked_genre_names(mass, MediaType.ALBUM, library_album.item_id) == {
+            "AddedGenreA",
+            "AddedGenreB",
+        }
+
+    async def test_new_item_links_the_genres_metadata_finds(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A new item added by hand is linked to the genres the metadata update adds."""
+        bare = await _add_by_hand(
+            mass, _genre_album("Enriched Bare Album", set()), {"EnrichedOnlyGenre"}
+        )
+        assert await _linked_genre_names(mass, MediaType.ALBUM, bare.item_id) == {
+            "EnrichedOnlyGenre"
+        }
+        tagged = await _add_by_hand(
+            mass, _genre_album("Enriched Tagged Album", {"EnrichedOwnGenre"}), {"EnrichedExtra"}
+        )
+        assert await _linked_genre_names(mass, MediaType.ALBUM, tagged.item_id) == {
+            "EnrichedOwnGenre",
+            "EnrichedExtra",
+        }
+
+    async def test_existing_item_keeps_its_genre_links(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Adding an item that is already in the library leaves its genre links alone."""
+        library_album = await _add_by_hand(
+            mass, _genre_album("Added Again Genre Album", {"AddedAgainFirst"})
+        )
+        library_album.metadata.genres = {"AddedAgainSecond"}
+        added_again = await _add_by_hand(mass, library_album, {"AddedAgainEnriched"})
+        assert added_again.item_id == library_album.item_id
+        assert await _linked_genre_names(mass, MediaType.ALBUM, library_album.item_id) == {
+            "AddedAgainFirst"
+        }
+
+    async def test_unlinked_media_type_gets_no_genre_links(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A playlist added by hand is not linked to the genres it carries."""
+        playlist = Playlist(
+            item_id="0",
+            provider="library",
+            name="Added Genre Playlist",
+            provider_mappings=_library_provider_mapping(),
+        )
+        playlist.metadata.genres = {"AddedPlaylistGenre"}
+        library_playlist = await _add_by_hand(mass, playlist)
+        assert (
+            await _linked_genre_names(mass, MediaType.PLAYLIST, library_playlist.item_id) == set()
+        )
+
+    async def test_sync_add_leaves_genres_to_the_sync(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """An item added by a library sync or scan is not linked on add."""
+        album = _genre_album("Synced Genre Album", {"SyncedGenre"})
+        library_album = await mass.music.albums.add_item_to_library(album)
+        assert await _linked_genre_names(mass, MediaType.ALBUM, library_album.item_id) == set()
 
 
 # ===================================================================
@@ -3063,3 +3135,54 @@ class TestGenreIconMetadata:
             "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
         )
         assert GenreController._get_genre_icon_metadata("nope", MediaType.PODCAST) is None
+
+
+def _genre_album(name: str, genres: set[str]) -> Album:
+    """Create a minimal album carrying the given genres."""
+    album = Album(
+        item_id="0",
+        provider="library",
+        name=name,
+        provider_mappings=_library_provider_mapping(),
+        album_type=AlbumType.ALBUM,
+    )
+    album.metadata.genres = genres
+    return album
+
+
+async def _add_by_hand(
+    mass: MusicAssistant, item: Album | Playlist, metadata_genres: set[str] | None = None
+) -> Album | Playlist:
+    """
+    Add an item through the library add command, as a user does by hand.
+
+    :param mass: The MusicAssistant instance.
+    :param item: The item to add.
+    :param metadata_genres: Genres the metadata update adds to the library item.
+    """
+
+    async def _update_metadata(library_item: Album | Playlist, *_: Any) -> Album | Playlist:
+        library_item.metadata.genres = (library_item.metadata.genres or set()) | (
+            metadata_genres or set()
+        )
+        return library_item
+
+    with (
+        patch.object(mass.music, "get_item", AsyncMock(return_value=item)),
+        patch.object(mass.metadata, "update_metadata", side_effect=_update_metadata),
+    ):
+        return cast("Album | Playlist", await mass.music.add_item_to_library(item))
+
+
+async def _linked_genre_names(
+    mass: MusicAssistant, media_type: MediaType, media_id: str | int
+) -> set[str]:
+    """Return the names of the genres linked to a library item."""
+    rows = await mass.music.database.get_rows_from_query(
+        f"SELECT g.name FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} gm "
+        f"JOIN {DB_TABLE_GENRES} g ON g.item_id = gm.genre_id "
+        "WHERE gm.media_id = :mid AND gm.media_type = :mtype",
+        {"mid": int(media_id), "mtype": media_type.value},
+        limit=0,
+    )
+    return {r["name"] for r in rows}
