@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
+from aiosendspin.models.visualizer import ClientHelloVisualizerSupport
 from music_assistant_models.enums import PlayerType
 
 from music_assistant.providers.sendspin.bridge_role import (
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
     import asyncio
 
     from aiosendspin.models.core import ServerStatePayload
-    from aiosendspin.models.visualizer import BeatTiming, ClientHelloVisualizerSupport
+    from aiosendspin.models.visualizer import BeatTiming, VisualizerStatePayload
     from aiosendspin.server import ExternalStreamStartRequest, SendspinClient
     from aiosendspin.server.roles.visualizer.features import ExtractedFrame
 
@@ -39,7 +40,8 @@ class SendspinLightBridge(ABC):
         name: str,
         manufacturer: str,
         product_name: str,
-        support: ClientHelloVisualizerSupport,
+        visualizer_request: VisualizerStatePayload,
+        buffer_capacity: int,
         render_rate_hz: int,
         with_color_role: bool = False,
     ) -> None:
@@ -52,7 +54,8 @@ class SendspinLightBridge(ABC):
         :param name: Display name of the light player.
         :param manufacturer: Manufacturer shown in the device info.
         :param product_name: Product name shown in the device info.
-        :param support: Visualizer features to request from the extraction pipeline.
+        :param visualizer_request: Visualizer features to request from the extraction pipeline.
+        :param buffer_capacity: Number of feature frames the light player can buffer.
         :param render_rate_hz: Rate of the render loop.
         :param with_color_role: Also receive color palette updates.
         """
@@ -65,7 +68,8 @@ class SendspinLightBridge(ABC):
         self._name = name
         self._manufacturer = manufacturer
         self._product_name = product_name
-        self._support = support
+        self._visualizer_request = visualizer_request
+        self._buffer_capacity = buffer_capacity
         self._with_color_role = with_color_role
         self._render_period_s = 1.0 / render_rate_hz
         self._sendspin_client: SendspinClient | None = None
@@ -86,7 +90,7 @@ class SendspinLightBridge(ABC):
             device_info=SendspinDeviceInfo(
                 manufacturer=self._manufacturer, product_name=self._product_name
             ),
-            visualizer_support=self._support,
+            visualizer_support=ClientHelloVisualizerSupport(buffer_capacity=self._buffer_capacity),
         )
         client = self.sendspin_server.register_external_player(
             hello, on_stream_start=self._on_external_stream_start
@@ -102,7 +106,7 @@ class SendspinLightBridge(ABC):
                 on_stream_clear=self._on_stream_clear,
                 on_stream_end=self._on_stream_end,
             )
-            viz_role.setup_visualizer(self._support)
+            viz_role.setup_visualizer(self._visualizer_request)
         if self._with_color_role and (color_roles := client.roles_by_family("color")):
             cast("BridgeColorRole", color_roles[0]).set_callbacks(on_color=self._on_color)
         client.attach_preinitialized_roles()

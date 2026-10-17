@@ -7,7 +7,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from aiosendspin.models.visualizer import ClientHelloVisualizerSupport
+from aiosendspin.models.visualizer import VisualizerStatePayload
 from music_assistant_models.enums import PlayerType
 
 from music_assistant.providers.sendspin_lights.base import SendspinLightBridge
@@ -34,8 +34,8 @@ def _make() -> tuple[_Bridge, Mock, Mock, Mock]:
     provider: Any = SimpleNamespace(
         mass=SimpleNamespace(loop=SimpleNamespace(call_later=call_later)), logger=Mock()
     )
-    support = ClientHelloVisualizerSupport(buffer_capacity=1, rate_max=10, types=["peak"])
-    bridge = _Bridge(provider, sendspin, "light", "Light", "Acme", "Lamp", support, 10)
+    request = VisualizerStatePayload(types=["peak"], rate_max=10)
+    bridge = _Bridge(provider, sendspin, "light", "Light", "Acme", "Lamp", request, 1, 10)
     return bridge, call_later, sendspin.register_bridge_player_type, server.remove_client
 
 

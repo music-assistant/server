@@ -6,10 +6,7 @@ import asyncio
 from collections import deque
 from typing import TYPE_CHECKING
 
-from aiosendspin.models.visualizer import (
-    ClientHelloVisualizerSpectrum,
-    ClientHelloVisualizerSupport,
-)
+from aiosendspin.models.visualizer import ClientHelloVisualizerSpectrum, VisualizerStatePayload
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.sendspin_lights.base import SendspinLightBridge
@@ -70,10 +67,9 @@ class WledBridge(SendspinLightBridge):
             name=f"WLED Sync (port {port})",
             manufacturer="WLED",
             product_name="Audio Sync Zone",
-            support=ClientHelloVisualizerSupport(
-                buffer_capacity=2048,
-                rate_max=SEND_RATE_HZ,
+            visualizer_request=VisualizerStatePayload(
                 types=["loudness", "f_peak", "spectrum", "peak"],
+                rate_max=SEND_RATE_HZ,
                 spectrum=ClientHelloVisualizerSpectrum(
                     n_disp_bins=SPECTRUM_BINS,
                     scale=SPECTRUM_SCALE,
@@ -81,6 +77,7 @@ class WledBridge(SendspinLightBridge):
                     f_max=SPECTRUM_F_MAX,
                 ),
             ),
+            buffer_capacity=2048,
             render_rate_hz=SEND_RATE_HZ,
         )
         self.port = port
