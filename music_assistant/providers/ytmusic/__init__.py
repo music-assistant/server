@@ -235,10 +235,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._initialize_headers()
         self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
-        self._rotate_session = create_clientsession(self.mass, cookie_jar=DummyCookieJar())
-        # a cookie that sat unused (e.g. while MA was offline) needs fresh timestamps first
-        with suppress(ClientError, TimeoutError):
-            await self._rotate_cookies()
         # get default language (that is supported by YTM)
         mass_locale = self.mass.metadata.locale
         for lang_code in SUPPORTED_LANGUAGES:
@@ -247,7 +243,18 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 break
         else:
             self.language = "en"
-        if not await self._user_has_ytm_premium():
+        self._rotate_session = create_clientsession(self.mass, cookie_jar=DummyCookieJar())
+        try:
+            # a cookie that sat unused (e.g. while MA was offline) needs fresh timestamps first
+            with suppress(ClientError, TimeoutError):
+                await self._rotate_cookies()
+            has_premium = await self._user_has_ytm_premium()
+        except BaseException:
+            # the provider is only registered once init succeeds, so unload won't run
+            await self._rotate_session.close()
+            raise
+        if not has_premium:
+            await self._rotate_session.close()
             raise LoginFailed("User does not have Youtube Music Premium")
         self._keep_alive_task = self.mass.create_task(self._keep_session_alive())
 
@@ -1327,6 +1334,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 had_login = _has_login_cookie(ydl.cookiejar)
+                sent = {cookie.name: cookie.value for cookie in ydl.cookiejar}
                 try:
                     info = ydl.extract_info(url, download=False)
                 except yt_dlp.utils.DownloadError as err:
@@ -1349,10 +1357,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     raise UnplayableMediaError("No stream formats found")
                 rotated: dict[str, str] = {}
                 if _has_login_cookie(ydl.cookiejar):
+                    # only what YouTube changed, so a rotation that ran meanwhile isn't undone
                     rotated = {
                         cookie.name: cookie.value
                         for cookie in ydl.cookiejar
                         if cookie.domain.endswith("youtube.com")
+                        and sent.get(cookie.name) != cookie.value
                     }
                 return stream_format, rotated
 
@@ -1441,7 +1451,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._cookie = "; ".join(f"{name}={value}" for name, value in merged.items())
         self._netscape_cookie = convert_to_netscape(self._cookie, YTM_COOKIE_DOMAIN)
         self._initialize_headers()
-        self._update_setup_data(CONF_COOKIE, self._cookie, immediate=False)
+        self._update_setup_data(CONF_COOKIE, self._cookie)
 
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""

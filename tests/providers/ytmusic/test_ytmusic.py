@@ -122,10 +122,7 @@ async def test_init_distinguishes_expired_cookies_from_missing_premium(
     expected_message: str,
 ) -> None:
     """Cookies YouTube invalidated during the premium check are not reported as no Premium."""
-    cookiejar = [
-        SimpleNamespace(name="LOGIN_INFO", value="xyz", domain=".youtube.com"),
-        SimpleNamespace(name="SIDCC", value="rotated", domain=".youtube.com"),
-    ]
+    cookiejar = [SimpleNamespace(name="LOGIN_INFO", value="xyz", domain=".youtube.com")]
 
     class _FakeYoutubeDL:
         def __init__(self, opts: dict[str, Any]) -> None:
@@ -138,6 +135,7 @@ async def test_init_distinguishes_expired_cookies_from_missing_premium(
             return None
 
         def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            cookiejar.append(SimpleNamespace(name="SIDCC", value="rotated", domain=".youtube.com"))
             if login_cleared:
                 # YouTube clears LOGIN_INFO via Set-Cookie when it invalidates the session
                 cookiejar[:] = [c for c in cookiejar if c.name != "LOGIN_INFO"]
@@ -162,13 +160,18 @@ async def test_init_distinguishes_expired_cookies_from_missing_premium(
         patch.object(provider, "get_setup_value", side_effect=setup_values.get),
         patch.object(provider, "_rotate_cookies", AsyncMock()),
         patch.object(provider, "_update_setup_data") as update_setup_data,
-        patch("music_assistant.providers.ytmusic.create_clientsession"),
+        patch(
+            "music_assistant.providers.ytmusic.create_clientsession",
+            return_value=MagicMock(close=AsyncMock()),
+        ) as create_clientsession,
         pytest.raises(LoginFailed) as exc_info,
     ):
         await provider.handle_async_init()
 
     assert exc_info.value.translation_key == expected_key
     assert expected_message in str(exc_info.value)
+    # a failed init never registers the provider, so it must close its own session
+    create_clientsession.return_value.close.assert_awaited_once()
     if login_cleared:
         assert exc_info.value.translation_owner == "provider.ytmusic"
         assert "Premium" not in str(exc_info.value)
@@ -176,7 +179,7 @@ async def test_init_distinguishes_expired_cookies_from_missing_premium(
         update_setup_data.assert_not_called()
     else:
         update_setup_data.assert_called_once_with(
-            CONF_COOKIE, "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; SIDCC=rotated", immediate=False
+            CONF_COOKIE, "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; SIDCC=rotated"
         )
 
 
@@ -200,7 +203,7 @@ async def test_rotate_cookies_stores_refreshed_session(provider: YoutubeMusicPro
         await provider._rotate_cookies()
 
     expected = "__Secure-3PAPISID=abc; __Secure-1PSIDTS=new; SID=sid"
-    update_setup_data.assert_called_once_with(CONF_COOKIE, expected, immediate=False)
+    update_setup_data.assert_called_once_with(CONF_COOKIE, expected)
     assert provider._headers["Cookie"] == expected
     assert "__Secure-1PSIDTS\tnew" in provider._netscape_cookie
 
@@ -860,3 +863,47 @@ async def test_stream_from_signed_out_session_keeps_stored_cookie(
         await provider._get_stream_format("dQw4w9WgXcQ")
 
     update_setup_data.assert_not_called()
+
+
+async def test_stream_does_not_undo_a_rotation_that_ran_meanwhile(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Cookies a stream left untouched never overwrite ones rotated during the extraction."""
+    provider._cookie = "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; __Secure-1PSIDTS=old; SIDCC=old"
+    provider._netscape_cookie = ""
+    cookiejar = [
+        SimpleNamespace(name=name, value=value, domain=".youtube.com")
+        for name, value in (("LOGIN_INFO", "xyz"), ("__Secure-1PSIDTS", "old"), ("SIDCC", "old"))
+    ]
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            self.cookiejar = cookiejar
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            # RotateCookies lands while yt-dlp is still extracting
+            provider._cookie = provider._cookie.replace(
+                "__Secure-1PSIDTS=old", "__Secure-1PSIDTS=new"
+            )
+            cookiejar[2] = SimpleNamespace(name="SIDCC", value="fresh", domain=".youtube.com")
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "141"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    with patch.object(provider, "_update_setup_data") as update_setup_data:
+        await provider._get_stream_format("dQw4w9WgXcQ")
+
+    update_setup_data.assert_called_once_with(
+        CONF_COOKIE, "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; __Secure-1PSIDTS=new; SIDCC=fresh"
+    )
