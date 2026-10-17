@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.auth import User, UserRole
+from music_assistant_models.bookmarks_update import BookmarksUpdate
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing
+from music_assistant_models.enums import EventType, MediaType, ProviderFeature, ProviderSharing
 from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
 from music_assistant_models.media_items import (
     Audiobook,
@@ -124,11 +125,36 @@ async def test_bookmark_goes_to_the_provider_only_when_it_may_edit(
         lambda mappings: list(mappings) if write_target else [],
     )
     book = await _library_book(music_mass)
+    events: list[tuple[str, BookmarksUpdate]] = []
+    monkeypatch.setattr(
+        music_mass,
+        "signal_event",
+        lambda event, object_id=None, data=None: (
+            events.append((object_id, data)) if event == EventType.BOOKMARKS_UPDATED else None
+        ),
+    )
 
     refused = stored_by_music_assistant is None
 
     with pytest.raises(InsufficientPermissions) if refused else nullcontext():
         await music_mass.music.bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 754.5, "Arrakis")
+
+    # every client hears of it, each one applies it for its own user only
+    assert events == (
+        []
+        if refused
+        else [
+            (
+                f"{ABS}://audiobook/book1",
+                BookmarksUpdate(
+                    media_type=AUDIOBOOK,
+                    provider_instance_id=ABS,
+                    provider_item_id="book1",
+                    user_id=LISTENER.user_id,
+                ),
+            )
+        ]
+    )
 
     assert await music_mass.music.bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == (
         []
