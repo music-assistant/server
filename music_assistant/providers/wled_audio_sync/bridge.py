@@ -101,14 +101,7 @@ class WledBridge(SendspinLightBridge):
             asyncio.DatagramProtocol, remote_addr=(WLED_MULTICAST_GROUP, self.port)
         )
         try:
-            # register_external_player() would silently take over a live zone's client
-            # for the same port, so refuse here. Nothing suspends between this check and
-            # the claim, so no other zone can load in between.
-            if self.sendspin_server.get_client(self.client_id) is not None:
-                raise SetupFailedError(
-                    f"Sendspin client '{self.client_id}' is already registered: another "
-                    f"WLED zone is using port {self.port}. Each WLED instance needs its own port."
-                )
+            self._ensure_client_unclaimed()
             self.register_client()
         except Exception:
             try:
@@ -212,3 +205,18 @@ class WledBridge(SendspinLightBridge):
                 self._latest_f_peak_amp = frame.f_peak_amp
             if frame.peak is not None and frame.peak >= PEAK_MIN_STRENGTH:
                 self._peak_pending = True
+
+    def _ensure_client_unclaimed(self) -> None:
+        """
+        Refuse to start when another zone already holds this port's Sendspin client.
+
+        :raises SetupFailedError: If the client id is already registered.
+        """
+        # register_external_player() would silently take over a live zone's client for the
+        # same port. Nothing suspends between this check and the claim, so no other zone
+        # can load in between.
+        if self.sendspin_server.get_client(self.client_id) is not None:
+            raise SetupFailedError(
+                f"Sendspin client '{self.client_id}' is already registered: another "
+                f"WLED zone is using port {self.port}. Each WLED instance needs its own port."
+            )
