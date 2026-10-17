@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock
 
@@ -9,7 +10,7 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
 from music_assistant_models.media_items import (
     Audiobook,
     ItemMapping,
@@ -97,7 +98,7 @@ async def _library_book(mass: MusicAssistant) -> Audiobook:
     ("features", "write_target", "stored_by_music_assistant"),
     [
         ({READ, EDIT}, True, False),
-        ({READ, EDIT}, False, True),
+        ({READ, EDIT}, False, None),
         ({READ}, True, True),
         (set(), True, True),
     ],
@@ -107,9 +108,13 @@ async def test_bookmark_goes_to_the_provider_only_when_it_may_edit(
     monkeypatch: pytest.MonkeyPatch,
     features: set[ProviderFeature],
     write_target: bool,
-    stored_by_music_assistant: bool,
+    stored_by_music_assistant: bool | None,
 ) -> None:
-    """A provider keeps a bookmark if it can edit them for this user, otherwise MA does."""
+    """
+    A provider that can edit bookmarks keeps them, MA keeps them for any other provider.
+
+    An account of such a provider the user may not write to takes none, not even through MA.
+    """
     set_current_user(LISTENER)
     providers = {ABS: _provider(features), LOCAL: _provider(set())}
     monkeypatch.setattr(EXACT_PROVIDER, lambda _mass, instance_id: providers[instance_id])
@@ -120,17 +125,24 @@ async def test_bookmark_goes_to_the_provider_only_when_it_may_edit(
     )
     book = await _library_book(music_mass)
 
-    await music_mass.music.bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 754.5, "Arrakis")
+    refused = stored_by_music_assistant is None
 
-    assert await music_mass.music.bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == [
-        MediaItemBookmark(
-            name="Arrakis",
-            start=754.5,
-            provider_instance_id=ABS,
-            provider_item_id="book1",
-            stored_by_music_assistant=stored_by_music_assistant,
-        )
-    ]
+    with pytest.raises(InsufficientPermissions) if refused else nullcontext():
+        await music_mass.music.bookmarks.set_bookmark(AUDIOBOOK, ABS, "book1", 754.5, "Arrakis")
+
+    assert await music_mass.music.bookmarks.bookmarks(AUDIOBOOK, book.item_id, "library") == (
+        []
+        if refused
+        else [
+            MediaItemBookmark(
+                name="Arrakis",
+                start=754.5,
+                provider_instance_id=ABS,
+                provider_item_id="book1",
+                stored_by_music_assistant=bool(stored_by_music_assistant),
+            )
+        ]
+    )
 
 
 async def test_bookmarks_stored_by_music_assistant(

@@ -2,8 +2,9 @@
 Per-user bookmarks of audiobooks and podcast episodes.
 
 A bookmark belongs to one user and one copy of the item. The provider of that copy keeps it
-when it can edit bookmarks for the user, otherwise the bookmarks table does, for library copies
-only. Episodes have no library row, so their rows carry the podcast copy and leave with it.
+when it can edit bookmarks, otherwise the bookmarks table does, for library copies only; an
+account the user may not write to takes none. Episodes have no library row, so their rows carry
+the podcast copy and leave with it.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     AuthenticationRequired,
+    InsufficientPermissions,
     InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -216,9 +218,11 @@ class BookmarksController:
             raise MediaNotFoundError(
                 f"{mapping_item_id} on {provider_instance_id} is not in the library"
             )
-        # bookmarks only go to an account the user may write to, otherwise MA keeps them
-        if provider.supports_feature(edit_feature) and self.mass.music._write_target_mappings(
-            [mapping]
-        ):
-            return row, provider
-        return row, None
+        if not provider.supports_feature(edit_feature):
+            return row, None
+        # the provider keeps them, MA does not stand in for an account the user may not write to
+        if not self.mass.music._write_target_mappings([mapping]):
+            raise InsufficientPermissions(
+                f"Bookmarks on {provider.name} can only be changed by its owner"
+            )
+        return row, provider
