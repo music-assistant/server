@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Coroutine
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +13,7 @@ from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import PlaybackErrorEvent
 from aiosonos.exceptions import CannotConnect, FailedCommand
+from aiosonos.group import PlaybackActions
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, RepeatMode
 from music_assistant_models.errors import PlayerUnavailableError
@@ -27,6 +28,14 @@ from music_assistant.providers.sonos.const import (
     SOURCE_SPOTIFY,
 )
 from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
+
+if TYPE_CHECKING:
+    from aiosonos.api.models import PlaybackActions as PlaybackActionsData
+
+
+def _actions(flags: dict[str, bool]) -> PlaybackActions:
+    """Build the playback actions a speaker reports, from the flags it sent."""
+    return PlaybackActions(cast("PlaybackActionsData", flags))
 
 
 def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMock]:
@@ -46,6 +55,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._woken_from_sleep = False
     player.cloud_queue_id = None
     player.cloud_queue_item_generation = 0
+    player._evicted_cloud_queue = None
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -227,6 +237,29 @@ async def test_on_unload_cancels_an_airplay_group_restore_that_already_started(
     task_id = f"restore_airplay_group_{player.player_id}"
     timer_mass.call_later(0, _restore_airplay_group, task_id=task_id)
     await restoring.wait()
+    task = timer_mass._tracked_tasks[task_id]
+
+    await player.on_unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_on_unload_cancels_a_pending_stop_of_a_moved_group(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test the stop waiting on a group's new coordinator is aborted when the player is unloaded."""
+    player, _ = _bind_player(timer_mass)
+    waiting = asyncio.Event()
+
+    async def _stop_moved_group() -> None:
+        waiting.set()
+        await asyncio.sleep(5)
+
+    task_id = f"sonos_stop_moved_group_{player.player_id}"
+    timer_mass.create_task(_stop_moved_group(), task_id=task_id)
+    await waiting.wait()
     task = timer_mass._tracked_tasks[task_id]
 
     await player.on_unload()
@@ -708,17 +741,19 @@ def _report_paused_qobuz(group: MagicMock) -> None:
         "container": {"name": "Chill Mix", "service": {"name": "Qobuz"}},
         "currentItem": {"id": "1", "track": {"name": "Shout"}},
     }
-    group.playback_actions.raw_data = {
-        "canShuffle": True,
-        "canRepeat": True,
-        "canRepeatOne": True,
-        # paused, so the speaker offers play but not pause
-        "canPlay": True,
-        "canPause": False,
-        "canSeek": True,
-        "canSkip": True,
-        "canSkipBack": False,
-    }
+    group.playback_actions = _actions(
+        {
+            "canShuffle": True,
+            "canRepeat": True,
+            "canRepeatOne": True,
+            # paused, so the speaker offers play but not pause
+            "canPlay": True,
+            "canPause": False,
+            "canSeek": True,
+            "canSkip": True,
+            "canSkipToPrevious": False,
+        }
+    )
     # a bare MagicMock attribute is truthy, so the play modes are spelled out
     group.play_modes.shuffle = True
     group.play_modes.repeat = True
@@ -807,14 +842,16 @@ def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports(
     player, _ = _speaker_reporting_paused_qobuz()
     player.on_player_event(None)
     group = cast("MagicMock", player.client.player.group)
-    group.playback_actions.raw_data = {
-        "canShuffle": False,
-        "canRepeat": False,
-        "canPause": False,
-        "canSeek": False,
-        "canSkip": True,
-        "canSkipBack": True,
-    }
+    group.playback_actions = _actions(
+        {
+            "canShuffle": False,
+            "canRepeat": False,
+            "canPause": False,
+            "canSeek": False,
+            "canSkip": True,
+            "canSkipToPrevious": True,
+        }
+    )
     group.play_modes.shuffle = False
 
     player.on_player_event(None)
@@ -825,6 +862,18 @@ def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports(
     assert source.can_play_pause is False
     assert source.can_next_previous is True
     assert len([x for x in player._attr_source_list if x.id == "Qobuz"]) == 1
+
+
+def test_skipping_back_follows_the_deprecated_key_on_older_firmware() -> None:
+    """Test a speaker that only reports canSkipBack (before API 1.36.0) still offers skipping."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    group = cast("MagicMock", player.client.player.group)
+    group.playback_actions = _actions({"canSkip": True, "canSkipBack": True})
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == "Qobuz")
+    assert source.can_next_previous is True
 
 
 def test_a_group_child_does_not_take_over_the_line_in_of_its_coordinator() -> None:
