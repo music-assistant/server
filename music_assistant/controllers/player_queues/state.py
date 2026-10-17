@@ -92,6 +92,9 @@ class PlayerQueueData:
     # which the crossfade preload raises to a track the player was never given, this only
     # moves when audio actually goes out
     last_served_item_id: str | None = None
+    # queue_item_id of the item whose stream request was last accepted. Moves before any audio
+    # goes out, so a slow item the player gave up on still vouches for the one after it
+    last_requested_item_id: str | None = None
     # queue_item_ids whose audio reached the player during the current load, plus the item it
     # was still playing when that load started. The tracker only reports a play for, or ends the
     # queue on, one of these: a player can name an item it never received (one from its own
