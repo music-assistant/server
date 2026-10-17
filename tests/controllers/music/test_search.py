@@ -804,3 +804,78 @@ async def test_search_reloaded_provider_uses_saved_preference(combined: bool) ->
         for call in cast("AsyncMock", controller.mass.cache.get).await_args_list
     )
     reloaded.search.assert_awaited_once()
+
+
+@pytest.mark.parametrize("pause_at", ["combined_cache", "library", "provider_cache", "dispatch"])
+async def test_search_preference_change_before_dispatch_does_not_poison_cache(
+    pause_at: str,
+) -> None:
+    """A changed preference before dispatch cannot populate the previous mode's cache."""
+    provider = _make_search_provider("ytmusic")
+    provider.search_cache_key = "include_videos=False"
+    controller = _make_controller([provider])
+    started = asyncio.Event()
+    release = asyncio.Event()
+    entries: dict[tuple[str, str], SearchResults] = {}
+    paused = False
+
+    async def pause() -> None:
+        nonlocal paused
+        if not paused:
+            paused = True
+            started.set()
+            await release.wait()
+
+    async def get_cache(*, key: str, provider: str, **_kwargs: Any) -> SearchResults | None:
+        if (pause_at == "combined_cache" and provider == "music") or (
+            pause_at == "provider_cache" and provider == "ytmusic"
+        ):
+            await pause()
+        return entries.get((provider, key))
+
+    async def set_cache(*, key: str, provider: str, data: Any, **_kwargs: Any) -> None:
+        entries[provider, key] = SearchResults.from_dict(data)
+
+    async def library(*_args: Any, **_kwargs: Any) -> SearchResults:
+        if pause_at == "library":
+            await pause()
+        return SearchResults()
+
+    async def backend(*_args: Any) -> SearchResults:
+        return SearchResults(tracks=[_make_track(provider.search_cache_key, "ytmusic", "Song")])
+
+    provider.search.side_effect = backend
+    controller.search_library = AsyncMock(side_effect=library)  # type: ignore[method-assign]
+    cast("AsyncMock", controller.mass.cache.get).side_effect = get_cache
+    cast("AsyncMock", controller.mass.cache.set).side_effect = set_cache
+    if pause_at == "dispatch":
+        create_task = cast("Mock", controller.mass.create_task).side_effect
+
+        async def delayed(target: Any) -> Any:
+            await pause()
+            return await target
+
+        cast("Mock", controller.mass.create_task).side_effect = lambda target, **kwargs: (
+            create_task(delayed(target), **kwargs)
+        )
+
+    async def search() -> SearchResults | None:
+        if pause_at in ("combined_cache", "library"):
+            return await controller.search("Song", media_types=[MediaType.TRACK])
+        return await controller._search_provider("Song", "ytmusic", [MediaType.TRACK])
+
+    pending = asyncio.create_task(search())
+    await asyncio.wait_for(started.wait(), timeout=2)
+    provider.search_cache_key = "include_videos=True"
+    release.set()
+    await pending
+    provider.search.assert_not_awaited()
+    assert not entries
+    enabled = await search()
+    assert enabled is not None
+    assert enabled.tracks[0].item_id == "include_videos=True"
+    provider.search_cache_key = "include_videos=False"
+    disabled = await search()
+    assert disabled is not None
+    assert disabled.tracks[0].item_id == "include_videos=False"
+    assert provider.search.await_count == 2

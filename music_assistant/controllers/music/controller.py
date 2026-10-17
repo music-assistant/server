@@ -740,6 +740,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         limit=limit,
                         skip_item_ids=all_prov_item_ids,
                         soft_timeout=SEARCH_PROVIDER_SOFT_TIMEOUT,
+                        expected_search_cache_key=dict(search_config).get(provider_instance),
                     )
                 )
             # include results from all (unique) music providers
@@ -3120,6 +3121,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
         strict_provider_instance: bool = False,
         soft_timeout: float | None = None,
+        expected_search_cache_key: str | None = None,
     ) -> SearchResults | None:
         """
         Perform search on given provider, returns None if the search failed or timed out.
@@ -3134,6 +3136,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param strict_provider_instance: Do not fall back to another provider instance.
         :param soft_timeout: Seconds to wait before returning None while the search
                              continues in the background; None waits for it to finish.
+        :param expected_search_cache_key: Required search configuration, if captured by the caller.
         """
         prov = self.mass.get_provider(
             provider_instance_id_or_domain,
@@ -3148,29 +3151,36 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if ProviderFeature.SEARCH not in prov.supported_features:
             return SearchResults()
 
+        search_config = prov.search_cache_key
+        if expected_search_cache_key is not None and search_config != expected_search_cache_key:
+            return None
+
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
         # use the per-provider cache so repeated and overlapping searches
         # do not hit the provider again
         cache_key = (
             f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
-            f"{prov.search_cache_key}"
+            f"{search_config}"
         )
-        if (
-            cache := await self.mass.cache.get(
-                key=cache_key,
-                provider=prov.instance_id,
-                category=CACHE_CATEGORY_SEARCH_RESULTS,
-                base_class=SearchResults,
-            )
-        ) is not None:
+        cache = await self.mass.cache.get(
+            key=cache_key,
+            provider=prov.instance_id,
+            category=CACHE_CATEGORY_SEARCH_RESULTS,
+            base_class=SearchResults,
+        )
+        if prov.search_cache_key != search_config:
+            return None
+        if cache is not None:
             return filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
         # run the provider search as a separate task (deduplicated by task_id so
         # identical concurrent searches share a single provider call); with a soft
         # timeout a slow provider contributes no results now, while its search
         # continues in the background so the result is cached for a next search
         task = self.mass.create_task(
-            self._execute_provider_search(prov, search_query, media_types, limit, cache_key),
+            self._execute_provider_search(
+                prov, search_query, media_types, limit, cache_key, search_config
+            ),
             task_id=f"provider_search_{prov.instance_id}_{cache_key}",
         )
         try:
@@ -3194,6 +3204,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_types: list[MediaType],
         limit: int,
         cache_key: str,
+        search_config: str,
     ) -> SearchResults | None:
         """
         Execute the actual search on a provider and cache the result.
@@ -3202,6 +3213,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         handled here (and not raised) as this coroutine runs as a background task
         that may outlive the request that started it.
         """
+        if prov.search_cache_key != search_config:
+            return None
         try:
             async with asyncio.timeout(SEARCH_PROVIDER_HARD_TIMEOUT):
                 result = await prov.search(search_query, media_types, limit)
