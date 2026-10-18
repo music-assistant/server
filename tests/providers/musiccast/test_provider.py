@@ -105,6 +105,34 @@ async def test_player_enabled_while_receiver_unreachable(
     assert network.registry["B___main"].physical_device.device is device
 
 
+async def test_rediscovery_with_failing_zone_keeps_registrations(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zone failing to set up on rediscovery leaves all players on the previous device."""
+    monkeypatch.setattr(provider_module, "MusicCastDevice", _DiscoveredDevice)
+
+    async def setup(player: MusicCastPlayer) -> None:
+        if player.zone_device.zone_name == "zone2":
+            raise RuntimeError("zone2 setup failed")
+
+    monkeypatch.setattr(MusicCastPlayer, "setup", setup)
+    previous_device = network.player("B___main").physical_device
+    network.player("B___main")._attr_available = False
+
+    with pytest.raises(RuntimeError):
+        await network.provider._device_discovered(
+            device_id="B",
+            device_ip="192.168.1.21",
+            description_url="http://192.168.1.21:49154/MediaRenderer/desc.xml",
+        )
+
+    assert network.registry["B___main"].physical_device is previous_device
+    assert [
+        physical_device.device.ip
+        for physical_device in network.provider.mc_controller.physical_devices
+    ] == ["192.168.1.10", "192.168.1.20"]
+
+
 async def test_player_enabled_during_rediscovery(
     network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
 ) -> None:

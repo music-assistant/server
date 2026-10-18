@@ -280,6 +280,27 @@ async def test_zone_synced_through_main_resolves_network_server(
     assert _zone(network, "B___zone2").group_server is _zone(network, "A___main")
 
 
+async def test_main_sync_zone_resolves_main_not_sibling_server(network: MusicCastNetwork) -> None:
+    """A zone on main_sync belongs to main, also while another zone of its device leads a group."""
+    link(_zone(network, "A___zone2"), _zone(network, "B___main"))
+    _zone(network, "A___zone3").zone_data.input = "main_sync"
+
+    assert _zone(network, "A___zone3").group_server is _zone(network, "A___main")
+    assert _zone(network, "A___zone3") not in _zone(network, "A___zone2").musiccast_group
+
+
+async def test_zone_leaving_main_sync_joins_powered_on(network: MusicCastNetwork) -> None:
+    """A zone leaving its local main_sync for another group is powered on when it joins."""
+    _main_plays_spotify(network)
+    _zone(network, "B___zone2").zone_data.input = "main_sync"
+
+    await network.player("A___main").set_members(player_ids_to_add=["B___zone2"])
+
+    zone_data = _zone(network, "B___zone2").zone_data
+    assert (zone_data.input, zone_data.power) == ("mc_link", "on")
+    assert _zone(network, "B___main").zone_data.input == "audio1"
+
+
 async def test_standby_leader_powered_on_for_own_zone(network: MusicCastNetwork) -> None:
     """Syncing a zone to its main in standby powers that main on."""
     _zone(network, "A___main").zone_data.power = "standby"

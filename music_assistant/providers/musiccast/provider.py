@@ -207,7 +207,9 @@ class MusicCastProvider(PlayerProvider):
                 super().on_player_enabled(player_id)
                 return
             if self.mass.players.get_player(player_id) is None:
-                await self._add_zone_player(musiccast_player_helper, zone_device)
+                player = await self._setup_zone_player(musiccast_player_helper, zone_device)
+                await self.mass.players.register_or_update(player)
+                setattr(musiccast_player_helper, f"player_{zone_device.zone_name}", player)
 
     async def _register_player(
         self, physical_device: MusicCastPhysicalDevice, device_id: str
@@ -227,15 +229,17 @@ class MusicCastProvider(PlayerProvider):
             physical_device=physical_device,
         )
 
-        for zone_device in physical_device.zone_devices.values():
-            if zone_device.zone_data is None or zone_device.zone_data.name is None:
-                continue
-            await self._add_zone_player(musiccast_player_helper, zone_device)
-            physical_device.register_callback(
-                partial(
-                    self._on_udp_update, f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_device.zone_name}"
-                )
-            )
+        # set up every zone before registering any, so a failing zone leaves no player
+        # registered on this device
+        players = [
+            await self._setup_zone_player(musiccast_player_helper, zone_device)
+            for zone_device in physical_device.zone_devices.values()
+            if zone_device.zone_data is not None and zone_device.zone_data.name is not None
+        ]
+        for player in players:
+            await self.mass.players.register_or_update(player)
+            setattr(musiccast_player_helper, f"player_{player.zone_device.zone_name}", player)
+            physical_device.register_callback(partial(self._on_udp_update, player.player_id))
 
         if (
             musiccast_player_helper.player_zone2 is not None
@@ -254,9 +258,9 @@ class MusicCastProvider(PlayerProvider):
             mc_player_known.physical_device.remove()
         self.musiccast_player_helpers[device_id] = musiccast_player_helper
 
-    async def _add_zone_player(
+    async def _setup_zone_player(
         self, musiccast_player_helper: MusicCastPlayerHelper, zone_device: MusicCastZoneDevice
-    ) -> None:
+    ) -> MusicCastPlayer:
         # player features
         # NOTE: There is seek in the upnp desc
         # http://{ip}:49154/AVTransport/desc.xml
@@ -269,8 +273,7 @@ class MusicCastProvider(PlayerProvider):
             zone_device=zone_device,
         )
         await player.setup()
-        await self.mass.players.register_or_update(player)
-        setattr(musiccast_player_helper, f"player_{zone_device.zone_name}", player)
+        return player
 
     def _on_udp_update(self, player_id: str, physical_device: MusicCastPhysicalDevice) -> None:
         # resolved per update: a re-enabled player replaces the disabled one without a new callback

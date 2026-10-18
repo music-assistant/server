@@ -384,7 +384,12 @@ class MusicCastZoneDevice:
                 and self.device.ip != group_server.device.ip
                 and self.source_id == MC_SOURCE_MC_LINK
             )
-            or (self.device.ip == group_server.device.ip and self.source_id == MC_SOURCE_MAIN_SYNC)
+            # main_sync follows main, never another zone of the same device
+            or (
+                self.device.ip == group_server.device.ip
+                and group_server.zone_name == MC_DEFAULT_ZONE
+                and self.source_id == MC_SOURCE_MAIN_SYNC
+            )
             # a zone synced to its main, which is a client of the group
             or (
                 self.source_id == MC_SOURCE_MAIN_SYNC
@@ -501,6 +506,9 @@ class MusicCastZoneDevice:
             await self.device.zone_join(self.zone_name)
             return False
 
+        if self.state == MusicCastPlayerState.OFF:
+            # leaving a local main_sync above puts the zone in standby
+            await self.turn_on()
         await self.device.mc_client_join(server.device.ip, group_id, self.zone_name)
         return True
 
