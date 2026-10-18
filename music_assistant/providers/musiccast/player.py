@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
 )
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import (
     DeviceInfo,
     PlayerMedia,
@@ -690,6 +691,9 @@ class MusicCastPlayer(Player):
         assert device_id is not None
         return f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_player.zone_name}"
 
+    def _is_in_group(self, zone_device: MusicCastZoneDevice) -> bool:
+        return zone_device is self.zone_device or zone_device.is_part_of_group(self.zone_device)
+
     def _get_allowed_sources_zone_switch(self, zone_player: MusicCastZoneDevice) -> set[str]:
         """Return non net sources for a zone player."""
         assert zone_player.zone_data is not None, "zone data missing"
@@ -941,6 +945,8 @@ class MusicCastPlayer(Player):
             return
         children: set[str] = set()  # set[ma_player_id]
         children_zones: list[str] = []  # list[ma_player_id]
+        # raised after the possible joins, so the caller does not assume them joined
+        rejected_reasons: list[str] = []
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
         for child_id in player_ids_to_add:
             child_player = self.mass.players.get_player(child_id)
@@ -953,12 +959,10 @@ class MusicCastPlayer(Player):
                 self.zone_device.zone_name != "main"
                 and child_player.zone_device.device.ip == self.zone_device.device.ip
             ):
-                self.logger.warning(
-                    "Cannot add %s to the group of %s, a zone cannot lead main or another "
-                    "zone of the same device. Use main as group leader and sync the zones "
-                    "to main.",
-                    child_player.display_name or child_player.name,
-                    self.display_name or self.name,
+                rejected_reasons.append(
+                    f"Cannot add {child_player.display_name} to the group of "
+                    f"{self.display_name}, a zone cannot lead main or another zone of the "
+                    "same device. Use main as group leader and sync the zones to main."
                 )
                 continue
 
@@ -968,8 +972,7 @@ class MusicCastPlayer(Player):
                 child_player.zone_device.zone_name != "main"
                 and _child_main is not None
                 and (
-                    _child_main is self.zone_device
-                    or _child_main.is_part_of_group(self.zone_device)
+                    self._is_in_group(_child_main)
                     or self._get_player_id_from_zone_device(_child_main) in player_ids_to_add
                 )
             ):
@@ -984,11 +987,10 @@ class MusicCastPlayer(Player):
                 and x.is_part_of_group(self.zone_device)
                 for x in child_player.zone_device.other_zones
             ):
-                self.logger.warning(
-                    "Cannot add %s to the group, another zone of this device already joined "
-                    "it on its own. Remove that zone first, then add main and sync the zones "
-                    "to main.",
-                    child_player.display_name or child_player.name,
+                rejected_reasons.append(
+                    f"Cannot add {child_player.display_name} to the group, another zone of "
+                    "this device already joined it on its own. Remove that zone first, then "
+                    "add main and sync the zones to main."
                 )
                 continue
 
@@ -1020,9 +1022,9 @@ class MusicCastPlayer(Player):
                 continue
 
             # non-main child while another non-main sibling holds netusb is unsupported
-            self.logger.warning(
-                "It is impossible to join as a normal zone to another zone of the same "
-                "device. Only joining to main is possible. Please refer to the docs."
+            rejected_reasons.append(
+                f"Cannot add {child_player.display_name} to the group, another zone of this "
+                "device uses the network source. Only joining to main is possible."
             )
 
         if children:
@@ -1041,9 +1043,22 @@ class MusicCastPlayer(Player):
             child_player = self.mass.players.get_player(child_id)
             if TYPE_CHECKING:
                 child_player = cast("MusicCastPlayer", child_player)
+            child_main = child_player.zone_device.physical_device.zone_devices["main"]
+            # main can have been rejected or failed to join
+            if not self._is_in_group(child_main):
+                rejected_reasons.append(
+                    f"Cannot sync {child_player.display_name} to its main, the main zone "
+                    "is not part of the group."
+                )
+                continue
+            if child_main.state == MusicCastPlayerState.OFF:
+                await self._cmd_run(child_main.turn_on)
             if child_player.zone_device.state == MusicCastPlayerState.OFF:
                 await child_player.power(powered=True)
             await child_player.select_source(MC_SOURCE_MAIN_SYNC)
+
+        if rejected_reasons:
+            raise PlayerCommandFailed(" ".join(rejected_reasons))
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""

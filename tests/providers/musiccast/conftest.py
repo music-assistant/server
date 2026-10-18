@@ -35,7 +35,7 @@ class FakeMusicCastDevice:
     fail_fetch = False
 
     def __init__(self, ip: str, device_id: str, upnp_description: str = "") -> None:
-        """Init a powered device with a main zone on audio1 and a zone2 on audio2."""
+        """Init a powered device with zones main, zone2 and zone3 on audio1, audio2 and audio3."""
         self.ip = ip
         self.upnp_description = upnp_description
         self.transport: object | None = None
@@ -50,7 +50,11 @@ class FakeMusicCastDevice:
             device_id=device_id,
             model_name="RX-V6A",
             system_version="1.0",
-            zones={"main": self._zone("Living", "audio1"), "zone2": self._zone("Patio", "audio2")},
+            zones={
+                "main": self._zone("Living", "audio1"),
+                "zone2": self._zone("Patio", "audio2"),
+                "zone3": self._zone("Garage", "audio3"),
+            },
             input_names={},
             netusb_input="server",
             netusb_playback="play",
@@ -108,6 +112,23 @@ class FakeMusicCastDevice:
         """Join the zone to the group the device is a client of."""
         self.data.zones[zone].input = MC_SOURCE_MC_LINK
 
+    async def zone_unjoin(self, zone: str) -> None:
+        """Switch the zone to a non-net input and put it in standby."""
+        self.data.zones[zone].input = "audio1"
+        self.data.zones[zone].power = "standby"
+
+    async def mc_client_unjoin(self) -> None:
+        """Leave the group the device is a client of."""
+        self.data.group_role = "none"
+        self.data.group_id = MC_NULL_GROUP
+
+    async def mc_server_group_reduce(
+        self, zone: str, client_ips: list[str], distribution_num: int
+    ) -> None:
+        """Remove the clients from the group served by the zone."""
+        for client_ip in client_ips:
+            self.data.group_client_list.remove(client_ip)
+
     async def mc_client_join(self, server_ip: str, group_id: str, zone: str) -> None:
         """Join the zone to a group as client."""
         self.data.group_role = "client"
@@ -164,7 +185,7 @@ class MusicCastNetwork:
         self.provider = provider
 
     def add_device(self, ip: str, device_id: str) -> MusicCastPhysicalDevice:
-        """Add a known device with registered players for main and zone2."""
+        """Add a known device with registered players for all its zones."""
         physical_device = MusicCastPhysicalDevice(
             device=FakeMusicCastDevice(ip, device_id), controller=self.provider.mc_controller
         )
@@ -209,7 +230,7 @@ class MusicCastNetwork:
 
 @pytest.fixture
 def network() -> MusicCastNetwork:
-    """Two MusicCast receivers A and B, each with a main zone and a zone2."""
+    """Two MusicCast receivers A and B, each with a main zone, a zone2 and a zone3."""
     network = MusicCastNetwork()
     network.add_device("192.168.1.10", "A")
     network.add_device("192.168.1.20", "B")

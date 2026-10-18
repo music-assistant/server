@@ -382,6 +382,13 @@ class MusicCastZoneDevice:
                 and self.source_id == MC_SOURCE_MC_LINK
             )
             or (self.device.ip == group_server.device.ip and self.source_id == MC_SOURCE_MAIN_SYNC)
+            # a zone synced to its main, which is a client of the group
+            or (
+                self.source_id == MC_SOURCE_MAIN_SYNC
+                and (main := self.physical_device.zone_devices.get(MC_DEFAULT_ZONE)) is not None
+                and main is not self
+                and main.is_part_of_group(group_server)
+            )
         )
 
     async def join_players(self, group_members: list[MusicCastZoneDevice]) -> None:
@@ -432,7 +439,13 @@ class MusicCastZoneDevice:
 
         Stops the distribution if device is server. Used for unjoin service.
         """
-        if self.is_server:
+        if self.is_network_client:
+            # a client with main_sync zones also counts as server, it still leaves as client
+            for zone in self.other_zones:
+                if zone.source_id == MC_SOURCE_MAIN_SYNC:
+                    await zone._client_leave_group()
+            await self._client_leave_group(True)
+        elif self.is_server:
             await self._server_close_group()
         else:
             # this is not as in HA
@@ -501,7 +514,8 @@ class MusicCastZoneDevice:
             servers = [
                 server
                 for server in self.controller.all_server_devices
-                if server.device.data.group_id == self.device.data.group_id
+                if server.is_network_server
+                and server.device.data.group_id == self.device.data.group_id
             ]
             await self.device.mc_client_unjoin()
             if servers:
