@@ -401,6 +401,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 self._undecided_since = time.time()
             if time.time() - self._undecided_since < GROUP_SETTLE_TIME:
                 return
+        owners = await self._queue_owners()
         # the reads took a while: mirror only the layout they were taken for
         if self.group_change_settling or self._grouped_zones() != zones:
             return
@@ -411,7 +412,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         )
         self._pending_zones = None
         self._undecided_since = None
-        self._sync_groups()
+        self._sync_groups(owners)
 
     def _grouped_zones(self) -> frozenset[frozenset[str]]:
         """Return the host's zones that hold more than one room with a player."""
@@ -440,8 +441,29 @@ class RaumfeldPlayerProvider(PlayerProvider):
         player = self.mass.players.get_player(player_id)
         return player if isinstance(player, RaumfeldPlayer) else None
 
-    def _sync_groups(self) -> None:
-        """Mirror the current Raumfeld zones into the players' sync-group state."""
+    async def _queue_owners(self) -> dict[frozenset[str], str]:
+        """Return the room whose queue a zone plays, for each zone more than one room claims."""
+        # two groups that both play a queue MA started, merged in the Raumfeld app, play on
+        # with only one of those queues: the zone's stream tells which
+        owners: dict[frozenset[str], str] = {}
+        for zone_rooms in self.host.get_zones():
+            claimants = self._queue_claimants(
+                [player for room in zone_rooms if (player := self._room_player(room)) is not None]
+            )
+            if len(claimants) < 2:
+                continue
+            for claimant in claimants:
+                if await claimant.plays_queue_in(list(zone_rooms)):
+                    owners[frozenset(zone_rooms)] = claimant.player_id
+                    break
+        return owners
+
+    def _sync_groups(self, owners: dict[frozenset[str], str] | None = None) -> None:
+        """
+        Mirror the current Raumfeld zones into the players' sync-group state.
+
+        :param owners: For zones more than one room claims, the room whose queue plays there.
+        """
         groups: dict[str, list[str]] = {}
         for zone_rooms in self.host.get_zones():
             # coordinator first: the room the zone was created from (get_zones sorts them)
@@ -452,7 +474,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
             ]
             if len(member_ids) < 2:
                 continue
-            leader_id = self._pick_leader(member_ids)
+            owner = (owners or {}).get(frozenset(zone_rooms))
+            leader_id = owner if owner in member_ids else self._pick_leader(member_ids)
             groups[leader_id] = [leader_id, *(pid for pid in member_ids if pid != leader_id)]
         # Every player gets its list in one pass, leaders and all others (emptied) alike: a
         # former leader that became a follower must not keep a stale list, or it would form
@@ -479,19 +502,26 @@ class RaumfeldPlayerProvider(PlayerProvider):
             for member_id in member_ids
             if isinstance(member := self.mass.players.get_player(member_id), RaumfeldPlayer)
         ]
+        if claimants := self._queue_claimants(members):
+            return claimants[0].player_id
+        for member in members:
+            if member.leads_group:
+                return member.player_id
+        return member_ids[0]
+
+    def _queue_claimants(self, members: list[RaumfeldPlayer]) -> list[RaumfeldPlayer]:
+        """Return the members that play a queue Music Assistant started, followers left out."""
         following = {
             member_id
             for player in self.players
             if isinstance(player, RaumfeldPlayer) and player.leads_group
             for member_id in player.group_members[1:]
         }
-        for member in members:
-            if member.plays_own_queue and member.player_id not in following:
-                return member.player_id
-        for member in members:
-            if member.leads_group:
-                return member.player_id
-        return member_ids[0]
+        return [
+            member
+            for member in members
+            if member.plays_own_queue and member.player_id not in following
+        ]
 
     def _room_player_id(self, room: str) -> str | None:
         """Return the player_id for a room, or ``None`` if its serial is not known yet."""

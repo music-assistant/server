@@ -647,6 +647,14 @@ class RaumfeldPlayer(Player):
         )
         return self._leave_group()
 
+    async def plays_queue_in(self, zone: list[str]) -> bool | None:
+        """
+        Return whether a zone plays this room's queue, or ``None`` while that cannot be told.
+
+        :param zone: The rooms of the zone to read.
+        """
+        return await self._zone_plays_queue(self.raumfeld.host, zone)
+
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
         host = self.raumfeld.host
@@ -1116,6 +1124,19 @@ class RaumfeldPlayer(Player):
             await asyncio.sleep(ZONE_WAIT_INTERVAL)
         self.logger.debug("%s left its zone after %.1fs", self.room, time.time() - started)
 
+    def _follows_or_held(self) -> bool:
+        """
+        Return whether this room's own next item must not start now.
+
+        A room that joined another room's group follows that room's queue, so the next item
+        of its own queue is dropped; a leader whose group left its zone waits for the zone
+        watcher.
+        """
+        if self.synced_to and self.synced_to != self.player_id:
+            self._clear_next()
+            return True
+        return self._held_for_watcher()
+
     def _held_for_watcher(self) -> bool:
         """Return whether this playing leader's group left its zone, for the watcher to sort out."""
         return self._attr_playback_state == PlaybackState.PLAYING and bool(
@@ -1342,10 +1363,10 @@ class RaumfeldPlayer(Player):
         if not self._advance_armed or self._next_media is None:
             return
         # a leader whose group left its zone is the zone watcher's to sort out (see poll)
-        if self._held_for_watcher() or (zone := self._active_zone()) is None:
+        if self._follows_or_held() or (zone := self._active_zone()) is None:
             return
         info = await self._read_transport(self.raumfeld.host, zone)
-        if self._held_for_watcher():
+        if self._follows_or_held():
             return
         if (info or {}).get("CurrentTransportState", "").upper() in ("STOPPED", "NO_MEDIA_PRESENT"):
             self._advance_to_next()

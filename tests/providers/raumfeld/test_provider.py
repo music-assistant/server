@@ -556,10 +556,64 @@ async def test_the_end_watch_leaves_a_split_group_to_the_watcher() -> None:
     bar = players["Bar"]
     bar._advance_armed = True
     bar._next_media = MagicMock()
-    with patch.object(bar, "_advance_to_next") as advance:
+    with (
+        patch.object(bar, "_advance_to_next") as advance,
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+    ):
         await bar._watch_for_track_end(0)
     advance.assert_not_called()
     provider.host.async_get_transport_info.assert_not_awaited()
+
+
+def _next_cleared(player: RaumfeldPlayer) -> bool:
+    """Return whether the player's next item and its end watch were dropped."""
+    return not player._advance_armed and player._next_media is None
+
+
+@pytest.mark.parametrize("joins", ["before the watch", "during its read"])
+async def test_a_room_that_joined_a_group_drops_its_own_next_item(joins: str) -> None:
+    """With flow mode off, a new follower's own next item never replaces the group's audio."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    _playing_group(provider, players, ["Sofa", "Bar"], [])
+    bar, sofa = players["Bar"], players["Sofa"]
+    bar._advance_armed = True
+    bar._next_media = MagicMock()
+    synced_to = PropertyMock(return_value=sofa.player_id if joins == "before the watch" else None)
+
+    async def joined_while_read(_zone: list[str]) -> dict[str, str]:
+        synced_to.return_value = sofa.player_id
+        return {"CurrentTransportState": "STOPPED"}
+
+    provider.host.async_get_transport_info = AsyncMock(side_effect=joined_while_read)
+    with (
+        patch.object(bar, "_advance_to_next") as advance,
+        patch.object(RaumfeldPlayer, "synced_to", synced_to),
+    ):
+        await bar._watch_for_track_end(0)
+    advance.assert_not_called()
+    assert _next_cleared(bar)
+
+
+async def test_a_merge_of_two_playing_groups_keeps_the_queue_that_plays_on() -> None:
+    """The room whose queue the merged zone plays leads, not the first one with a queue."""
+    provider, players = _zone_provider([["Bar", "Sofa"], ["Kitchen", "Office"]])
+    _playing_group(provider, players, ["Bar", "Sofa"], [])
+    kitchen = players["Kitchen"]
+    kitchen._attr_group_members = [kitchen.player_id, players["Office"].player_id]
+    kitchen._attr_active_source = kitchen.player_id
+    kitchen._attr_playback_state = PlaybackState.PLAYING
+    provider.host.get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
+    provider.host.async_get_transport_info = AsyncMock(
+        return_value={"CurrentTransportState": "PLAYING"}
+    )
+    kitchen_stream = f"{_BASE_URL}/flow/s1/{kitchen.player_id}/i1/{kitchen.player_id}.flac"
+    provider.host.async_get_position_info = AsyncMock(return_value={"TrackURI": kitchen_stream})
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+    groups = _groups(players)
+    assert list(groups) == ["Kitchen"]
+    assert sorted(groups["Kitchen"]) == ["Bar", "Kitchen", "Office", "Sofa"]
 
 
 def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:
