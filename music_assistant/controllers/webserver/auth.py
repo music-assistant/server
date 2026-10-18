@@ -179,6 +179,8 @@ class AuthenticationManager:
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
+        # Keep username matching from seeing another provider's unlinked user row.
+        self.user_link_lock = asyncio.Lock()
         self.pending_logins = PendingLoginStore()
         self.oidc_sessions = OIDCSessionStore(self)
         self.oidc_deployment: OIDCDeploymentConfig | None = None
@@ -468,6 +470,7 @@ class AuthenticationManager:
         is_first_user = not await self._has_non_system_users()
         if (
             is_first_user
+            and not (normalized_username == HOMEASSISTANT_SYSTEM_USER and role == UserRole.SERVICE)
             and self.oidc_deployment
             and self.oidc_deployment.bootstrap_admin
             and (not oidc_bootstrap or role != UserRole.ADMIN)

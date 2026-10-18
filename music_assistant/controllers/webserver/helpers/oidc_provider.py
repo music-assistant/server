@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final, NotRequired
@@ -176,7 +175,6 @@ class OIDCLoginProvider(LoginProvider):
             config["client_secret"],
             config["token_auth_method"],
         )
-        self._user_lock = asyncio.Lock()
         self._role_mapping = config.get("role_mapping", {})
         self._groups_claim = config.get("groups_claim", "groups")
         if not self._groups_claim or len(self._groups_claim) > 255:
@@ -233,7 +231,7 @@ class OIDCLoginProvider(LoginProvider):
             # Log only the exception type to avoid exposing tokens or provider responses.
             self.logger.warning("OIDC sign-in validation failed (%s)", type(err).__name__)
             raise AuthenticationFailed("OpenID Connect sign-in failed") from err
-        async with self._user_lock:
+        async with self.auth_manager.user_link_lock:
             session = OIDCSession(
                 issuer=self.client.issuer,
                 client_id=self.client.client_id,
@@ -256,7 +254,7 @@ class OIDCLoginProvider(LoginProvider):
         except Exception as err:
             self.logger.warning("OIDC logout validation failed (%s)", type(err).__name__)
             raise AuthenticationFailed("Invalid OpenID Connect logout token") from err
-        async with self._user_lock:
+        async with self.auth_manager.user_link_lock:
             await self.auth_manager.oidc_sessions.logout(
                 self.client.issuer, self.client.client_id, claims
             )

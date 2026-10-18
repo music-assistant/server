@@ -15,6 +15,7 @@ from music_assistant_models.auth import AuthProviderType, UserRole
 from music_assistant_models.errors import AuthenticationFailed
 from yarl import URL
 
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.webserver.controller import WebserverController, _oidc_cookie_name
 from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
 from music_assistant.controllers.webserver.helpers.oidc_deployment import (
@@ -149,9 +150,44 @@ async def test_local_and_other_provider_creation_cannot_bypass_bootstrap(
     assert isinstance(builtin, BuiltinLoginProvider)
     with pytest.raises(AuthenticationFailed):
         await builtin.create_user_with_password("visitor", "long-password", role=UserRole.ADMIN)
-    with pytest.raises(AuthenticationFailed):
-        await bootstrap_server.auth.create_user("ha-admin", role=UserRole.ADMIN)
+    for username, role in (
+        ("ha-admin", UserRole.ADMIN),
+        (HOMEASSISTANT_SYSTEM_USER, UserRole.ADMIN),
+        ("other-service", UserRole.SERVICE),
+    ):
+        with pytest.raises(AuthenticationFailed):
+            await bootstrap_server.auth.create_user(username, role=role)
     assert not await bootstrap_server.auth.database.get_rows("users")
+
+
+async def test_addon_system_account_does_not_claim_oidc_bootstrap(
+    bootstrap_server: WebserverController, idp: IdentityProvider
+) -> None:
+    """Add-on discovery can obtain a Service token while first-admin setup stays protected."""
+    auth = bootstrap_server.auth
+    token = await auth.get_homeassistant_system_user_token()
+    assert await auth.get_homeassistant_system_user_token() == token
+    system_user = await auth.get_homeassistant_system_user()
+    assert system_user.username == HOMEASSISTANT_SYSTEM_USER
+    assert system_user.role == UserRole.SERVICE
+    assert not bool(auth.has_users)
+    assert bool(auth.oidc_bootstrap_required)
+    token_row = await auth.database.get_row(
+        "auth_tokens", {"token_id": auth.jwt_helper.decode_token(token)["jti"]}
+    )
+    assert token_row is not None
+    assert token_row["user_id"] == system_user.user_id
+    provider = auth.login_providers["oidc"]
+    idp.overrides["groups"] = ["music-users"]
+    with pytest.raises(AuthenticationFailed):
+        await provider.complete_authorization(idp.pending, {"code": "valid-code"})
+    idp.overrides["groups"] = ["music-admins"]
+    admin = await provider.complete_authorization(idp.pending, {"code": "valid-code"})
+    assert admin.role == UserRole.ADMIN
+    assert admin.user_id != system_user.user_id
+    assert auth.has_users
+    assert not auth.oidc_bootstrap_required
+    assert len(await auth.database.get_rows("users")) == 2
 
 
 async def test_bootstrap_rejects_untrusted_return_urls(

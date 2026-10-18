@@ -40,6 +40,7 @@ from music_assistant.controllers.webserver.helpers.oidc_provider import (
     CONF_OIDC_ENABLED,
     CONF_OIDC_ISSUER,
     CONF_OIDC_NAME,
+    CONF_OIDC_ROLE_MAPPING,
     OIDCLoginProvider,
     oidc_identity_id,
 )
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from aiohttp.pytest_plugin import AiohttpServer
+    from music_assistant_models.auth import User, UserAuthProvider
 
     from music_assistant.controllers.webserver.helpers.login_flow import PendingLogin
     from music_assistant.mass import MusicAssistant
@@ -490,6 +492,77 @@ async def test_later_home_assistant_login_cannot_merge_with_an_oidc_username(
     ).user_id == oidc_user.user_id
 
 
+@pytest.mark.parametrize("first_provider", [AuthProviderType.OIDC, AuthProviderType.HOME_ASSISTANT])
+async def test_concurrent_home_assistant_and_oidc_accounts_stay_separate(
+    provider: OIDCLoginProvider, idp: IdentityProvider, first_provider: AuthProviderType
+) -> None:
+    """A concurrent HA sign-in cannot inherit the role of a partially created OIDC account."""
+    auth = provider.auth_manager
+    auth.webserver.config.values[CONF_OIDC_ROLE_MAPPING].value = '{"admins":"admin"}'
+    auth._setup_oidc_provider()
+    oidc_provider = auth.login_providers["oidc"]
+    assert isinstance(oidc_provider, OIDCLoginProvider)
+    provider = oidc_provider
+    idp.overrides["groups"] = ["admins"]
+    link_started = asyncio.Event()
+    finish_link = asyncio.Event()
+    link_user = auth.link_user_to_provider
+
+    async def delayed_link(
+        user: User, provider_type: AuthProviderType, provider_user_id: str
+    ) -> UserAuthProvider:
+        if provider_type == first_provider:
+            link_started.set()
+            await finish_link.wait()
+        return await link_user(user, provider_type, provider_user_id)
+
+    async def sign_in(provider_type: AuthProviderType) -> User | None:
+        if provider_type == AuthProviderType.OIDC:
+            return await provider.complete_authorization(idp.pending, {"code": "valid-code"})
+        return await get_or_create_ha_user(
+            provider.mass, "ha-listener", "listener", None, None, allow_create=True
+        )
+
+    second_provider = (
+        AuthProviderType.HOME_ASSISTANT
+        if first_provider == AuthProviderType.OIDC
+        else AuthProviderType.OIDC
+    )
+    with (
+        patch.object(auth, "link_user_to_provider", side_effect=delayed_link),
+        patch(
+            "music_assistant.controllers.webserver.helpers.auth_providers.get_ha_user_role",
+            new=AsyncMock(return_value=UserRole.USER),
+        ),
+    ):
+        async with asyncio.TaskGroup() as tasks:
+            first = tasks.create_task(sign_in(first_provider))
+            try:
+                await asyncio.wait_for(link_started.wait(), timeout=5)
+                second = tasks.create_task(sign_in(second_provider))
+                await asyncio.wait({second}, timeout=0.2)
+            finally:
+                finish_link.set()
+    users = {first_provider: first.result(), second_provider: second.result()}
+    oidc_user = users[AuthProviderType.OIDC]
+    ha_user = users[AuthProviderType.HOME_ASSISTANT]
+    assert oidc_user is not None
+    assert ha_user is not None
+    assert oidc_user.user_id != ha_user.user_id
+    assert oidc_user.role == UserRole.ADMIN
+    assert ha_user.role == UserRole.USER
+    assert (
+        await auth.get_user_by_provider_link(AuthProviderType.HOME_ASSISTANT, "ha-listener")
+        == ha_user
+    )
+    assert (
+        await auth.get_user_by_provider_link(
+            AuthProviderType.OIDC, oidc_identity_id(idp.issuer, "subject-1")
+        )
+        == oidc_user
+    )
+
+
 async def test_registration_can_be_disabled_without_locking_out_linked_users(
     provider: OIDCLoginProvider, idp: IdentityProvider
 ) -> None:
@@ -573,6 +646,37 @@ async def test_browser_start_callback_and_replay_protection(
     replay = await auth.webserver._handle_auth_callback(request)
     assert replay.status == 400
     assert idp.token_requests == 1
+
+
+@pytest.mark.parametrize("internal_base", [False, True])
+async def test_forwarded_host_sets_cookie_on_the_public_callback_origin(
+    provider: OIDCLoginProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    internal_base: bool,
+) -> None:
+    """A proxy's internal Host cannot loop redirects or choose the wrong callback URL."""
+    if internal_base:
+        monkeypatch.setattr(
+            WebserverController, "base_url", property(lambda _: "http://ma-internal:8095")
+        )
+        monkeypatch.setattr(WebserverController, "external_url", property(lambda _: MA_URL))
+    auth = provider.auth_manager
+    response = await auth.webserver._handle_oidc_start(
+        make_mocked_request(
+            "GET",
+            "/auth/oidc/start",
+            headers={"Host": "ma-internal:8095", "X-Forwarded-Host": "music.example"},
+        )
+    )
+    assert response.status == 302
+    state = URL(response.headers["Location"]).query["state"]
+    pending = auth.pending_logins.get(state)
+    assert pending is not None
+    assert pending.redirect_uri == f"{MA_URL}/auth/callback?provider_id=oidc"
+    cookie = response.cookies[_oidc_cookie_name(state)]
+    assert cookie["secure"]
+    assert cookie["httponly"]
+    assert not cookie["domain"]
 
 
 @pytest.mark.parametrize("code", ["", "non-ascii-\u00e9", "line\nbreak", "c" * 4097])

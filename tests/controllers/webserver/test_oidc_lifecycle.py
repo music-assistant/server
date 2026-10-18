@@ -100,8 +100,11 @@ async def test_logout_scopes_sessions_and_preserves_other_login_methods(
 ) -> None:
     """A session logout closes all its tabs, preserving other devices and local/API tokens."""
     provider = configure(provider)
-    user, first, _ = await sign_in(provider, idp)
+    user, first, session = await sign_in(provider, idp)
     _, second, _ = await sign_in(provider, idp)
+    newer = await provider.auth_manager.oidc_sessions.create_token(
+        user, "overlapping exchange", replace(session, issued_at=utc().timestamp() + 1)
+    )
     _, other_session, _ = await sign_in(provider, idp, "session-two")
     local = await provider.auth_manager.create_token(user, "password login")
     api = await provider.auth_manager.create_token(user, "API", is_long_lived=True)
@@ -109,9 +112,10 @@ async def test_logout_scopes_sessions_and_preserves_other_login_methods(
         provider.auth_manager.webserver, "disconnect_websockets_for_token"
     ) as disconnect:
         await provider.handle_backchannel_logout(logout_token(idp))
-        assert disconnect.call_count == 2
+        assert disconnect.call_count == 3
     assert not await token_exists(provider, first)
     assert not await token_exists(provider, second)
+    assert not await token_exists(provider, newer)
     for token in (other_session, local, api):
         assert await token_exists(provider, token)
 
@@ -128,6 +132,7 @@ async def test_subject_logout_is_bound_to_issuer_client_and_subject(
         replace(session, issuer="https://other.example/"),
         replace(session, client_id="other-client"),
         replace(session, subject="other-subject"),
+        replace(session, issued_at=utc().timestamp() + 1),
     ):
         others.append(
             await provider.auth_manager.oidc_sessions.create_token(user, "other", sibling)
@@ -140,6 +145,8 @@ async def test_subject_logout_is_bound_to_issuer_client_and_subject(
     assert not await token_exists(provider, first)
     assert not await token_exists(provider, second)
     assert all([await token_exists(provider, token) for token in others])
+    newer = replace(session, issued_at=utc().timestamp() + 1)
+    assert await provider.auth_manager.oidc_sessions.create_token(user, "new sign-in", newer)
 
 
 async def test_logout_replay_and_inflight_callback_remain_safe_after_restart(
@@ -161,7 +168,12 @@ async def test_logout_replay_and_inflight_callback_remain_safe_after_restart(
     with pytest.raises(AuthenticationFailed, match="session has ended"):
         await auth.oidc_sessions.create_token(user, "late callback", session)
     newer = replace(session, issued_at=int(utc().timestamp()) + 1)
-    new_token = await auth.oidc_sessions.create_token(user, "new sign-in", newer)
+    with pytest.raises(AuthenticationFailed, match="session has ended"):
+        await auth.oidc_sessions.validate_session(newer)
+    with pytest.raises(AuthenticationFailed, match="session has ended"):
+        await auth.oidc_sessions.create_token(user, "late callback with newer ID token", newer)
+    new_session = replace(newer, session_id="session-two")
+    new_token = await auth.oidc_sessions.create_token(user, "new sign-in", new_session)
     await provider.handle_backchannel_logout(signed)
     assert await token_exists(provider, new_token)
 
@@ -337,8 +349,9 @@ async def test_group_denial_revokes_sessions_with_provider_clock_ahead(
     assert not await token_exists(provider, token)
 
 
+@pytest.mark.parametrize("newer_token", [False, True])
 async def test_logged_out_callback_cannot_change_mapped_role(
-    provider: OIDCLoginProvider, idp: IdentityProvider
+    provider: OIDCLoginProvider, idp: IdentityProvider, newer_token: bool
 ) -> None:
     """A late callback cannot promote an account after the IdP session has ended."""
     provider = configure(provider, '{"music-admins":"admin","music-users":"user"}')
@@ -346,6 +359,8 @@ async def test_logged_out_callback_cannot_change_mapped_role(
     user, _, _ = await sign_in(provider, idp)
     await provider.handle_backchannel_logout(logout_token(idp))
     idp.overrides["groups"] = ["music-admins"]
+    if newer_token:
+        idp.overrides["iat"] = int(utc().timestamp()) + 1
     with pytest.raises(AuthenticationFailed, match="session has ended"):
         await provider.complete_authorization(idp.pending, {"code": "valid-code"})
     current = await provider.auth_manager.get_user(user.user_id)

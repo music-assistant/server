@@ -1274,6 +1274,7 @@ class WebserverController(CoreController):
     async def _handle_oidc_start(self, request: web.Request) -> web.Response:
         """Bind a new OIDC sign-in to the browser and redirect to the IdP."""
         return_url = request.query.get("return_url")
+        request_host = request.headers.get("X-Forwarded-Host") or request.host
         if return_url:
             valid, category = is_allowed_redirect_url(
                 return_url, request, self.base_url, self.external_url
@@ -1282,7 +1283,7 @@ class WebserverController(CoreController):
                 return web.Response(status=400, text="Invalid return_url")
         try:
             started = await self.auth.get_authorization_url(
-                OIDC_PROVIDER_ID, return_url, request_host=request.host
+                OIDC_PROVIDER_ID, return_url, request_host=request_host
             )
         except RateLimited:
             return web.Response(status=429, text="Too many sign-ins are pending")
@@ -1293,7 +1294,7 @@ class WebserverController(CoreController):
         authorization_url, pending = started
         # Set the state cookie on the callback origin, even when opened through an alias.
         callback_origin = URL(pending.redirect_uri).origin()
-        entry_origin = URL(f"{callback_origin.scheme}://{request.host}").origin()
+        entry_origin = URL(f"{callback_origin.scheme}://{request_host}").origin()
         if callback_origin != entry_origin:
             self.auth.pending_logins.pop(pending.state)
             entry_url = callback_origin.with_path("/auth/oidc/start")

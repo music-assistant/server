@@ -123,7 +123,8 @@ class OIDCSessionStore:
                 )
             rows = await self.auth.database.get_rows_from_query(
                 "SELECT token_id FROM oidc_sessions WHERE issuer = :issuer "
-                "AND client_id = :client_id AND issued_at <= :issued_at "
+                "AND client_id = :client_id "
+                "AND (:session_id IS NOT NULL OR issued_at <= :issued_at) "
                 "AND (:subject IS NULL OR subject = :subject) "
                 "AND (:session_id IS NULL OR session_id = :session_id)",
                 values,
@@ -153,7 +154,8 @@ class OIDCSessionStore:
             raise AuthenticationFailed("The identity token has expired; sign in again")
         logout = await self.auth.database.get_rows_from_query(
             "SELECT logout_id FROM oidc_logouts WHERE issuer = :issuer "
-            "AND client_id = :client_id AND issued_at >= :issued_at "
+            "AND client_id = :client_id "
+            "AND (session_id IS NOT NULL OR issued_at >= :issued_at) "
             "AND (subject IS NULL OR subject = :subject) "
             "AND (session_id IS NULL OR session_id = :session_id)",
             asdict(session),
