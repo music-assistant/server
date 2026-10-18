@@ -217,6 +217,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         summary: bool = True,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
         **kwargs: Any,
     ) -> list[Artist]:
         """
@@ -226,6 +227,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
@@ -268,6 +270,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             in_library_only=True,
             summary=summary,
             reachable_via=reachable_via,
+            random_seed=random_seed,
         )
 
     async def tracks(
@@ -281,6 +284,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int | None = 500,
         offset: int = 0,
         favorite: bool | None = None,
+        random_seed: int | None = None,
     ) -> list[Track]:
         """
         Return the tracks of an artist, searched, sorted and paged.
@@ -299,6 +303,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of tracks to return; 0 returns them all.
         :param offset: Number of tracks to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param favorite: Only list the tracks the current user likes (True) or dislikes (False).
         :raises InvalidDataError: When the sort field is not offered for artist tracks.
         """
@@ -330,6 +335,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def tracks_count(
@@ -376,7 +382,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             in_library_only=True,
         )
 
-    async def albums(
+    async def albums(  # noqa: PLR0913
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
@@ -388,6 +394,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         offset: int = 0,
         album_types: list[AlbumType] | None = None,
         favorite: bool | None = None,
+        random_seed: int | None = None,
     ) -> list[Album]:
         """
         Return the albums of an artist, searched, sorted and paged.
@@ -405,6 +412,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param album_types: Only list albums whose type is included.
         :param favorite: Only list the albums the current user likes (True) or dislikes (False).
         :raises InvalidDataError: When the sort field is not offered for artist albums.
@@ -435,6 +443,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def albums_count(
@@ -499,6 +508,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Album]:
         """
         Return the albums an artist appears on without being an album artist.
@@ -514,6 +524,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for this listing.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -529,6 +540,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def appears_on_count(
@@ -577,6 +589,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Album]:
         """
         Return a library artist's discography as MusicBrainz knows it, searched, sorted and paged.
@@ -592,6 +605,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the artist is not a library artist, or the sort field
             is not offered for a discography.
         """
@@ -644,6 +658,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def discography_count(
@@ -684,6 +699,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Track]:
         """
         Return the top/featured tracks of an artist, searched, sorted and paged.
@@ -703,6 +719,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of tracks to return; 0 returns them all.
         :param offset: Number of tracks to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for top tracks.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -734,6 +751,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def top_albums(
@@ -746,6 +764,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Album]:
         """
         Return the top/featured albums of an artist, searched, sorted and paged.
@@ -763,6 +782,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for top albums.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -794,6 +814,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def similar_artists(
@@ -806,6 +827,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Artist]:
         """
         Return the artists similar to an artist, searched, sorted and paged.
@@ -824,6 +846,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_field: Sort field, the providers' ranking (ORIGINAL) when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
         :param offset: Number of similar artists to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for similar artists.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -859,6 +882,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     if TYPE_CHECKING:
@@ -878,6 +902,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             *,
             provider_filter: str | None = None,
             collapse_collections: Literal[False] = False,
+            random_seed: int | None = None,
         ) -> list[Audiobook]: ...
 
         @overload
@@ -895,6 +920,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             *,
             provider_filter: str | None = None,
             collapse_collections: Literal[True],
+            random_seed: int | None = None,
         ) -> list[Audiobook | MediaCollection[Audiobook]]: ...
 
     async def audiobooks(  # noqa: PLR0913
@@ -911,6 +937,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         *,
         provider_filter: str | None = None,
         collapse_collections: bool = False,
+        random_seed: int | None = None,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
         Return the audiobooks of an artist, searched, sorted and paged.
@@ -927,6 +954,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of audiobooks to return; 0 returns them all.
         :param offset: Number of audiobooks to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param provider_filter: Only list audiobooks from this provider instance.
         :param collapse_collections: Collapse available collections. Only applies to
             in-library items; when in_library_only is False, provider items are
@@ -948,6 +976,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 sort_direction=sort_direction,
                 limit=limit,
                 offset=offset,
+                random_seed=random_seed,
             )
 
         if artist_type == ArtistType.SINGER:
@@ -1609,6 +1638,47 @@ class ArtistsController(MediaControllerBase[Artist]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_artist.item_id, match)
                 cur_provider_domains.add(provider.domain)
+
+    async def get_merged_library_item(self, artist: Artist) -> Artist:
+        """
+        Return the library artist the given one was merged into, else the given artist.
+
+        :param artist: A library artist.
+        """
+        if not artist.provider_mappings:
+            return artist
+        # a merge moves the provider mappings to the surviving artist
+        mapping = next(iter(artist.provider_mappings))
+        return (
+            await self.get_library_item_by_prov_id(mapping.item_id, mapping.provider_instance)
+            or artist
+        )
+
+    async def merge_library_artists_by_mbid(self, artist_id: int, mbid: str) -> int:
+        """
+        Merge the library artists carrying the given MusicBrainz artist id into the oldest.
+
+        Only artists of the same type merge, so an author and a singer are left apart.
+
+        :param artist_id: Library id of an artist carrying the MusicBrainz id.
+        :param mbid: The MusicBrainz artist id.
+        :return: The library id the given artist is found under after the merge.
+        """
+        artist_types = {
+            int(item.item_id): item.artist_type
+            for item in await self.get_library_items_by_external_id(
+                mbid, ExternalID.MB_ARTIST, limit=None
+            )
+        }
+        artist_type = artist_types.get(artist_id)
+        # the oldest library artist survives and keeps its name
+        target_id, *source_ids = sorted(
+            {artist_id, *(item_id for item_id, t in artist_types.items() if t == artist_type)}
+        )
+        for source_id in source_ids:
+            with contextlib.suppress(MediaNotFoundError):  # already merged by a concurrent add
+                await self.merge_library_items(target_id, source_id)
+        return target_id
 
     def artist_from_item_mapping(self, item: ItemMapping) -> Artist:
         """Create an Artist object from an ItemMapping object."""

@@ -15,7 +15,7 @@ import os
 import sys
 import time
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from itertools import batched
 from math import isfinite
@@ -127,15 +127,18 @@ def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
 def _parse_row(
     row: Mapping[str, Any],
     unparsable_ids: list[Any] | None = None,
+    *,
+    arrays: Collection[str] | None = None,
 ) -> AudioAnalysisData | None:
     """
     Parse a single audio_analysis row's packed record, logging and skipping on error.
 
     :param row: The audio_analysis row to parse.
     :param unparsable_ids: When given, the id of a row that fails to parse is appended.
+    :param arrays: The array fields to unpack (see :func:`decode`); None unpacks them all.
     """
     try:
-        return decode(row["header"], row["payload"])
+        return decode(row["header"], row["payload"], arrays=arrays)
     except (IndexError, KeyError, TypeError, ValueError) as err:
         row_id = _get_row_value(row, "id")
         # the error itself may embed the full (huge) field value, so log only
@@ -159,6 +162,8 @@ def _merged_from_rows(
     available_aa_domains: set[str],
     priority: tuple[str, ...] | None = None,
     unparsable_ids: list[Any] | None = None,
+    *,
+    arrays: Collection[str] | None = None,
 ) -> AudioAnalysisData | None:
     """
     Fold audio_analysis rows into one merged result.
@@ -174,6 +179,7 @@ def _merged_from_rows(
         are considered and the first-listed domain wins each per-field conflict.
     :param unparsable_ids: When given, ids of rows whose packed record fails to parse
         are appended.
+    :param arrays: The array fields to unpack (see :func:`decode`); None unpacks them all.
     """
     merged = AudioAnalysisData()
     found = False
@@ -181,7 +187,7 @@ def _merged_from_rows(
         for row in rows:
             if row["aa_provider_domain"] not in available_aa_domains:
                 continue
-            if (row_data := _parse_row(row, unparsable_ids)) is None:
+            if (row_data := _parse_row(row, unparsable_ids, arrays=arrays)) is None:
                 continue
             merged.update(row_data)
             found = True
@@ -195,7 +201,7 @@ def _merged_from_rows(
         domain = row["aa_provider_domain"]
         if domain not in wanted_set or domain in by_domain:
             continue
-        if (row_data := _parse_row(row, unparsable_ids)) is None:
+        if (row_data := _parse_row(row, unparsable_ids, arrays=arrays)) is None:
             continue
         by_domain[domain] = row_data
     for domain in reversed(wanted):
@@ -970,6 +976,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         primary_aa_domain: str,
         media_type: MediaType = MediaType.TRACK,
         priority: tuple[str, ...] | None = None,
+        *,
+        arrays: Collection[str] | None = None,
     ) -> AsyncGenerator[tuple[str, str, AudioAnalysisData]]:
         """
         Yield one merged AudioAnalysisData per track present in primary_aa_domain.
@@ -994,6 +1002,9 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         :param priority: AA provider domains the merged values must come from, first-listed
             wins per-field conflicts (see get_audio_analysis). When None, all available
             providers are merged latest-write-wins.
+        :param arrays: The array fields to unpack; every other array field is left None on
+            the yielded records. None unpacks them all. A consumer that needs only a few
+            arrays saves most of the decode work of a fully analysed track.
         """
         self._require_database()
         available_aa_domains = self._available_aa_domains()
@@ -1031,14 +1042,16 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         ):
             key = (row["item_id"], row["provider"])
             if current_key is not None and key != current_key:
-                merged = _merged_from_rows(current_group, available_aa_domains, priority)
+                merged = _merged_from_rows(
+                    current_group, available_aa_domains, priority, arrays=arrays
+                )
                 if merged is not None:
                     yield (*current_key, merged)
                 current_group = []
             current_key = key
             current_group.append(row)
         if current_key is not None:
-            merged = _merged_from_rows(current_group, available_aa_domains, priority)
+            merged = _merged_from_rows(current_group, available_aa_domains, priority, arrays=arrays)
             if merged is not None:
                 yield (*current_key, merged)
 
