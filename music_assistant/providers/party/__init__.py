@@ -19,14 +19,25 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, SetupFailedError
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    MediaType,
+    PlaybackState,
+    ProviderFeature,
+)
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    SetupFailedError,
+)
 
 from music_assistant.constants import CONF_ENABLED
 from music_assistant.controllers.player_queues.helpers import build_queue_item, committed_index
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_token,
     get_current_user,
+    has_player_access,
 )
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
@@ -34,6 +45,7 @@ from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPl
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.queue_item import QueueItem
 
@@ -405,11 +417,15 @@ class PartyPlugin(PluginProvider):
         self._session: SharedPlaybackSession | None = None
         self._session_lock = asyncio.Lock()
         # Skip votes are only held for the queue item they were cast on
+        self._skip_vote_queue_id: str | None = None
         self._skip_vote_item_id: str | None = None
         self._skip_voters: set[str] = set()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        self._unregister_handles.append(
+            self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED)
+        )
         # Register API commands and store unregister handles
         # PROVIDERS_READ (held by guests) lets a guest fetch the join URL to display/share
         # the QR; get_party_url returns None when guest access is disabled, so nothing leaks.
@@ -912,20 +928,32 @@ class PartyPlugin(PluginProvider):
         if not queue_id:
             raise InvalidDataError("Could not get player queue")
 
-        queue = self.mass.player_queues.get(queue_id)
-        if not queue:
-            raise InvalidDataError(f"Queue not found: {queue_id}")
-
-        if queue.state != PlaybackState.PLAYING or not queue.current_item:
-            raise InvalidDataError("Nothing is currently playing")
+        # A vote counts towards skipping, so it needs the same player access as skipping
+        current_user = get_current_user()
+        if current_user and not has_player_access(
+            current_user, queue_id, self.mass.players.get_player(queue_id)
+        ):
+            msg = f"{current_user.username} does not have access to player {queue_id}"
+            raise InsufficientPermissions(msg)
 
         votes_required = cast("int", self.config.get_value(CONF_PARTY_SKIP_VOTES_REQUIRED))
         voter_id = await self._get_voter_id()
 
         async with self._queue_lock:
+            # Check the queue only now: it may have changed while waiting for the lock
+            queue = self.mass.player_queues.get(queue_id)
+            if not queue:
+                raise InvalidDataError(f"Queue not found: {queue_id}")
             current_item = queue.current_item
-            if self._skip_vote_item_id != current_item.queue_item_id:
-                self._clear_skip_votes(queue_id)
+            if queue.state != PlaybackState.PLAYING or not current_item:
+                raise InvalidDataError("Nothing is currently playing")
+
+            if (
+                self._skip_vote_queue_id != queue_id
+                or self._skip_vote_item_id != current_item.queue_item_id
+            ):
+                self._clear_skip_votes()
+                self._skip_vote_queue_id = queue_id
                 self._skip_vote_item_id = current_item.queue_item_id
 
             vote_counted = voter_id not in self._skip_voters
@@ -934,7 +962,7 @@ class PartyPlugin(PluginProvider):
             skipped = votes >= votes_required
 
             if skipped:
-                self._clear_skip_votes(queue_id)
+                self._clear_skip_votes()
                 await self.mass.player_queues.next(queue_id)
             elif vote_counted:
                 # Store the tally on the item so every guest sees the vote progress
@@ -1085,18 +1113,32 @@ class PartyPlugin(PluginProvider):
             return f"user:{user.user_id}"
         return "anonymous"
 
-    def _clear_skip_votes(self, queue_id: str) -> None:
+    def _on_queue_updated(self, event: MassEvent) -> None:
         """
-        Forget the skip votes and remove the vote tally from the item they were cast on.
+        Drop the skip votes once the voted track is no longer the one playing.
 
-        :param queue_id: The queue ID holding the voted item.
+        :param event: The queue updated event.
         """
-        if self._skip_vote_item_id and (
-            voted_item := self.mass.player_queues.get_item(queue_id, self._skip_vote_item_id)
-        ):
-            voted_item.extra_attributes.pop(ATTR_PARTY_SKIP_VOTES, None)
+        queue_id = self._skip_vote_queue_id
+        if queue_id is None or event.object_id != queue_id:
+            return
+        queue = self.mass.player_queues.get(queue_id)
+        current_item = queue.current_item if queue else None
+        if not current_item or current_item.queue_item_id != self._skip_vote_item_id:
+            self._clear_skip_votes()
+
+    def _clear_skip_votes(self) -> None:
+        """Forget the skip votes and remove the vote tally from the item they were cast on."""
+        queue_id, item_id = self._skip_vote_queue_id, self._skip_vote_item_id
+        self._skip_vote_queue_id = None
         self._skip_vote_item_id = None
         self._skip_voters = set()
+        if not queue_id or not item_id:
+            return
+        voted_item = self.mass.player_queues.get_item(queue_id, item_id)
+        if voted_item and voted_item.extra_attributes.pop(ATTR_PARTY_SKIP_VOTES, None):
+            # Signal the item change so the removal reaches guests and the stored queue
+            self.mass.player_queues.signal_update(queue_id, items_changed=True)
 
     async def _revoke_guest_tokens(self) -> None:
         """
