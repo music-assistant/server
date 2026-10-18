@@ -359,7 +359,8 @@ class GenreController(MediaControllerBase[Genre]):
         # Pass raw lowered search for alias matching (search_raw),
         # since the normalized :search param strips spaces/special chars.
         extra_params: dict[str, Any] = {}
-        extra_parts: list[str] = []
+        # Random sampling reads the raw table, so excluded rows must be removed before LIMIT.
+        extra_parts: list[str] = [f"{self.db_table}.is_excluded = 0"]
         if search:
             extra_params["search_raw"] = f"%{search.strip().lower()}%"
         if content_type == "music":
