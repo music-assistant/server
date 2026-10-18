@@ -1,7 +1,6 @@
 """Fixtures for the MusicCast provider tests."""
 
 import asyncio
-import logging
 from collections.abc import Coroutine
 from types import SimpleNamespace
 from typing import Any
@@ -176,11 +175,9 @@ class MusicCastNetwork:
         mass.streams.base_url = "http://ma:8097"
         mass.config.get_base_player_config.side_effect = self._player_config
         self.mass = mass
-        provider = MusicCastProvider.__new__(MusicCastProvider)
-        provider.mass = mass
-        provider.config = MagicMock(instance_id="musiccast")
-        provider.logger = logging.getLogger("test.musiccast")
-        provider.musiccast_player_helpers = {}
+        config = MagicMock(instance_id="musiccast")
+        config.get_value.return_value = None
+        provider = MusicCastProvider(mass, MagicMock(domain="musiccast"), config, set())
         provider.mc_controller = MusicCastController(logger=provider.logger)
         self.provider = provider
 

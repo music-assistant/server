@@ -8,13 +8,11 @@ import aiohttp
 from music_assistant.helpers.upnp import (
     get_xml_soap_media_info,
     get_xml_soap_next,
-    get_xml_soap_pause,
     get_xml_soap_play,
     get_xml_soap_previous,
     get_xml_soap_set_next_url,
     get_xml_soap_set_url,
     get_xml_soap_stop,
-    get_xml_soap_transport_info,
 )
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player import PlayerMedia
@@ -54,7 +52,12 @@ async def _post_soap(
     """
     POST a SOAP request and log a warning on 4xx/5xx error responses.
 
-    :param read_body: Return the response body, None stays reserved for error responses.
+    :param client: Session to send the request with.
+    :param ctrl_url: AVTransport control url of the device.
+    :param xml: SOAP request body.
+    :param soap_action: SOAPACTION header value.
+    :param op_name: Operation name for the log.
+    :param read_body: Return the response body; None then means an error response.
     """
     headers = get_headers(xml, soap_action)
     async with client.post(ctrl_url, headers=headers, data=xml) as response:
@@ -93,16 +96,6 @@ async def avt_stop(
     await _post_soap(client, ctrl_url, xml, soap_action, "Stop")
 
 
-async def avt_pause(
-    client: aiohttp.ClientSession,
-    physical_device: MusicCastPhysicalDevice,
-) -> None:
-    """Pause."""
-    ctrl_url = get_upnp_ctrl_url(physical_device)
-    xml, soap_action = get_xml_soap_pause()
-    await _post_soap(client, ctrl_url, xml, soap_action, "Pause")
-
-
 async def avt_next(
     client: aiohttp.ClientSession,
     physical_device: MusicCastPhysicalDevice,
@@ -133,19 +126,6 @@ async def avt_get_media_info(
     body = await _post_soap(client, ctrl_url, xml, soap_action, "GetMediaInfo", read_body=True)
     if body is None:
         raise aiohttp.ClientError("GetMediaInfo failed")
-    return body
-
-
-async def avt_get_transport_info(
-    client: aiohttp.ClientSession,
-    physical_device: MusicCastPhysicalDevice,
-) -> str:
-    """Get Transport Info."""
-    ctrl_url = get_upnp_ctrl_url(physical_device)
-    xml, soap_action = get_xml_soap_transport_info()
-    body = await _post_soap(client, ctrl_url, xml, soap_action, "GetTransportInfo", read_body=True)
-    if body is None:
-        raise aiohttp.ClientError("GetTransportInfo failed")
     return body
 
 

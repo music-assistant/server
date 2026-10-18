@@ -1,7 +1,9 @@
 """MusicCast Provider."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING
 
 from aiohttp.client_exceptions import ClientError
@@ -65,6 +67,8 @@ class MusicCastProvider(PlayerProvider):
         super().__init__(mass, manifest, config, supported_features)
         # str is device_id here:
         self.musiccast_player_helpers: dict[str, MusicCastPlayerHelper] = {}
+        # per device_id, serializes device (re)registration with re-enabling single players
+        self._registration_locks: dict[str, asyncio.Lock] = {}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -72,27 +76,13 @@ class MusicCastProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Call on unload."""
-        for musiccast_player_helper in self.musiccast_player_helpers.values():
-            musiccast_player_helper.physical_device.remove()
+        # all devices of the controller, also those still being registered
+        for physical_device in list(self.mc_controller.physical_devices):
+            physical_device.remove()
 
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
-        # a known device only lacks the player, which got unregistered when disabled
-        device_id, _, zone_name = player_id.partition(PLAYER_ZONE_SPLITTER)
-        musiccast_player_helper = self.musiccast_player_helpers.get(device_id)
-        zone_device = (
-            musiccast_player_helper.physical_device.zone_devices.get(zone_name)
-            if musiccast_player_helper is not None
-            else None
-        )
-        if (
-            musiccast_player_helper is None
-            or zone_device is None
-            or self.mass.players.get_player(player_id) is not None
-        ):
-            super().on_player_enabled(player_id)
-            return
-        self.mass.create_task(self._add_zone_player(musiccast_player_helper, zone_device))
+        self.mass.create_task(self._register_enabled_player(player_id))
 
     async def handle_async_init(self) -> None:
         """Async init."""
@@ -162,32 +152,62 @@ class MusicCastProvider(PlayerProvider):
         if not check:
             return
 
-        mc_player_known = self.musiccast_player_helpers.get(device_id)
-        if mc_player_known is not None and (
-            mc_player_known.player_main is not None
-            and mc_player_known.physical_device.device.device.upnp_description == description_url
-            and mc_player_known.player_main.available
-        ):
-            # nothing to do, device is already connected
-            return
-        # new or updated player detected
-        physical_device = MusicCastPhysicalDevice(
-            device=MusicCastDevice(
-                client=self.mass.http_session,
-                ip=device_ip,
-                upnp_description=description_url,
-            ),
-            controller=self.mc_controller,
-        )
-        success = await physical_device.async_init()  # fetch + polling
-        if not success:
-            physical_device.remove()
-            self.logger.debug(
-                "Had trouble setting up device at %s. Will be retried on next discovery.",
-                device_ip,
+        async with self._registration_locks.setdefault(device_id, asyncio.Lock()):
+            mc_player_known = self.musiccast_player_helpers.get(device_id)
+            if mc_player_known is not None and (
+                mc_player_known.player_main is not None
+                and mc_player_known.physical_device.device.device.upnp_description
+                == description_url
+                and mc_player_known.player_main.available
+            ):
+                # nothing to do, device is already connected
+                return
+            # new or updated player detected
+            physical_device = MusicCastPhysicalDevice(
+                device=MusicCastDevice(
+                    client=self.mass.http_session,
+                    ip=device_ip,
+                    upnp_description=description_url,
+                ),
+                controller=self.mc_controller,
             )
-            return
-        await self._register_player(physical_device, device_id)
+            try:
+                success = await physical_device.async_init()  # fetch + polling
+                if success:
+                    await self._register_player(physical_device, device_id)
+            except BaseException:
+                physical_device.remove()
+                raise
+            if not success:
+                physical_device.remove()
+                self.logger.debug(
+                    "Had trouble setting up device at %s. Will be retried on next discovery.",
+                    device_ip,
+                )
+
+    async def _register_enabled_player(self, player_id: str) -> None:
+        device_id, _, zone_name = player_id.partition(PLAYER_ZONE_SPLITTER)
+        async with self._registration_locks.setdefault(device_id, asyncio.Lock()):
+            # a re-enable still queued must not register players for an unloaded instance
+            if self.unloading:
+                return
+            # a known device only lacks the player, which got unregistered when disabled
+            musiccast_player_helper = self.musiccast_player_helpers.get(device_id)
+            zone_device = (
+                musiccast_player_helper.physical_device.zone_devices.get(zone_name)
+                if musiccast_player_helper is not None
+                else None
+            )
+            if (
+                musiccast_player_helper is None
+                or zone_device is None
+                or zone_device.zone_data is None
+                or zone_device.zone_data.name is None
+            ):
+                super().on_player_enabled(player_id)
+                return
+            if self.mass.players.get_player(player_id) is None:
+                await self._add_zone_player(musiccast_player_helper, zone_device)
 
     async def _register_player(
         self, physical_device: MusicCastPhysicalDevice, device_id: str
@@ -211,6 +231,11 @@ class MusicCastProvider(PlayerProvider):
             if zone_device.zone_data is None or zone_device.zone_data.name is None:
                 continue
             await self._add_zone_player(musiccast_player_helper, zone_device)
+            physical_device.register_callback(
+                partial(
+                    self._on_udp_update, f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_device.zone_name}"
+                )
+            )
 
         if (
             musiccast_player_helper.player_zone2 is not None
@@ -245,5 +270,10 @@ class MusicCastProvider(PlayerProvider):
         )
         await player.setup()
         await self.mass.players.register_or_update(player)
-        musiccast_player_helper.physical_device.register_callback(player._non_async_udp_callback)
         setattr(musiccast_player_helper, f"player_{zone_device.zone_name}", player)
+
+    def _on_udp_update(self, player_id: str, physical_device: MusicCastPhysicalDevice) -> None:
+        # resolved per update: a re-enabled player replaces the disabled one without a new callback
+        player = self.mass.players.get_player(player_id)
+        if isinstance(player, MusicCastPlayer) and player.physical_device is physical_device:
+            player._non_async_udp_callback(physical_device)

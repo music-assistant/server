@@ -184,9 +184,13 @@ class MusicCastPlayer(Player):
 
         if "zone" not in self.player_id:
             # we do not add mac/ ip information to zone players to prevent false player merging
-            network_status = await self.physical_device.device.device.request_json(
-                MCSystem.get_network_status()
-            )
+            try:
+                network_status = await self.physical_device.device.device.request_json(
+                    MCSystem.get_network_status()
+                )
+            except MusicCastConnectionException:
+                # an unreachable receiver still registers, the next poll marks it unavailable
+                network_status = {}
             network_info = MusicCastNetworkStatus.from_dict(network_status)
             mac_address: str | None = None
 
@@ -664,11 +668,9 @@ class MusicCastPlayer(Player):
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
         if not _allowed_sources:
-            self.logger.error(
-                "The player %s lacks a non-net source to switch to.",
-                mass_player.display_name or mass_player.name,
+            raise PlayerCommandFailed(
+                f"The player {mass_player.display_name} lacks a non-net source to switch to."
             )
-            return
         if _source not in _allowed_sources:
             msg = (
                 "The switch source you specified for "
@@ -678,7 +680,11 @@ class MusicCastPlayer(Player):
                 "Will use the first available source."
             )
             self.logger.error(msg)
-            _source = min(_allowed_sources)
+            # same order as the default of the config entry
+            assert zone_player.zone_data is not None  # for type checking
+            _source = next(
+                source for source in zone_player.zone_data.input_list if source in _allowed_sources
+            )
 
         await mass_player.select_source(_source)
         _turn_off = mass_player.get_config_value(CONF_PLAYER_TURN_OFF_ON_LEAVE, return_type=bool)
@@ -690,46 +696,6 @@ class MusicCastPlayer(Player):
         device_id = zone_player.physical_device.device.data.device_id
         assert device_id is not None
         return f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_player.zone_name}"
-
-    def _is_in_group(self, zone_device: MusicCastZoneDevice) -> bool:
-        return zone_device is self.zone_device or zone_device.is_part_of_group(self.zone_device)
-
-    def _get_join_rejection(
-        self, child_player: MusicCastPlayer, joining_player_ids: set[str]
-    ) -> str | None:
-        """Return why the hardware cannot join the child to this group, if it cannot."""
-        child_zone = child_player.zone_device
-        # once a bare zone joined the group, the hardware cannot add main or
-        # another zone of the same device
-        if any(
-            x.zone_name != "main" and x.is_network_client and x.is_part_of_group(self.zone_device)
-            for x in child_zone.other_zones
-        ):
-            return (
-                f"Cannot add {child_player.display_name} to the group, another zone of this "
-                "device already joined it on its own. Remove that zone first, then add main "
-                "and sync the zones to main."
-            )
-        # a device is a client of a single group only
-        if (
-            child_zone.device.data.group_role == "client"
-            and child_zone.device.data.group_id != self.zone_device.device.data.group_id
-        ):
-            return (
-                f"Cannot add {child_player.display_name} to the group, its device is part of "
-                "another group. Remove it there first."
-            )
-        # likewise for a second zone of a device that joins in this call on its own
-        if child_zone.zone_name != "main" and any(
-            cast("MusicCastPlayer", self.mass.players.get_player(player_id)).zone_device.device.ip
-            == child_zone.device.ip
-            for player_id in joining_player_ids
-        ):
-            return (
-                f"Cannot add {child_player.display_name} to the group, another zone of this "
-                "device joins it on its own. Add main and sync the zones to main."
-            )
-        return None
 
     def _get_allowed_sources_zone_switch(self, zone_player: MusicCastZoneDevice) -> set[str]:
         """Return non net sources for a zone player."""
@@ -806,9 +772,6 @@ class MusicCastPlayer(Player):
 
     def _non_async_udp_callback(self, physical_device: MusicCastPhysicalDevice) -> None:
         """Call on UDP updates."""
-        # disabled or replaced player objects keep their callback, skip their updates
-        if self.mass.players.get_player(self.player_id) is not self:
-            return
         self.mass.create_task(self._async_udp_callback(), eager_start=False)
 
     async def _async_udp_callback(self) -> None:
@@ -1079,7 +1042,14 @@ class MusicCastPlayer(Player):
                 )
                 continue
             if child_main.state == MusicCastPlayerState.OFF:
-                await self._cmd_run(child_main.turn_on)
+                # the child's receiver owns that main, a failure must not hit the leader's
+                await child_player._cmd_run(child_main.turn_on)
+                if not child_player.available:
+                    rejected_reasons.append(
+                        f"Cannot sync {child_player.display_name} to its main, the receiver "
+                        "is not reachable."
+                    )
+                    continue
             if child_player.zone_device.state == MusicCastPlayerState.OFF:
                 await child_player.power(powered=True)
             await child_player.select_source(MC_SOURCE_MAIN_SYNC)
@@ -1136,3 +1106,43 @@ class MusicCastPlayer(Player):
         )
 
         return base_entries + zone_entries + [auto_advance_entry] + PLAYER_CONFIG_ENTRIES
+
+    def _is_in_group(self, zone_device: MusicCastZoneDevice) -> bool:
+        return zone_device is self.zone_device or zone_device.is_part_of_group(self.zone_device)
+
+    def _get_join_rejection(
+        self, child_player: MusicCastPlayer, joining_player_ids: set[str]
+    ) -> str | None:
+        """Return why the hardware cannot join the child to this group, if it cannot."""
+        child_zone = child_player.zone_device
+        # once a bare zone joined the group, the hardware cannot add main or
+        # another zone of the same device
+        if any(
+            x.zone_name != "main" and x.is_network_client and x.is_part_of_group(self.zone_device)
+            for x in child_zone.other_zones
+        ):
+            return (
+                f"Cannot add {child_player.display_name} to the group, another zone of this "
+                "device already joined it on its own. Remove that zone first, then add main "
+                "and sync the zones to main."
+            )
+        # a device is a client of a single group only; a zone that left keeps the device's
+        # client role, so only a zone still on mc_link counts
+        if child_zone.device.data.group_id != self.zone_device.device.data.group_id and any(
+            zone.is_network_client for zone in (child_zone, *child_zone.other_zones)
+        ):
+            return (
+                f"Cannot add {child_player.display_name} to the group, its device is part of "
+                "another group. Remove it there first."
+            )
+        # likewise for a second zone of a device that joins in this call on its own
+        if child_zone.zone_name != "main" and any(
+            isinstance(player := self.mass.players.get_player(player_id), MusicCastPlayer)
+            and player.zone_device.device.ip == child_zone.device.ip
+            for player_id in joining_player_ids
+        ):
+            return (
+                f"Cannot add {child_player.display_name} to the group, another zone of this "
+                "device joins it on its own. Add main and sync the zones to main."
+            )
+        return None

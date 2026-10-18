@@ -2,12 +2,15 @@
 
 from collections.abc import Callable
 from contextlib import nullcontext
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiomusiccast.exceptions import MusicCastConnectionException, MusicCastGroupException
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.musiccast.constants import CONF_PLAYER_SWITCH_SOURCE_NON_NET
 from music_assistant.providers.musiccast.musiccast import MusicCastZoneDevice
+from music_assistant.providers.musiccast.player import MusicCastPlayer
 
 from .conftest import MusicCastNetwork, link
 
@@ -42,6 +45,13 @@ def _zone_off_on_netusb(network: MusicCastNetwork) -> None:
     zone_data = _zone(network, "B___zone2").device.data.zones["zone2"]
     zone_data.power = "standby"
     zone_data.input = "server"
+
+
+def _client_role_left_behind(network: MusicCastNetwork) -> None:
+    # a zone left another group by switching its input, the device keeps its client role
+    data = _zone(network, "B___main").device.data
+    data.group_role = "client"
+    data.group_id = "OTHER"
 
 
 @pytest.mark.parametrize(
@@ -143,6 +153,14 @@ def _zone_off_on_netusb(network: MusicCastNetwork) -> None:
             False,
             id="powered-off-zone-keeps-its-source",
         ),
+        pytest.param(
+            _client_role_left_behind,
+            "A___main",
+            ["B___main"],
+            {"B___main": "mc_link"},
+            False,
+            id="device-left-other-group-joins",
+        ),
     ],
 )
 async def test_set_members(
@@ -211,6 +229,57 @@ async def test_zone_of_device_in_other_group_rejected(network: MusicCastNetwork)
     assert _zone(network, "B___zone2").zone_data.input == "main_sync"
 
 
+async def test_remote_main_power_failure_hits_its_own_receiver(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A main of another receiver failing to power on fails the join and only marks that receiver."""
+    monkeypatch.setattr(MusicCastPlayer, "update_state", MagicMock())
+    _main_in_group(network)
+    b_main = _zone(network, "B___main")
+    b_main.zone_data.power = "standby"
+    monkeypatch.setattr(
+        b_main.device, "turn_on", AsyncMock(side_effect=MusicCastConnectionException)
+    )
+
+    with pytest.raises(PlayerCommandFailed):
+        await network.player("A___main").set_members(player_ids_to_add=["B___zone2"])
+
+    assert network.player("A___main")._attr_available
+    assert not network.player("B___zone2")._attr_available
+    assert _zone(network, "B___zone2").zone_data.input == "audio2"
+
+
+async def test_main_leaves_when_synced_zone_fails_to_leave(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A synced zone failing to leave does not keep its main in the group."""
+    _main_in_group(network)
+    leader = network.player("A___main")
+    await leader.set_members(player_ids_to_add=["B___zone2"])
+    monkeypatch.setattr(
+        _zone(network, "B___zone2").device,
+        "zone_unjoin",
+        AsyncMock(side_effect=MusicCastGroupException),
+    )
+
+    await leader.set_members(player_ids_to_remove=["B___main"])
+
+    assert leader.zone_device.device.data.group_client_list == []
+
+
+@pytest.mark.parametrize("reverse_discovery_order", [False, True])
+async def test_zone_synced_through_main_resolves_network_server(
+    network: MusicCastNetwork, reverse_discovery_order: bool
+) -> None:
+    """A zone following its main into a group resolves the group's server, not its own main."""
+    _main_in_group(network)
+    await network.player("A___main").set_members(player_ids_to_add=["B___zone2"])
+    if reverse_discovery_order:
+        network.provider.mc_controller.physical_devices.reverse()
+
+    assert _zone(network, "B___zone2").group_server is _zone(network, "A___main")
+
+
 async def test_standby_leader_powered_on_for_own_zone(network: MusicCastNetwork) -> None:
     """Syncing a zone to its main in standby powers that main on."""
     _zone(network, "A___main").zone_data.power = "standby"
@@ -222,21 +291,22 @@ async def test_standby_leader_powered_on_for_own_zone(network: MusicCastNetwork)
 
 
 @pytest.mark.parametrize(
-    ("input_list", "expected_input"),
+    ("input_list", "expected_input", "rejected"),
     [
-        pytest.param(["server", "audio2", "audio1"], "audio1", id="first-non-net-source"),
-        pytest.param(["server", "spotify"], "server", id="no-non-net-source"),
+        pytest.param(["server", "audio2", "audio1"], "audio2", False, id="first-non-net-source"),
+        pytest.param(["server", "spotify"], "server", True, id="no-non-net-source"),
     ],
 )
 async def test_zone_switch_fallback_source(
-    network: MusicCastNetwork, input_list: list[str], expected_input: str
+    network: MusicCastNetwork, input_list: list[str], expected_input: str, rejected: bool
 ) -> None:
-    """An invalid switch source falls back to a non-net source, or leaves the zone alone."""
+    """An invalid switch source falls back to the first non-net source, or fails."""
     network.config_values[CONF_PLAYER_SWITCH_SOURCE_NON_NET] = "spotify"
     zone2 = _zone(network, "A___zone2")
     zone2.zone_data.input_list = input_list
     zone2.zone_data.input = "server"
 
-    await network.player("A___main")._handle_zone_grouping(zone2)
+    with pytest.raises(PlayerCommandFailed) if rejected else nullcontext():
+        await network.player("A___main")._handle_zone_grouping(zone2)
 
     assert zone2.zone_data.input == expected_input

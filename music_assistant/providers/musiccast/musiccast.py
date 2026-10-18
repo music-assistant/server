@@ -273,7 +273,10 @@ class MusicCastZoneDevice:
     @property
     def group_server(self) -> MusicCastZoneDevice:
         """Return the server of the own group if present, self else."""
-        for entity in self.controller.all_server_devices:
+        # a zone synced to a main, which is a client, also matches that main as local server
+        for entity in sorted(
+            self.controller.all_server_devices, key=lambda entity: not entity.is_network_server
+        ):
             if self.is_part_of_group(entity):
                 return entity
         return self
@@ -443,7 +446,9 @@ class MusicCastZoneDevice:
             # a client with main_sync zones also counts as server, it still leaves as client
             for zone in self.other_zones:
                 if zone.source_id == MC_SOURCE_MAIN_SYNC:
-                    await zone._client_leave_group()
+                    # a zone failing to leave must not keep main in the group
+                    with suppress(MusicCastGroupException):
+                        await zone._client_leave_group()
             await self._client_leave_group(True)
         elif self.is_server:
             await self._server_close_group()
@@ -535,7 +540,9 @@ class MusicCastZoneDevice:
         """
         for client in self.musiccast_group:
             if client != self:
-                await client._client_leave_group()
+                # a client failing to leave must not keep the group open
+                with suppress(MusicCastGroupException):
+                    await client._client_leave_group()
         await self.device.mc_server_group_close()
 
     async def _check_client_list(self) -> None:
