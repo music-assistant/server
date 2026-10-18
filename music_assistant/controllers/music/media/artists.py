@@ -1639,6 +1639,47 @@ class ArtistsController(MediaControllerBase[Artist]):
                 await self.add_provider_mappings(db_artist.item_id, match)
                 cur_provider_domains.add(provider.domain)
 
+    async def get_merged_library_item(self, artist: Artist) -> Artist:
+        """
+        Return the library artist the given one was merged into, else the given artist.
+
+        :param artist: A library artist.
+        """
+        if not artist.provider_mappings:
+            return artist
+        # a merge moves the provider mappings to the surviving artist
+        mapping = next(iter(artist.provider_mappings))
+        return (
+            await self.get_library_item_by_prov_id(mapping.item_id, mapping.provider_instance)
+            or artist
+        )
+
+    async def merge_library_artists_by_mbid(self, artist_id: int, mbid: str) -> int:
+        """
+        Merge the library artists carrying the given MusicBrainz artist id into the oldest.
+
+        Only artists of the same type merge, so an author and a singer are left apart.
+
+        :param artist_id: Library id of an artist carrying the MusicBrainz id.
+        :param mbid: The MusicBrainz artist id.
+        :return: The library id the given artist is found under after the merge.
+        """
+        artist_types = {
+            int(item.item_id): item.artist_type
+            for item in await self.get_library_items_by_external_id(
+                mbid, ExternalID.MB_ARTIST, limit=None
+            )
+        }
+        artist_type = artist_types.get(artist_id)
+        # the oldest library artist survives and keeps its name
+        target_id, *source_ids = sorted(
+            {artist_id, *(item_id for item_id, t in artist_types.items() if t == artist_type)}
+        )
+        for source_id in source_ids:
+            with contextlib.suppress(MediaNotFoundError):  # already merged by a concurrent add
+                await self.merge_library_items(target_id, source_id)
+        return target_id
+
     def artist_from_item_mapping(self, item: ItemMapping) -> Artist:
         """Create an Artist object from an ItemMapping object."""
         # a library item mapping references an item already in the library, which has no

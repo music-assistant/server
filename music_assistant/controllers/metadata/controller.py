@@ -320,6 +320,7 @@ class MetaDataController(
                 await self._update_artist_metadata(
                     cast("Artist", item), force_refresh=force_refresh
                 )
+                item = await self.mass.music.artists.get_merged_library_item(cast("Artist", item))
             if item.media_type == MediaType.ALBUM:
                 await self._update_album_metadata(cast("Album", item), force_refresh=force_refresh)
             if item.media_type == MediaType.TRACK:
@@ -375,10 +376,17 @@ class MetaDataController(
         :param item: The library artist, album or track.
         """
         if isinstance(item, Artist):
-            if not item.mbid and (mbid := await self._get_artist_mbid(item)):
-                item.mbid = mbid
+            merge_mbid: str | None = None
+            if not item.mbid and (found := await self._get_artist_mbid(item)):
+                item.mbid, by_name = found
+                merge_mbid = None if by_name else item.mbid
             await self._link_artist_to_musicbrainz(item)
             await self.mass.music.artists.update_item_in_library(item.item_id, item)
+            # an id a name search found may belong to a namesake, so only a reliable one merges
+            if merge_mbid:
+                await self.mass.music.artists.merge_library_artists_by_mbid(
+                    int(item.item_id), merge_mbid
+                )
         elif isinstance(item, Album):
             await self._link_album_to_musicbrainz(item)
             await self.mass.music.albums.update_item_in_library(item.item_id, item)
