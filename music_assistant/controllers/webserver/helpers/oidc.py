@@ -324,25 +324,35 @@ class OIDCClient:
             or header.get("crit")
         ):
             raise OIDCProtocolError("Unsupported OIDC token signing algorithm or critical header")
+        # Unknown IDs and stale matching keys share one retry and the same refresh throttle.
         jwks = await self._get_jwks(metadata["jwks_uri"])
-        key = _select_signing_key(jwks, header)
-        if key is None:
-            # Refresh for key rotation, but rate-limit unknown kids to prevent JWKS floods.
-            jwks = await self._get_jwks(metadata["jwks_uri"], force=True)
+        for attempt in range(2):
             key = _select_signing_key(jwks, header)
-        if key is None:
-            raise OIDCProtocolError("No matching OIDC signing key")
-        claims: dict[str, Any] = jwt.decode(
-            token,
-            key,
-            algorithms=list(
-                SIGNING_ALGORITHMS.intersection(metadata["id_token_signing_alg_values_supported"])
-            ),
-            audience=self.client_id,
-            issuer=self.issuer,
-            leeway=CLOCK_LEEWAY,
-            options={"require": required_claims},
-        )
+            if key is None:
+                if attempt:
+                    raise OIDCProtocolError("No matching OIDC signing key")
+            else:
+                try:
+                    claims: dict[str, Any] = jwt.decode(
+                        token,
+                        key,
+                        algorithms=list(
+                            SIGNING_ALGORITHMS.intersection(
+                                metadata["id_token_signing_alg_values_supported"]
+                            )
+                        ),
+                        audience=self.client_id,
+                        issuer=self.issuer,
+                        leeway=CLOCK_LEEWAY,
+                        options={"require": required_claims},
+                    )
+                    break
+                except jwt.InvalidSignatureError:
+                    if attempt:
+                        raise
+            jwks = await self._get_jwks(metadata["jwks_uri"], force=True)
+        else:
+            raise OIDCProtocolError("OIDC signature verification failed")
         for name in ("iat", "exp"):
             if (
                 isinstance(claims[name], bool)

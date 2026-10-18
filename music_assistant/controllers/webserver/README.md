@@ -163,8 +163,9 @@ under RFC 6749 Appendix A.11, bounded to 4096 characters; Home Assistant's valid
 The client reuses aiohttp, PyJWT and existing pending-login/session helpers. PyJWT validates
 signatures and standard claims; this client owns OIDC discovery and protocol checks. Remote
 requests verify TLS, refuse redirects and have size/time limits. Discovery and JWKS are cached;
-key refreshes are rate-limited. Discovery is lazy so IdP outages leave startup and local login
-available. Remote Access requires a browser-reachable External URL.
+unknown keys and signature failures allow one rate-limited JWKS refresh and verification retry.
+Discovery is lazy so IdP outages leave startup and local login available. Remote Access requires
+a browser-reachable External URL.
 
 Scopes default to `openid profile`. The advanced `oidc_scopes` setting, or `scopes` in the mounted
 configuration, can request extra scopes such as `groups` for Authelia. `openid` is always included.
