@@ -43,6 +43,10 @@
       "label": "Accept OpenID Connect logout notifications",
       "description": "Let your identity provider end the Music Assistant sessions created through OpenID Connect. Register /auth/oidc/backchannel-logout on this server as the provider's back-channel logout URL. Local password sessions and separately created access tokens are unaffected."
     },
+    "oidc_scopes": {
+      "label": "OpenID Connect scopes",
+      "description": "Space-separated scopes to request from the identity provider. The openid scope is always included. Add groups if your provider requires it for group-to-role mapping."
+    },
     "oidc_groups_claim": {
       "label": "OpenID Connect groups claim",
       "description": "The claim containing a list of group names, usually groups. Used only when group-to-role mapping is configured. Your provider must include it in the ID token or UserInfo response."

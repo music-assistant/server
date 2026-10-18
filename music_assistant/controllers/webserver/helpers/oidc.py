@@ -34,6 +34,8 @@ SIGNING_ALGORITHMS: Final = frozenset(
     {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
 )
 TOKEN_AUTH_METHODS: Final = ("client_secret_basic", "client_secret_post", "none")
+DEFAULT_OIDC_SCOPES: Final = "openid profile"
+SCOPE_TOKEN_RE: Final = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]+")
 # RFC 6749 Appendix A.11 allows visible ASCII, including spaces and base64 padding.
 OIDC_AUTH_CODE_RE: Final = re.compile(r"[\x20-\x7e]{1,4096}")
 
@@ -54,6 +56,17 @@ def validate_oidc_url(value: str, *, issuer: bool = False) -> bool:
         return False
 
 
+def validate_oidc_scopes(value: str) -> bool:
+    """Return whether a space-separated scope list contains valid OAuth scope tokens."""
+    return len(value) <= 1024 and all(
+        SCOPE_TOKEN_RE.fullmatch(scope) for scope in value.split(" ") if scope
+    )
+
+
+class OIDCProtocolError(ValueError):
+    """The identity provider returned an invalid OIDC response."""
+
+
 class OIDCClient:
     """A discovery-based OIDC code client with PKCE and signed ID token validation."""
 
@@ -64,6 +77,7 @@ class OIDCClient:
         client_id: str,
         client_secret: str,
         client_auth_method: str = "client_secret_basic",
+        scopes: str = DEFAULT_OIDC_SCOPES,
     ) -> None:
         """
         Initialize a client without contacting the identity provider.
@@ -73,6 +87,7 @@ class OIDCClient:
         :param client_id: Registered OIDC client identifier.
         :param client_secret: Client secret, empty only for a public client.
         :param client_auth_method: Registered token endpoint authentication method.
+        :param scopes: Space-separated scopes; openid is always included.
         """
         if not validate_oidc_url(issuer, issuer=True) or not client_id:
             raise ValueError("An HTTPS issuer and client ID are required")
@@ -80,9 +95,12 @@ class OIDCClient:
             raise ValueError("Unsupported OIDC token endpoint authentication method")
         if client_auth_method != "none" and not client_secret:
             raise ValueError("A client secret is required for a confidential client")
+        if not validate_oidc_scopes(scopes):
+            raise ValueError("Invalid OpenID Connect scopes")
         self.session = session
         self.issuer = issuer
         self.client_id = client_id
+        self.scopes = " ".join(dict.fromkeys(("openid", *scopes.split())))
         self._client_secret = client_secret
         self._client_auth_method = client_auth_method
         self._metadata: dict[str, Any] | None = None
@@ -101,7 +119,7 @@ class OIDCClient:
                 response_type="code",
                 client_id=self.client_id,
                 redirect_uri=pending.redirect_uri,
-                scope="openid profile",
+                scope=self.scopes,
                 state=pending.state,
                 nonce=pending.idp_nonce,
                 code_challenge=pkce_challenge(pending.idp_code_verifier),
@@ -140,7 +158,7 @@ class OIDCClient:
             or str(tokens.get("token_type", "")).lower() != "bearer"
             or "error" in tokens
         ):
-            raise ValueError("Invalid OIDC token response")
+            raise OIDCProtocolError("Invalid OIDC token response")
         claims = await self._validate_id_token(metadata, id_token, pending, access_token, code)
         if metadata.get("userinfo_endpoint") and (
             not claims.get("preferred_username") or (groups_claim and groups_claim not in claims)
@@ -149,7 +167,7 @@ class OIDCClient:
                 "GET", metadata["userinfo_endpoint"], bearer_token=access_token
             )
             if userinfo.get("sub") != claims["sub"]:
-                raise ValueError("OIDC UserInfo subject does not match the ID token")
+                raise OIDCProtocolError("OIDC UserInfo subject does not match the ID token")
             for key in ("preferred_username", "name", "picture"):
                 if isinstance(userinfo.get(key), str):
                     claims[key] = userinfo[key]
@@ -165,25 +183,25 @@ class OIDCClient:
         )
         header_type = jwt.get_unverified_header(token).get("typ")
         if header_type not in (None, "JWT", "logout+jwt"):
-            raise ValueError("Invalid OIDC logout token type")
+            raise OIDCProtocolError("Invalid OIDC logout token type")
         events = claims["events"]
         if (
             not isinstance(events, dict)
             or not isinstance(events.get(BACKCHANNEL_LOGOUT_EVENT), dict)
             or "nonce" in claims
         ):
-            raise ValueError("Invalid OIDC logout event")
+            raise OIDCProtocolError("Invalid OIDC logout event")
         if not claims.get("sub") and not claims.get("sid"):
-            raise ValueError("OIDC logout requires a subject or session")
+            raise OIDCProtocolError("OIDC logout requires a subject or session")
         for name in ("sub", "sid", "jti"):
             if name in claims and (
                 not isinstance(claims[name], str) or not 0 < len(claims[name]) <= 255
             ):
-                raise ValueError("Invalid OIDC logout identifier")
+                raise OIDCProtocolError("Invalid OIDC logout identifier")
         if claims["iat"] < time.time() - LOGOUT_MAX_AGE - CLOCK_LEEWAY:
-            raise ValueError("OIDC logout token is too old")
+            raise OIDCProtocolError("OIDC logout token is too old")
         if claims["exp"] <= claims["iat"]:
-            raise ValueError("Invalid OIDC logout token lifetime")
+            raise OIDCProtocolError("Invalid OIDC logout token lifetime")
         return claims
 
     async def _get_metadata(self) -> dict[str, Any]:
@@ -194,26 +212,39 @@ class OIDCClient:
                 "GET", f"{self.issuer.rstrip('/')}/.well-known/openid-configuration"
             )
             if metadata.get("issuer") != self.issuer:
-                raise ValueError("OIDC discovery issuer does not match the configured issuer")
+                raise OIDCProtocolError(
+                    "OIDC discovery issuer does not match the configured issuer"
+                )
             for key in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
                 if not isinstance(metadata.get(key), str) or not validate_oidc_url(metadata[key]):
-                    raise ValueError("OIDC discovery contains an invalid endpoint")
-            if "userinfo_endpoint" in metadata and not validate_oidc_url(
-                metadata["userinfo_endpoint"]
+                    raise OIDCProtocolError("OIDC discovery contains an invalid endpoint")
+            if "userinfo_endpoint" in metadata and (
+                not isinstance(metadata["userinfo_endpoint"], str)
+                or not validate_oidc_url(metadata["userinfo_endpoint"])
             ):
-                raise ValueError("OIDC discovery contains an invalid UserInfo endpoint")
-            if "code" not in metadata.get("response_types_supported", []):
-                raise ValueError("OIDC provider does not support the authorization code flow")
+                raise OIDCProtocolError("OIDC discovery contains an invalid UserInfo endpoint")
+            responses = metadata.get("response_types_supported", [])
+            if not isinstance(responses, list) or "code" not in responses:
+                raise OIDCProtocolError(
+                    "OIDC provider does not support the authorization code flow"
+                )
             methods = metadata.get("token_endpoint_auth_methods_supported", ["client_secret_basic"])
-            if self._client_auth_method not in methods:
-                raise ValueError(
+            if not isinstance(methods, list) or self._client_auth_method not in methods:
+                raise OIDCProtocolError(
                     "OIDC provider does not support the configured client authentication"
                 )
-            if "S256" not in metadata.get("code_challenge_methods_supported", []):
-                raise ValueError("OIDC provider must advertise PKCE S256 support")
+            challenges = metadata.get("code_challenge_methods_supported", [])
+            if not isinstance(challenges, list) or "S256" not in challenges:
+                raise OIDCProtocolError("OIDC provider must advertise PKCE S256 support")
             algorithms = metadata.get("id_token_signing_alg_values_supported", [])
-            if not isinstance(algorithms, list) or not SIGNING_ALGORITHMS.intersection(algorithms):
-                raise ValueError("OIDC provider does not advertise supported signing algorithms")
+            if (
+                not isinstance(algorithms, list)
+                or any(not isinstance(algorithm, str) for algorithm in algorithms)
+                or not SIGNING_ALGORITHMS.intersection(algorithms)
+            ):
+                raise OIDCProtocolError(
+                    "OIDC provider does not advertise supported signing algorithms"
+                )
             self._metadata = metadata
             self._metadata_expires_at = time.monotonic() + CACHE_TTL
             return metadata
@@ -230,7 +261,7 @@ class OIDCClient:
                 self._last_forced_refresh = now
             jwks = await self._request_json("GET", uri)
             if not isinstance(jwks.get("keys"), list):
-                raise TypeError("OIDC provider returned an invalid key set")
+                raise OIDCProtocolError("OIDC provider returned an invalid key set")
             self._jwks = jwks
             self._jwks_expires_at = now + CACHE_TTL
             return jwks
@@ -247,24 +278,28 @@ class OIDCClient:
             metadata, token, ["iss", "sub", "aud", "exp", "iat", "nonce"]
         )
         if not isinstance(claims["sub"], str) or not claims["sub"] or len(claims["sub"]) > 255:
-            raise ValueError("Invalid OIDC subject")
+            raise OIDCProtocolError("Invalid OIDC subject")
         if "sid" in claims and (
             not isinstance(claims["sid"], str) or not 0 < len(claims["sid"]) <= 255
         ):
-            raise ValueError("Invalid OIDC session identifier")
+            raise OIDCProtocolError("Invalid OIDC session identifier")
         nonce = claims["nonce"]
-        if not isinstance(nonce, str) or not hmac.compare_digest(nonce, pending.idp_nonce):
-            raise ValueError("OIDC nonce does not match this sign-in")
+        if not isinstance(nonce, str) or not hmac.compare_digest(
+            nonce.encode(), pending.idp_nonce.encode()
+        ):
+            raise OIDCProtocolError("OIDC nonce does not match this sign-in")
         audience = claims["aud"]
         if isinstance(audience, list) and len(audience) > 1 and "azp" not in claims:
-            raise ValueError(
+            raise OIDCProtocolError(
                 "OIDC token with multiple audiences must identify its authorized party"
             )
         if "azp" in claims and claims["azp"] != self.client_id:
-            raise ValueError("OIDC authorized party does not match this client")
+            raise OIDCProtocolError("OIDC authorized party does not match this client")
         algorithm = jwt.get_unverified_header(token)["alg"]
         for name, value in (("at_hash", access_token), ("c_hash", code)):
             if name in claims:
+                if not value.isascii():
+                    raise OIDCProtocolError("OIDC token hash input must be ASCII")
                 digest = jwt.get_algorithm_by_name(algorithm).compute_hash_digest(
                     value.encode("ascii")
                 )
@@ -272,9 +307,9 @@ class OIDCClient:
                     base64.urlsafe_b64encode(digest[: len(digest) // 2]).rstrip(b"=").decode()
                 )
                 if not isinstance(claims[name], str) or not hmac.compare_digest(
-                    claims[name], expected
+                    claims[name].encode(), expected.encode()
                 ):
-                    raise ValueError("OIDC token hash does not match")
+                    raise OIDCProtocolError("OIDC token hash does not match")
         return claims
 
     async def _decode_signed_token(
@@ -283,11 +318,12 @@ class OIDCClient:
         header = jwt.get_unverified_header(token)
         algorithm = header.get("alg")
         if (
-            algorithm not in SIGNING_ALGORITHMS
+            not isinstance(algorithm, str)
+            or algorithm not in SIGNING_ALGORITHMS
             or algorithm not in metadata["id_token_signing_alg_values_supported"]
             or header.get("crit")
         ):
-            raise ValueError("Unsupported OIDC token signing algorithm or critical header")
+            raise OIDCProtocolError("Unsupported OIDC token signing algorithm or critical header")
         jwks = await self._get_jwks(metadata["jwks_uri"])
         key = _select_signing_key(jwks, header)
         if key is None:
@@ -295,7 +331,7 @@ class OIDCClient:
             jwks = await self._get_jwks(metadata["jwks_uri"], force=True)
             key = _select_signing_key(jwks, header)
         if key is None:
-            raise ValueError("No matching OIDC signing key")
+            raise OIDCProtocolError("No matching OIDC signing key")
         claims: dict[str, Any] = jwt.decode(
             token,
             key,
@@ -313,7 +349,7 @@ class OIDCClient:
                 or not isinstance(claims[name], (int, float))
                 or not math.isfinite(claims[name])
             ):
-                raise TypeError("Invalid OIDC token timestamp")
+                raise OIDCProtocolError("Invalid OIDC token timestamp")
         return claims
 
     async def _request_json(
@@ -339,15 +375,18 @@ class OIDCClient:
             allow_redirects=False,
         ) as response:
             if response.status != 200:
-                raise ValueError("OIDC endpoint did not return a successful response")
+                raise OIDCProtocolError("OIDC endpoint did not return a successful response")
             body = bytearray()
             async for chunk in response.content.iter_chunked(65536):
                 body.extend(chunk)
                 if len(body) > MAX_RESPONSE_SIZE:
-                    raise ValueError("OIDC endpoint response is too large")
-            result = json_loads(bytes(body))
+                    raise OIDCProtocolError("OIDC endpoint response is too large")
+            try:
+                result = json_loads(bytes(body))
+            except ValueError:
+                raise OIDCProtocolError("OIDC endpoint did not return valid JSON") from None
         if not isinstance(result, dict):
-            raise TypeError("OIDC endpoint response must be an object")
+            raise OIDCProtocolError("OIDC endpoint response must be an object")
         return result
 
 
@@ -359,6 +398,7 @@ def _select_signing_key(jwks: dict[str, Any], header: dict[str, Any]) -> jwt.PyJ
         if isinstance(key, dict)
         and key.get("kty") in ("RSA", "EC")
         and key.get("use", "sig") == "sig"
+        and isinstance(key.get("key_ops", ["verify"]), list)
         and "verify" in key.get("key_ops", ["verify"])
         and key.get("alg", header["alg"]) == header["alg"]
         and ("kid" not in header or key.get("kid") == header["kid"])

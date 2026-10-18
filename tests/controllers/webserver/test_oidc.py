@@ -85,6 +85,9 @@ class IdentityProvider:
     jwks_override: dict[str, Any] | None = None
     last_token_form: dict[str, str] = field(default_factory=dict)
     last_auth_header: str = ""
+    groups_scope: str | None = None
+    granted_scopes: set[str] = field(default_factory=set)
+    token_body: bytes | None = None
 
     def token(self) -> str:
         """Sign the configured identity using the current key."""
@@ -108,6 +111,11 @@ class IdentityProvider:
             algorithm=self.signing_algorithm,
             headers={"kid": self.kid},
         )
+
+    async def authorize(self, request: web.Request) -> web.Response:
+        """Record scopes granted for the subsequent code exchange."""
+        self.granted_scopes = set(request.query.get("scope", "").split())
+        return web.Response(status=204)
 
     async def discovery(self, request: web.Request) -> web.Response:
         """Serve standards-based discovery with optional fault injection."""
@@ -149,6 +157,8 @@ class IdentityProvider:
             or self.last_token_form.get("redirect_uri") != self.pending.redirect_uri
         ):
             return web.json_response({"error": "invalid_grant"}, status=400)
+        if self.token_body is not None:
+            return web.Response(body=self.token_body, content_type="application/json")
         return web.json_response(
             {"id_token": self.token(), "access_token": "oidc-test-access", "token_type": "Bearer"},
             status=self.token_status,
@@ -157,14 +167,15 @@ class IdentityProvider:
     async def userinfo(self, request: web.Request) -> web.Response:
         """Return profile claims separately from the signed ID token."""
         assert request.headers["Authorization"] == "Bearer oidc-test-access"
-        return web.json_response(
-            {
-                "sub": self.userinfo_subject,
-                "preferred_username": "profile-listener",
-                "name": "Profile Name",
-                **self.userinfo_overrides,
-            }
-        )
+        claims = {
+            "sub": self.userinfo_subject,
+            "preferred_username": "profile-listener",
+            "name": "Profile Name",
+            **self.userinfo_overrides,
+        }
+        if self.groups_scope and self.groups_scope not in self.granted_scopes:
+            claims.pop("groups", None)
+        return web.json_response(claims)
 
 
 @pytest.fixture
@@ -209,6 +220,7 @@ async def idp(aiohttp_server: AiohttpServer, tmp_path: Path) -> AsyncIterator[Id
         app = web.Application()
         app.router.add_get("/issuer/.well-known/openid-configuration", identity_provider.discovery)
         app.router.add_get("/issuer/jwks", identity_provider.jwks)
+        app.router.add_get("/issuer/authorize", identity_provider.authorize)
         app.router.add_get("/issuer/userinfo", identity_provider.userinfo)
         app.router.add_post("/issuer/token", identity_provider.exchange)
         server = await aiohttp_server(app, ssl=server_ssl)
@@ -293,6 +305,7 @@ async def test_registered_client_authentication_methods(idp: IdentityProvider, m
         ("iss", "https://another-issuer.example/"),
         ("aud", "other-client"),
         ("nonce", "other-nonce"),
+        ("nonce", "non-ascii-\u00e9"),
         ("sub", ""),
         ("azp", "other-client"),
         ("exp", 1),
@@ -300,7 +313,9 @@ async def test_registered_client_authentication_methods(idp: IdentityProvider, m
         ("iat", True),
         ("aud", [CLIENT_ID, "another-client"]),
         ("at_hash", "wrong-hash"),
+        ("at_hash", "non-ascii-\u00e9"),
         ("c_hash", "wrong-hash"),
+        ("c_hash", "non-ascii-\u00e9"),
     ],
 )
 async def test_untrusted_identity_claims_are_rejected(
@@ -611,7 +626,9 @@ async def test_browser_start_callback_and_replay_protection(
     assert not auth.pending_logins._pending
     response = await auth.webserver._handle_oidc_start(
         make_mocked_request(
-            "GET", f"/auth/oidc/start?return_url={MA_URL}", headers={"Host": "music.example"}
+            "GET",
+            f"/auth/oidc/start?return_url={MA_URL}",
+            headers={"Host": "music.example", "X-Forwarded-Proto": "https"},
         )
     )
     assert response.status == 302
@@ -665,7 +682,11 @@ async def test_forwarded_host_sets_cookie_on_the_public_callback_origin(
         make_mocked_request(
             "GET",
             "/auth/oidc/start",
-            headers={"Host": "ma-internal:8095", "X-Forwarded-Host": "music.example"},
+            headers={
+                "Host": "ma-internal:8095",
+                "X-Forwarded-Host": "music.example",
+                "X-Forwarded-Proto": "https",
+            },
         )
     )
     assert response.status == 302

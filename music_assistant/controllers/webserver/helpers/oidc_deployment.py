@@ -13,7 +13,7 @@ from yarl import URL
 
 from music_assistant.helpers.json import json_dumps, json_loads
 
-from .oidc import TOKEN_AUTH_METHODS, validate_oidc_url
+from .oidc import DEFAULT_OIDC_SCOPES, TOKEN_AUTH_METHODS, validate_oidc_scopes, validate_oidc_url
 from .oidc_provider import OIDCProviderConfig, parse_role_mapping
 
 OIDC_CONFIG_FILE_ENV: Final = "MASS_OIDC_CONFIG_FILE"
@@ -63,6 +63,7 @@ def _read_config(path: str) -> OIDCDeploymentConfig:
         "allow_self_registration",
         "backchannel_logout",
         "groups_claim",
+        "scopes",
         "role_mapping",
         "bootstrap_admin",
     }
@@ -71,7 +72,7 @@ def _read_config(path: str) -> OIDCDeploymentConfig:
     for key in ("base_url", "issuer", "client_id"):
         if not isinstance(data.get(key), str) or not data[key].strip():
             raise ValueError(f"OIDC deployment configuration requires {key}")
-    for key in ("client_secret", "token_auth_method", "name", "groups_claim"):
+    for key in ("client_secret", "token_auth_method", "name", "groups_claim", "scopes"):
         if key in data and not isinstance(data[key], str):
             raise ValueError(f"OIDC deployment setting {key} must be a string")
     for key in ("bootstrap_admin", "allow_self_registration", "backchannel_logout"):
@@ -88,6 +89,9 @@ def _read_config(path: str) -> OIDCDeploymentConfig:
     if method not in TOKEN_AUTH_METHODS or (method != "none" and not secret):
         raise ValueError("OIDC deployment client authentication is incomplete")
     groups_claim = data.get("groups_claim", "groups")
+    scopes = data.get("scopes", DEFAULT_OIDC_SCOPES)
+    if not validate_oidc_scopes(scopes):
+        raise ValueError("OIDC deployment scopes are invalid")
     name = data.get("name", "OpenID Connect")
     if not 0 < len(groups_claim) <= 255 or not 0 < len(name.strip()) <= 255:
         raise ValueError("OIDC deployment name or groups claim is invalid")
@@ -108,6 +112,7 @@ def _read_config(path: str) -> OIDCDeploymentConfig:
             allow_self_registration=registration,
             backchannel_logout=data.get("backchannel_logout", False),
             groups_claim=groups_claim,
+            scopes=scopes,
             role_mapping=mapping,
         ),
     )

@@ -69,7 +69,10 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     RedirectTarget,
     verify_pkce,
 )
-from music_assistant.controllers.webserver.helpers.oidc import OIDC_AUTH_CODE_RE
+from music_assistant.controllers.webserver.helpers.oidc import (
+    DEFAULT_OIDC_SCOPES,
+    OIDC_AUTH_CODE_RE,
+)
 from music_assistant.controllers.webserver.helpers.oidc_deployment import (
     OIDCDeploymentConfig,
     load_oidc_deployment,
@@ -84,6 +87,7 @@ from music_assistant.controllers.webserver.helpers.oidc_provider import (
     CONF_OIDC_ISSUER,
     CONF_OIDC_NAME,
     CONF_OIDC_ROLE_MAPPING,
+    CONF_OIDC_SCOPES,
     CONF_OIDC_TOKEN_AUTH_METHOD,
     OIDC_PROVIDER_ID,
     OIDCLoginProvider,
@@ -181,6 +185,8 @@ class AuthenticationManager:
         self._join_code_exchange_lock = asyncio.Lock()
         # Keep username matching from seeing another provider's unlinked user row.
         self.user_link_lock = asyncio.Lock()
+        # Keep the last-admin check and every removal of admin access atomic.
+        self._user_role_lock = asyncio.Lock()
         self.pending_logins = PendingLoginStore()
         self.oidc_sessions = OIDCSessionStore(self)
         self.oidc_deployment: OIDCDeploymentConfig | None = None
@@ -1024,16 +1030,17 @@ class AuthenticationManager:
             raise InvalidDataError("Cannot disable your own account")
 
         # Look up the user before disabling (get_user hides disabled accounts)
-        user_row = await self.database.get_row("users", {"user_id": user_id})
-        if not user_row:
-            raise InvalidDataError("User not found")
-        _refuse_system_user(user_row["username"])
-
-        await self.database.update(
-            "users",
-            {"user_id": user_id},
-            {"enabled": 0},
-        )
+        async with self._user_role_lock:
+            user_row = await self.database.get_row("users", {"user_id": user_id})
+            if not user_row:
+                raise InvalidDataError("User not found")
+            _refuse_system_user(user_row["username"])
+            await self._ensure_not_last_admin(user_row)
+            await self.database.update(
+                "users",
+                {"user_id": user_id},
+                {"enabled": 0},
+            )
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
@@ -1512,19 +1519,21 @@ class AuthenticationManager:
             raise InvalidDataError("Cannot delete your own account")
 
         # Look up the username before deleting
-        user_row = await self.database.get_row("users", {"user_id": user_id})
-        if not user_row:
-            raise InvalidDataError("User not found")
-        _refuse_system_user(user_row["username"])
+        async with self._user_role_lock:
+            user_row = await self.database.get_row("users", {"user_id": user_id})
+            if not user_row:
+                raise InvalidDataError("User not found")
+            _refuse_system_user(user_row["username"])
+            await self._ensure_not_last_admin(user_row)
 
-        # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
-        # key enforcement is off on our connections, so remove those rows here.
-        for table in ("auth_tokens", "join_codes", "user_auth_providers"):
-            await self.database.delete(table, {"user_id": user_id})
-        await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
-        await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
-        await self.database.delete("users", {"user_id": user_id})
-        await self.database.commit()
+            # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
+            # key enforcement is off on our connections, so remove those rows here.
+            for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+                await self.database.delete(table, {"user_id": user_id})
+            await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
+            await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
+            await self.database.delete("users", {"user_id": user_id})
+            await self.database.commit()
 
         # the music sources this user owned or was given access to outlive it
         self.mass.config.release_user_sources(user_id)
@@ -2147,12 +2156,18 @@ class AuthenticationManager:
                 "This role can not own a music source.",
                 translation_key="role_can_not_own_music_sources",
             )
-        await self._ensure_not_last_admin(user_row)
-        await self.database.update(
-            "users",
-            {"user_id": user_id},
-            {"role": new_role},
-        )
+        async with self._user_role_lock:
+            current_row = await self.database.get_row("users", {"user_id": user_id})
+            if current_row is None:
+                raise InvalidDataError("User not found")
+            if current_row["role"] == new_role:
+                return
+            await self._ensure_not_last_admin(current_row)
+            await self.database.update(
+                "users",
+                {"user_id": user_id},
+                {"role": new_role},
+            )
 
         # a session holds the User it authenticated with, so it must reconnect to get the new role
         self.webserver.disconnect_websockets_for_user(user_id)
@@ -2428,6 +2443,9 @@ class AuthenticationManager:
             issuer=str(self.webserver.get_config_value(CONF_OIDC_ISSUER, "") or "").strip(),
             client_id=str(self.webserver.get_config_value(CONF_OIDC_CLIENT_ID, "") or "").strip(),
             client_secret=str(self.webserver.get_config_value(CONF_OIDC_CLIENT_SECRET, "") or ""),
+            scopes=str(
+                self.webserver.get_config_value(CONF_OIDC_SCOPES, DEFAULT_OIDC_SCOPES) or ""
+            ),
             token_auth_method=str(
                 self.webserver.get_config_value(CONF_OIDC_TOKEN_AUTH_METHOD, "client_secret_basic")
             ),

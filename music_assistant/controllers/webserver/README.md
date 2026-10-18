@@ -151,6 +151,8 @@ and display settings remain locally managed.
 `auth/authorization_url` and `/auth/authorize` return `/auth/oidc/start`, which creates
 single-use state and a nonce bound to the initiating browser by an HttpOnly, SameSite=Lax
 cookie. HTTPS uses Secure `__Host-` cookies; concurrent sign-ins have separate cookies.
+HTTP entry redirects to the configured HTTPS callback origin before setting that cookie;
+reverse-proxy callbacks use the forwarded host and scheme.
 Code exchange uses the exact callback and PKCE verifier. ID tokens require valid signatures,
 issuer, audience, timestamps, subject, nonce and authorized party; token hashes are checked
 when present. UserInfo must match the verified subject. Opaque codes accept visible ASCII
@@ -161,6 +163,9 @@ signatures and standard claims; this client owns OIDC discovery and protocol che
 requests verify TLS, refuse redirects and have size/time limits. Discovery and JWKS are cached;
 key refreshes are rate-limited. Discovery is lazy so IdP outages leave startup and local login
 available. Remote Access requires a browser-reachable External URL.
+
+Scopes default to `openid profile`. The advanced `oidc_scopes` setting, or `scopes` in the mounted
+configuration, can request extra scopes such as `groups` for Authelia. `openid` is always included.
 
 #### Logout and roles
 

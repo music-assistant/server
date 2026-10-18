@@ -1007,6 +1007,8 @@
   "core.webserver.config_entries.oidc_name.label": "Identity provider name",
   "core.webserver.config_entries.oidc_role_mapping.description": "Optional JSON object mapping exact group names to Music Assistant role IDs, for example {\"music-admins\":\"admin\",\"music-users\":\"user\"}. The first matching group wins. Roles are updated at each OIDC sign-in; missing or unmatched groups deny sign-in and end existing OIDC sessions. Leave empty to manage roles locally.",
   "core.webserver.config_entries.oidc_role_mapping.label": "OpenID Connect group-to-role mapping",
+  "core.webserver.config_entries.oidc_scopes.description": "Space-separated scopes to request from the identity provider. The openid scope is always included. Add groups if your provider requires it for group-to-role mapping.",
+  "core.webserver.config_entries.oidc_scopes.label": "OpenID Connect scopes",
   "core.webserver.config_entries.oidc_token_auth_method.description": "Must match your registered client. Use client_secret_basic or client_secret_post for a confidential client; none is for a public client using PKCE.",
   "core.webserver.config_entries.oidc_token_auth_method.label": "Token endpoint authentication",
   "core.webserver.config_entries.server_name.description": "The name of this Music Assistant instance, shown in the UI and announced on the network (e.g. Sendspin). \nUseful when running multiple servers on the same network.",

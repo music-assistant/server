@@ -1287,14 +1287,18 @@ class WebserverController(CoreController):
             )
         except RateLimited:
             return web.Response(status=429, text="Too many sign-ins are pending")
-        except Exception:
+        except AuthenticationFailed:
             return web.Response(status=503, text="OpenID Connect provider is unavailable")
         if not started:
             return web.Response(status=404, text="OpenID Connect is not configured")
         authorization_url, pending = started
         # Set the state cookie on the callback origin, even when opened through an alias.
         callback_origin = URL(pending.redirect_uri).origin()
-        entry_origin = URL(f"{callback_origin.scheme}://{request_host}").origin()
+        request_scheme = request.headers.get("X-Forwarded-Proto", request.scheme).lower()
+        if request_scheme not in ("http", "https"):
+            self.auth.pending_logins.pop(pending.state)
+            return web.Response(status=400, text="Invalid request scheme")
+        entry_origin = URL(f"{request_scheme}://{request_host}").origin()
         if callback_origin != entry_origin:
             self.auth.pending_logins.pop(pending.state)
             entry_url = callback_origin.with_path("/auth/oidc/start")

@@ -6,6 +6,8 @@ import hashlib
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final, NotRequired
 
+from aiohttp import ClientError
+from jwt import PyJWTError
 from music_assistant_models.auth import AuthProviderType, User, UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
@@ -15,7 +17,14 @@ from slugify import slugify
 from music_assistant.helpers.json import json_dumps, json_loads
 
 from .auth_providers import AuthResult, LoginProvider, LoginProviderConfig
-from .oidc import TOKEN_AUTH_METHODS, OIDCClient, validate_oidc_url
+from .oidc import (
+    DEFAULT_OIDC_SCOPES,
+    TOKEN_AUTH_METHODS,
+    OIDCClient,
+    OIDCProtocolError,
+    validate_oidc_scopes,
+    validate_oidc_url,
+)
 from .oidc_sessions import OIDCSession
 
 if TYPE_CHECKING:
@@ -33,6 +42,7 @@ CONF_OIDC_ALLOW_SELF_REGISTRATION: Final = "oidc_allow_self_registration"
 CONF_OIDC_BACKCHANNEL_LOGOUT: Final = "oidc_backchannel_logout"
 CONF_OIDC_GROUPS_CLAIM: Final = "oidc_groups_claim"
 CONF_OIDC_ROLE_MAPPING: Final = "oidc_role_mapping"
+CONF_OIDC_SCOPES: Final = "oidc_scopes"
 OIDC_PROVIDER_ID: Final = "oidc"
 
 
@@ -80,6 +90,15 @@ def oidc_config_entries() -> tuple[ConfigEntry, ...]:
             depends_on=CONF_OIDC_ENABLED,
             requires_reload=True,
             advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_OIDC_SCOPES,
+            type=ConfigEntryType.STRING,
+            default_value=DEFAULT_OIDC_SCOPES,
+            depends_on=CONF_OIDC_ENABLED,
+            requires_reload=True,
+            advanced=True,
+            validate=lambda value: isinstance(value, str) and validate_oidc_scopes(value),
         ),
         ConfigEntry(
             key=CONF_OIDC_ALLOW_SELF_REGISTRATION,
@@ -159,6 +178,7 @@ class OIDCProviderConfig(LoginProviderConfig):
     backchannel_logout: NotRequired[bool]
     groups_claim: NotRequired[str]
     role_mapping: NotRequired[dict[str, str]]
+    scopes: NotRequired[str]
 
 
 class OIDCLoginProvider(LoginProvider):
@@ -174,6 +194,7 @@ class OIDCLoginProvider(LoginProvider):
             config["client_id"],
             config["client_secret"],
             config["token_auth_method"],
+            config.get("scopes", DEFAULT_OIDC_SCOPES),
         )
         self._role_mapping = config.get("role_mapping", {})
         self._groups_claim = config.get("groups_claim", "groups")
@@ -213,7 +234,7 @@ class OIDCLoginProvider(LoginProvider):
         """Build the identity provider URL for this pending sign-in."""
         try:
             return await self.client.authorization_url(pending)
-        except Exception as err:
+        except (ClientError, TimeoutError, PyJWTError, OIDCProtocolError) as err:
             self.logger.warning("OIDC authorization could not start (%s)", type(err).__name__)
             raise AuthenticationFailed("OpenID Connect provider is unavailable") from err
 
@@ -227,7 +248,7 @@ class OIDCLoginProvider(LoginProvider):
             claims = await self.client.authenticate(
                 pending, code, groups_claim=self._groups_claim if self._role_mapping else None
             )
-        except Exception as err:
+        except (ClientError, TimeoutError, PyJWTError, OIDCProtocolError) as err:
             # Log only the exception type to avoid exposing tokens or provider responses.
             self.logger.warning("OIDC sign-in validation failed (%s)", type(err).__name__)
             raise AuthenticationFailed("OpenID Connect sign-in failed") from err
@@ -251,7 +272,7 @@ class OIDCLoginProvider(LoginProvider):
             raise AuthenticationFailed("OpenID Connect back-channel logout is disabled")
         try:
             claims = await self.client.validate_logout_token(token)
-        except Exception as err:
+        except (ClientError, TimeoutError, PyJWTError, OIDCProtocolError) as err:
             self.logger.warning("OIDC logout validation failed (%s)", type(err).__name__)
             raise AuthenticationFailed("Invalid OpenID Connect logout token") from err
         async with self.auth_manager.user_link_lock:

@@ -87,7 +87,11 @@ async def test_fresh_browser_bootstraps_a_mapped_administrator(
         "/login": server._handle_login_page,
         "/setup": server._handle_setup_page,
     }[entry]
-    response = await handler(make_mocked_request("GET", entry, headers={"Host": "music.example"}))
+    response = await handler(
+        make_mocked_request(
+            "GET", entry, headers={"Host": "music.example", "X-Forwarded-Proto": "https"}
+        )
+    )
     assert response.status == 302
     state = URL(response.headers["Location"]).query["state"]
     pending = server.auth.pending_logins.get(state)
@@ -188,6 +192,29 @@ async def test_addon_system_account_does_not_claim_oidc_bootstrap(
     assert auth.has_users
     assert not auth.oidc_bootstrap_required
     assert len(await auth.database.get_rows("users")) == 2
+
+
+async def test_deployment_scopes_allow_scope_gated_admin_bootstrap(
+    bootstrap_server: WebserverController, deployment_file: Path, idp: IdentityProvider
+) -> None:
+    """Mounted scopes can release group claims needed for the first mapped administrator."""
+    settings = json.loads(deployment_file.read_text())
+    settings["scopes"] = "profile groups"
+    deployment_file.write_text(json.dumps(settings))
+    auth = bootstrap_server.auth
+    await auth.close()
+    await auth.setup()
+    provider = auth.login_providers["oidc"]
+    idp.groups_scope = "groups"
+    idp.userinfo_overrides["groups"] = ["music-admins"]
+    url = await provider.build_authorization_url(idp.pending)
+    assert url is not None
+    assert URL(url).query["scope"] == "openid profile groups"
+    async with idp.session.get(url) as response:
+        assert response.status == 204
+    admin = await provider.complete_authorization(idp.pending, {"code": "valid-code"})
+    assert admin.role == UserRole.ADMIN
+    assert auth.has_users
 
 
 async def test_bootstrap_rejects_untrusted_return_urls(
@@ -315,6 +342,9 @@ async def test_file_settings_are_authoritative_and_not_stored(
         {"client_secret": ""},
         {"token_auth_method": "unknown"},
         {"groups_claim": ""},
+        {"scopes": ["groups"]},
+        {"scopes": "profile\ngroups"},
+        {"scopes": 'profile "groups"'},
         {"name": 123},
         {"unexpected": True},
     ],
