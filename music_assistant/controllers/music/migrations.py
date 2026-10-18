@@ -1393,6 +1393,11 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         # audiobookshelf image urls carried its api token, which must not reach clients
         await _drop_audiobookshelf_image_tokens(database)
 
+    if prev_version <= 68:
+        # more classical genre aliases that are not classical music move to the genre they
+        # belong to, and the words for classical and chamber music in other languages join
+        await _move_more_classical_genre_aliases(database, logger)
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active
@@ -1477,6 +1482,80 @@ async def _move_classical_genre_aliases(
         "K-Pop",
         "Soundtracks and Musicals",
     )
+    await _change_classical_genre_aliases(database, logger, moved_aliases, dropped_aliases)
+
+
+async def _move_more_classical_genre_aliases(
+    database: DatabaseConnection, logger: logging.Logger
+) -> None:
+    """
+    Move more misplaced aliases out of the default music classical genre.
+
+    Also adds the words for classical and chamber music in other languages.
+
+    :param database: The library database connection.
+    :param logger: The logger to report progress on.
+    """
+    # frozen copy of the genre_mapping.json change: target translation_key -> moved aliases
+    moved_aliases: dict[str, tuple[str, ...]] = {
+        "soundtrack": ("Cinematic Classical",),
+        "new_age": ("Post-Classical", "Solo Piano"),
+    }
+    # not classical music, or already owned by another default genre
+    dropped_aliases = (
+        "Duets",
+        "March",
+        "Modern Classical",
+        "Quartets",
+        "Quintets",
+        "Secular Vocal Music",
+        "Third Stream",
+        "Trios",
+        "Vocal Music",
+        "Vocal Music (Secular and Sacred)",
+    )
+    added_aliases = (
+        "Kamermuziek",
+        "Kammermusik",
+        "Kammermusikk",
+        "Klassiek",
+        "Klassik",
+        "Klassisk",
+        "Klassisk Musik",
+        "Klassische Musik",
+        "Musica Classica",
+        "Musica da Camera",
+        "Musique Classique",
+        "Musique de Chambre",  # codespell:ignore chambre
+        "Muzyka Kameralna",
+        "Muzyka Klasyczna",
+        "Música Clásica",
+        "Música de Cámara",
+    )
+    await _change_classical_genre_aliases(
+        database, logger, moved_aliases, dropped_aliases, added_aliases
+    )
+
+
+async def _change_classical_genre_aliases(
+    database: DatabaseConnection,
+    logger: logging.Logger,
+    moved_aliases: dict[str, tuple[str, ...]],
+    dropped_aliases: tuple[str, ...],
+    added_aliases: tuple[str, ...] = (),
+) -> None:
+    """
+    Change the aliases of the default music classical genre.
+
+    Mappings created through a removed alias are dropped, so the next genre scan maps
+    those items again.
+
+    :param database: The library database connection.
+    :param logger: The logger to report progress on.
+    :param moved_aliases: Aliases to move to another default genre, by its translation_key.
+    :param dropped_aliases: Aliases to remove from the classical genre only.
+    :param added_aliases: Aliases to add to the classical genre.
+    """
     removed_norms = {
         create_safe_string(alias, True, True)
         for alias in (*dropped_aliases, *(a for x in moved_aliases.values() for a in x))
@@ -1517,13 +1596,23 @@ async def _move_classical_genre_aliases(
             removed = [
                 x for x in aliases or [] if create_safe_string(x, True, True) in removed_norms
             ]
-            if aliases and removed:
+            kept = [x for x in aliases or [] if x not in removed]
+            kept_norms = {create_safe_string(x, True, True) for x in kept}
+            added = [
+                x for x in added_aliases if create_safe_string(x, True, True) not in kept_norms
+            ]
+            if aliases is not None and (removed or added):
                 await database.update(
                     DB_TABLE_GENRES,
                     {"item_id": row["item_id"]},
-                    {"genre_aliases": serialize_to_json([x for x in aliases if x not in removed])},
+                    {"genre_aliases": serialize_to_json([*kept, *added])},
                 )
-                logger.info("Removed %d misplaced alias(es) from the classical genre", len(removed))
+                if removed:
+                    logger.info(
+                        "Removed %d misplaced alias(es) from the classical genre", len(removed)
+                    )
+                if added:
+                    logger.info("Added %d alias(es) to the classical genre", len(added))
             # mappings are cleaned up even when the alias list was already clean, as an
             # earlier alias edit can have left them behind
             if has_mapping_table:

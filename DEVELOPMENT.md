@@ -85,6 +85,21 @@ In most cases, you won't need to modify the models. However, if you do need to m
 
 **Note:** You must rerun this command whenever you add or remove files from the `models` repository to ensure the changes are picked up.
 
+## Listing random order
+
+Server listing commands accept an optional integer `random_seed`. With `sort_field=random`,
+reuse the same seed for every page of one listing load; with unchanged items and filters,
+this avoids repeated or skipped items across pages. SQL listings also accept the seed for
+`random_play_count`, which keeps play count as the primary order and randomizes ties.
+Start a new seed when requesting a new random order. Seed `0` is valid. Without a seed,
+random sorts continue to draw a new order for each request.
+
+The seed is a request parameter, not stored state or a frozen snapshot: library edits,
+provider changes and updated play counts can change the result. It has no effect on other
+sort fields. `music/sort_options` remains the authority for the sorts each listing supports;
+accepting a seed does not add Random to a listing's offered options. Provider methods are
+unchanged; the server applies search, sort and paging to their listings.
+
 ## Note on async Python
 The Music Assistant server is fully built in Python. The Python language has no real supported for multi-threading. This is why Music Assistant heavily relies on asyncio to handle blocking IO. It is important to get a good understanding of asynchronous programming before building your first provider. [This](https://www.youtube.com/watch?v=M-UcUs7IMIM) video is an excellent first step in the world of asyncio.
 
