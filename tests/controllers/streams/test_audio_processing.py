@@ -1636,6 +1636,7 @@ async def test_flow_source_error_skips_item_without_completing_it() -> None:
     """An item-stream error skips to the next queue item; the flow itself continues."""
     mass = MagicMock()
     streamdetails = SimpleNamespace(
+        buffer=None,
         fade_in=False,
         stream_error=False,
         tail_overlap=None,
@@ -1821,13 +1822,16 @@ async def test_flow_zero_audio_skip_restores_seek_position(
 
 
 @pytest.mark.parametrize(
-    ("source_cancelled", "expected_duration"),
-    [(True, 300), (False, 3)],
-    ids=["aborted_source", "clean_source"],
+    ("source_cancelled", "released_by_stop", "expected_duration"),
+    [(True, False, 300), (False, False, 3), (False, True, 300)],
+    ids=["aborted_source", "clean_source", "source_released_by_a_stop"],
 )
 @pytest.mark.asyncio
 async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
-    monkeypatch: pytest.MonkeyPatch, source_cancelled: bool, expected_duration: int
+    monkeypatch: pytest.MonkeyPatch,
+    source_cancelled: bool,
+    released_by_stop: bool,
+    expected_duration: int,
 ) -> None:
     """An externally cancelled buffer ends in a clean EOF that must not shorten the item."""
     mass = MagicMock()
@@ -1880,6 +1884,12 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
         # a cancelled buffer stops yielding without an error, exactly like a real EOF
         for _ in range(3):
             yield bytes(pcm_format.pcm_sample_size)
+        if released_by_stop:
+            # a stop (a queue handed over to another player, say) detaches the buffer
+            # from the details before it releases it
+            source_buffer = streamdetails.buffer
+            streamdetails.buffer = None
+            source_buffer.cancelled = True
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_flow_stream(
@@ -1895,7 +1905,72 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
     assert streamdetails.seconds_streamed == 3
     entry = queue_data.flow_mode_stream_log[0]
     assert entry.seconds_streamed == 3
-    assert entry.duration == (None if source_cancelled else 3)
+    assert entry.duration == (3 if expected_duration == 3 else None)
+
+
+@pytest.mark.parametrize(
+    ("released_by_stop", "expected_duration"),
+    [(False, 3), (True, 180)],
+    ids=["clean_source", "source_released_by_a_stop"],
+)
+@pytest.mark.asyncio
+async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
+    monkeypatch: pytest.MonkeyPatch, released_by_stop: bool, expected_duration: int
+) -> None:
+    """A single item whose buffer a stop released keeps its length, as in the flow."""
+    mass = MagicMock()
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    streamdetails = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=SimpleNamespace(cancelled=False, eof=False),
+        fade_in=False,
+        stream_error=False,
+        tail_overlap=None,
+        uri="test://track",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=180,
+        is_realtime=False,
+    )
+    queue_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="track",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=streamdetails,
+        duration=180,
+        extra_attributes={},
+    )
+    mass.player_queues.get.return_value = SimpleNamespace(
+        queue_id="queue-1", display_name="Queue", index_in_buffer=0
+    )
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+
+    async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        for _ in range(3):
+            yield bytes(pcm_format.pcm_sample_size)
+        if released_by_stop:
+            # a stop detaches the buffer from the details before it releases it
+            source_buffer = streamdetails.buffer
+            streamdetails.buffer = None
+            source_buffer.cancelled = True
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        MagicMock(),
+        cast("Any", queue_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.DISABLED,
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert len(chunks) == 3
+    assert streamdetails.seconds_streamed == 3
+    assert streamdetails.duration == expected_duration
+    assert queue_item.duration == expected_duration
 
 
 def _manager_context(
