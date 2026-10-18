@@ -8,6 +8,46 @@
       "label": "Allow User Self-Registration",
       "description": "Allow users to create accounts via Home Assistant OAuth."
     },
+    "oidc_enabled": {
+      "label": "Enable OpenID Connect",
+      "description": "Offer sign-in through an OpenID Connect identity provider such as Authentik, Keycloak or Authelia. Built-in and Home Assistant sign-in remain available."
+    },
+    "oidc_name": {
+      "label": "Identity provider name",
+      "description": "The name shown on the sign-in button, for example Authentik."
+    },
+    "oidc_issuer": {
+      "label": "OpenID Connect issuer",
+      "description": "The exact HTTPS issuer identifier from your provider's discovery document, including any trailing slash. Discovery must advertise PKCE S256 and signed ID tokens."
+    },
+    "oidc_client_id": {
+      "label": "OpenID Connect client ID",
+      "description": "Register a client using the authorization code flow and the callback URL documented in the webserver README."
+    },
+    "oidc_client_secret": {
+      "label": "OpenID Connect client secret",
+      "description": "The registered client secret. Stored encrypted. Required unless the client authentication method is none."
+    },
+    "oidc_token_auth_method": {
+      "label": "Token endpoint authentication",
+      "description": "Must match your registered client. Use client_secret_basic or client_secret_post for a confidential client; none is for a public client using PKCE."
+    },
+    "oidc_allow_self_registration": {
+      "label": "Allow OpenID Connect self-registration",
+      "description": "Allow identities approved by your provider to create Music Assistant accounts. New accounts receive the User role unless group-to-role mapping is configured. Matching usernames or emails never link existing accounts automatically."
+    },
+    "oidc_backchannel_logout": {
+      "label": "Accept OpenID Connect logout notifications",
+      "description": "Let your identity provider end the Music Assistant sessions created through OpenID Connect. Register /auth/oidc/backchannel-logout on this server as the provider's back-channel logout URL. Local password sessions and separately created access tokens are unaffected."
+    },
+    "oidc_groups_claim": {
+      "label": "OpenID Connect groups claim",
+      "description": "The claim containing a list of group names, usually groups. Used only when group-to-role mapping is configured. Your provider must include it in the ID token or UserInfo response."
+    },
+    "oidc_role_mapping": {
+      "label": "OpenID Connect group-to-role mapping",
+      "description": "Optional JSON object mapping exact group names to Music Assistant role IDs, for example {\"music-admins\":\"admin\",\"music-users\":\"user\"}. The first matching group wins. Roles are updated at each OIDC sign-in; missing or unmatched groups deny sign-in and end existing OIDC sessions. Leave empty to manage roles locally."
+    },
     "base_url": {
       "label": "Internal URL",
       "description": "The URL that Music Assistant shares with devices and apps on your local network. \nSet it yourself when the automatically detected address does not work for them, for example behind a reverse proxy, with a custom hostname or on a server connected to more than one network."

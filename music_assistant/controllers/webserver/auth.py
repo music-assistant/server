@@ -30,6 +30,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     RateLimited,
 )
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_PLAYERS,
@@ -68,6 +69,24 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     RedirectTarget,
     verify_pkce,
 )
+from music_assistant.controllers.webserver.helpers.oidc import OIDC_AUTH_CODE_RE
+from music_assistant.controllers.webserver.helpers.oidc_provider import (
+    CONF_OIDC_ALLOW_SELF_REGISTRATION,
+    CONF_OIDC_BACKCHANNEL_LOGOUT,
+    CONF_OIDC_CLIENT_ID,
+    CONF_OIDC_CLIENT_SECRET,
+    CONF_OIDC_ENABLED,
+    CONF_OIDC_GROUPS_CLAIM,
+    CONF_OIDC_ISSUER,
+    CONF_OIDC_NAME,
+    CONF_OIDC_ROLE_MAPPING,
+    CONF_OIDC_TOKEN_AUTH_METHOD,
+    OIDC_PROVIDER_ID,
+    OIDCLoginProvider,
+    OIDCProviderConfig,
+    parse_role_mapping,
+)
+from music_assistant.controllers.webserver.helpers.oidc_sessions import OIDCSessionStore
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc
@@ -157,6 +176,7 @@ class AuthenticationManager:
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
         self.pending_logins = PendingLoginStore()
+        self.oidc_sessions = OIDCSessionStore(self)
         self._auth_exchange_rate_limiter = LoginRateLimiter(subject="client")
         # Serialises the read-modify-write of the user access filters
         self._user_filter_lock = asyncio.Lock()
@@ -172,6 +192,7 @@ class AuthenticationManager:
 
         # Create database schema and handle migrations
         await self._setup_database()
+        await self.oidc_sessions.setup()
         await self._load_custom_roles()
 
         # Initialize JWT helper with secret key
@@ -909,26 +930,7 @@ class AuthenticationManager:
         old_role = user_row["role"]
         if new_role == old_role:
             return True
-        # config.providers.own is the scope a member needs to manage the sources it owns. A user
-        # that owns one is not given a role without it, or it would keep the source with no way
-        # left to manage it.
-        user_with_new_role = User(user_id=user_id, username=user_row["username"], role=new_role)
-        if not has_scope(user_with_new_role, Scope.CONFIG_PROVIDERS_OWN) and own_music_sources(
-            self.mass, user_with_new_role
-        ):
-            raise InvalidDataError(
-                "This role can not own a music source.",
-                translation_key="role_can_not_own_music_sources",
-            )
-        await self._ensure_not_last_admin(user_row)
-        await self.database.update(
-            "users",
-            {"user_id": user_id},
-            {"role": new_role},
-        )
-
-        # a session holds the User it authenticated with, so it must reconnect to get the new role
-        self.webserver.disconnect_websockets_for_user(user_id)
+        await self._set_user_role(user_row, new_role)
         self.logger.info(
             "User role changed: '%s' from '%s' to '%s' by admin '%s'",
             user_row["username"],
@@ -937,6 +939,29 @@ class AuthenticationManager:
             admin_user.username,
         )
         return True
+
+    async def sync_oidc_user_role(self, user: User, new_role: str) -> User:
+        """Apply a verified, explicitly mapped OIDC role using existing role-change safeguards."""
+        if not user.enabled or new_role == UserRole.SERVICE:
+            raise AuthenticationFailed("OpenID Connect role mapping cannot update this account")
+        if not await self.database.get_row(
+            "user_auth_providers",
+            {"user_id": user.user_id, "provider_type": AuthProviderType.OIDC.value},
+        ):
+            raise AuthenticationFailed("Account is not linked to OpenID Connect")
+        row = await self.database.get_row("users", {"user_id": user.user_id})
+        if row is None or not row["enabled"]:
+            raise AuthenticationFailed("User account is disabled")
+        self._ensure_role_exists(new_role)
+        if row["role"] != new_role:
+            await self._set_user_role(row, new_role)
+            self.logger.info(
+                "OIDC role changed for '%s': '%s' to '%s'", user.username, row["role"], new_role
+            )
+        updated = await self.get_user(user.user_id)
+        if updated is None:
+            raise AuthenticationFailed("User account is disabled")
+        return updated
 
     @api_command("auth/user/enable", required_scope=Scope.USERS_MANAGE)
     async def enable_user(self, user_id: str) -> None:
@@ -1008,6 +1033,8 @@ class AuthenticationManager:
                     "supports_remote_app": await provider.supports_remote_app(),
                 }
             )
+            if isinstance(provider, OIDCLoginProvider):
+                providers[-1]["name"] = provider.name
         return providers
 
     @api_command("auth/login", authenticated=False)
@@ -1154,6 +1181,15 @@ class AuthenticationManager:
                     "error": "Provider does not support the remote app",
                 }
 
+        if provider_id == OIDC_PROVIDER_ID:
+            return {
+                "authorization_url": self.get_oidc_start_url(
+                    return_url,
+                    transport=transport,
+                    request_host=client.request_host if client else None,
+                )
+            }
+
         started = await self.get_authorization_url(
             provider_id,
             return_url,
@@ -1175,6 +1211,22 @@ class AuthenticationManager:
                 utc() + timedelta(seconds=max(0.0, pending.expires_at - time.monotonic()))
             ).isoformat(),
         }
+
+    def get_oidc_start_url(
+        self,
+        return_url: str | None = None,
+        *,
+        transport: AuthTransport = AuthTransport.DIRECT,
+        request_host: str | None = None,
+    ) -> str | None:
+        """Return the browser entry point that starts OIDC with a browser-bound state cookie."""
+        if OIDC_PROVIDER_ID not in self.login_providers:
+            return None
+        base = self.webserver.get_auth_callback_base(
+            transport, return_url=return_url, request_host=request_host
+        )
+        url = URL(f"{base}/auth/oidc/start")
+        return str(url.with_query(return_url=return_url)) if return_url else str(url)
 
     async def get_authorization_url(
         self,
@@ -1247,13 +1299,19 @@ class AuthenticationManager:
         # a sign-in that returns to the app is completed by the app itself (auth/exchange)
         if not pending or pending.provider_id != provider_id or pending.redirect_target != "server":
             return AuthResult(success=False, error="Invalid or expired state parameter")
-        if not AUTH_CODE_RE.fullmatch(code):
+        code_pattern = OIDC_AUTH_CODE_RE if provider_id == OIDC_PROVIDER_ID else AUTH_CODE_RE
+        if not code_pattern.fullmatch(code):
             return AuthResult(success=False, error="Invalid authorization code")
         try:
             user = await provider.complete_authorization(pending, {"code": code})
         except AuthenticationFailed as err:
             return AuthResult(success=False, error=str(err))
-        return AuthResult(success=True, user=user, return_url=pending.return_url)
+        return AuthResult(
+            success=True,
+            user=user,
+            return_url=pending.return_url,
+            oidc_session=pending.oidc_session,
+        )
 
     @api_command("auth/exchange", authenticated=False)
     async def exchange_authorization_code(
@@ -2047,6 +2105,29 @@ class AuthenticationManager:
         await self.database.commit()
         self.logger.info("Join code revoked (code_id=%s)", code_id)
 
+    async def _set_user_role(self, user_row: Mapping[str, Any], new_role: str) -> None:
+        user_id = user_row["user_id"]
+        # config.providers.own is the scope a member needs to manage the sources it owns. A user
+        # that owns one is not given a role without it, or it would keep the source with no way
+        # left to manage it.
+        user_with_new_role = User(user_id=user_id, username=user_row["username"], role=new_role)
+        if not has_scope(user_with_new_role, Scope.CONFIG_PROVIDERS_OWN) and own_music_sources(
+            self.mass, user_with_new_role
+        ):
+            raise InvalidDataError(
+                "This role can not own a music source.",
+                translation_key="role_can_not_own_music_sources",
+            )
+        await self._ensure_not_last_admin(user_row)
+        await self.database.update(
+            "users",
+            {"user_id": user_id},
+            {"role": new_role},
+        )
+
+        # a session holds the User it authenticated with, so it must reconnect to get the new role
+        self.webserver.disconnect_websockets_for_user(user_id)
+
     async def _setup_database(self) -> None:
         """Set up database schema and handle migrations."""
         # Always create tables if they don't exist
@@ -2275,6 +2356,7 @@ class AuthenticationManager:
         """Set up available login providers based on configuration."""
         # Always enable built-in provider
         self.login_providers["builtin"] = BuiltinLoginProvider(self.mass, "builtin", {})
+        self._setup_oidc_provider()
 
         # Home Assistant OAuth provider
         # Automatically enabled if HA provider (plugin) is configured
@@ -2301,6 +2383,39 @@ class AuthenticationManager:
                 "Home Assistant OAuth provider enabled (using URL from HA provider: %s)",
                 ha_url,
             )
+
+    def _setup_oidc_provider(self) -> None:
+        """Configure optional OIDC independently of built-in and Home Assistant sign-in."""
+        self.login_providers.pop(OIDC_PROVIDER_ID, None)
+        self.pending_logins.discard_provider(OIDC_PROVIDER_ID)
+        if not self.webserver.get_config_value(CONF_OIDC_ENABLED, False):
+            return
+        config = OIDCProviderConfig(
+            issuer=str(self.webserver.get_config_value(CONF_OIDC_ISSUER, "") or "").strip(),
+            client_id=str(self.webserver.get_config_value(CONF_OIDC_CLIENT_ID, "") or "").strip(),
+            client_secret=str(self.webserver.get_config_value(CONF_OIDC_CLIENT_SECRET, "") or ""),
+            token_auth_method=str(
+                self.webserver.get_config_value(CONF_OIDC_TOKEN_AUTH_METHOD, "client_secret_basic")
+            ),
+            name=str(
+                self.webserver.get_config_value(CONF_OIDC_NAME, "OpenID Connect")
+                or "OpenID Connect"
+            ).strip(),
+            allow_self_registration=bool(
+                self.webserver.get_config_value(CONF_OIDC_ALLOW_SELF_REGISTRATION, False)
+            ),
+            backchannel_logout=bool(
+                self.webserver.get_config_value(CONF_OIDC_BACKCHANNEL_LOGOUT, False)
+            ),
+            groups_claim=str(self.webserver.get_config_value(CONF_OIDC_GROUPS_CLAIM, "groups")),
+        )
+        try:
+            config["role_mapping"] = parse_role_mapping(
+                str(self.webserver.get_config_value(CONF_OIDC_ROLE_MAPPING, "") or "")
+            )
+            self.login_providers[OIDC_PROVIDER_ID] = OIDCLoginProvider(self.mass, config)
+        except ValueError:
+            self.logger.error("Invalid OpenID Connect configuration; OIDC sign-in is disabled")
 
     async def _sync_ha_oauth_provider(self) -> None:
         """

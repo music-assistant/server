@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import html
 import inspect
 import json
@@ -21,7 +22,7 @@ from concurrent import futures
 from contextlib import aclosing
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import aiofiles
 from aiohttp import web
@@ -37,6 +38,7 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
+    AuthenticationFailed,
     InsufficientPermissions,
     InvalidDataError,
     PlayerUnavailableError,
@@ -95,7 +97,8 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
-from .helpers.login_flow import AuthTransport, RedirectTarget
+from .helpers.login_flow import PENDING_LOGIN_TTL, AuthTransport, RedirectTarget
+from .helpers.oidc_provider import OIDC_PROVIDER_ID, OIDCLoginProvider, oidc_config_entries
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
@@ -394,6 +397,10 @@ class WebserverController(CoreController):
         routes.append(("GET", "/auth/providers", self._handle_auth_providers))
         routes.append(("GET", "/auth/authorize", self._handle_auth_authorize))
         routes.append(("GET", "/auth/callback", self._handle_auth_callback))
+        routes.append(("GET", "/auth/oidc/start", self._handle_oidc_start))
+        routes.append(
+            ("POST", "/auth/oidc/backchannel-logout", self._handle_oidc_backchannel_logout)
+        )
         # add first-time setup routes
         routes.append(("GET", "/setup", self._handle_setup_page))
         routes.append(("POST", "/setup", self._handle_setup))
@@ -695,6 +702,7 @@ class WebserverController(CoreController):
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
                 requires_reload=False,
             ),
+            *oidc_config_entries(),
             ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
@@ -1216,6 +1224,10 @@ class WebserverController(CoreController):
                 if not is_valid:
                     return web.Response(status=400, text="Invalid return_url")
 
+            if provider_id == OIDC_PROVIDER_ID:
+                return web.json_response(
+                    {"authorization_url": self.auth.get_oidc_start_url(return_url)}
+                )
             started = await self.auth.get_authorization_url(provider_id, return_url)
             if not started:
                 return web.Response(
@@ -1229,6 +1241,63 @@ class WebserverController(CoreController):
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
 
+    async def _handle_oidc_backchannel_logout(self, request: web.Request) -> web.Response:
+        """Receive a bounded, signed logout notification without requiring a browser session."""
+        headers = {"Cache-Control": "no-store"}
+        provider = self.auth.login_providers.get(OIDC_PROVIDER_ID)
+        if not isinstance(provider, OIDCLoginProvider) or not provider.backchannel_logout_enabled:
+            return web.Response(status=404, headers=headers)
+        try:
+            await provider.handle_backchannel_logout(await _read_oidc_logout_token(request))
+        except ValueError, AuthenticationFailed:
+            return web.json_response({"error": "invalid_request"}, status=400, headers=headers)
+        return web.Response(status=200, headers=headers)
+
+    async def _handle_oidc_start(self, request: web.Request) -> web.Response:
+        """Start a fresh OIDC sign-in in its browser, then redirect to the identity provider."""
+        return_url = request.query.get("return_url")
+        if return_url:
+            valid, _ = is_allowed_redirect_url(
+                return_url, request, self.base_url, self.external_url
+            )
+            if not valid:
+                return web.Response(status=400, text="Invalid return_url")
+        try:
+            started = await self.auth.get_authorization_url(
+                OIDC_PROVIDER_ID, return_url, request_host=request.host
+            )
+        except RateLimited:
+            return web.Response(status=429, text="Too many sign-ins are pending")
+        except Exception:
+            return web.Response(status=503, text="OpenID Connect provider is unavailable")
+        if not started:
+            return web.Response(status=404, text="OpenID Connect is not configured")
+        authorization_url, pending = started
+        # Starting in the callback's origin also works when a client used another server
+        # alias. No pre-created state from a URL, websocket or another browser is accepted.
+        callback_origin = URL(pending.redirect_uri).origin()
+        entry_origin = URL(f"{callback_origin.scheme}://{request.host}").origin()
+        if callback_origin != entry_origin:
+            self.auth.pending_logins.pop(pending.state)
+            entry_url = callback_origin.with_path("/auth/oidc/start")
+            if return_url:
+                entry_url = entry_url.with_query(return_url=return_url)
+            return web.HTTPFound(str(entry_url))
+        response = web.HTTPFound(authorization_url)
+        secure_cookie = callback_origin.scheme == "https"
+        response.set_cookie(
+            _oidc_cookie_name(pending.state, secure=secure_cookie),
+            pending.idp_nonce,
+            max_age=PENDING_LOGIN_TTL,
+            path="/",
+            httponly=True,
+            secure=secure_cookie,
+            samesite="Lax",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
     async def _handle_auth_callback(self, request: web.Request) -> web.Response:
         """Handle OAuth callback."""
         try:
@@ -1238,6 +1307,22 @@ class WebserverController(CoreController):
 
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")
+
+            oidc_cookie_name = None
+            secure_cookie = False
+            if provider_id == OIDC_PROVIDER_ID:
+                pending = self.auth.pending_logins.get(state)
+                if pending is None or pending.provider_id != OIDC_PROVIDER_ID:
+                    return web.Response(
+                        status=400, text="Invalid or expired OpenID Connect sign-in"
+                    )
+                secure_cookie = URL(pending.redirect_uri).scheme == "https"
+                oidc_cookie_name = _oidc_cookie_name(state, secure=secure_cookie)
+                cookie = request.cookies.get(oidc_cookie_name, "")
+                if not hmac.compare_digest(cookie.encode(), pending.idp_nonce.encode()):
+                    return web.Response(
+                        status=400, text="Invalid or expired OpenID Connect sign-in"
+                    )
 
             auth_result = await self.auth.handle_oauth_callback(provider_id, code, state)
 
@@ -1256,7 +1341,12 @@ class WebserverController(CoreController):
 
             # Create token
             device_name = f"OAuth ({provider_id})"
-            token = await self.auth.create_token(auth_result.user, device_name)
+            if auth_result.oidc_session is not None:
+                token = await self.auth.oidc_sessions.create_token(
+                    auth_result.user, device_name, auth_result.oidc_session
+                )
+            else:
+                token = await self.auth.create_token(auth_result.user, device_name)
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
             final_redirect_url = auth_result.return_url or "/"
@@ -1289,7 +1379,18 @@ class WebserverController(CoreController):
                 "{REDIRECT_URL}", _serialize_script_value(final_redirect_url)
             )
 
-            return web.Response(text=success_html, content_type="text/html")
+            response = web.Response(text=success_html, content_type="text/html")
+            if oidc_cookie_name is not None:
+                response.del_cookie(oidc_cookie_name, path="/", secure=secure_cookie)
+                response.headers["Cache-Control"] = "no-store"
+                response.headers["Referrer-Policy"] = "no-referrer"
+            return response
+        except AuthenticationFailed:
+            return web.Response(
+                status=400,
+                text="This sign-in is no longer valid. Sign in again.",
+                headers={"Cache-Control": "no-store"},
+            )
         except Exception:
             self.logger.exception("Error during OAuth callback")
             error_html = """
@@ -1488,6 +1589,28 @@ def _serialize_script_value(value: str) -> str:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
+
+
+async def _read_oidc_logout_token(request: web.Request) -> str:
+    """Read one form-encoded logout token with a strict request-size bound."""
+    if request.content_type != "application/x-www-form-urlencoded":
+        raise ValueError("Expected form-encoded logout token")
+    body = bytearray()
+    async for chunk in request.content.iter_chunked(4096):
+        body.extend(chunk)
+        if len(body) > 16384:
+            raise ValueError("Logout request is too large")
+    form = parse_qs(body.decode("utf-8"), strict_parsing=True, max_num_fields=10)
+    tokens = form.get("logout_token", [])
+    if len(tokens) != 1 or not tokens[0]:
+        raise ValueError("Expected one logout token")
+    return tokens[0]
+
+
+def _oidc_cookie_name(state: str, *, secure: bool = True) -> str:
+    """Return a separate browser cookie name for each concurrent OIDC sign-in."""
+    prefix = "__Host-" if secure else ""
+    return f"{prefix}ma_oidc_{hashlib.sha256(state.encode()).hexdigest()[:16]}"
 
 
 def _is_valid_external_url(value: ConfigValueType) -> bool:

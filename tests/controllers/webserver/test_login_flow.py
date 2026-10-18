@@ -100,6 +100,30 @@ def test_an_expired_sign_in_is_not_returned() -> None:
     assert pending.state not in store._pending
 
 
+def test_oidc_browser_binding_does_not_consume_the_pending_sign_in() -> None:
+    """Reading browser state leaves it usable once, and does not return expired entries."""
+    store = PendingLoginStore()
+    pending = store.start("oidc", AuthTransport.DIRECT, "https://ma.example/cb", "verifier")
+    assert store.get(pending.state) is pending
+    assert store.get(pending.state) is pending
+    assert store.pop(pending.state) is pending
+    assert store.get(pending.state) is None
+    expired = store.start("oidc", AuthTransport.DIRECT, "https://ma.example/cb", "verifier")
+    with _monotonic_after(PENDING_LOGIN_TTL):
+        assert store.get(expired.state) is None
+
+
+def test_reconfiguring_oidc_preserves_other_providers_pending_sign_ins() -> None:
+    """Discarding OIDC state leaves Home Assistant sign-ins and their nonces independent."""
+    store = PendingLoginStore()
+    oidc = store.start("oidc", AuthTransport.DIRECT, "https://ma.example/cb", "verifier")
+    ha = store.start("homeassistant", AuthTransport.DIRECT, "https://ma.example/cb", "verifier")
+    assert oidc.idp_nonce != ha.idp_nonce
+    store.discard_provider("oidc")
+    assert store.pop(oidc.state) is None
+    assert store.pop(ha.state) is ha
+
+
 def test_starts_beyond_the_limit_are_refused_until_some_expire() -> None:
     """A start at the limit is refused, and accepted again once the pending ones expired."""
     store = PendingLoginStore()
