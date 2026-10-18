@@ -16,11 +16,13 @@ from music_assistant_models.auth import UserRole
 from music_assistant_models.errors import AuthenticationFailed, InvalidDataError
 from yarl import URL
 
+from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.oidc import OIDCClient, OIDCProtocolError
 from music_assistant.controllers.webserver.helpers.oidc_provider import (
     CONF_OIDC_SCOPES,
     OIDCLoginProvider,
 )
+from music_assistant.helpers.json import json_loads
 
 from .test_oidc import MA_URL, IdentityProvider, auth_manager, idp, provider
 from .test_oidc_lifecycle import configure, sign_in
@@ -101,6 +103,48 @@ async def test_concurrent_admin_removals_preserve_an_enabled_administrator(
     assert isinstance(errors[0], (AuthenticationFailed, InvalidDataError))
     rows = await auth.database.get_rows("users")
     assert sum(row["role"] == UserRole.ADMIN and row["enabled"] for row in rows) == 1
+
+
+@pytest.mark.parametrize("return_url", [None, "musicassistant://auth"])
+@pytest.mark.parametrize(
+    ("request_host", "forwarded_host", "expected_base"),
+    [
+        ("music.example", None, MA_URL),
+        ("ma-internal:8095", "music.example", MA_URL),
+        ("ma-lan.local:8095", None, "http://ma-lan.local:8095"),
+    ],
+)
+async def test_http_authorization_selects_the_browser_facing_oidc_origin(
+    provider: OIDCLoginProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    return_url: str | None,
+    request_host: str,
+    forwarded_host: str | None,
+    expected_base: str,
+) -> None:
+    """Public and proxied authorization use the public entry point while LAN access stays local."""
+    monkeypatch.setattr(
+        WebserverController, "base_url", property(lambda _: "http://ma-lan.local:8095")
+    )
+    monkeypatch.setattr(WebserverController, "external_url", property(lambda _: MA_URL))
+    headers = {"Host": request_host}
+    if forwarded_host:
+        headers["X-Forwarded-Host"] = forwarded_host
+    query = {"provider_id": "oidc"}
+    if return_url:
+        query["return_url"] = return_url
+    auth = provider.auth_manager
+    response = await auth.webserver._handle_auth_authorize(
+        make_mocked_request("GET", str(URL("/auth/authorize").with_query(query)), headers=headers)
+    )
+    assert response.status == 200
+    assert response.text is not None
+    authorization_url = URL(json_loads(response.text)["authorization_url"])
+    assert str(authorization_url.origin()) == expected_base
+    assert authorization_url.path == "/auth/oidc/start"
+    assert authorization_url.query.get("return_url") == return_url
+    assert not response.cookies
+    assert not auth.pending_logins._pending
 
 
 @pytest.mark.parametrize(

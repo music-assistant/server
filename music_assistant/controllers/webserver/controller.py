@@ -1244,7 +1244,12 @@ class WebserverController(CoreController):
 
             if provider_id == OIDC_PROVIDER_ID:
                 return web.json_response(
-                    {"authorization_url": self.auth.get_oidc_start_url(return_url)}
+                    {
+                        "authorization_url": self.auth.get_oidc_start_url(
+                            return_url,
+                            request_host=request.headers.get("X-Forwarded-Host") or request.host,
+                        )
+                    }
                 )
             started = await self.auth.get_authorization_url(provider_id, return_url)
             if not started:
