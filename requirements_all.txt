@@ -39,7 +39,7 @@ duration-parser==1.0.1
 fastmcp==4.1.0
 getmac==0.9.6
 gql[all]==4.0.0
-hass-client==1.4.0
+hass-client==1.4.1
 hassfeld==0.3.14
 hue-entertainment==0.1.2
 huggingface-hub==1.30.0
