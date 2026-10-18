@@ -949,6 +949,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Browse Music providers, searched, sorted and paged.
@@ -967,6 +968,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of items to return; 0 returns them all.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for browsing.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -983,6 +985,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 search=search,
                 sort_field=sort_field,
                 sort_direction=sort_direction,
+                random_seed=random_seed,
             )
             if sort_field == SortField.NAME:
                 # the folders come before the other items, as in a file browser
@@ -1086,6 +1089,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     sort_direction=sort_direction,
                     limit=limit or 0,
                     offset=offset,
+                    random_seed=random_seed,
                 )
             )
             is not None
@@ -2940,6 +2944,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         sort_direction: SortDirection | None,
         limit: int,
         offset: int,
+        random_seed: int | None = None,
     ) -> list[MediaItemType | BrowseFolder] | None:
         """
         Return a page of one of a provider's standard library folders, read from the library.
@@ -2952,6 +2957,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param sort_direction: Sort direction.
         :param limit: Maximum number of entries to return; 0 returns them all.
         :param offset: Number of entries to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :returns: None while the library holds none of the provider's items of this type,
             so the provider lists the folder itself.
         """
@@ -2969,8 +2975,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sort_field=sort_field if typed_sort else None,
             sort_direction=sort_direction if typed_sort else None,
             summary=False,
+            random_seed=random_seed,
         )
-        if not items and not await controller.library_items(provider=provider.instance_id, limit=1):
+        if not items and not await controller.library_items(
+            provider=provider.instance_id, limit=1, random_seed=random_seed
+        ):
             return None
         page.extend(items)
         return page

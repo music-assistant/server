@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import fields
 from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 from music_assistant_models.api import SortOptionInfo
@@ -100,6 +102,34 @@ def _track(  # noqa: PLR0913
     track.disc_number, track.track_number = disc_number, track_number
     track.position, track.date_added, track.last_played = position, date_added, last_played
     return track
+
+
+@pytest.mark.parametrize("seed", [0, -5, 123456])
+def test_seeded_random_pages_form_one_permutation(seed: int) -> None:
+    """A seeded random listing keeps its order across independently requested pages."""
+    items = [create_track("library", str(index)) for index in range(30)]
+    options: dict[str, Any] = {"sort_field": SortField.RANDOM, "random_seed": seed}
+    first = apply_listing(items, ListingType.LIBRARY_TRACKS, limit=15, **options)
+    second = apply_listing(items, ListingType.LIBRARY_TRACKS, limit=15, offset=15, **options)
+    whole = apply_listing(items, ListingType.LIBRARY_TRACKS, **options)
+
+    assert first + second == whole
+    assert {item.item_id for item in whole} == {item.item_id for item in items}
+    assert len({item.item_id for item in first + second}) == len(items)
+    assert whole != apply_listing(
+        items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM, random_seed=seed + 1
+    )
+
+
+def test_unseeded_random_still_uses_global_shuffle() -> None:
+    """An omitted seed preserves the existing per-request shuffle."""
+    items = [create_track("library", str(index)) for index in range(10)]
+    with patch("music_assistant.controllers.music.listing.random.shuffle") as shuffle:
+        apply_listing(items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM)
+        shuffle.assert_called_once()
+        shuffle.reset_mock()
+        apply_listing(items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM, random_seed=0)
+        shuffle.assert_not_called()
 
 
 @pytest.fixture

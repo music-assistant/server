@@ -84,3 +84,19 @@ async def test_genre_albums_follow_the_listing_contract(mass: MusicAssistant) ->
     assert await _albums(limit=2, offset=2) == ["Zebra"]
     with pytest.raises(InvalidDataError):
         await _albums(sort_field=SortField.DURATION)
+
+
+@pytest.mark.parametrize("media_type", [MediaType.TRACK, MediaType.ALBUM])
+async def test_genre_random_seed_stays_stable_across_pages(
+    mass: MusicAssistant, media_type: MediaType
+) -> None:
+    """Genre contents forward their seed to the shared SQL query."""
+    genre_id = await _genre_with(mass, media_type)
+    listing = (
+        mass.music.genres.tracks if media_type == MediaType.TRACK else mass.music.genres.albums
+    )
+    whole = await listing(genre_id, sort_field=SortField.RANDOM, random_seed=0, limit=0)
+    first = await listing(genre_id, sort_field=SortField.RANDOM, random_seed=0, limit=1)
+    rest = await listing(genre_id, sort_field=SortField.RANDOM, random_seed=0, limit=2, offset=1)
+
+    assert [item.item_id for item in first + rest] == [item.item_id for item in whole]
