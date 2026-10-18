@@ -174,9 +174,7 @@ async def get_or_create_ha_user(
             "user_auth_providers",
             {"user_id": user.user_id, "provider_type": AuthProviderType.OIDC.value},
         ):
-            # OIDC profile names are not proof that the HA user owns that account.
-            # Keep HA's existing local-account linking, but give this HA identity a
-            # distinct username when an OIDC user claimed the name first.
+            # An OIDC username is not proof that this HA identity owns the account.
             username = f"{normalize_username(username)}-ha-{secrets.token_hex(8)}"
             user = None
     if user:

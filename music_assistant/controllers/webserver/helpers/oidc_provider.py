@@ -38,7 +38,7 @@ OIDC_PROVIDER_ID: Final = "oidc"
 
 
 def oidc_config_entries() -> tuple[ConfigEntry, ...]:
-    """Return opt-in OpenID Connect settings for the webserver core configuration."""
+    """Return the webserver's OpenID Connect settings."""
     return (
         ConfigEntry(
             key=CONF_OIDC_ENABLED,
@@ -118,12 +118,12 @@ def oidc_config_entries() -> tuple[ConfigEntry, ...]:
 
 
 def oidc_identity_id(issuer: str, subject: str) -> str:
-    """Return the stable provider link ID for an exact OIDC issuer and subject pair."""
+    """Hash the exact issuer/subject pair into a provider link ID."""
     return hashlib.sha256(json_dumps([issuer, subject]).encode()).hexdigest()
 
 
 def parse_role_mapping(value: str) -> dict[str, str]:
-    """Read an ordered, explicit group-to-role map; an empty map keeps local role management."""
+    """Parse an ordered group-to-role map; empty keeps local role management."""
     if not value.strip():
         return {}
     if len(value) > 16384:
@@ -163,10 +163,10 @@ class OIDCProviderConfig(LoginProviderConfig):
 
 
 class OIDCLoginProvider(LoginProvider):
-    """Sign in through an OIDC identity provider without changing other login methods."""
+    """Sign in through an OIDC identity provider."""
 
     def __init__(self, mass: MusicAssistant, config: OIDCProviderConfig) -> None:
-        """Initialize the provider without fetching discovery or contacting the identity provider."""
+        """Initialize without contacting the identity provider."""
         super().__init__(mass, OIDC_PROVIDER_ID, config)
         self._oidc_config = config
         self.client = OIDCClient(
@@ -189,7 +189,7 @@ class OIDCLoginProvider(LoginProvider):
 
     @property
     def allow_self_registration(self) -> bool:
-        """Return whether verified, unlinked OIDC identities may create regular accounts."""
+        """Return whether new identities may create accounts."""
         return self._oidc_config["allow_self_registration"]
 
     @property
@@ -204,11 +204,11 @@ class OIDCLoginProvider(LoginProvider):
 
     @property
     def backchannel_logout_enabled(self) -> bool:
-        """Return whether signed identity-provider logout notifications are accepted."""
+        """Return whether back-channel logout is enabled."""
         return self._oidc_config.get("backchannel_logout", False)
 
     async def authenticate(self, credentials: dict[str, Any]) -> AuthResult:
-        """Refuse credential-based sign-in; OIDC requires the authorization code flow."""
+        """Reject credentials; OIDC requires the authorization code flow."""
         return AuthResult(success=False, error="Use the OpenID Connect sign-in flow")
 
     async def build_authorization_url(self, pending: PendingLogin) -> str | None:
@@ -222,7 +222,7 @@ class OIDCLoginProvider(LoginProvider):
     async def complete_authorization(
         self, pending: PendingLogin, params: Mapping[str, str]
     ) -> User:
-        """Verify an OIDC authorization code and resolve its linked Music Assistant user."""
+        """Exchange an authorization code and resolve the linked user."""
         if not (code := params.get("code")):
             raise AuthenticationFailed("No authorization code received")
         try:
@@ -230,7 +230,7 @@ class OIDCLoginProvider(LoginProvider):
                 pending, code, groups_claim=self._groups_claim if self._role_mapping else None
             )
         except Exception as err:
-            # Never expose provider response bodies, codes, tokens or secrets in errors/logs.
+            # Log only the exception type to avoid exposing tokens or provider responses.
             self.logger.warning("OIDC sign-in validation failed (%s)", type(err).__name__)
             raise AuthenticationFailed("OpenID Connect sign-in failed") from err
         async with self._user_lock:
@@ -248,7 +248,7 @@ class OIDCLoginProvider(LoginProvider):
             return user
 
     async def handle_backchannel_logout(self, token: str) -> None:
-        """Validate and apply an identity-provider logout to this client's OIDC sessions."""
+        """Validate a logout notification and revoke matching sessions."""
         if not self.backchannel_logout_enabled:
             raise AuthenticationFailed("OpenID Connect back-channel logout is disabled")
         try:
@@ -296,8 +296,7 @@ class OIDCLoginProvider(LoginProvider):
         preferred_username = claims.get("preferred_username")
         username = slugify(preferred_username) if isinstance(preferred_username, str) else ""
         username = username[:50] if len(username) >= 2 else "oidc-user"
-        # An IdP username/email is not proof of ownership of a local or HA account.
-        # A collision creates a distinct account, without touching the existing user.
+        # A matching username does not prove ownership of a local or HA account.
         if await self.auth_manager.get_user_by_username(username, include_disabled=True):
             username = f"{username[:37]}-{identity_id[:12]}"
         display_name = claims.get("name")

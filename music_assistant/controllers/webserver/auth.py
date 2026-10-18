@@ -941,7 +941,7 @@ class AuthenticationManager:
         return True
 
     async def sync_oidc_user_role(self, user: User, new_role: str) -> User:
-        """Apply a verified, explicitly mapped OIDC role using existing role-change safeguards."""
+        """Apply a mapped OIDC role with the existing role-change safeguards."""
         if not user.enabled or new_role == UserRole.SERVICE:
             raise AuthenticationFailed("OpenID Connect role mapping cannot update this account")
         if not await self.database.get_row(
@@ -1219,7 +1219,7 @@ class AuthenticationManager:
         transport: AuthTransport = AuthTransport.DIRECT,
         request_host: str | None = None,
     ) -> str | None:
-        """Return the browser entry point that starts OIDC with a browser-bound state cookie."""
+        """Return the OIDC entry point that binds state to the initiating browser."""
         if OIDC_PROVIDER_ID not in self.login_providers:
             return None
         base = self.webserver.get_auth_callback_base(

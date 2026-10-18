@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class OIDCSession:
-    """Verified identity-provider context for a single Music Assistant sign-in."""
+    """Verified identity-provider session for one sign-in."""
 
     issuer: str
     client_id: str
@@ -34,7 +34,7 @@ class OIDCSession:
 
 
 class OIDCSessionStore:
-    """Track OIDC login tokens and serialize their creation with logout delivery."""
+    """Persist OIDC sessions and serialize token creation with logout."""
 
     def __init__(self, auth: AuthenticationManager) -> None:
         """Initialize a store using the authentication manager's database."""
@@ -42,7 +42,7 @@ class OIDCSessionStore:
         self._lock = asyncio.Lock()
 
     async def setup(self) -> None:
-        """Add optional session tables without rewriting existing accounts or tokens."""
+        """Create session tables while preserving existing accounts and tokens."""
         await self.auth.database.execute_write(
             """
             CREATE TABLE IF NOT EXISTS oidc_sessions (
@@ -87,7 +87,7 @@ class OIDCSessionStore:
                     "oidc_sessions", {"token_id": token_id, **asdict(session)}
                 )
             except BaseException:
-                # Never return a usable token whose logout association could not be saved.
+                # A token without a saved session link cannot be revoked by IdP logout.
                 await self.auth.database.delete("auth_tokens", {"token_id": token_id})
                 raise
             return token
@@ -99,7 +99,7 @@ class OIDCSessionStore:
             await self._ensure_session_active(session)
 
     async def logout(self, issuer: str, client_id: str, claims: dict[str, Any]) -> int:
-        """Apply a verified logout once, including across restarts and in-flight sign-ins."""
+        """Apply a verified logout, retrying interrupted revocations."""
         logout_id = hashlib.sha256(
             json_dumps([issuer, client_id, claims["jti"]]).encode()
         ).hexdigest()
@@ -112,8 +112,7 @@ class OIDCSessionStore:
                 "session_id": claims.get("sid"),
                 "issued_at": claims["iat"],
             }
-            # Persist the logout before deleting tokens so a concurrent callback cannot
-            # recreate a session after logout. Retain it at least as long as pending logins.
+            # Persist first to block concurrent callbacks; retain through the pending-login TTL.
             existing = await self.auth.database.get_row("oidc_logouts", {"logout_id": logout_id})
             if existing:
                 values = {key: existing[key] for key in values}
@@ -137,12 +136,11 @@ class OIDCSessionStore:
             return len(rows)
 
     async def revoke_identity(self, issuer: str, client_id: str, subject: str) -> None:
-        """End this provider's sessions when a user's mapped access can no longer be granted."""
+        """Revoke this identity's sessions when group mapping denies access."""
         await self.logout(
             issuer,
             client_id,
-            # Include all ID tokens accepted within the clock-skew allowance, even if
-            # the provider's clock is ahead of ours when access is removed.
+            # Include accepted ID tokens from a provider whose clock is ahead.
             {
                 "sub": subject,
                 "iat": time.time() + CLOCK_LEEWAY,

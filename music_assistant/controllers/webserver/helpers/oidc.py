@@ -29,13 +29,12 @@ MAX_RESPONSE_SIZE: Final = 1024 * 1024
 CLOCK_LEEWAY: Final = 30
 LOGOUT_MAX_AGE: Final = 300
 BACKCHANNEL_LOGOUT_EVENT: Final = "http://schemas.openid.net/event/backchannel-logout"
-# Never accept symmetric or unsigned ID tokens, even when discovery advertises them.
+# Discovery cannot enable symmetric or unsigned tokens.
 SIGNING_ALGORITHMS: Final = frozenset(
     {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
 )
 TOKEN_AUTH_METHODS: Final = ("client_secret_basic", "client_secret_post", "none")
-# RFC 6749 Appendix A.11 permits all visible ASCII, including spaces and base64 padding.
-# Bound the opaque value before forwarding it to the provider in a form-encoded request.
+# RFC 6749 Appendix A.11 allows visible ASCII, including spaces and base64 padding.
 OIDC_AUTH_CODE_RE: Final = re.compile(r"[\x20-\x7e]{1,4096}")
 
 
@@ -95,7 +94,7 @@ class OIDCClient:
         self._last_forced_refresh = float("-inf")
 
     async def authorization_url(self, pending: PendingLogin) -> str:
-        """Return the authorization URL for an existing, single-use pending sign-in."""
+        """Build the authorization URL for a pending sign-in."""
         metadata = await self._get_metadata()
         return str(
             URL(metadata["authorization_endpoint"]).update_query(
@@ -113,7 +112,7 @@ class OIDCClient:
     async def authenticate(
         self, pending: PendingLogin, code: str, *, groups_claim: str | None = None
     ) -> dict[str, Any]:
-        """Exchange a code and return verified identity claims, with optional profile details."""
+        """Exchange a code for verified identity and profile claims."""
         metadata = await self._get_metadata()
         data = {
             "grant_type": "authorization_code",
@@ -151,7 +150,6 @@ class OIDCClient:
             )
             if userinfo.get("sub") != claims["sub"]:
                 raise ValueError("OIDC UserInfo subject does not match the ID token")
-            # The subject must match before accepting any profile or configured group claim.
             for key in ("preferred_username", "name", "picture"):
                 if isinstance(userinfo.get(key), str):
                     claims[key] = userinfo[key]
@@ -160,7 +158,7 @@ class OIDCClient:
         return claims
 
     async def validate_logout_token(self, token: str) -> dict[str, Any]:
-        """Verify a back-channel logout token without accepting an ID token in its place."""
+        """Verify a signed back-channel logout event."""
         metadata = await self._get_metadata()
         claims = await self._decode_signed_token(
             metadata, token, ["iss", "aud", "iat", "exp", "jti", "events"]
@@ -293,8 +291,7 @@ class OIDCClient:
         jwks = await self._get_jwks(metadata["jwks_uri"])
         key = _select_signing_key(jwks, header)
         if key is None:
-            # A new kid can arrive before our cached keys expire. Limit forced refreshes
-            # so attacker-chosen kids cannot turn the token endpoint into a JWKS flood.
+            # Refresh for key rotation, but rate-limit unknown kids to prevent JWKS floods.
             jwks = await self._get_jwks(metadata["jwks_uri"], force=True)
             key = _select_signing_key(jwks, header)
         if key is None:

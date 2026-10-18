@@ -1242,7 +1242,7 @@ class WebserverController(CoreController):
             return web.json_response({"error": "Authorization failed"}, status=500)
 
     async def _handle_oidc_backchannel_logout(self, request: web.Request) -> web.Response:
-        """Receive a bounded, signed logout notification without requiring a browser session."""
+        """Handle a signed logout notification without browser authentication."""
         headers = {"Cache-Control": "no-store"}
         provider = self.auth.login_providers.get(OIDC_PROVIDER_ID)
         if not isinstance(provider, OIDCLoginProvider) or not provider.backchannel_logout_enabled:
@@ -1254,7 +1254,7 @@ class WebserverController(CoreController):
         return web.Response(status=200, headers=headers)
 
     async def _handle_oidc_start(self, request: web.Request) -> web.Response:
-        """Start a fresh OIDC sign-in in its browser, then redirect to the identity provider."""
+        """Bind a new OIDC sign-in to the browser and redirect to the IdP."""
         return_url = request.query.get("return_url")
         if return_url:
             valid, _ = is_allowed_redirect_url(
@@ -1273,8 +1273,7 @@ class WebserverController(CoreController):
         if not started:
             return web.Response(status=404, text="OpenID Connect is not configured")
         authorization_url, pending = started
-        # Starting in the callback's origin also works when a client used another server
-        # alias. No pre-created state from a URL, websocket or another browser is accepted.
+        # Set the state cookie on the callback origin, even when opened through an alias.
         callback_origin = URL(pending.redirect_uri).origin()
         entry_origin = URL(f"{callback_origin.scheme}://{request.host}").origin()
         if callback_origin != entry_origin:
