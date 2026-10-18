@@ -103,6 +103,7 @@ from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
+from music_assistant.helpers.util import join_task
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -2169,12 +2170,22 @@ class AuthenticationManager:
             if current_row["role"] == new_role:
                 return
             await self._ensure_not_last_admin(current_row)
-            await self.database.update(
-                "users",
-                {"user_id": user_id},
-                {"role": new_role},
+            # Retain the lock until both the write and invalidation of cached roles finish.
+            update_task = asyncio.create_task(
+                self._write_user_role_and_disconnect(user_id, new_role)
             )
+            try:
+                await join_task(update_task)
+            except asyncio.CancelledError:
+                while not update_task.done():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await join_task(update_task)
+                update_task.result()
+                raise
 
+    async def _write_user_role_and_disconnect(self, user_id: str, new_role: str) -> None:
+        """Persist a changed role and close sessions holding the previous role."""
+        await self.database.update("users", {"user_id": user_id}, {"role": new_role})
         # a session holds the User it authenticated with, so it must reconnect to get the new role
         self.webserver.disconnect_websockets_for_user(user_id)
 

@@ -204,6 +204,8 @@ subject-matched UserInfo. An empty mapping keeps local role management.
 Roles synchronize at sign-in, including demotions. Missing, malformed or unmatched groups
 revoke tracked OIDC sessions and deny sign-in. Last-administrator and music-source ownership
 checks still apply; conflicting mappings deny access and preserve account/source data.
+Once a role write starts, it and WebSocket disconnection finish under the role lock before
+cancellation propagates, including an expired OIDC callback or a cancelled manual update.
 After denial, allow 30 seconds for clock skew before retrying. For immediate revocation, send
 IdP logout notifications or disable the MA account; group edits alone are not pushed.
 
