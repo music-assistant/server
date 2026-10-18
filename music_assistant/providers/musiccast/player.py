@@ -948,6 +948,20 @@ class MusicCastPlayer(Player):
                 continue
             assert isinstance(child_player, MusicCastPlayer)  # for type checking
 
+            # a non-main zone cannot host main or another zone of its own device
+            if (
+                self.zone_device.zone_name != "main"
+                and child_player.zone_device.device.ip == self.zone_device.device.ip
+            ):
+                self.logger.warning(
+                    "Cannot add %s to the group of %s, a zone cannot lead main or another "
+                    "zone of the same device. Use main as group leader and sync the zones "
+                    "to main.",
+                    child_player.display_name or child_player.name,
+                    self.display_name or self.name,
+                )
+                continue
+
             # a non-main zone whose main is or joins the leader's group follows main locally
             _child_main = child_player.zone_device.physical_device.zone_devices.get("main")
             if (
