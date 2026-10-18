@@ -70,9 +70,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _update_task: asyncio.Task[None] | None = None
     _zone_watch_task: asyncio.Task[None] | None = None
     # the host's zones as seen on the previous look, when they differed from Music
-    # Assistant's groups, how many group changes MA is making right now, and when the
-    # last one ended
+    # Assistant's groups, since when it could not be told whether a leader was taken out
+    # of them, how many group changes MA is making right now, and when the last one ended
     _pending_zones: frozenset[frozenset[str]] | None = None
+    _undecided_since: float | None = None
     _group_changes: int = 0
     _group_changed_at: float = 0.0
     _connected: bool = False
@@ -368,6 +369,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # that was mirrored before, while MA still shows the group
         if zones == self._shown_groups():
             self._pending_zones = None
+            self._undecided_since = None
             return
         # Regrouping passes through states in between, on the host as well as while Music
         # Assistant changes a group itself. Mirroring one of those is what once left two
@@ -375,8 +377,32 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # taken over, and none at all while a change MA made is still settling.
         if zones != self._pending_zones:
             self._pending_zones = zones
+            self._undecided_since = None
             return
         if self.group_change_settling:
+            return
+        # A leader taken out of the zone its group plays in hands its queue over to the
+        # rooms that play on, as MA does when a leader leaves its group; mirroring the zones
+        # first would leave those rooms playing a queue that no player shows.
+        undecided = False
+        for player in list(self.players):
+            if not isinstance(player, RaumfeldPlayer):
+                continue
+            handing_over = await player.leave_group_if_dropped()
+            if handing_over:
+                self._pending_zones = None
+                self._undecided_since = None
+                return
+            undecided = undecided or handing_over is None
+        if undecided:
+            # a zone did not answer, or the layout moved on meanwhile: look again, until
+            # mirroring the zones as they are is all that is left
+            if self._undecided_since is None:
+                self._undecided_since = time.time()
+            if time.time() - self._undecided_since < GROUP_SETTLE_TIME:
+                return
+        # the reads took a while: mirror only the layout they were taken for
+        if self.group_change_settling or self._grouped_zones() != zones:
             return
         self.logger.debug(
             "Raumfeld zones differ from the groups shown, following them: %s -> %s",
@@ -384,12 +410,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             sorted(sorted(zone) for zone in zones),
         )
         self._pending_zones = None
-        # A leader taken out of the zone its group plays in hands its queue over to the
-        # rooms that play on, as MA does when a leader leaves its group; mirroring the zones
-        # first would leave those rooms playing a queue that no player shows.
-        for player in list(self.players):
-            if isinstance(player, RaumfeldPlayer) and await player.leave_group_if_dropped():
-                return
+        self._undecided_since = None
         self._sync_groups()
 
     def _grouped_zones(self) -> frozenset[frozenset[str]]:

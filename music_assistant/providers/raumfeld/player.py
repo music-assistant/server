@@ -599,11 +599,12 @@ class RaumfeldPlayer(Player):
             if (member := self.mass.players.get_player(pid)) is not None:
                 member.update_state()
 
-    async def leave_group_if_dropped(self) -> bool:
+    async def leave_group_if_dropped(self) -> bool | None:
         """
         Leave the group this room leads, if the host took the room out of the group's zone.
 
-        Return whether this room's queue is being handed over to the rooms that play on.
+        Return whether this room's queue is being handed over to the rooms that play on, or
+        ``None`` while it cannot be told yet whether this room was taken out.
         """
         if self._attr_playback_state != PlaybackState.PLAYING:
             return False
@@ -614,10 +615,20 @@ class RaumfeldPlayer(Player):
         # out stops, so only playback tells them apart.
         host = self.raumfeld.host
         own_zone = self.raumfeld.get_zone_for_room(self.room)
-        if not await self._zone_plays(host, members_zone) or (
-            own_zone is not None and await self._zone_plays(host, own_zone)
+        members_play = await self._zone_plays(host, members_zone)
+        own_plays = False if own_zone is None else await self._zone_plays(host, own_zone)
+        if members_play is None or own_plays is None:
+            return None
+        # the reads took a while: act only on the layout they were taken for
+        if (
+            self.raumfeld.group_change_settling
+            or self._zone_without_leader() != members_zone
+            or self.raumfeld.get_zone_for_room(self.room) != own_zone
         ):
+            return None
+        if not members_play or own_plays:
             return False
+        self.logger.debug("%s was taken out of the zone its group plays in", self.room)
         return self._leave_group()
 
     async def poll(self) -> None:
@@ -1042,7 +1053,7 @@ class RaumfeldPlayer(Player):
 
     def _zone_without_leader(self) -> list[str] | None:
         """Return the zone this leading room's members are in without it, or ``None``."""
-        if not self.leads_group or self.raumfeld.group_change_settling:
+        if not self.leads_group:
             return None
         own_zone = self.raumfeld.get_zone_for_room(self.room) or [self.room]
         members_zone: list[str] | None = None
@@ -1054,11 +1065,11 @@ class RaumfeldPlayer(Player):
             members_zone = members_zone or self.raumfeld.get_zone_for_room(room)
         return members_zone
 
-    async def _zone_plays(self, host: hassfeld.RaumfeldHost, zone: list[str]) -> bool:
-        """Return whether the zone is playing, as far as it answers."""
-        transport = await self._read_transport(host, zone)
-        state = (transport or {}).get("CurrentTransportState") or ""
-        return state.upper() == "PLAYING"
+    async def _zone_plays(self, host: hassfeld.RaumfeldHost, zone: list[str]) -> bool | None:
+        """Return whether the zone is playing, or ``None`` if it did not answer."""
+        if (transport := await self._read_transport(host, zone)) is None:
+            return None
+        return (transport.get("CurrentTransportState") or "").upper() == "PLAYING"
 
     def _clear_external(self) -> None:
         """Drop the external source, and the controls that only applied to it."""

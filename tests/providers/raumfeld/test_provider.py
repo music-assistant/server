@@ -293,6 +293,7 @@ def _playing_group(
     for player in players.values():
         player._provider = provider
         player.mass = provider.mass
+        player.logger = provider.logger
 
     async def transport(zone: list[str]) -> dict[str, str]:
         state = "PLAYING" if zone in playing_zones else "STOPPED"
@@ -330,16 +331,76 @@ async def test_rooms_taken_out_of_a_playing_group_are_mirrored() -> None:
     assert _groups(players) == {}
 
 
-def test_a_leader_whose_rooms_left_its_zone_waits_for_the_watcher() -> None:
-    """Until the watcher tells who left, the leader's own reading must not end its queue."""
+async def test_a_leader_whose_rooms_left_its_zone_waits_for_the_watcher() -> None:
+    """Until the watcher tells who left, the leader's own poll must not end its queue."""
     provider, players = _zone_provider([["Bar", "Sofa"]])
     _playing_group(provider, players, ["Bar", "Sofa"], [["Sofa"]])
     bar = players["Bar"]
     assert bar._zone_without_leader() is None
     provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
-    assert bar._zone_without_leader() == ["Sofa"]
-    with provider.changing_group():
-        assert bar._zone_without_leader() is None
+    # also while a group change MA made settles, when the watcher does not look yet
+    with provider.changing_group(), patch.object(bar, "_update_power"):
+        await bar.poll()
+    assert bar._attr_playback_state == PlaybackState.PLAYING
+    provider.host.async_get_transport_info.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failing", [["Kitchen", "Sofa"], ["Bar"]])
+async def test_a_zone_that_does_not_answer_holds_the_decision(failing: list[str]) -> None:
+    """A failed read tells nothing: the group waits for one that answers, either zone."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
+    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    answering = provider.host.async_get_transport_info.side_effect
+
+    async def unanswered(zone: list[str]) -> dict[str, str] | None:
+        return None if zone == failing else cast("dict[str, str]", await answering(zone))
+
+    provider.host.async_get_transport_info.side_effect = unanswered
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+        assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
+        mass.players.cmd_ungroup.assert_not_called()
+        provider.host.async_get_transport_info.side_effect = answering
+        await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+
+
+async def test_zones_that_never_answer_are_mirrored_in_the_end() -> None:
+    """A zone that keeps not answering does not keep the groups as they were for good."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [])
+    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    provider.host.async_get_transport_info = AsyncMock(return_value=None)
+    clock = "music_assistant.providers.raumfeld.provider.time.time"
+    with patch(clock, return_value=1000.0):
+        await _follow(provider, players)
+        await _follow(provider, players)
+    assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
+    with patch(clock, return_value=1000.0 + GROUP_SETTLE_TIME + 1):
+        await _follow(provider, players)
+    assert _groups(players) == {"Kitchen": ["Kitchen", "Sofa"]}
+
+
+@pytest.mark.parametrize("playing", [[["Kitchen", "Sofa"]], [["Bar"]]])
+async def test_a_group_change_during_the_reads_is_left_alone(playing: list[list[str]]) -> None:
+    """A change MA starts while the zones are read is not undone by what was read before."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], playing)
+    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    answering = provider.host.async_get_transport_info.side_effect
+
+    async def change_starts(zone: list[str]) -> dict[str, str]:
+        provider._group_changes = 1
+        return cast("dict[str, str]", await answering(zone))
+
+    provider.host.async_get_transport_info.side_effect = change_starts
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_not_called()
+    assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
 
 
 def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:
