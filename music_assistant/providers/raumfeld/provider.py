@@ -394,14 +394,14 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 self._undecided_since = None
                 return
             undecided = undecided or handing_over is None
-        if undecided:
-            # a zone did not answer, or the layout moved on meanwhile: look again, until
-            # mirroring the zones as they are is all that is left
+        owners = await self._queue_owners()
+        if undecided or owners is None:
+            # a zone did not answer, or the layout or playback moved on meanwhile: look
+            # again, until mirroring the zones as they are is all that is left
             if self._undecided_since is None:
                 self._undecided_since = time.time()
             if time.time() - self._undecided_since < GROUP_SETTLE_TIME:
                 return
-        owners = await self._queue_owners()
         # the reads took a while: mirror only the layout they were taken for
         if self.group_change_settling or self._grouped_zones() != zones:
             return
@@ -412,7 +412,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         )
         self._pending_zones = None
         self._undecided_since = None
-        self._sync_groups(owners)
+        self._sync_groups(owners or {})
 
     def _grouped_zones(self) -> frozenset[frozenset[str]]:
         """Return the host's zones that hold more than one room with a player."""
@@ -441,21 +441,38 @@ class RaumfeldPlayerProvider(PlayerProvider):
         player = self.mass.players.get_player(player_id)
         return player if isinstance(player, RaumfeldPlayer) else None
 
-    async def _queue_owners(self) -> dict[frozenset[str], str]:
-        """Return the room whose queue a zone plays, for each zone more than one room claims."""
+    async def _queue_owners(self) -> dict[frozenset[str], str] | None:
+        """
+        Return the room whose queue a zone plays, for each zone more than one room claims.
+
+        Return ``None`` while that cannot be told: a zone did not answer, or playback changed
+        on one of those rooms during the reads.
+        """
         # two groups that both play a queue MA started, merged in the Raumfeld app, play on
         # with only one of those queues: the zone's stream tells which
         owners: dict[frozenset[str], str] = {}
+        generations: dict[RaumfeldPlayer, int] = {}
         for zone_rooms in self.host.get_zones():
             claimants = self._queue_claimants(
                 [player for room in zone_rooms if (player := self._room_player(room)) is not None]
             )
             if len(claimants) < 2:
                 continue
+            generations.update((claimant, claimant.playback_generation) for claimant in claimants)
+            answers = []
             for claimant in claimants:
-                if await claimant.plays_queue_in(list(zone_rooms)):
+                answers.append(plays := await claimant.plays_queue_in(list(zone_rooms)))
+                if plays:
                     owners[frozenset(zone_rooms)] = claimant.player_id
                     break
+            else:
+                if None in answers:
+                    return None
+        if not all(
+            player.playback_unchanged_since(generation)
+            for player, generation in generations.items()
+        ):
+            return None
         return owners
 
     def _sync_groups(self, owners: dict[frozenset[str], str] | None = None) -> None:

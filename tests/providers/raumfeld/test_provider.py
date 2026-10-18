@@ -474,9 +474,37 @@ async def test_a_split_during_the_leaders_poll_leaves_its_queue_alone() -> None:
         return {"CurrentTransportState": "STOPPED"}
 
     provider.host.async_get_transport_info = AsyncMock(side_effect=split_while_read)
-    with patch.object(bar, "_update_volume", AsyncMock()):
+    with (
+        patch.object(bar, "_update_volume", AsyncMock()),
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+    ):
         await bar._poll_zone(provider.host, ["Bar", "Sofa"])
     assert bar._attr_playback_state == PlaybackState.PLAYING
+
+
+async def test_a_room_that_joined_a_group_during_its_poll_drops_its_next_item() -> None:
+    """With flow mode off, a stale reading of a new follower does not start its next item."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    _playing_group(provider, players, ["Sofa", "Bar"], [])
+    bar, sofa = players["Bar"], players["Sofa"]
+    bar._attr_playback_state = PlaybackState.PLAYING
+    bar._advance_armed = True
+    bar._next_media = MagicMock()
+    synced_to = PropertyMock(return_value=None)
+
+    async def joined_while_read(_zone: list[str]) -> dict[str, str]:
+        synced_to.return_value = sofa.player_id
+        return {"CurrentTransportState": "STOPPED"}
+
+    provider.host.async_get_transport_info = AsyncMock(side_effect=joined_while_read)
+    with (
+        patch.object(bar, "_update_volume", AsyncMock()),
+        patch.object(bar, "_advance_to_next") as advance,
+        patch.object(RaumfeldPlayer, "synced_to", synced_to),
+    ):
+        await bar._poll_zone(provider.host, ["Bar"])
+    advance.assert_not_called()
+    assert _next_cleared(bar)
 
 
 async def test_a_leader_switched_off_while_playing_leaves_its_zone_to_the_others() -> None:
@@ -614,6 +642,43 @@ async def test_a_merge_of_two_playing_groups_keeps_the_queue_that_plays_on() -> 
     groups = _groups(players)
     assert list(groups) == ["Kitchen"]
     assert sorted(groups["Kitchen"]) == ["Bar", "Kitchen", "Office", "Sofa"]
+
+
+def _merged_playing_groups() -> tuple[RaumfeldPlayerProvider, dict[str, RaumfeldPlayer], str]:
+    """Build two playing groups the host merged into one zone; return Kitchen's stream."""
+    provider, players = _zone_provider([["Bar", "Sofa"], ["Kitchen", "Office"]])
+    _playing_group(provider, players, ["Bar", "Sofa"], [])
+    kitchen = players["Kitchen"]
+    kitchen._attr_group_members = [kitchen.player_id, players["Office"].player_id]
+    kitchen._attr_active_source = kitchen.player_id
+    kitchen._attr_playback_state = PlaybackState.PLAYING
+    provider.host.get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
+    provider.host.async_get_transport_info = AsyncMock(
+        return_value={"CurrentTransportState": "PLAYING"}
+    )
+    return provider, players, f"{_BASE_URL}/flow/s1/{kitchen.player_id}/i1/{kitchen.player_id}.flac"
+
+
+@pytest.mark.parametrize("disturbance", ["no answer", "playback starts"])
+async def test_a_merge_waits_for_reads_that_tell_its_queue(disturbance: str) -> None:
+    """Reads that tell nothing, or that a play overtook, pick no leader; the next look does."""
+    provider, players, kitchen_stream = _merged_playing_groups()
+    kitchen = players["Kitchen"]
+
+    async def disturbed(_zone: list[str]) -> dict[str, str] | None:
+        if disturbance == "no answer":
+            return None
+        kitchen._playback_generation += 1
+        return {"TrackURI": kitchen_stream}
+
+    provider.host.async_get_position_info = AsyncMock(side_effect=disturbed)
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+        assert set(_groups(players)) == {"Bar", "Kitchen"}
+        provider.host.async_get_position_info = AsyncMock(return_value={"TrackURI": kitchen_stream})
+        await _follow(provider, players)
+    assert list(_groups(players)) == ["Kitchen"]
 
 
 def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:

@@ -647,6 +647,19 @@ class RaumfeldPlayer(Player):
         )
         return self._leave_group()
 
+    @property
+    def playback_generation(self) -> int:
+        """Return a count that moves on with every playback command on this room."""
+        return self._playback_generation
+
+    def playback_unchanged_since(self, generation: int) -> bool:
+        """
+        Return whether no playback command ran, or runs, since a generation was read.
+
+        :param generation: The value ``playback_generation`` had then.
+        """
+        return self._reading_is_current(generation)
+
     async def plays_queue_in(self, zone: list[str]) -> bool | None:
         """
         Return whether a zone plays this room's queue, or ``None`` while that cannot be told.
@@ -729,8 +742,9 @@ class RaumfeldPlayer(Player):
             # a play or stop command ran meanwhile; the next poll reads what it brought
             self.update_state()
             return
-        if self._held_for_watcher():
-            # the group's zone split during the reads, which then belong to the zone watcher
+        if self._follows_or_held():
+            # the room joined another room's group during the reads, or its group's zone
+            # split: the readings are not this room's queue's to act on
             self.update_state()
             return
 
