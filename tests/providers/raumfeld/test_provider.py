@@ -336,7 +336,7 @@ async def test_a_leader_whose_rooms_left_its_zone_waits_for_the_watcher() -> Non
     provider, players = _zone_provider([["Bar", "Sofa"]])
     _playing_group(provider, players, ["Bar", "Sofa"], [["Sofa"]])
     bar = players["Bar"]
-    assert bar._zone_without_leader() is None
+    assert bar._zones_without_leader() == []
     provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
     # also while a group change MA made settles, when the watcher does not look yet
     with provider.changing_group(), patch.object(bar, "_update_power"):
@@ -346,17 +346,20 @@ async def test_a_leader_whose_rooms_left_its_zone_waits_for_the_watcher() -> Non
 
 
 @pytest.mark.parametrize("failing", [["Kitchen", "Sofa"], ["Bar"]])
-async def test_a_zone_that_does_not_answer_holds_the_decision(failing: list[str]) -> None:
-    """A failed read tells nothing: the group waits for one that answers, either zone."""
+@pytest.mark.parametrize("reply", [None, {"CurrentTransportState": "TRANSITIONING"}])
+async def test_a_zone_that_does_not_tell_holds_the_decision(
+    failing: list[str], reply: dict[str, str] | None
+) -> None:
+    """A failed read, or a zone between states, tells nothing: the group waits, either zone."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
     provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
     answering = provider.host.async_get_transport_info.side_effect
 
-    async def unanswered(zone: list[str]) -> dict[str, str] | None:
-        return None if zone == failing else cast("dict[str, str]", await answering(zone))
+    async def inconclusive(zone: list[str]) -> dict[str, str] | None:
+        return reply if zone == failing else cast("dict[str, str]", await answering(zone))
 
-    provider.host.async_get_transport_info.side_effect = unanswered
+    provider.host.async_get_transport_info.side_effect = inconclusive
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
@@ -401,6 +404,40 @@ async def test_a_group_change_during_the_reads_is_left_alone(playing: list[list[
         await _follow(provider, players)
     mass.players.cmd_ungroup.assert_not_called()
     assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
+
+
+async def test_a_play_during_the_reads_is_not_handed_over() -> None:
+    """A queue started on the leader while its zone is read stays with the leader."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
+    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    answering = provider.host.async_get_transport_info.side_effect
+    bar = players["Bar"]
+
+    async def play_starts(zone: list[str]) -> dict[str, str]:
+        bar._playback_generation += 1
+        return cast("dict[str, str]", await answering(zone))
+
+    provider.host.async_get_transport_info.side_effect = play_starts
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_not_called()
+    assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
+
+
+async def test_only_the_rooms_that_play_on_get_the_queue() -> None:
+    """Rooms that left the group's zone before the leader did are not handed its queue."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Office", "Sofa"]])
+    mass = _playing_group(
+        provider, players, ["Bar", "Sofa", "Kitchen", "Office"], [["Kitchen", "Office"]]
+    )
+    provider.host.get_zones.return_value = [["Bar"], ["Sofa"], ["Kitchen", "Office"]]
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+    assert _groups(players) == {"Bar": ["Bar", "Kitchen", "Office"]}
 
 
 def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:
