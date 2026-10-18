@@ -100,7 +100,7 @@ enabled admin can not lose the admin role.
 
 ### OpenID Connect
 
-Keep a local administrator for recovery. In Webserver settings, enable OIDC and enter
+For setup through the UI, create a local administrator, then enable OIDC and enter
 the provider name, exact HTTPS issuer, client ID and client secret. The secret uses the
 existing encrypted `SECURE_STRING` storage. OIDC and self-registration default off.
 
@@ -119,6 +119,25 @@ For Authentik, configure a confidential OAuth2/OpenID provider with a signing ke
 scope mapping and per-provider issuer mode. Copy the discovery document's issuer exactly,
 including its trailing slash, e.g. `https://auth.example/application/o/music-assistant/`.
 Global issuer mode is unsupported. See [Authentik setup](https://docs.goauthentik.io/add-secure-apps/providers/oauth2/).
+
+#### Deployment-managed bootstrap
+
+`MASS_OIDC_CONFIG_FILE` loads a read-only JSON file through
+[oidc_deployment.py](helpers/oidc_deployment.py). It supplies the OIDC provider settings and
+HTTPS `base_url` without writing credentials into `settings.json`. Invalid or unreadable
+configuration aborts authentication startup. The settings UI hides overridden fields and
+shows a deployment-managed notice; changes require a restart.
+
+With `bootstrap_admin: true`, self-registration and an explicit group mapping to `admin`
+are required. A fresh server routes `/`, `/login` and `/setup` through the existing
+browser-bound OIDC flow. Only a verified admin mapping can create its first user; local
+setup and other providers cannot create that initial account. The frontend then continues
+normal onboarding. No local password is required or created.
+
+Existing accounts and sessions are unchanged; no schema or stored-settings migration is
+needed. After bootstrap, normal role mapping and optional local password management apply.
+Recovery without a local account requires correcting the IdP or mounted configuration.
+See the user-management documentation for the file format and container example.
 
 #### Identity and session handling
 

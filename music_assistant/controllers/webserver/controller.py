@@ -20,6 +20,7 @@ import time
 from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import parse_qs, urlparse
@@ -226,6 +227,8 @@ class WebserverController(CoreController):
     @property
     def base_url(self) -> str:
         """Return the base_url for the webserver."""
+        if self.auth.oidc_deployment:
+            return self.auth.oidc_deployment.base_url
         config = getattr(self, "config", None)
         if config is None:
             return ""
@@ -305,7 +308,18 @@ class WebserverController(CoreController):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        return await self._build_config_entries()
+        entries = await self._build_config_entries()
+        if not self.auth.oidc_deployment:
+            return entries
+        return (
+            ConfigEntry(key="oidc_managed", type=ConfigEntryType.ALERT, required=False),
+            *(
+                replace(entry, hidden=True, required=False)
+                if entry.key.startswith("oidc_") or entry.key == CONF_BASE_URL
+                else entry
+                for entry in entries
+            ),
+        )
 
     async def handle_config_action(
         self, action: str
@@ -1015,6 +1029,8 @@ class WebserverController(CoreController):
 
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
         """Handle request for index page (Vue frontend)."""
+        if self.auth.oidc_bootstrap_required:
+            return await self._handle_oidc_start(request)
         is_ingress_request = is_request_from_ingress_proxy(request)
 
         if (not self.auth.has_users or not self.mass.config.onboard_done) and is_ingress_request:
@@ -1043,6 +1059,8 @@ class WebserverController(CoreController):
 
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page (external client OAuth callback scenario)."""
+        if self.auth.oidc_bootstrap_required:
+            return await self._handle_oidc_start(request)
         if not self.auth.has_users:
             # not yet onboarded (no first admin user exists), redirect to setup with the
             # client's hand-back, re-encoded so a return url with a query of its own survives
@@ -1257,10 +1275,10 @@ class WebserverController(CoreController):
         """Bind a new OIDC sign-in to the browser and redirect to the IdP."""
         return_url = request.query.get("return_url")
         if return_url:
-            valid, _ = is_allowed_redirect_url(
+            valid, category = is_allowed_redirect_url(
                 return_url, request, self.base_url, self.external_url
             )
-            if not valid:
+            if not valid or (self.auth.oidc_bootstrap_required and category != "trusted"):
                 return web.Response(status=400, text="Invalid return_url")
         try:
             started = await self.auth.get_authorization_url(
@@ -1405,6 +1423,8 @@ class WebserverController(CoreController):
 
     async def _handle_setup_page(self, request: web.Request) -> web.StreamResponse:
         """Handle request for the first-time setup page (the frontend's account step)."""
+        if self.auth.oidc_bootstrap_required:
+            return await self._handle_oidc_start(request)
         # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
@@ -1424,6 +1444,10 @@ class WebserverController(CoreController):
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
         """Handle first-time setup request to create admin user (non-ingress only)."""
+        if self.auth.oidc_bootstrap_required:
+            return web.json_response(
+                {"success": False, "error": "Initial setup requires OpenID Connect"}, status=403
+            )
         if self.auth.has_users:
             # a conflict tells the frontend the admin exists, so it offers the sign-in
             # instead of another attempt

@@ -37,7 +37,7 @@ async def _failing_save() -> None:
 
 def _create_client(webserver: WebserverController) -> WebsocketClientHandler:
     """Create a websocket client handler for a mocked request."""
-    webserver.auth = MagicMock(has_users=True)
+    webserver.auth = MagicMock(has_users=True, oidc_deployment=None)
     return WebsocketClientHandler(
         webserver, make_mocked_request("GET", "/ws", app=web.Application())
     )

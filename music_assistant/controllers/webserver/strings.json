@@ -1,5 +1,8 @@
 {
   "config_entries": {
+    "oidc_managed": {
+      "label": "OpenID Connect and the Internal URL are managed by your deployment. Update the mounted configuration file and restart Music Assistant to change them."
+    },
     "server_name": {
       "label": "Server name",
       "description": "The name of this Music Assistant instance, shown in the UI and announced on the network (e.g. Sendspin). \nUseful when running multiple servers on the same network."

@@ -70,6 +70,10 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     verify_pkce,
 )
 from music_assistant.controllers.webserver.helpers.oidc import OIDC_AUTH_CODE_RE
+from music_assistant.controllers.webserver.helpers.oidc_deployment import (
+    OIDCDeploymentConfig,
+    load_oidc_deployment,
+)
 from music_assistant.controllers.webserver.helpers.oidc_provider import (
     CONF_OIDC_ALLOW_SELF_REGISTRATION,
     CONF_OIDC_BACKCHANNEL_LOGOUT,
@@ -177,6 +181,7 @@ class AuthenticationManager:
         self._join_code_exchange_lock = asyncio.Lock()
         self.pending_logins = PendingLoginStore()
         self.oidc_sessions = OIDCSessionStore(self)
+        self.oidc_deployment: OIDCDeploymentConfig | None = None
         self._auth_exchange_rate_limiter = LoginRateLimiter(subject="client")
         # Serialises the read-modify-write of the user access filters
         self._user_filter_lock = asyncio.Lock()
@@ -185,6 +190,8 @@ class AuthenticationManager:
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
+        # A broken mounted configuration must never reopen unauthenticated local setup.
+        self.oidc_deployment = await load_oidc_deployment()
         # Setup database
         db_path = self.mass.storage_path + "/auth.db"
         self.database = DatabaseConnection(db_path)
@@ -224,6 +231,13 @@ class AuthenticationManager:
         set_custom_role_scopes({})
         if self.database:
             await self.database.close()
+
+    @property
+    def oidc_bootstrap_required(self) -> bool:
+        """Return whether the deployment reserves initial setup for an OIDC administrator."""
+        return bool(
+            not self.has_users and self.oidc_deployment and self.oidc_deployment.bootstrap_admin
+        )
 
     @property
     def has_users(self) -> bool:
@@ -434,6 +448,8 @@ class AuthenticationManager:
         avatar_url: str | None = None,
         preferences: dict[str, Any] | None = None,
         player_filter: list[str] | None = None,
+        *,
+        oidc_bootstrap: bool = False,
     ) -> User:
         """
         Create a new user.
@@ -444,11 +460,21 @@ class AuthenticationManager:
         :param avatar_url: Optional avatar URL.
         :param preferences: Optional user preferences dict.
         :param player_filter: Optional list of player IDs user has access to.
+        :param oidc_bootstrap: Whether a verified OIDC admin mapping authorized initial setup.
         """
         normalized_username = normalize_username(username)
 
         # Check if this is the first non-system user
         is_first_user = not await self._has_non_system_users()
+        if (
+            is_first_user
+            and self.oidc_deployment
+            and self.oidc_deployment.bootstrap_admin
+            and (not oidc_bootstrap or role != UserRole.ADMIN)
+        ):
+            raise AuthenticationFailed(
+                "Initial setup requires a mapped OpenID Connect administrator"
+            )
 
         user_id = secrets.token_urlsafe(32)
         created_at = utc()
@@ -2388,6 +2414,11 @@ class AuthenticationManager:
         """Configure optional OIDC independently of built-in and Home Assistant sign-in."""
         self.login_providers.pop(OIDC_PROVIDER_ID, None)
         self.pending_logins.discard_provider(OIDC_PROVIDER_ID)
+        if self.oidc_deployment:
+            self.login_providers[OIDC_PROVIDER_ID] = OIDCLoginProvider(
+                self.mass, self.oidc_deployment.provider
+            )
+            return
         if not self.webserver.get_config_value(CONF_OIDC_ENABLED, False):
             return
         config = OIDCProviderConfig(

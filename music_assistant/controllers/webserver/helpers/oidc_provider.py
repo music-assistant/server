@@ -291,7 +291,15 @@ class OIDCLoginProvider(LoginProvider):
                 "Self-registration is disabled. Please contact an administrator.",
                 translation_key="self_registration_disabled",
             )
-        if not self.auth_manager.has_users:
+        deployment = self.auth_manager.oidc_deployment
+        bootstrap = bool(
+            deployment and deployment.bootstrap_admin and mapped_role == UserRole.ADMIN
+        )
+        if not self.auth_manager.has_users and not bootstrap:
+            if deployment and deployment.bootstrap_admin:
+                raise AuthenticationFailed(
+                    "Initial setup requires a mapped OpenID Connect administrator"
+                )
             raise AuthenticationFailed("Create a local administrator before enabling OIDC")
         preferred_username = claims.get("preferred_username")
         username = slugify(preferred_username) if isinstance(preferred_username, str) else ""
@@ -306,6 +314,7 @@ class OIDCLoginProvider(LoginProvider):
             display_name=display_name
             if isinstance(display_name, str) and display_name
             else username,
+            oidc_bootstrap=bootstrap,
         )
         await self.auth_manager.link_user_to_provider(user, AuthProviderType.OIDC, identity_id)
         return user

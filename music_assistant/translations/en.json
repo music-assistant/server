@@ -1002,6 +1002,7 @@
   "core.webserver.config_entries.oidc_groups_claim.label": "OpenID Connect groups claim",
   "core.webserver.config_entries.oidc_issuer.description": "The exact HTTPS issuer identifier from your provider's discovery document, including any trailing slash. Discovery must advertise PKCE S256 and signed ID tokens.",
   "core.webserver.config_entries.oidc_issuer.label": "OpenID Connect issuer",
+  "core.webserver.config_entries.oidc_managed.label": "OpenID Connect and the Internal URL are managed by your deployment. Update the mounted configuration file and restart Music Assistant to change them.",
   "core.webserver.config_entries.oidc_name.description": "The name shown on the sign-in button, for example Authentik.",
   "core.webserver.config_entries.oidc_name.label": "Identity provider name",
   "core.webserver.config_entries.oidc_role_mapping.description": "Optional JSON object mapping exact group names to Music Assistant role IDs, for example {\"music-admins\":\"admin\",\"music-users\":\"user\"}. The first matching group wins. Roles are updated at each OIDC sign-in; missing or unmatched groups deny sign-in and end existing OIDC sessions. Leave empty to manage roles locally.",
