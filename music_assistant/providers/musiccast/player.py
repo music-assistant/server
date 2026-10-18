@@ -1018,14 +1018,14 @@ class MusicCastPlayer(Player):
             )
 
         if children:
-            child_player_zone_devices: list[MusicCastZoneDevice] = []
-            for child_id in children:
-                child_player = self.mass.players.get_player(child_id)
-                if TYPE_CHECKING:
-                    child_player = cast("MusicCastPlayer", child_player)
-                child_player_zone_devices.append(child_player.zone_device)
-
-            await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
+            rejected_reasons.extend(
+                await self._join_network_children(
+                    [
+                        cast("MusicCastPlayer", self.mass.players.get_player(child_id))
+                        for child_id in children
+                    ]
+                )
+            )
 
         # after the joins: a main with a main_sync zone counts as server and would
         # close that local group when it joins as client
@@ -1146,3 +1146,15 @@ class MusicCastPlayer(Player):
                 "device joins it on its own. Add main and sync the zones to main."
             )
         return None
+
+    async def _join_network_children(self, child_players: list[MusicCastPlayer]) -> list[str]:
+        """Join the children to this group, return why those that did not join failed."""
+        await self._cmd_run(self.zone_device.join_players, [x.zone_device for x in child_players])
+        # _cmd_run swallows a failed join; a zone of the leader's own device only
+        # selects main_sync, which the device has not confirmed yet
+        return [
+            f"Could not add {child_player.display_name} to the group."
+            for child_player in child_players
+            if child_player.zone_device.device.ip != self.zone_device.device.ip
+            and not self._is_in_group(child_player.zone_device)
+        ]

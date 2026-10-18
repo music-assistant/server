@@ -555,6 +555,9 @@ class MusicCastZoneDevice:
 
     async def _check_client_list(self) -> None:
         """Let the server check if all its clients are still part of his group."""
+        # a client with main_sync zones also counts as server, but has no group of its own
+        if self.is_network_client:
+            return
         if not self.is_server or self.device.data.group_update_lock.locked():
             return
 

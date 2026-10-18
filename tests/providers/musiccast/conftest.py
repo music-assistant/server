@@ -128,6 +128,12 @@ class FakeMusicCastDevice:
         for client_ip in client_ips:
             self.data.group_client_list.remove(client_ip)
 
+    async def mc_server_group_close(self) -> None:
+        """Close the group served by the device."""
+        self.data.group_role = "none"
+        self.data.group_id = MC_NULL_GROUP
+        self.data.group_client_list.clear()
+
     async def mc_client_join(self, server_ip: str, group_id: str, zone: str) -> None:
         """Join the zone to a group as client."""
         self.data.group_role = "client"

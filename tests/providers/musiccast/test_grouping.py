@@ -8,7 +8,10 @@ import pytest
 from aiomusiccast.exceptions import MusicCastConnectionException, MusicCastGroupException
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.providers.musiccast.constants import CONF_PLAYER_SWITCH_SOURCE_NON_NET
+from music_assistant.providers.musiccast.constants import (
+    CONF_PLAYER_SWITCH_SOURCE_NON_NET,
+    MC_NULL_GROUP,
+)
 from music_assistant.providers.musiccast.musiccast import MusicCastZoneDevice
 from music_assistant.providers.musiccast.player import MusicCastPlayer
 
@@ -299,6 +302,36 @@ async def test_zone_leaving_main_sync_joins_powered_on(network: MusicCastNetwork
     zone_data = _zone(network, "B___zone2").zone_data
     assert (zone_data.input, zone_data.power) == ("mc_link", "on")
     assert _zone(network, "B___main").zone_data.input == "audio1"
+
+
+async def test_group_update_keeps_client_main_with_synced_zone(network: MusicCastNetwork) -> None:
+    """A client main with a synced zone does not close a group when its server lost the group."""
+    _main_in_group(network)
+    await network.player("A___main").set_members(player_ids_to_add=["B___zone2"])
+    # A rebooted and lost its group
+    a_data = _zone(network, "A___main").device.data
+    a_data.group_role = "none"
+    a_data.group_id = MC_NULL_GROUP
+    a_data.group_client_list.clear()
+
+    await _zone(network, "B___main")._check_client_list()
+
+    b_data = _zone(network, "B___main").device.data
+    assert (b_data.group_role, b_data.group_id) == ("client", "GROUP")
+
+
+async def test_failed_network_join_is_reported(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A network join the device does not complete fails the request."""
+    monkeypatch.setattr(
+        _zone(network, "B___main").device,
+        "mc_client_join",
+        AsyncMock(side_effect=MusicCastGroupException),
+    )
+
+    with pytest.raises(PlayerCommandFailed):
+        await network.player("A___main").set_members(player_ids_to_add=["B___main"])
 
 
 async def test_standby_leader_powered_on_for_own_zone(network: MusicCastNetwork) -> None:
