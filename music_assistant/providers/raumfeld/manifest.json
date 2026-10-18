@@ -4,7 +4,7 @@
   "name": "Teufel Raumfeld",
   "description": "Stream music to Teufel Raumfeld (Smart Speaker) multiroom devices.",
   "codeowners": ["@Simanias"],
-  "requirements": ["hassfeld==0.3.14"],
+  "requirements": ["async-upnp-client==0.48.0", "hassfeld==0.3.14"],
   "documentation": "https://music-assistant.io/player-support/raumfeld/",
   "multi_instance": false,
   "builtin": false,
