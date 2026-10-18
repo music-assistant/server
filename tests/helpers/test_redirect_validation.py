@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from aiohttp.test_utils import make_mocked_request
 
 from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
@@ -81,7 +82,7 @@ def test_build_code_redirect_url_encodes_token() -> None:
         ("https://example.com/ma/#/home", "https://example.com/ma", (True, "trusted")),
         ("https://ma.example.com/#/home", None, (True, "external")),
         ("https://other.example.com/#/home", "https://ma.example.com", (True, "external")),
-        ("http://ma.example.com/#/home", "https://ma.example.com", (True, "external")),
+        ("http://ma.example.com/#/home", "https://ma.example.com", (False, "blocked")),
         ("https://app.music-assistant.io/#/home", "https://ma.example.com", (True, "external")),
     ],
 )
@@ -93,3 +94,59 @@ def test_is_allowed_redirect_url_trusts_the_external_url(
         is_allowed_redirect_url(url, base_url="http://192.168.1.10:8095", external_url=external_url)
         == expected
     )
+
+
+@pytest.mark.parametrize("setting", ["base_url", "external_url"])
+@pytest.mark.parametrize("return_url", ["http://music.example/", "http://music.example:8095/"])
+def test_configured_https_hosts_cannot_receive_tokens_over_http(
+    setting: str, return_url: str
+) -> None:
+    """An HTTPS host cannot become a trusted plaintext destination by changing its port."""
+    assert is_allowed_redirect_url(
+        return_url,
+        base_url="https://music.example" if setting == "base_url" else None,
+        external_url="https://music.example" if setting == "external_url" else None,
+    ) == (False, "blocked")
+
+
+@pytest.mark.parametrize(
+    "return_url",
+    [
+        "http://music.example/",
+        "http://homeassistant.local/",
+        "http://localhost:8765/",
+        "http://192.168.1.20/",
+        "http://other.example/",
+    ],
+)
+@pytest.mark.parametrize("proxy", [False, True])
+def test_https_requests_cannot_redirect_tokens_to_http(return_url: str, proxy: bool) -> None:
+    """TLS and forwarded HTTPS cannot be downgraded by any destination trust shortcut."""
+    headers = {"Host": "music.example"}
+    if proxy:
+        headers["X-Forwarded-Proto"] = "https"
+    request = make_mocked_request("GET", "/auth/callback", headers=headers)
+    if not proxy:
+        request = request.clone(scheme="https")
+    assert is_allowed_redirect_url(return_url, request=request) == (False, "blocked")
+
+
+@pytest.mark.parametrize(
+    "return_url",
+    ["http://music.local:8095/", "http://192.168.1.20/", "musicassistant://auth"],
+)
+def test_local_http_and_native_app_sign_ins_remain_supported(return_url: str) -> None:
+    """Configuring a separate public HTTPS origin leaves local HTTP and app flows available."""
+    request = make_mocked_request("GET", "/auth/callback", headers={"Host": "music.local:8095"})
+    assert is_allowed_redirect_url(
+        return_url,
+        request=request,
+        base_url="http://music.local:8095",
+        external_url="https://music.example",
+    ) == (True, "trusted")
+
+
+def test_https_sign_in_can_return_to_a_native_app() -> None:
+    """Native application callbacks do not expose tokens through plaintext HTTP."""
+    request = make_mocked_request("GET", "/auth/callback").clone(scheme="https")
+    assert is_allowed_redirect_url("musicassistant://auth", request=request) == (True, "trusted")

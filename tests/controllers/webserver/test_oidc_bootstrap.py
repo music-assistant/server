@@ -131,6 +131,61 @@ async def test_fresh_browser_bootstraps_a_mapped_administrator(
         serve.assert_awaited_once()
 
 
+@pytest.mark.parametrize("entry", ["/auth/oidc/start", "/setup"])
+async def test_bootstrap_rejects_a_plaintext_return_url(
+    bootstrap_server: WebserverController, idp: IdentityProvider, entry: str
+) -> None:
+    """The first administrator cannot start sign-in with an HTTP token destination."""
+    handler = (
+        bootstrap_server._handle_oidc_start
+        if entry == "/auth/oidc/start"
+        else bootstrap_server._handle_setup_page
+    )
+    response = await handler(
+        make_mocked_request(
+            "GET",
+            f"{entry}?return_url=http://music.example/",
+            headers={"Host": "music.example", "X-Forwarded-Proto": "https"},
+        )
+    )
+    assert response.status == 400
+    assert not response.cookies
+    assert not bootstrap_server.auth.pending_logins._pending
+    assert not bootstrap_server.auth.has_users
+    assert idp.discovery_requests == 0
+
+
+async def test_bootstrap_callback_revalidates_the_token_destination(
+    bootstrap_server: WebserverController, idp: IdentityProvider
+) -> None:
+    """An already-pending sign-in cannot forward the administrator token over HTTP."""
+    server = bootstrap_server
+    started = await server.auth.get_authorization_url("oidc", "http://music.example/")
+    assert started is not None
+    _, pending = started
+    idp.pending = pending
+    idp.overrides["groups"] = ["music-admins"]
+    cookie_name = _oidc_cookie_name(pending.state)
+    callback_url = str(
+        URL("/auth/callback").with_query(provider_id="oidc", code="valid-code", state=pending.state)
+    )
+    response = await server._handle_auth_callback(
+        make_mocked_request(
+            "GET",
+            callback_url,
+            headers={"Host": "music.example", "Cookie": f"{cookie_name}={pending.idp_nonce}"},
+        )
+    )
+    assert response.status == 200
+    assert response.text is not None
+    assert 'const redirectUrl = "/?code=' in response.text
+    assert "http://music.example/" not in response.text
+    users = await server.auth.database.get_rows("users")
+    assert len(users) == 1
+    assert users[0]["role"] == "admin"
+    assert len(await server.auth.database.get_rows("auth_tokens")) == 1
+
+
 @pytest.mark.parametrize("groups", [None, [], ["unmapped"], ["music-users"], "music-admins"])
 async def test_non_administrators_cannot_claim_initial_setup(
     bootstrap_server: WebserverController, idp: IdentityProvider, groups: Any

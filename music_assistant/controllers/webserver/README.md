@@ -153,6 +153,8 @@ single-use state and a nonce bound to the initiating browser by an HttpOnly, Sam
 cookie. HTTPS uses Secure `__Host-` cookies; concurrent sign-ins have separate cookies.
 HTTP entry redirects to the configured HTTPS callback origin before setting that cookie;
 reverse-proxy callbacks use the forwarded host and scheme.
+Return URLs cannot downgrade HTTPS requests or configured HTTPS hosts to HTTP. Local HTTP
+sign-ins and registered native-app callbacks remain available.
 Code exchange uses the exact callback and PKCE verifier. ID tokens require valid signatures,
 issuer, audience, timestamps, subject, nonce and authorized party; token hashes are checked
 when present. UserInfo must match the verified subject. Opaque codes accept visible ASCII
@@ -174,6 +176,8 @@ Enable back-channel logout and register the absolute HTTPS URL ending in
 The IdP must reach and trust that endpoint. Signed notifications validate issuer/client,
 timestamps, event and subject/session selectors, then revoke matching tokens and disconnect
 WebSockets. A `sid` targets one IdP session; a subject-only notification targets that identity.
+Logout tokens require `exp`, as specified by
+[Back-Channel Logout 1.0 incorporating errata set 1, section 2.4](https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken).
 
 Idempotent setup adds `oidc_sessions` and `oidc_logouts` to `auth.db`, preserving existing users
 and tokens. Fresh OIDC sign-in establishes logout tracking. Session links and replay receipts
@@ -194,7 +198,7 @@ IdP logout notifications or disable the MA account; group edits alone are not pu
 
 #### Development
 
-Publish the companion models/frontend packages and update server pins before release.
+Publish the companion models/frontend packages and update server pins before merging.
 For sibling checkouts, run `pnpm build` in `music-assistant-frontend`, then in the server:
 
 ```sh
