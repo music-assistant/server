@@ -19,6 +19,7 @@ so hassfeld's long-polling can't flood the log while the host is offline.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urljoin, urlparse
 
@@ -35,10 +36,12 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     DEFAULT_PORT,
     DEVICE_INFO_TIMEOUT,
+    GROUP_SETTLE_TIME,
     HOST_ERRORS,
     INITIAL_UPDATE_TIMEOUT,
     LINE_IN_OBJECT_ID,
     RECONNECT_INTERVAL,
+    ZONE_WATCH_INTERVAL,
 )
 from .helpers import (
     parse_control_url,
@@ -62,6 +65,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _host_port: int
     _supervisor_task: asyncio.Task[None] | None = None
     _update_task: asyncio.Task[None] | None = None
+    _zone_watch_task: asyncio.Task[None] | None = None
+    # the host's zones as seen on the previous look, when they differed from Music
+    # Assistant's groups, and when MA last changed a group itself
+    _pending_zones: frozenset[frozenset[str]] | None = None
+    _group_changed_at: float = 0.0
     _connected: bool = False
     # renderer UUID -> (Line-In stream url, title) for rooms that expose an analog input
     _line_in: dict[str, tuple[str, str]]
@@ -119,6 +127,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return None
         return location
 
+    def note_group_change(self) -> None:
+        """Record that Music Assistant itself is changing a group right now."""
+        self._group_changed_at = time.time()
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider (setup input is in setup_flow)."""
         return ()
@@ -139,11 +151,12 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        for task in (self._supervisor_task, self._update_task):
+        for task in (self._supervisor_task, self._update_task, self._zone_watch_task):
             if task and not task.done():
                 task.cancel()
         self._supervisor_task = None
         self._update_task = None
+        self._zone_watch_task = None
 
     def get_zone_for_room(self, room: str) -> list[str] | None:
         """
@@ -248,12 +261,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # load Line-In inputs before registering players so each room can expose its own
         await self._load_line_in()
         await self._resync()
-        # restore any existing Raumfeld zones into MA's group state ONCE on connect (e.g. a
-        # group that survived a restart). We deliberately do NOT re-mirror zones on the
-        # periodic resync: that fights MA's own live group state and can build a circular
-        # leader/member relationship when the Raumfeld zone coordinator differs from the
-        # leader MA picked, which then recurses infinitely while streaming.
+        # restore the existing Raumfeld zones into MA's group state (e.g. a group that
+        # survived a restart), then keep following changes made outside Music Assistant
         self._sync_groups()
+        self._pending_zones = None
+        self._zone_watch_task = self.mass.create_task(self._watch_zones())
         self._connected = True
         self.logger.info("Connected to Raumfeld host %s", self._host_address)
 
@@ -262,9 +274,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if self._connected:
             self.logger.warning("Raumfeld host %s %s - pausing", self._host_address, reason)
         self._connected = False
-        if self._update_task and not self._update_task.done():
-            self._update_task.cancel()
+        for task in (self._update_task, self._zone_watch_task):
+            if task and not task.done():
+                task.cancel()
         self._update_task = None
+        self._zone_watch_task = None
         for player in self.players:
             if isinstance(player, RaumfeldPlayer):
                 player.set_available(False)
@@ -320,30 +334,107 @@ class RaumfeldPlayerProvider(PlayerProvider):
             if isinstance(known, RaumfeldPlayer) and known.player_id not in present:
                 known.set_available(False)
 
+    async def _watch_zones(self) -> None:
+        """Follow zone changes made outside Music Assistant (e.g. in the Raumfeld app)."""
+        while True:
+            await asyncio.sleep(ZONE_WATCH_INTERVAL)
+            try:
+                self._follow_zones()
+            except HOST_ERRORS as err:
+                self.logger.debug("Failed to compare Raumfeld zones: %r", err)
+
+    def _follow_zones(self) -> None:
+        """Mirror the host's zones once they differ from MA's groups and have settled."""
+        zones = self._grouped_zones()
+        # compare with the groups MA shows right now, not with what was mirrored last: a
+        # group made in MA and undone in the Raumfeld app brings the host back to a layout
+        # that was mirrored before, while MA still shows the group
+        if zones == self._shown_groups():
+            self._pending_zones = None
+            return
+        # Regrouping passes through states in between, on the host as well as while Music
+        # Assistant changes a group itself. Mirroring one of those is what once left two
+        # players leading each other, so only a layout that held for two looks in a row is
+        # taken over, and none at all while a change MA made is still settling.
+        if zones != self._pending_zones:
+            self._pending_zones = zones
+            return
+        if time.time() - self._group_changed_at < GROUP_SETTLE_TIME:
+            return
+        self.logger.debug(
+            "Raumfeld zones differ from the groups shown, following them: %s -> %s",
+            sorted(sorted(group) for group in self._shown_groups()),
+            sorted(sorted(zone) for zone in zones),
+        )
+        self._sync_groups()
+        self._pending_zones = None
+
+    def _grouped_zones(self) -> frozenset[frozenset[str]]:
+        """Return the host's zones that hold more than one room with a player."""
+        zones = (
+            frozenset(room for room in zone_rooms if self._room_player(room) is not None)
+            for zone_rooms in self.host.get_zones()
+        )
+        return frozenset(zone for zone in zones if len(zone) > 1)
+
+    def _shown_groups(self) -> frozenset[frozenset[str]]:
+        """Return the sync groups Music Assistant shows right now, as sets of rooms."""
+        groups = set()
+        for player in self.players:
+            if not isinstance(player, RaumfeldPlayer) or not player.leads_group:
+                continue
+            members = (self.mass.players.get_player(pid) for pid in player.group_members)
+            groups.add(
+                frozenset(member.room for member in members if isinstance(member, RaumfeldPlayer))
+            )
+        return frozenset(groups)
+
+    def _room_player(self, room: str) -> RaumfeldPlayer | None:
+        """Return the registered player of a room, or ``None``."""
+        if (player_id := self._room_player_id(room)) is None:
+            return None
+        player = self.mass.players.get_player(player_id)
+        return player if isinstance(player, RaumfeldPlayer) else None
+
     def _sync_groups(self) -> None:
         """Mirror the current Raumfeld zones into the players' sync-group state."""
-        leaders: set[str] = set()
+        groups: dict[str, list[str]] = {}
         for zone_rooms in self.host.get_zones():
-            # order the rooms with the zone coordinator first so the group leader matches
-            # the room the group was originally created from (get_zones sorts the rooms)
+            # coordinator first: the room the zone was created from (get_zones sorts them)
             member_ids = [
-                pid
+                member.player_id
                 for room in self._zone_rooms_leader_first(zone_rooms)
-                if (pid := self._room_player_id(room))
-                and self.mass.players.get_player(pid) is not None
+                if (member := self._room_player(room)) is not None
             ]
             if len(member_ids) < 2:
                 continue
-            leader = self.mass.players.get_player(member_ids[0])
-            if isinstance(leader, RaumfeldPlayer):
-                leader.set_group_members(member_ids)
-                leaders.add(member_ids[0])
-        # only a current leader may carry a member list; clearing every other player (both
-        # solo rooms and followers) avoids a former leader that became a follower keeping a
-        # stale list and forming a circular group with the new leader
+            leader_id = self._pick_leader(member_ids)
+            groups[leader_id] = [leader_id, *(pid for pid in member_ids if pid != leader_id)]
+        # Every player gets its list in one pass, leaders and all others (emptied) alike: a
+        # former leader that became a follower must not keep a stale list, or it would form
+        # a circular group with the new leader.
         for player in self.players:
-            if isinstance(player, RaumfeldPlayer) and player.player_id not in leaders:
-                player.set_group_members([])
+            if isinstance(player, RaumfeldPlayer):
+                player.set_group_members(groups.get(player.player_id, []))
+
+    def _pick_leader(self, member_ids: list[str]) -> str:
+        """
+        Return which member leads a zone's group in Music Assistant.
+
+        :param member_ids: The player ids of the zone's rooms, the zone coordinator first.
+        """
+        # A member that already leads a group here keeps leading, and failing that the one
+        # playing a queue Music Assistant started: either holds the queue that is playing,
+        # and the host's coordinator is often another room than the one MA grouped or played
+        # from. Making that other room the leader would leave the queue's own player showing
+        # nothing. Only a zone with neither (made and played from the Raumfeld app) takes
+        # the host's coordinator.
+        members = [self.mass.players.get_player(member_id) for member_id in member_ids]
+        for wanted in ("leads_group", "plays_own_queue"):
+            for member in members:
+                if isinstance(member, RaumfeldPlayer) and getattr(member, wanted):
+                    return member.player_id
+        return member_ids[0]
 
     def _room_player_id(self, room: str) -> str | None:
         """Return the player_id for a room, or ``None`` if its serial is not known yet."""

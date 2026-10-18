@@ -285,14 +285,12 @@ async def test_unload_cancels_its_timers() -> None:
     """Unloading cancels the timers mass holds for this player, which would otherwise run."""
     player, mass = _advancing_player()
     player._player_id = "raumfeld_test"
-    player._resync_task_id = "raumfeld_resync_test"
     player._on_unload_callbacks = []
 
     await player.on_unload()
 
     assert {call.args[0] for call in mass.cancel_timer.call_args_list} == {
         "raumfeld_advance_test",
-        "raumfeld_resync_test",
         "external_pause_raumfeld_test",
     }
     assert player._advance_armed is False
@@ -372,6 +370,55 @@ async def test_volume_update_reads_mute_and_keeps_unread_values() -> None:
         upnp.async_get_mute = AsyncMock(return_value=None)
         await player._update_volume(host)
     assert (player._attr_volume_level, player._attr_volume_muted) == (42, True)
+
+
+async def test_no_zone_for_the_room_is_reported() -> None:
+    """A room the host gives no zone raises a clear error instead of playing into nothing."""
+    player = _room_player()
+    host = MagicMock()
+    host.roomlst_to_zoneudn.return_value = None
+    provider = MagicMock()
+    provider.host = host
+    provider.get_zone_for_room.return_value = None
+    player._provider = provider
+    player.logger = MagicMock()
+    with (
+        patch(
+            "music_assistant.providers.raumfeld.player.hassfeld_ws.async_connect_rooms_to_zone",
+            AsyncMock(),
+        ),
+        patch("music_assistant.providers.raumfeld.player.ZONE_WAIT_TIMEOUT", 0),
+        pytest.raises(PlayerCommandFailed, match="no zone for Bar"),
+    ):
+        await player._ensure_playable_zone()
+
+
+async def test_a_group_is_created_as_one_zone() -> None:
+    """A leader without a zone has the host make one with all rooms at once."""
+    player = _room_player()
+    host = MagicMock()
+    host.roomlst_to_udnlst.side_effect = lambda rooms: [f"uuid:{room}" for room in rooms]
+    host.location = "http://192.168.1.41:47365"
+    host.async_add_room_to_zone = AsyncMock()
+    provider = MagicMock()
+    provider.host = host
+    # no zone until the host is asked to create one
+    provider.get_zone_for_room.return_value = None
+    player._provider = provider
+    player.logger = MagicMock()
+
+    async def create(*_args: object, **_kwargs: object) -> None:
+        provider.get_zone_for_room.return_value = ["Bar", "Sofa"]
+
+    with patch("music_assistant.providers.raumfeld.player.hassfeld_ws") as webservice:
+        webservice.async_connect_rooms_to_zone = AsyncMock(side_effect=create)
+        await player._add_rooms_to_zone(["Sofa"])
+    webservice.async_connect_rooms_to_zone.assert_awaited_once_with(
+        player.mass.http_session,
+        "http://192.168.1.41:47365",
+        room_udns=["uuid:Bar", "uuid:Sofa"],
+    )
+    host.async_add_room_to_zone.assert_not_awaited()
 
 
 def _powered_player(power_state: str | None) -> tuple[RaumfeldPlayer, MagicMock]:
@@ -498,24 +545,6 @@ async def test_power_off_failure_is_reported() -> None:
     with pytest.raises(PlayerCommandFailed):
         await player.power(False)
     assert player._attr_powered is True
-
-
-async def test_no_zone_for_the_room_is_reported() -> None:
-    """A room the host gives no zone raises a clear error instead of playing into nothing."""
-    player = _flow_player()
-    player.room = "Bar"
-    host = MagicMock()
-    host.async_create_zone = AsyncMock()
-    host.roomlst_to_zoneudn.return_value = None
-    provider = MagicMock()
-    provider.host = host
-    provider.get_zone_for_room.return_value = None
-    player._provider = provider
-    with (
-        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
-        pytest.raises(PlayerCommandFailed, match="no zone for Bar"),
-    ):
-        await player._ensure_playable_zone()
 
 
 _SPOTIFY_META: dict[str, str | None] = {

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 
 from async_upnp_client.exceptions import UpnpError
 from hassfeld import upnp as hassfeld_upnp
+from hassfeld import webservice as hassfeld_ws
 from hassfeld.constants import SERVICE_AV_TRANSPORT
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
@@ -73,10 +74,14 @@ POSITION_REPORT_LAG = 1.0
 ADVANCE_WATCH_INTERVAL = 0.25
 ADVANCE_WATCH_ATTEMPTS = 12
 # When a room has no addressable zone (e.g. it just detached during a group leadership
-# handover), how many times to (re)create a single-room zone and how long to wait between
-# attempts for the host to actually publish it before giving up.
-ZONE_CREATE_ATTEMPTS = 4
-ZONE_CREATE_RETRY_DELAY = 0.75
+# handover), how many times to (re)create one, and how long (seconds) to wait each time for
+# the host to publish a zone change before looking again.
+# The host lists a new zone after about a second and publishes its renderer, which playback
+# is addressed to, up to three seconds after that (measured: 1.1 - 4.3 s in total).
+ZONE_CREATE_ATTEMPTS = 3
+ZONE_WAIT_TIMEOUT = 6.0
+ZONE_WAIT_INTERVAL = 0.1
+
 # After leaving standby, how long (seconds) to wait for a room to report awake before
 # playing, so the first play command is not dropped while the renderer powers on.
 WAKE_TIMEOUT = 5.0
@@ -201,7 +206,6 @@ class RaumfeldPlayer(Player):
         # timestamp of the last power command, see POWER_SETTLE_TIME
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
-        self._resync_task_id = f"raumfeld_resync_{player_id}"
         self._attr_device_info = DeviceInfo(
             model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
         )
@@ -278,11 +282,9 @@ class RaumfeldPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
-        # both timers are held by mass, not by this player, so they would otherwise fire
-        # after it is gone: the end watch against a dropped player, the resync against a
-        # queue whose player no longer exists
+        # the timer is held by mass, not by this player, so it would otherwise fire after
+        # it is gone, against a dropped player
         self._clear_next()
-        self.mass.cancel_timer(self._resync_task_id)
 
     def set_available(self, available: bool) -> None:
         """
@@ -313,8 +315,26 @@ class RaumfeldPlayer(Player):
 
         :param member_ids: Player ids in the group, with this player (the leader) first.
         """
+        # keep the order MA already has for the same rooms, and stay quiet when nothing changed
+        if set(member_ids) == set(self._attr_group_members) and (
+            not member_ids or member_ids[0] == self.player_id
+        ):
+            return
         self._attr_group_members = member_ids
         self.update_state()
+
+    @property
+    def leads_group(self) -> bool:
+        """Return whether this player currently leads a sync group in Music Assistant."""
+        return len(self._attr_group_members) > 1 and self._attr_group_members[0] == self.player_id
+
+    @property
+    def plays_own_queue(self) -> bool:
+        """Return whether this player is playing a queue Music Assistant started on it."""
+        return (
+            self._attr_active_source == self.player_id
+            and self._attr_playback_state == PlaybackState.PLAYING
+        )
 
     async def power(self, powered: bool) -> None:
         """Send POWER command: wake the room, or switch it off (manual standby)."""
@@ -540,6 +560,7 @@ class RaumfeldPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS: translate MA group changes into Raumfeld zone changes."""
         host = self.raumfeld.host
+        self.raumfeld.note_group_change()
 
         # this player is the group leader and owns the zone: add/drop each member's room
         try:
@@ -550,6 +571,10 @@ class RaumfeldPlayer(Player):
                     if (room := self._player_id_to_room(pid)) is not None
                 ]
                 await self._add_rooms_to_zone(add_rooms)
+                # the host pulls an added room into the running stream by itself, but not
+                # one that is in standby
+                if self._attr_playback_state == PlaybackState.PLAYING:
+                    await self._wake_rooms(add_rooms)
             for pid in player_ids_to_remove or []:
                 if (room := self._player_id_to_room(pid)) is not None:
                     await host.async_drop_room_from_zone(room, self._active_zone() or [self.room])
@@ -567,24 +592,11 @@ class RaumfeldPlayer(Player):
         other_member_ids = [pid for pid in members if pid != self.player_id]
         self._attr_group_members = [self.player_id, *other_member_ids] if other_member_ids else []
         self.update_state()
+        # the host calls above took a while; count the settle time from their end
+        self.raumfeld.note_group_change()
         for pid in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
             if (member := self.mass.players.get_player(pid)) is not None:
                 member.update_state()
-
-        # a room added to an already-playing Raumfeld zone does not get pulled into the
-        # running stream, so re-push playback to bring the new member into sync. Resume
-        # (rather than a fresh play) keeps the position, and running it deferred avoids
-        # re-entering the player lock held by this command; debounced per leader so
-        # adding several rooms at once only re-syncs once.
-        if player_ids_to_add:
-            queue = self.mass.player_queues.get_active_queue(self.player_id)
-            if queue is not None and queue.state == PlaybackState.PLAYING:
-                self.mass.call_later(
-                    1,
-                    self.mass.player_queues.resume,
-                    queue.queue_id,
-                    task_id=self._resync_task_id,
-                )
 
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
@@ -1303,21 +1315,17 @@ class RaumfeldPlayer(Player):
 
     async def _ensure_playable_zone(self) -> list[str]:
         """Return an addressable Raumfeld zone for this room, creating one if needed."""
-        if (zone := self._active_zone()) is not None:
-            return zone
-        host = self.raumfeld.host
-        # a room that is idle/standby (e.g. just left a group) is in no active zone, so
-        # create a single-room zone. During a group handover the room is still detaching
-        # and hassfeld's create-and-wait gives up silently on timeout, so confirm the host
-        # can resolve the new zone before returning and retry while the state settles.
-        for attempt in range(ZONE_CREATE_ATTEMPTS):
-            await host.async_create_zone([self.room])
-            if (zone := self._active_zone()) is not None:
+        # a room that is idle/standby (e.g. just left a group) is in no zone, so create a
+        # single-room one. During a group handover the room is still detaching, so retry
+        # while the state settles.
+        for _ in range(ZONE_CREATE_ATTEMPTS):
+            if self._active_zone() is None:
+                await self._create_zone([self.room])
+            if (
+                await self._wait_for_zone([self.room], addressable=True)
+                and (zone := self._active_zone()) is not None
+            ):
                 return zone
-            if host.roomlst_to_zoneudn([self.room]) is not None:
-                return [self.room]
-            if attempt < ZONE_CREATE_ATTEMPTS - 1:
-                await asyncio.sleep(ZONE_CREATE_RETRY_DELAY)
         raise PlayerCommandFailed(
             f"The Raumfeld host has no zone for {self.room}; check that the room is online"
         )
@@ -1325,18 +1333,64 @@ class RaumfeldPlayer(Player):
     async def _add_rooms_to_zone(self, rooms: list[str]) -> None:
         """Add the given rooms to this leader's zone, waiting until they have joined."""
         host = self.raumfeld.host
+        wanted = [self.room, *rooms]
         # hassfeld's add-room call does not wait, so during rapid regrouping (a room moving
         # straight from one group to another) it can race and leave the room unassigned;
         # verify the room really landed in the zone and retry while the state settles
-        for attempt in range(ZONE_CREATE_ATTEMPTS):
-            zone = await self._ensure_playable_zone()
+        for _ in range(ZONE_CREATE_ATTEMPTS):
+            if (zone := self._active_zone()) is None:
+                # no zone yet: have the host make it with all rooms at once, rather than
+                # one for this room alone that the others then have to be moved into
+                await self._create_zone(wanted)
+                continue
             missing = [room for room in rooms if room not in zone]
             if not missing:
                 return
             for room in missing:
                 await host.async_add_room_to_zone(room, zone)
-            if attempt < ZONE_CREATE_ATTEMPTS - 1:
-                await asyncio.sleep(ZONE_CREATE_RETRY_DELAY)
+            await self._wait_for_zone(wanted, addressable=False)
+
+    async def _create_zone(self, rooms: list[str]) -> None:
+        """
+        Have the host put the rooms in a zone of their own, and wait until it lists it.
+
+        :param rooms: The rooms of the new zone.
+        """
+        host = self.raumfeld.host
+        # Not hassfeld's create-and-wait: that looks the new zone up by room name where it
+        # needs room UDNs, never finds it and so always waits out its full five seconds.
+        await hassfeld_ws.async_connect_rooms_to_zone(
+            self.mass.http_session, host.location, room_udns=host.roomlst_to_udnlst(rooms)
+        )
+        await self._wait_for_zone(rooms, addressable=False)
+
+    async def _wait_for_zone(self, rooms: list[str], addressable: bool) -> bool:
+        """
+        Wait (bounded) until the host lists a zone holding the rooms.
+
+        :param rooms: The rooms that have to be in this room's zone.
+        :param addressable: Whether to wait for the zone's renderer to be published as
+            well, which playback needs and a group change does not.
+        """
+        started = time.time()
+        while True:
+            zone = self._active_zone()
+            if (
+                zone is not None
+                and all(room in zone for room in rooms)
+                and (not addressable or self.raumfeld.zone_location(zone) is not None)
+            ):
+                self.logger.debug(
+                    "Zone %s ready after %.1fs (addressable: %s)",
+                    zone,
+                    time.time() - started,
+                    addressable,
+                )
+                return True
+            if time.time() - started >= ZONE_WAIT_TIMEOUT:
+                self.logger.debug("Zone for %s not ready after %.1fs", rooms, ZONE_WAIT_TIMEOUT)
+                return False
+            await asyncio.sleep(ZONE_WAIT_INTERVAL)
 
     def _player_id_to_room(self, player_id: str) -> str | None:
         """Resolve a MA player_id of this provider back to its Raumfeld room name."""
