@@ -50,6 +50,15 @@ def _zone_off_on_netusb(network: MusicCastNetwork) -> None:
     zone_data.input = "server"
 
 
+def _bare_zone_in_group_of_rebooted_server(network: MusicCastNetwork) -> None:
+    # the server rebooted and lost the group, the zone still links to it
+    _bare_zone_in_group(network)
+    a_data = _zone(network, "A___main").device.data
+    a_data.group_role = "none"
+    a_data.group_id = MC_NULL_GROUP
+    a_data.group_client_list.clear()
+
+
 def _client_role_left_behind(network: MusicCastNetwork) -> None:
     # a zone left another group by switching its input, the device keeps its client role
     data = _zone(network, "B___main").device.data
@@ -163,6 +172,14 @@ def _client_role_left_behind(network: MusicCastNetwork) -> None:
             {"B___main": "mc_link"},
             False,
             id="device-left-other-group-joins",
+        ),
+        pytest.param(
+            _bare_zone_in_group_of_rebooted_server,
+            "A___main",
+            ["B___main"],
+            {"B___main": "mc_link"},
+            False,
+            id="device-in-group-of-rebooted-server-joins",
         ),
     ],
 )

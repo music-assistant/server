@@ -1127,9 +1127,16 @@ class MusicCastPlayer(Player):
                 "and sync the zones to main."
             )
         # a device is a client of a single group only; a zone that left keeps the device's
-        # client role, so only a zone still on mc_link counts
-        if child_zone.device.data.group_id != self.zone_device.device.data.group_id and any(
-            zone.is_network_client for zone in (child_zone, *child_zone.other_zones)
+        # client role, so only a zone still on mc_link counts, and only while a server
+        # still serves that group (it is gone after a reboot of the server)
+        child_group_id = child_zone.device.data.group_id
+        if (
+            child_group_id != self.zone_device.device.data.group_id
+            and any(zone.is_network_client for zone in (child_zone, *child_zone.other_zones))
+            and any(
+                server.is_network_server and server.device.data.group_id == child_group_id
+                for server in self.zone_device.controller.all_server_devices
+            )
         ):
             return (
                 f"Cannot add {child_player.display_name} to the group, its device is part of "
