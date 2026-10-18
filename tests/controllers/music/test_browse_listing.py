@@ -255,7 +255,7 @@ async def test_library_folder_is_read_a_page_at_a_time(
         ) == ["One"]
         # playing the folder reads all of it
         assert await _browse(limit=None) == ["..", "One"]
-    page = {"provider": "qobuz_1", "summary": False}
+    page = {"provider": "qobuz_1", "summary": False, "random_seed": None}
     assert [call.kwargs for call in library_items.await_args_list] == [
         {
             **page,

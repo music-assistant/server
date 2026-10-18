@@ -79,6 +79,7 @@ def apply_listing[ItemT: ListingItem](
     sort_direction: SortDirection | None = None,
     limit: int | None = None,
     offset: int = 0,
+    random_seed: int | None = None,
 ) -> list[ItemT]:
     """
     Search, sort and page a listing assembled in memory.
@@ -94,13 +95,26 @@ def apply_listing[ItemT: ListingItem](
     :param sort_direction: Sort direction, the field's default for this listing when omitted.
     :param limit: Maximum number of items to return; None (or 0) returns them all.
     :param offset: Number of items to skip.
+    :param random_seed: Keep random ordering stable across pages with the same seed.
     :raises InvalidDataError: When the listing does not offer the sort field.
     """
     field, direction = resolve_listing_sort(listing, sort_field, sort_direction)
     term = _normalize(search) if search else ""
     result = [item for item in items if _matches(item, term)] if term else list(items)
     if field == SortField.RANDOM:
-        random.shuffle(result)
+        if random_seed is None:
+            random.shuffle(result)
+        else:
+            # A cache refill can reorder identical contents; anchor the shuffle to identities
+            # without deduplicating repeated playlist entries.
+            result.sort(
+                key=lambda item: (
+                    item.media_type.value,
+                    item.provider,
+                    item.path if isinstance(item, BrowseFolder) else item.item_id,
+                )
+            )
+            random.Random(random_seed).shuffle(result)  # noqa: S311 - reproducible order, not security
     elif field != SortField.ORIGINAL:
         if (sort_key := _SORT_KEYS.get(field)) is None:
             raise InvalidDataError(f"Sort field {field.value} cannot be sorted in memory")

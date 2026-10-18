@@ -13,6 +13,10 @@ _DEVICE_DESCRIPTION = (
     "<friendlyName>Speaker Bar</friendlyName>"
     "<modelName>Raumfeld One S</modelName>"
     "<serialNumber>04:a3:16:f3:b6:c4</serialNumber>"
+    "<serviceList><service>"
+    "<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>"
+    "<controlURL>/AVTransport/ctrl</controlURL>"
+    "</service></serviceList>"
     "</device></root>"
 )
 
@@ -22,6 +26,7 @@ def _provider(description: str) -> tuple[RaumfeldPlayerProvider, MagicMock]:
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
     provider._room_serials = {}
     provider._room_models = {}
+    provider._room_transport_paths = {}
     provider.host = MagicMock()
     provider.host.resolve = {
         "room_to_udn": {"Bar": "uuid:room"},
@@ -60,3 +65,14 @@ async def test_room_without_a_model_name_has_no_model() -> None:
     assert await provider._ensure_room_serial("Bar") == "04:a3:16:f3:b6:c4"
 
     assert provider.room_model("Bar") is None
+
+
+async def test_transport_url_follows_the_renderers_current_address() -> None:
+    """A renderer that restarts on another port is reached there, though read only once."""
+    provider, _ = _provider(_DEVICE_DESCRIPTION)
+    await provider._ensure_room_serial("Bar")
+    assert provider.room_transport_url("Bar") == "http://192.168.1.42:54730/AVTransport/ctrl"
+
+    provider.host.resolve["udn_to_devloc"]["uuid:renderer"] = "http://192.168.1.42:41000/r.xml"
+
+    assert provider.room_transport_url("Bar") == "http://192.168.1.42:41000/AVTransport/ctrl"

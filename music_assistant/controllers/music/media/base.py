@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
@@ -253,6 +254,9 @@ class PodcastSyncDetails(LibraryItemSyncDetails):
     """Lightweight sync snapshot of a library podcast."""
 
     genres: set[str]
+
+
+_RANDOM_ORDER_PRIME: Final[int] = (1 << 31) - 1
 
 
 class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
@@ -531,6 +535,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = True,
             collapse_collections: Literal[False] = False,
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[ItemCls]: ...
 
@@ -551,6 +556,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = True,
             collapse_collections: Literal[True],
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
@@ -571,6 +577,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary: bool = True,
             collapse_collections: bool,
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
@@ -590,6 +597,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         summary: bool = True,
         collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
         **kwargs: Any,
     ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """
@@ -599,6 +607,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
             Legacy string-based sorting (e.g. 'sort_name', 'timestamp_added_desc').
         :param provider: Filter by provider instance ID (single string or list).
@@ -638,6 +647,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             summary=summary,
             collapse_collections=collapse_collections,
             reachable_via=reachable_via,
+            random_seed=random_seed,
         )
         if (
             kwargs.get("_localized_fallback", True)
@@ -657,6 +667,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 genre=genre,
                 summary=summary,
                 reachable_via=reachable_via,
+                random_seed=random_seed,
             )
         return items
 
@@ -1766,6 +1777,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             collapse_collections: Literal[True],
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
         ) -> list[ItemCls | MediaCollection[ItemCls]]: ...
 
         @overload
@@ -1788,6 +1800,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             collapse_collections: Literal[False] = False,
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
         ) -> list[ItemCls]: ...
 
         @overload
@@ -1810,6 +1823,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             *,
             collapse_collections: bool,
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
         ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
 
     @final
@@ -1832,6 +1846,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         *,
         collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
     ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """
         Fetch MediaItem records from database by building the query.
@@ -1840,6 +1855,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param sort_field: The sort field; None keeps the database order.
         :param sort_direction: The sort direction, the field's default when None.
         :param provider_filter: Only include items with a provider mapping on one of these
@@ -1879,6 +1895,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 in_library_only=in_library_only,
                 reachable_via=reachable_via,
                 sort_field=sort_field,
+                random_seed=random_seed,
             )
         else:
             # apply filters
@@ -1900,6 +1917,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sort_field,
             sort_direction,
             summary=summary,
+            random_seed=random_seed,
         )
         # base query params act as defaults: callers may override them via extra_query_params
         for key, value in base_query_params.items():
@@ -1915,6 +1933,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 sort_field=sort_field,
                 sort_direction=sort_direction,
                 search=search,
+                random_seed=random_seed,
             )
 
         db_rows = await self.mass.music.database.get_rows_from_query(
@@ -2266,7 +2285,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             json_extract({self.db_table}.metadata, '$.collections') AS collections"""
 
     async def _localized_search_fallback(
-        self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
+        self,
+        search_query: str,
+        limit: int,
+        offset: int = 0,
+        random_seed: int | None = None,
+        **call_kwargs: Any,
     ) -> list[ItemCls]:
         """
         Retry a library search using the canonical names behind a localized query.
@@ -2289,6 +2313,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 offset=0,
                 _localized_fallback=False,
                 **call_kwargs,
+                random_seed=random_seed,
             ):
                 if item.item_id not in seen:
                     seen.add(item.item_id)
@@ -2362,6 +2387,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         offset: int = 0,
         in_library_only: bool = False,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
     ) -> None:
         """Build a fast random subquery honoring the random sort field with all filters applied."""
         sub_query_parts = query_parts.copy()
@@ -2389,7 +2415,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if sub_query_parts:
             sub_query += " WHERE " + " AND ".join(self._clean_query_parts(sub_query_parts))
 
-        sub_query += f" ORDER BY {self._get_sort_sql(sort_field, None)}"
+        # Sampling and final ordering must agree, or an offset can skip or repeat candidates.
+        sort_sql = (
+            self._seeded_random_sort_sql(sort_field, random_seed, query_params)
+            if random_seed is not None
+            else self._get_sort_sql(sort_field, None)
+        )
+        sub_query += f" ORDER BY {sort_sql}"
         # Sample limit+offset rows so later pages aren't skipped past an exhausted sample;
         # an unlimited listing (limit 0) shuffles all rows.
         if limit:
@@ -2545,6 +2577,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         sort_direction: SortDirection | None = None,
         *,
         summary: bool = False,
+        random_seed: int | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Build the final SQL query string and its (base) bound query params."""
         sql_query, base_query_params = self.summary_query if summary else self.base_query
@@ -2567,9 +2600,37 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query += f" GROUP BY {self.db_table}.item_id"
 
         if sort_field:
-            sql_query += f" ORDER BY {self._get_sort_sql(sort_field, sort_direction)}"
+            sort_sql = (
+                self._seeded_random_sort_sql(sort_field, random_seed, base_query_params)
+                if sort_field in RANDOM_SORT_FIELDS and random_seed is not None
+                else self._get_sort_sql(sort_field, sort_direction)
+            )
+            sql_query += f" ORDER BY {sort_sql}"
 
         return sql_query, base_query_params
+
+    def _seeded_random_sort_sql(
+        self,
+        field: SortField,
+        seed: int,
+        query_params: dict[str, Any],
+        *,
+        item_id_sql: str | None = None,
+        play_count_sql: str | None = None,
+    ) -> str:
+        """Return a stable random order shared by the sample and its paged result."""
+        generator = random.Random(seed)  # noqa: S311 - reproducible listing order, not security
+        query_params["random_order_multiplier"] = generator.randrange(1, _RANDOM_ORDER_PRIME)
+        item_id_sql = item_id_sql or f"{self.db_table}.item_id"
+        # Reducing both factors to 31 bits keeps multiplication within SQLite's integer range.
+        order = (
+            f"(({item_id_sql} % {_RANDOM_ORDER_PRIME}) "
+            f"* :random_order_multiplier) % {_RANDOM_ORDER_PRIME}, {item_id_sql}"
+        )
+        if field == SortField.RANDOM_PLAY_COUNT:
+            play_count_sql = play_count_sql or f"{self.db_table}.play_count"
+            return f"COALESCE({play_count_sql}, 0), {order}"
+        return order
 
     @final
     @staticmethod
@@ -2773,6 +2834,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         sort_direction: SortDirection | None,
         limit: int | None,
         offset: int,
+        random_seed: int | None = None,
     ) -> list[ItemCls]:
         """
         Return the versions of one of this type's items, searched, sorted and paged.
@@ -2791,6 +2853,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of versions to return; None or 0 returns them all.
         :param offset: Number of versions to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for versions.
         """
         # an unsupported sort is rejected before the providers are searched
@@ -2814,6 +2877,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     @final
@@ -3081,6 +3145,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         sort_direction: SortDirection | None = None,
         collection_name: str | None = None,
         search: str | None = None,
+        random_seed: int | None = None,
     ) -> str:
         cache_key_json_object = f"collection_{self.api_base}"
         json_object = await self.mass.cache.get(key=cache_key_json_object, category=int(summary))
@@ -3134,6 +3199,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 joined_table as ({sql_query}),
                 collection_extract as (
                     SELECT
+                        item_id,
                         name as media_name,
                         timestamp_added,
                         timestamp_modified,
@@ -3164,6 +3230,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 )
             SELECT
                 'collection' as type,
+                MIN(item_id) as random_item_id,
                 collection_title as name,
                 COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
                 COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
@@ -3201,7 +3268,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
             UNION ALL
 
-            SELECT 'single', name, search_name, search_sort_name,
+            SELECT 'single', item_id as random_item_id, name, search_name, search_sort_name,
                 timestamp_added, timestamp_modified, last_played, play_count,
                 {single_extra_order_keys}
                 {json_object} FROM joined_table
@@ -3224,7 +3291,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 )
                 sort_field, sort_direction = SortField.NAME, None
             # the derived query has no table to qualify the columns with
-            sql_query += f" ORDER BY {self._render_sort_sql(sort_field, sort_direction, None)}"
+            if random_seed is not None and sort_field in RANDOM_SORT_FIELDS:
+                # Collapsed rows use their smallest member id; type/name resolve shared-id ties.
+                order = self._seeded_random_sort_sql(
+                    sort_field,
+                    random_seed,
+                    query_params,
+                    item_id_sql="random_item_id",
+                    play_count_sql="play_count",
+                )
+                sql_query += f" ORDER BY {order}, type, name"
+            else:
+                sql_query += f" ORDER BY {self._render_sort_sql(sort_field, sort_direction, None)}"
 
         return sql_query
 
