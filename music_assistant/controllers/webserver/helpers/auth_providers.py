@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.controllers.webserver.helpers.login_flow import PendingLogin
+    from music_assistant.controllers.webserver.helpers.oidc_sessions import OIDCSession
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
@@ -389,6 +390,7 @@ class AuthResult:
     translation_key: str | None = None
     access_token: str | None = None
     return_url: str | None = None
+    oidc_session: OIDCSession | None = None
 
 
 @dataclass

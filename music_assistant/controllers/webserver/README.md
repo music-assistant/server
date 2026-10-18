@@ -127,8 +127,9 @@ including its trailing slash; its discovery document is below
 location and is not supported by this issuer-based discovery configuration.
 
 Self-registration is a separate, opt-in OIDC setting. An approved, previously unlinked identity
-creates a regular `user` account; Music Assistant administrators manage its role and player
-access as usual. An existing identity keeps its local role, display settings and restrictions.
+creates a regular `user` account unless optional group-to-role mapping is configured.
+Without a mapping, an existing identity keeps its locally assigned role. Display settings
+and player restrictions remain locally managed in either mode.
 Identities are keyed by the exact `(issuer, sub)` pair, hashed with `oidc_identity_id` in
 [oidc_provider.py](helpers/oidc_provider.py) and stored with provider type `oidc` in the existing
 `user_auth_providers` table. Matching usernames or emails never link to a local or Home Assistant
@@ -166,10 +167,36 @@ client supplies the additional protocol checks. See the primary references:
 
 OIDC discovery is lazy: an identity provider outage cannot prevent server startup or built-in
 or Home Assistant login. Remote Access can use OIDC only when a browser can reach the server's
-External URL; the remote-app-only callback is not advertised. Logout and revocation retain
-Music Assistant's current semantics: signing out revokes the local session, and disabling an
-account at the IdP prevents future OIDC logins but does not revoke already issued Music
-Assistant sessions. OIDC back-channel/single logout and group-to-role mapping are not included.
+External URL; the remote-app-only callback is not advertised. Signing out of Music Assistant
+revokes the local session; it does not initiate global identity-provider logout.
+
+Optional back-channel logout accepts signed form-encoded logout tokens at
+`/auth/oidc/backchannel-logout`. Enable it in the advanced OIDC settings and register the
+absolute HTTPS endpoint with the identity provider. For Authentik set **Logout URI** and
+choose **Back-channel** as the logout method. The IdP must be able to reach and trust this
+endpoint. The server validates the signature, exact issuer/client, timestamps, event, token
+ID and subject/session selector before revoking associated login tokens and disconnecting
+their WebSockets. A session selector targets that device's IdP session; a subject-only
+notification targets all tracked sessions for that identity. Replay receipts and session
+links survive server restarts and prevent an in-flight callback from restoring ended access.
+
+Two additive tables in `auth.db`, `oidc_sessions` and `oidc_logouts`, track those associations
+and recent logout receipts. Setup is idempotent and does not rewrite existing users or tokens.
+Existing sessions remain valid through the upgrade; users must sign in again through OIDC
+to establish a logout association. Local-password sessions and long-lived API tokens are not
+revoked by IdP logout. Keep a local recovery administrator.
+
+Optional group-to-role mapping is an ordered JSON object, for example
+`{"music-admins":"admin","music-users":"user"}`. The first matching group determines the
+built-in or custom role ID; `service` is not allowed. The group claim defaults to `groups`
+and must be an array of strings in the verified ID token or subject-matched UserInfo.
+Roles synchronize at sign-in, including demotions. Missing, malformed or unmatched groups
+deny sign-in and revoke that identity's tracked OIDC sessions. Role changes retain the
+existing last-administrator and music-source ownership safeguards; a conflicting mapping
+denies access rather than silently keeping a privileged OIDC session. After access is denied,
+a fresh sign-in can be delayed by the 30-second clock-skew allowance. Group changes alone
+are not pushed to Music Assistant: use IdP logout notifications or disable the local account
+when immediate revocation is required.
 
 The shared models need the additive `AuthProviderType.OIDC` enum member and the frontend needs
 the optional OIDC button. Test/build with the matching models and frontend changes; publish

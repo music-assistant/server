@@ -14,6 +14,8 @@ from music_assistant_models.errors import RateLimited
 
 from music_assistant.helpers.pkce import pkce_challenge
 
+from .oidc_sessions import OIDCSession
+
 # Seconds a sign-in may take, and how many may be pending at once
 PENDING_LOGIN_TTL: Final = 600
 MAX_PENDING_LOGINS: Final = 100
@@ -51,6 +53,7 @@ class PendingLogin:
     return_url: str | None = None
     client_code_challenge: str | None = None  # S256 only
     idp_nonce: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    oidc_session: OIDCSession | None = None
 
 
 class PendingLoginStore:

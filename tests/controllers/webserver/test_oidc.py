@@ -77,6 +77,7 @@ class IdentityProvider:
     token_requests: int = 0
     token_status: int = 200
     userinfo_subject: str = "subject-1"
+    userinfo_overrides: dict[str, Any] = field(default_factory=dict)
     signing_algorithm: str = "RS256"
     signing_key: Any = None
     jwks_override: dict[str, Any] | None = None
@@ -159,6 +160,7 @@ class IdentityProvider:
                 "sub": self.userinfo_subject,
                 "preferred_username": "profile-listener",
                 "name": "Profile Name",
+                **self.userinfo_overrides,
             }
         )
 
@@ -567,6 +569,7 @@ async def test_browser_start_callback_and_replay_protection(
     assert accepted.cookies[cookie_name]["secure"]
     assert idp.token_requests == 1
     assert idp.last_token_form["code"] == code
+    assert len(await auth.database.get_rows("oidc_sessions")) == 1
     replay = await auth.webserver._handle_auth_callback(request)
     assert replay.status == 400
     assert idp.token_requests == 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hmac
+import math
 import re
 import time
 from typing import TYPE_CHECKING, Any, Final
@@ -26,6 +27,8 @@ CACHE_TTL: Final = 3600
 KEY_REFRESH_INTERVAL: Final = 30
 MAX_RESPONSE_SIZE: Final = 1024 * 1024
 CLOCK_LEEWAY: Final = 30
+LOGOUT_MAX_AGE: Final = 300
+BACKCHANNEL_LOGOUT_EVENT: Final = "http://schemas.openid.net/event/backchannel-logout"
 # Never accept symmetric or unsigned ID tokens, even when discovery advertises them.
 SIGNING_ALGORITHMS: Final = frozenset(
     {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
@@ -107,7 +110,9 @@ class OIDCClient:
             )
         )
 
-    async def authenticate(self, pending: PendingLogin, code: str) -> dict[str, Any]:
+    async def authenticate(
+        self, pending: PendingLogin, code: str, *, groups_claim: str | None = None
+    ) -> dict[str, Any]:
         """Exchange a code and return verified identity claims, with optional profile details."""
         metadata = await self._get_metadata()
         data = {
@@ -138,16 +143,49 @@ class OIDCClient:
         ):
             raise ValueError("Invalid OIDC token response")
         claims = await self._validate_id_token(metadata, id_token, pending, access_token, code)
-        if metadata.get("userinfo_endpoint") and not claims.get("preferred_username"):
+        if metadata.get("userinfo_endpoint") and (
+            not claims.get("preferred_username") or (groups_claim and groups_claim not in claims)
+        ):
             userinfo = await self._request_json(
                 "GET", metadata["userinfo_endpoint"], bearer_token=access_token
             )
             if userinfo.get("sub") != claims["sub"]:
                 raise ValueError("OIDC UserInfo subject does not match the ID token")
-            # UserInfo may supply profile claims, never a new identity or permissions.
+            # The subject must match before accepting any profile or configured group claim.
             for key in ("preferred_username", "name", "picture"):
                 if isinstance(userinfo.get(key), str):
                     claims[key] = userinfo[key]
+            if groups_claim and groups_claim not in claims and groups_claim in userinfo:
+                claims[groups_claim] = userinfo[groups_claim]
+        return claims
+
+    async def validate_logout_token(self, token: str) -> dict[str, Any]:
+        """Verify a back-channel logout token without accepting an ID token in its place."""
+        metadata = await self._get_metadata()
+        claims = await self._decode_signed_token(
+            metadata, token, ["iss", "aud", "iat", "exp", "jti", "events"]
+        )
+        header_type = jwt.get_unverified_header(token).get("typ")
+        if header_type not in (None, "JWT", "logout+jwt"):
+            raise ValueError("Invalid OIDC logout token type")
+        events = claims["events"]
+        if (
+            not isinstance(events, dict)
+            or not isinstance(events.get(BACKCHANNEL_LOGOUT_EVENT), dict)
+            or "nonce" in claims
+        ):
+            raise ValueError("Invalid OIDC logout event")
+        if not claims.get("sub") and not claims.get("sid"):
+            raise ValueError("OIDC logout requires a subject or session")
+        for name in ("sub", "sid", "jti"):
+            if name in claims and (
+                not isinstance(claims[name], str) or not 0 < len(claims[name]) <= 255
+            ):
+                raise ValueError("Invalid OIDC logout identifier")
+        if claims["iat"] < time.time() - LOGOUT_MAX_AGE - CLOCK_LEEWAY:
+            raise ValueError("OIDC logout token is too old")
+        if claims["exp"] <= claims["iat"]:
+            raise ValueError("Invalid OIDC logout token lifetime")
         return claims
 
     async def _get_metadata(self) -> dict[str, Any]:
@@ -207,6 +245,43 @@ class OIDCClient:
         access_token: str,
         code: str,
     ) -> dict[str, Any]:
+        claims = await self._decode_signed_token(
+            metadata, token, ["iss", "sub", "aud", "exp", "iat", "nonce"]
+        )
+        if not isinstance(claims["sub"], str) or not claims["sub"] or len(claims["sub"]) > 255:
+            raise ValueError("Invalid OIDC subject")
+        if "sid" in claims and (
+            not isinstance(claims["sid"], str) or not 0 < len(claims["sid"]) <= 255
+        ):
+            raise ValueError("Invalid OIDC session identifier")
+        nonce = claims["nonce"]
+        if not isinstance(nonce, str) or not hmac.compare_digest(nonce, pending.idp_nonce):
+            raise ValueError("OIDC nonce does not match this sign-in")
+        audience = claims["aud"]
+        if isinstance(audience, list) and len(audience) > 1 and "azp" not in claims:
+            raise ValueError(
+                "OIDC token with multiple audiences must identify its authorized party"
+            )
+        if "azp" in claims and claims["azp"] != self.client_id:
+            raise ValueError("OIDC authorized party does not match this client")
+        algorithm = jwt.get_unverified_header(token)["alg"]
+        for name, value in (("at_hash", access_token), ("c_hash", code)):
+            if name in claims:
+                digest = jwt.get_algorithm_by_name(algorithm).compute_hash_digest(
+                    value.encode("ascii")
+                )
+                expected = (
+                    base64.urlsafe_b64encode(digest[: len(digest) // 2]).rstrip(b"=").decode()
+                )
+                if not isinstance(claims[name], str) or not hmac.compare_digest(
+                    claims[name], expected
+                ):
+                    raise ValueError("OIDC token hash does not match")
+        return claims
+
+    async def _decode_signed_token(
+        self, metadata: dict[str, Any], token: str, required_claims: list[str]
+    ) -> dict[str, Any]:
         header = jwt.get_unverified_header(token)
         algorithm = header.get("alg")
         if (
@@ -214,7 +289,7 @@ class OIDCClient:
             or algorithm not in metadata["id_token_signing_alg_values_supported"]
             or header.get("crit")
         ):
-            raise ValueError("Unsupported OIDC ID token signing algorithm or critical header")
+            raise ValueError("Unsupported OIDC token signing algorithm or critical header")
         jwks = await self._get_jwks(metadata["jwks_uri"])
         key = _select_signing_key(jwks, header)
         if key is None:
@@ -233,35 +308,15 @@ class OIDCClient:
             audience=self.client_id,
             issuer=self.issuer,
             leeway=CLOCK_LEEWAY,
-            options={"require": ["iss", "sub", "aud", "exp", "iat", "nonce"]},
+            options={"require": required_claims},
         )
-        if not isinstance(claims["sub"], str) or not claims["sub"] or len(claims["sub"]) > 255:
-            raise ValueError("Invalid OIDC subject")
         for name in ("iat", "exp"):
-            if isinstance(claims[name], bool) or not isinstance(claims[name], (int, float)):
+            if (
+                isinstance(claims[name], bool)
+                or not isinstance(claims[name], (int, float))
+                or not math.isfinite(claims[name])
+            ):
                 raise TypeError("Invalid OIDC token timestamp")
-        nonce = claims["nonce"]
-        if not isinstance(nonce, str) or not hmac.compare_digest(nonce, pending.idp_nonce):
-            raise ValueError("OIDC nonce does not match this sign-in")
-        audience = claims["aud"]
-        if isinstance(audience, list) and len(audience) > 1 and "azp" not in claims:
-            raise ValueError(
-                "OIDC token with multiple audiences must identify its authorized party"
-            )
-        if "azp" in claims and claims["azp"] != self.client_id:
-            raise ValueError("OIDC authorized party does not match this client")
-        for name, value in (("at_hash", access_token), ("c_hash", code)):
-            if name in claims:
-                digest = jwt.get_algorithm_by_name(algorithm).compute_hash_digest(
-                    value.encode("ascii")
-                )
-                expected = (
-                    base64.urlsafe_b64encode(digest[: len(digest) // 2]).rstrip(b"=").decode()
-                )
-                if not isinstance(claims[name], str) or not hmac.compare_digest(
-                    claims[name], expected
-                ):
-                    raise ValueError("OIDC token hash does not match")
         return claims
 
     async def _request_json(

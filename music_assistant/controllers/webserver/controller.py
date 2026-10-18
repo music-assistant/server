@@ -22,7 +22,7 @@ from concurrent import futures
 from contextlib import aclosing
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import aiofiles
 from aiohttp import web
@@ -38,6 +38,7 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
+    AuthenticationFailed,
     InsufficientPermissions,
     InvalidDataError,
     PlayerUnavailableError,
@@ -97,7 +98,7 @@ from .helpers.auth_middleware import (
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .helpers.login_flow import PENDING_LOGIN_TTL, AuthTransport, RedirectTarget
-from .helpers.oidc_provider import OIDC_PROVIDER_ID, oidc_config_entries
+from .helpers.oidc_provider import OIDC_PROVIDER_ID, OIDCLoginProvider, oidc_config_entries
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
@@ -397,6 +398,9 @@ class WebserverController(CoreController):
         routes.append(("GET", "/auth/authorize", self._handle_auth_authorize))
         routes.append(("GET", "/auth/callback", self._handle_auth_callback))
         routes.append(("GET", "/auth/oidc/start", self._handle_oidc_start))
+        routes.append(
+            ("POST", "/auth/oidc/backchannel-logout", self._handle_oidc_backchannel_logout)
+        )
         # add first-time setup routes
         routes.append(("GET", "/setup", self._handle_setup_page))
         routes.append(("POST", "/setup", self._handle_setup))
@@ -1237,6 +1241,18 @@ class WebserverController(CoreController):
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
 
+    async def _handle_oidc_backchannel_logout(self, request: web.Request) -> web.Response:
+        """Receive a bounded, signed logout notification without requiring a browser session."""
+        headers = {"Cache-Control": "no-store"}
+        provider = self.auth.login_providers.get(OIDC_PROVIDER_ID)
+        if not isinstance(provider, OIDCLoginProvider) or not provider.backchannel_logout_enabled:
+            return web.Response(status=404, headers=headers)
+        try:
+            await provider.handle_backchannel_logout(await _read_oidc_logout_token(request))
+        except ValueError, AuthenticationFailed:
+            return web.json_response({"error": "invalid_request"}, status=400, headers=headers)
+        return web.Response(status=200, headers=headers)
+
     async def _handle_oidc_start(self, request: web.Request) -> web.Response:
         """Start a fresh OIDC sign-in in its browser, then redirect to the identity provider."""
         return_url = request.query.get("return_url")
@@ -1325,7 +1341,12 @@ class WebserverController(CoreController):
 
             # Create token
             device_name = f"OAuth ({provider_id})"
-            token = await self.auth.create_token(auth_result.user, device_name)
+            if auth_result.oidc_session is not None:
+                token = await self.auth.oidc_sessions.create_token(
+                    auth_result.user, device_name, auth_result.oidc_session
+                )
+            else:
+                token = await self.auth.create_token(auth_result.user, device_name)
 
             # Determine redirect URL (use return_url from OAuth flow or default to root)
             final_redirect_url = auth_result.return_url or "/"
@@ -1364,6 +1385,12 @@ class WebserverController(CoreController):
                 response.headers["Cache-Control"] = "no-store"
                 response.headers["Referrer-Policy"] = "no-referrer"
             return response
+        except AuthenticationFailed:
+            return web.Response(
+                status=400,
+                text="This sign-in is no longer valid. Sign in again.",
+                headers={"Cache-Control": "no-store"},
+            )
         except Exception:
             self.logger.exception("Error during OAuth callback")
             error_html = """
@@ -1562,6 +1589,22 @@ def _serialize_script_value(value: str) -> str:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
+
+
+async def _read_oidc_logout_token(request: web.Request) -> str:
+    """Read one form-encoded logout token with a strict request-size bound."""
+    if request.content_type != "application/x-www-form-urlencoded":
+        raise ValueError("Expected form-encoded logout token")
+    body = bytearray()
+    async for chunk in request.content.iter_chunked(4096):
+        body.extend(chunk)
+        if len(body) > 16384:
+            raise ValueError("Logout request is too large")
+    form = parse_qs(body.decode("utf-8"), strict_parsing=True, max_num_fields=10)
+    tokens = form.get("logout_token", [])
+    if len(tokens) != 1 or not tokens[0]:
+        raise ValueError("Expected one logout token")
+    return tokens[0]
 
 
 def _oidc_cookie_name(state: str, *, secure: bool = True) -> str:
