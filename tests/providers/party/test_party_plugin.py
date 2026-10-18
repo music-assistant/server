@@ -18,10 +18,12 @@ from music_assistant.providers.party import (
     CONF_ENABLE_ADD_QUEUE,
     CONF_ENABLE_BOOST,
     CONF_ENABLE_GUEST_ACCESS,
+    CONF_ENABLE_SKIP_SONG,
     CONF_PARTY_DURATION,
     CONF_PARTY_MODE,
     CONF_PARTY_PLAYER,
     CONF_PARTY_PLAYER_AUTO,
+    CONF_PARTY_SKIP_VOTES_REQUIRED,
     CONF_PREVENT_DUPLICATE_TRACKS,
     PartyPlugin,
 )
@@ -83,6 +85,87 @@ async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None
         await plugin.add_to_queue(uri)
 
     player_queues.load.assert_not_awaited()
+
+
+def _create_skip_vote_plugin(votes_required: int) -> tuple[PartyPlugin, MagicMock, MagicMock]:
+    """Create a party plugin with a playing queue for skip vote tests."""
+    plugin = PartyPlugin.__new__(PartyPlugin)
+    plugin.mass = MagicMock()
+    plugin.mass.player_queues = MagicMock()
+    plugin.mass.player_queues.next = AsyncMock()
+    plugin.logger = MagicMock()
+    plugin.config = MagicMock()
+    plugin._queue_lock = asyncio.Lock()
+    plugin._skip_vote_item_id = None
+    plugin._skip_voters = set()
+    plugin.get_party_player = AsyncMock(return_value="party_queue")  # type: ignore[method-assign]
+    config_values = {
+        CONF_ENABLE_GUEST_ACCESS: True,
+        CONF_ENABLE_SKIP_SONG: True,
+        CONF_PARTY_SKIP_VOTES_REQUIRED: votes_required,
+    }
+    plugin.config.get_value.side_effect = config_values.__getitem__
+    current_item = MagicMock(queue_item_id="item_1", extra_attributes={})
+    queue = MagicMock(state=PlaybackState.PLAYING, current_item=current_item)
+    plugin.mass.player_queues.get.return_value = queue
+    plugin.mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: (
+        queue.current_item if queue.current_item.queue_item_id == item_id else None
+    )
+    return plugin, queue, current_item
+
+
+@pytest.mark.asyncio
+async def test_skip_with_single_vote_required_skips_immediately() -> None:
+    """With the default of one vote, a single guest skips the current track."""
+    plugin, _queue, _item = _create_skip_vote_plugin(votes_required=1)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+
+    result = await plugin.skip_current()
+
+    assert result["skipped"] is True
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_awaited_once_with("party_queue")
+
+
+@pytest.mark.asyncio
+async def test_skip_waits_for_required_distinct_votes() -> None:
+    """The track is only skipped once enough distinct guests voted."""
+    plugin, _queue, current_item = _create_skip_vote_plugin(votes_required=2)
+    next_track = cast("AsyncMock", plugin.mass.player_queues.next)
+
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+    first = await plugin.skip_current()
+    assert first["skipped"] is False
+    assert first["vote_counted"] is True
+    assert first["votes"] == 1
+    assert current_item.extra_attributes["party_skip_votes"] == 1
+
+    # the same guest voting again does not count
+    repeat = await plugin.skip_current()
+    assert repeat["vote_counted"] is False
+    assert repeat["votes"] == 1
+    next_track.assert_not_awaited()
+
+    plugin._get_voter_id = AsyncMock(return_value="token:b")  # type: ignore[method-assign]
+    second = await plugin.skip_current()
+    assert second["skipped"] is True
+    next_track.assert_awaited_once_with("party_queue")
+    assert "party_skip_votes" not in current_item.extra_attributes
+
+
+@pytest.mark.asyncio
+async def test_skip_votes_reset_when_track_changes() -> None:
+    """Votes cast on a previous track do not count for the new one."""
+    plugin, queue, _item = _create_skip_vote_plugin(votes_required=2)
+    plugin._get_voter_id = AsyncMock(return_value="token:a")  # type: ignore[method-assign]
+    await plugin.skip_current()
+
+    queue.current_item = MagicMock(queue_item_id="item_2", extra_attributes={})
+    plugin._get_voter_id = AsyncMock(return_value="token:b")  # type: ignore[method-assign]
+    result = await plugin.skip_current()
+
+    assert result["skipped"] is False
+    assert result["votes"] == 1
+    cast("AsyncMock", plugin.mass.player_queues.next).assert_not_awaited()
 
 
 def _create_session_test_plugin(mode: str, guest_access: bool = True) -> PartyPlugin:
