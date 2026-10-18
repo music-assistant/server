@@ -1,16 +1,24 @@
 """Test Tidal Provider integration."""
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import (
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderSharing,
+)
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError, SetupFailedError
 from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
+from music_assistant.providers.tidal.accounts import is_nameable
 from music_assistant.providers.tidal.provider import SUPPORTED_FEATURES, TidalProvider
 from tests.common import use_real_create_task
 
@@ -25,7 +33,7 @@ def mass_mock() -> Mock:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
-    mass.config.get_provider_configs = AsyncMock(return_value=[])
+    mass.config.get = Mock(return_value={})
     use_real_create_task(mass)
     return mass
 
@@ -112,18 +120,31 @@ def _set_other_instances(
     others: dict[str, tuple[str | None, bool]],
     names: dict[str, str] | None = None,
     default_names: dict[str, str] | None = None,
+    access: dict[str, dict[str, Any]] | None = None,
+    loaded: frozenset[str] = frozenset(),
 ) -> None:
-    """Configure the other Tidal instances as {instance_id: (user_id, enabled)}."""
+    """Store the other Tidal instances, as {instance_id: (user_id, enabled)}, as raw configs."""
     names = names or {}
     default_names = default_names or {}
-    configs = []
-    for iid, (_, enabled) in others.items():
-        config = Mock(instance_id=iid, enabled=enabled)
-        config.name = names.get(iid)
-        config.default_name = default_names.get(iid)
-        configs.append(config)
-    mass_mock.config.get_provider_configs = AsyncMock(return_value=configs)
+    access = access or {}
+    raw_configs = {
+        iid: {
+            "type": "music",
+            "domain": "tidal",
+            "instance_id": iid,
+            "enabled": enabled,
+            "name": names.get(iid),
+            "default_name": default_names.get(iid),
+            **({"access": access[iid]} if iid in access else {}),
+        }
+        for iid, (_, enabled) in others.items()
+    }
+    mass_mock.config.get = Mock(return_value=raw_configs)
+    mass_mock.config.get_provider_configs = AsyncMock(side_effect=AssertionError)
     mass_mock.config.get_provider_setup_value = Mock(side_effect=lambda iid, _key: others[iid][0])
+    mass_mock.get_provider = Mock(
+        side_effect=lambda iid, *_args, **_kwargs: Mock() if iid in loaded else None
+    )
 
 
 @pytest.mark.parametrize(
@@ -214,6 +235,355 @@ async def test_account_conflict_names_an_unnamed_winner(
         await provider.handle_async_init()
 
     assert list(exc_info.value.translation_args) == [expected]
+
+
+_PRIVATE_ACCESS = {"owner": "user-1", "sharing": "private"}
+
+
+async def _init_expecting_conflict(provider: TidalProvider) -> SetupFailedError:
+    """Run the init with the own account set to 12345 and return the error it raises."""
+    values = {**_SETUP_VALUES, "user_id": "12345"}
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await provider.handle_async_init()
+    return exc_info.value
+
+
+async def test_account_conflict_sees_a_holder_hidden_from_the_caller(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """The check reads the stored configs, so a private holder of another member still blocks."""
+    _set_other_instances(
+        mass_mock, {"tidal_a": ("12345", True)}, access={"tidal_a": _PRIVATE_ACCESS}
+    )
+
+    error = await _init_expecting_conflict(provider)
+
+    assert error.translation_key == "account_used_by_private_instance"
+
+
+async def test_private_holder_is_not_named(provider: TidalProvider, mass_mock: Mock) -> None:
+    """A holder that is private to its owner is reported without a name."""
+    _set_other_instances(
+        mass_mock,
+        {"tidal_a": ("12345", True)},
+        names={"tidal_a": "Secret"},
+        access={"tidal_a": _PRIVATE_ACCESS},
+    )
+
+    error = await _init_expecting_conflict(provider)
+
+    assert error.translation_key == "account_used_by_private_instance"
+    assert not error.translation_args
+    assert "Secret" not in str(error)
+
+
+async def test_holder_shared_with_everyone_is_named(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """A holder shared with every user is reported by name."""
+    _set_other_instances(
+        mass_mock,
+        {"tidal_a": ("12345", True)},
+        names={"tidal_a": "Family"},
+        access={"tidal_a": {"owner": "user-1", "sharing": "everyone"}},
+    )
+
+    error = await _init_expecting_conflict(provider)
+
+    assert error.translation_key == "account_used_by_other_instance"
+    assert list(error.translation_args) == ["Family"]
+
+
+async def test_members_only_holder_is_not_named(provider: TidalProvider, mass_mock: Mock) -> None:
+    """Members-only excludes guests, so the holder stays unnamed."""
+    _set_other_instances(
+        mass_mock,
+        {"tidal_a": ("12345", True)},
+        names={"tidal_a": "Members"},
+        access={"tidal_a": {"owner": "user-1", "sharing": "members"}},
+    )
+
+    error = await _init_expecting_conflict(provider)
+
+    assert error.translation_key == "account_used_by_private_instance"
+
+
+async def test_selected_holder_is_not_named(provider: TidalProvider, mass_mock: Mock) -> None:
+    """A holder shared with only some users is not visible to everyone, so it stays unnamed."""
+    _set_other_instances(
+        mass_mock,
+        {"tidal_a": ("12345", True)},
+        names={"tidal_a": "Some"},
+        access={"tidal_a": {"owner": "user-1", "sharing": "selected", "shared_users": ["u2"]}},
+    )
+
+    error = await _init_expecting_conflict(provider)
+
+    assert error.translation_key == "account_used_by_private_instance"
+
+
+async def test_a_not_loaded_lower_holder_refuses_even_with_a_loaded_higher_one(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """Only the lowest-id rule refuses at load: the lower holder is named, loaded or not."""
+    _set_other_instances(
+        mass_mock,
+        {"tidal_a": ("12345", True), "tidal_z": ("12345", True)},
+        names={"tidal_a": "Tidal A", "tidal_z": "Tidal Z"},
+        loaded=frozenset({"tidal_z"}),
+    )
+    provider.config.instance_id = "tidal_m"
+
+    error = await _init_expecting_conflict(provider)
+
+    assert list(error.translation_args) == ["Tidal A"]
+
+
+@pytest.mark.parametrize(
+    ("enabled", "loaded"),
+    [(True, False), (False, True), (True, True)],
+    ids=["not_loaded", "disabled_but_loaded", "enabled_and_loaded"],
+)
+async def test_a_higher_instance_never_blocks_the_init(
+    provider: TidalProvider, mass_mock: Mock, enabled: bool, loaded: bool
+) -> None:
+    """A higher-id holder, loaded or not, leaves the account to this instance."""
+    _set_other_instances(
+        mass_mock,
+        {"tidal_z": ("12345", enabled)},
+        loaded=frozenset({"tidal_z"}) if loaded else frozenset(),
+    )
+    values = {**_SETUP_VALUES, "user_id": "12345"}
+
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init,
+        patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,
+        patch.object(provider, "get_user", new_callable=AsyncMock),
+        patch.object(provider.auth, "update_user_info", new_callable=AsyncMock),
+    ):
+        mock_init.return_value = True
+        mock_get.return_value = {"userId": "12345", "sessionId": "session_123"}
+
+        await provider.handle_async_init()
+
+    mock_init.assert_called_once()
+    cast("AsyncMock", mass_mock.unload_provider_with_error).assert_not_called()
+
+
+async def test_a_failed_login_does_not_unload_the_running_holder(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """The handover only happens after a load: a failed login leaves the holder running."""
+    _set_other_instances(mass_mock, {"tidal_z": ("12345", True)}, loaded=frozenset({"tidal_z"}))
+    values = {**_SETUP_VALUES, "user_id": "12345"}
+
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        patch.object(provider.auth, "initialize", new_callable=AsyncMock, return_value=False),
+        pytest.raises(LoginFailed),
+    ):
+        await provider.handle_async_init()
+
+    cast("AsyncMock", mass_mock.unload_provider_with_error).assert_not_called()
+
+
+async def _hand_over(
+    provider: TidalProvider,
+    mass_mock: Mock,
+    others: dict[str, tuple[str | None, bool]],
+    loaded: frozenset[str],
+    own_user_id: str | None = "12345",
+) -> AsyncMock:
+    """Run the post-load hook and return the unload mock."""
+    _set_other_instances(mass_mock, others, loaded=loaded)
+    mass_mock.unload_provider_with_error = AsyncMock()
+    values = {**_SETUP_VALUES, "user_id": own_user_id}
+    with patch.object(
+        provider,
+        "get_setup_value",
+        side_effect=lambda key, default=None: values.get(key, default),
+    ):
+        await provider.loaded_in_mass()
+    return cast("AsyncMock", mass_mock.unload_provider_with_error)
+
+
+async def test_loading_unloads_a_running_higher_holder_with_an_error_naming_this_instance(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """Enabling the lower instance hands the account over and tells the other one why."""
+    provider.config.access = None
+    unload = await _hand_over(
+        provider, mass_mock, {"tidal_z": ("12345", True)}, frozenset({"tidal_z"})
+    )
+
+    unload.assert_awaited_once()
+    assert unload.await_args is not None
+    instance_id, error = unload.await_args.args
+    assert instance_id == "tidal_z"
+    assert error.translation_key == "account_used_by_other_instance"
+    assert list(error.translation_args) == ["Tidal Test"]
+    assert error.translation_owner == provider.translation_owner
+
+
+async def test_the_handover_error_does_not_name_a_private_instance(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """The unloaded holder may belong to another user, so a private keeper stays unnamed."""
+    provider.config.access = ProviderAccess(owner="user-1", sharing=ProviderSharing.PRIVATE)
+    unload = await _hand_over(
+        provider, mass_mock, {"tidal_z": ("12345", True)}, frozenset({"tidal_z"})
+    )
+
+    assert unload.await_args is not None
+    error = unload.await_args.args[1]
+    assert error.translation_key == "account_used_by_private_instance"
+    assert not error.translation_args
+
+
+@pytest.mark.parametrize(
+    ("others", "loaded", "own_user_id"),
+    [
+        ({"tidal_z": ("12345", False)}, frozenset({"tidal_z"}), "12345"),
+        ({"tidal_z": ("12345", True)}, frozenset(), "12345"),
+        ({"tidal_z": ("999", True)}, frozenset({"tidal_z"}), "12345"),
+        ({}, frozenset(), "12345"),
+        ({"tidal_z": ("12345", True)}, frozenset({"tidal_z"}), None),
+    ],
+    ids=["disabled", "not_loaded", "other_account", "no_holders", "no_user_id"],
+)
+async def test_the_handover_leaves_everyone_else_alone(
+    provider: TidalProvider,
+    mass_mock: Mock,
+    others: dict[str, tuple[str | None, bool]],
+    loaded: frozenset[str],
+    own_user_id: str | None,
+) -> None:
+    """Only enabled, running holders of the same account are unloaded."""
+    unload = await _hand_over(provider, mass_mock, others, loaded, own_user_id)
+
+    unload.assert_not_called()
+
+
+async def test_enabling_the_lower_instance_while_the_higher_one_runs_cannot_dead_end(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """The lower instance loads and takes over, so the higher one is the one left refused."""
+    provider.config.access = None
+    others: dict[str, tuple[str | None, bool]] = {"tidal_z": ("12345", True)}
+    _set_other_instances(mass_mock, others, loaded=frozenset({"tidal_z"}))
+    values = {**_SETUP_VALUES, "user_id": "12345"}
+
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        patch.object(provider.auth, "initialize", new_callable=AsyncMock, return_value=True),
+        patch.object(provider.api, "get", new_callable=AsyncMock, return_value={}),
+        patch.object(provider, "get_user", new_callable=AsyncMock),
+        patch.object(provider.auth, "update_user_info", new_callable=AsyncMock),
+    ):
+        await provider.handle_async_init()
+        mass_mock.unload_provider_with_error = AsyncMock()
+        await provider.loaded_in_mass()
+
+    cast("AsyncMock", mass_mock.unload_provider_with_error).assert_awaited_once()
+
+
+async def test_a_lower_instance_enabled_during_the_login_refuses_at_the_late_check(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """The early check passes, the lower holder appears during the login, the late check fires."""
+    _set_other_instances(mass_mock, {"tidal_a": ("12345", False)})
+    provider.config.instance_id = "tidal_z"
+    values = {**_SETUP_VALUES, "user_id": "12345"}
+
+    async def enable_lower_holder(_auth_data: str) -> bool:
+        _set_other_instances(mass_mock, {"tidal_a": ("12345", True)}, names={"tidal_a": "Tidal A"})
+        return True
+
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        patch.object(provider.auth, "initialize", side_effect=enable_lower_holder) as mock_init,
+        patch.object(provider.api, "get", new_callable=AsyncMock, return_value={}),
+        patch.object(provider, "get_user", new_callable=AsyncMock),
+        patch.object(provider.auth, "update_user_info", new_callable=AsyncMock) as mock_update,
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await provider.handle_async_init()
+
+    mock_init.assert_called_once()
+    mock_update.assert_awaited_once()
+    assert exc_info.value.translation_key == "account_used_by_other_instance"
+    assert list(exc_info.value.translation_args) == ["Tidal A"]
+
+
+async def test_cancelling_the_post_load_task_does_not_abort_the_handover(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """The unload is shielded, so a cancelled post-load task cannot leave the holder running."""
+    _set_other_instances(mass_mock, {"tidal_z": ("12345", True)}, loaded=frozenset({"tidal_z"}))
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def slow_unload(*_args: Any) -> None:
+        started.set()
+        await release.wait()
+        finished.set()
+
+    mass_mock.unload_provider_with_error = AsyncMock(side_effect=slow_unload)
+    values = {**_SETUP_VALUES, "user_id": "12345"}
+    with patch.object(
+        provider,
+        "get_setup_value",
+        side_effect=lambda key, default=None: values.get(key, default),
+    ):
+        task = asyncio.ensure_future(provider.loaded_in_mass())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+
+
+@pytest.mark.parametrize(
+    ("access", "nameable"),
+    [
+        (None, True),
+        (ProviderAccess(owner="u", sharing=ProviderSharing.EVERYONE), True),
+        (ProviderAccess(owner="u", sharing=ProviderSharing.MEMBERS), False),
+        (ProviderAccess(owner="u", sharing=ProviderSharing.PRIVATE), False),
+    ],
+    ids=["no_access", "everyone", "members", "private"],
+)
+def test_is_nameable(access: ProviderAccess | None, nameable: bool) -> None:
+    """Only an instance every user can see, guests included, may be named."""
+    config = Mock(access=access)
+
+    assert is_nameable(config) is nameable
 
 
 async def test_handle_async_init_migrates_iso_expiry(provider: TidalProvider) -> None:

@@ -32,7 +32,8 @@
     }
   },
   "errors": {
-    "account_used_by_other_instance": "This Tidal account is already used by {0}. Tidal allows one stream per account, so only one instance can use it. Reconfigure this instance with a different Tidal account, or remove it."
+    "account_used_by_other_instance": "This Tidal account is already used by {0}. Tidal allows one stream per account, so only one instance can use it. Reconfigure this instance with a different Tidal account, or remove it.",
+    "account_used_by_private_instance": "This Tidal account is already used by another Tidal instance. Tidal allows one stream per account, so only one instance can use it. Reconfigure this instance with a different Tidal account, or remove it."
   },
   "manifest": {
     "description": "Stream music, playlists, and exclusives in lossless FLAC quality."

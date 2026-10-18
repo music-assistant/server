@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from sqlite3 import OperationalError
@@ -9,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError, SetupFailedError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -28,7 +29,11 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
-from .accounts import get_winning_account_holder
+from .accounts import (
+    account_in_use_error,
+    get_loaded_account_holders,
+    get_winning_account_holder,
+)
 from .api_client import TidalAPIClient
 from .auth_manager import TidalAuthManager
 from .constants import (
@@ -38,7 +43,6 @@ from .constants import (
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_USER_ID,
-    ERROR_ACCOUNT_IN_USE,
 )
 from .library import TidalLibraryManager
 from .media import TidalMediaManager
@@ -142,16 +146,7 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         expires_at = self.get_setup_value(CONF_EXPIRY_TIME)
         user_id = self.get_setup_value(CONF_USER_ID)
 
-        if user_id and (
-            holder := await get_winning_account_holder(self.mass, str(user_id), self.instance_id)
-        ):
-            other_name = holder.name or holder.default_name or holder.instance_id
-            raise SetupFailedError(
-                f"This Tidal account is already used by {other_name}",
-                translation_key=ERROR_ACCOUNT_IN_USE,
-                translation_args=[other_name],
-                translation_owner=self.translation_owner,
-            )
+        self._ensure_account_is_ours()
 
         if not access_token or not refresh_token:
             raise LoginFailed("Missing authentication data")
@@ -177,6 +172,22 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         user_info = await self.api.get("sessions")
         logged_in_user = await self.get_user(str(user_info.get("userId")))
         await self.auth.update_user_info(logged_in_user, str(user_info.get("sessionId")))
+        # mass registers the provider right after init without yielding, so this re-check
+        # catches a lower instance enabled during the login, whose handover could not see us yet
+        self._ensure_account_is_ours()
+
+    async def loaded_in_mass(self) -> None:
+        """Take the account over from any higher-id instance still running on it."""
+        await super().loaded_in_mass()
+        user_id = self.get_setup_value(CONF_USER_ID)
+        if not user_id:
+            return
+        for holder in get_loaded_account_holders(self.mass, str(user_id), self.instance_id):
+            await asyncio.shield(
+                self.mass.unload_provider_with_error(
+                    holder.instance_id, account_in_use_error(self.config, self.translation_owner)
+                )
+            )
 
     async def get_user(self, prov_user_id: str) -> dict[str, Any]:
         """Get user information."""
@@ -472,6 +483,14 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders WITH items)."""
         return await self.recommendations_manager.get_recommendations()
+
+    def _ensure_account_is_ours(self) -> None:
+        """Raise if a lower-id enabled instance keeps this instance's Tidal account."""
+        user_id = self.get_setup_value(CONF_USER_ID)
+        if user_id and (
+            keeper := get_winning_account_holder(self.mass, str(user_id), self.instance_id)
+        ):
+            raise account_in_use_error(keeper, self.translation_owner)
 
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
         """Update the persisted auth setup data with new (rotated) auth info."""

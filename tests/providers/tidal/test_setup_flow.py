@@ -28,9 +28,18 @@ def _make_session(
 ) -> tuple[SetupSession, mock.AsyncMock]:
     """Return a session with the given configured Tidal instances and its finish mock."""
     mass = mock.Mock()
-    mass.config.get_provider_configs = mock.AsyncMock(
-        return_value=[mock.Mock(instance_id=iid, enabled=iid not in disabled) for iid in accounts]
+    mass.config.get = mock.Mock(
+        return_value={
+            iid: {
+                "type": "music",
+                "domain": DOMAIN,
+                "instance_id": iid,
+                "enabled": iid not in disabled,
+            }
+            for iid in accounts
+        }
     )
+    mass.config.get_provider_configs = mock.AsyncMock(side_effect=AssertionError)
     mass.config.get_provider_setup_value = mock.Mock(
         side_effect=lambda iid, _key: accounts.get(iid)
     )

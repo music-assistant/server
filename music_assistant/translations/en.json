@@ -2663,6 +2663,7 @@
   "provider.tidal.config_entries.quality.options.HI_RES_LOSSLESS": "Max",
   "provider.tidal.config_entries.quality.options.LOSSLESS": "High",
   "provider.tidal.errors.account_used_by_other_instance": "This Tidal account is already used by {0}. Tidal allows one stream per account, so only one instance can use it. Reconfigure this instance with a different Tidal account, or remove it.",
+  "provider.tidal.errors.account_used_by_private_instance": "This Tidal account is already used by another Tidal instance. Tidal allows one stream per account, so only one instance can use it. Reconfigure this instance with a different Tidal account, or remove it.",
   "provider.tidal.manifest.description": "Stream music, playlists, and exclusives in lossless FLAC quality.",
   "provider.tidal.media.playlist.favorite_tracks.name": "Favorite Tracks",
   "provider.tidal.setup_flow.abort.account_already_configured": "This Tidal account is already set up in Music Assistant. Each account can only be added once. Sign in with a different account, or reconfigure the existing one instead.",
