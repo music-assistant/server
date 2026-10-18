@@ -1663,6 +1663,22 @@ class TracksController(MediaControllerBase[Track]):
         """Merge track model state without replacing existing album relations."""
         await self._update_library_item(item_id, update, set_album=False)
 
+    async def _update_library_item_from_provider(self, item_id: int, update: Track) -> None:
+        """Replace the track's data with the given provider track, keeping its album relations."""
+        await self._update_library_item(item_id, update, overwrite=True, set_album=False)
+
+    async def _after_provider_mapping_removed(self, db_id: int, provider_instance_id: str) -> None:
+        """Drop album mappings to the same provider that went away along with the track's."""
+        album_rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE track_id = :track_id",
+            {"track_id": db_id},
+            limit=0,
+        )
+        for row in album_rows:
+            await self.mass.music.albums.remove_missing_provider_mappings(
+                row["album_id"], provider_instance_id
+            )
+
     async def _verify_musicbrainz_mapping(self, db_item: Track, mapping: ProviderMapping) -> bool:
         """Return True if a linked track may be added, checked while remasters are kept apart."""
         if not get_keep_remasters_apart():
