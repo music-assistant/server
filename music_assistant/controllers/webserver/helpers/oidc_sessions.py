@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import secrets
 import time
@@ -130,9 +131,19 @@ class OIDCSessionStore:
                 values,
                 limit=0,
             )
-            for row in rows:
-                await self.auth.database.delete("auth_tokens", {"token_id": row["token_id"]})
-                self.auth.webserver.disconnect_websockets_for_token(row["token_id"])
+            if rows:
+                # A cancelled commit must not leave live WebSockets after their tokens disappear.
+                revoke_task = asyncio.create_task(
+                    self._revoke_tokens([row["token_id"] for row in rows])
+                )
+                try:
+                    await asyncio.shield(revoke_task)
+                except asyncio.CancelledError:
+                    while not revoke_task.done():
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.shield(revoke_task)
+                    revoke_task.result()
+                    raise
             await self._cleanup()
             return len(rows)
 
@@ -148,6 +159,14 @@ class OIDCSessionStore:
                 "jti": secrets.token_urlsafe(32),
             },
         )
+
+    async def _revoke_tokens(self, token_ids: list[str]) -> None:
+        await self.auth.database.execute_write(
+            "DELETE FROM auth_tokens WHERE token_id IN (SELECT value FROM json_each(:token_ids))",
+            {"token_ids": json_dumps(token_ids)},
+        )
+        for token_id in token_ids:
+            self.auth.webserver.disconnect_websockets_for_token(token_id)
 
     async def _ensure_session_active(self, session: OIDCSession) -> None:
         if session.expires_at <= time.time():

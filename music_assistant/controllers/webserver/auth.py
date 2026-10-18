@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any, cast
 
+import aiosqlite
 import jwt as pyjwt
 from music_assistant_models.auth import (
     AuthProviderType,
@@ -203,7 +204,7 @@ class AuthenticationManager:
         # Setup database
         db_path = self.mass.storage_path + "/auth.db"
         self.database = DatabaseConnection(db_path)
-        await self.database.setup()
+        await self.database.setup(exclusive_locking=False)
 
         # Create database schema and handle migrations
         await self._setup_database()
@@ -458,6 +459,7 @@ class AuthenticationManager:
         player_filter: list[str] | None = None,
         *,
         oidc_bootstrap: bool = False,
+        provider_link: tuple[AuthProviderType, str] | None = None,
     ) -> User:
         """
         Create a new user.
@@ -469,6 +471,7 @@ class AuthenticationManager:
         :param preferences: Optional user preferences dict.
         :param player_filter: Optional list of player IDs user has access to.
         :param oidc_bootstrap: Whether a verified OIDC admin mapping authorized initial setup.
+        :param provider_link: Optional provider identity to persist atomically with the user.
         """
         normalized_username = normalize_username(username)
 
@@ -505,8 +508,6 @@ class AuthenticationManager:
             "provider_filter": "[]",
         }
 
-        await self.database.insert("users", user_data)
-
         user = User(
             user_id=user_id,
             username=normalized_username,
@@ -519,10 +520,15 @@ class AuthenticationManager:
             player_filter=player_filter,
         )
 
-        # If this is the first non-system user, migrate playlog entries to them
-        if is_first_user and normalized_username != HOMEASSISTANT_SYSTEM_USER:
-            self._has_users = True
-            await self._migrate_playlog_to_first_user(user_id)
+        first_user = is_first_user and normalized_username != HOMEASSISTANT_SYSTEM_USER
+        if provider_link is not None:
+            await self._create_linked_user(user, user_data, provider_link, first_user)
+        else:
+            await self.database.insert("users", user_data)
+            # If this is the first non-system user, migrate playlog entries to them
+            if first_user:
+                self._has_users = True
+                await self._migrate_playlog_to_first_user(user_id)
 
         return user
 
@@ -2714,6 +2720,63 @@ class AuthenticationManager:
                 # a session holds its own copy of the User object, so the live ones have to
                 # follow or they keep applying the filter that was just rewritten
                 self.webserver.update_active_user_filters(row["user_id"], player_filter=remaining)
+
+    async def _create_linked_user(
+        self,
+        user: User,
+        user_data: dict[str, Any],
+        provider_link: tuple[AuthProviderType, str],
+        first_user: bool,
+    ) -> None:
+        """Persist a user and provider identity together before publishing first-user effects."""
+        # The normal connection is shared; its rollback could undo another task's writes.
+        async with aiosqlite.connect(self.database.db_path) as connection:
+            await connection.execute("PRAGMA foreign_keys=ON")
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                await connection.execute(
+                    "INSERT INTO users (user_id, username, role, enabled, created_at, "
+                    "display_name, avatar_url, preferences, player_filter, provider_filter) "
+                    "VALUES (:user_id, :username, :role, :enabled, :created_at, "
+                    ":display_name, :avatar_url, :preferences, :player_filter, :provider_filter)",
+                    user_data,
+                )
+                await connection.execute(
+                    "INSERT INTO user_auth_providers "
+                    "(link_id, user_id, provider_type, provider_user_id, created_at) "
+                    "VALUES (:link_id, :user_id, :provider_type, :provider_user_id, :created_at)",
+                    {
+                        "link_id": secrets.token_urlsafe(32),
+                        "user_id": user.user_id,
+                        "provider_type": provider_link[0].value,
+                        "provider_user_id": provider_link[1],
+                        "created_at": user_data["created_at"],
+                    },
+                )
+                # Once commit starts, finish its in-memory state and migration before cancellation.
+                commit_task = asyncio.create_task(
+                    self._commit_linked_user(connection, user, first_user)
+                )
+                try:
+                    await asyncio.shield(commit_task)
+                except asyncio.CancelledError:
+                    while not commit_task.done():
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.shield(commit_task)
+                    commit_task.result()
+                    raise
+            except BaseException:
+                await connection.rollback()
+                raise
+
+    async def _commit_linked_user(
+        self, connection: aiosqlite.Connection, user: User, first_user: bool
+    ) -> None:
+        """Commit a linked account and apply first-user effects after it becomes durable."""
+        await connection.commit()
+        if first_user:
+            self._has_users = True
+            await self._migrate_playlog_to_first_user(user.user_id)
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """

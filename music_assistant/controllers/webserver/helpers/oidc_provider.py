@@ -327,16 +327,15 @@ class OIDCLoginProvider(LoginProvider):
         if await self.auth_manager.get_user_by_username(username, include_disabled=True):
             username = f"{username[:37]}-{identity_id[:12]}"
         display_name = claims.get("name")
-        user = await self.auth_manager.create_user(
+        return await self.auth_manager.create_user(
             username=username,
             role=mapped_role or UserRole.USER,
             display_name=display_name
             if isinstance(display_name, str) and display_name
             else username,
             oidc_bootstrap=bootstrap,
+            provider_link=(AuthProviderType.OIDC, identity_id),
         )
-        await self.auth_manager.link_user_to_provider(user, AuthProviderType.OIDC, identity_id)
-        return user
 
     async def _ensure_mapped_role_exists(self, role_id: str) -> None:
         if role_id not in {role.role_id for role in await self.auth_manager.get_roles()}:

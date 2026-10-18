@@ -185,16 +185,106 @@ async def test_logout_retry_finishes_interrupted_revocation(
     provider = configure(provider)
     _, token, _ = await sign_in(provider, idp)
     signed = logout_token(idp)
+    database = provider.auth_manager.database
+    execute_write = database.execute_write
+
+    async def fail_bulk_delete(query: str, values: dict[str, Any] | None = None) -> None:
+        if query.startswith("DELETE FROM auth_tokens"):
+            raise RuntimeError("storage error")
+        await execute_write(query, values)
+
     with (
+        patch.object(database, "execute_write", side_effect=fail_bulk_delete),
         patch.object(
-            provider.auth_manager.database, "delete", side_effect=RuntimeError("storage error")
-        ),
+            provider.auth_manager.webserver, "disconnect_websockets_for_token"
+        ) as disconnect,
         pytest.raises(RuntimeError, match="storage error"),
     ):
         await provider.handle_backchannel_logout(signed)
+    disconnect.assert_not_called()
     assert await token_exists(provider, token)
     await provider.handle_backchannel_logout(signed)
     assert not await token_exists(provider, token)
+
+
+@pytest.mark.parametrize("trigger", ["logout", "mapping_denial"])
+async def test_matching_tokens_are_revoked_with_one_bulk_write(
+    provider: OIDCLoginProvider, idp: IdentityProvider, trigger: str
+) -> None:
+    """Logout and mapping denial delete every matching token before disconnecting its clients."""
+    provider = configure(provider, '{"members":"user"}')
+    idp.overrides["groups"] = ["members"]
+    user, first, session = await sign_in(provider, idp)
+    auth = provider.auth_manager
+    matching = [first]
+    for index in range(11):
+        matching.append(await auth.oidc_sessions.create_token(user, f"tab {index}", session))
+    local = await auth.create_token(user, "local login")
+    unrelated = await auth.oidc_sessions.create_token(
+        user, "other identity", replace(session, subject="other", session_id="other")
+    )
+    with (
+        patch.object(auth.database, "execute_write", wraps=auth.database.execute_write) as write,
+        patch.object(auth.webserver, "disconnect_websockets_for_token") as disconnect,
+    ):
+        if trigger == "logout":
+            await provider.handle_backchannel_logout(logout_token(idp))
+        else:
+            idp.overrides["groups"] = []
+            with pytest.raises(AuthenticationFailed):
+                await provider.complete_authorization(idp.pending, {"code": "valid-code"})
+    deletes = [
+        call for call in write.call_args_list if call.args[0].startswith("DELETE FROM auth_tokens")
+    ]
+    assert len(deletes) == 1
+    assert {call.args[0] for call in disconnect.call_args_list} == {
+        auth.jwt_helper.decode_token(token)["jti"] for token in matching
+    }
+    for token in matching:
+        assert not await token_exists(provider, token)
+    assert await token_exists(provider, local)
+    assert await token_exists(provider, unrelated)
+
+
+async def test_cancelled_bulk_revocation_finishes_websocket_disconnection(
+    provider: OIDCLoginProvider, idp: IdentityProvider
+) -> None:
+    """Cancellation after deletion cannot leave connected clients using revoked tokens."""
+    provider = configure(provider)
+    _, token, _ = await sign_in(provider, idp)
+    auth = provider.auth_manager
+    deleted = asyncio.Event()
+    finish = asyncio.Event()
+    execute_write = auth.database.execute_write
+
+    async def delayed_delete(query: str, values: dict[str, Any] | None = None) -> None:
+        await execute_write(query, values)
+        if query.startswith("DELETE FROM auth_tokens"):
+            deleted.set()
+            await finish.wait()
+
+    with (
+        patch.object(auth.database, "execute_write", side_effect=delayed_delete),
+        patch.object(auth.webserver, "disconnect_websockets_for_token") as disconnect,
+    ):
+        task = asyncio.create_task(provider.handle_backchannel_logout(logout_token(idp)))
+        try:
+            await asyncio.wait_for(deleted.wait(), timeout=5)
+            assert not await token_exists(provider, token)
+            task.cancel()
+            await asyncio.wait({task}, timeout=0.02)
+            assert not task.done()
+            task.cancel()
+            await asyncio.wait({task}, timeout=0.02)
+            assert not task.done()
+            finish.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            finish.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        disconnect.assert_called_once_with(auth.jwt_helper.decode_token(token)["jti"])
 
 
 async def test_concurrent_logout_and_token_creation_cannot_leave_live_session(

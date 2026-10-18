@@ -222,6 +222,8 @@ class DatabaseConnection:
         self,
         cache_size_kib: int | None = None,
         mmap_size_bytes: int | None = None,
+        *,
+        exclusive_locking: bool = True,
     ) -> None:
         """
         Perform async initialization.
@@ -230,6 +232,7 @@ class DatabaseConnection:
             Defaults to a value scaled to the host's available memory.
         :param mmap_size_bytes: SQLite memory-map ceiling for this connection, in bytes.
             Defaults to a value scaled to the host's available memory.
+        :param exclusive_locking: Whether this connection retains an exclusive database lock.
         """
         default_cache_kib, default_mmap_bytes = get_sqlite_memory_settings()
         # coerce + clamp to non-negative ints so the values are always safe to interpolate
@@ -243,7 +246,9 @@ class DatabaseConnection:
         self._db.row_factory = aiosqlite.Row
         # setup some default settings for more performance
         await self.execute("PRAGMA analysis_limit=10000;")
-        await self.execute("PRAGMA locking_mode=exclusive;")
+        await self.execute(
+            "PRAGMA locking_mode=exclusive;" if exclusive_locking else "PRAGMA locking_mode=normal;"
+        )
         await self.execute("PRAGMA journal_mode=WAL;")
         await self.execute("PRAGMA journal_size_limit = 6144000;")
         await self.execute("PRAGMA synchronous=normal;")

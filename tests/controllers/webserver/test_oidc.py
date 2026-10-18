@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from aiohttp.pytest_plugin import AiohttpServer
-    from music_assistant_models.auth import User, UserAuthProvider
+    from music_assistant_models.auth import User
 
     from music_assistant.controllers.webserver.helpers.login_flow import PendingLogin
     from music_assistant.mass import MusicAssistant
@@ -521,15 +521,19 @@ async def test_concurrent_home_assistant_and_oidc_accounts_stay_separate(
     idp.overrides["groups"] = ["admins"]
     link_started = asyncio.Event()
     finish_link = asyncio.Event()
-    link_user = auth.link_user_to_provider
+    create_user = auth.create_user
 
-    async def delayed_link(
-        user: User, provider_type: AuthProviderType, provider_user_id: str
-    ) -> UserAuthProvider:
+    async def delayed_creation(*args: Any, **kwargs: Any) -> User:
+        user = await create_user(*args, **kwargs)
+        provider_type = (
+            AuthProviderType.OIDC
+            if kwargs.get("provider_link")
+            else AuthProviderType.HOME_ASSISTANT
+        )
         if provider_type == first_provider:
             link_started.set()
             await finish_link.wait()
-        return await link_user(user, provider_type, provider_user_id)
+        return user
 
     async def sign_in(provider_type: AuthProviderType) -> User | None:
         if provider_type == AuthProviderType.OIDC:
@@ -544,7 +548,7 @@ async def test_concurrent_home_assistant_and_oidc_accounts_stay_separate(
         else AuthProviderType.OIDC
     )
     with (
-        patch.object(auth, "link_user_to_provider", side_effect=delayed_link),
+        patch.object(auth, "create_user", side_effect=delayed_creation),
         patch(
             "music_assistant.controllers.webserver.helpers.auth_providers.get_ha_user_role",
             new=AsyncMock(return_value=UserRole.USER),

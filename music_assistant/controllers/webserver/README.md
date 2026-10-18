@@ -148,6 +148,10 @@ accounts; collisions get distinct usernames. Home Assistant's local-account link
 available, but excludes OIDC accounts. Disabled users cannot sign in. Player restrictions
 and display settings remain locally managed.
 
+New OIDC accounts and their provider links commit together. Failed or cancelled linking
+leaves no account and does not claim first-user state or legacy playlog. Once commit begins,
+it finishes the link and first-user effects before propagating cancellation.
+
 `auth/authorization_url` and `/auth/authorize` return `/auth/oidc/start`, which creates
 single-use state and a nonce bound to the initiating browser by an HttpOnly, SameSite=Lax
 cookie. HTTPS uses Secure `__Host-` cookies; concurrent sign-ins have separate cookies.
@@ -177,6 +181,8 @@ Enable back-channel logout and register the absolute HTTPS URL ending in
 The IdP must reach and trust that endpoint. Signed notifications validate issuer/client,
 timestamps, event and subject/session selectors, then revoke matching tokens and disconnect
 WebSockets. A `sid` targets one IdP session; a subject-only notification targets that identity.
+Matching tokens are deleted in one parameterized write before their WebSockets disconnect;
+cancellation waits for both steps to finish. Mapping denial uses the same revocation path.
 Logout tokens require `exp`, as specified by
 [Back-Channel Logout 1.0 incorporating errata set 1, section 2.4](https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken).
 
