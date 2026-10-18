@@ -84,3 +84,19 @@ async def test_command_item_is_not_inserted_twice() -> None:
     fake = _fake_flow_player(cast_queue_items=[MagicMock(), MagicMock()])
     messages = await _run_flow_metadata_update(fake)
     assert not [msg for msg in messages if msg["type"] == "QUEUE_INSERT"]
+
+
+async def test_universal_group_member_gets_track_metadata() -> None:
+    """A member playing a Universal Group stream gets the current track metadata pushed."""
+    fake = _fake_flow_player()
+    fake._attr_current_media = PlayerMedia(uri="http://mass:8097/ugp/ugp_1.flac?player_id=c1")
+    fake._state = MagicMock(
+        current_media=PlayerMedia(
+            uri="track://x", title="Song", image_url="http://mass:8097/imageproxy/cover.jpg"
+        )
+    )
+    messages = await _run_flow_metadata_update(fake)
+    play = next(msg for msg in messages if msg["type"] == "PLAY")
+    metadata = play["customData"]["metadata"]
+    assert metadata["title"] == "Song"
+    assert metadata["images"] == [{"url": "http://mass:8097/imageproxy/cover.jpg"}]
