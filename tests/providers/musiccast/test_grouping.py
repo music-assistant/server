@@ -96,6 +96,22 @@ def _zone_off_on_netusb(network: MusicCastNetwork) -> None:
             id="valid-join-done-despite-rejected-main",
         ),
         pytest.param(
+            None,
+            "A___main",
+            ["B___zone2", "B___zone3"],
+            {"B___zone2": "mc_link", "B___zone3": "audio3"},
+            True,
+            id="second-bare-zone-of-device-rejected",
+        ),
+        pytest.param(
+            None,
+            "A___main",
+            ["B___zone3", "B___zone2"],
+            {"B___zone2": "audio2", "B___zone3": "mc_link"},
+            True,
+            id="second-bare-zone-of-device-rejected-reversed",
+        ),
+        pytest.param(
             _bare_zone_in_group,
             "A___main",
             ["B___main", "B___zone3"],
@@ -178,6 +194,21 @@ async def test_main_leaving_takes_its_synced_zone_along(network: MusicCastNetwor
     assert members == ["A___main"]
     assert _zone(network, "B___zone2").zone_data.power == "standby"
     assert _zone(network, "A___main").device.data.group_role == "server"
+
+
+async def test_zone_of_device_in_other_group_rejected(network: MusicCastNetwork) -> None:
+    """A zone following its main in one group cannot move to another group on its own."""
+    network.add_device("192.168.1.30", "C")
+    _main_in_group(network)
+    await network.player("A___main").set_members(player_ids_to_add=["B___zone2"])
+
+    with pytest.raises(PlayerCommandFailed):
+        await network.player("C___main").set_members(player_ids_to_add=["B___zone2"])
+
+    a_data = _zone(network, "A___main").device.data
+    assert (a_data.group_role, a_data.group_client_list) == ("server", ["192.168.1.20"])
+    assert _zone(network, "B___main").zone_data.input == "mc_link"
+    assert _zone(network, "B___zone2").zone_data.input == "main_sync"
 
 
 async def test_standby_leader_powered_on_for_own_zone(network: MusicCastNetwork) -> None:

@@ -77,3 +77,19 @@ async def test_poll_by_first_registered_zone(
             polled_by.append(player_id)
 
     assert polled_by == [polling_player_id]
+
+
+async def test_poll_restores_udp_for_reenabled_player(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A player re-enabled while UDP was stopped gets UDP back with the next successful poll."""
+    monkeypatch.setattr(MusicCastPlayer, "set_dynamic_attributes", AsyncMock())
+    player = network.player("A___main")
+    device = player.physical_device.device
+    # UDP stopped by a connection loss, the re-enabled player starts out available
+    device.transport = None
+    player._attr_available = True
+
+    await player.poll()
+
+    assert device.transport is not None

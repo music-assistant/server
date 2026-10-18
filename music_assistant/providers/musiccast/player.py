@@ -694,6 +694,43 @@ class MusicCastPlayer(Player):
     def _is_in_group(self, zone_device: MusicCastZoneDevice) -> bool:
         return zone_device is self.zone_device or zone_device.is_part_of_group(self.zone_device)
 
+    def _get_join_rejection(
+        self, child_player: MusicCastPlayer, joining_player_ids: set[str]
+    ) -> str | None:
+        """Return why the hardware cannot join the child to this group, if it cannot."""
+        child_zone = child_player.zone_device
+        # once a bare zone joined the group, the hardware cannot add main or
+        # another zone of the same device
+        if any(
+            x.zone_name != "main" and x.is_network_client and x.is_part_of_group(self.zone_device)
+            for x in child_zone.other_zones
+        ):
+            return (
+                f"Cannot add {child_player.display_name} to the group, another zone of this "
+                "device already joined it on its own. Remove that zone first, then add main "
+                "and sync the zones to main."
+            )
+        # a device is a client of a single group only
+        if (
+            child_zone.device.data.group_role == "client"
+            and child_zone.device.data.group_id != self.zone_device.device.data.group_id
+        ):
+            return (
+                f"Cannot add {child_player.display_name} to the group, its device is part of "
+                "another group. Remove it there first."
+            )
+        # likewise for a second zone of a device that joins in this call on its own
+        if child_zone.zone_name != "main" and any(
+            cast("MusicCastPlayer", self.mass.players.get_player(player_id)).zone_device.device.ip
+            == child_zone.device.ip
+            for player_id in joining_player_ids
+        ):
+            return (
+                f"Cannot add {child_player.display_name} to the group, another zone of this "
+                "device joins it on its own. Add main and sync the zones to main."
+            )
+        return None
+
     def _get_allowed_sources_zone_switch(self, zone_player: MusicCastZoneDevice) -> set[str]:
         """Return non net sources for a zone player."""
         assert zone_player.zone_data is not None, "zone data missing"
@@ -754,7 +791,8 @@ class MusicCastPlayer(Player):
                 return
             except ClientError:
                 return
-            if _was_unavailable:
+            # a player re-enabled while UDP was stopped starts out available
+            if _was_unavailable or self.physical_device.device.device.transport is None:
                 await self._set_player_available()
             await self.set_dynamic_attributes()
             # fetch() above covers every zone; push it to the other zone players too
@@ -979,19 +1017,8 @@ class MusicCastPlayer(Player):
                 children_zones.append(child_id)
                 continue
 
-            # once a bare zone joined the group, the hardware cannot add main or
-            # another zone of the same device
-            if any(
-                x.zone_name != "main"
-                and x.is_network_client
-                and x.is_part_of_group(self.zone_device)
-                for x in child_player.zone_device.other_zones
-            ):
-                rejected_reasons.append(
-                    f"Cannot add {child_player.display_name} to the group, another zone of "
-                    "this device already joined it on its own. Remove that zone first, then "
-                    "add main and sync the zones to main."
-                )
+            if rejection := self._get_join_rejection(child_player, children):
+                rejected_reasons.append(rejection)
                 continue
 
             # find a sibling zone on the child's device currently using netusb;
