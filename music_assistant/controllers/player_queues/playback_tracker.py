@@ -865,6 +865,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         only the first of the album's tracks to complete, so an album play is credited once
         however its tracks ended up ordered in the queue. Claiming marks the album as credited
         on this queue, so a second call for it returns None until the album is played again.
+
+        :param queue_data: The queue the track played on.
+        :param queue_item: The queue item of the track that played to the end.
         """
         album = played_from_album(queue_item)
         if album is None or album.uri in queue_data.credited_albums:

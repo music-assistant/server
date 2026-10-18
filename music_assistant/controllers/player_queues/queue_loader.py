@@ -1053,7 +1053,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_items:
             raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
 
-        # playing an album again is a new play of it, so it is credited again
+        # playing an album again is a new play of it, so it is credited again; read before the
+        # enqueue, which appends the queue's remaining items to this list
         queue_data.credited_albums.difference_update(
             album.uri for item in queue_items if (album := played_from_album(item))
         )

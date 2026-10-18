@@ -265,6 +265,28 @@ async def test_an_album_folder_play_counts_as_a_play_of_the_album(mass: MusicAss
     assert row["play_count"] == 1
 
 
+async def test_an_album_folder_played_with_its_parent_is_no_album_play(
+    mass: MusicAssistant,
+) -> None:
+    """Playing the folder above an album folder does not count that album as played."""
+    await _scanned_album(mass, "Nefertiti", "Music/Nefertiti")
+    parent = BrowseFolder(item_id="Music", provider=PROVIDER, name="Music", is_playable=True)
+    album_folder = BrowseFolder(
+        item_id="Music/Nefertiti", provider=PROVIDER, name="Nefertiti", is_playable=True
+    )
+    file = _file("Music/Nefertiti/01.flac")
+    browse = AsyncMock(
+        side_effect=lambda path, **_kwargs: [album_folder] if path == parent.path else [file]
+    )
+    with patch.object(mass.music, "browse", browse):
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(parent)
+    item = build_queue_item("q1", cast("Track", resolved[0].item), origin=resolved[0].origin)
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    queue_data = PlayerQueueData(queue=queue, items=[item])
+
+    assert mass.player_queues._claim_album_credit(queue_data, item) is None
+
+
 async def test_a_disc_subfolder_played_by_uri_plays_as_the_album(mass: MusicAssistant) -> None:
     """A folder played by its URI is named after its whole path, which must not hide the disc."""
     album = await _scanned_album(mass, "Bitches Brew", "Music/Bitches Brew")

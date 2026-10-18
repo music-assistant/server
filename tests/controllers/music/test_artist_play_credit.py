@@ -264,8 +264,9 @@ def test_album_play_is_credited_once() -> None:
 
     tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     assert tracker._claim_album_credit(data, x1) is album_x
-    assert tracker._claim_album_credit(data, x2) is None
+    # crediting another album in between keeps the credit of one still on the queue
     assert tracker._claim_album_credit(data, y1) is album_y
+    assert tracker._claim_album_credit(data, x2) is None
 
 
 def test_album_tracks_not_played_from_the_album_credit_nothing() -> None:

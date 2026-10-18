@@ -58,7 +58,7 @@ def test_directly_enqueued_track_is_user_initiated() -> None:
 
 
 async def test_mark_album_played_is_user_initiated() -> None:
-    """Crediting an enqueued album records it as a user-initiated play."""
+    """Crediting an album play records it as a user-initiated play."""
     tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     tracker.logger = Mock()
     mark = AsyncMock()
