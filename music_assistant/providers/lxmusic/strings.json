@@ -1,0 +1,170 @@
+{
+  "config_entries": {
+    "server_url": {
+      "label": "Server URL",
+      "description": "Full URL of the LX Music server, e.g. http://localhost:9527"
+    },
+    "username": {
+      "label": "Username"
+    },
+    "password": {
+      "label": "Password",
+      "description": "Login password for the lxserver account (required); can be reset in the lxserver admin panel."
+    },
+    "default_source": {
+      "label": "Default source",
+      "description": "Source preferred when resolving stream URLs (kw/kg/tx/wy/mg)"
+    },
+    "search_sources": {
+      "label": "Search sources",
+      "description": "Comma-separated list of sources polled during search"
+    },
+    "import_leaderboards": {
+      "label": "Show leaderboards in browse",
+      "description": "Shows a leaderboards entry (~50 charts) in the browse view."
+    },
+    "import_square_playlists": {
+      "label": "Show square playlists in browse",
+      "description": "Shows a square playlists entry (top 5 per category) in the browse view."
+    },
+    "radio_refresh_minutes": {
+      "label": "LX Radio refresh interval (minutes)",
+      "description": "How many minutes LX Radio keeps one batch of songs. Within the same interval every open returns the same batch; it only changes across intervals. Default {0} (hourly); allowed {1}-{2}."
+    },
+    "daily_source": {
+      "label": "Daily picks source",
+      "description": "Which platform's official charts the daily picks mix songs from; a new batch every day. Default Kuwo, applies immediately.",
+      "options": {
+        "kw": "Kuwo",
+        "kg": "Kugou",
+        "wy": "NetEase Cloud Music",
+        "mg": "Migu Music",
+        "tx": "QQ Music"
+      }
+    },
+    "newsong_source": {
+      "label": "New song picks source",
+      "description": "Which platform's new-song charts the new-song picks mix songs from. Default Kuwo, applies immediately.",
+      "options": {
+        "kw": "Kuwo",
+        "kg": "Kugou",
+        "wy": "NetEase Cloud Music",
+        "mg": "Migu Music",
+        "tx": "QQ Music"
+      }
+    },
+    "sync_love_list": {
+      "label": "Sync LX hearted favorites",
+      "description": "Two-way favorites sync between the LX app / lxserver and MA library favorites; hearting in MA writes back to lxserver immediately. When off, existing library items stay."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to LX Music server",
+      "description": "Enter the address and login of your self-hosted lxserver (https://github.com/xcq0607/lxserver)."
+    }
+  },
+  "media": {
+    "folder": {
+      "recommendations": {
+        "name": "Recommendations"
+      },
+      "recent_played": {
+        "name": "Recently Played"
+      },
+      "leaderboards": {
+        "name": "Leaderboards"
+      },
+      "square_playlists": {
+        "name": "Square Playlists"
+      },
+      "hot_kw": {
+        "name": "Kuwo Hot"
+      },
+      "hot_kg": {
+        "name": "Kugou Hot"
+      },
+      "hot_tx": {
+        "name": "QQ Music Hot"
+      },
+      "hot_wy": {
+        "name": "NetEase Cloud Music Hot"
+      },
+      "hot_mg": {
+        "name": "Migu Music Hot"
+      },
+      "radio": {
+        "name": "LX Radio",
+        "subtitle": "Randomly samples multiple charts, switches to a new batch every {0} minutes"
+      },
+      "daily_kw": {
+        "name": "Daily Picks",
+        "subtitle": "Mixed from Kuwo official charts, refreshed daily"
+      },
+      "daily_kg": {
+        "name": "Daily Picks",
+        "subtitle": "Mixed from Kugou official charts, refreshed daily"
+      },
+      "daily_tx": {
+        "name": "Daily Picks",
+        "subtitle": "Mixed from QQ Music official charts, refreshed daily"
+      },
+      "daily_wy": {
+        "name": "Daily Picks",
+        "subtitle": "Mixed from NetEase Cloud Music official charts, refreshed daily"
+      },
+      "daily_mg": {
+        "name": "Daily Picks",
+        "subtitle": "Mixed from Migu Music official charts, refreshed daily"
+      },
+      "new_kw": {
+        "name": "New Song Picks",
+        "subtitle": "Mixed from Kuwo new-song charts"
+      },
+      "new_kg": {
+        "name": "New Song Picks",
+        "subtitle": "Mixed from Kugou new-song charts"
+      },
+      "new_tx": {
+        "name": "New Song Picks",
+        "subtitle": "Mixed from QQ Music new-song charts"
+      },
+      "new_wy": {
+        "name": "New Song Picks",
+        "subtitle": "Mixed from NetEase Cloud Music new-song charts"
+      },
+      "new_mg": {
+        "name": "New Song Picks",
+        "subtitle": "Mixed from Migu Music new-song charts"
+      },
+      "picks": {
+        "name": "Playlist Picks",
+        "subtitle": "Curated square playlists from lxserver"
+      }
+    },
+    "playlist": {
+      "recent_played": {
+        "name": "Recently Played"
+      },
+      "love": {
+        "name": "LX Favorites"
+      },
+      "radio": {
+        "name": "LX Radio",
+        "description": "Randomly samples multiple charts, switches to a new batch every {0} minutes"
+      }
+    }
+  },
+  "errors": {
+    "empty_username": "Username is empty. Set the lxserver username in the provider settings.",
+    "empty_password": "Password is empty. Set the lxserver password in the provider settings (reset it in the lxserver admin panel if forgotten).",
+    "login_no_token": "Login failed: the server returned no token. Check the username and password.",
+    "love_sync_disabled": "LX heart sync is turned off; this sync round was skipped.",
+    "love_list_fetch_failed": "Failed to fetch the hearted playlist; this sync round was skipped.",
+    "user_playlists_fetch_failed": "Failed to fetch user playlists; this sync round was skipped.",
+    "track_info_not_found": "Track info not found on lxserver or in Music Assistant; cannot heart it (it may have been delisted)."
+  },
+  "manifest": {
+    "description": "Stream music from a self-hosted LX Music server (lxserver): cross-source search, lyrics, leaderboards, playlists, daily picks and radio."
+  }
+}

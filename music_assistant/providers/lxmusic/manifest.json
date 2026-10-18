@@ -1,0 +1,13 @@
+{
+  "type": "music",
+  "domain": "lxmusic",
+  "stage": "experimental",
+  "name": "LX Music",
+  "description": "Stream music from a self-hosted LX Music server (lxserver): cross-source search, lyrics, leaderboards, playlists, daily picks and radio.",
+  "codeowners": [
+    "@andychao2024"
+  ],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/lx-music",
+  "multi_instance": true
+}
