@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, SetupFailedError
 from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
 from music_assistant.providers.tidal.provider import SUPPORTED_FEATURES, TidalProvider
@@ -25,6 +25,7 @@ def mass_mock() -> Mock:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
+    mass.config.get_provider_configs = AsyncMock(return_value=[])
     use_real_create_task(mass)
     return mass
 
@@ -104,6 +105,115 @@ async def test_handle_async_init_success(provider: TidalProvider) -> None:
 
         mock_init.assert_called_once()
         mock_get.assert_called_with("sessions")
+
+
+def _set_other_instances(
+    mass_mock: Mock,
+    others: dict[str, tuple[str | None, bool]],
+    names: dict[str, str] | None = None,
+    default_names: dict[str, str] | None = None,
+) -> None:
+    """Configure the other Tidal instances as {instance_id: (user_id, enabled)}."""
+    names = names or {}
+    default_names = default_names or {}
+    configs = []
+    for iid, (_, enabled) in others.items():
+        config = Mock(instance_id=iid, enabled=enabled)
+        config.name = names.get(iid)
+        config.default_name = default_names.get(iid)
+        configs.append(config)
+    mass_mock.config.get_provider_configs = AsyncMock(return_value=configs)
+    mass_mock.config.get_provider_setup_value = Mock(side_effect=lambda iid, _key: others[iid][0])
+
+
+@pytest.mark.parametrize(
+    ("others", "own_user_id", "conflict", "winner"),
+    [
+        ({"tidal_a": ("12345", True)}, "12345", True, "Tidal A"),
+        ({"tidal_z": ("12345", True)}, "12345", False, None),
+        ({"tidal_a": ("12345", False)}, "12345", False, None),
+        ({"tidal_a": ("999", True)}, "12345", False, None),
+        ({"tidal_a": ("12345", True)}, None, False, None),
+        ({"tidal_a": ("12345", False), "tidal_b": ("12345", True)}, "12345", True, "Tidal B"),
+    ],
+    ids=[
+        "lower_id_wins",
+        "higher_id_ignored",
+        "disabled_ignored",
+        "other_account",
+        "no_user_id",
+        "disabled_and_enabled_holders",
+    ],
+)
+async def test_handle_async_init_account_conflict(
+    provider: TidalProvider,
+    mass_mock: Mock,
+    others: dict[str, tuple[str | None, bool]],
+    own_user_id: str | None,
+    conflict: bool,
+    winner: str | None,
+) -> None:
+    """Only a lower-id enabled instance on the same account blocks this one."""
+    _set_other_instances(mass_mock, others, {"tidal_a": "Tidal A", "tidal_b": "Tidal B"})
+    values = {**_SETUP_VALUES, "user_id": own_user_id}
+
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init,
+        patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,
+        patch.object(provider, "get_user", new_callable=AsyncMock),
+        patch.object(provider.auth, "update_user_info", new_callable=AsyncMock),
+    ):
+        mock_init.return_value = True
+        mock_get.return_value = {"userId": "12345", "sessionId": "session_123"}
+
+        if not conflict:
+            await provider.handle_async_init()
+            mock_init.assert_called_once()
+            return
+
+        with pytest.raises(SetupFailedError) as exc_info:
+            await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == "account_used_by_other_instance"
+    assert list(exc_info.value.translation_args) == [winner]
+    assert exc_info.value.translation_owner == provider.translation_owner
+    mock_init.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("default_names", "expected"),
+    [
+        ({"tidal_a": "Tidal [1]"}, "Tidal [1]"),
+        ({}, "tidal_a"),
+    ],
+    ids=["default_name", "instance_id"],
+)
+async def test_account_conflict_names_an_unnamed_winner(
+    provider: TidalProvider,
+    mass_mock: Mock,
+    default_names: dict[str, str],
+    expected: str,
+) -> None:
+    """An instance without a custom name is reported by its default name, else its id."""
+    _set_other_instances(mass_mock, {"tidal_a": ("12345", True)}, default_names=default_names)
+    values = {**_SETUP_VALUES, "user_id": "12345"}
+
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: values.get(key, default),
+        ),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await provider.handle_async_init()
+
+    assert list(exc_info.value.translation_args) == [expected]
 
 
 async def test_handle_async_init_migrates_iso_expiry(provider: TidalProvider) -> None:

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, SetupFailedError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -28,6 +28,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
+from .accounts import get_winning_account_holder
 from .api_client import TidalAPIClient
 from .auth_manager import TidalAuthManager
 from .constants import (
@@ -37,6 +38,7 @@ from .constants import (
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_USER_ID,
+    ERROR_ACCOUNT_IN_USE,
 )
 from .library import TidalLibraryManager
 from .media import TidalMediaManager
@@ -107,6 +109,11 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         """Return True: Tidal's catalog carries a hi-res flag but no sample rate."""
         return True
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Tidal accounts allow a single active playback stream."""
+        return 1
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
         Return the configuration (options) entries for the Tidal provider.
@@ -134,6 +141,17 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
         expires_at = self.get_setup_value(CONF_EXPIRY_TIME)
         user_id = self.get_setup_value(CONF_USER_ID)
+
+        if user_id and (
+            holder := await get_winning_account_holder(self.mass, str(user_id), self.instance_id)
+        ):
+            other_name = holder.name or holder.default_name or holder.instance_id
+            raise SetupFailedError(
+                f"This Tidal account is already used by {other_name}",
+                translation_key=ERROR_ACCOUNT_IN_USE,
+                translation_args=[other_name],
+                translation_owner=self.translation_owner,
+            )
 
         if not access_token or not refresh_token:
             raise LoginFailed("Missing authentication data")

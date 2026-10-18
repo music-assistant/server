@@ -17,6 +17,7 @@ from music_assistant_models.errors import LoginFailed
 
 from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
 
+from .accounts import get_account_holders, get_winning_account_holder
 from .auth_manager import TidalAuthManager
 from .constants import (
     CONF_AUTH_TOKEN,
@@ -58,11 +59,18 @@ async def run_setup(session: SetupSession) -> None:
         except LoginFailed as err:
             raise AbortFlow("login_failed") from err
 
+        user_id = str(auth_data["userId"])
+        if await _account_refused(session, user_id):
+            raise AbortFlow(
+                "account_used_by_other_instance"
+                if session.context.kind == "reconfigure"
+                else "account_already_configured"
+            )
         collected: dict[str, ConfigValueType] = {
             CONF_AUTH_TOKEN: auth_data["access_token"],
             CONF_REFRESH_TOKEN: auth_data["refresh_token"],
             CONF_EXPIRY_TIME: auth_data["expires_at"],
-            CONF_USER_ID: str(auth_data["userId"]),
+            CONF_USER_ID: user_id,
         }
         await session.finish(collected)
         return
@@ -72,3 +80,29 @@ def _verification_url(device: dict[str, str]) -> str:
     """Return the full (scheme-prefixed) verification URL with the code pre-filled."""
     url = str(device.get("verificationUriComplete") or device["verificationUri"])
     return url if url.startswith("http") else f"https://{url}"
+
+
+async def _account_refused(session: SetupSession, user_id: str) -> bool:
+    """
+    Return whether the account that just signed in may not be used by this flow.
+
+    A new setup is refused if any other instance holds the account. A reconfigure is refused
+    if another instance would win the account at startup or is running on it right now.
+
+    :param session: The setup session driving the flow.
+    :param user_id: The Tidal user id that just signed in.
+    """
+    mass = session.mass
+    instance_id = session.context.instance_id
+    holders = await get_account_holders(mass, user_id, instance_id)
+    if session.context.kind != "reconfigure" or not instance_id:
+        return bool(holders)
+    if await get_winning_account_holder(mass, user_id, instance_id) is not None:
+        return True
+    return any(holder.enabled and _is_loaded(session, holder.instance_id) for holder in holders)
+
+
+def _is_loaded(session: SetupSession, instance_id: str) -> bool:
+    """Return whether the instance is currently running."""
+    # return_unavailable skips get_provider's fallback to a sibling instance of the same domain
+    return session.mass.get_provider(instance_id, return_unavailable=True) is not None
