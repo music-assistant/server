@@ -49,22 +49,23 @@ async def _post_soap(
     xml: str,
     soap_action: str,
     op_name: str,
-) -> aiohttp.ClientResponse:
-    """POST a SOAP request and log a warning on 4xx/5xx error responses."""
+) -> str | None:
+    """POST a SOAP request and return the response body, or None on 4xx/5xx error responses."""
     headers = get_headers(xml, soap_action)
-    response = await client.post(ctrl_url, headers=headers, data=xml)
-    if response.status >= 400:
+    async with client.post(ctrl_url, headers=headers, data=xml) as response:
+        if response.status < 400:
+            return (await response.read()).decode(errors="replace")
         body_excerpt = ""
-        with suppress(aiohttp.ClientError, UnicodeError):
+        with suppress(aiohttp.ClientError):
             body_excerpt = (await response.read())[:300].decode(errors="replace")
-        LOGGER.warning(
-            "AVT %s failed: status=%s url=%s body=%s",
-            op_name,
-            response.status,
-            ctrl_url,
-            body_excerpt,
-        )
-    return response
+    LOGGER.warning(
+        "AVT %s failed: status=%s url=%s body=%s",
+        op_name,
+        response.status,
+        ctrl_url,
+        body_excerpt,
+    )
+    return None
 
 
 async def avt_play(
@@ -124,11 +125,10 @@ async def avt_get_media_info(
     """Get Media Info."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action = get_xml_soap_media_info()
-    response = await _post_soap(client, ctrl_url, xml, soap_action, "GetMediaInfo")
-    if response.status >= 400:
-        raise aiohttp.ClientError(f"GetMediaInfo returned {response.status}")
-    response_text = await response.read()
-    return response_text.decode()
+    body = await _post_soap(client, ctrl_url, xml, soap_action, "GetMediaInfo")
+    if body is None:
+        raise aiohttp.ClientError("GetMediaInfo failed")
+    return body
 
 
 async def avt_get_transport_info(
@@ -138,11 +138,10 @@ async def avt_get_transport_info(
     """Get Transport Info."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action = get_xml_soap_transport_info()
-    response = await _post_soap(client, ctrl_url, xml, soap_action, "GetTransportInfo")
-    if response.status >= 400:
-        raise aiohttp.ClientError(f"GetTransportInfo returned {response.status}")
-    response_text = await response.read()
-    return response_text.decode()
+    body = await _post_soap(client, ctrl_url, xml, soap_action, "GetTransportInfo")
+    if body is None:
+        raise aiohttp.ClientError("GetTransportInfo failed")
+    return body
 
 
 async def avt_set_url(

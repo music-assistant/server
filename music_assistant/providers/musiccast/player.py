@@ -269,7 +269,9 @@ class MusicCastPlayer(Player):
             _max_volume = 100 if _max_volume is None else _max_volume
             if _min_volume == _max_volume:
                 _max_volume += 1
-            self._attr_volume_level = int(_current_volume / (_max_volume - _min_volume) * 100)
+            self._attr_volume_level = round(
+                (_current_volume - _min_volume) / (_max_volume - _min_volume) * 100
+            )
         self._attr_volume_muted = zone_data.mute
 
         # STATE
@@ -321,32 +323,33 @@ class MusicCastPlayer(Player):
             except ClientError:
                 # this is regularly called, we can ignore a failing update
                 self.logger.debug("Acquiring media info failed, trying again in 5s.")
-                if self.upnp_update_helper is not None:
-                    self.upnp_update_helper.last_poll = now
-                return
-            _player_current_url = search_xml(_xml_media_info, "CurrentURI")
+                if self.upnp_update_helper is None:
+                    return
+                self.upnp_update_helper.last_poll = now
+            else:
+                _player_current_url = search_xml(_xml_media_info, "CurrentURI")
 
-            # controlled by mass is only True, if we are directly controlled
-            # i.e. we are not a group member.
-            # the device's source id is server, if controlled by upnp, but also, if the internal
-            # dlna function of the device are used. As a fallback, we then
-            # use the item's title. This can only fail, if our current and next item
-            # has the same name as the external.
-            controlled_by_mass = False
-            if _player_current_url is not None:
-                controlled_by_mass = (
-                    self.player_id in _player_current_url
-                    and self.mass.streams.base_url in _player_current_url
-                    and self.zone_device.source_id == "server"
+                # controlled by mass is only True, if we are directly controlled
+                # i.e. we are not a group member.
+                # the device's source id is server, if controlled by upnp, but also, if the
+                # internal dlna function of the device are used. As a fallback, we then
+                # use the item's title. This can only fail, if our current and next item
+                # has the same name as the external.
+                controlled_by_mass = False
+                if _player_current_url is not None:
+                    controlled_by_mass = (
+                        self.player_id in _player_current_url
+                        and self.mass.streams.base_url in _player_current_url
+                        and self.zone_device.source_id == "server"
+                    )
+
+                self.upnp_update_helper = UpnpUpdateHelper(
+                    last_poll=now,
+                    controlled_by_mass=controlled_by_mass,
+                    current_uri=_player_current_url,
                 )
 
-            self.upnp_update_helper = UpnpUpdateHelper(
-                last_poll=now,
-                controlled_by_mass=controlled_by_mass,
-                current_uri=_player_current_url,
-            )
-
-        # either freshly assigned above or a cache hit (which implies it was set before)
+        # either assigned above or a cache hit (which implies it was set before)
         assert self.upnp_update_helper is not None
 
         # UPDATE PLAYBACK INFORMATION
@@ -426,11 +429,7 @@ class MusicCastPlayer(Player):
                 # we are in a group with ourselves.
                 self._attr_group_members.clear()
 
-        elif not self.zone_device.is_client and not self.zone_device.is_server:
-            self._attr_group_members.clear()
-
-        elif self.zone_device.is_client:
-            _synced_to_id = self._get_player_id_from_zone_device(self.zone_device.group_server)
+        elif self.zone_device.is_client or not self.zone_device.is_server:
             self._attr_group_members.clear()
 
         elif self.zone_device.is_server:
@@ -663,6 +662,12 @@ class MusicCastPlayer(Player):
         _source = mass_player.get_config_value(CONF_PLAYER_SWITCH_SOURCE_NON_NET, return_type=str)
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
+        if not _allowed_sources:
+            self.logger.error(
+                "The player %s lacks a non-net source to switch to.",
+                mass_player.display_name or mass_player.name,
+            )
+            return
         if _source not in _allowed_sources:
             msg = (
                 "The switch source you specified for "
@@ -672,7 +677,7 @@ class MusicCastPlayer(Player):
                 "Will use the first available source."
             )
             self.logger.error(msg)
-            _source = _allowed_sources.pop()
+            _source = min(_allowed_sources)
 
         await mass_player.select_source(_source)
         _turn_off = mass_player.get_config_value(CONF_PLAYER_TURN_OFF_ON_LEAVE, return_type=bool)
@@ -719,15 +724,22 @@ class MusicCastPlayer(Player):
 
     async def _set_player_available(self) -> None:
         """Re-enable UDP polling after recovery."""
-        assert self.zone_device.zone_name == "main", "Call only from main player!"
         self.logger.debug("Player %s became available again.", self.display_name)
         if self.physical_device.device.device.transport is None:
             await self.physical_device.enable_polling()
 
     async def poll(self) -> None:
         """Poll player."""
-        if self.zone_device.zone_name != "main":
-            # we only poll main, which polls the whole device
+        # the first registered zone polls the whole device, i.e. main unless it is disabled
+        _polling_zone = next(
+            (
+                zone_device
+                for zone_device in self.physical_device.zone_devices.values()
+                if self.mass.players.get_player(self._get_player_id_from_zone_device(zone_device))
+            ),
+            None,
+        )
+        if _polling_zone is not self.zone_device:
             return
         async with self.update_lock:
             _was_unavailable = not self._attr_available
@@ -752,7 +764,10 @@ class MusicCastPlayer(Player):
 
     def _non_async_udp_callback(self, physical_device: MusicCastPhysicalDevice) -> None:
         """Call on UDP updates."""
-        self.mass.loop.create_task(self._async_udp_callback())
+        # disabled or replaced player objects keep their callback, skip their updates
+        if self.mass.players.get_player(self.player_id) is not self:
+            return
+        self.mass.create_task(self._async_udp_callback(), eager_start=False)
 
     async def _async_udp_callback(self) -> None:
         async with self.update_lock:
@@ -934,10 +949,11 @@ class MusicCastPlayer(Player):
             assert isinstance(child_player, MusicCastPlayer)  # for type checking
 
             # find a sibling zone on the child's device currently using netusb;
-            # skip disabled zones (user opted out of MA managing them)
+            # skip disabled zones (user opted out of MA managing them) and powered-off
+            # zones, whose remembered source can match netusb_input without using it
             _other_zone_mc: MusicCastZoneDevice | None = None
             for x in child_player.zone_device.other_zones:
-                if not x.is_netusb:
+                if not x.is_netusb or x.zone_data is None or x.zone_data.power != "on":
                     continue
                 _other_player_id = self._get_player_id_from_zone_device(x)
                 _other_player = self.mass.players.get_player(_other_player_id)
@@ -952,15 +968,23 @@ class MusicCastPlayer(Player):
                 children.add(child_id)
                 continue
 
-            # child is a non-main zone of a device whose main is the netusb consumer;
+            # child is a non-main zone of a device whose main is or joins the leader's group;
             # join the group via main_sync so the child follows main locally
-            if child_player.zone_device.zone_name != "main" and _other_zone_mc.zone_name == "main":
+            if (
+                child_player.zone_device.zone_name != "main"
+                and _other_zone_mc.zone_name == "main"
+                and (
+                    _other_zone_mc is self.zone_device
+                    or _other_zone_mc.is_part_of_group(self.zone_device)
+                    or self._get_player_id_from_zone_device(_other_zone_mc) in player_ids_to_add
+                )
+            ):
                 children_zones.append(child_id)
                 continue
 
-            # child is main but a sibling holds netusb; free the sibling so main
-            # can become the netusb client, then join normally
-            if child_player.zone_device.zone_name == "main":
+            # child or sibling is main, and the sibling holds netusb for other audio;
+            # free the sibling so the child can become the netusb client, then join normally
+            if "main" in (child_player.zone_device.zone_name, _other_zone_mc.zone_name):
                 await child_player._handle_zone_grouping(_other_zone_mc)
                 children.add(child_id)
                 continue
