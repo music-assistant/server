@@ -1025,6 +1025,18 @@ class MusicCastPlayer(Player):
                 "device. Only joining to main is possible. Please refer to the docs."
             )
 
+        if children:
+            child_player_zone_devices: list[MusicCastZoneDevice] = []
+            for child_id in children:
+                child_player = self.mass.players.get_player(child_id)
+                if TYPE_CHECKING:
+                    child_player = cast("MusicCastPlayer", child_player)
+                child_player_zone_devices.append(child_player.zone_device)
+
+            await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
+
+        # after the joins: a main with a main_sync zone counts as server and would
+        # close that local group when it joins as client
         for child_id in children_zones:
             child_player = self.mass.players.get_player(child_id)
             if TYPE_CHECKING:
@@ -1032,17 +1044,6 @@ class MusicCastPlayer(Player):
             if child_player.zone_device.state == MusicCastPlayerState.OFF:
                 await child_player.power(powered=True)
             await child_player.select_source(MC_SOURCE_MAIN_SYNC)
-        if not children:
-            return
-
-        child_player_zone_devices: list[MusicCastZoneDevice] = []
-        for child_id in children:
-            child_player = self.mass.players.get_player(child_id)
-            if TYPE_CHECKING:
-                child_player = cast("MusicCastPlayer", child_player)
-            child_player_zone_devices.append(child_player.zone_device)
-
-        await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
