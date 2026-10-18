@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, NotRequired
 
 from aiohttp import ClientError
@@ -242,6 +244,31 @@ class OIDCLoginProvider(LoginProvider):
         self, pending: PendingLogin, params: Mapping[str, str]
     ) -> User:
         """Exchange an authorization code and resolve the linked user."""
+        try:
+            async with asyncio.timeout(max(0, pending.expires_at - monotonic())):
+                return await self._complete_authorization(pending, params)
+        except TimeoutError as err:
+            raise AuthenticationFailed(
+                "This sign-in is invalid or has expired", translation_key="sign_in_expired"
+            ) from err
+
+    async def handle_backchannel_logout(self, token: str) -> None:
+        """Validate a logout notification and revoke matching sessions."""
+        if not self.backchannel_logout_enabled:
+            raise AuthenticationFailed("OpenID Connect back-channel logout is disabled")
+        try:
+            claims = await self.client.validate_logout_token(token)
+        except (ClientError, TimeoutError, PyJWTError, OIDCProtocolError) as err:
+            self.logger.warning("OIDC logout validation failed (%s)", type(err).__name__)
+            raise AuthenticationFailed("Invalid OpenID Connect logout token") from err
+        async with self.auth_manager.user_link_lock:
+            await self.auth_manager.oidc_sessions.logout(
+                self.client.issuer, self.client.client_id, claims
+            )
+
+    async def _complete_authorization(
+        self, pending: PendingLogin, params: Mapping[str, str]
+    ) -> User:
         if not (code := params.get("code")):
             raise AuthenticationFailed("No authorization code received")
         try:
@@ -260,25 +287,13 @@ class OIDCLoginProvider(LoginProvider):
                 session_id=claims.get("sid"),
                 issued_at=int(claims["iat"]),
                 expires_at=claims["exp"],
+                login_expires_at=pending.expires_at,
             )
             await self.auth_manager.oidc_sessions.validate_session(session)
             user = await self._get_or_create_user(claims)
+            session.ensure_login_active()
             pending.oidc_session = session
             return user
-
-    async def handle_backchannel_logout(self, token: str) -> None:
-        """Validate a logout notification and revoke matching sessions."""
-        if not self.backchannel_logout_enabled:
-            raise AuthenticationFailed("OpenID Connect back-channel logout is disabled")
-        try:
-            claims = await self.client.validate_logout_token(token)
-        except (ClientError, TimeoutError, PyJWTError, OIDCProtocolError) as err:
-            self.logger.warning("OIDC logout validation failed (%s)", type(err).__name__)
-            raise AuthenticationFailed("Invalid OpenID Connect logout token") from err
-        async with self.auth_manager.user_link_lock:
-            await self.auth_manager.oidc_sessions.logout(
-                self.client.issuer, self.client.client_id, claims
-            )
 
     async def _get_or_create_user(self, claims: dict[str, Any]) -> User:
         identity_id = oidc_identity_id(self.client.issuer, claims["sub"])

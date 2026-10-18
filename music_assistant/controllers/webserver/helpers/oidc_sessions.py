@@ -8,6 +8,7 @@ import hashlib
 import secrets
 import time
 from dataclasses import asdict, dataclass
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.errors import AuthenticationFailed
@@ -32,6 +33,14 @@ class OIDCSession:
     session_id: str | None
     issued_at: float
     expires_at: float
+    login_expires_at: float  # Monotonic deadline for this in-flight sign-in; never persisted.
+
+    def ensure_login_active(self) -> None:
+        """Reject a sign-in that has passed its original deadline."""
+        if self.login_expires_at <= monotonic():
+            raise AuthenticationFailed(
+                "This sign-in is invalid or has expired", translation_key="sign_in_expired"
+            )
 
 
 class OIDCSessionStore:
@@ -79,23 +88,30 @@ class OIDCSessionStore:
     async def create_token(self, user: User, name: str, session: OIDCSession) -> str:
         """Issue a token unless its identity-provider session has already ended."""
         async with self._lock:
+            session.ensure_login_active()
             await self._cleanup()
             await self._ensure_session_active(session)
             token = await self.auth.create_token(user, name)
             token_id = self.auth.jwt_helper.decode_token(token)["jti"]
             try:
+                session.ensure_login_active()
+                session_data = asdict(session)
+                del session_data["login_expires_at"]
                 await self.auth.database.insert(
-                    "oidc_sessions", {"token_id": token_id, **asdict(session)}
+                    "oidc_sessions", {"token_id": token_id, **session_data}
                 )
+                session.ensure_login_active()
             except BaseException:
                 # A token without a saved session link cannot be revoked by IdP logout.
                 await self.auth.database.delete("auth_tokens", {"token_id": token_id})
+                await self.auth.database.delete("oidc_sessions", {"token_id": token_id})
                 raise
             return token
 
     async def validate_session(self, session: OIDCSession) -> None:
         """Reject an ended session before applying its identity or role claims."""
         async with self._lock:
+            session.ensure_login_active()
             await self._cleanup()
             await self._ensure_session_active(session)
 
@@ -169,6 +185,7 @@ class OIDCSessionStore:
             self.auth.webserver.disconnect_websockets_for_token(token_id)
 
     async def _ensure_session_active(self, session: OIDCSession) -> None:
+        session.ensure_login_active()
         if session.expires_at <= time.time():
             raise AuthenticationFailed("The identity token has expired; sign in again")
         logout = await self.auth.database.get_rows_from_query(
@@ -180,6 +197,7 @@ class OIDCSessionStore:
             asdict(session),
             limit=1,
         )
+        session.ensure_login_active()
         if logout:
             raise AuthenticationFailed("The identity provider session has ended; sign in again")
 

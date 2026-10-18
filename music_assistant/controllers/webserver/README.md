@@ -192,6 +192,10 @@ survive restarts and block late callbacks from restoring logged-out access. Loca
 sessions and long-lived API tokens remain locally managed. MA logout ends the local session;
 it does not initiate global IdP logout.
 
+The original ten-minute sign-in deadline covers code exchange, account locks, claim processing
+and token issuance. Expired callbacks cannot restore access after logout receipts are cleaned
+up; tokens whose writes finish after the deadline are removed before returning credentials.
+
 Group mapping is an ordered JSON object, e.g. `{"music-admins":"admin","music-users":"user"}`.
 The first matching group selects a built-in or custom role ID; `service` is forbidden.
 The claim defaults to `groups` and must be a string array from the verified ID token or
