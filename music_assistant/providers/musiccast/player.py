@@ -948,6 +948,36 @@ class MusicCastPlayer(Player):
                 continue
             assert isinstance(child_player, MusicCastPlayer)  # for type checking
 
+            # a non-main zone whose main is or joins the leader's group follows main locally
+            _child_main = child_player.zone_device.physical_device.zone_devices.get("main")
+            if (
+                child_player.zone_device.zone_name != "main"
+                and _child_main is not None
+                and (
+                    _child_main is self.zone_device
+                    or _child_main.is_part_of_group(self.zone_device)
+                    or self._get_player_id_from_zone_device(_child_main) in player_ids_to_add
+                )
+            ):
+                children_zones.append(child_id)
+                continue
+
+            # once a bare zone joined the group, the hardware cannot add main or
+            # another zone of the same device
+            if any(
+                x.zone_name != "main"
+                and x.is_network_client
+                and x.is_part_of_group(self.zone_device)
+                for x in child_player.zone_device.other_zones
+            ):
+                self.logger.warning(
+                    "Cannot add %s to the group, another zone of this device already joined "
+                    "it on its own. Remove that zone first, then add main and sync the zones "
+                    "to main.",
+                    child_player.display_name or child_player.name,
+                )
+                continue
+
             # find a sibling zone on the child's device currently using netusb;
             # skip disabled zones (user opted out of MA managing them) and powered-off
             # zones, whose remembered source can match netusb_input without using it
@@ -966,20 +996,6 @@ class MusicCastPlayer(Player):
             # no conflicting sibling -> standard client join
             if _other_zone_mc is None:
                 children.add(child_id)
-                continue
-
-            # child is a non-main zone of a device whose main is or joins the leader's group;
-            # join the group via main_sync so the child follows main locally
-            if (
-                child_player.zone_device.zone_name != "main"
-                and _other_zone_mc.zone_name == "main"
-                and (
-                    _other_zone_mc is self.zone_device
-                    or _other_zone_mc.is_part_of_group(self.zone_device)
-                    or self._get_player_id_from_zone_device(_other_zone_mc) in player_ids_to_add
-                )
-            ):
-                children_zones.append(child_id)
                 continue
 
             # child or sibling is main, and the sibling holds netusb for other audio;
