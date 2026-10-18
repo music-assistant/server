@@ -304,7 +304,7 @@ class MusicbrainzProvider(MetadataProvider):
                     else:
                         continue
                     # if we reach this point, we got a match on recording,
-                    # artist and release(group)
+                    # artist and release group
                     recording = MusicBrainzRecording.from_raw(item)
                     return (artist_match, album_match, recording)
 
@@ -1105,6 +1105,9 @@ class MusicbrainzProvider(MetadataProvider):
         urls: list[str] = []
         for domain in REVERSE_URL_DOMAINS:
             if not (mapping := next((m for m in mappings if m.provider_domain == domain), None)):
+                continue
+            if domain == "qobuz" and not mapping.url:
+                # a performer without a Qobuz page has its name as id and no URL
                 continue
             storefront = None
             if domain == "apple_music" and mapping.url:

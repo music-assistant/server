@@ -275,7 +275,7 @@ class LastFMRecommendationManager:
         # Hourly seed keeps the sampled remainder stable within the hour and rotates it each hour.
         now = utc()
         seed = f"{now.date().isoformat()}_{now.hour}_{seed_suffix}"
-        rng = random.Random(seed)
+        rng = random.Random(seed)  # noqa: S311 - seeded sampling
         random_items = rng.sample(remaining, min(random_count, len(remaining)))
 
         return top_items + random_items

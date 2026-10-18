@@ -1127,7 +1127,7 @@ class MusicAssistant:
                 return
             retry_delay = round(
                 PROVIDER_RETRY_DELAYS[min(retry_attempt, len(PROVIDER_RETRY_DELAYS) - 1)]
-                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)
+                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)  # noqa: S311 - retry jitter
             )
             self.call_later(
                 retry_delay,

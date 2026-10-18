@@ -75,7 +75,7 @@ async def test_update_playlist_metadata_calls_provider() -> None:
     enrichment.providers = [provider]  # type: ignore[misc]
 
     playlist = _make_playlist()
-    enrichment.mass.music.playlists.tracks = _empty_tracks_iter
+    enrichment.mass.music.playlists.iter_tracks = _empty_tracks_iter
     enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
 
     await enrichment._update_playlist_metadata(playlist, force_refresh=False)
@@ -101,7 +101,7 @@ async def test_update_playlist_metadata_handles_provider_exception() -> None:
     enrichment.providers = [provider]  # type: ignore[misc]
 
     playlist = _make_playlist()
-    enrichment.mass.music.playlists.tracks = _empty_tracks_iter
+    enrichment.mass.music.playlists.iter_tracks = _empty_tracks_iter
     enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
 
     # Should not raise, just log warning
@@ -133,7 +133,7 @@ async def test_update_playlist_metadata_preserves_existing_thumb() -> None:
     )
     playlist.metadata.images = UniqueList([existing_thumb])
 
-    enrichment.mass.music.playlists.tracks = _empty_tracks_iter
+    enrichment.mass.music.playlists.iter_tracks = _empty_tracks_iter
     enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
 
     await enrichment._update_playlist_metadata(playlist, force_refresh=False)
@@ -160,7 +160,7 @@ async def test_update_playlist_metadata_skips_providers_without_feature() -> Non
     enrichment.providers = [provider_without_feature]  # type: ignore[misc]
 
     playlist = _make_playlist()
-    enrichment.mass.music.playlists.tracks = _empty_tracks_iter
+    enrichment.mass.music.playlists.iter_tracks = _empty_tracks_iter
     enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
 
     # Should not raise, just skip the provider
@@ -198,7 +198,7 @@ async def test_update_playlist_metadata_calls_providers_for_dynamic_playlists() 
         if False:
             yield  # type: ignore[unreachable]  # pragma: no cover
 
-    enrichment.mass.music.playlists.tracks = mock_tracks
+    enrichment.mass.music.playlists.iter_tracks = mock_tracks
 
     # Mock update_item_in_library
     enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
@@ -268,7 +268,7 @@ async def test_update_playlist_metadata_allows_smart_playlists() -> None:
         metadata=MediaItemMetadata(),
     )
 
-    enrichment.mass.music.playlists.tracks = _empty_tracks_iter
+    enrichment.mass.music.playlists.iter_tracks = _empty_tracks_iter
     enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
 
     await enrichment._update_playlist_metadata(playlist, force_refresh=True)

@@ -35,6 +35,7 @@ from music_assistant.helpers.playlists import (
     PlaylistItem,
     ProviderMappingInfo,
     generate_m3u,
+    sanitize_playlist_filename,
 )
 from music_assistant.providers.builtin import BuiltinProvider
 
@@ -2016,7 +2017,7 @@ async def test_provider_error_is_reported_as_unmatched_with_issue() -> None:
 async def test_extinf_title_without_structured_artist_is_split_for_matching() -> None:
     """A foreign M3U8 entry with only a combined EXTINF title still gets matched."""
     prov = _make_provider()
-    # no #EXTARTIST tag: only a combined "Artist - Title" EXTINF string is available
+    # without an #EXTARTIST tag only a combined "Artist - Title" EXTINF string is available
     item = _make_playlist_item(
         path="/music/song.mp3", title="Radiohead - Everything In Its Right Place"
     )
@@ -2383,7 +2384,7 @@ async def test_create_playlist_generation_survives_inode_reuse(tmp_path: Path) -
     prov_any.get_playlist = AsyncMock(return_value=_make_playlist("Test"))
 
     await prov.create_playlist("Test", {MediaType.TRACK})
-    playlist_id = prov._sanitize_playlist_id("Test")
+    playlist_id = sanitize_playlist_filename("Test")
     playlist_file = tmp_path / f"{playlist_id}.m3u"
     first_generation = await prov._get_playlist_generation(playlist_id)
     assert first_generation == 1

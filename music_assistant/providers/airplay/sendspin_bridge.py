@@ -50,7 +50,7 @@ from .constants import (
     ClockReadiness,
     StreamingProtocol,
 )
-from .helpers import player_id_to_mac_address
+from .helpers import cli_clock_time, player_id_to_mac_address
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
@@ -171,19 +171,18 @@ def sendspin_audible_instant_to_unix_ms(
     Map an audible instant on the Sendspin clock to a unix epoch millisecond.
 
     Sendspin schedules playback on its own monotonic clock (``server.clock.now_us()``)
-    whereas the AirPlay START command uses unix wall-clock.
+    whereas the AirPlay START command uses the cliairplay unix timeline (``cli_clock_time()``).
     The two clocks share no epoch, so only the *offset from now* transfers between
     them: this takes how far ``audible_instant_us`` sits in the future on the
     Sendspin clock and applies that same offset to a unix reading captured at the
     same instant. Because the offset is a delta on a single clock, the standing
-    offset between the Sendspin clock and unix wall-clock cancels out -- the only
-    residual is the rate skew across the (sub-second to a few seconds) lead, which
-    stays well under a millisecond. ``sendspin_now_us`` and ``unix_now`` must be
-    sampled back to back for that cancellation to hold.
+    offset between the Sendspin clock and the cliairplay timeline cancels out.
+    ``sendspin_now_us`` and ``unix_now`` must be sampled back to back for that
+    cancellation to hold.
 
     :param audible_instant_us: Sendspin-clock instant the first sample must be audible.
     :param sendspin_now_us: ``sendspin_server.clock.now_us()`` captured now.
-    :param unix_now: ``time.time()`` captured at the same instant as sendspin_now_us.
+    :param unix_now: ``cli_clock_time()`` captured at the same instant as sendspin_now_us.
     :return: The unix epoch millisecond that coincides with ``audible_instant_us``.
     """
     future_s = (audible_instant_us - sendspin_now_us) / 1_000_000
@@ -206,7 +205,7 @@ def unix_ms_to_sendspin_audible_instant(
 
     :param unix_ms: Unix epoch millisecond to map.
     :param sendspin_now_us: ``sendspin_server.clock.now_us()`` captured now.
-    :param unix_now: ``time.time()`` captured at the same instant as sendspin_now_us.
+    :param unix_now: ``cli_clock_time()`` captured at the same instant as sendspin_now_us.
     :return: The Sendspin-clock instant (µs) that coincides with ``unix_ms``.
     """
     future_s = unix_ms / 1000 - unix_now
@@ -915,7 +914,7 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
             )
         sendspin_now_us = self.sendspin_server.clock.now_us()
-        unix_now = time.time()
+        unix_now = cli_clock_time()
         now_ms = int(unix_now * 1000)
         # The instant Sendspin wants the first chunk we hold to be audible; the
         # anchor never precedes it, so nothing Sendspin scheduled is thrown away.
@@ -980,7 +979,7 @@ class SendspinAirPlayBridge:
         # The command carries the device's sync_adjust; the group timeline does not.
         acked_timeline_ms = acked_adjusted - adjust_ms
         sendspin_now_us = self.sendspin_server.clock.now_us()
-        unix_now = time.time()
+        unix_now = cli_clock_time()
         anchor_us = unix_ms_to_sendspin_audible_instant(
             acked_timeline_ms, sendspin_now_us, unix_now
         )
@@ -1632,7 +1631,7 @@ class SendspinAirPlayBridge:
                 # than dumped into the CLI ahead of its start anchor (which desyncs it).
                 if self._start_unix_ms:
                     ahead = device_buffer_ahead_seconds(
-                        self._start_unix_ms, bytes_written, bytes_per_second, time.time()
+                        self._start_unix_ms, bytes_written, bytes_per_second, cli_clock_time()
                     )
                     if ahead > MAX_DEVICE_BUFFER_SECONDS:
                         await asyncio.sleep(ahead - MAX_DEVICE_BUFFER_SECONDS)

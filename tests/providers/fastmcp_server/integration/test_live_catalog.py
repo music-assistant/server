@@ -250,7 +250,7 @@ async def test_live_meta_surface_and_discovery_latency(live_client: LiveClient) 
 @pytest.mark.integration
 async def test_live_paginated_catalog_tool_resource_parity(live_client: LiveClient) -> None:
     """Tool and resource traversal enumerate one stable visible MA catalog."""
-    templates = {str(item.uriTemplate) for item in await live_client.list_resource_templates()}
+    templates = {str(item.uri_template) for item in await live_client.list_resource_templates()}
     assert "catalog://commands{?cursor,limit}" in templates
     tool_names, tool_revision = await collect_tool_catalog(live_client)
     resource_names, resource_revision = await collect_resource_catalog(live_client)

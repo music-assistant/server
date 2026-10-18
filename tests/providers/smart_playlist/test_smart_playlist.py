@@ -370,6 +370,29 @@ async def test_rules_persist_to_disk(tmp_path: Any) -> None:
     assert plugin2._rules_store["42"] == rules
 
 
+@pytest.mark.asyncio
+async def test_create_smart_playlist_accepts_slash_in_name(tmp_path: Any) -> None:
+    """A smart playlist name may contain a slash."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    mass.music.playlists.add_item_to_library = AsyncMock(return_value=MagicMock())
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+    plugin._save_rules = AsyncMock()  # type: ignore[method-assign]
+    plugin._build_playlist = AsyncMock()  # type: ignore[method-assign]
+    plugin._schedule_ai_description_refresh = MagicMock()  # type: ignore[method-assign]
+    plugin.signal_provider_event = MagicMock()  # type: ignore[method-assign,misc]
+
+    await plugin.create_smart_playlist("AC/DC Mix", {"favorites_only": True})
+
+    assert "AC/DC Mix" in plugin._names_store.values()
+
+
 # ---------------------------------------------------------------------------
 # Evaluate-rules unit tests with mocked mass
 # ---------------------------------------------------------------------------
@@ -1066,7 +1089,7 @@ async def test_tracks_from_seeds_static_gets_headroom_above_target(
     # the radio provider re-samples base tracks per batch, and each mocked similar-track lookup
     # returns fresh mocks, so a base track drawn twice re-adds ids the provider cannot dedupe;
     # pin the provider's draws so the unique-id count does not depend on entropy
-    monkeypatch.setattr("music_assistant.providers.radio_playlist.random", random.Random(1))
+    monkeypatch.setattr("music_assistant.providers.radio_playlist.random", random.Random(1))  # noqa: S311 - test data
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"

@@ -528,7 +528,7 @@ jobs:
             --directory source/dist
 
       - name: Preserve release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -570,7 +570,7 @@ jobs:
           persist-credentials: false
 
       - name: Restore release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -862,7 +862,7 @@ jobs:
 
       - name: Restore release assets
         if: needs.resolve.outputs.release_state != 'published'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -986,6 +986,30 @@ jobs:
               "$RUNNER_TEMP/image-config.json" > /dev/null
           done
 
+      # Runs the server's own official build check inside the image, without starting the
+      # server, so a release can never flag all of its installs as unsupported. A release
+      # source without that check has nothing to verify.
+      - name: Verify official build info
+        if: hashFiles('source/music_assistant/helpers/build_info.py') != ''
+        env:
+          DIGEST: ${{ steps.verify.outputs.digest }}
+          IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/server
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          WHEEL_SHA256: ${{ needs.resolve.outputs.release_state == 'published' && needs.resolve.outputs.wheel_sha256 || needs.prepare_draft.outputs.wheel_sha256 }}
+        run: |
+          docker run --rm --platform linux/amd64 --network none \
+            --entrypoint python "$IMAGE_REPOSITORY@$DIGEST" -c '
+          import asyncio, json
+          from music_assistant.helpers.build_info import get_official_build_info
+          print(json.dumps(asyncio.run(get_official_build_info())))
+          ' > "$RUNNER_TEMP/build-info.json"
+          python3 .release-workflow/scripts/release_workflow.py verify-build-info \
+            --build-info-json "$RUNNER_TEMP/build-info.json" \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --wheel-sha256 "$WHEEL_SHA256"
+
   publish_release:
     name: Publish and verify immutable release
     runs-on: ubuntu-latest
@@ -1071,7 +1095,7 @@ jobs:
 
       - name: Restore draft assets
         if: steps.publication_state.outputs.already_published != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
