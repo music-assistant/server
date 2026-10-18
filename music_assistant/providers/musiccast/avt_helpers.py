@@ -49,12 +49,17 @@ async def _post_soap(
     xml: str,
     soap_action: str,
     op_name: str,
+    read_body: bool = False,
 ) -> str | None:
-    """POST a SOAP request and return the response body, or None on 4xx/5xx error responses."""
+    """
+    POST a SOAP request and log a warning on 4xx/5xx error responses.
+
+    :param read_body: Return the response body, None stays reserved for error responses.
+    """
     headers = get_headers(xml, soap_action)
     async with client.post(ctrl_url, headers=headers, data=xml) as response:
         if response.status < 400:
-            return (await response.read()).decode(errors="replace")
+            return (await response.read()).decode(errors="replace") if read_body else None
         body_excerpt = ""
         with suppress(aiohttp.ClientError):
             body_excerpt = (await response.read())[:300].decode(errors="replace")
@@ -125,7 +130,7 @@ async def avt_get_media_info(
     """Get Media Info."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action = get_xml_soap_media_info()
-    body = await _post_soap(client, ctrl_url, xml, soap_action, "GetMediaInfo")
+    body = await _post_soap(client, ctrl_url, xml, soap_action, "GetMediaInfo", read_body=True)
     if body is None:
         raise aiohttp.ClientError("GetMediaInfo failed")
     return body
@@ -138,7 +143,7 @@ async def avt_get_transport_info(
     """Get Transport Info."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action = get_xml_soap_transport_info()
-    body = await _post_soap(client, ctrl_url, xml, soap_action, "GetTransportInfo")
+    body = await _post_soap(client, ctrl_url, xml, soap_action, "GetTransportInfo", read_body=True)
     if body is None:
         raise aiohttp.ClientError("GetTransportInfo failed")
     return body
