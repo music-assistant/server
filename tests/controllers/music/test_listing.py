@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import fields
 from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 from music_assistant_models.api import SortOptionInfo
@@ -100,6 +103,60 @@ def _track(  # noqa: PLR0913
     track.disc_number, track.track_number = disc_number, track_number
     track.position, track.date_added, track.last_played = position, date_added, last_played
     return track
+
+
+@pytest.mark.parametrize("seed", [0, -5, 123456])
+def test_seeded_random_pages_form_one_permutation(seed: int) -> None:
+    """A seeded random listing keeps its order across independently requested pages."""
+    items = [create_track("library", str(index)) for index in range(30)]
+    options: dict[str, Any] = {"sort_field": SortField.RANDOM, "random_seed": seed}
+    first = apply_listing(items, ListingType.LIBRARY_TRACKS, limit=15, **options)
+    second = apply_listing(items, ListingType.LIBRARY_TRACKS, limit=15, offset=15, **options)
+    whole = apply_listing(items, ListingType.LIBRARY_TRACKS, **options)
+
+    assert first + second == whole
+    assert {item.item_id for item in whole} == {item.item_id for item in items}
+    assert len({item.item_id for item in first + second}) == len(items)
+    assert whole != apply_listing(
+        items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM, random_seed=seed + 1
+    )
+
+
+@pytest.mark.parametrize("seed", [0, 17, -5])
+def test_seeded_random_pages_ignore_source_order_and_keep_repeated_entries(seed: int) -> None:
+    """A source reshuffle cannot change seeded pages or remove repeated playlist entries."""
+    items = [create_track("library", str(index)) for index in range(30)]
+    items.extend([items[3], items[3], create_track("qobuz_1", "0")])
+    original = list(items)
+    permutations = [items, list(reversed(items)), items[7:] + items[:7]]
+    options: dict[str, Any] = {"sort_field": SortField.RANDOM, "random_seed": seed}
+    whole = apply_listing(items, ListingType.LIBRARY_TRACKS, **options)
+    paged = []
+    for page_index, offset in enumerate(range(0, len(items), 7)):
+        paged.extend(
+            apply_listing(
+                permutations[page_index % len(permutations)],
+                ListingType.LIBRARY_TRACKS,
+                limit=7,
+                offset=offset,
+                **options,
+            )
+        )
+
+    assert [item.uri for item in paged] == [item.uri for item in whole]
+    assert Counter(item.uri for item in paged) == Counter(item.uri for item in items)
+    assert items == original
+
+
+def test_unseeded_random_still_uses_global_shuffle() -> None:
+    """An omitted seed preserves the existing per-request shuffle."""
+    items = [create_track("library", str(index)) for index in range(10)]
+    with patch("music_assistant.controllers.music.listing.random.shuffle") as shuffle:
+        apply_listing(items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM)
+        shuffle.assert_called_once()
+        shuffle.reset_mock()
+        apply_listing(items, ListingType.LIBRARY_TRACKS, sort_field=SortField.RANDOM, random_seed=0)
+        shuffle.assert_not_called()
 
 
 @pytest.fixture

@@ -2170,6 +2170,15 @@ def test_a_loose_track_compare_still_takes_a_remaster_for_its_recording() -> Non
 
 
 @pytest.mark.usefixtures("keep_remasters_apart")
+def test_a_strict_track_compare_can_still_match_a_remaster() -> None:
+    """A caller that asks for it still gets a remaster matched to the original."""
+    original = _recording("original", "provider_a")
+    remaster = _recording("remaster", "provider_b", version="2009 Remaster")
+
+    assert compare.compare_track(original, remaster, match_remasters=True) is True
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
 def test_compare_track_evidence_keeps_remasters_apart() -> None:
     """A remaster is no match for the original, while the same remaster on another album is."""
     original = _recording("original", "provider_a")

@@ -36,16 +36,26 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
         "MusicAssistant",
         SimpleNamespace(
             loop=asyncio.get_running_loop(),
-            players=SimpleNamespace(get_player=lambda _client_id: player),
+            players=SimpleNamespace(
+                get_player=lambda _client_id: player, trigger_player_update=Mock()
+            ),
             create_task=Mock(side_effect=AssertionError("refresh must not spawn tasks")),
         ),
     )
+    provider.server_api = cast(
+        "SendspinServer", SimpleNamespace(get_client=lambda _client_id: None)
+    )
+    provider._held_elsewhere = set()
+    provider._held_unapproved = set()
+    provider._held_paired = set()
+    provider._unencrypted_clients = set()
     return provider
 
 
 def _mock_player(*, initialized: bool = True) -> Mock:
     player = Mock(spec=SendspinBasePlayer)
     player.initialized.is_set.return_value = initialized
+    player.protocol_parent_id = None
     return player
 
 
@@ -56,6 +66,17 @@ async def test_refresh_player_updates_in_place() -> None:
     await provider._refresh_player("c")
     player.on_config_updated.assert_awaited_once()
     player.update_state.assert_called_once()
+
+
+async def test_refresh_player_refreshes_the_visible_player() -> None:
+    """A role change reaches the visible player, also when the device is the visible player."""
+    player = _mock_player()
+    provider = _make_provider(player)
+    await provider._refresh_player("c")
+    player.protocol_parent_id = "visible"
+    await provider._refresh_player("c")
+    trigger = cast("Mock", provider.mass.players.trigger_player_update)
+    assert [call.args for call in trigger.call_args_list] == [("c",), ("visible",)]
 
 
 async def test_refresh_player_ignores_unknown_player() -> None:

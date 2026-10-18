@@ -75,6 +75,7 @@ from music_assistant.constants import (
     UNKNOWN_ARTIST,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.tags import async_parse_tags, clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -1403,7 +1404,11 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         if library_items := await self.mass.music.artists.get_library_items_by_query(
             search=artist_name, provider_filter=[self.instance_id]
         ):
-            return ItemMapping.from_item(library_items[0])
+            # Make sure it was a full match since get_library_items_by_query()
+            # matches on substrings
+            for item in library_items:
+                if compare_strings(item.name, artist_name, strict=True):
+                    return ItemMapping.from_item(item)
 
         artist_id = FAKE_ARTIST_PREFIX + artist_name
         return Artist(

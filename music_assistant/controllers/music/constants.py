@@ -12,7 +12,7 @@ CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
 
-DB_SCHEMA_VERSION: Final[int] = 69
+DB_SCHEMA_VERSION: Final[int] = 70
 # library settings key holding old -> new sidebar shortcut URIs a migration parked
 PENDING_SHORTCUT_REWRITES_KEY: Final[str] = "pending_shortcut_rewrites"
 

@@ -219,6 +219,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[PlaylistPlayableItem]:
         """
         Return the items of a playlist, searched, sorted and paged.
@@ -240,6 +241,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of items to return; 0 returns them all.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for playlist tracks.
         """
         # an unsupported sort is rejected before the playlist is fetched
@@ -292,6 +294,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def iter_tracks(

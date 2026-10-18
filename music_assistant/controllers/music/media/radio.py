@@ -195,6 +195,7 @@ class RadioController(MediaControllerBase[Radio]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Radio]:
         """
         Return the versions of a radio station on all providers, searched, sorted and paged.
@@ -207,6 +208,7 @@ class RadioController(MediaControllerBase[Radio]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of versions to return; 0 returns them all.
         :param offset: Number of versions to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for versions.
         """
         return await self._versions_listing(
@@ -218,6 +220,7 @@ class RadioController(MediaControllerBase[Radio]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def match_provider(

@@ -1877,6 +1877,38 @@ async def test_resolve_artist_by_barcode_checks_every_release_of_the_barcode() -
     assert _requested(get_data) == ["release?query", f"artist/{RADIOHEAD_MBID}"]
 
 
+async def test_identify_artist_tells_a_name_search_apart() -> None:
+    """Only an artist that a name search alone identifies is reported as found by name."""
+    provider, _ = _routed_provider(
+        {
+            SPOTIFY_ARTIST_URL: _url_lookup("artist", RADIOHEAD_MBID),
+            "recording?query": {
+                "recordings": [
+                    {
+                        **_recording_lookup("rec-1"),
+                        "releases": [
+                            {
+                                "title": "In Rainbows",
+                                "release-group": {"id": "rg", "title": "In Rainbows"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    by_link = _artist_item(mappings={_mapping("spotify", "4Z8W4fKeB5YxbusRsdQVPb")})
+
+    linked = await provider.identify_artist(by_link, [], [])
+    searched = await provider.identify_artist(_artist_item(), [], [_track_item()])
+
+    assert linked is not None
+    assert (linked.artist.id, linked.by_name) == (RADIOHEAD_MBID, False)
+    assert searched is not None
+    assert (searched.artist.id, searched.by_name) == (RADIOHEAD_MBID, True)
+
+
 def test_reverse_lookup_urls_take_one_canonical_url_per_provider_first() -> None:
     """A provider's first mapping is looked up canonically; its other mappings come after."""
     artist = _artist_item(
