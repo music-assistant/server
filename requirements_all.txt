@@ -53,7 +53,7 @@ markdownify==1.2.3
 mashumaro==3.22
 modern_colorthief==0.3.0
 music-assistant-frontend==2.17.344
-music-assistant-models==1.1.225
+music-assistant-models @ git+https://github.com/ashtonian/music-assistant-models@82a0865148922b39c7c356ace688ccfef58e829a
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post3
 nnAudio==0.3.4
