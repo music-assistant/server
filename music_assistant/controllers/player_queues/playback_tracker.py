@@ -861,7 +861,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         """
         Claim the album play this track credits, or None when there is nothing to credit.
 
-        Only a track played from an album, or from the folder that holds one, is eligible, and
+        Only a track played from an album, or from the album's own folder, is eligible, and
         only the first of the album's tracks to complete, so an album play is credited once
         however its tracks ended up ordered in the queue. Claiming marks the album as credited
         on this queue, so a second call for it returns None until the album is played again.

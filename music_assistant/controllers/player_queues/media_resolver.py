@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import NoneType
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
@@ -1270,11 +1270,7 @@ class MediaResolver:
                 elif origin.container.media_type == MediaType.ALBUM:
                     # an album in the folder plays as part of the folder rather than as an
                     # album of its own, so its tracks keep their pins under the folder
-                    origin = QueueItemOrigin(
-                        container=container,
-                        provider_instance=origin.provider_instance,
-                        item_id=origin.item_id,
-                    )
+                    origin = replace(origin, container=container)
                 # any other container in the folder, such as a plain subfolder or a playlist,
                 # stays the origin of its entries
                 items.append(ResolvedItem(entry.item, origin))

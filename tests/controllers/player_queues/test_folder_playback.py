@@ -238,6 +238,32 @@ async def test_album_folder_and_its_disc_subfolder_play_as_the_album(mass: Music
     assert bonus_origin.container.item_id == f"{album_path}/Bonus"
 
 
+async def test_an_album_folder_plays_its_disc_subfolders_as_the_album(mass: MusicAssistant) -> None:
+    """The files in the disc subfolders of a played album folder play as that album."""
+    album = await _scanned_album(mass, "In a Silent Way", "Music/In a Silent Way")
+    album_folder = BrowseFolder(
+        item_id="Music/In a Silent Way", provider=PROVIDER, name="In a Silent Way", is_playable=True
+    )
+    disc_folder = BrowseFolder(
+        item_id="Music/In a Silent Way/CD1", provider=PROVIDER, name="CD1", is_playable=True
+    )
+    file = _file("Music/In a Silent Way/CD1/01.flac")
+    browse = AsyncMock(
+        side_effect=lambda path, **_kwargs: [disc_folder] if path == album_folder.path else [file]
+    )
+    with patch.object(mass.music, "browse", browse):
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(album_folder)
+
+    origin = resolved[0].origin
+    assert origin is not None
+    assert origin.container is not None
+    assert (origin.container.media_type, origin.container.item_id) == (
+        MediaType.ALBUM,
+        album.item_id,
+    )
+    assert (origin.provider_instance, origin.item_id) == (PROVIDER, file.item_id)
+
+
 async def test_an_album_folder_play_counts_as_a_play_of_the_album(mass: MusicAssistant) -> None:
     """The first file of an album folder to play to the end counts the album as played, once."""
     user = await mass.webserver.auth.create_user("folderalbumcredit")
