@@ -616,7 +616,7 @@ class RaumfeldPlayer(Player):
         host = self.raumfeld.host
         generation = self._playback_generation
         own_zone = self.raumfeld.get_zone_for_room(self.room)
-        members_play = [await self._zone_plays(host, zone) for zone in member_zones]
+        members_play = [await self._zone_plays_queue(host, zone) for zone in member_zones]
         own_plays = False if own_zone is None else await self._zone_plays(host, own_zone)
         if None in members_play or own_plays is None:
             return None
@@ -654,7 +654,7 @@ class RaumfeldPlayer(Player):
             # over on the next poll
             self.update_state()
             return
-        if self._attr_playback_state == PlaybackState.PLAYING and self._zones_without_leader():
+        if self._held_for_watcher():
             # This room or the others were taken out of the group's zone. The zone watcher
             # tells which, and hands the queue over if it was this room; reading this room's
             # zone meanwhile would end the queue it plays.
@@ -705,6 +705,10 @@ class RaumfeldPlayer(Player):
         )
         if not self._reading_is_current(generation):
             # a play or stop command ran meanwhile; the next poll reads what it brought
+            self.update_state()
+            return
+        if self._held_for_watcher():
+            # the group's zone split during the reads, which then belong to the zone watcher
             self.update_state()
             return
 
@@ -1079,6 +1083,24 @@ class RaumfeldPlayer(Player):
             if (zone := self.raumfeld.get_zone_for_room(room)) is not None and zone not in zones:
                 zones.append(zone)
         return zones
+
+    def _held_for_watcher(self) -> bool:
+        """Return whether this playing leader's group left its zone, for the watcher to sort out."""
+        return self._attr_playback_state == PlaybackState.PLAYING and bool(
+            self._zones_without_leader()
+        )
+
+    async def _zone_plays_queue(self, host: hassfeld.RaumfeldHost, zone: list[str]) -> bool | None:
+        """Return whether the zone plays this room's queue, or ``None`` while that cannot be told."""
+        if not (plays := await self._zone_plays(host, zone)):
+            return plays
+        if (position := await self._read_position(host, zone)) is None:
+            return None
+        # a queue's stream is served at <base url>/flow|single/<session>/<queue id>/...
+        base_url = self.mass.streams.base_url
+        uri = position.get("TrackURI") or ""
+        parts = uri.removeprefix(f"{base_url}/").split("/") if uri.startswith(base_url) else []
+        return len(parts) > 2 and parts[0] in ("flow", "single") and parts[2] == self.player_id
 
     async def _zone_plays(self, host: hassfeld.RaumfeldHost, zone: list[str]) -> bool | None:
         """Return whether the zone is playing, or ``None`` while that cannot be told."""

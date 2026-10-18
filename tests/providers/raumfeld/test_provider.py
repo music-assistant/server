@@ -87,6 +87,7 @@ async def test_transport_url_follows_the_renderers_current_address() -> None:
 
 
 ROOMS = ("Bar", "Sofa", "Kitchen", "Office")
+_BASE_URL = "http://mass.local:8097"
 
 
 @pytest.fixture(autouse=True)
@@ -299,8 +300,15 @@ def _playing_group(
         state = "PLAYING" if zone in playing_zones else "STOPPED"
         return {"CurrentTransportState": state}
 
+    async def position(zone: list[str]) -> dict[str, str]:
+        if zone not in playing_zones:
+            return {"TrackURI": ""}
+        return {"TrackURI": f"{_BASE_URL}/flow/s1/{leader.player_id}/i1/{leader.player_id}.flac"}
+
     provider.host.async_get_transport_info = AsyncMock(side_effect=transport)
+    provider.host.async_get_position_info = AsyncMock(side_effect=position)
     mass = cast("MagicMock", provider.mass)
+    mass.streams.base_url = _BASE_URL
     queue = MagicMock(queue_id=leader.player_id, state=PlaybackState.PLAYING)
     mass.player_queues.get_active_queue.return_value = queue
     return mass
@@ -438,6 +446,36 @@ async def test_only_the_rooms_that_play_on_get_the_queue() -> None:
         await _follow(provider, players)
     mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
     assert _groups(players) == {"Bar": ["Bar", "Kitchen", "Office"]}
+
+
+async def test_rooms_that_play_on_another_source_are_not_handed_the_queue() -> None:
+    """Rooms that switched to another source after the leader left keep playing that."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    mass = _playing_group(provider, players, ["Bar", "Sofa"], [["Sofa"]])
+    provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+    provider.host.async_get_position_info = AsyncMock(
+        return_value={"TrackURI": "http://opml.radiotime.com/Tune.ashx?id=s25777"}
+    )
+    await _follow(provider, players)
+    await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_not_called()
+    assert _groups(players) == {}
+
+
+async def test_a_split_during_the_leaders_poll_leaves_its_queue_alone() -> None:
+    """A zone split while the leader's poll reads it does not end the queue it plays."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    _playing_group(provider, players, ["Bar", "Sofa"], [["Bar", "Sofa"]])
+    bar = players["Bar"]
+
+    async def split_while_read(_zone: list[str]) -> dict[str, str]:
+        provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+        return {"CurrentTransportState": "STOPPED"}
+
+    provider.host.async_get_transport_info = AsyncMock(side_effect=split_while_read)
+    with patch.object(bar, "_update_volume", AsyncMock()):
+        await bar._poll_zone(provider.host, ["Bar", "Sofa"])
+    assert bar._attr_playback_state == PlaybackState.PLAYING
 
 
 def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:
