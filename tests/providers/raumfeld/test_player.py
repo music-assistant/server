@@ -16,6 +16,7 @@ from music_assistant.providers.raumfeld.player import (
     ADVANCE_WATCH_ATTEMPTS,
     IDLE_POLL_INTERVAL,
     PLAYING_POLL_INTERVAL,
+    ZONE_CREATE_ATTEMPTS,
     RaumfeldPlayer,
     _map_transport_state,
     _near_track_end,
@@ -34,6 +35,7 @@ def _flow_player() -> RaumfeldPlayer:
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player._attr_elapsed_time = None
     player._attr_elapsed_time_last_updated = None
+    player._attr_group_members = []
     player._external_source = None
     player._extra_data = {}
     mass = MagicMock()
@@ -226,6 +228,7 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player.room = "Bank"
     player._player_id = "raumfeld_follower"
+    player._attr_group_members = []
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_poll_interval = PLAYING_POLL_INTERVAL
     provider = MagicMock()
@@ -419,6 +422,24 @@ async def test_a_group_is_created_as_one_zone() -> None:
         room_udns=["uuid:Bar", "uuid:Sofa"],
     )
     host.async_add_room_to_zone.assert_not_awaited()
+
+
+async def test_rooms_the_host_does_not_add_are_reported() -> None:
+    """A room that never lands in the leader's zone fails the group change, not silently."""
+    player = _room_player()
+    host = MagicMock()
+    host.async_add_room_to_zone = AsyncMock()
+    provider = MagicMock()
+    provider.host = host
+    provider.get_zone_for_room.return_value = ["Bar"]
+    player._provider = provider
+    player.logger = MagicMock()
+    with (
+        patch("music_assistant.providers.raumfeld.player.ZONE_WAIT_TIMEOUT", 0),
+        pytest.raises(PlayerCommandFailed, match="did not add Sofa to the zone of Bar"),
+    ):
+        await player._add_rooms_to_zone(["Sofa"])
+    assert host.async_add_room_to_zone.await_count == ZONE_CREATE_ATTEMPTS
 
 
 def _powered_player(power_state: str | None) -> tuple[RaumfeldPlayer, MagicMock]:

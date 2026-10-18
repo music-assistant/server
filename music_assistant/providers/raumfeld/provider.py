@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urljoin, urlparse
 
@@ -54,6 +55,8 @@ from .helpers import (
 from .player import RaumfeldPlayer
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from music_assistant_models.config_entries import ConfigEntry
 
 
@@ -67,8 +70,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _update_task: asyncio.Task[None] | None = None
     _zone_watch_task: asyncio.Task[None] | None = None
     # the host's zones as seen on the previous look, when they differed from Music
-    # Assistant's groups, and when MA last changed a group itself
+    # Assistant's groups, how many group changes MA is making right now, and when the
+    # last one ended
     _pending_zones: frozenset[frozenset[str]] | None = None
+    _group_changes: int = 0
     _group_changed_at: float = 0.0
     _connected: bool = False
     # renderer UUID -> (Line-In stream url, title) for rooms that expose an analog input
@@ -127,9 +132,21 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return None
         return location
 
-    def note_group_change(self) -> None:
-        """Record that Music Assistant itself is changing a group right now."""
-        self._group_changed_at = time.time()
+    @property
+    def group_change_settling(self) -> bool:
+        """Return whether a group change Music Assistant made is still running or settling."""
+        return bool(self._group_changes) or time.time() - self._group_changed_at < GROUP_SETTLE_TIME
+
+    @contextmanager
+    def changing_group(self) -> Iterator[None]:
+        """Keep the host's zones from being mirrored while Music Assistant changes a group."""
+        self._group_changes += 1
+        try:
+            yield
+        finally:
+            self._group_changes -= 1
+            # the settle time counts from the end of the change, a failed one included
+            self._group_changed_at = time.time()
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider (setup input is in setup_flow)."""
@@ -339,11 +356,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
         while True:
             await asyncio.sleep(ZONE_WATCH_INTERVAL)
             try:
-                self._follow_zones()
+                await self._follow_zones()
             except HOST_ERRORS as err:
                 self.logger.debug("Failed to compare Raumfeld zones: %r", err)
 
-    def _follow_zones(self) -> None:
+    async def _follow_zones(self) -> None:
         """Mirror the host's zones once they differ from MA's groups and have settled."""
         zones = self._grouped_zones()
         # compare with the groups MA shows right now, not with what was mirrored last: a
@@ -359,15 +376,21 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if zones != self._pending_zones:
             self._pending_zones = zones
             return
-        if time.time() - self._group_changed_at < GROUP_SETTLE_TIME:
+        if self.group_change_settling:
             return
         self.logger.debug(
             "Raumfeld zones differ from the groups shown, following them: %s -> %s",
             sorted(sorted(group) for group in self._shown_groups()),
             sorted(sorted(zone) for zone in zones),
         )
-        self._sync_groups()
         self._pending_zones = None
+        # A leader taken out of the zone its group plays in hands its queue over to the
+        # rooms that play on, as MA does when a leader leaves its group; mirroring the zones
+        # first would leave those rooms playing a queue that no player shows.
+        for player in list(self.players):
+            if isinstance(player, RaumfeldPlayer) and await player.leave_group_if_dropped():
+                return
+        self._sync_groups()
 
     def _grouped_zones(self) -> frozenset[frozenset[str]]:
         """Return the host's zones that hold more than one room with a player."""
@@ -423,17 +446,30 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param member_ids: The player ids of the zone's rooms, the zone coordinator first.
         """
-        # A member that already leads a group here keeps leading, and failing that the one
-        # playing a queue Music Assistant started: either holds the queue that is playing,
-        # and the host's coordinator is often another room than the one MA grouped or played
-        # from. Making that other room the leader would leave the queue's own player showing
-        # nothing. Only a zone with neither (made and played from the Raumfeld app) takes
+        # The member playing a queue Music Assistant started leads, and failing that one that
+        # already leads a group here: the host's coordinator is often another room than the
+        # one MA grouped or played from, and making that other room the leader would leave
+        # the queue's own player showing nothing. A follower is passed over: it mirrors its
+        # leader's playing state, and still names its own queue as its source until it is
+        # stopped. Only a zone with neither (made and played from the Raumfeld app) takes
         # the host's coordinator.
-        members = [self.mass.players.get_player(member_id) for member_id in member_ids]
-        for wanted in ("leads_group", "plays_own_queue"):
-            for member in members:
-                if isinstance(member, RaumfeldPlayer) and getattr(member, wanted):
-                    return member.player_id
+        members = [
+            member
+            for member_id in member_ids
+            if isinstance(member := self.mass.players.get_player(member_id), RaumfeldPlayer)
+        ]
+        following = {
+            member_id
+            for player in self.players
+            if isinstance(player, RaumfeldPlayer) and player.leads_group
+            for member_id in player.group_members[1:]
+        }
+        for member in members:
+            if member.plays_own_queue and member.player_id not in following:
+                return member.player_id
+        for member in members:
+            if member.leads_group:
+                return member.player_id
         return member_ids[0]
 
     def _room_player_id(self, room: str) -> str | None:

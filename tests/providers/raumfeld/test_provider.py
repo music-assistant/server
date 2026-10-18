@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
@@ -189,63 +191,155 @@ def test_merged_groups_end_up_with_a_single_leader() -> None:
     assert _groups(players) == {"Bar": ["Bar", "Kitchen", "Office", "Sofa"]}
 
 
-def _follow(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldPlayer]) -> None:
+async def _follow(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldPlayer]) -> None:
     """Run one look of the zone watcher with the provider's players in place."""
     with patch.object(
         RaumfeldPlayerProvider, "players", new_callable=lambda: property(lambda _: players.values())
     ):
-        provider._follow_zones()
+        await provider._follow_zones()
 
 
-def test_a_changed_zone_layout_is_followed_once_it_held() -> None:
+async def test_a_changed_zone_layout_is_followed_once_it_held() -> None:
     """A new layout is taken over on the second look in a row, not on the first."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _sync(provider, players)
     provider.host.get_zones.return_value = [["Bar", "Sofa"]]
-    _follow(provider, players)
+    await _follow(provider, players)
     assert _groups(players) == {}
-    _follow(provider, players)
+    await _follow(provider, players)
     assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
 
 
-def test_a_layout_that_keeps_changing_is_not_followed() -> None:
+async def test_a_layout_that_keeps_changing_is_not_followed() -> None:
     """States the host passes through while regrouping are never mirrored."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _sync(provider, players)
     for zones in ([["Bar", "Sofa"]], [["Bar", "Kitchen"]], [["Bar", "Sofa"]]):
         provider.host.get_zones.return_value = zones
-        _follow(provider, players)
+        await _follow(provider, players)
     assert _groups(players) == {}
 
 
-def test_zones_are_left_alone_while_a_change_from_music_assistant_settles() -> None:
+async def test_zones_are_left_alone_while_a_change_from_music_assistant_settles() -> None:
     """A group change MA just made is not overwritten by what the host shows meanwhile."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _sync(provider, players)
     provider.host.get_zones.return_value = [["Bar", "Sofa"]]
     with patch("music_assistant.providers.raumfeld.provider.time.time", return_value=1000.0):
-        provider.note_group_change()
-        _follow(provider, players)
-        _follow(provider, players)
+        with provider.changing_group():
+            pass
+        await _follow(provider, players)
+        await _follow(provider, players)
         assert _groups(players) == {}
     with patch(
         "music_assistant.providers.raumfeld.provider.time.time",
         return_value=1000.0 + GROUP_SETTLE_TIME + 1,
     ):
-        _follow(provider, players)
+        await _follow(provider, players)
     assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
 
 
-def test_a_group_made_here_and_undone_in_the_raumfeld_app_is_cleared() -> None:
+async def test_zones_are_left_alone_while_a_change_from_music_assistant_runs() -> None:
+    """A group change that takes longer than the settle time is not overwritten meanwhile."""
+    provider, players = _zone_provider([["Bar"], ["Sofa"]])
+    _sync(provider, players)
+    provider.host.get_zones.return_value = [["Bar", "Sofa"]]
+    clock = "music_assistant.providers.raumfeld.provider.time.time"
+    with provider.changing_group():
+        with patch(clock, return_value=1000.0 + GROUP_SETTLE_TIME + 1):
+            await _follow(provider, players)
+            await _follow(provider, players)
+        assert _groups(players) == {}
+    # the settle time counts from the end of the change, a failed one included
+    with pytest.raises(RuntimeError), provider.changing_group():
+        raise RuntimeError
+    await _follow(provider, players)
+    assert _groups(players) == {}
+    with patch(clock, return_value=time.time() + GROUP_SETTLE_TIME + 1):
+        await _follow(provider, players)
+    assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
+
+
+async def test_a_group_made_here_and_undone_in_the_raumfeld_app_is_cleared() -> None:
     """A group MA made disappears when the host no longer has it, even if never mirrored."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _sync(provider, players)
     # grouped in Music Assistant, which the host has undone again before any look at it
     bar = players["Bar"]
     bar._attr_group_members = [bar.player_id, players["Sofa"].player_id]
-    _follow(provider, players)
-    _follow(provider, players)
+    await _follow(provider, players)
+    await _follow(provider, players)
     assert _groups(players) == {}
+
+
+def _playing_group(
+    provider: RaumfeldPlayerProvider,
+    players: dict[str, RaumfeldPlayer],
+    rooms: list[str],
+    playing_zones: list[list[str]],
+) -> MagicMock:
+    """
+    Make the first room lead the others, playing its own queue; return the mass mock.
+
+    :param provider: The provider the players belong to.
+    :param players: The players by room.
+    :param rooms: The group's rooms, the leader first.
+    :param playing_zones: The zones whose transport reads as playing; all others stop.
+    """
+    leader = players[rooms[0]]
+    leader._attr_group_members = [players[room].player_id for room in rooms]
+    leader._attr_active_source = leader.player_id
+    leader._attr_playback_state = PlaybackState.PLAYING
+    for player in players.values():
+        player._provider = provider
+        player.mass = provider.mass
+
+    async def transport(zone: list[str]) -> dict[str, str]:
+        state = "PLAYING" if zone in playing_zones else "STOPPED"
+        return {"CurrentTransportState": state}
+
+    provider.host.async_get_transport_info = AsyncMock(side_effect=transport)
+    mass = cast("MagicMock", provider.mass)
+    queue = MagicMock(queue_id=leader.player_id, state=PlaybackState.PLAYING)
+    mass.player_queues.get_active_queue.return_value = queue
+    return mass
+
+
+async def test_a_leader_taken_out_of_its_playing_group_hands_its_queue_over() -> None:
+    """The rooms that play on get the leader's queue, as when MA takes the leader out."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    mass = _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"]])
+    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+    mass.create_task.assert_called_once()
+    # the core moves the group over; mirroring the zones first would empty it here
+    assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
+
+
+async def test_rooms_taken_out_of_a_playing_group_are_mirrored() -> None:
+    """A leader that plays on keeps its queue; only the group is mirrored from the zones."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    mass = _playing_group(provider, players, ["Bar", "Sofa"], [["Bar"]])
+    provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+    await _follow(provider, players)
+    await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_not_called()
+    assert _groups(players) == {}
+
+
+def test_a_leader_whose_rooms_left_its_zone_waits_for_the_watcher() -> None:
+    """Until the watcher tells who left, the leader's own reading must not end its queue."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    _playing_group(provider, players, ["Bar", "Sofa"], [["Sofa"]])
+    bar = players["Bar"]
+    assert bar._zone_without_leader() is None
+    provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+    assert bar._zone_without_leader() == ["Sofa"]
+    with provider.changing_group():
+        assert bar._zone_without_leader() is None
 
 
 def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:
@@ -256,3 +350,26 @@ def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:
     sofa._attr_playback_state = PlaybackState.PLAYING
     _sync(provider, players)
     assert _groups(players) == {"Sofa": ["Sofa", "Bar"]}
+
+
+def test_the_playing_room_leads_over_an_idle_leader_when_zones_merge() -> None:
+    """An idle group merged into a room playing MA's queue does not take that queue's lead."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    bar, sofa = players["Bar"], players["Sofa"]
+    bar._attr_group_members = [bar.player_id, players["Kitchen"].player_id]
+    sofa._attr_active_source = sofa.player_id
+    sofa._attr_playback_state = PlaybackState.PLAYING
+    _sync(provider, players)
+    assert _groups(players) == {"Sofa": ["Sofa", "Bar", "Kitchen"]}
+
+
+def test_a_follower_still_naming_its_own_queue_does_not_take_the_lead() -> None:
+    """A follower mirrors its leader's playing state, which is not a queue of its own."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    bar, sofa = players["Bar"], players["Sofa"]
+    sofa._attr_group_members = [sofa.player_id, bar.player_id]
+    for player in (bar, sofa):
+        player._attr_active_source = player.player_id
+        player._attr_playback_state = PlaybackState.PLAYING
+    _sync(provider, players)
+    assert _groups(players) == {"Sofa": ["Sofa", "Bar", "Kitchen"]}
