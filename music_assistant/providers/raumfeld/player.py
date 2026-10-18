@@ -648,7 +648,19 @@ class RaumfeldPlayer(Player):
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
         host = self.raumfeld.host
+        was_powered = self._attr_powered
         self._update_power()
+        if (
+            was_powered
+            and self._attr_powered is False
+            and self.leads_group
+            and self._attr_playback_state == PlaybackState.PLAYING
+        ):
+            # Switched off outside MA (the Raumfeld app does that to a room it takes out of
+            # a group) while leading a group that plays: the other rooms play on in the zone.
+            # MA hands the queue to one of them once it sees the room off; leaving the zone
+            # to them first saves taking each out of it and making them a new one.
+            await self._leave_zone()
         if self._plays_spotify_connect() and self._leave_group():
             # the handover reads this room's queue as it is now; Spotify Connect is taken
             # over on the next poll
@@ -1083,6 +1095,23 @@ class RaumfeldPlayer(Player):
             if (zone := self.raumfeld.get_zone_for_room(room)) is not None and zone not in zones:
                 zones.append(zone)
         return zones
+
+    async def _leave_zone(self) -> None:
+        """Take this room out of its zone on the host, leaving the other rooms in it."""
+        try:
+            await self.raumfeld.host.async_drop_room_from_zone(self.room)
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to take %s out of its zone: %r", self.room, err)
+            return
+        # MA's handover acts on the rooms' zones right after this, so wait (bounded) until
+        # the host's zone list shows the room out
+        started = time.time()
+        while (zone := self.raumfeld.get_zone_for_room(self.room)) and len(zone) > 1:
+            if time.time() - started >= ZONE_WAIT_TIMEOUT:
+                self.logger.debug("%s still listed in zone %s", self.room, zone)
+                return
+            await asyncio.sleep(ZONE_WAIT_INTERVAL)
+        self.logger.debug("%s left its zone after %.1fs", self.room, time.time() - started)
 
     def _held_for_watcher(self) -> bool:
         """Return whether this playing leader's group left its zone, for the watcher to sort out."""

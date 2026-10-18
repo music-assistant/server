@@ -478,6 +478,55 @@ async def test_a_split_during_the_leaders_poll_leaves_its_queue_alone() -> None:
     assert bar._attr_playback_state == PlaybackState.PLAYING
 
 
+async def test_a_leader_switched_off_while_playing_leaves_its_zone_to_the_others() -> None:
+    """The other rooms keep their zone, so handing them the queue needs no new one."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Bar", "Kitchen", "Sofa"]])
+    provider.host.room_is_spotify_single_room.return_value = False
+    bar = players["Bar"]
+    bar._attr_powered = True
+
+    async def drop(_room: str) -> None:
+        provider.host.get_zones.return_value = [["Kitchen", "Sofa"]]
+
+    provider.host.async_drop_room_from_zone = AsyncMock(side_effect=drop)
+    with (
+        patch.object(
+            bar, "_update_power", side_effect=lambda: setattr(bar, "_attr_powered", False)
+        ),
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(bar, "_poll_zone", AsyncMock()),
+    ):
+        await bar.poll()
+    provider.host.async_drop_room_from_zone.assert_awaited_once_with("Bar")
+    # until MA has handed the queue over, the leader keeps reporting it as playing
+    assert bar._attr_playback_state == PlaybackState.PLAYING
+
+
+@pytest.mark.parametrize("case", ["already off", "idle", "not leading"])
+async def test_a_room_switched_off_otherwise_stays_in_its_zone(case: str) -> None:
+    """Only a leader of a playing group leaves its zone when it is switched off."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    _playing_group(provider, players, ["Bar", "Sofa", "Kitchen"], [["Bar", "Kitchen", "Sofa"]])
+    provider.host.room_is_spotify_single_room.return_value = False
+    provider.host.async_drop_room_from_zone = AsyncMock()
+    bar = players["Bar"]
+    bar._attr_powered = case != "already off"
+    if case == "idle":
+        bar._attr_playback_state = PlaybackState.IDLE
+    if case == "not leading":
+        bar._attr_group_members = []
+    with (
+        patch.object(
+            bar, "_update_power", side_effect=lambda: setattr(bar, "_attr_powered", False)
+        ),
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(bar, "_poll_zone", AsyncMock()),
+    ):
+        await bar.poll()
+    provider.host.async_drop_room_from_zone.assert_not_awaited()
+
+
 def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:
     """A room added in the Raumfeld app joins the room that plays MA's queue, not vice versa."""
     provider, players = _zone_provider([["Bar", "Sofa"]])
