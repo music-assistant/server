@@ -103,6 +103,7 @@ def _player(room: str) -> RaumfeldPlayer:
     player.room = room
     player._player_id = f"raumfeld_{room.lower()}"
     player._attr_group_members = []
+    player._advance_task_id = f"raumfeld_advance_{room.lower()}"
     player._attr_active_source = None
     player._attr_playback_state = PlaybackState.IDLE
     return player
@@ -525,6 +526,40 @@ async def test_a_room_switched_off_otherwise_stays_in_its_zone(case: str) -> Non
     ):
         await bar.poll()
     provider.host.async_drop_room_from_zone.assert_not_awaited()
+
+
+async def test_a_leader_that_switched_source_still_hands_its_queue_over() -> None:
+    """A leader playing something else by now does not keep the queue its old rooms play."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
+    mass = _playing_group(
+        provider, players, ["Bar", "Sofa", "Kitchen"], [["Kitchen", "Sofa"], ["Bar"]]
+    )
+    provider.host.get_zones.return_value = [["Bar"], ["Kitchen", "Sofa"]]
+    queue_position = provider.host.async_get_position_info.side_effect
+
+    async def radio_on_bar(zone: list[str]) -> dict[str, str]:
+        if zone == ["Bar"]:
+            return {"TrackURI": "http://opml.radiotime.com/Tune.ashx?id=s25777"}
+        return cast("dict[str, str]", await queue_position(zone))
+
+    provider.host.async_get_position_info.side_effect = radio_on_bar
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+
+
+async def test_the_end_watch_leaves_a_split_group_to_the_watcher() -> None:
+    """With flow mode off, the next item does not start on a leader its group left."""
+    provider, players = _zone_provider([["Bar"], ["Sofa"]])
+    _playing_group(provider, players, ["Bar", "Sofa"], [["Sofa"]])
+    bar = players["Bar"]
+    bar._advance_armed = True
+    bar._next_media = MagicMock()
+    with patch.object(bar, "_advance_to_next") as advance:
+        await bar._watch_for_track_end(0)
+    advance.assert_not_called()
+    provider.host.async_get_transport_info.assert_not_awaited()
 
 
 def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:

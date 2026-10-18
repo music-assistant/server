@@ -372,12 +372,13 @@ class RaumfeldPlayer(Player):
     @_changes_playback
     async def stop(self) -> None:
         """Send STOP command."""
+        # a queue handed over takes its next item along: nothing may start here after it
+        self._clear_next()
         if time.time() < self._handover_until:
             # MA ends this room's queue while handing it over; the room itself left the
             # group's zone (to Spotify Connect, say), and what it plays now must go on
             self._handover_until = 0.0
             return
-        self._clear_next()
         # we treat pause as stop; freeze the extrapolated position into the anchor so the
         # paused progress bar stays where playback was, instead of snapping back to the
         # last (behind) poll anchor
@@ -617,7 +618,8 @@ class RaumfeldPlayer(Player):
         generation = self._playback_generation
         own_zone = self.raumfeld.get_zone_for_room(self.room)
         members_play = [await self._zone_plays_queue(host, zone) for zone in member_zones]
-        own_plays = False if own_zone is None else await self._zone_plays(host, own_zone)
+        # this room may play something else by now, which does not keep the queue here
+        own_plays = False if own_zone is None else await self._zone_plays_queue(host, own_zone)
         if None in members_play or own_plays is None:
             return None
         # the reads took a while: act only on the playback and layout they were taken for
@@ -1064,6 +1066,7 @@ class RaumfeldPlayer(Player):
                 # Hand that queue to one of them the way MA does when a leader leaves its
                 # group, so they show and control what they play.
                 self._handover_until = time.time() + QUEUE_HANDOVER_TIMEOUT
+                self._clear_next()
                 self.mass.create_task(self.mass.players.cmd_ungroup(self.player_id))
                 return True
             remaining = [pid for pid in self._attr_group_members if pid != self.player_id]
@@ -1338,9 +1341,12 @@ class RaumfeldPlayer(Player):
         """Advance as soon as the device reports the track stopped, or give up trying."""
         if not self._advance_armed or self._next_media is None:
             return
-        if (zone := self._active_zone()) is None:
+        # a leader whose group left its zone is the zone watcher's to sort out (see poll)
+        if self._held_for_watcher() or (zone := self._active_zone()) is None:
             return
         info = await self._read_transport(self.raumfeld.host, zone)
+        if self._held_for_watcher():
+            return
         if (info or {}).get("CurrentTransportState", "").upper() in ("STOPPED", "NO_MEDIA_PRESENT"):
             self._advance_to_next()
             return

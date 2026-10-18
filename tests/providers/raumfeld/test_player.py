@@ -36,6 +36,7 @@ def _flow_player() -> RaumfeldPlayer:
     player._attr_elapsed_time = None
     player._attr_elapsed_time_last_updated = None
     player._attr_group_members = []
+    player._advance_task_id = "raumfeld_advance_test"
     player._external_source = None
     player._extra_data = {}
     mass = MagicMock()
@@ -1112,10 +1113,13 @@ async def test_the_stop_of_a_handover_leaves_spotify_connect_playing() -> None:
     with (
         patch.object(player, "update_state"),
         patch.object(player, "_transport_action", AsyncMock()) as action,
+        patch.object(player, "_clear_next") as clear_next,
     ):
         await player.stop()
         action.assert_not_awaited()
         assert player._attr_active_source == "spotify"
+        # with flow mode off, the queue's next item goes along with it
+        clear_next.assert_called_once()
         # the next stop is a stop again
         await player.stop()
     action.assert_awaited_once_with(_RENDERER, "Stop")
