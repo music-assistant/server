@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.media_items import Audiobook, Playlist, Podcast
+    from music_assistant_models.media_items import Audiobook, MediaItemType, Playlist, Podcast
     from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
@@ -625,6 +625,9 @@ class MetadataEnrichmentMixin:
                     err,
                 )
                 return True
+            except MediaNotFoundError:
+                # an item removed from the library meanwhile ends the whole update
+                raise
             except Exception as err:
                 self.logger.warning(
                     "Error linking Artist %s through MusicBrainz: %s",
@@ -668,6 +671,10 @@ class MetadataEnrichmentMixin:
             )
             return True
         except Exception as err:
+            # an album removed from the library meanwhile ends the whole update, a track of
+            # it merged away meanwhile does not
+            if isinstance(err, MediaNotFoundError) and not await self._in_library(album):
+                raise
             self.logger.warning(
                 "Error linking Album %s through MusicBrainz: %s",
                 album.name,
@@ -703,6 +710,9 @@ class MetadataEnrichmentMixin:
                 "Track %s could not be looked up on MusicBrainz right now: %s", track.name, err
             )
             return True
+        except MediaNotFoundError:
+            # an item removed from the library meanwhile ends the whole update
+            raise
         except Exception as err:
             self.logger.warning(
                 "Error linking Track %s through MusicBrainz: %s",
@@ -713,6 +723,14 @@ class MetadataEnrichmentMixin:
             return False
         track.metadata.last_musicbrainz_lookup = int(time())
         return False
+
+    async def _in_library(self, item: MediaItemType) -> bool:
+        """Return whether the given library item still exists in the library."""
+        try:
+            await self.mass.music.get_controller(item.media_type).get_library_item(item.item_id)
+        except MediaNotFoundError:
+            return False
+        return True
 
     def _musicbrainz_provider(self) -> MusicbrainzProvider | None:
         """Return the MusicBrainz provider, if it is loaded."""

@@ -339,6 +339,7 @@ async def test_updating_metadata_of_an_artist_it_merges_returns_the_survivor(
     ):
         updated = await mass.metadata.update_metadata(newer, force_refresh=True)
 
+    assert updated is not None
     assert updated.item_id == older.item_id
 
 
