@@ -105,6 +105,15 @@ def apply_listing[ItemT: ListingItem](
         if random_seed is None:
             random.shuffle(result)
         else:
+            # A cache refill can reorder identical contents; anchor the shuffle to identities
+            # without deduplicating repeated playlist entries.
+            result.sort(
+                key=lambda item: (
+                    item.media_type.value,
+                    item.provider,
+                    item.path if isinstance(item, BrowseFolder) else item.item_id,
+                )
+            )
             random.Random(random_seed).shuffle(result)  # noqa: S311 - reproducible order, not security
     elif field != SortField.ORIGINAL:
         if (sort_key := _SORT_KEYS.get(field)) is None:
