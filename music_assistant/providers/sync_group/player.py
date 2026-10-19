@@ -9,13 +9,16 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.constants import PLAYER_CONTROL_FAKE
+from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     APPLICATION_NAME,
+    ATTR_LINKED_VOLUME_SET_AT,
+    CONF_AIRPLAY_GROUP_LEADER,
+    CONF_AIRPLAY_GROUP_TYPE,
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
     CONF_POWER_CONTROL,
@@ -25,6 +28,8 @@ from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    AIRPLAY_GROUP_MANUFACTURER,
+    AIRPLAY_GROUP_MODELS,
     CONF_ALLOWED_MEMBERS,
     CONF_ENTRY_SGP_NOTE,
     EXTRA_FEATURES_FROM_MEMBERS,
@@ -35,6 +40,11 @@ from .constants import (
     REFORM_DEBOUNCE_SECONDS,
     VOLUME_FEATURES_FROM_MEMBERS,
 )
+
+# seconds a member's own volume change settles before a linked group follows it
+LINKED_VOLUME_DEBOUNCE_SECONDS = 0.5
+# seconds after a linked group set its members during which their reports are echoes
+LINKED_VOLUME_ECHO_SECONDS = 2.0
 
 # seconds between attempts to re-add a configured member the live group is missing
 # (one that powered on, or refused the stream)
@@ -57,6 +67,9 @@ class SyncGroupPlayer(Player):
     """The active sync leader player for this syncgroup."""
     _late_join_attempt_at: float = 0.0
     _avoid_leader_id: str | None = None
+    _linked_volume_source: str | None = None
+    _airplay_group_type: str | None = None
+    _airplay_group_leader: str | None = None
 
     def __init__(
         self,
@@ -137,6 +150,32 @@ class SyncGroupPlayer(Player):
         # field) would wipe any dynamic joins that happened during this session.
         if not self.is_active_session:
             self._attr_group_members = list(preset_members)
+        # a group the AirPlay provider formed from an Apple group: one shared volume,
+        # its type exposed so a client can show it the way Apple does, and managed by
+        # the Home app (nothing about it can be changed in Music Assistant)
+        airplay_group_type = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_AIRPLAY_GROUP_TYPE
+        )
+        self._airplay_group_type = None if airplay_group_type is None else str(airplay_group_type)
+        airplay_group_leader = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_AIRPLAY_GROUP_LEADER
+        )
+        self._airplay_group_leader = (
+            None if airplay_group_leader is None else str(airplay_group_leader)
+        )
+        self._attr_group_volume_linked = self._airplay_group_type is not None
+        self._attr_managed_externally = self._airplay_group_type is not None
+        if self._airplay_group_type is None:
+            self._extra_attributes.pop(CONF_AIRPLAY_GROUP_TYPE, None)
+            self._attr_device_info = DeviceInfo(
+                model=self.provider.name, manufacturer=APPLICATION_NAME
+            )
+        else:
+            self._extra_attributes[CONF_AIRPLAY_GROUP_TYPE] = self._airplay_group_type
+            self._attr_device_info = DeviceInfo(
+                model=AIRPLAY_GROUP_MODELS.get(self._airplay_group_type, self._airplay_group_type),
+                manufacturer=AIRPLAY_GROUP_MANUFACTURER,
+            )
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
@@ -290,6 +329,14 @@ class SyncGroupPlayer(Player):
                 continue
             can_group_with.add(player.player_id)
         return {pid for pid in can_group_with if self._is_member_allowed(pid)}
+
+    def takes_part_in_group_volume(self, member: Player) -> bool:
+        """
+        Return whether a member of this group counts toward the group volume.
+
+        :param member: A member of this group.
+        """
+        return not self._is_display_member(member)
 
     @property
     def group_members(self) -> list[str]:
@@ -471,8 +518,9 @@ class SyncGroupPlayer(Player):
         self._update_attributes()
         self.update_state()
         # a member left out of the live session (e.g. it refused the stream at the
-        # start) is not a live member, so its updates never reach
-        # on_group_member_updated: retry it from here, though not every poll
+        # start, or an Apple TV left out while powered off) is not a live member, so
+        # its updates never reach on_group_member_updated: retry it from here, though
+        # not every poll
         if (
             not self.is_dynamic
             and (leader := self.sync_leader) is not None
@@ -528,50 +576,6 @@ class SyncGroupPlayer(Player):
                 await self._play_media(media)
             finally:
                 self._avoid_leader_id = None
-
-    async def _play_media(self, media: PlayerMedia) -> None:
-        """Form the group and start PLAY MEDIA on its leader."""
-        previous_media = self._attr_current_media
-        new_content = previous_media is None or (
-            previous_media.uri,
-            previous_media.source_id,
-            previous_media.queue_item_id,
-        ) != (media.uri, media.source_id, media.queue_item_id)
-        self._attr_current_media = media
-        self._attr_active_source = media.source_id or None
-        # The controller has already powered us on, but the group may not be
-        # formed (e.g. after _dissolve_and_reform left us powered with no leader).
-        # _form_syncgroup is idempotent so calling it here is cheap when already formed.
-        takeover = self._pending_content_takeover
-        self._pending_content_takeover = None
-        playback_started = False
-        try:
-            if takeover is None:
-                takeover = await self._form_syncgroup(new_content=new_content)
-            if sync_leader := self.sync_leader:
-                # Use internal handler to target the sync leader directly,
-                # bypassing group/sync redirect that would loop back to this player.
-                # Hold the group's playback lock until the leader confirms playback
-                # (see play()) so a concurrent (un)group command can't race the start.
-                async with (
-                    self.mass.players.get_player_lock(
-                        sync_leader.player_id, PlayerLockPurpose.PLAYBACK
-                    ),
-                    self._await_leader_playback(),
-                ):
-                    await self.mass.players._handle_play_media(sync_leader.player_id, media)
-                playback_started = True
-            else:
-                raise RuntimeError(
-                    "An empty group cannot play media, consider adding members first"
-                )
-        finally:
-            if takeover is not None:
-                takeover_owner, takeover_token = takeover
-                if playback_started:
-                    await takeover_owner.on_group_content_takeover_finished(takeover_token)
-                else:
-                    await takeover_owner.on_group_content_takeover_aborted(takeover_token)
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
@@ -824,6 +828,23 @@ class SyncGroupPlayer(Player):
         super().on_group_member_updated(member_player, changed_values)
         if not self.is_dynamic and self.sync_leader is not None:
             self._schedule_rejoin_missing_members()
+        if (
+            self.group_volume_linked
+            and "volume_level" in changed_values
+            and not self._is_display_member(member_player)
+            # a level reported just after the group set its members is that command
+            # coming back (perhaps rounded), not a change of the member's own
+            and time.monotonic() - self.extra_data.get(ATTR_LINKED_VOLUME_SET_AT, 0.0)
+            >= LINKED_VOLUME_ECHO_SECONDS
+        ):
+            # a member changed its own volume (e.g. from Siri): bring the others along,
+            # debounced so a group volume change in flight settles first
+            self._linked_volume_source = member_player.player_id
+            self.mass.call_later(
+                LINKED_VOLUME_DEBOUNCE_SECONDS,
+                self._level_linked_volume,
+                task_id=f"sync_group_linked_volume_{self.player_id}",
+            )
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
@@ -879,6 +900,100 @@ class SyncGroupPlayer(Player):
         :param leader: The (current or failed) sync leader.
         """
         return leader.provider.domain in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
+
+    async def _play_media(self, media: PlayerMedia) -> None:
+        """Form the group and start PLAY MEDIA on its leader."""
+        previous_media = self._attr_current_media
+        new_content = previous_media is None or (
+            previous_media.uri,
+            previous_media.source_id,
+            previous_media.queue_item_id,
+        ) != (media.uri, media.source_id, media.queue_item_id)
+        self._attr_current_media = media
+        self._attr_active_source = media.source_id or None
+        # The controller has already powered us on, but the group may not be
+        # formed (e.g. after _dissolve_and_reform left us powered with no leader).
+        # _form_syncgroup is idempotent so calling it here is cheap when already formed.
+        takeover = self._pending_content_takeover
+        self._pending_content_takeover = None
+        playback_started = False
+        try:
+            if takeover is None:
+                takeover = await self._form_syncgroup(new_content=new_content)
+            if sync_leader := self.sync_leader:
+                # Use internal handler to target the sync leader directly,
+                # bypassing group/sync redirect that would loop back to this player.
+                # Hold the group's playback lock until the leader confirms playback
+                # (see play()) so a concurrent (un)group command can't race the start.
+                async with (
+                    self.mass.players.get_player_lock(
+                        sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+                    ),
+                    self._await_leader_playback(),
+                ):
+                    await self.mass.players._handle_play_media(sync_leader.player_id, media)
+                playback_started = True
+            else:
+                raise RuntimeError(
+                    "An empty group cannot play media, consider adding members first"
+                )
+        finally:
+            if takeover is not None:
+                takeover_owner, takeover_token = takeover
+                if playback_started:
+                    await takeover_owner.on_group_content_takeover_finished(takeover_token)
+                else:
+                    await takeover_owner.on_group_content_takeover_aborted(takeover_token)
+
+    async def _level_linked_volume(self) -> None:
+        """Set every member of a linked group to the level its last changed member has."""
+        if (source_id := self._linked_volume_source) is None:
+            return
+        self._linked_volume_source = None
+        if (source := self.mass.players.get_player(source_id)) is None:
+            return
+        if (level := source.state.volume_level) is None:
+            return
+        self.extra_data[ATTR_LINKED_VOLUME_SET_AT] = time.monotonic()
+        for member in self.mass.players.iter_group_members(
+            self, only_powered=True, exclude_self=False
+        ):
+            if member.player_id == source_id or member.state.volume_level in (None, level):
+                continue
+            if self._is_display_member(member):
+                continue
+            if member.state.volume_control == PLAYER_CONTROL_NONE:
+                continue
+            await self.mass.players._set_member_volume(member.player_id, level)
+
+    def _is_display_member(self, member: Player) -> bool:
+        """
+        Return whether a member of an Apple group shows the playback but carries no audio.
+
+        That is the Apple TV of a home theater group (the member advertising itself
+        as the group's leader): it plays through the group's speakers, so its own
+        volume level says nothing about loudness.
+
+        :param member: The member to check.
+        """
+        return member.player_id == self._airplay_group_leader
+
+    def _is_powered_off(self, player_id: str) -> bool:
+        """
+        Return whether a member is left out because its power is off.
+
+        In a group formed from an Apple group, an Apple TV on standby is never woken
+        (as an iPhone does not): it is left out until it reports on, and then joins
+        the live session. Other groups power their members on as before.
+
+        :param player_id: The member to check.
+        """
+        if player_id != self._airplay_group_leader:
+            # only the Apple TV of a home theater group is kept asleep (as an iPhone
+            # does); every other member is powered on as before
+            return False
+        member = self.mass.players.get_player(player_id)
+        return member is not None and member.state.powered is False
 
     def _is_member_allowed(self, player_id: str) -> bool:
         """Return whether a player is allowed to join this group given the configured filter."""
@@ -968,7 +1083,9 @@ class SyncGroupPlayer(Player):
         # so we can compare against our _attr_group_members (always parent IDs)
         already_synced = set(self._translate_to_parent_ids(leader.state.group_members))
         members_to_sync = [
-            x for x in self._attr_group_members if x != leader.player_id and x not in already_synced
+            x
+            for x in self._attr_group_members
+            if x != leader.player_id and x not in already_synced and not self._is_powered_off(x)
         ]
         if members_to_sync:
             # If the sync leader is playing something independently, stop it first
@@ -1111,6 +1228,7 @@ class SyncGroupPlayer(Player):
             if (member_player := self.mass.players.get_player(member_id))
             and member_player.state.available
             and member_player.state.type in PLAYBACK_TARGET_TYPES
+            and not self._is_powered_off(member_id)
         ]
         # a leader that just failed to start the session leads only when nothing else can
         candidates = [x for x in candidates if x.player_id != self._avoid_leader_id] or candidates
@@ -1662,6 +1780,7 @@ class SyncGroupPlayer(Player):
             # the leader lists the available players it can group with, so a member
             # that is offline, or incompatible with it, is not on it
             and member_id in leader.state.can_group_with
+            and not self._is_powered_off(member_id)
             and (member := self.mass.players.get_player(member_id)) is not None
             # a member another group holds, or that leads a group of its own, is left
             # alone: this is a background recovery, not a play command

@@ -345,6 +345,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "enabled": state.enabled,
         "hide_in_ui": state.hide_in_ui,
         "private": state.private,
+        "managed_externally": state.managed_externally,
         "expose_to_ha": state.expose_to_ha,
         "icon": state.icon,
         "group_volume": state.group_volume,
@@ -440,7 +441,10 @@ class Player(ABC):
     _attr_needs_poll: bool = False
     _attr_poll_interval: int = 30
     _attr_hidden_by_default: bool = False
+    _attr_represented_by: str | None = None
+    _attr_group_volume_linked: bool = False
     _attr_private: bool = False
+    _attr_managed_externally: bool = False
     _attr_expose_to_ha_by_default: bool = True
     _attr_enabled_by_default: bool = True
     _attr_needs_setup: bool = False
@@ -597,9 +601,63 @@ class Player(ABC):
         return self._attr_hidden_by_default
 
     @property
+    def represented_by(self) -> str | None:
+        """
+        Return the name of the player that represents this player in the UI, if any.
+
+        Such a player is hidden in the UI whatever its own setting (e.g. an AirPlay
+        speaker inside the Apple TV group it plays for). The player's own 'hide in UI'
+        setting applies again when this is None.
+        """
+        return self._attr_represented_by
+
+    @final
+    def set_represented_by(self, name: str | None) -> None:
+        """
+        Set the player that represents this player in the UI (see represented_by).
+
+        :param name: Name of the representing player, or None when there is none.
+        """
+        if self._attr_represented_by == name:
+            return
+        self._attr_represented_by = name
+        # hide_in_ui is a config-derived cached value, kept across state updates
+        self._cache.pop("hide_in_ui", None)
+        self.mark_state_dirty()
+        self.update_state()
+
+    def takes_part_in_group_volume(self, member: Player) -> bool:
+        """
+        Return whether a member of this group counts toward the group volume.
+
+        :param member: A member of this group.
+        """
+        return True
+
+    @property
+    def group_volume_linked(self) -> bool:
+        """
+        Return if all members of this group run at one shared volume level.
+
+        A linked group sets every member to the group volume instead of scaling each
+        from its own level, and keeps the members level when one of them changes.
+        """
+        return self._attr_group_volume_linked
+
+    @property
     def private(self) -> bool:
         """Return if the player may not be offered to other clients as a target."""
         return self._attr_private
+
+    @property
+    def managed_externally(self) -> bool:
+        """
+        Return if the player is set up and kept in line outside of Music Assistant.
+
+        Such a player (e.g. a group formed from an Apple Home grouping) can not be
+        renamed, configured, regrouped or removed in Music Assistant.
+        """
+        return self._attr_managed_externally
 
     @property
     def expose_to_ha_by_default(self) -> bool:
@@ -1667,6 +1725,8 @@ class Player(ABC):
         ):
             if child_player.state.volume_control == PLAYER_CONTROL_NONE:
                 continue
+            if not self.takes_part_in_group_volume(child_player):
+                continue
             if (child_volume := child_player.state.volume_level) is None:
                 continue
             if group_volume is None or child_volume > group_volume:
@@ -1717,8 +1777,11 @@ class Player(ABC):
         """
         Return the hide player in UI options.
 
-        This is a convenience property based on the config entry.
+        This is a convenience property based on the config entry, overruled by
+        another player representing it (see represented_by).
         """
+        if self.represented_by is not None:
+            return True
         return bool(self._config.get_value(CONF_HIDE_IN_UI, self.hidden_by_default))
 
     @cached_property
@@ -2612,6 +2675,7 @@ class Player(ABC):
         return {
             "type": self.type,
             "private": self.private,
+            "managed_externally": self.managed_externally,
             "available": self.available,
             "name": self.name,
             "needs_setup": self.needs_setup,
@@ -2766,6 +2830,7 @@ class Player(ABC):
             enabled=self.enabled,
             hide_in_ui=self.hide_in_ui,
             private=self.private,
+            managed_externally=self.managed_externally,
             expose_to_ha=self.expose_to_ha,
             icon=self.icon,
             group_volume=self.group_volume,

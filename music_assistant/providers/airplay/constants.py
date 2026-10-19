@@ -382,6 +382,15 @@ LEGACY_PAIRING_BIT = 0x200
 # the trace floods the log and only matters for clock-sync debugging.
 CONF_VERBOSE_PTP_LOGGING: Final[str] = "verbose_ptp_logging"
 
+# Apple groups: the AirPlay TXT records carry how the Home app grouped the devices.
+# An Apple TV home theater group: the Apple TV advertises psgid (persistent group id,
+# with psgtp/psgsz) and igl=1; its speakers advertise the same psgid plus pgid
+# (the group they are paired into) and pgmid (their slot). A stereo pair: both
+# speakers share tsid, gid is "<tsid>+<role>+<device>", gpn is the pair's name.
+CONF_APPLE_HOME_GROUPS: Final[str] = "apple_home_groups"
+# discovery comes in per device and service: let a burst settle before regrouping
+APPLE_GROUP_RECONCILE_DELAY: Final[float] = 2.0
+
 # The cliairplay binary tags no log levels on its output, so a genuine problem is
 # recognised by keyword and promoted to a warning that stays visible at normal levels.
 CLI_PROBLEM_MARKERS: Final[tuple[str, ...]] = ("error", "cannot", "failed", "unable")
