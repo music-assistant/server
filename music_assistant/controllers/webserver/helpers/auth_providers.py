@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import secrets
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.webserver.auth import AuthenticationManager
     from music_assistant.controllers.webserver.helpers.login_flow import PendingLogin
+    from music_assistant.controllers.webserver.helpers.oidc_sessions import OIDCSession
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
@@ -144,9 +146,10 @@ async def get_or_create_ha_user(
     """
     Get the user of a Home Assistant account, linking or creating it as needed.
 
-    A user not yet linked to the Home Assistant account is matched by username. An enabled
-    user gets its display name and avatar refreshed from the given details, a disabled user
-    is returned untouched for the caller to refuse.
+    A user not yet linked to the Home Assistant account is matched by username, except for
+    an OIDC-linked account, which stays separate. An enabled user gets its display name and
+    avatar refreshed from the given details, a disabled user is returned untouched for the
+    caller to refuse.
 
     :param mass: MusicAssistant instance.
     :param ha_user_id: Home Assistant user ID.
@@ -159,49 +162,57 @@ async def get_or_create_ha_user(
     :raises AuthenticationFailed: If the role of a new user can not be read from Home Assistant.
     """
     auth = mass.webserver.auth
-    # Check if user already linked to HA
-    user = await auth.get_user_by_provider_link(
-        AuthProviderType.HOME_ASSISTANT, ha_user_id, include_disabled=True
-    )
-    linked = user is not None
-    if not user:
-        # Check if a user with this username already exists (from built-in provider)
-        user = await auth.get_user_by_username(username, include_disabled=True)
-    if user:
-        # A disabled user is left untouched, the caller refuses its sign-in
-        if not user.enabled:
+    async with auth.user_link_lock:
+        # Check if user already linked to HA
+        user = await auth.get_user_by_provider_link(
+            AuthProviderType.HOME_ASSISTANT, ha_user_id, include_disabled=True
+        )
+        linked = user is not None
+        if not user:
+            # Check if a user with this username already exists (from built-in provider)
+            user = await auth.get_user_by_username(username, include_disabled=True)
+            if user and await auth.database.get_row(
+                "user_auth_providers",
+                {"user_id": user.user_id, "provider_type": AuthProviderType.OIDC.value},
+            ):
+                # An OIDC username is not proof that this HA identity owns the account.
+                username = f"{normalize_username(username)}-ha-{secrets.token_hex(8)}"
+                user = None
+        if user:
+            # A disabled user is left untouched, the caller refuses its sign-in
+            if not user.enabled:
+                return user
+            if not linked:
+                # User exists with this username - link them to HA provider
+                await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+            # Update user with HA details if available (HA is source of truth)
+            if display_name or avatar_url:
+                user = await auth.update_user(
+                    user,
+                    display_name=display_name,
+                    avatar_url=avatar_url,
+                )
             return user
-        if not linked:
-            # User exists with this username - link them to HA provider
-            await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
-        # Update user with HA details if available (HA is source of truth)
-        if display_name or avatar_url:
-            user = await auth.update_user(
-                user,
-                display_name=display_name,
-                avatar_url=avatar_url,
-            )
+
+        if not allow_create:
+            return None
+
+        # Determine role based on HA admin status
+        role = await get_ha_user_role(mass, ha_user_id)
+
+        # Create new user
+        username = normalize_username(username)
+        user = await auth.create_user(
+            username=username,
+            role=role,
+            display_name=display_name or username,
+            avatar_url=avatar_url,
+        )
+
+        # Link to Home Assistant
+        await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+
         return user
-
-    if not allow_create:
-        return None
-
-    # Determine role based on HA admin status
-    role = await get_ha_user_role(mass, ha_user_id)
-
-    # Create new user
-    username = normalize_username(username)
-    user = await auth.create_user(
-        username=username,
-        role=role,
-        display_name=display_name or username,
-        avatar_url=avatar_url,
-    )
-
-    # Link to Home Assistant
-    await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
-
-    return user
 
 
 class LoginRateLimiter:
@@ -378,6 +389,7 @@ class AuthResult:
     translation_key: str | None = None
     access_token: str | None = None
     return_url: str | None = None
+    oidc_session: OIDCSession | None = None
 
 
 @dataclass

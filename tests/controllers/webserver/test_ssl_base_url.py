@@ -261,7 +261,7 @@ async def _setup_webserver(
     webserver = WebserverController(mock_mass)
     server = _make_server_mock()
     webserver._server = server
-    webserver.auth = MagicMock(setup=AsyncMock())
+    webserver.auth = MagicMock(setup=AsyncMock(), oidc_deployment=None)
     webserver.remote_access = MagicMock(setup=AsyncMock())
     await _run_setup(
         webserver,

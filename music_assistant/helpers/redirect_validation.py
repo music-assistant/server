@@ -37,12 +37,13 @@ def is_allowed_redirect_url(
 
     Security rules (in order of priority):
     1. Must use http, https, or registered custom scheme (e.g., musicassistant://)
-    2. Same origin as the request - auto-allowed (trusted)
-    3. Localhost (127.0.0.1, ::1, localhost) - auto-allowed (trusted)
-    4. Private network IPs (RFC 1918) - auto-allowed (trusted)
-    5. Configured base_url or external_url - auto-allowed (trusted)
-    6. Matches allowed redirect patterns - auto-allowed (trusted)
-    7. Everything else - requires user consent (external)
+    2. HTTP cannot downgrade an HTTPS request or a configured HTTPS host
+    3. Same origin as the request - auto-allowed (trusted)
+    4. Localhost (127.0.0.1, ::1, localhost) - auto-allowed (trusted)
+    5. Private network IPs (RFC 1918) - auto-allowed (trusted)
+    6. Configured base_url or external_url - auto-allowed (trusted)
+    7. Matches allowed redirect patterns - auto-allowed (trusted)
+    8. Everything else - requires user consent (external)
 
     :param url: The redirect URL to validate.
     :param request: Optional aiohttp request to compare origin.
@@ -58,6 +59,20 @@ def is_allowed_redirect_url(
 
     try:
         parsed = urlparse(url)
+
+        # Transport checks must precede trust shortcuts that bypass user consent.
+        if parsed.scheme == "http":
+            https_request = request is not None and (
+                request.scheme == "https"
+                or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
+            )
+            configured_origins = [urlparse(value) for value in (base_url, external_url) if value]
+            if https_request or any(
+                origin.scheme == "https" and origin.hostname == parsed.hostname
+                for origin in configured_origins
+            ):
+                LOGGER.warning("Redirect URL blocked (HTTPS downgrade): %s", url)
+                return False, "blocked"
 
         # Check for custom URL schemes (mobile apps)
         for pattern in ALLOWED_REDIRECT_PATTERNS:

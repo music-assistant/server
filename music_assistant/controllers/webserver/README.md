@@ -59,6 +59,7 @@ Handles all authentication and user management:
 **Authentication Providers:**
 - **Built-in Provider** - Username/password authentication with PBKDF2-HMAC-SHA256 hashing
 - **Home Assistant OAuth** - OAuth2 flow for Home Assistant users (auto-enabled when HA provider is configured)
+- **OpenID Connect** - Optional discovery-based authorization code flow with PKCE, for providers such as Authentik, Keycloak and Authelia. Disabled by default.
 
 **Token Types:**
 - **Short-lived tokens**: Auto-renewing on use, 30-day sliding expiration window capped at 90 days from creation (for user sessions)
@@ -96,6 +97,158 @@ the server itself (`users.manage`, `users.impersonate`, `library.manage`,
 role. The live sessions of a user are closed when its role, or the
 scopes of its custom role, change, so its clients reconnect with the new scopes. The last
 enabled admin can not lose the admin role.
+
+### OpenID Connect
+
+For setup through the UI, create a local administrator, then enable OIDC and enter
+the provider name, exact HTTPS issuer, client ID and client secret. The secret uses the
+existing encrypted `SECURE_STRING` storage. OIDC and self-registration default off.
+
+Register an authorization-code client with PKCE S256 and this exact callback:
+
+```text
+https://music.example/auth/callback?provider_id=oidc
+```
+
+Register callbacks for both Internal and External URLs if both serve sign-ins. Use HTTPS
+and match the token endpoint authentication method: `client_secret_basic` (default),
+`client_secret_post`, or `none` for a public PKCE client. Discovery must advertise code
+flow, PKCE S256 and a supported asymmetric signing algorithm. Scopes are `openid profile`.
+
+For Authentik, configure a confidential OAuth2/OpenID provider with a signing key, profile
+scope mapping and per-provider issuer mode. Copy the discovery document's issuer exactly,
+including its trailing slash, e.g. `https://auth.example/application/o/music-assistant/`.
+Global issuer mode is unsupported. See [Authentik setup](https://docs.goauthentik.io/add-secure-apps/providers/oauth2/).
+
+#### Deployment-managed bootstrap
+
+`MASS_OIDC_CONFIG_FILE` loads a read-only JSON file through
+[oidc_deployment.py](helpers/oidc_deployment.py). It supplies the OIDC provider settings and
+HTTPS `base_url` without writing credentials into `settings.json`. Invalid or unreadable
+configuration aborts authentication startup. The settings UI hides overridden fields and
+shows a deployment-managed notice; changes require a restart.
+
+With `bootstrap_admin: true`, self-registration and an explicit group mapping to `admin`
+are required. A fresh server routes `/`, `/login` and `/setup` through the existing
+browser-bound OIDC flow. Only a verified admin mapping can create its first user; local
+setup and other providers cannot create that initial account. The frontend then continues
+normal onboarding. No local password is required or created.
+
+Existing accounts and sessions are unchanged; no schema or stored-settings migration is
+needed. After bootstrap, normal role mapping and optional local password management apply.
+Recovery without a local account requires correcting the IdP or mounted configuration.
+See the user-management documentation for the file format and container example.
+
+#### Identity and session handling
+
+[oidc_provider.py](helpers/oidc_provider.py) hashes the exact `(issuer, sub)` pair into an
+`oidc` link in `user_auth_providers`. Self-registration creates a User unless group mapping
+assigns another role. Matching usernames or emails never link OIDC to local or Home Assistant
+accounts; collisions get distinct usernames. Home Assistant's local-account linking remains
+available, but excludes OIDC accounts. Disabled users cannot sign in. Player restrictions
+and display settings remain locally managed.
+
+New OIDC accounts and their provider links commit together. Failed or cancelled linking
+leaves no account and does not claim first-user state or legacy playlog. Once commit begins,
+it finishes the link and first-user effects before propagating cancellation.
+
+`auth/authorization_url` and `/auth/authorize` return `/auth/oidc/start`, which creates
+single-use state and a nonce bound to the initiating browser by an HttpOnly, SameSite=Lax
+cookie. HTTPS uses Secure `__Host-` cookies; concurrent sign-ins have separate cookies.
+HTTP or alias entry redirects to the canonical `/auth/oidc/start` on the callback origin
+before any sign-in state or cookie is created; reverse-proxy callbacks use the forwarded host
+and scheme. That redirect, the registered callback and the default post-sign-in destination
+all keep the External URL's base path (e.g. `https://example.com/ma`), including escaped
+path segments.
+Return URLs cannot downgrade HTTPS requests or configured HTTPS hosts to HTTP. Local HTTP
+sign-ins and registered native-app callbacks remain available.
+Code exchange uses the exact callback and PKCE verifier. ID tokens require valid signatures,
+issuer, audience, timestamps, subject, nonce and authorized party; token hashes are checked
+when present. UserInfo must match the verified subject. Opaque codes accept visible ASCII
+under RFC 6749 Appendix A.11, bounded to 4096 characters; Home Assistant's validator is unchanged.
+
+The client reuses aiohttp, PyJWT and existing pending-login/session helpers. PyJWT validates
+signatures and standard claims; this client owns OIDC discovery and protocol checks. Remote
+requests verify TLS, refuse redirects and have size/time limits. Discovery and JWKS are cached;
+unknown keys and signature failures allow one rate-limited JWKS refresh and verification retry.
+Discovery is lazy so IdP outages leave startup and local login available. Remote Access requires
+a browser-reachable External URL.
+
+Scopes default to `openid profile`. The advanced `oidc_scopes` setting, or `scopes` in the mounted
+configuration, can request extra scopes such as `groups` for Authelia. `openid` is always included.
+
+#### Logout and roles
+
+Enable back-channel logout and register the absolute HTTPS URL ending in
+`/auth/oidc/backchannel-logout`. In Authentik, set **Logout URI** and **Logout Method: Back-channel**.
+The IdP must reach and trust that endpoint. Signed notifications validate issuer/client,
+timestamps, event and subject/session selectors, then revoke matching tokens and disconnect
+WebSockets. A `sid` targets one IdP session; a subject-only notification targets that identity.
+Matching tokens are deleted in one parameterized write before their WebSockets disconnect.
+Once a notification is verified, cancellation waits for the whole logout: lock waits, receipt
+storage, session selection, token deletion and disconnection. Mapping denial uses the same
+revocation path, so an expiring sign-in deadline cannot leave the denied identity's tokens or
+WebSockets active.
+Logout tokens require `exp`, as specified by
+[Back-Channel Logout 1.0 incorporating errata set 1, section 2.4](https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken).
+
+Idempotent setup adds `oidc_sessions` and `oidc_logouts` to `auth.db`, preserving existing users
+and tokens. Fresh OIDC sign-in establishes logout tracking. Session links and replay receipts
+survive restarts and block late callbacks from restoring logged-out access. Local-password
+sessions and long-lived API tokens remain locally managed. MA logout ends the local session;
+it does not initiate global IdP logout.
+
+The original ten-minute sign-in deadline covers code exchange, account locks, claim processing
+and token issuance. Expired callbacks cannot restore access after logout receipts are cleaned
+up; tokens whose writes finish after the deadline are removed before returning credentials.
+
+Group mapping is an ordered JSON object, e.g. `{"music-admins":"admin","music-users":"user"}`.
+The first matching group selects a built-in or custom role ID; `service` is forbidden.
+The claim defaults to `groups` and must be a string array from the verified ID token or
+subject-matched UserInfo. An empty mapping keeps local role management.
+
+Roles synchronize at sign-in, including demotions. Missing, malformed or unmatched groups
+revoke tracked OIDC sessions and deny sign-in. Last-administrator and music-source ownership
+checks still apply; conflicting mappings deny access and preserve account/source data.
+Once a role write starts, it and WebSocket disconnection finish under the role lock before
+cancellation propagates, including an expired OIDC callback or a cancelled manual update.
+After denial, allow 30 seconds for clock skew before retrying. For immediate revocation, send
+IdP logout notifications or disable the MA account; group edits alone are not pushed.
+
+#### Development
+
+Cancellation boundaries use `run_to_completion` (`helpers/util.py`) for work that must finish
+before its caller can release a lock or return. Validation may be cancelled before an
+authorization decision; required side effects and credential cleanup must finish once started.
+
+| Operation | Required outcome before cancellation propagates |
+| --- | --- |
+| Account provisioning | Roll back an incomplete user/link transaction, or finish the commit and first-user effects. |
+| Role changes | Finish the role write and disconnect sessions holding the old role under the role lock. |
+| Verified logout or mapping denial | Finish lock waits, receipt storage, selection, token deletion and WebSocket disconnection. |
+| Token issuance | Remove unissued token/link rows after cancellation, expiry or failure, retaining the session lock during OIDC cleanup. |
+
+WebSocket authentication does not lock against revocation. It relies on `session_revision`
+(see [WebSocket Authentication](#websocket-authentication)), so any new code path that revokes
+sessions or changes a live user's access must go through `disconnect_websockets_for_token`,
+`disconnect_websockets_for_user` or `update_active_user_filters`, which bump it.
+
+Publish the companion models/frontend packages and update server pins before merging.
+For sibling checkouts, run `pnpm build` in `music-assistant-frontend`, then in the server:
+
+```sh
+uv pip install --python .venv/bin/python --no-deps ../music-assistant-models ../music-assistant-frontend
+.venv/bin/pytest tests/controllers/webserver tests/test_webserver_auth.py tests/helpers/test_jwt_auth.py
+UV_NO_SYNC=1 .venv/bin/pre-commit run --all-files
+```
+
+Setup or `uv run` without `UV_NO_SYNC=1` restores released pins; reinstall companions afterward.
+Back up `auth.db` before downgrading: older servers do not understand OIDC provider links.
+Browser authentication is separate from music-provider and player authentication.
+
+Protocol references: [OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation),
+[OAuth security BCP](https://www.rfc-editor.org/rfc/rfc9700.html),
+[PyJWT validation](https://pyjwt.readthedocs.io/en/stable/api.html).
 
 ### 3. RemoteAccessManager ([remote_access/](remote_access/))
 
@@ -262,9 +415,15 @@ When running as a Home Assistant add-on:
 2. **Auth Command Required**: Until an `auth` command with a valid token succeeds, only public
    commands (such as `auth/login`) are accepted. Ingress connections skip this step: they are
    signed in from the HA headers on connect
-3. **Token Validation**: Token validated and user context set
+3. **Token Validation**: Token validated, user context set and the connection registered for
+   revocation. Validation reads the database before registration, so a token revocation, user
+   disable/delete, role change or player-filter change could finish unseen in between. Every
+   such change bumps `WebserverController.session_revision` after its database write; if the
+   revision moved since validation began, the now-registered connection validates again until
+   one validation completes without a change. A revoked token or disabled user is then rejected
+   with `InvalidToken` and the connection is unregistered; a changed role or filter is adopted.
 4. **Authenticated Session**: All subsequent commands executed in user context
-5. **Auto-Disconnect**: Connection closed on token revocation or user disable
+5. **Auto-Disconnect**: Connection closed on token revocation, user disable/delete or role change
 
 ## Remote Access (WebRTC)
 
