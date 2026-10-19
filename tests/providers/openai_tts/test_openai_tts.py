@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from aiohttp import ClientError, ClientPayloadError, web
+from aiohttp import ClientError, ClientPayloadError, ConnectionTimeoutError, web
 from music_assistant_models.enums import (
     ContentType,
     FlowStepType,
@@ -26,6 +26,7 @@ from music_assistant.providers.openai_tts import (
     CONF_RESPONSE_FORMAT,
     CONF_VOICES,
     DEFAULT_VOICES,
+    SPEECH_TIMEOUT_SECONDS,
     SUPPORTED_FEATURES,
     OpenAITTSProvider,
     fetch_backend_voices,
@@ -397,6 +398,44 @@ async def test_setup_reports_the_server_error_of_a_failed_render() -> None:
     assert step.error_translations["base"].key == "render_failed"
     assert step.error_translations["base"].args == ["x" * 200]
     assert CONF_VOICES not in step.error_translations
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (TimeoutError(), "render_timeout"),
+        (ConnectionTimeoutError("Connection timeout"), "cannot_connect"),
+    ],
+)
+async def test_setup_tells_a_slow_render_apart_from_an_unreachable_server(
+    error: Exception, expected: str
+) -> None:
+    """A server that connects but renders too slowly is not reported as unreachable."""
+    session, http_session = create_setup_session(
+        {"object": "list", "data": []}, [create_speech_response(error)], {}
+    )
+    task = asyncio.create_task(run_setup(session))
+    step = await wait_for_form(session)
+    session.handle_submit(
+        {
+            CONF_BASE_URL: "http://localhost:8880/v1",
+            CONF_MODEL: "kokoro",
+            CONF_RESPONSE_FORMAT: "mp3",
+        }
+    )
+    step = await wait_for_form(session, step)
+    assert step.error_translations["base"].key == expected
+    if expected == "render_timeout":
+        assert step.error_translations["base"].args == [SPEECH_TIMEOUT_SECONDS]
+    # neither points at a missing voice, so the voices field stays closed
+    assert CONF_VOICES not in step.error_translations
+    # a render may take as long as at runtime, but connecting may not
+    timeout = http_session.post.call_args.kwargs["timeout"]
+    assert timeout.total == SPEECH_TIMEOUT_SECONDS
+    assert 0 < timeout.connect < timeout.total
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task

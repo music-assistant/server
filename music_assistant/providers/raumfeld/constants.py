@@ -27,6 +27,10 @@ INITIAL_UPDATE_TIMEOUT = 30
 # room to get the hardware serial the player_id is derived from.
 DEVICE_INFO_TIMEOUT = 10
 
+# How long (seconds) to wait for a renderer to answer a state query. Polls run one after the
+# other for all players, so a renderer that stops answering must not hold them up for long.
+RENDERER_QUERY_TIMEOUT = 5
+
 # How often (seconds) the connection supervisor retries a connect while the host is
 # unreachable, and health-checks the host while connected.
 RECONNECT_INTERVAL = 30

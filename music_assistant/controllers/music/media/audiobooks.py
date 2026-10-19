@@ -172,6 +172,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             summary: bool = True,
             collapse_collections: Literal[False] = False,
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[Audiobook]: ...
 
@@ -192,6 +193,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             summary: bool = True,
             collapse_collections: Literal[True],
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
 
@@ -212,6 +214,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             summary: bool = True,
             collapse_collections: bool,
             reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
             **kwargs: Any,
         ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
 
@@ -231,6 +234,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         summary: bool = True,
         collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
         **kwargs: Any,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
@@ -240,6 +244,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
@@ -276,6 +281,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             summary=summary,
             collapse_collections=collapse_collections,
             reachable_via=reachable_via,
+            random_seed=random_seed,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -299,6 +305,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 summary=summary,
                 collapse_collections=collapse_collections,
                 reachable_via=reachable_via,
+                random_seed=random_seed,
             )
         return result
 
@@ -311,6 +318,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Audiobook]:
         """
         Return the versions of an audiobook on all providers, searched, sorted and paged.
@@ -323,6 +331,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of versions to return; 0 returns them all.
         :param offset: Number of versions to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for versions.
         """
         return await self._versions_listing(
@@ -334,6 +343,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def match_provider(

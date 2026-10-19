@@ -27,6 +27,16 @@
         "best_quality_per_track": "Pick the highest quality copy for every track on its own, even inside an album, playlist or folder."
       }
     },
+    "upgrade_below_quality": {
+      "label": "Upgrade copies below",
+      "description": "When the copy chosen by the setting above is below this quality, play a better copy if the track has one, and search your other streaming services once for a match.",
+      "options": {
+        "off": "Off",
+        "lossy_high": "High-bitrate lossy",
+        "lossless": "Lossless",
+        "hires": "Hi-res"
+      }
+    },
     "smart_fades_log_level": {
       "label": "Smart Fades Log level",
       "description": "Log level for the Smart Fades mixer and analyzer."

@@ -230,6 +230,36 @@ async def test_appears_on_provider_artist_is_empty(mass: MusicAssistant) -> None
     assert await mass.music.artists.appears_on("guest", "spotify_1") == []
 
 
+async def test_album_artists_only_needs_an_album_in_the_library(mass: MusicAssistant) -> None:
+    """An artist only counts as album artist when one of its own albums is in the library."""
+    library_album = create_album("spotify_1", "kept", "Kept Album", "Album Artist", "album_artist")
+    for mapping in library_album.provider_mappings:
+        mapping.in_library = True
+    # this album is only stored because one of its tracks is in the library
+    track = _track_on_album(
+        "hit",
+        "track_artist",
+        "Track Artist",
+        create_album("spotify_1", "hits", "Hits Album", "Track Artist", "track_artist"),
+    )
+    for artist in (*library_album.artists, *track.artists):
+        assert isinstance(artist, Artist)
+        for mapping in artist.provider_mappings:
+            mapping.in_library = True
+    await mass.music.albums.add_item_to_library(library_album)
+    await mass.music.tracks.add_item_to_library(track)
+    artists = mass.music.artists
+    assert {artist.name for artist in await artists.library_items()} == {
+        "Album Artist",
+        "Track Artist",
+    }
+
+    album_artists = await artists.library_items(album_artists_only=True)
+
+    assert [artist.name for artist in album_artists] == ["Album Artist"]
+    assert await artists.library_count(album_artists_only=True) == 1
+
+
 @pytest.mark.parametrize(
     ("feature", "library_method", "provider_method"),
     [

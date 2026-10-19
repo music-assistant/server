@@ -42,9 +42,13 @@ from music_assistant.controllers.music.media.album_tracks import (
     mapped_album_listing,
 )
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
-from music_assistant.controllers.streams.constants import CONF_STREAM_SOURCE_MODE
+from music_assistant.controllers.streams.constants import (
+    CONF_STREAM_SOURCE_MODE,
+    CONF_UPGRADE_BELOW_QUALITY,
+)
 from music_assistant.controllers.streams.stream_sources import (
     StreamSourceMode,
+    UpgradeQuality,
     select_container_source,
 )
 from tests.common import set_music_source_access
@@ -219,6 +223,7 @@ def _album_resolver(
     local: Collection[str] = (),
     gone: dict[str, str] | None = None,
     mode: StreamSourceMode = StreamSourceMode.BEST_QUALITY,
+    upgrade: UpgradeQuality = UpgradeQuality.OFF,
 ) -> MediaResolver:
     """
     Build a bare resolver that plays an album the given listing lists.
@@ -227,6 +232,7 @@ def _album_resolver(
     :param local: The instances that are local sources rather than streaming services.
     :param gone: The instances that are no longer loaded, with the account answering for each.
     :param mode: The source selection mode of the streams settings.
+    :param upgrade: The upgrade quality of the streams settings.
     """
     resolver = _resolver()
     # the album selection setting is not the library tracks only
@@ -234,7 +240,10 @@ def _album_resolver(
     resolver.mass.music.albums.playback_listing = AsyncMock(return_value=listing)  # type: ignore[method-assign]
     resolver.mass.webserver.auth.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
     resolver.mass.streams.get_config_value = Mock(  # type: ignore[method-assign]
-        side_effect=lambda key, *_args, **_kwargs: {CONF_STREAM_SOURCE_MODE: mode}[key]
+        side_effect=lambda key, *_args, **_kwargs: {
+            CONF_STREAM_SOURCE_MODE: mode,
+            CONF_UPGRADE_BELOW_QUALITY: upgrade,
+        }[key]
     )
     set_music_source_access(resolver.mass, dict.fromkeys(ALBUM_SOURCES))
 
@@ -444,6 +453,23 @@ async def test_a_track_outside_the_library_plays_its_best_entry_when_ranked_on_i
 
     assert [x.item for x in resolved] == [*tidal, spotify[2]]
     assert [_container(x) for x in resolved] == [ItemMapping.from_item(album)] * 3
+    assert [_pin(x) for x in resolved] == [(None, None)] * 3
+
+
+@pytest.mark.usefixtures("loaded_sources")
+async def test_a_track_outside_the_library_plays_an_entry_above_the_upgrade_quality() -> None:
+    """Ranking every track on its own, a better entry goes before the own account's poorer one."""
+    spotify = [_entry(SPOTIFY, position, HIRES) for position in (1, 2, 3)]
+    tidal = [_entry(TIDAL, position, LOSSY) for position in (1, 2)]
+    listing = album_listing([], [(TIDAL, tidal), (SPOTIFY, spotify)])
+    resolver = _album_resolver(
+        listing, mode=StreamSourceMode.BEST_QUALITY_PER_TRACK, upgrade=UpgradeQuality.LOSSLESS
+    )
+
+    with _sources(preferred=[TIDAL]):
+        resolved = await resolver._resolve_media_items(_album())
+
+    assert [x.item for x in resolved] == spotify
     assert [_pin(x) for x in resolved] == [(None, None)] * 3
 
 

@@ -167,6 +167,7 @@ CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 CONF_STREAM_SOURCE_MODE: Final[str] = "stream_source_mode"
+CONF_UPGRADE_BELOW_QUALITY: Final[str] = "upgrade_below_quality"
 
 # Shortest declared tail overlap (voice over) worth mixing; below this the boundary
 # is a plain cut.
@@ -199,6 +200,10 @@ DEFAULT_PORT: Final[int] = 8097
 # Cache constants for resolved radio URLs
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
+# A provider that found no match for a library track is not searched for it again until
+# its cache entry expires.
+CACHE_CATEGORY_NO_TRACK_MATCH: Final[int] = 101
+NO_TRACK_MATCH_EXPIRATION: Final[int] = 24 * 3600
 
 # StreamDetails.data key providers set to opt into the in-band title handoff.
 STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"

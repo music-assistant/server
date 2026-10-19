@@ -194,6 +194,26 @@ class TestReconcilePositionAnchor:
         assert timestamp == now - 5
         assert not jumped
 
+    def test_resume_adopts_the_fresh_anchor(self) -> None:
+        """Resuming must not extrapolate from a timestamp taken before the stop."""
+        now = time.time()
+        position, timestamp, jumped = player_module._reconcile_position_anchor(
+            59.0, now - 3600, 59.0, now - 0.5, prev_playing=False, new_playing=True
+        )
+        assert position == 59.0
+        assert timestamp == now - 0.5
+        assert not jumped
+
+    def test_pause_adopts_the_paused_anchor(self) -> None:
+        """A paused anchor is read without extrapolation, so it must hold the paused position."""
+        now = time.time()
+        position, timestamp, jumped = player_module._reconcile_position_anchor(
+            0.0, now - 90, 90.0, now, prev_playing=True, new_playing=False
+        )
+        assert position == 90.0
+        assert timestamp == now
+        assert not jumped
+
 
 class TestNativeCurrentMediaPosition:
     """The published position of native current_media and the timestamp it is paired with."""
