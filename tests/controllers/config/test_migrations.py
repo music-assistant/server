@@ -11,6 +11,8 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
+    CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
+    CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_NFS_SUBFOLDER_MIGRATED,
     CONF_SERVER_ID,
     ENCRYPT_SUFFIX,
@@ -24,11 +26,13 @@ from music_assistant.controllers.config.migrations import (
     _migrate_apple_music_sync_schedule,
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
+    _migrate_emby_album_artists_heal,
     _migrate_orphaned_disabled_protocol_configs,
     _migrate_output_limiter,
     _migrate_player_icons,
     _migrate_player_setup_data,
     _migrate_unrenamed_player_names,
+    migrate,
     migrate_connected_player_plugins,
     migrate_hass_engine_selection,
     migrate_nfs_subfolder_into_export_path,
@@ -1732,3 +1736,45 @@ def test_migrate_apple_music_sync_schedule_survives_malformed_state() -> None:
     }
     assert _migrate_apple_music_sync_schedule(data) is True
     assert data["core"] == {"tasks": "broken"}
+
+
+async def test_migrate_emby_album_artists_heal_marks_each_emby_instance() -> None:
+    """Each Emby instance gets the heal marker, once."""
+    data: dict[str, Any] = {
+        "providers": {
+            "emby--a": {"domain": "emby", "values": {"sync": True}},
+            "emby--b": {"domain": "emby"},
+            "spotify--s": {"domain": "spotify", "values": {}},
+        }
+    }
+    providers = data["providers"]
+
+    assert await migrate(data) is True
+    assert providers["emby--a"]["values"] == {
+        "sync": True,
+        CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: True,
+    }
+    assert providers["emby--b"]["values"] == {CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: True}
+    assert providers["spotify--s"]["values"] == {}
+    assert data[CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED] is True
+
+    # a marker the provider cleared after healing must not come back
+    del providers["emby--a"]["values"][CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING]
+    assert _migrate_emby_album_artists_heal(data) is False
+    assert CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING not in providers["emby--a"]["values"]
+
+
+def test_migrate_emby_album_artists_heal_noop_without_emby() -> None:
+    """Installs without an Emby provider are left untouched."""
+    data: dict[str, Any] = {"providers": {"spotify--s": {"domain": "spotify", "values": {}}}}
+    expected = deepcopy(data)
+    assert _migrate_emby_album_artists_heal(data) is False
+    assert data == expected
+
+
+def test_migrate_emby_album_artists_heal_survives_malformed_config() -> None:
+    """Malformed provider configs are skipped without raising."""
+    assert _migrate_emby_album_artists_heal({"providers": "broken"}) is False
+    data: dict[str, Any] = {"providers": {"emby--a": {"domain": "emby", "values": "broken"}}}
+    _migrate_emby_album_artists_heal(data)
+    assert data["providers"]["emby--a"]["values"] == "broken"
