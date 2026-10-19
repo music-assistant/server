@@ -470,6 +470,42 @@ async def test_background_streaming_ffmpeg_startup_failure() -> None:
     assert "ffmpeg startup failed" in failure_args[1]
 
 
+@pytest.mark.asyncio
+async def test_background_streaming_sizes_dsd_in_wavpack_as_32_bit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The PCM format requested for an 8-bit probed source matches the S32 bytes ffmpeg emits."""
+    controller = _make_controller()
+    streamdetails = _make_streamdetails(path="/music/test.wv")
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.WAVPACK,
+        codec_type=ContentType.WAVPACK,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+    p = _make_aa_provider("p1", available=True)
+    p.start_analysis = AsyncMock(return_value=True)
+    p.finalize = AsyncMock(return_value=None)
+    controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+    captured: list[AudioFormat] = []
+
+    async def _stream(
+        _streamdetails: object, pcm_format: AudioFormat, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        captured.append(pcm_format)
+        yield b"\x00" * 8
+
+    controller.mass.streams.audio.get_media_stream = _stream  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(audio_analysis_mod, "BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR", 0.0)
+
+    await controller._run_background_streaming_for_track(streamdetails, [p])
+
+    assert captured[0].content_type == ContentType.PCM_S32LE
+    assert captured[0].bit_depth == 32
+    assert captured[0].pcm_sample_size == 352800 * 4 * 2
+
+
 def _make_streamdetails(
     *, path: str, item_id: str = "test-item", duration: int | None = None
 ) -> MagicMock:

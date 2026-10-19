@@ -48,6 +48,7 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.audio import pcm_container_bit_depth
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -1320,9 +1321,11 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             return
 
         # Override content_type so ffmpeg decodes rather than re-muxing the source codec.
+        source_bit_depth = streamdetails.audio_format.bit_depth
         pcm_format = dataclasses.replace(
             streamdetails.audio_format,
-            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
+            content_type=ContentType.from_bit_depth(source_bit_depth),
+            bit_depth=pcm_container_bit_depth(source_bit_depth),
         )
 
         accepted = await self._start_analysis_on_providers(
