@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import cast
 from unittest import mock
 
 import pytest
@@ -13,50 +12,29 @@ from music_assistant.providers.tidal.auth_manager import TidalAuthManager
 from music_assistant.providers.tidal.constants import CONF_USER_ID, DOMAIN
 
 DEVICE = {"userCode": "ABCDE", "verificationUri": "link.tidal.com/ABCDE", "expiresIn": "300"}
-
-
-LOW = f"{DOMAIN}--a"
-HIGH = f"{DOMAIN}--b"
+OWN = f"{DOMAIN}--own"
+OTHER = f"{DOMAIN}--other"
 
 
 def _make_session(
-    accounts: dict[str, str | int | None],
-    *,
-    instance_id: str | None = None,
-    disabled: frozenset[str] = frozenset(),
-    loaded: frozenset[str] = frozenset(),
+    accounts: dict[str, str | int | None], *, instance_id: str | None = None
 ) -> tuple[SetupSession, mock.AsyncMock]:
     """Return a session with the given configured Tidal instances and its finish mock."""
     mass = mock.Mock()
-    mass.config.get = mock.Mock(
-        return_value={
-            iid: {
-                "type": "music",
-                "domain": DOMAIN,
-                "instance_id": iid,
-                "enabled": iid not in disabled,
-            }
-            for iid in accounts
-        }
+    mass.config.get_provider_configs = mock.AsyncMock(
+        return_value=[mock.Mock(instance_id=iid) for iid in accounts]
     )
-    mass.config.get_provider_configs = mock.AsyncMock(side_effect=AssertionError)
     mass.config.get_provider_setup_value = mock.Mock(
         side_effect=lambda iid, _key: accounts.get(iid)
     )
-    mass.get_provider = mock.Mock(
-        side_effect=lambda iid, *_args, **_kwargs: (
-            mock.Mock(instance_id=iid) if iid in loaded else None
-        )
-    )
-    finish = mock.AsyncMock(return_value={"instance_id": f"{DOMAIN}--test"})
+    finish = mock.AsyncMock(return_value={"instance_id": OWN})
     context = SetupFlowContext(
         kind="reconfigure" if instance_id else "setup",
         reason="user",
         domain=DOMAIN,
         instance_id=instance_id,
     )
-    session = SetupSession(mass, "flow-test", context, finish)
-    return session, finish
+    return SetupSession(mass, "flow-test", context, finish), finish
 
 
 def _sign_in(session: SetupSession, monkeypatch: pytest.MonkeyPatch, user_id: int | str) -> None:
@@ -72,11 +50,13 @@ def _sign_in(session: SetupSession, monkeypatch: pytest.MonkeyPatch, user_id: in
     monkeypatch.setattr(session, "external_until", mock.AsyncMock(return_value=auth_data))
 
 
+@pytest.mark.parametrize("instance_id", [None, OWN], ids=["setup", "reconfigure"])
 async def test_an_account_on_another_instance_is_refused(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, instance_id: str | None
 ) -> None:
-    """An account another instance already serves aborts before anything is stored."""
-    session, finish = _make_session({f"{DOMAIN}--other": "42"})
+    """An account another instance already holds aborts before anything is stored."""
+    # auth refreshes can store the user id as a number
+    session, finish = _make_session({OTHER: 42, OWN: "41"}, instance_id=instance_id)
     _sign_in(session, monkeypatch, 42)
 
     with pytest.raises(AbortFlow, match="account_already_configured"):
@@ -87,7 +67,7 @@ async def test_an_account_on_another_instance_is_refused(
 
 async def test_a_different_account_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     """A second account alongside an existing instance finishes the setup."""
-    session, finish = _make_session({f"{DOMAIN}--other": "41"})
+    session, finish = _make_session({OTHER: "41"})
     _sign_in(session, monkeypatch, 42)
 
     await tidal_flow.run_setup(session)
@@ -96,152 +76,21 @@ async def test_a_different_account_is_accepted(monkeypatch: pytest.MonkeyPatch) 
     assert finish.call_args.args[1][CONF_USER_ID] == "42"
 
 
+async def test_a_reconfigure_keeps_its_own_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The instance being reconfigured may sign in with the account it already holds."""
+    session, finish = _make_session({OWN: "42"}, instance_id=OWN)
+    _sign_in(session, monkeypatch, 42)
+
+    await tidal_flow.run_setup(session)
+
+    finish.assert_awaited_once()
+
+
 async def test_an_instance_without_a_stored_account_is_ignored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An instance with no stored user id never blocks a sign-in."""
-    session, finish = _make_session({f"{DOMAIN}--other": None})
-    _sign_in(session, monkeypatch, 42)
-
-    await tidal_flow.run_setup(session)
-
-    finish.assert_awaited_once()
-
-
-async def test_an_account_on_a_disabled_instance_is_refused_for_a_new_setup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A fresh setup is refused even when the holder is disabled."""
-    session, finish = _make_session({LOW: "42"}, disabled=frozenset({LOW}))
-    _sign_in(session, monkeypatch, 42)
-
-    with pytest.raises(AbortFlow, match="account_already_configured"):
-        await tidal_flow.run_setup(session)
-
-    finish.assert_not_called()
-
-
-async def test_a_reconfigure_keeps_its_own_account(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The instance being reconfigured may sign in with the account it already holds."""
-    session, finish = _make_session({LOW: "42"}, instance_id=LOW)
-    _sign_in(session, monkeypatch, 42)
-
-    await tidal_flow.run_setup(session)
-
-    finish.assert_awaited_once()
-
-
-async def test_the_winning_instance_may_reauthenticate_with_a_shared_account(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The lowest-id instance keeps its account even if a higher-id instance shares it."""
-    session, finish = _make_session({LOW: "42", HIGH: "42"}, instance_id=LOW)
-    _sign_in(session, monkeypatch, 42)
-
-    await tidal_flow.run_setup(session)
-
-    finish.assert_awaited_once()
-
-
-@pytest.mark.parametrize("own_account", ["41", "42"], ids=["moved_onto", "kept"])
-async def test_a_disabled_lower_instance_blocks_a_reconfigure(
-    monkeypatch: pytest.MonkeyPatch, own_account: str
-) -> None:
-    """A disabled lower-id instance would take the account over once enabled, so it holds it."""
-    session, finish = _make_session(
-        {LOW: "42", HIGH: own_account}, instance_id=HIGH, disabled=frozenset({LOW})
-    )
-    _sign_in(session, monkeypatch, 42)
-
-    with pytest.raises(AbortFlow, match="account_used_by_other_instance"):
-        await tidal_flow.run_setup(session)
-
-    finish.assert_not_awaited()
-
-
-async def test_a_reconfigure_onto_a_held_account_is_refused(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Reconfiguring onto an account a lower-id enabled instance holds aborts."""
-    session, finish = _make_session({LOW: "42", HIGH: "41"}, instance_id=HIGH)
-    _sign_in(session, monkeypatch, 42)
-
-    with pytest.raises(AbortFlow, match="account_used_by_other_instance"):
-        await tidal_flow.run_setup(session)
-
-    finish.assert_not_awaited()
-
-
-async def test_a_running_higher_instance_blocks_relinking_the_same_account(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A higher-id instance running on the account blocks a lower-id re-link of it."""
-    session, finish = _make_session(
-        {LOW: "42", HIGH: "42"}, instance_id=LOW, loaded=frozenset({HIGH})
-    )
-    _sign_in(session, monkeypatch, 42)
-
-    with pytest.raises(AbortFlow, match="account_used_by_other_instance"):
-        await tidal_flow.run_setup(session)
-
-    finish.assert_not_awaited()
-    get_provider = cast("mock.Mock", session.mass.get_provider)
-    get_provider.assert_any_call(HIGH, return_unavailable=True)
-
-
-@pytest.mark.parametrize(
-    "disabled", [frozenset(), frozenset({HIGH})], ids=["not_loaded", "disabled"]
-)
-async def test_moving_onto_an_account_a_higher_instance_holds_is_refused(
-    monkeypatch: pytest.MonkeyPatch, disabled: frozenset[str]
-) -> None:
-    """Moving onto any held account would create a new duplicate, whatever the holder's state."""
-    session, finish = _make_session({LOW: "41", HIGH: "42"}, instance_id=LOW, disabled=disabled)
-    _sign_in(session, monkeypatch, 42)
-
-    with pytest.raises(AbortFlow, match="account_used_by_other_instance"):
-        await tidal_flow.run_setup(session)
-
-    finish.assert_not_awaited()
-
-
-async def test_the_winning_instance_may_reauthenticate_beside_a_disabled_duplicate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Re-linking its own account is not blocked by a disabled higher-id duplicate."""
-    session, finish = _make_session(
-        {LOW: "42", HIGH: "42"},
-        instance_id=LOW,
-        disabled=frozenset({HIGH}),
-        loaded=frozenset({HIGH}),
-    )
-    _sign_in(session, monkeypatch, 42)
-
-    await tidal_flow.run_setup(session)
-
-    finish.assert_awaited_once()
-
-
-async def test_an_instance_without_a_stored_account_moving_onto_a_held_one_is_refused(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With no stored account the reconfigure is a move, so any holder refuses it."""
-    session, finish = _make_session({LOW: "42", HIGH: None}, instance_id=HIGH)
-    _sign_in(session, monkeypatch, 42)
-
-    with pytest.raises(AbortFlow, match="account_used_by_other_instance"):
-        await tidal_flow.run_setup(session)
-
-    finish.assert_not_awaited()
-
-
-async def test_a_numeric_stored_account_counts_as_the_same_account(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Auth refreshes can store the user id as a number; re-linking it is not a move."""
-    session, finish = _make_session(
-        {LOW: 42, HIGH: "42"}, instance_id=LOW, disabled=frozenset({HIGH})
-    )
+    session, finish = _make_session({OTHER: None})
     _sign_in(session, monkeypatch, 42)
 
     await tidal_flow.run_setup(session)

@@ -17,13 +17,13 @@ from music_assistant_models.errors import LoginFailed
 
 from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
 
-from .accounts import get_account_holders, get_loaded_account_holders
 from .auth_manager import TidalAuthManager
 from .constants import (
     CONF_AUTH_TOKEN,
     CONF_EXPIRY_TIME,
     CONF_REFRESH_TOKEN,
     CONF_USER_ID,
+    DOMAIN,
 )
 
 if TYPE_CHECKING:
@@ -60,12 +60,8 @@ async def run_setup(session: SetupSession) -> None:
             raise AbortFlow("login_failed") from err
 
         user_id = str(auth_data["userId"])
-        if await _account_refused(session, user_id):
-            raise AbortFlow(
-                "account_used_by_other_instance"
-                if session.context.kind == "reconfigure"
-                else "account_already_configured"
-            )
+        if await _account_in_use(session, user_id):
+            raise AbortFlow("account_already_configured")
         collected: dict[str, ConfigValueType] = {
             CONF_AUTH_TOKEN: auth_data["access_token"],
             CONF_REFRESH_TOKEN: auth_data["refresh_token"],
@@ -82,26 +78,18 @@ def _verification_url(device: dict[str, str]) -> str:
     return url if url.startswith("http") else f"https://{url}"
 
 
-async def _account_refused(session: SetupSession, user_id: str) -> bool:
+async def _account_in_use(session: SetupSession, user_id: str) -> bool:
     """
-    Return whether the account that just signed in may not be used by this flow.
-
-    A new setup, or a reconfigure that moves onto another account, is refused if any other
-    instance holds the account. Re-linking the account an instance already has is refused if
-    a lower-id instance holds it, even a disabled one since it takes the account over once
-    enabled, or if another instance is running on it right now.
+    Return whether another Tidal provider instance is already set up for this account.
 
     :param session: The setup session driving the flow.
     :param user_id: The Tidal user id that just signed in.
     """
     mass = session.mass
-    instance_id = session.context.instance_id
-    holders = get_account_holders(mass, user_id, instance_id)
-    if session.context.kind != "reconfigure" or not instance_id:
-        return bool(holders)
-    stored = mass.config.get_provider_setup_value(instance_id, CONF_USER_ID)
-    if not stored or str(stored) != user_id:
-        return bool(holders)
-    return any(holder.instance_id < instance_id for holder in holders) or bool(
-        get_loaded_account_holders(mass, user_id, instance_id)
-    )
+    for config in await mass.config.get_provider_configs(provider_domain=DOMAIN):
+        if config.instance_id == session.context.instance_id:
+            continue
+        stored = mass.config.get_provider_setup_value(config.instance_id, CONF_USER_ID)
+        if stored and str(stored) == user_id:
+            return True
+    return False

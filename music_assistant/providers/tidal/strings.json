@@ -20,8 +20,7 @@
     },
     "abort": {
       "login_failed": "Could not link your Tidal account. Please start the setup again.",
-      "account_already_configured": "This Tidal account is already set up in Music Assistant. Each account can only be added once. Sign in with a different account, or reconfigure the existing one instead.",
-      "account_used_by_other_instance": "This Tidal account is already used by another Tidal instance. Sign in with a different Tidal account, or remove the other instance that uses this account."
+      "account_already_configured": "This Tidal account is already used by another Tidal provider in Music Assistant. Each account can only be added once. Sign in with a different account, or remove the other Tidal provider first."
     }
   },
   "media": {
@@ -30,10 +29,6 @@
         "name": "Favorite Tracks"
       }
     }
-  },
-  "errors": {
-    "account_used_by_other_instance": "This Tidal account is already used by {0}. Tidal allows one stream per account, so only one instance can use it. Reconfigure this instance with a different Tidal account, or remove it.",
-    "account_used_by_private_instance": "This Tidal account is already used by another Tidal instance. Tidal allows one stream per account, so only one instance can use it. Reconfigure this instance with a different Tidal account, or remove it."
   },
   "manifest": {
     "description": "Stream music, playlists, and exclusives in lossless FLAC quality."

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime
 from sqlite3 import OperationalError
@@ -29,11 +28,6 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
-from .accounts import (
-    account_in_use_error,
-    get_loaded_account_holders,
-    get_winning_account_holder,
-)
 from .api_client import TidalAPIClient
 from .auth_manager import TidalAuthManager
 from .constants import (
@@ -146,8 +140,6 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         expires_at = self.get_setup_value(CONF_EXPIRY_TIME)
         user_id = self.get_setup_value(CONF_USER_ID)
 
-        self._ensure_account_is_ours()
-
         if not access_token or not refresh_token:
             raise LoginFailed("Missing authentication data")
 
@@ -172,26 +164,6 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         user_info = await self.api.get("sessions")
         logged_in_user = await self.get_user(str(user_info.get("userId")))
         await self.auth.update_user_info(logged_in_user, str(user_info.get("sessionId")))
-        # mass registers the provider right after init without yielding, so this re-check
-        # catches a lower instance enabled during the login, whose handover could not see us yet
-        self._ensure_account_is_ours()
-
-    async def loaded_in_mass(self) -> None:
-        """Take the account over from any higher-id instance still running on it."""
-        await super().loaded_in_mass()
-        user_id = self.get_setup_value(CONF_USER_ID)
-        if not user_id:
-            return
-        for holder in get_loaded_account_holders(self.mass, str(user_id), self.instance_id):
-            # registration precedes this hook by several awaits, so a lower instance that
-            # registered meanwhile keeps the account; its own handover unloads this one
-            if holder.instance_id < self.instance_id:
-                continue
-            await asyncio.shield(
-                self.mass.unload_provider_with_error(
-                    holder.instance_id, account_in_use_error(self.config, self.translation_owner)
-                )
-            )
 
     async def get_user(self, prov_user_id: str) -> dict[str, Any]:
         """Get user information."""
@@ -487,14 +459,6 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders WITH items)."""
         return await self.recommendations_manager.get_recommendations()
-
-    def _ensure_account_is_ours(self) -> None:
-        """Raise if a lower-id enabled instance keeps this instance's Tidal account."""
-        user_id = self.get_setup_value(CONF_USER_ID)
-        if user_id and (
-            keeper := get_winning_account_holder(self.mass, str(user_id), self.instance_id)
-        ):
-            raise account_in_use_error(keeper, self.translation_owner)
 
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
         """Update the persisted auth setup data with new (rotated) auth info."""

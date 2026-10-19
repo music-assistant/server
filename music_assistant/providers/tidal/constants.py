@@ -31,13 +31,7 @@ AUTH_SCOPE = "r_usr w_usr w_sub"
 PLAYLISTS = "playlists"
 PAGES_MIX = "pages/mix"
 
-# Provider domain (matches manifest.json)
 DOMAIN = "tidal"
-
-# Translation key (errors.*) of the error raised when another instance holds the same account
-ERROR_ACCOUNT_IN_USE = "account_used_by_other_instance"
-# Same error for a holder that is not visible to everyone, so its name is not disclosed
-ERROR_ACCOUNT_IN_USE_PRIVATE = "account_used_by_private_instance"
 
 # Config keys
 CONF_AUTH_TOKEN = "auth_token"  # noqa: S105 - config key
