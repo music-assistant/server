@@ -119,11 +119,46 @@ async def test_top_items_combines_provider_plays_with_library_identity(
             },
         )
 
+    other_user = await mass.webserver.auth.create_user("statistics-other-user")
+    for media_type, user_id in (
+        (MediaType.RADIO, user.user_id),
+        (MediaType.TRACK, other_user.user_id),
+    ):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": str(library_track_id),
+                "provider": "library",
+                "media_type": media_type.value,
+                "userid": user_id,
+                "name": "Unrelated play",
+                "timestamp": 1_000,
+            },
+        )
+
     with patch(
         "music_assistant.controllers.statistics.controller.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
+        ranked_counts = [
+            await mass.statistics.get_play_count(
+                result.item.item_id, result.item.provider, MediaType.TRACK
+            )
+            for result in results
+        ]
+        mapped_counts = [
+            await mass.statistics.get_play_count(item_id, provider, MediaType.TRACK)
+            for item_id, provider in (
+                ("apple-track", "apple_music"),
+                ("apple-track", "apple_music--account"),
+                ("apple-track", "apple_music--second-account"),
+                ("tidal-track", "tidal--account"),
+            )
+        ]
+        missing_count = await mass.statistics.get_play_count(
+            "missing-track", "apple_music--account", MediaType.TRACK
+        )
 
     assert [
         (result.item.item_id, result.item.provider, result.play_count) for result in results
@@ -131,6 +166,9 @@ async def test_top_items_combines_provider_plays_with_library_identity(
         (str(library_track_id), "library", 3),
         ("unmapped-track", "apple_music--account", 1),
     ]
+    assert ranked_counts == [result.play_count for result in results]
+    assert mapped_counts == [3, 3, 3, 3]
+    assert missing_count == 0
 
 
 async def test_top_items_prefers_exact_instance_over_domain_mapping(mass: MusicAssistant) -> None:
@@ -164,10 +202,16 @@ async def test_top_items_prefers_exact_instance_over_domain_mapping(mass: MusicA
         return_value=user,
     ):
         results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
+        count = await mass.statistics.get_play_count("track-1", "test", MediaType.TRACK)
+        other_account_count = await mass.statistics.get_play_count(
+            "track-1", "test--other-account", MediaType.TRACK
+        )
 
     assert [
         (result.item.item_id, result.item.provider, result.play_count) for result in results
     ] == [("42", "library", 1)]
+    assert count == 1
+    assert other_account_count == 0
 
 
 async def test_top_items_artist_tab_counts_track_history(mass: MusicAssistant) -> None:

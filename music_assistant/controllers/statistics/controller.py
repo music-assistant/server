@@ -867,12 +867,48 @@ class StatisticsController(CoreController):
             return 0
 
         query = f"""
-            SELECT COUNT(*) as count
-            FROM {DB_TABLE_PLAY_HISTORY}
-            WHERE userid = :user_id
-                AND item_id = :item_id
-                AND provider = :provider
-                AND media_type = :media_type
+            WITH requested_item AS (
+                SELECT
+                    COALESCE(CAST(provider_mappings.item_id AS TEXT), :item_id) AS item_id,
+                    CASE
+                        WHEN provider_mappings.item_id IS NOT NULL THEN 'library'
+                        ELSE :provider
+                    END AS provider
+                FROM (SELECT 1) AS requested
+                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
+                    ON {
+            _PROVIDER_MAPPING_JOIN.format(
+                mapping="provider_mappings",
+                media_type=":media_type",
+                item_id=":item_id",
+                provider=":provider",
+            )
+        }
+            ), normalized_history AS (
+                SELECT
+                    COALESCE(
+                        CAST(provider_mappings.item_id AS TEXT), play_history.item_id
+                    ) AS item_id,
+                    CASE
+                        WHEN provider_mappings.item_id IS NOT NULL THEN 'library'
+                        ELSE play_history.provider
+                    END AS provider
+                FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
+                    ON {
+            _PROVIDER_MAPPING_JOIN.format(
+                mapping="provider_mappings",
+                media_type="play_history.media_type",
+                item_id="play_history.item_id",
+                provider="play_history.provider",
+            )
+        }
+                WHERE play_history.userid = :user_id
+                    AND play_history.media_type = :media_type
+            )
+            SELECT COUNT(*) AS count
+            FROM normalized_history
+            INNER JOIN requested_item USING (item_id, provider)
         """
 
         params = {
