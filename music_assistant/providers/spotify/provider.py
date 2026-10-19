@@ -97,6 +97,7 @@ from .constants import (
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     CREDENTIALS_FILE,
+    GLOBAL_SEARCH_TIMEOUT,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SOLOIST_DATA_DIR_NAME,
 )
@@ -1287,11 +1288,17 @@ class SpotifyProvider(MusicProvider):
         self, search_query: str, limit: int, searchresult: SearchResults
     ) -> None:
         """Search playlists on the global session, or the dev session while it is rate limited."""
+        global_result = SearchResults()
         try:
-            await self._search_pages(search_query, [MediaType.PLAYLIST], limit, searchresult, True)
-        except RetriesExhausted as err:
-            self.logger.debug("Searching playlists with the custom Client ID instead: %s", err)
+            async with asyncio.timeout(GLOBAL_SEARCH_TIMEOUT):
+                await self._search_pages(
+                    search_query, [MediaType.PLAYLIST], limit, global_result, True
+                )
+        except RetriesExhausted, TimeoutError:
+            self.logger.debug("Global session is rate limited, searching playlists on the dev one")
             await self._search_pages(search_query, [MediaType.PLAYLIST], limit, searchresult, False)
+            return
+        searchresult.playlists = global_result.playlists
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
         """Build comma-separated search types string from media types."""

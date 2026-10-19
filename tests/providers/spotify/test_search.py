@@ -1,5 +1,6 @@
 """Unit tests for the Spotify provider's search implementation."""
 
+import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,6 +8,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import RetriesExhausted
 
+from music_assistant.providers.spotify import provider as provider_module
 from music_assistant.providers.spotify.provider import SpotifyProvider
 from tests.common import use_real_create_task
 
@@ -162,6 +164,50 @@ async def test_search_playlists_fall_back_to_dev_session_when_global_is_limited(
 
     assert len(result.tracks) == 1
     assert len(result.playlists) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_playlists_fall_back_when_global_session_is_backing_off(
+    provider: SpotifyProvider, get_data: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A global session that keeps retrying a rate limit is not waited out."""
+    provider.dev_session_active = True
+    monkeypatch.setattr(provider_module, "GLOBAL_SEARCH_TIMEOUT", 0.05)
+
+    async def side_effect(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if kwargs["use_global_session"]:
+            await asyncio.sleep(160)
+        return _respond(endpoint, **kwargs)
+
+    get_data.side_effect = side_effect
+
+    async with asyncio.timeout(5):
+        result = await provider.search("chill", [MediaType.TRACK, MediaType.PLAYLIST], limit=10)
+
+    assert len(result.tracks) == 1
+    assert len(result.playlists) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_playlists_fallback_drops_partial_global_results(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """Playlists of global pages before the failing one are not kept next to the fallback."""
+    provider.dev_session_active = True
+
+    async def side_effect(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if not kwargs["use_global_session"]:
+            return _respond(endpoint, **kwargs)
+        if kwargs["offset"]:
+            raise RetriesExhausted("Not retrying, asked to wait 600 seconds")
+        items = [_make_playlist_obj(f"g{i}", "Playlist") for i in range(10)]
+        return {"playlists": {"items": items}}
+
+    get_data.side_effect = side_effect
+
+    result = await provider.search("chill", [MediaType.PLAYLIST], limit=20)
+
+    assert [p.item_id for p in result.playlists] == ["p1"]
 
 
 @pytest.mark.asyncio
