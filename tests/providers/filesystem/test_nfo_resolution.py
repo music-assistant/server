@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
-from music_assistant_models.media_items import Album
+from music_assistant_models.media_items import Album, Artist
 
 from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.helpers.util import parse_title_and_version
@@ -1911,3 +1911,54 @@ async def test_parse_album_relaxed_match_never_trusts_a_folder_the_nfo_tier_reje
     album_mapping = next(iter(album.provider_mappings))
     assert album_mapping.url == "Artist/2025-03-14 My Album"
     assert album.name == "My Album"
+
+
+# --- missing ALBUMARTIST tag with the folder-name fallback -----------------------------
+
+
+def _missing_album_artist_provider(nfo_data: bytes, fallback_action: str) -> Any:
+    """Build a provider where "Artist/My Album/album.nfo" holds the given data."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider.exists = AsyncMock(return_value=True)
+    provider._get_local_images = AsyncMock(return_value=[])
+    provider.cache.get = AsyncMock(return_value=None)
+    provider.cache.set = AsyncMock()
+    provider._resolve_artists_with_mbids = AsyncMock(return_value=[])
+    provider.config.get_value = MagicMock(return_value=fallback_action)
+    provider._parse_artist = AsyncMock(
+        side_effect=lambda name, **_kw: Artist(
+            item_id=name, provider=INSTANCE_ID, name=name, provider_mappings=set()
+        )
+    )
+    _mock_single_file(provider, "Artist/My Album/album.nfo", nfo_data)
+    return provider
+
+
+def _missing_album_artist_tags() -> Any:
+    """Build tags for a track in "Artist/My Album" without an album artist."""
+    return MagicMock(
+        album="My Album",
+        album_sort=None,
+        album_artists=[],
+        artists=["Track Artist"],
+        barcode=None,
+        musicbrainz_albumid=None,
+        musicbrainz_releasegroupid=None,
+        year=None,
+        album_type=AlbumType.ALBUM,
+        filename="track.mp3",
+    )
+
+
+async def test_parse_album_folder_name_fallback_uses_track_artists_at_share_root() -> None:
+    """An album folder at the share root has no artist folder, so track artists are used."""
+    provider = _missing_album_artist_provider(
+        b"<album><title>My Album</title></album>", fallback_action="folder_name"
+    )
+
+    album = await provider._parse_album(
+        track_path="Track Artist - My Album/t1.mp3", track_tags=_missing_album_artist_tags()
+    )
+
+    assert [artist.name for artist in album.artists] == ["Track Artist"]
