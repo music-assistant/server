@@ -1917,7 +1917,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
-    async def mark_item_played(
+    async def mark_item_played(  # noqa: PLR0915
         self,
         media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
@@ -2039,13 +2039,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played = media_item.duration
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        await self._forward_play_report(
-            media_item,
-            user,
-            fully_played=fully_played,
-            position=seconds_played,
-            is_playing=is_playing,
-        )
+        # a report of a provider's own account must not reach any other account
+        if not provider_instance_id:
+            await self._forward_play_report(
+                media_item,
+                user,
+                fully_played=fully_played,
+                position=seconds_played,
+                is_playing=is_playing,
+            )
 
         # also update playcount in library table (if fully played)
         if not fully_played or is_playing or not play_history_written:
@@ -2142,7 +2144,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        await self._forward_play_report(media_item, user, fully_played=False, position=0)
+        # a report of a provider's own account must not reach any other account
+        if not provider_instance_id:
+            await self._forward_play_report(media_item, user, fully_played=False, position=0)
 
     @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
