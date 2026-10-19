@@ -16,6 +16,7 @@ from music_assistant_models.media_items import Track
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.webserver.controller import WebserverController
+from music_assistant.controllers.webserver.helpers.auth_middleware import sendspin_player_id
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
@@ -258,6 +259,45 @@ async def test_queue_events_follow_the_active_source_of_an_allowed_player(
     mass_minimal.signal_event(EventType.QUEUE_UPDATED, "group", {"queue_id": "group"})
     await drain_event_callbacks()
     assert client._to_write.empty()
+
+
+async def test_queue_event_access_uses_the_recipient_client_player(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Queue event access honors the recipient's private client player, not the emitter's."""
+    phone_a = SimpleNamespace(
+        player_id="phone_a", private=True, state=SimpleNamespace(active_source="phone_a")
+    )
+    phone_b = SimpleNamespace(
+        player_id="phone_b", private=True, state=SimpleNamespace(active_source="group")
+    )
+    registry = {"phone_a": phone_a, "phone_b": phone_b}
+    players = SimpleNamespace(get_player=registry.get, iter_players=lambda: list(registry.values()))
+    monkeypatch.setattr(mass_minimal, "players", players, raising=False)
+    queues = PlayerQueuesController.__new__(PlayerQueuesController)
+    queues.mass = mass_minimal
+    monkeypatch.setattr(mass_minimal, "player_queues", queues, raising=False)
+    other = _restricted_client(webserver, player_filter=["kitchen"])
+    owner_b = _restricted_client(webserver, player_filter=["kitchen"])
+    owner_b.bind_sendspin_player("phone_b")
+
+    # emitted by phone_a's own command: other users may still not read its queue
+    token = sendspin_player_id.set("phone_a")
+    try:
+        mass_minimal.signal_event(EventType.QUEUE_UPDATED, "phone_a", {"queue_id": "phone_a"})
+    finally:
+        sendspin_player_id.reset(token)
+    await drain_event_callbacks()
+    assert other._to_write.empty()
+    assert owner_b._to_write.empty()
+
+    # emitted outside phone_b's context: its owner still reads the group it plays from
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "group", {"queue_id": "group"})
+    await drain_event_callbacks()
+    assert "group" in get_written_message(owner_b)
+    assert other._to_write.empty()
 
 
 async def test_full_access_user_receives_events_outside_their_filter(

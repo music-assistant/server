@@ -52,6 +52,7 @@ from .helpers.auth_middleware import (
     player_access_filter,
     resolve_command_impersonation,
     resolve_ingress_user,
+    sendspin_player_id,
     set_current_client_id,
     set_current_token,
     set_current_user,
@@ -580,6 +581,15 @@ class WebsocketClientHandler:
             self._sendspin_player_is_private = player is not None and player.private
         return self._sendspin_player_is_private
 
+    def _may_read_queue(self, queue_id: str) -> bool:
+        """Return whether this connection's user may read the queue."""
+        # events run in the emitter's context, so bind this connection's client player
+        token = sendspin_player_id.set(self._sendspin_player_id)
+        try:
+            return self.mass.player_queues.has_read_access(self._authenticated_user, queue_id)
+        finally:
+            sendspin_player_id.reset(token)
+
     def _subscribe_to_events(self) -> None:
         """Subscribe to Mass events and forward them to the client."""
         if self._events_unsub_callback is not None:
@@ -612,9 +622,7 @@ class WebsocketClientHandler:
                     EventType.QUEUE_ITEMS_UPDATED,
                     EventType.QUEUE_TIME_UPDATED,
                     EventType.QUEUE_UPDATED,
-                ) and not self.mass.player_queues.has_read_access(
-                    self._authenticated_user, event.object_id
-                ):
+                ) and not self._may_read_queue(event.object_id):
                     return
 
             if event.event == EventType.SETUP_FLOW_UPDATED:
