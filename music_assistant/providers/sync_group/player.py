@@ -36,6 +36,10 @@ from .constants import (
     VOLUME_FEATURES_FROM_MEMBERS,
 )
 
+# seconds between attempts to re-add a configured member the live group is missing
+# (one that powered on, or refused the stream)
+LATE_JOIN_RETRY_SECONDS = 10.0
+
 if TYPE_CHECKING:
     from collections.abc import Collection
 
@@ -51,6 +55,8 @@ class SyncGroupPlayer(Player):
     _attr_type: PlayerType = PlayerType.GROUP
     sync_leader: Player | None = None
     """The active sync leader player for this syncgroup."""
+    _late_join_attempt_at: float = 0.0
+    _avoid_leader_id: str | None = None
 
     def __init__(
         self,
@@ -464,9 +470,67 @@ class SyncGroupPlayer(Player):
         """Poll player for state updates."""
         self._update_attributes()
         self.update_state()
+        # a member left out of the live session (e.g. it refused the stream at the
+        # start) is not a live member, so its updates never reach
+        # on_group_member_updated: retry it from here, though not every poll
+        if (
+            not self.is_dynamic
+            and (leader := self.sync_leader) is not None
+            and self._leader_is_interchangeable(leader)
+            and leader.state.playback_state == PlaybackState.PLAYING
+            and time.monotonic() - self._late_join_attempt_at >= LATE_JOIN_RETRY_SECONDS
+            and self._missing_members(leader)
+        ):
+            self._late_join_attempt_at = time.monotonic()
+            self.mass.create_task(
+                self._rejoin_members, task_id=f"sync_group_rejoin_now_{self.player_id}"
+            )
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
+        try:
+            await self._play_media(media)
+        except PlayerCommandFailed:
+            # The session is owned by the leader, so a leader that fails to connect
+            # fails the start even when every other member is fine (a failing
+            # non-leader is simply left out). The receivers do not care who leads:
+            # retry once with another member leading, and the failed one is then
+            # left out like any other member and re-added by poll().
+            failed = self.sync_leader
+            # the failed start may already have dropped members from the live list
+            known_members = (
+                self._attr_group_members
+                if self.is_dynamic
+                else cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+            )
+            if (
+                self._avoid_leader_id is not None
+                or failed is None
+                or not self._leader_is_interchangeable(failed)
+                or len(known_members) < 2
+            ):
+                raise
+            self.logger.warning(
+                "Playback on %s failed to start with %s leading, retrying with another leader",
+                self.display_name,
+                failed.display_name,
+            )
+            self._avoid_leader_id = failed.player_id
+            try:
+                await self._dissolve_syncgroup()
+                if not self.is_dynamic:
+                    # the failed start may have dropped members: start from the preset
+                    self._attr_group_members = list(
+                        cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+                    )
+                # start over as new content: the first attempt already set it
+                self._attr_current_media = None
+                await self._play_media(media)
+            finally:
+                self._avoid_leader_id = None
+
+    async def _play_media(self, media: PlayerMedia) -> None:
+        """Form the group and start PLAY MEDIA on its leader."""
         previous_media = self._attr_current_media
         new_content = previous_media is None or (
             previous_media.uri,
@@ -803,6 +867,19 @@ class SyncGroupPlayer(Player):
             raise PlayerCommandFailed(f"{self.display_name} has no active sync leader")
         return leader
 
+    def _leader_is_interchangeable(self, leader: Player) -> bool:
+        """
+        Return whether any member could lead in place of the given leader.
+
+        True where the leader is only the member the session is anchored on (every
+        member gets its own stream), so leading with another member changes nothing
+        for the devices. Elsewhere the leader is a device that distributes the audio
+        to the others, and changing it regroups the devices.
+
+        :param leader: The (current or failed) sync leader.
+        """
+        return leader.provider.domain in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
+
     def _is_member_allowed(self, player_id: str) -> bool:
         """Return whether a player is allowed to join this group given the configured filter."""
         # preset members should always be allowed to re-join
@@ -1035,6 +1112,8 @@ class SyncGroupPlayer(Player):
             and member_player.state.available
             and member_player.state.type in PLAYBACK_TARGET_TYPES
         ]
+        # a leader that just failed to start the session leads only when nothing else can
+        candidates = [x for x in candidates if x.player_id != self._avoid_leader_id] or candidates
         preferred_ids = set(preferred_member_ids or ())
         # preference tiers, most specific first: a member that is already fed by the
         # live session can take it over without restarting playback, and one that
