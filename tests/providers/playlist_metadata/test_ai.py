@@ -740,6 +740,29 @@ async def test_preview_leaves_the_description_out_when_descriptions_are_off(
     assert CONF_PREVIEW_DESCRIPTION not in [entry.key for entry in entries or ()]
 
 
+async def test_the_cover_key_names_the_text_engine_picked_for_the_concept(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """The key holds the engine the concept is written with, also before one was picked."""
+    _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
+    # nothing picked yet: the stored selection is empty until an engine is adopted
+    provider.config.get_value.side_effect = (  # type: ignore[attr-defined]
+        lambda key, default=None: (
+            None if key == CONF_TEXT_ENGINE else provider._test_config.get(key, default)  # type: ignore[attr-defined]
+        )
+    )
+    playlist = _smart_playlist()
+
+    await _metadata(provider, playlist)
+
+    assert _engine_calls(provider) == 1
+    assert playlist.image is not None
+    assert playlist.image.path == await provider._ai._file_name(
+        playlist,
+        provider.test_engine,  # type: ignore[attr-defined]
+    )
+
+
 async def test_preview_asks_for_the_visual_concept_once(
     provider: PlaylistMetadataProvider,
 ) -> None:

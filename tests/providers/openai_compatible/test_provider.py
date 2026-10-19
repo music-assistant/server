@@ -687,8 +687,13 @@ def _image_session_on_mass() -> Iterator[None]:
     def session(mass: AsyncMock, _endpoint_host: str) -> MagicMock:
         return _response_cm(response=mass.http_session)
 
-    with patch(
-        "music_assistant.providers.openai_compatible.helpers._image_session", side_effect=session
+    with (
+        patch(
+            "music_assistant.providers.openai_compatible.helpers._image_session",
+            side_effect=session,
+        ),
+        # no proxy, whatever the environment the tests run in has
+        patch("music_assistant.providers.openai_compatible.helpers.getproxies", return_value={}),
     ):
         yield
 
@@ -806,6 +811,60 @@ async def test_image_links_on_the_configured_endpoint_are_allowed(mass: AsyncMoc
     assert image == b"png"
 
 
+async def test_other_services_on_the_endpoints_host_are_refused(mass: AsyncMock) -> None:
+    """Only the endpoint itself is trusted, not another port or scheme on its address."""
+    mass.http_session.get = MagicMock()
+    for url in ("http://192.168.1.20:8123/api/states", "https://192.168.1.20:8080/x.png"):
+        mass.http_session.request = MagicMock(
+            return_value=_response_cm(response=_json_response(200, {"data": [{"url": url}]}))
+        )
+        with pytest.raises(InvalidDataError, match="local network"):
+            await helpers.image_generation(
+                mass,
+                "http://192.168.1.20:8080/v1",
+                "",
+                model="dall-e-3",
+                prompt="A cat",
+                timeout=10,
+                use_images_endpoint=True,
+            )
+
+    mass.http_session.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("addresses", "allowed"), [(["93.184.215.14"], True), (["10.0.0.7"], False)]
+)
+async def test_behind_a_proxy_hosts_are_checked_before_the_download(
+    mass: AsyncMock, addresses: list[str], allowed: bool
+) -> None:
+    """Through a proxy the host is resolved up front, then the shared session downloads it."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"png"]))
+    )
+    with (
+        patch(
+            "music_assistant.providers.openai_compatible.helpers.getproxies",
+            return_value={"https": "http://proxy.lan:3128"},
+        ),
+        patch(
+            "music_assistant.providers.openai_compatible.helpers._image_session"
+        ) as image_session,
+        patch(
+            "music_assistant.providers.openai_compatible.helpers._host_addresses",
+            AsyncMock(return_value=addresses),
+        ),
+    ):
+        if allowed:
+            assert await _generate_by_url(mass, "https://cdn.example.com/x.png") == b"png"
+        else:
+            with pytest.raises(InvalidDataError, match="local network"):
+                await _generate_by_url(mass, "https://cdn.example.com/x.png")
+
+    image_session.assert_not_called()
+    assert mass.http_session.get.called is allowed
+
+
 async def test_image_link_redirects_are_checked_at_every_hop(mass: AsyncMock) -> None:
     """A redirect is followed by hand, so its target is checked like the link itself."""
     mass.http_session.get = MagicMock(
@@ -849,7 +908,7 @@ async def test_the_resolver_refuses_hosts_with_a_local_address(
     addresses: tuple[str, ...],
 ) -> None:
     """A host with any local address, or none at all, is refused as it is connected to."""
-    resolver = helpers.PublicHostResolver("api.example.com")
+    resolver = helpers.PublicHostResolver(("https", "api.example.com", 443))
     with (
         patch.object(
             helpers.ThreadedResolver, "resolve", AsyncMock(return_value=_resolved(*addresses))
@@ -860,15 +919,24 @@ async def test_the_resolver_refuses_hosts_with_a_local_address(
 
 
 async def test_the_resolver_passes_public_hosts_and_the_endpoint() -> None:
-    """Public hosts resolve as usual, and so does the endpoint's own (local) host."""
-    resolver = helpers.PublicHostResolver("localai.lan")
+    """Public hosts resolve as usual, and so does the endpoint itself, but not its neighbours."""
+    resolver = helpers.PublicHostResolver(("http", "localai.lan", 8080))
     with patch.object(
         helpers.ThreadedResolver,
         "resolve",
-        AsyncMock(side_effect=[_resolved("93.184.215.14"), _resolved("192.168.1.20")]),
+        AsyncMock(
+            side_effect=[
+                _resolved("93.184.215.14"),
+                _resolved("192.168.1.20"),
+                _resolved("192.168.1.20"),
+            ]
+        ),
     ):
         assert await resolver.resolve("images.example.com", 443) == _resolved("93.184.215.14")
         assert await resolver.resolve("LocalAI.lan", 8080) == _resolved("192.168.1.20")
+        # another service on the endpoint's host is not the endpoint
+        with pytest.raises(helpers.LocalNetworkHostError):
+            await resolver.resolve("localai.lan", 8123)
 
 
 async def test_a_malformed_inline_image_falls_back_to_the_images_endpoint(

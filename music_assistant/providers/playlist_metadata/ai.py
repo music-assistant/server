@@ -1241,11 +1241,11 @@ class AIArtwork:
         if (rules_digest := await self._rules_digest(playlist)) is None:
             return None
         style = self._style()
-        prompt_engine = (
-            str(self.provider.config.get_value(CONF_TEXT_ENGINE) or "")
-            if self.provider.config.get_value(CONF_USE_PROMPT_ENGINE)
-            else ""
-        )
+        prompt_engine = ""
+        if self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
+            # the engine the concept is written with, also when it is only picked as it is used
+            text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+            prompt_engine = text_engine.uid if text_engine else ""
         key = json_dumps(
             [
                 str(playlist.item_id),
