@@ -249,13 +249,17 @@ class TracksController(MediaControllerBase[Track]):
                 if isinstance(item, Album):
                     track.album = item
             elif provider_instance_id_or_domain == "library":
-                # grab the first album this track is attached to
+                # grab the first album this track is attached to, on the user's sources; the
+                # row's album mapping is dropped when none is
+                track.album = None
                 for album_track_row in await self.mass.music.database.get_rows(
-                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(item_id)}, limit=1
+                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(item_id)}
                 ):
-                    track.album = await self.mass.music.albums.get_library_item(
-                        album_track_row["album_id"]
-                    )
+                    if album := await self.mass.music.albums.get_visible_library_item_by_prov_id(
+                        str(album_track_row["album_id"]), "library"
+                    ):
+                        track.album = album
+                        break
             elif isinstance(track.album, ItemMapping) or (track.album and not track.album.image):
                 track.album = await self.mass.music.albums.get(
                     track.album.item_id,
