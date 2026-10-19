@@ -14,9 +14,11 @@ from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.compare import compare_strings, loose_compare_strings
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
+    from lyricsgenius.types import Song
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -106,7 +108,7 @@ class GeniusProvider(MetadataProvider):
             self.logger.info(f"Searching lyrics for artist='{artist}' and title='{cleaned_title}'")
 
             # perform search
-            song = self._genius.search_song(cleaned_title, artist, get_full_info=False)
+            song = self._search_song(artist, cleaned_title)
 
             # second search needed?
             if not song and " - " in cleaned_title:
@@ -115,7 +117,7 @@ class GeniusProvider(MetadataProvider):
                 self.logger.info(f"Second attempt, aggressively cleaned title='{cleaned_title}'")
 
                 # perform search
-                song = self._genius.search_song(cleaned_title, artist, get_full_info=False)
+                song = self._search_song(artist, cleaned_title)
 
             if song:
                 # attempts to clean lyrics of erroneous text
@@ -132,3 +134,22 @@ class GeniusProvider(MetadataProvider):
             if not str(err).startswith("Unexpected response status code"):
                 raise
             raise ResourceTemporarilyUnavailable("Genius request failed") from err
+
+    def _search_song(self, artist: str, title: str) -> Song | None:
+        """Search Genius and return the hit only if its title and artist match the request."""
+        song = self._genius.search_song(title, artist, get_full_info=False)
+        if not song:
+            return None
+        # lyricsgenius falls back to the first search hit, which is often an unrelated song
+        if compare_strings(clean_song_title(song.title), title, strict=False) and (
+            loose_compare_strings(song.artist, artist)
+        ):
+            return song
+        self.logger.debug(
+            "Ignoring Genius hit '%s' by '%s' for '%s' by '%s'",
+            song.title,
+            song.artist,
+            title,
+            artist,
+        )
+        return None

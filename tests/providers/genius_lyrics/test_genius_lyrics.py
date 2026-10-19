@@ -61,3 +61,30 @@ async def test_fetch_lyrics_returns_none_when_not_found(provider: GeniusProvider
     provider._genius.search_song.return_value = None
 
     assert await provider.fetch_lyrics("Artist", "Song") is None
+
+
+@pytest.mark.parametrize(
+    ("hit_artist", "hit_title"),
+    [
+        ("Wes Montgomery", "Twisted Blues"),
+        ("SK8", "Cool Kids"),
+    ],
+)
+async def test_fetch_lyrics_rejects_mismatched_search_hit(
+    provider: GeniusProvider, hit_artist: str, hit_title: str
+) -> None:
+    """A search hit for a different song or artist is rejected instead of returned as lyrics."""
+    provider._genius.search_song.return_value = MagicMock(
+        title=hit_title, artist=hit_artist, lyrics="Wrong lyrics"
+    )
+
+    assert await provider.fetch_lyrics("Wes Montgomery", "No Blues") is None
+
+
+async def test_fetch_lyrics_accepts_matching_search_hit(provider: GeniusProvider) -> None:
+    """A search hit matching the requested title and artist returns its lyrics."""
+    provider._genius.search_song.return_value = MagicMock(
+        title="No Blues", artist="Wes Montgomery", lyrics="Right lyrics", pyongs_count=0
+    )
+
+    assert await provider.fetch_lyrics("Wes Montgomery", "No Blues (Live)") == "Right lyrics"
