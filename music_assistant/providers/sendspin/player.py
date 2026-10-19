@@ -1311,6 +1311,12 @@ class SendspinPlayer(SendspinBasePlayer):
     # Queue item the current poller is targeting (so a track switch cancels it).
     _beat_retry_queue_item_id: str | None = None
     _metadata_generation: int = 0
+    # Bumped by every play_media, stop command and group change, so a start still waiting
+    # for the Cast app can tell it was stopped, replaced or regrouped meanwhile. A group
+    # stop counts only while the app is waited for: during the status refresh before it,
+    # the outgoing session's natural end stops the group too and must not drop the start.
+    _play_generation: int = 0
+    _pending_cast_app_ready: asyncio.Future[None] | None = None
     _content_takeover_pending: bool = False
     # Item (uri and queue item id) of the metadata last published to the group.
     _published_item: tuple[str, str | None] | None = None
@@ -1563,6 +1569,7 @@ class SendspinPlayer(SendspinBasePlayer):
         """Stop command."""
         self.logger.debug("Received STOP command on player %s", self.display_name)
         self.mark_stop_called()
+        self._abort_pending_cast_start()
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_elapsed_time = 0
@@ -1618,22 +1625,45 @@ class SendspinPlayer(SendspinBasePlayer):
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
+        # Cast-only: launch the Sendspin Cast app and wait for it before start(). The
+        # stream would otherwise run on while the app launches (several seconds), and
+        # the device would miss the start of the track. The fresh future also cancels
+        # any stale pending one from a previous timed-out attempt.
+        bridge = (
+            mgr.get_bridge_by_client_id(self.player_id)
+            if (mgr := self._get_cast_bridge_manager())
+            else None
+        )
+        self._play_generation += 1
+        generation = self._play_generation
+        cast_app_ready: asyncio.Future[None] | None = None
+        if bridge is not None:
+            await bridge.refresh_cast_app_state()
+            if generation != self._play_generation:
+                # stopped or replaced during the refresh
+                return
+            cast_app_ready = bridge.reset_cast_app_ready()
+
         prev_media_identity = self._media_identity()
         self._attr_current_media = media
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
 
+        if bridge is not None and cast_app_ready is not None:
+            if not cast_app_ready.done():
+                # End the current playback rather than keep its stream for a successor:
+                # the device isn't receiving it, its progress would run on under the new
+                # media while the app launches, and a failed launch would leave it open.
+                await self.playback_session.cancel("new media requested")
+                if generation != self._play_generation:
+                    # stopped or regrouped during the cancel: don't launch for it
+                    return
+                bridge.launch_cast_app()
+            if not await self._wait_for_cast_app(cast_app_ready, generation):
+                return
+
         # The spec reserves stream/end for queue-empty, not track changes.
         await self.playback_session.cancel("new media requested", keep_stream=True)
-
-        # Cast-only: reset future before start() to avoid racing _on_stream_start
-        # and to cancel any stale pending future from a previous timed-out attempt.
-        cast_app_ready: asyncio.Future[None] | None = None
-        if (mgr := self._get_cast_bridge_manager()) and (
-            bridge := mgr.get_bridge_by_client_id(self.player_id)
-        ):
-            cast_app_ready = bridge.reset_cast_app_ready()
-
         await self.playback_session.start(media)
         self.update_state()
         if (
@@ -1651,26 +1681,6 @@ class SendspinPlayer(SendspinBasePlayer):
                 task_id=f"sendspin_metadata_{self.player_id}",
                 abort_existing=True,
             )
-
-        if cast_app_ready is None:
-            return
-        try:
-            await asyncio.wait_for(asyncio.shield(cast_app_ready), timeout=CAST_APP_READY_TIMEOUT)
-        except BaseException as exc:
-            if not cast_app_ready.done():
-                cast_app_ready.cancel()
-            # Cancel the playback session so we don't keep streaming to a
-            # device that never reported ready.
-            with suppress(Exception):
-                await self.playback_session.cancel("cast app readiness failed")
-            if isinstance(exc, TimeoutError):
-                raise PlayerCommandFailed(
-                    f"Cast app on {self.display_name} did not report ready within 30s",
-                    translation_key="cast_app_not_ready",
-                    translation_owner=self.translation_owner,
-                    translation_args=[self.display_name],
-                ) from None
-            raise
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -1788,7 +1798,11 @@ class SendspinPlayer(SendspinBasePlayer):
                     and bridge_manager
                     and (bridge := bridge_manager.get_bridge_by_client_id(player_id))
                 ):
-                    pending_cast.append((member_player, bridge.reset_cast_app_ready()))
+                    # a stale connection would keep add_client from launching the app
+                    await bridge.refresh_cast_app_state()
+                    # the stream may have ended meanwhile, and add_client then launches nothing
+                    if self.api.group.has_active_stream:
+                        pending_cast.append((member_player, bridge.reset_cast_app_ready()))
                 await self.api.group.add_client(member_player.api)
 
             if pending_cast:
@@ -2064,6 +2078,8 @@ class SendspinPlayer(SendspinBasePlayer):
 
     def _on_group_changed(self, new_group: SendspinGroup) -> None:
         """Handle group change with controller commands and playback session cancellation."""
+        # a start still waiting for the Cast app was meant for the old group
+        self._abort_pending_cast_start()
         if controller_role := self._controller_role:
             controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
         # Cancel active playback - push stream belongs to the old group
@@ -2074,6 +2090,10 @@ class SendspinPlayer(SendspinBasePlayer):
         """Cancel playback session when group stops and we are the leader."""
         if self.synced_to is not None:
             return
+        if self._pending_cast_app_ready is not None:
+            # the outgoing playback was already cancelled for the launch, so this stop
+            # is an explicit one
+            self._abort_pending_cast_start()
         # Bind the cancel to the session task that is live right now: by the time
         # the deferred task below runs, play_media may already have started a fresh
         # session, which must not be torn down by this stale group-stopped event.
@@ -2192,6 +2212,49 @@ class SendspinPlayer(SendspinBasePlayer):
         if manager is None:
             return None
         return cast("SendspinBridgeManager", manager)
+
+    async def _wait_for_cast_app(
+        self, cast_app_ready: asyncio.Future[None], generation: int
+    ) -> bool:
+        """
+        Wait for the Sendspin Cast app to report ready, cancelling playback if it doesn't.
+
+        :param cast_app_ready: The bridge's cast-ready future.
+        :param generation: The play_media call's playback generation.
+        :return: Whether playback should still start: False once stopped or replaced.
+        """
+        self._pending_cast_app_ready = cast_app_ready
+        try:
+            await asyncio.wait_for(asyncio.shield(cast_app_ready), timeout=CAST_APP_READY_TIMEOUT)
+        except BaseException as exc:
+            task = asyncio.current_task()
+            if generation != self._play_generation and not (task and task.cancelling()):
+                # stopped or replaced while waiting; whoever did that owns the cleanup
+                return False
+            if not cast_app_ready.done():
+                cast_app_ready.cancel()
+            # Cancel the playback session so we don't keep streaming to a
+            # device that never reported ready.
+            with suppress(Exception):
+                await self.playback_session.cancel("cast app readiness failed")
+            if isinstance(exc, TimeoutError):
+                raise PlayerCommandFailed(
+                    f"Cast app on {self.display_name} did not report ready within 30s",
+                    translation_key="cast_app_not_ready",
+                    translation_owner=self.translation_owner,
+                    translation_args=[self.display_name],
+                ) from None
+            raise
+        finally:
+            if self._pending_cast_app_ready is cast_app_ready:
+                self._pending_cast_app_ready = None
+        return generation == self._play_generation
+
+    def _abort_pending_cast_start(self) -> None:
+        """Drop a playback start that is still waiting for the Sendspin Cast app."""
+        self._play_generation += 1
+        if (pending := self._pending_cast_app_ready) is not None and not pending.done():
+            pending.cancel()
 
     async def _apply_preferred_format(self) -> None:
         """Read config and set/clear the players preferred format."""
