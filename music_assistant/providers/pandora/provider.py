@@ -48,12 +48,15 @@ from music_assistant.constants import (
     CONF_USERNAME,
 )
 from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ACCOUNT_FLAG_HIGH_QUALITY,
     ADD_FEEDBACK_ENDPOINT,
+    API_RATE_LIMIT,
+    API_RATE_PERIOD,
     CACHE_CATEGORY_FEEDBACK,
     CONF_QUALITY,
     CONF_TAKEOVER_ACTION,
@@ -97,6 +100,8 @@ class PandoraProvider(MusicProvider):
     _sessions: dict[str, PandoraStationSession]
     _socks_proxy: bool = False
     _high_quality_available: bool = False
+    # per instance: Pandora limits the account, and each instance logs in to its own
+    throttler: ThrottlerManager
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -144,6 +149,8 @@ class PandoraProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._sessions = {}
+        # every request takes a slot, the login included
+        self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
 
         # Authenticate with Pandora
         username = str(self.get_setup_value(CONF_USERNAME) or "")
@@ -369,7 +376,8 @@ class PandoraProvider(MusicProvider):
     async def _authenticate(self, username: str, password: str) -> None:
         """Authenticate with Pandora and get auth token."""
         try:
-            self._csrf_token = await get_csrf_token(self.http_session)
+            async with self.throttler.acquire():
+                self._csrf_token = await get_csrf_token(self.http_session)
 
             login_data = {
                 "username": username,
@@ -380,12 +388,15 @@ class PandoraProvider(MusicProvider):
 
             headers = create_auth_headers(self._csrf_token)
 
-            async with self.http_session.post(
-                LOGIN_ENDPOINT,
-                headers=headers,
-                json=login_data,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as response:
+            async with (
+                self.throttler.acquire(),
+                self.http_session.post(
+                    LOGIN_ENDPOINT,
+                    headers=headers,
+                    json=login_data,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as response,
+            ):
                 if response.status != 200:
                     await self.close()
                     raise LoginFailed(f"Login request failed with status {response.status}")
@@ -439,9 +450,13 @@ class PandoraProvider(MusicProvider):
         headers = create_auth_headers(self._csrf_token, self._auth_token)
 
         try:
-            async with self.http_session.request(
-                method, url, json=data, headers=headers
-            ) as response:
+            # throttled here rather than with throttle_with_retries: that decorator retries on
+            # ResourceTemporarilyUnavailable, which handle_pandora_error also raises for
+            # parameter errors that no retry fixes, and the writes (feedback) must not repeat
+            async with (
+                self.throttler.acquire(),
+                self.http_session.request(method, url, json=data, headers=headers) as response,
+            ):
                 # Check status BEFORE parsing JSON
                 if response.status == 401:
                     if RETRY_REASON_AUTH not in exhausted_retry_reasons:

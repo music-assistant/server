@@ -9,6 +9,10 @@ PLAYBACK_RESUMED_ENDPOINT = f"{API_BASE}/station/playbackResumed"
 ADD_FEEDBACK_ENDPOINT = f"{API_BASE}/station/addFeedback"
 DELETE_FEEDBACK_ENDPOINT = f"{API_BASE}/station/deleteFeedback"
 
+# Request rate per provider instance. 
+API_RATE_LIMIT = 4
+API_RATE_PERIOD = 1.0
+
 # Pandora Error Code Categories
 # Authentication and authorization failures
 AUTH_ERRORS = {12, 13, 1001, 1002, 1003}
