@@ -1308,9 +1308,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
 
 def _track_keys(track: Track) -> set[tuple[str, str]]:
-    """Return the (provider, item_id) pairs identifying a track across its provider mappings."""
-    keys = {(track.provider, track.item_id)}
-    for mapping in track.provider_mappings:
-        keys.add((mapping.provider_instance, mapping.item_id))
-        keys.add((mapping.provider_domain, mapping.item_id))
-    return keys
+    """Return the (provider instance, item_id) pairs identifying a track across its mappings."""
+    return {(track.provider, track.item_id)} | {
+        (mapping.provider_instance, mapping.item_id) for mapping in track.provider_mappings
+    }
