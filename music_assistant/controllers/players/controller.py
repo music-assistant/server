@@ -2577,7 +2577,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # this will restart the queue stream/playback
             if self.get_active_queue(player):
                 self.mass.call_later(
-                    0, self.mass.player_queues.resume, player.state.active_source, False
+                    0, self._resume_queue_after_dsp_change, player.state.active_source
                 )
                 return
             # if the player is not using a queue, we need to stop and start playback
@@ -3400,6 +3400,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             #   (or vice versa)
             # - the leader has DSP enabled
             self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
+
+    async def _resume_queue_after_dsp_change(self, queue_id: str) -> None:
+        """Resume a queue to apply a DSP change, unless it was emptied while waiting for the lock."""
+        # a running command (e.g. a leadership transfer) may move the queue away meanwhile
+        async with self.get_group_and_player_lock(queue_id):
+            queue = self.mass.player_queues.get(queue_id)
+            if queue is None or not queue.items:
+                self.logger.debug("Not restarting queue %s after DSP change: it is empty", queue_id)
+                return
+            await self.mass.player_queues.resume(queue_id, False)
 
     def _check_external_source_takeover(self, player: Player) -> None:
         """
