@@ -520,7 +520,9 @@ class SpotifyProvider(MusicProvider):
                 searches.append((other_types, False))
         await asyncio.gather(
             *(
-                self._search_pages(search_query, types, limit, searchresult, use_global)
+                self._search_playlists_on_global_session(search_query, limit, searchresult)
+                if use_global
+                else self._search_pages(search_query, types, limit, searchresult, False)
                 for types, use_global in searches
             )
         )
@@ -1280,6 +1282,16 @@ class SpotifyProvider(MusicProvider):
             offset += page_limit
             if offset >= limit or items_received < page_limit:
                 break
+
+    async def _search_playlists_on_global_session(
+        self, search_query: str, limit: int, searchresult: SearchResults
+    ) -> None:
+        """Search playlists on the global session, or the dev session while it is rate limited."""
+        try:
+            await self._search_pages(search_query, [MediaType.PLAYLIST], limit, searchresult, True)
+        except RetriesExhausted as err:
+            self.logger.debug("Searching playlists with the custom Client ID instead: %s", err)
+            await self._search_pages(search_query, [MediaType.PLAYLIST], limit, searchresult, False)
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
         """Build comma-separated search types string from media types."""

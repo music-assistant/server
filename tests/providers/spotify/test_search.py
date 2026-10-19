@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import RetriesExhausted
 
 from music_assistant.providers.spotify.provider import SpotifyProvider
 from tests.common import use_real_create_task
@@ -140,6 +141,26 @@ async def test_search_only_playlists_with_dev_session(
         offset=0,
         use_global_session=True,
     )
+    assert len(result.playlists) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_playlists_fall_back_to_dev_session_when_global_is_limited(
+    provider: SpotifyProvider, get_data: AsyncMock
+) -> None:
+    """A rate limited global session neither fails the search nor drops its playlists."""
+    provider.dev_session_active = True
+
+    async def side_effect(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if kwargs["use_global_session"]:
+            raise RetriesExhausted("Not retrying, asked to wait 600 seconds")
+        return _respond(endpoint, **kwargs)
+
+    get_data.side_effect = side_effect
+
+    result = await provider.search("chill", [MediaType.TRACK, MediaType.PLAYLIST], limit=10)
+
+    assert len(result.tracks) == 1
     assert len(result.playlists) == 1
 
 
