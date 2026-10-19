@@ -56,14 +56,43 @@ _PLAY_HISTORY_EVENT_TYPES = (
 _PLAY_HISTORY_EVENT_TYPE_SQL = ", ".join(
     f"'{media_type}'" for media_type in _PLAY_HISTORY_EVENT_TYPES
 )
+# Domain-scoped history must resolve to one account mapping, while exact instances win.
+_PROVIDER_MAPPING_JOIN = f"""
+    {{mapping}}.media_type = {{media_type}}
+    AND {{mapping}}.provider_item_id = {{item_id}}
+    AND {{mapping}}.provider_instance = COALESCE(
+        (
+            SELECT exact_mapping.provider_instance
+            FROM {DB_TABLE_PROVIDER_MAPPINGS} AS exact_mapping
+            WHERE exact_mapping.media_type = {{media_type}}
+                AND exact_mapping.provider_item_id = {{item_id}}
+                AND exact_mapping.provider_instance = {{provider}}
+            LIMIT 1
+        ),
+        (
+            SELECT domain_mapping.provider_instance
+            FROM {DB_TABLE_PROVIDER_MAPPINGS} AS domain_mapping
+            WHERE domain_mapping.media_type = {{media_type}}
+                AND domain_mapping.provider_item_id = {{item_id}}
+                AND domain_mapping.provider_domain = {{provider}}
+            ORDER BY domain_mapping.item_id, domain_mapping.provider_instance
+            LIMIT 1
+        )
+    )
+"""
 _TRACK_HISTORY_CTE = f"""
     history_tracks AS (
         SELECT play_history.id AS play_id, provider_mappings.item_id AS track_id
         FROM {DB_TABLE_PLAY_HISTORY} AS play_history
         INNER JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
-            ON provider_mappings.media_type = play_history.media_type
-            AND provider_mappings.provider_instance = play_history.provider
-            AND provider_mappings.provider_item_id = play_history.item_id
+            ON {
+    _PROVIDER_MAPPING_JOIN.format(
+        mapping="provider_mappings",
+        media_type="play_history.media_type",
+        item_id="play_history.item_id",
+        provider="play_history.provider",
+    )
+}
         WHERE play_history.userid = :user_id
             AND play_history.media_type = :media_type
             AND play_history.timestamp >= :cutoff_timestamp
@@ -102,15 +131,23 @@ _TRACK_ARTISTS_CTE = f"""
         FROM {DB_TABLE_PLAY_HISTORY} AS play_history
         CROSS JOIN json_each(play_history.artists) AS artist_data
         LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS track_mappings
-            ON track_mappings.media_type = play_history.media_type
-            AND track_mappings.provider_instance = play_history.provider
-            AND track_mappings.provider_item_id = play_history.item_id
+            ON {
+    _PROVIDER_MAPPING_JOIN.format(
+        mapping="track_mappings",
+        media_type="play_history.media_type",
+        item_id="play_history.item_id",
+        provider="play_history.provider",
+    )
+}
         LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS artist_mappings
-            ON artist_mappings.media_type = '{MediaType.ARTIST.value}'
-            AND artist_mappings.provider_instance =
-                json_extract(artist_data.value, '$.provider')
-            AND artist_mappings.provider_item_id =
-                json_extract(artist_data.value, '$.item_id')
+            ON {
+    _PROVIDER_MAPPING_JOIN.format(
+        mapping="artist_mappings",
+        media_type=f"'{MediaType.ARTIST.value}'",
+        item_id="json_extract(artist_data.value, '$.item_id')",
+        provider="json_extract(artist_data.value, '$.provider')",
+    )
+}
         WHERE play_history.artists IS NOT NULL
             AND play_history.media_type = '{MediaType.TRACK.value}'
             AND play_history.userid = :user_id
@@ -269,9 +306,14 @@ class StatisticsController(CoreController):
                         play_history.image
                     FROM {DB_TABLE_PLAY_HISTORY} AS play_history
                     LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
-                        ON provider_mappings.media_type = play_history.media_type
-                        AND provider_mappings.provider_instance = play_history.provider
-                        AND provider_mappings.provider_item_id = play_history.item_id
+                        ON {
+                _PROVIDER_MAPPING_JOIN.format(
+                    mapping="provider_mappings",
+                    media_type="play_history.media_type",
+                    item_id="play_history.item_id",
+                    provider="play_history.provider",
+                )
+            }
                     WHERE play_history.userid = :user_id
                         AND play_history.media_type = :media_type
                         AND play_history.timestamp >= :cutoff_timestamp

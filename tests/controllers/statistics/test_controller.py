@@ -67,8 +67,10 @@ async def test_top_items_counts_history_not_media_progress(mass: MusicAssistant)
     assert results[0].play_count == 1
 
 
+@pytest.mark.parametrize("apple_provider", ["apple_music--account", "apple_music"])
 async def test_top_items_combines_provider_plays_with_library_identity(
     mass: MusicAssistant,
+    apple_provider: str,
 ) -> None:
     """Mapped provider plays and library plays count as one logical item."""
     user = await mass.webserver.auth.create_user("statistics-top-items-identity")
@@ -84,6 +86,7 @@ async def test_top_items_combines_provider_plays_with_library_identity(
     )
     for provider_domain, provider_instance, provider_item_id in (
         ("apple_music", "apple_music--account", "apple-track"),
+        ("apple_music", "apple_music--second-account", "apple-track"),
         ("tidal", "tidal--account", "tidal-track"),
     ):
         await mass.music.database.insert(
@@ -99,7 +102,7 @@ async def test_top_items_combines_provider_plays_with_library_identity(
 
     plays = (
         (str(library_track_id), "library", "Shared Track"),
-        ("apple-track", "apple_music--account", "Apple Track"),
+        ("apple-track", apple_provider, "Apple Track"),
         ("tidal-track", "tidal--account", "Tidal Track"),
         ("unmapped-track", "apple_music--account", "Unmapped Track"),
     )
@@ -128,6 +131,43 @@ async def test_top_items_combines_provider_plays_with_library_identity(
         (str(library_track_id), "library", 3),
         ("unmapped-track", "apple_music--account", 1),
     ]
+
+
+async def test_top_items_prefers_exact_instance_over_domain_mapping(mass: MusicAssistant) -> None:
+    """An exact instance match wins over another account's domain match."""
+    user = await mass.webserver.auth.create_user("statistics-exact-instance")
+    for library_id, provider_instance in ((42, "test"), (1, "test--other-account")):
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": MediaType.TRACK.value,
+                "item_id": library_id,
+                "provider_domain": "test",
+                "provider_instance": provider_instance,
+                "provider_item_id": "track-1",
+            },
+        )
+    await mass.music.database.insert(
+        DB_TABLE_PLAY_HISTORY,
+        {
+            "item_id": "track-1",
+            "provider": "test",
+            "media_type": MediaType.TRACK.value,
+            "userid": user.user_id,
+            "name": "Track",
+            "timestamp": 1_000,
+        },
+    )
+
+    with patch(
+        "music_assistant.controllers.statistics.controller.get_current_user",
+        return_value=user,
+    ):
+        results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
+
+    assert [
+        (result.item.item_id, result.item.provider, result.play_count) for result in results
+    ] == [("42", "library", 1)]
 
 
 async def test_top_items_artist_tab_counts_track_history(mass: MusicAssistant) -> None:
@@ -183,14 +223,17 @@ async def test_top_items_artist_tab_counts_track_history(mass: MusicAssistant) -
     ] == [(str(library_artist_id), "library", 2), ("unmapped-artist", "test-provider", 1)]
 
 
+@pytest.mark.parametrize("apple_provider", ["apple_music--account", "apple_music"])
 async def test_artist_aggregations_merge_provider_artist_mappings(
     mass: MusicAssistant,
+    apple_provider: str,
 ) -> None:
     """Artist distribution and listening time group all mapped artist identities together."""
     user = await mass.webserver.auth.create_user("statistics-artist-mappings")
     library_artist_id = 100
     artist_mappings = (
         ("apple_music--account", "apple-artist"),
+        ("apple_music--second-account", "apple-artist"),
         ("tidal--account", "tidal-artist"),
     )
     for provider_instance, provider_artist_id in artist_mappings:
@@ -206,7 +249,7 @@ async def test_artist_aggregations_merge_provider_artist_mappings(
         )
 
     plays = (
-        ("apple_music--account", "apple-track", "apple-artist", 120),
+        (apple_provider, "apple-track", "apple-artist", 120),
         ("tidal--account", "tidal-track", "tidal-artist", 240),
     )
     for provider_instance, provider_track_id, provider_artist_id, duration in plays:
@@ -221,16 +264,22 @@ async def test_artist_aggregations_merge_provider_artist_mappings(
                 "search_sort_name": provider_track_id,
             },
         )
-        await mass.music.database.insert(
-            DB_TABLE_PROVIDER_MAPPINGS,
-            {
-                "media_type": MediaType.TRACK.value,
-                "item_id": library_track_id,
-                "provider_domain": provider_instance.split("--", maxsplit=1)[0],
-                "provider_instance": provider_instance,
-                "provider_item_id": provider_track_id,
-            },
+        mapping_instances = (
+            ("apple_music--account", "apple_music--second-account")
+            if provider_track_id == "apple-track"
+            else (provider_instance,)
         )
+        for mapping_instance in mapping_instances:
+            await mass.music.database.insert(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {
+                    "media_type": MediaType.TRACK.value,
+                    "item_id": library_track_id,
+                    "provider_domain": mapping_instance.split("--", maxsplit=1)[0],
+                    "provider_instance": mapping_instance,
+                    "provider_item_id": provider_track_id,
+                },
+            )
         await mass.music.database.insert(
             DB_TABLE_PLAY_HISTORY,
             {
@@ -341,7 +390,10 @@ async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssis
     ]
 
 
-async def test_genre_distribution_counts_play_history(mass: MusicAssistant) -> None:
+@pytest.mark.parametrize("history_provider", ["test-provider", "test"])
+async def test_genre_distribution_counts_play_history(
+    mass: MusicAssistant, history_provider: str
+) -> None:
     """Genre distribution counts user plays through the track's provider mapping."""
     user = await mass.webserver.auth.create_user("statistics-genres")
     genre_id = await mass.music.database.insert(
@@ -365,21 +417,22 @@ async def test_genre_distribution_counts_play_history(mass: MusicAssistant) -> N
             "search_sort_name": "rock track",
         },
     )
-    await mass.music.database.insert(
-        DB_TABLE_PROVIDER_MAPPINGS,
-        {
-            "media_type": MediaType.TRACK.value,
-            "item_id": track_id,
-            "provider_domain": "test",
-            "provider_instance": "test-provider",
-            "provider_item_id": "track-1",
-        },
-    )
+    for provider_instance in ("test-provider", "test-second-account"):
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": MediaType.TRACK.value,
+                "item_id": track_id,
+                "provider_domain": "test",
+                "provider_instance": provider_instance,
+                "provider_item_id": "track-1",
+            },
+        )
     await mass.music.database.insert(
         DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
         {"genre_id": genre_id, "media_id": track_id, "media_type": MediaType.TRACK.value},
     )
-    for item_id, provider in (("track-1", "test-provider"), (str(track_id), "library")):
+    for item_id, provider in (("track-1", history_provider), (str(track_id), "library")):
         await mass.music.database.insert(
             DB_TABLE_PLAY_HISTORY,
             {
@@ -739,8 +792,10 @@ async def test_statistics_reject_invalid_timezones(mass: MusicAssistant, timezon
                 await call()
 
 
+@pytest.mark.parametrize("history_provider", ["test-provider", "test"])
 async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums(
     mass: MusicAssistant,
+    history_provider: str,
 ) -> None:
     """Provider plays map to library tracks and count once despite duplicate album links."""
     user = await mass.webserver.auth.create_user("statistics-decades")
@@ -785,18 +840,19 @@ async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums
             {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
         )
 
-    await mass.music.database.insert(
-        DB_TABLE_PROVIDER_MAPPINGS,
-        {
-            "media_type": MediaType.TRACK.value,
-            "item_id": track_ids[0],
-            "provider_domain": "test",
-            "provider_instance": "test-provider",
-            "provider_item_id": "provider-track-1",
-        },
-    )
+    for provider_instance in ("test-provider", "test-second-account"):
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": MediaType.TRACK.value,
+                "item_id": track_ids[0],
+                "provider_domain": "test",
+                "provider_instance": provider_instance,
+                "provider_item_id": "provider-track-1",
+            },
+        )
     for item_id, provider in (
-        ("provider-track-1", "test-provider"),
+        ("provider-track-1", history_provider),
         (str(track_ids[1]), "library"),
     ):
         await mass.music.database.insert(
