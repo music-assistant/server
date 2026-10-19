@@ -316,17 +316,16 @@ class PandoraProvider(MusicProvider):
         """
         Send a like or dislike on a station track to Pandora as thumbs up or thumbs down.
 
-        Pandora ties feedback to the `trackToken` it issued with the fragment that served the
-        track, so only a track still held in a retained fragment can be rated; the freshest copy
-        wins, as in `_find_track`. Clearing (None) is not sent: Pandora removes feedback by the
-        feedback id, which is not kept.
-
         :param prov_item_id: The track's Pandora id (`TR:…`).
         :param media_type: Media type of the item, only tracks can be rated.
         :param favorite: True for thumbs up, False for thumbs down, None to clear (ignored).
         """
+        # clearing is not sent: Pandora removes feedback by the feedback id, which is not kept
         if media_type != MediaType.TRACK or favorite is None:
             return
+        # Pandora ties feedback to the trackToken it issued with the fragment that served the
+        # track, so only a track still held in a retained fragment can be rated; the freshest
+        # copy wins, as in _find_track
         track = self._find_track(prov_item_id)
         if track is None:
             raise MediaNotFoundError(
