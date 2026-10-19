@@ -113,6 +113,7 @@ from music_assistant.helpers.audio import (
     create_streaming_wave_header,
     get_content_length,
     get_mime_type,
+    pcm_container_bit_depth,
     store_content_length_in_cache,
 )
 from music_assistant.helpers.ffmpeg import (
@@ -1949,7 +1950,7 @@ class StreamsController(CoreController):
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
             sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=streamdetails.audio_format.bit_depth,
+            bit_depth=pcm_container_bit_depth(streamdetails.audio_format.bit_depth),
             channels=streamdetails.audio_format.channels,
         )
         async for chunk in get_ffmpeg_stream(

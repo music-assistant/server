@@ -13,6 +13,7 @@ from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache
 from io import StringIO
+from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
@@ -20,8 +21,10 @@ from urllib.parse import parse_qs, unquote, urlparse
 import ytmusicapi
 from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar
 from duration_parser import parse as parse_str_duration
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     AlbumType,
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -66,6 +69,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.util import (
     import_module_in_thread,
@@ -104,13 +108,14 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 
+CONF_INCLUDE_VIDEOS = "include_videos_in_search"
 CONF_COOKIE = "cookie"
 CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"  # noqa: S105 - URL
 DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"  # noqa: S105 - URL
@@ -211,7 +216,14 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_INCLUDE_VIDEOS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
@@ -272,8 +284,20 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await self._rotate_session.close()
         await super().unload(is_removed)
 
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle a config update."""
+        await super().update_config(config, changed_keys)
+        if f"values/{CONF_INCLUDE_VIDEOS}" in changed_keys:
+            # cached search results do not record the video preference they were made with
+            for provider in (self.instance_id, self.mass.music.domain):
+                await self.mass.cache.delete(
+                    None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=provider
+                )
+
     # the checksum invalidates entries cached before the search was pinned to English
-    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
+    @use_cache(
+        3600 * 24 * 7, category=CACHE_CATEGORY_SEARCH_RESULTS, cache_checksum="english_search_v1"
+    )  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -306,6 +330,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             ytm_filter=ytm_filter,
             limit=limit,
         )
+        if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
+            # some tracks only exist as a video; interleave so videos survive the limit cut
+            videos = await search(query=search_query, ytm_filter="videos", limit=limit)
+            results = [item for pair in zip_longest(results, videos) for item in pair if item]
+            results = results[:limit]
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
         albums: list[Album | ItemMapping] = []

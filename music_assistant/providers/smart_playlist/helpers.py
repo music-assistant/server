@@ -103,6 +103,7 @@ class SmartPlaylistRules:
     genre_ids: list[int] = field(default_factory=list)
     artist_ids: list[int] = field(default_factory=list)
     album_ids: list[int] = field(default_factory=list)
+    folder_paths: list[str] = field(default_factory=list)
     favorites_only: bool = False
     seed_track_uris: list[str] = field(default_factory=list)
     seed_artist_uris: list[str] = field(default_factory=list)
@@ -154,6 +155,7 @@ class SmartPlaylistRules:
             "genre_ids": self.genre_ids,
             "artist_ids": self.artist_ids,
             "album_ids": self.album_ids,
+            "folder_paths": self.folder_paths,
             "favorites_only": self.favorites_only,
             "seed_track_uris": self.seed_track_uris,
             "seed_artist_uris": self.seed_artist_uris,
@@ -192,6 +194,7 @@ class SmartPlaylistRules:
             genre_ids=_coerce_id_list(data.get("genre_ids"), "genre_ids"),
             artist_ids=_coerce_id_list(data.get("artist_ids"), "artist_ids"),
             album_ids=_coerce_id_list(data.get("album_ids"), "album_ids"),
+            folder_paths=_coerce_str_list(data.get("folder_paths"), "folder_paths"),
             favorites_only=data.get("favorites_only", False),
             seed_track_uris=_coerce_str_list(data.get("seed_track_uris"), "seed_track_uris"),
             seed_artist_uris=_coerce_str_list(data.get("seed_artist_uris"), "seed_artist_uris"),
@@ -261,6 +264,10 @@ class SmartPlaylistRules:
         if self.album_ids:
             names = [self.album_names.get(aid, str(aid)) for aid in self.album_ids]
             parts.append(f"Albums: {', '.join(names)}")
+        if self.folder_paths:
+            # only the count: the summary ends up in the playlist description every user sees,
+            # while a folder may be on a music source hidden from some of them
+            parts.append(f"Folders: {len(self.folder_paths)}")
         seed_uris = self.all_seed_uris()
         if seed_uris:
             labels = [self.seed_names.get(uri, uri) for uri in seed_uris]
@@ -348,6 +355,14 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
             f"{rules.year_from}>{rules.year_to}"
         )
         raise InvalidDataError(msg)
+    for folder_path in rules.folder_paths:
+        prov_instance, sep, _ = folder_path.partition("://")
+        if not sep or not prov_instance.startswith("filesystem_"):
+            msg = (
+                f"Invalid folder path: {folder_path!r}. "
+                "Expected '<filesystem provider instance>://<path>'"
+            )
+            raise InvalidDataError(msg)
     total_seeds = len(rules.all_seed_uris())
     if total_seeds > MAX_SEEDS:
         msg = f"Too many seeds: {total_seeds} > {MAX_SEEDS}"

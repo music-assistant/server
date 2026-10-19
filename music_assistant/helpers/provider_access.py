@@ -175,6 +175,28 @@ def music_sources_access(mass: MusicAssistant) -> dict[str, ProviderAccess | Non
     return {source.instance_id: source.access for source in _music_sources(mass)}
 
 
+def visible_provider(
+    mass: MusicAssistant, instance_id_or_domain: str, user: User | None
+) -> ProviderInstanceType | None:
+    """
+    Return the loaded provider serving this instance id or domain, if the user may see it.
+
+    An unavailable account of a streaming service resolves to another loaded account of that
+    service (see `mass.get_provider`), so the account actually serving is the one checked.
+    Only music sources are narrowed; None for the user means no narrowing at all.
+
+    :param mass: The MusicAssistant instance.
+    :param instance_id_or_domain: The provider instance id or domain to look up.
+    :param user: The user to check the source for, None for unfiltered access.
+    """
+    provider = mass.get_provider(instance_id_or_domain)
+    if provider is None or user is None or provider.type != ProviderType.MUSIC:
+        return provider
+    if provider.instance_id in hidden_music_sources(mass, user):
+        return None
+    return provider
+
+
 def exact_provider(mass: MusicAssistant, instance_id: str) -> ProviderInstanceType | None:
     """
     Return the loaded and available provider with exactly this instance id, if there is one.

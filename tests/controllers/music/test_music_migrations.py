@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
@@ -21,6 +22,7 @@ from music_assistant.constants import (
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
+    DEFAULT_GENRE_MAPPING,
 )
 from music_assistant.controllers.music import MusicController, migrations
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
@@ -44,6 +46,26 @@ MEDIA_TABLES = (
     "audiobooks",
     "podcasts",
     "genres",
+)
+
+# the aliases the schema 69 step adds to the classical genre
+ADDED_CLASSICAL_ALIASES = (
+    "Kamermuziek",
+    "Kammermusik",
+    "Kammermusikk",
+    "Klassiek",
+    "Klassik",
+    "Klassisk",
+    "Klassisk Musik",
+    "Klassische Musik",
+    "Musica Classica",
+    "Musica da Camera",
+    "Musique Classique",
+    "Musique de Chambre",  # codespell:ignore chambre
+    "Muzyka Kameralna",
+    "Muzyka Klasyczna",
+    "Música Clásica",
+    "Música de Cámara",
 )
 
 
@@ -1045,7 +1067,7 @@ async def test_migration_moves_misplaced_classical_genre_aliases(
         )
 
     aliases = await _genre_aliases(database)
-    assert aliases[1] == ["classical", "Opera"]
+    assert aliases[1] == ["classical", "Opera", *ADDED_CLASSICAL_ALIASES]
     assert aliases[2][:2] == ["asian music", "K-Pop"]
     assert "Gamelan" in aliases[2]
     assert "Thai Classical" in aliases[2]
@@ -1111,13 +1133,158 @@ async def test_migration_drops_stale_mappings_of_a_clean_classical_genre(
         f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
     )
     assert {row["item_id"]: row["genre_aliases"] for row in genre_rows} == {
-        1: serialize_to_json(["classical", "Opera"]),
+        1: serialize_to_json(["classical", "Opera", *ADDED_CLASSICAL_ALIASES]),
         2: 42,
     }
     mapping_rows = await database.get_rows_from_query(
         f"SELECT media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
     )
     assert [row["media_id"] for row in mapping_rows] == [10]
+
+
+def test_genre_mapping_keeps_non_classical_aliases_out_of_classical() -> None:
+    """The default classical genre holds only classical aliases, the rest sit elsewhere."""
+    aliases = {x["translation_key"]: x["aliases"] for x in DEFAULT_GENRE_MAPPING}
+    removed = {
+        "Cinematic Classical",
+        "Duets",
+        "March",
+        "Modern Classical",
+        "Post-Classical",
+        "Quartets",
+        "Quintets",
+        "Secular Vocal Music",
+        "Solo Piano",
+        "Third Stream",
+        "Trios",
+        "Vocal Music",
+        "Vocal Music (Secular and Sacred)",
+    }
+    assert not removed & set(aliases["classical"])
+    assert set(ADDED_CLASSICAL_ALIASES) <= set(aliases["classical"])
+    assert "Cinematic Classical" in aliases["soundtrack"]
+    assert {"Post-Classical", "Solo Piano"} <= set(aliases["new_age"])
+    assert "Third Stream" in aliases["jazz"]
+    assert "March" in aliases["marching_band"]
+    # an added alias must not pull items into another genre as well
+    other_norms = {
+        create_safe_string(alias, True, True)
+        for key, genre_aliases in aliases.items()
+        if key != "classical"
+        for alias in genre_aliases
+    }
+    assert not {create_safe_string(x, True, True) for x in ADDED_CLASSICAL_ALIASES} & other_norms
+
+
+async def test_migration_moves_more_classical_genre_aliases(
+    database: DatabaseConnection,
+) -> None:
+    """
+    More aliases leave the classical genre and the words for it in other languages join.
+
+    Moved aliases land on their new genre, other genres and manual mappings stay untouched
+    and running the step twice changes nothing.
+    """
+    await _create_genre_tables(database)
+    genres = {
+        # music classical genre
+        1: (
+            "classical",
+            None,
+            ["classical", "Opera", "Solo Piano", "Duets", "March", "third stream", "klassiek"],
+        ),
+        2: ("new_age", None, ["new age", "Solo Piano"]),
+        3: ("soundtrack", None, ["soundtrack"]),
+        # a classical genre in another taxonomy is left alone
+        4: ("classical", "audiobook", ["classical", "Duets"]),
+        5: ("jazz", None, ["jazz", "Third Stream"]),
+        6: ("marching_band", None, ["marching band", "March"]),
+    }
+    for item_id, (translation_key, content_type, stored_aliases) in genres.items():
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRES} VALUES "
+            "(:item_id, :translation_key, :genre_aliases, :content_type)",
+            {
+                "item_id": item_id,
+                "translation_key": translation_key,
+                "genre_aliases": serialize_to_json(stored_aliases),
+                "content_type": content_type,
+            },
+        )
+    mappings = [
+        (1, 10, "Opera", 0),
+        (1, 11, "Solo Piano", 0),
+        (1, 12, "Duets", 1),
+        # raw tag variant the scanner matched to a removed alias in normalized form
+        (1, 13, "Third-Stream", 0),
+        (1, 14, "Klassiek", 0),
+        (1, 15, "march", 0),
+        (5, 13, "Third Stream", 0),
+        (6, 15, "March", 0),
+    ]
+    for genre_id, media_id, alias, is_manual in mappings:
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias, is_manual) "
+            "VALUES (:genre_id, :media_id, 'track', :alias, :is_manual)",
+            {"genre_id": genre_id, "media_id": media_id, "alias": alias, "is_manual": is_manual},
+        )
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=68, create_tables=AsyncMock()
+        )
+
+    aliases = await _genre_aliases(database)
+    assert aliases[1] == [
+        "classical",
+        "Opera",
+        "klassiek",
+        *(x for x in ADDED_CLASSICAL_ALIASES if x != "Klassiek"),
+    ]
+    assert aliases[2] == ["new age", "Solo Piano", "Post-Classical"]
+    assert aliases[3] == ["soundtrack", "Cinematic Classical"]
+    assert aliases[4] == ["classical", "Duets"]
+    assert aliases[5] == ["jazz", "Third Stream"]
+    assert aliases[6] == ["marching band", "March"]
+    mapping_rows = await database.get_rows_from_query(
+        f"SELECT genre_id, media_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}", limit=0
+    )
+    assert {(row["genre_id"], row["media_id"]) for row in mapping_rows} == {
+        (1, 10),
+        (1, 12),
+        (1, 14),
+        (5, 13),
+        (6, 15),
+    }
+
+
+async def test_migration_survives_missing_genres_for_more_classical_aliases(
+    database: DatabaseConnection,
+) -> None:
+    """Missing genres, a missing mapping table and broken alias data do not fail the step."""
+    await _create_genre_tables(database)
+    await database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}")
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_GENRES} VALUES (1, 'classical', 'not json', NULL)"
+    )
+    await database.execute(f"INSERT INTO {DB_TABLE_GENRES} VALUES (2, 'soundtrack', '', NULL)")
+    await database.commit()
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+
+    await migrate_database(mass, database, MagicMock(), prev_version=68, create_tables=AsyncMock())
+
+    genre_rows = await database.get_rows_from_query(
+        f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+    )
+    assert {row["item_id"]: row["genre_aliases"] for row in genre_rows} == {
+        1: "not json",
+        2: serialize_to_json(["Cinematic Classical"]),
+    }
 
 
 async def test_migration_adds_is_endless_column_to_radios(
