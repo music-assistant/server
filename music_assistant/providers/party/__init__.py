@@ -426,6 +426,9 @@ class PartyPlugin(PluginProvider):
         self._unregister_handles.append(
             self.mass.subscribe(self._on_queue_updated, EventType.QUEUE_UPDATED)
         )
+        # queues that are already loaded will not send an update for their tallies
+        for queue in self.mass.player_queues:
+            self._remove_stale_skip_tally(queue.queue_id)
         # Register API commands and store unregister handles
         # PROVIDERS_READ (held by guests) lets a guest fetch the join URL to display/share
         # the QR; get_party_url returns None when guest access is disabled, so nothing leaks.
@@ -490,6 +493,9 @@ class PartyPlugin(PluginProvider):
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
+
+        # The votes are lost with this instance, so remove their tally as well
+        self._clear_skip_votes()
 
         # Tear down the shared playback session (detaches guest listeners and,
         # in remote mode, removes the virtual player)
@@ -936,17 +942,21 @@ class PartyPlugin(PluginProvider):
             msg = f"{current_user.username} does not have access to player {queue_id}"
             raise InsufficientPermissions(msg)
 
+        # The vote is for the track playing right now, even if playback moves on
+        # while the vote is being processed
+        target_item_id = self._get_playing_item(queue_id).queue_item_id
         votes_required = cast("int", self.config.get_value(CONF_PARTY_SKIP_VOTES_REQUIRED))
         voter_id = await self._get_voter_id()
 
-        async with self._queue_lock:
-            # Check the queue only now: it may have changed while waiting for the lock
-            queue = self.mass.player_queues.get(queue_id)
-            if not queue:
-                raise InvalidDataError(f"Queue not found: {queue_id}")
-            current_item = queue.current_item
-            if queue.state != PlaybackState.PLAYING or not current_item:
-                raise InvalidDataError("Nothing is currently playing")
+        # Hold the player's playback lock through the skip, so no other playback
+        # action can change the track between checking it and skipping it
+        async with (
+            self._queue_lock,
+            self.mass.players.get_group_and_player_lock(queue_id, strict=True),
+        ):
+            current_item = self._get_playing_item(queue_id)
+            if current_item.queue_item_id != target_item_id:
+                raise InvalidDataError("The song changed before the vote was counted")
 
             if (
                 self._skip_vote_queue_id != queue_id
@@ -1113,19 +1123,54 @@ class PartyPlugin(PluginProvider):
             return f"user:{user.user_id}"
         return "anonymous"
 
+    def _get_playing_item(self, queue_id: str) -> QueueItem:
+        """
+        Return the item that is currently playing on the given queue.
+
+        :param queue_id: The queue ID to check.
+        :raises InvalidDataError: When nothing is playing on the queue.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue:
+            raise InvalidDataError(f"Queue not found: {queue_id}")
+        if queue.state != PlaybackState.PLAYING or not queue.current_item:
+            raise InvalidDataError("Nothing is currently playing")
+        return queue.current_item
+
     def _on_queue_updated(self, event: MassEvent) -> None:
         """
         Drop the skip votes once the voted track is no longer the one playing.
 
         :param event: The queue updated event.
         """
-        queue_id = self._skip_vote_queue_id
-        if queue_id is None or event.object_id != queue_id:
+        if not (queue_id := event.object_id):
             return
+        if queue_id == self._skip_vote_queue_id:
+            queue = self.mass.player_queues.get(queue_id)
+            current_item = queue.current_item if queue else None
+            if not current_item or current_item.queue_item_id != self._skip_vote_item_id:
+                self._clear_skip_votes()
+        self._remove_stale_skip_tally(queue_id)
+
+    def _remove_stale_skip_tally(self, queue_id: str) -> None:
+        """
+        Remove a skip vote tally that no vote counted by this instance belongs to.
+
+        Such a tally is left over from before a reload or a restart, where the queue
+        items are restored from the cache but the votes themselves are not.
+
+        :param queue_id: The queue ID to check.
+        """
         queue = self.mass.player_queues.get(queue_id)
         current_item = queue.current_item if queue else None
-        if not current_item or current_item.queue_item_id != self._skip_vote_item_id:
-            self._clear_skip_votes()
+        if (
+            current_item
+            and ATTR_PARTY_SKIP_VOTES in current_item.extra_attributes
+            and (queue_id, current_item.queue_item_id)
+            != (self._skip_vote_queue_id, self._skip_vote_item_id)
+        ):
+            current_item.extra_attributes.pop(ATTR_PARTY_SKIP_VOTES)
+            self.mass.player_queues.signal_update(queue_id, items_changed=True)
 
     def _clear_skip_votes(self) -> None:
         """Forget the skip votes and remove the vote tally from the item they were cast on."""
