@@ -211,6 +211,9 @@ class AIArtwork:
     _paused_until: dict[str, float]
     # set when the provider unloads, so nothing queued afterwards starts a worker
     _stopped: bool
+    # whether a worker runs; set before it is started, as an eagerly started task can queue
+    # more work before Music Assistant has tracked it under its task id
+    _working: bool
 
     def __init__(self, provider: PlaylistMetadataProvider) -> None:
         """
@@ -232,6 +235,7 @@ class AIArtwork:
         self._waiting = False
         self._paused_until = {}
         self._stopped = False
+        self._working = False
 
     @property
     def covers_enabled(self) -> bool:
@@ -712,10 +716,19 @@ class AIArtwork:
         # work it can do now
         if self._blocked_for(kind) is None:
             self._wakeup.set()
-        self.mass.create_task(self._work(), task_id=self._task_id("worker"))
+        if not self._working:
+            self._working = True
+            self.mass.create_task(self._work(), task_id=self._task_id("worker"))
 
     async def _work(self) -> None:
         """Generate the queued covers and descriptions, one playlist at a time."""
+        try:
+            await self._work_queue()
+        finally:
+            self._working = False
+
+    async def _work_queue(self) -> None:
+        """Work through the queue until it is empty, waiting while everything left is blocked."""
         while self._pending and not self._stopped:
             self._wakeup.clear()
             blocked: dict[str, set[str]] = {}

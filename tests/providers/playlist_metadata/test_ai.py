@@ -959,6 +959,34 @@ async def test_new_work_wakes_a_waiting_worker(provider: PlaylistMetadataProvide
     assert provider._ai.waiting
 
 
+async def test_a_worker_that_queues_work_as_it_starts_stays_the_only_one(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """An eagerly started worker queueing more work at once does not start a second worker."""
+    ai = provider._ai
+    second = _smart_playlist(item_id="2")
+    processed: list[str] = []
+
+    async def process(item_id: str, _kinds: set[str]) -> tuple[set[str], int]:
+        # runs in the worker's first, eager step, before its task is tracked
+        processed.append(item_id)
+        if item_id == "1":
+            ai._enqueue(second, "cover")
+        return set(), 0
+
+    with patch.object(ai, "_process", side_effect=process):
+        ai._enqueue(_smart_playlist(item_id="1"), "cover")
+        await _settle(provider)
+
+    worker_starts = [
+        call
+        for call in _mass(provider).create_task.call_args_list
+        if call.kwargs.get("task_id") == f"{INSTANCE_ID}_ai_worker"
+    ]
+    assert len(worker_starts) == 1
+    assert processed == ["1", "2"]
+
+
 async def test_nothing_is_queued_after_unloading(provider: PlaylistMetadataProvider) -> None:
     """A metadata refresh still running on an unloaded provider starts no worker."""
     await provider.unload()
