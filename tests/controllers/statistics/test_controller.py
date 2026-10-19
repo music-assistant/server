@@ -261,10 +261,25 @@ async def test_top_items_artist_tab_counts_track_history(mass: MusicAssistant) -
         return_value=user,
     ):
         results = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")
+        distribution = await mass.statistics.get_artist_distribution(period="all_time")
+        counts = [
+            await mass.statistics.get_play_count(
+                result.item.item_id, result.item.provider, MediaType.ARTIST
+            )
+            for result in results
+        ]
+        provider_count = await mass.statistics.get_play_count(
+            "provider-artist", "test-provider", MediaType.ARTIST
+        )
 
     assert [
         (result.item.item_id, result.item.provider, result.play_count) for result in results
     ] == [(str(library_artist_id), "library", 2), ("unmapped-artist", "test-provider", 1)]
+    assert [
+        (result.item.item_id, result.item.provider, result.play_count) for result in distribution
+    ] == [(result.item.item_id, result.item.provider, result.play_count) for result in results]
+    assert counts == [result.play_count for result in results]
+    assert provider_count == 2
 
 
 @pytest.mark.parametrize("apple_provider", ["apple_music--account", "apple_music"])
@@ -350,6 +365,17 @@ async def test_artist_aggregations_merge_provider_artist_mappings(
         return_value=user,
     ):
         artist_distribution = await mass.statistics.get_artist_distribution(period="all_time")
+        ranking = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")
+        counts = [
+            await mass.statistics.get_play_count(item_id, provider, MediaType.ARTIST)
+            for item_id, provider in (
+                (str(library_artist_id), "library"),
+                ("apple-artist", "apple_music"),
+                ("apple-artist", "apple_music--account"),
+                ("apple-artist", "apple_music--second-account"),
+                ("tidal-artist", "tidal--account"),
+            )
+        ]
         listening_time = await mass.statistics.get_listening_time(
             period="all_time", group_by="artist"
         )
@@ -358,6 +384,10 @@ async def test_artist_aggregations_merge_provider_artist_mappings(
         (result.item.item_id, result.item.provider, result.play_count)
         for result in artist_distribution
     ] == [(str(library_artist_id), "library", 2)]
+    assert [
+        (result.item.item_id, result.item.provider, result.play_count) for result in ranking
+    ] == [(str(library_artist_id), "library", 2)]
+    assert counts == [2, 2, 2, 2, 2]
     assert [(result.name, result.minutes) for result in listening_time] == [("Shared Artist", 6.0)]
 
 

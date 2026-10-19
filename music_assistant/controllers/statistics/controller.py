@@ -854,7 +854,7 @@ class StatisticsController(CoreController):
         media_type: MediaType,
     ) -> int:
         """
-        Get play count for a specific item.
+        Get play count for an item, using completed track credits for artists.
 
         :param item_id: The item ID to get play count for.
         :param provider: The provider ID.
@@ -865,6 +865,38 @@ class StatisticsController(CoreController):
 
         if not user_id:
             return 0
+
+        if media_type == MediaType.ARTIST:
+            history_cte = f"""
+                {_TRACK_ARTISTS_CTE}, normalized_history AS (
+                    SELECT item_id, provider FROM track_artists
+                )
+            """
+        else:
+            history_cte = f"""
+                normalized_history AS (
+                    SELECT
+                        COALESCE(
+                            CAST(provider_mappings.item_id AS TEXT), play_history.item_id
+                        ) AS item_id,
+                        CASE
+                            WHEN provider_mappings.item_id IS NOT NULL THEN 'library'
+                            ELSE play_history.provider
+                        END AS provider
+                    FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+                    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
+                        ON {
+                _PROVIDER_MAPPING_JOIN.format(
+                    mapping="provider_mappings",
+                    media_type="play_history.media_type",
+                    item_id="play_history.item_id",
+                    provider="play_history.provider",
+                )
+            }
+                    WHERE play_history.userid = :user_id
+                        AND play_history.media_type = :media_type
+                )
+            """
 
         query = f"""
             WITH requested_item AS (
@@ -884,28 +916,7 @@ class StatisticsController(CoreController):
                 provider=":provider",
             )
         }
-            ), normalized_history AS (
-                SELECT
-                    COALESCE(
-                        CAST(provider_mappings.item_id AS TEXT), play_history.item_id
-                    ) AS item_id,
-                    CASE
-                        WHEN provider_mappings.item_id IS NOT NULL THEN 'library'
-                        ELSE play_history.provider
-                    END AS provider
-                FROM {DB_TABLE_PLAY_HISTORY} AS play_history
-                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
-                    ON {
-            _PROVIDER_MAPPING_JOIN.format(
-                mapping="provider_mappings",
-                media_type="play_history.media_type",
-                item_id="play_history.item_id",
-                provider="play_history.provider",
-            )
-        }
-                WHERE play_history.userid = :user_id
-                    AND play_history.media_type = :media_type
-            )
+            ), {history_cte}
             SELECT COUNT(*) AS count
             FROM normalized_history
             INNER JOIN requested_item USING (item_id, provider)
@@ -916,6 +927,7 @@ class StatisticsController(CoreController):
             "item_id": item_id,
             "provider": provider,
             "media_type": media_type.value,
+            "cutoff_timestamp": 0,
         }
 
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=1)
