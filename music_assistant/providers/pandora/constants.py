@@ -9,7 +9,9 @@ PLAYBACK_RESUMED_ENDPOINT = f"{API_BASE}/station/playbackResumed"
 ADD_FEEDBACK_ENDPOINT = f"{API_BASE}/station/addFeedback"
 DELETE_FEEDBACK_ENDPOINT = f"{API_BASE}/station/deleteFeedback"
 
-# Request rate per provider instance. 
+# Request rate per provider instance. Pandora publishes no limit for its web API; four per
+# second lets the longest recovery go out without waiting: a request answered 401, the CSRF
+# fetch and login that follow, and the retry.
 API_RATE_LIMIT = 4
 API_RATE_PERIOD = 1.0
 
