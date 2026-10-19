@@ -512,8 +512,8 @@ async def test_the_serving_session_is_the_one_marked_as_having_served() -> None:
     assert newer is not None
     older.fetched_at -= 60
     await provider.get_stream_details("TR:S0", MediaType.TRACK)
-    assert newer.served == {"TR:S0"}
-    assert older.served == set()
+    assert set(newer.served) == {"TR:S0"}
+    assert older.served == {}
 
 
 async def test_get_track_uses_the_freshest_fragment() -> None:

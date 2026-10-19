@@ -17,12 +17,17 @@ from .test_provider import STATION_ID, _provider, _tracks
 
 def _feedback_provider(
     tracks: list[dict[str, Any]] | None = None,
+    *later: list[dict[str, Any]],
 ) -> tuple[PandoraProvider, list[dict[str, Any]]]:
-    """Build a provider holding one fragment of `tracks`, recording every addFeedback body."""
+    """
+    Build a provider serving `tracks`, then each of `later`, as the fragments it fetches.
+
+    Every addFeedback body is recorded. Tracks without a token get `token-<id>`.
+    """
     tracks = tracks if tracks is not None else _tracks()
     for track in tracks:
         track.setdefault("trackToken", f"token-{track['pandoraId']}")
-    provider = _provider(payloads=[tracks])
+    provider = _provider(payloads=[tracks, *later])
     sent: list[dict[str, Any]] = []
     inner = provider._api_request
 
@@ -102,3 +107,54 @@ async def test_feedback_disallowed_by_pandora_is_refused() -> None:
     with pytest.raises(InvalidDataError):
         await provider.set_favorite("TR:S0", MediaType.TRACK, False)
     assert sent == []
+
+
+def _station_tracks(station: str) -> list[dict[str, Any]]:
+    """Build a fragment of the shared test songs as `station` serves them, with its own tokens."""
+    return [
+        {**track, "stationId": station, "trackToken": f"{station}-{track['pandoraId']}"}
+        for track in _tracks()
+    ]
+
+
+async def test_rating_uses_the_station_that_played_the_track() -> None:
+    """
+    A song another station fetched after playback started is still rated on the playing one.
+
+    Station B's copy is the freshest fetch, but A served the audio, so A's token is sent.
+    """
+    provider, sent = _feedback_provider(_station_tracks("a"), _station_tracks("b"))
+    await provider.get_dynamic_radio_tracks("station-a")
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    station_a = provider._sessions["station-a"].current
+    assert station_a is not None
+    station_a.fetched_at -= 60  # B's fetch is strictly the fresher one
+    await provider.get_dynamic_radio_tracks("station-b")
+    await provider.set_favorite("TR:S0", MediaType.TRACK, False)
+    assert sent == [{"trackToken": "a-TR:S0", "isPositive": False}]
+
+
+async def test_rating_follows_the_latest_playback_of_the_track() -> None:
+    """Played on A, then again on B: the rating goes to B, where it is playing now."""
+    provider, sent = _feedback_provider(_station_tracks("a"), _station_tracks("b"))
+    await provider.get_dynamic_radio_tracks("station-a")
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    station_a = provider._sessions["station-a"].current
+    assert station_a is not None
+    station_a.served["TR:S0"] -= 60  # A played it a minute ago
+    await provider.get_dynamic_radio_tracks("station-b")
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    await provider.set_favorite("TR:S0", MediaType.TRACK, True)
+    assert sent == [{"trackToken": "b-TR:S0", "isPositive": True}]
+
+
+async def test_rating_a_track_not_yet_played_uses_the_freshest_copy() -> None:
+    """With no playback to go by, the freshest fetch decides, as for track lookups."""
+    provider, sent = _feedback_provider(_station_tracks("a"), _station_tracks("b"))
+    await provider.get_dynamic_radio_tracks("station-a")
+    await provider.get_dynamic_radio_tracks("station-b")
+    station_a = provider._sessions["station-a"].current
+    assert station_a is not None
+    station_a.fetched_at -= 60
+    await provider.set_favorite("TR:S1", MediaType.TRACK, True)
+    assert sent == [{"trackToken": "b-TR:S1", "isPositive": True}]

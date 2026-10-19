@@ -323,10 +323,10 @@ class PandoraProvider(MusicProvider):
         # clearing is not sent: Pandora removes feedback by the feedback id, which is not kept
         if media_type != MediaType.TRACK or favorite is None:
             return
-        # Pandora ties feedback to the trackToken it issued with the fragment that served the
-        # track, so only a track still held in a retained fragment can be rated; the freshest
-        # copy wins, as in _find_track
-        track = self._find_track(prov_item_id)
+        # Pandora ties feedback to the trackToken it issued with a fragment, and that token
+        # decides which station the feedback trains, so only a track still held in a retained
+        # fragment can be rated
+        track = self._find_rated_track(prov_item_id)
         if track is None:
             raise MediaNotFoundError(
                 f"Track {prov_item_id} is not in any retained Pandora fragment (not playing, or "
@@ -585,6 +585,24 @@ class PandoraProvider(MusicProvider):
         ]
         freshest = max(holders, key=lambda holder: holder[0].fetched_at, default=None)
         return freshest[1] if freshest is not None else None
+
+    def _find_rated_track(self, prov_track_id: str) -> dict[str, Any] | None:
+        """Return raw track data from the retained fragment that last served it, or None."""
+        # the copy that most recently went to the audio pipeline names the station that played
+        # the song; the freshest fetch would train the wrong station whenever another station
+        # fetches the same song after playback started. With several players on different
+        # stations playing the same song, the latest stream wins: set_favorite gets no player.
+        served = [
+            (fragment.served[prov_track_id], track)
+            for session in self._sessions.values()
+            for fragment in session.fragments
+            if prov_track_id in fragment.served
+            and (track := fragment.find(prov_track_id)) is not None
+        ]
+        if served:
+            return max(served, key=lambda holder: holder[0])[1]
+        # never streamed, e.g. a track rated while still queued
+        return self._find_track(prov_track_id)
 
     def _parse_station(self, station: dict[str, Any]) -> Radio:
         """Parse a station object into a dynamic radio station."""
