@@ -8,10 +8,19 @@ playlist's ``translation_key`` survives the library round-trip.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+from music_assistant_models.background_task import BackgroundTask
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.media_items import Playlist, ProviderMapping
 
 from music_assistant.controllers.music.media.playlists import PlaylistController
+from music_assistant.controllers.tasks.context import (
+    ACTIVE_TASK_CONTEXT,
+    TaskExecutionContext,
+    report_current_task_failure,
+)
 from music_assistant.mass import MusicAssistant
 
 
@@ -92,3 +101,52 @@ class TestPlaylistTranslationKey:
         )
         fetched = await playlist_ctrl.get_library_item(int(created.item_id))
         assert fetched.translation_key == "recently_played"
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_add_task_does_not_count_items_the_provider_skipped(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """Items the provider reports as skipped are not counted as added."""
+    mass = music_mass_module
+    playlist_ctrl = mass.music.playlists
+    playlist = _make_playlist("partial_add", "Partial add")
+    playlist.is_editable = True
+    target = await playlist_ctrl.add_item_to_library(playlist)
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.available = True
+    provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
+    provider.get_playlist_tracks = AsyncMock(return_value=[])
+
+    async def add_tracks(_prov_playlist_id: str, uris: list[str]) -> None:
+        report_current_task_failure(f"Can't add {uris[-1]}")
+
+    provider.add_playlist_tracks = AsyncMock(side_effect=add_tracks)
+    task = BackgroundTask(name="add")
+    progress_texts: list[str | None] = []
+
+    def add_failure(_task_id: str, _message: str) -> None:
+        task.failure_count += 1
+
+    context = TaskExecutionContext(
+        task_id=task.id,
+        get_task=lambda _task_id: task,
+        update_progress=lambda _task_id, _progress, text: progress_texts.append(text),
+        update_progress_text=lambda _task_id, text: progress_texts.append(text),
+        add_failure=add_failure,
+        update_report=lambda _task_id, _markdown: None,
+    )
+    token = ACTIVE_TASK_CONTEXT.set(context)
+    try:
+        with (
+            patch.object(mass, "get_provider", return_value=provider),
+            patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        ):
+            await playlist_ctrl._handle_add_playlist_tracks(
+                target.item_id, ["deezer://track/1", "deezer://track/2", "bandcamp://track/3"]
+            )
+    finally:
+        ACTIVE_TASK_CONTEXT.reset(token)
+
+    assert progress_texts[-1] == "Added 2 item(s) to playlist"
