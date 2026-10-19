@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, ImageType, ProviderFeature
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import (
     Album,
     AlbumSummary,
@@ -326,3 +327,35 @@ async def test_library_artist_listings_query_one_instance_per_streaming_domain(
     queried = {call.args[1] for call in provider_listing.await_args_list}
     # one Spotify instance, and both (non-streaming) filesystem instances
     assert queried == {"spotify_1", "filesystem_local_1", "filesystem_local_2"}
+
+
+async def test_match_provider_skips_the_artists_mappings_on_hidden_sources() -> None:
+    """Matching an artist merged across a hidden source never asks that source."""
+    hidden, own = "plex_theirs", "spotify_mine"
+    ctrl = ArtistsController.__new__(ArtistsController)
+    ctrl.mass = MagicMock()
+    ctrl.logger = logging.getLogger("test.artists.match")
+    ctrl.mass.music.get_visible_provider = MagicMock(
+        side_effect=lambda instance: None if instance == hidden else MagicMock()
+    )
+
+    async def _listing(_item_id: str, provider_instance: str) -> list[Track]:
+        if provider_instance == hidden:
+            raise InsufficientPermissions(f"{hidden} is not a music source of this user")
+        return []
+
+    ctrl.mass.music.artists.tracks = AsyncMock(side_effect=_listing)
+    ctrl.mass.music.artists.albums = AsyncMock(side_effect=_listing)
+    db_artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Shared Artist",
+        provider_mappings={
+            ProviderMapping(item_id="a1", provider_domain="plex", provider_instance=hidden),
+            ProviderMapping(item_id="a2", provider_domain="spotify", provider_instance=own),
+        },
+    )
+
+    assert await ctrl.match_provider(db_artist, MagicMock(name="Tidal")) == []
+    asked = {call.args[1] for call in ctrl.mass.music.artists.tracks.await_args_list}
+    assert asked == {"library", own}

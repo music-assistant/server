@@ -1554,6 +1554,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_tracks) < 10:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
+                if not self.mass.music.get_visible_provider(provider_mapping.provider_instance):
+                    continue
                 with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
                     ref_tracks += await self.mass.music.artists.tracks(
                         provider_mapping.item_id, provider_mapping.provider_instance
@@ -1576,6 +1578,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_albums) < 10:
             # fetch reference albums from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
+                if not self.mass.music.get_visible_provider(provider_mapping.provider_instance):
+                    continue
                 with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
                     ref_albums += await self.mass.music.artists.albums(
                         provider_mapping.item_id, provider_mapping.provider_instance
