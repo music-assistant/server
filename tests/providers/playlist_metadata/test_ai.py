@@ -519,7 +519,9 @@ async def test_regular_playlist_context_comes_from_its_tracks(
         _track("Just Dance", "Lady Gaga", {"Pop"}),
         _track("Vogue", "Madonna", {"Dance"}),
     ]
-    _mass(provider).music.playlists.tracks = MagicMock(side_effect=lambda *_: _async_iter(tracks))
+    _mass(provider).music.playlists.iter_tracks = MagicMock(
+        side_effect=lambda *_: _async_iter(tracks)
+    )
 
     await _metadata(provider, _playlist("builtin", item_id="42", is_editable=True))
 
@@ -537,7 +539,9 @@ async def test_equally_common_genres_are_picked_in_a_stable_order(
     """Genres come as a set, so ties are broken alphabetically rather than by hash order."""
     _set_config(provider, **{CONF_EXTRA_PLAYLISTS: ["42"]})
     tracks = [_track("Vogue", "Madonna", {"Pop", "Dance", "House"})]
-    _mass(provider).music.playlists.tracks = MagicMock(side_effect=lambda *_: _async_iter(tracks))
+    _mass(provider).music.playlists.iter_tracks = MagicMock(
+        side_effect=lambda *_: _async_iter(tracks)
+    )
 
     await _metadata(provider, _playlist("builtin", item_id="42", is_editable=True))
 
@@ -564,8 +568,9 @@ async def test_a_metadata_refresh_never_waits_for_a_generation(
     assert playlist.image is None
     release.set()
     await _settle(provider)
-    assert playlist.image is not None
-    assert playlist.image.provider == INSTANCE_ID
+    cover = _cover(playlist)
+    assert cover is not None
+    assert cover.provider == INSTANCE_ID
 
 
 async def test_a_blocked_cover_does_not_hold_up_other_work(
@@ -691,8 +696,9 @@ async def test_refresh_passes_do_not_overlap(provider: PlaylistMetadataProvider)
         overlapped = overlapped or running > 1
         await asyncio.sleep(0.01)
         running -= 1
-        return
-        yield
+        # an empty library
+        for playlist in cast("list[Playlist]", []):
+            yield playlist
 
     _mass(provider).music.playlists.iter_library_items = iter_library_items
 
@@ -1617,7 +1623,7 @@ def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     mass.call_later = MagicMock()
     mass.cache = _FakeCache()
     mass.music.tracks.most_played_by_artists = AsyncMock(return_value=[])
-    mass.music.playlists.tracks = MagicMock(side_effect=lambda *_: _async_iter([]))
+    mass.music.playlists.iter_tracks = MagicMock(side_effect=lambda *_: _async_iter([]))
     smart_playlist_provider = MagicMock()
     smart_playlist_provider.domain = "smart_playlist"
     smart_playlist_provider.get_smart_playlist_rules = AsyncMock(return_value=SMART_RULES)
@@ -1851,6 +1857,11 @@ async def _metadata(
     metadata = await provider.get_playlist_metadata(playlist)
     await _settle(provider)
     return metadata
+
+
+def _cover(playlist: Playlist) -> MediaItemImage | None:
+    """Return the playlist's cover, as it is now."""
+    return playlist.image
 
 
 def _register(provider: PlaylistMetadataProvider, *playlists: Playlist) -> None:

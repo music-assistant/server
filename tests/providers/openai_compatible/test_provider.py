@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import ClientConnectorDNSError, ClientError
+from aiohttp import ClientConnectorDNSError, ClientError, ThreadedResolver
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -1002,9 +1002,7 @@ async def test_the_resolver_refuses_hosts_with_a_local_address(
     """A host with any local address, or none at all, is refused as it is connected to."""
     resolver = helpers.PublicHostResolver([("https", "api.example.com", 443)])
     with (
-        patch.object(
-            helpers.ThreadedResolver, "resolve", AsyncMock(return_value=_resolved(*addresses))
-        ),
+        patch.object(ThreadedResolver, "resolve", AsyncMock(return_value=_resolved(*addresses))),
         pytest.raises(helpers.LocalNetworkHostError),
     ):
         await resolver.resolve("images.example.com", 443)
@@ -1014,7 +1012,7 @@ async def test_the_resolver_passes_public_hosts_and_the_endpoint() -> None:
     """Public hosts resolve as usual, and so does the endpoint itself, but not its neighbours."""
     resolver = helpers.PublicHostResolver([("http", "localai.lan", 8080)])
     with patch.object(
-        helpers.ThreadedResolver,
+        ThreadedResolver,
         "resolve",
         AsyncMock(
             side_effect=[

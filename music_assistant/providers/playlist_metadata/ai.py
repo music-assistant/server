@@ -1184,7 +1184,7 @@ class AIArtwork:
         first_track: dict[str, Track] = {}
         count = 0
         try:
-            async for track in self.mass.music.playlists.tracks(
+            async for track in self.mass.music.playlists.iter_tracks(
                 playlist.item_id, playlist.provider
             ):
                 if not isinstance(track, Track):
