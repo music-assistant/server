@@ -1625,6 +1625,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 full_item = await cast(
                     "MediaControllerBase[MediaItemType]", ctrl
                 ).add_item_to_library(full_item)
+                await self._link_genres_if_unmapped(full_item)
         elif (
             favorite
             and (own_mappings := self._write_target_mappings(full_item.provider_mappings))
@@ -1796,6 +1797,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         if isinstance(library_item, Artist):
             library_item = await self.artists.get_merged_library_item(library_item)
+        await self._link_genres_if_unmapped(library_item)
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
@@ -3017,6 +3019,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for allowed_player_id in player_filter:
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
+
+    async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
+        """Link a library item to the genres it carries, if it has no genre links yet."""
+        if item.metadata.genres and not await self.genres.has_genre_mappings(
+            item.media_type, item.item_id
+        ):
+            await self.genres.sync_media_item_genres(
+                item.media_type, item.item_id, set(item.metadata.genres)
+            )
 
     def _write_target_mappings(
         self,
