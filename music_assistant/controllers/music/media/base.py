@@ -3007,8 +3007,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         user = get_current_user()
         visible_sources = visible_music_sources(self.mass, user) if user else None
         if visible_sources is None:
-            mapping = ordered_mappings[0]
-            return (mapping.provider_instance, mapping.item_id)
+            # the first mapping with a loaded instance, so a down account does not block the item
+            for mapping in ordered_mappings:
+                if exact_provider(self.mass, mapping.provider_instance):
+                    return (mapping.provider_instance, mapping.item_id)
+            msg = f"{library_item.name} is currently not available on any provider"
+            raise MediaNotFoundError(msg)
 
         # First prefer music provider mappings that are explicitly allowed for this user.
         # Only the exact instance counts: the domain fallback of get_provider must not
