@@ -885,35 +885,19 @@ async def test_search_includes_videos_only_when_enabled(
     assert backend_search.call_args_list[0].kwargs["ytm_filter"] == "songs"
 
 
-async def test_video_search_interleaves_deduplicates_and_limits(
-    provider: YoutubeMusicProvider,
+@pytest.mark.parametrize(
+    ("media_types", "ytm_filter"),
+    [([MediaType.ARTIST], "artists"), ([MediaType.ARTIST, MediaType.TRACK], None)],
+)
+async def test_search_fetches_videos_only_for_song_searches(
+    provider: YoutubeMusicProvider, media_types: list[MediaType], ytm_filter: str | None
 ) -> None:
-    """Videos get space in a full song list without duplicate IDs or invalid items."""
-
-    async def backend(**kwargs: Any) -> list[dict[str, Any]]:
-        if kwargs["ytm_filter"] == "videos":
-            return [
-                {"title": "Invalid"},
-                _search_track("song1", "video"),
-                _search_track("video2", "video"),
-                _search_track("video3", "video"),
-            ]
-        return [_search_track(f"song{index}") for index in range(1, 5)]
-
-    cast("MagicMock", provider.config.get_value).return_value = True
-    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
-    with patch("music_assistant.providers.ytmusic.search", side_effect=backend):
-        results = await search(provider, "query", [MediaType.TRACK], 4)
-    assert [track.item_id for track in results.tracks] == ["song1", "song2", "video2", "song3"]
-
-
-async def test_artist_search_does_not_fetch_videos(provider: YoutubeMusicProvider) -> None:
-    """The option only adds requests when tracks are requested."""
+    """Other filtered searches skip videos and unfiltered searches already include them."""
     cast("MagicMock", provider.config.get_value).return_value = True
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", AsyncMock(return_value=[])) as backend:
-        await search(provider, "query", [MediaType.ARTIST], 5)
-    backend.assert_awaited_once_with(query="query", ytm_filter="artists", limit=5)
+        await search(provider, "query", media_types, 5)
+    backend.assert_awaited_once_with(query="query", ytm_filter=ytm_filter, limit=5)
 
 
 async def test_stream_from_signed_out_session_keeps_stored_cookie(

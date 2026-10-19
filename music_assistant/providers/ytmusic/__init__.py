@@ -13,7 +13,6 @@ from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache
 from io import StringIO
-from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
@@ -330,6 +329,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             ytm_filter=ytm_filter,
             limit=limit,
         )
+        if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
+            # some tracks only exist as a video and never show up on the songs shelf
+            results += await search(query=search_query, ytm_filter="videos", limit=limit)
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
         albums: list[Album | ItemMapping] = []
@@ -358,8 +360,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         parsed_results.artists = artists
         parsed_results.albums = albums
         parsed_results.playlists = playlists
-        if self.config.get_value(CONF_INCLUDE_VIDEOS) and MediaType.TRACK in media_types:
-            tracks = await self._include_video_search_results(search_query, tracks, limit)
         parsed_results.tracks = tracks
         parsed_results.podcasts = podcasts
         return parsed_results
@@ -914,27 +914,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if item_id == f"{self.instance_id}_mixed_for_you":
             return (await self._get_mixed_for_you_folder()).items
         return await self._recommendation_items_from_payload(item_id)
-
-    async def _include_video_search_results(
-        self, search_query: str, tracks: list[Track | ItemMapping], limit: int
-    ) -> list[Track | ItemMapping]:
-        """Interleave song and video results without repeating a video ID."""
-        results = await search(query=search_query, ytm_filter="videos", limit=limit)
-        videos: list[Track | ItemMapping] = []
-        for result in results:
-            try:
-                if track := self._parse_track(result):
-                    videos.append(track)
-            except InvalidDataError:
-                continue
-        seen: set[str] = set()
-        combined: list[Track | ItemMapping] = []
-        for pair in zip_longest(tracks, videos):
-            for item in pair:
-                if item is not None and item.item_id not in seen:
-                    seen.add(item.item_id)
-                    combined.append(item)
-        return combined[:limit]
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch the home feed and parse its sections into recommendation folders with items."""
