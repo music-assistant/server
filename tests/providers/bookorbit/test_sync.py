@@ -617,9 +617,25 @@ def test_library_item_needs_update_when_sole_provider_images_change(
     assert provider._library_item_needs_update(library, prov_item) is True
 
 
-def test_library_sync_overwrite_sole_provider(provider: BookOrbitProvider) -> None:
-    """Merged library items keep merge semantics; sole BookOrbit items overwrite."""
-    sole = Audiobook(
+def test_library_item_needs_update_on_mapping_details_change(
+    provider: BookOrbitProvider,
+) -> None:
+    """BookOrbit ``details`` fingerprint changes trigger a library update."""
+    mapping = ProviderMapping(
+        item_id="1",
+        provider_domain="bookorbit",
+        provider_instance=provider.instance_id,
+        in_library=True,
+        details="old",
+    )
+    library = Audiobook(
+        item_id="1",
+        provider=provider.instance_id,
+        name="Hatchet",
+        provider_mappings={mapping},
+        duration=100,
+    )
+    prov_item = Audiobook(
         item_id="1",
         provider=provider.instance_id,
         name="Hatchet",
@@ -629,35 +645,12 @@ def test_library_sync_overwrite_sole_provider(provider: BookOrbitProvider) -> No
                 provider_domain="bookorbit",
                 provider_instance=provider.instance_id,
                 in_library=True,
+                details="new",
             )
         },
         duration=100,
     )
-    assert provider._is_sole_library_provider(sole) is True
-    assert provider._library_sync_overwrite(sole, sole) is True
-
-    merged = Audiobook(
-        item_id="1",
-        provider=provider.instance_id,
-        name="Hatchet",
-        provider_mappings={
-            ProviderMapping(
-                item_id="1",
-                provider_domain="bookorbit",
-                provider_instance=provider.instance_id,
-                in_library=True,
-            ),
-            ProviderMapping(
-                item_id="other",
-                provider_domain="filesystem_local",
-                provider_instance="filesystem_local--x",
-                in_library=True,
-            ),
-        },
-        duration=100,
-    )
-    assert provider._is_sole_library_provider(merged) is False
-    assert provider._library_sync_overwrite(merged, sole) is False
+    assert provider._library_item_needs_update(library, prov_item) is True
 
 
 @pytest.mark.asyncio

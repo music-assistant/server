@@ -20,7 +20,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.helpers.external_ids import is_valid_isrc
-from music_assistant.helpers.library_sync import REPLACE_EMPTY_METADATA
 from music_assistant.helpers.uri import canonical_provider_url, discogs_id_from_url, parse_uri
 
 if TYPE_CHECKING:
@@ -142,16 +141,12 @@ def metadata_for_update(
 
     An overwrite replaces the stored metadata, unless the given item carries none at
     all: providers embed a bare stub of an album or artist in their track payloads.
-    Provider sync sets :data:`REPLACE_EMPTY_METADATA` so an intentionally empty
-    update (for example clearing the last biography) still replaces stored fields.
 
     :param stored: Metadata currently stored for the library item.
     :param update: Metadata of the item as delivered by the provider.
     :param overwrite: Whether the given item replaces the stored one.
     """
-    if overwrite and (
-        REPLACE_EMPTY_METADATA.get() or any(getattr(update, field.name) for field in fields(update))
-    ):
+    if overwrite and any(getattr(update, field.name) for field in fields(update)):
         return update
     return stored.update(update)
 

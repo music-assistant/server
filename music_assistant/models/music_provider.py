@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import aiohttp
 from music_assistant_models.background_task import TaskSchedule
@@ -54,7 +54,6 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
 )
-from music_assistant.helpers.library_sync import REPLACE_EMPTY_METADATA
 
 from .media_capabilities import AudioStreamMixin, MediaCatalogMixin, RecommendationsMixin
 from .provider import Provider
@@ -79,7 +78,6 @@ DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
 # a provider-wide payload change fails every single item, so only the first failures
 # of a sync run are logged in full to keep the (rotating) log file usable
 MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
-_SyncItemT = TypeVar("_SyncItemT", bound=MediaItemType)
 MAX_SYNC_ERROR_DETAIL: Final[int] = 200
 # skipped id's are resolved back to library id's in batches of this size
 SKIPPED_ITEM_QUERY_LIMIT: Final[int] = 500
@@ -1419,11 +1417,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         library_item = await self.mass.music.artists.add_item_to_library(prov_item)
                         db_id = int(library_item.item_id)
                     elif self._library_item_needs_update(sync_details, prov_item):
-                        library_item = await self._update_synced_library_item(
-                            self.mass.music.artists,
-                            sync_details.item_id,
-                            prov_item,
-                            sync_details,
+                        library_item = await self.mass.music.artists.update_item_in_library(
+                            sync_details.item_id, prov_item
                         )
                         db_id = int(library_item.item_id)
                     else:
@@ -1477,11 +1472,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         library_item = await self.mass.music.albums.add_item_to_library(prov_item)
                         db_id = int(library_item.item_id)
                     elif self._library_item_needs_update(sync_details, prov_item):
-                        library_item = await self._update_synced_library_item(
-                            self.mass.music.albums,
-                            sync_details.item_id,
-                            prov_item,
-                            sync_details,
+                        library_item = await self.mass.music.albums.update_item_in_library(
+                            sync_details.item_id, prov_item
                         )
                         db_id = int(library_item.item_id)
                     else:
@@ -1592,11 +1584,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     elif self._library_item_needs_update(
                         sync_details, prov_item
                     ) or sync_details.authors_narrators_changed(prov_item):
-                        library_item = await self._update_synced_library_item(
-                            self.mass.music.audiobooks,
-                            sync_details.item_id,
-                            prov_item,
-                            sync_details,
+                        library_item = await self.mass.music.audiobooks.update_item_in_library(
+                            sync_details.item_id, prov_item
                         )
                         db_id = int(library_item.item_id)
                         lib_fully_played = library_item.fully_played
@@ -1963,42 +1952,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 )
         return cur_db_ids
 
-    def _library_sync_overwrite(
-        self,
-        library_item: MediaItemType | LibraryItemSyncDetails,
-        prov_item: MediaItemType,
-    ) -> bool:
-        """
-        Return whether a sync update should overwrite the library item.
-
-        Override for sole-provider semantics (replace metadata rather than merge).
-        """
-        return False
-
-    async def _update_synced_library_item(
-        self,
-        controller: Any,
-        item_id: str | int,
-        prov_item: _SyncItemT,
-        library_item: MediaItemType | LibraryItemSyncDetails,
-    ) -> _SyncItemT:
-        """Update a library item during sync, honoring overwrite and empty-image clearing."""
-        overwrite = self._library_sync_overwrite(library_item, prov_item)
-        # Sync updates are authoritative: empty metadata must clear stored fields,
-        # unlike embedded album/artist stubs on track payloads.
-        token = REPLACE_EMPTY_METADATA.set(overwrite)
-        try:
-            updated = await controller.update_item_in_library(
-                item_id, prov_item, overwrite=overwrite
-            )
-        finally:
-            REPLACE_EMPTY_METADATA.reset(token)
-        images = getattr(getattr(prov_item, "metadata", None), "images", None)
-        # overwrite with an all-empty metadata stub does not replace images; clear ours
-        if overwrite and images is not None and len(images) == 0:
-            await controller._remove_provider_images(int(updated.item_id), self.instance_id)
-        return cast("_SyncItemT", updated)
-
     def _library_item_needs_update(
         self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
     ) -> bool:
@@ -2091,9 +2044,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 return False
             if provider_mapping.is_unique != library_mapping.is_unique:
                 # unique status doesn't match
-                return False
-            if provider_mapping.details != library_mapping.details:
-                # provider-specific fingerprint (checksum / updatedAt / image path) changed
                 return False
             # check if the library item has all provider instances mappings
             is_unique = provider_mapping.is_unique or (not self.is_streaming_provider)

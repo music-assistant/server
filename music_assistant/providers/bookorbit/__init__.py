@@ -511,6 +511,14 @@ class BookOrbitProvider(MusicProvider):
         """Return whether a library item should be refreshed from the provider item."""
         if super()._library_item_needs_update(library_item, prov_item):
             return True
+        # Compare BookOrbit mapping fingerprints (updatedAt / image path) here rather
+        # than in core `_check_provider_mappings`, which must stay provider-agnostic.
+        # Sync-details rows omit ``details`` unless core loads them; only compare when
+        # both sides expose a fingerprint so absent sync fields are not false positives.
+        lib_details = self._provider_mapping_details(library_item)
+        prov_details = self._provider_mapping_details(prov_item)
+        if lib_details is not None and prov_details is not None and lib_details != prov_details:
+            return True
         if not self._is_sole_library_provider(library_item):
             return False
         # Full library items only (sync-details omit name/metadata). Defensive catch-up
@@ -523,13 +531,12 @@ class BookOrbitProvider(MusicProvider):
             and self._provider_image_paths(library_item) != self._provider_image_paths(prov_item)
         )
 
-    def _library_sync_overwrite(
-        self,
-        library_item: MediaItemType | LibraryItemSyncDetails,
-        prov_item: MediaItemType,
-    ) -> bool:
-        """Overwrite sole-provider library items so BookOrbit metadata replaces merges."""
-        return self._is_sole_library_provider(library_item)
+    def _provider_mapping_details(self, item: MediaItemType | LibraryItemSyncDetails) -> str | None:
+        """Return this instance's provider-mapping ``details`` fingerprint, if any."""
+        for mapping in item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                return mapping.details
+        return None
 
     def _provider_image_paths(self, item: MediaItemType | LibraryItemSyncDetails) -> list[str]:
         """Return sorted image paths owned by this provider instance."""
