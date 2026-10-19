@@ -182,8 +182,11 @@ class FakeRadioDirectoryProvider(MusicProvider):
 
 
 @pytest.fixture(name="radio_mass")
-async def radio_mass_fixture(music_mass: MusicAssistant) -> AsyncGenerator[MusicAssistant]:
+async def radio_mass_fixture(
+    music_mass_with_cache: MusicAssistant,
+) -> AsyncGenerator[MusicAssistant]:
     """Return a library-only instance with the fake dynamic-radio provider registered."""
+    music_mass = music_mass_with_cache
     config = ProviderConfig(
         values={},
         type=ProviderType.MUSIC,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard
 
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -16,7 +16,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
-from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
+from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.constants import ArtistOrder
 
 if TYPE_CHECKING:
@@ -32,8 +32,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.models.player import Player
-
-_SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
 
 class CompareState(TypedDict):
@@ -201,50 +199,6 @@ def origin_for(
         provider_instance=item.provider if pinned else None,
         item_id=item.item_id if pinned else None,
     )
-
-
-def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
-    """Sort tracks by the given sort key."""
-    key_map: dict[str, tuple[Any, bool]] = {
-        "position_desc": (lambda t: getattr(t, "position", 0) or 0, True),
-        # name/artist/album sort on the displayed names, as the frontend lists them
-        "name": (lambda t: (t.name or "").lower(), False),
-        "sort_name": (lambda t: (t.sort_name or t.name or "").lower(), False),
-        "artist": (
-            lambda t: t.artists[0].name.lower() if hasattr(t, "artists") and t.artists else "",
-            False,
-        ),
-        "album": (
-            lambda t: (
-                (t.album.name.lower() if hasattr(t, "album") and t.album else ""),
-                getattr(t, "disc_number", 0) or 0,
-                getattr(t, "track_number", 0) or 0,
-            ),
-            False,
-        ),
-        "duration": (lambda t: getattr(t, "duration", 0) or 0, False),
-        "duration_desc": (lambda t: getattr(t, "duration", 0) or 0, True),
-        # items without a date_added sort as the oldest
-        "timestamp_added": (
-            lambda t: t.date_added.timestamp() if t.date_added else 0.0,
-            False,
-        ),
-        "timestamp_added_desc": (
-            lambda t: t.date_added.timestamp() if t.date_added else 0.0,
-            True,
-        ),
-        "track_number": (
-            lambda t: (
-                getattr(t, "disc_number", 0) or 0,
-                getattr(t, "track_number", 0) or 0,
-            ),
-            False,
-        ),
-    }
-    if sort_by in key_map:
-        key_fn, reverse = key_map[sort_by]
-        return sorted(tracks, key=key_fn, reverse=reverse)
-    return list(tracks)
 
 
 def album_release_order(album: Album) -> tuple[bool, int, str, str]:

@@ -200,6 +200,11 @@ def _linked(ctrl: MetaDataController) -> AsyncMock:
     return cast("AsyncMock", ctrl.link_item_to_musicbrainz)
 
 
+def _logger(ctrl: MetaDataController) -> Mock:
+    """Return the stubbed logger of a controller."""
+    return cast("Mock", ctrl.logger)
+
+
 def _mass(ctrl: MetaDataController) -> Mock:
     """Return the stubbed MusicAssistant instance of a controller."""
     return cast("Mock", ctrl.mass)
@@ -394,7 +399,7 @@ async def test_link_run_stops_when_musicbrainz_starts_rate_limiting() -> None:
 async def test_link_run_waits_while_a_library_sync_is_active() -> None:
     """A run during a sync does nothing; the completed sync queues it again."""
     ctrl = _controller()
-    _mass(ctrl).music.active_sync_tasks = [Mock()]
+    _mass(ctrl).music.active_sync_tasks = [Mock(), Mock()]
     queried = _queue(ctrl, albums=_albums(1))
 
     with patch(_PROGRESS_TEXT) as progress_text:
@@ -402,6 +407,9 @@ async def test_link_run_waits_while_a_library_sync_is_active() -> None:
 
     assert queried == []
     progress_text.assert_called_once_with("Waiting for music sync completion")
+    _logger(ctrl).debug.assert_called_once_with(
+        "MusicBrainz link run skipped, %d music sync task(s) pending or running", 2
+    )
     _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
 
 
@@ -415,6 +423,9 @@ async def test_link_run_with_linking_disabled_returns_early_and_keeps_the_domain
 
     assert queried == []
     progress_text.assert_called_once_with("Linking through MusicBrainz is disabled")
+    _logger(ctrl).debug.assert_called_once_with(
+        "MusicBrainz link run skipped, linking through MusicBrainz is disabled"
+    )
     _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
 
 
@@ -429,6 +440,9 @@ async def test_link_run_without_a_musicbrainz_provider_returns_early() -> None:
 
     assert queried == []
     progress_text.assert_called_once_with("The MusicBrainz provider is not loaded")
+    _logger(ctrl).debug.assert_called_once_with(
+        "MusicBrainz link run skipped, the MusicBrainz provider is not loaded"
+    )
     _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
 
 
@@ -611,8 +625,9 @@ async def test_link_item_persists_an_album_without_touching_its_refresh_marker()
 async def test_link_item_resolves_an_artists_musicbrainz_id_first() -> None:
     """An artist without a MusicBrainz id gets it resolved before it is linked and stored."""
     ctrl = _controller(stub_link=False)
-    ctrl._get_artist_mbid = AsyncMock(return_value=ARTIST_ID)  # type: ignore[method-assign]
+    ctrl._get_artist_mbid = AsyncMock(return_value=(ARTIST_ID, False))  # type: ignore[method-assign]
     ctrl._link_artist_to_musicbrainz = AsyncMock()  # type: ignore[method-assign]
+    _mass(ctrl).music.artists.merge_library_artists_by_mbid = AsyncMock(return_value=1)
     artist = Artist(item_id="1", provider="library", name="Radiohead", provider_mappings=set())
 
     await ctrl.link_item_to_musicbrainz(artist)
@@ -620,6 +635,7 @@ async def test_link_item_resolves_an_artists_musicbrainz_id_first() -> None:
     assert artist.mbid == ARTIST_ID
     ctrl._link_artist_to_musicbrainz.assert_awaited_once_with(artist)
     _mass(ctrl).music.artists.update_item_in_library.assert_awaited_once_with("1", artist)
+    _mass(ctrl).music.artists.merge_library_artists_by_mbid.assert_awaited_once_with(1, ARTIST_ID)
 
 
 async def test_link_item_persists_a_track() -> None:

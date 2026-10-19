@@ -8,13 +8,11 @@ import aiohttp
 from music_assistant.helpers.upnp import (
     get_xml_soap_media_info,
     get_xml_soap_next,
-    get_xml_soap_pause,
     get_xml_soap_play,
     get_xml_soap_previous,
     get_xml_soap_set_next_url,
     get_xml_soap_set_url,
     get_xml_soap_stop,
-    get_xml_soap_transport_info,
 )
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player import PlayerMedia
@@ -49,22 +47,33 @@ async def _post_soap(
     xml: str,
     soap_action: str,
     op_name: str,
-) -> aiohttp.ClientResponse:
-    """POST a SOAP request and log a warning on 4xx/5xx error responses."""
+    read_body: bool = False,
+) -> str | None:
+    """
+    POST a SOAP request and log a warning on 4xx/5xx error responses.
+
+    :param client: Session to send the request with.
+    :param ctrl_url: AVTransport control url of the device.
+    :param xml: SOAP request body.
+    :param soap_action: SOAPACTION header value.
+    :param op_name: Operation name for the log.
+    :param read_body: Return the response body; None then means an error response.
+    """
     headers = get_headers(xml, soap_action)
-    response = await client.post(ctrl_url, headers=headers, data=xml)
-    if response.status >= 400:
+    async with client.post(ctrl_url, headers=headers, data=xml) as response:
+        if response.status < 400:
+            return (await response.read()).decode(errors="replace") if read_body else None
         body_excerpt = ""
-        with suppress(aiohttp.ClientError, UnicodeError):
+        with suppress(aiohttp.ClientError):
             body_excerpt = (await response.read())[:300].decode(errors="replace")
-        LOGGER.warning(
-            "AVT %s failed: status=%s url=%s body=%s",
-            op_name,
-            response.status,
-            ctrl_url,
-            body_excerpt,
-        )
-    return response
+    LOGGER.warning(
+        "AVT %s failed: status=%s url=%s body=%s",
+        op_name,
+        response.status,
+        ctrl_url,
+        body_excerpt,
+    )
+    return None
 
 
 async def avt_play(
@@ -85,16 +94,6 @@ async def avt_stop(
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action = get_xml_soap_stop()
     await _post_soap(client, ctrl_url, xml, soap_action, "Stop")
-
-
-async def avt_pause(
-    client: aiohttp.ClientSession,
-    physical_device: MusicCastPhysicalDevice,
-) -> None:
-    """Pause."""
-    ctrl_url = get_upnp_ctrl_url(physical_device)
-    xml, soap_action = get_xml_soap_pause()
-    await _post_soap(client, ctrl_url, xml, soap_action, "Pause")
 
 
 async def avt_next(
@@ -124,25 +123,10 @@ async def avt_get_media_info(
     """Get Media Info."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action = get_xml_soap_media_info()
-    response = await _post_soap(client, ctrl_url, xml, soap_action, "GetMediaInfo")
-    if response.status >= 400:
-        raise aiohttp.ClientError(f"GetMediaInfo returned {response.status}")
-    response_text = await response.read()
-    return response_text.decode()
-
-
-async def avt_get_transport_info(
-    client: aiohttp.ClientSession,
-    physical_device: MusicCastPhysicalDevice,
-) -> str:
-    """Get Transport Info."""
-    ctrl_url = get_upnp_ctrl_url(physical_device)
-    xml, soap_action = get_xml_soap_transport_info()
-    response = await _post_soap(client, ctrl_url, xml, soap_action, "GetTransportInfo")
-    if response.status >= 400:
-        raise aiohttp.ClientError(f"GetTransportInfo returned {response.status}")
-    response_text = await response.read()
-    return response_text.decode()
+    body = await _post_soap(client, ctrl_url, xml, soap_action, "GetMediaInfo", read_body=True)
+    if body is None:
+        raise aiohttp.ClientError("GetMediaInfo failed")
+    return body
 
 
 async def avt_set_url(

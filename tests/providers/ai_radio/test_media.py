@@ -7,8 +7,15 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import ImageType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import ProviderMapping, Track
+from music_assistant_models.media_items import (
+    MediaItemImage,
+    Playlist,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.providers.ai_radio.media import AIRadioMediaMixin
 
@@ -35,6 +42,7 @@ class _Media(AIRadioMediaMixin):
         self.domain = "ai_radio"
         # the mixin declares `mass: MusicAssistant`; a mock stands in for tests
         self.mass: Any = MagicMock()
+        self.mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
         self.logger = MagicMock()
 
     def _ai_radio_cover_image_path(self) -> str:
@@ -92,6 +100,73 @@ async def test_library_upkeep_repairs_a_stale_endless_flag() -> None:
     repaired.name = "Morning Show"
     radio_ctrl.get_library_item_by_prov_mappings = AsyncMock(return_value=stale)
     radio_ctrl.update_item_in_library = AsyncMock(return_value=repaired)
+
+    async def _no_items() -> AsyncGenerator[Any]:
+        return
+        yield
+
+    radio_ctrl.iter_library_items = MagicMock(return_value=_no_items())
+    await media._sync_show_library_items()
+
+    radio_ctrl.update_item_in_library.assert_awaited_once()
+    assert radio_ctrl.update_item_in_library.call_args.kwargs["overwrite"] is True
+
+
+def _playlist_with(images: list[MediaItemImage]) -> Playlist:
+    """Build a library playlist carrying the given images."""
+    playlist = Playlist(
+        item_id="42",
+        provider="library",
+        name="My Playlist",
+        provider_mappings={
+            ProviderMapping(item_id="42", provider_domain="builtin", provider_instance="builtin")
+        },
+    )
+    playlist.metadata.images = UniqueList(images)
+    return playlist
+
+
+async def test_get_radio_uses_the_source_playlist_thumb() -> None:
+    """A show's Radio item carries its source playlist's thumb, else the AI Radio cover."""
+    media = _Media({"morning_show": STATION})
+    thumb = MediaItemImage(type=ImageType.THUMB, path="https://img/42.jpg", provider="spotify")
+    media.mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=_playlist_with([thumb])
+    )
+    radio = await media.get_radio("morning_show")
+    assert radio.metadata.images == [thumb]
+
+    media.mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=_playlist_with([])
+    )
+    radio = await media.get_radio("morning_show")
+    assert radio.metadata.images is not None
+    assert radio.metadata.images[0].path == "/tmp/air.png"  # noqa: S108
+
+
+async def test_library_upkeep_replaces_a_stale_image() -> None:
+    """A show row still carrying the AI Radio cover is overwritten with the playlist's thumb."""
+    media = _Media({"morning_show": STATION})
+    thumb = MediaItemImage(type=ImageType.THUMB, path="https://img/42.jpg", provider="spotify")
+    media.mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=_playlist_with([thumb])
+    )
+    radio_ctrl = media.mass.music.radio
+    # MagicMock treats name= specially, so it is stamped after construction
+    stale = MagicMock(item_id="7", is_endless=False)
+    stale.name = "Morning Show"
+    stale.metadata.images = UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path="/tmp/air.png",  # noqa: S108
+                provider="builtin",
+                remotely_accessible=False,
+            )
+        ]
+    )
+    radio_ctrl.get_library_item_by_prov_mappings = AsyncMock(return_value=stale)
+    radio_ctrl.update_item_in_library = AsyncMock(return_value=MagicMock(item_id="7"))
 
     async def _no_items() -> AsyncGenerator[Any]:
         return

@@ -72,7 +72,8 @@ CACHE_MAX_AGE = 24 * 3600
 # the shared http session has no default timeout: discovery runs during provider load so
 # it must give up quickly, while rendering can legitimately be slow on a cpu-bound backend
 VOICES_TIMEOUT = ClientTimeout(total=10)
-SPEECH_TIMEOUT = ClientTimeout(total=120)
+SPEECH_TIMEOUT_SECONDS = 120
+SPEECH_TIMEOUT = ClientTimeout(total=SPEECH_TIMEOUT_SECONDS)
 
 # clip file names are sha256 hexdigests; anything else in the cache directory is not ours
 FILE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
