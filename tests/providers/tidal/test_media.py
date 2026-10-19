@@ -518,6 +518,53 @@ async def test_get_album_tracks_keeps_tracks_from_earlier_pages(
     assert tracks[-1].track_number == 13
 
 
+@pytest.mark.parametrize(
+    "item_numbers",
+    [(1, 2, 3, 4, 5), (1, 2, 1, 2, 1)],
+    ids=["album_wide", "per_volume"],
+)
+async def test_get_album_tracks_numbers_tracks_per_volume(
+    media_manager: TidalMediaManager, provider_mock: Mock, item_numbers: tuple[int, ...]
+) -> None:
+    """Test track numbers restart on each volume whichever way Tidal numbers them."""
+    volumes = (1, 1, 2, 2, 3)
+    doc = JsonApiDocument(
+        {
+            "data": [
+                {
+                    "id": str(idx),
+                    "type": "tracks",
+                    "meta": {"volumeNumber": volume, "trackNumber": number},
+                }
+                for idx, (volume, number) in enumerate(zip(volumes, item_numbers, strict=True))
+            ],
+            "included": [
+                {
+                    "id": str(idx),
+                    "type": "tracks",
+                    "attributes": {"title": f"Track {idx}", "duration": "PT3M0S"},
+                }
+                for idx in range(len(volumes))
+            ],
+        }
+    )
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = await media_manager.get_album_tracks("107050976")
+
+    assert [(track.disc_number, track.track_number) for track in tracks] == [
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (2, 2),
+        (3, 1),
+    ]
+
+
 async def test_get_album_tracks_fetch_failure_propagates(
     media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
