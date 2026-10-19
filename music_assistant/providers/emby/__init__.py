@@ -659,13 +659,13 @@ class EmbyProvider(MusicProvider):
                     )
                     db_artist = await self.mass.music.artists.add_item_to_library(new_artist)
                 keep[str(db_artist.item_id)] = db_artist
-            album_is_emby_only = self._only_mapped_here(db_album)
+            album_is_emby_only = self._only_on_emby(db_album)
             album_removed = 0
             for linked in db_album.artists:
                 if str(linked.item_id) in keep:
                     continue
                 library_artist = await self.mass.music.artists.get_library_item(linked.item_id)
-                if album_is_emby_only or self._only_mapped_here(library_artist):
+                if album_is_emby_only or self._only_on_emby(library_artist):
                     album_removed += 1
                     continue
                 # another provider knows both the album and the artist and may have linked it
@@ -680,8 +680,7 @@ class EmbyProvider(MusicProvider):
             removed += album_removed
         self.logger.info("Unlinked %d featured artist(s) from library albums", removed)
 
-    def _only_mapped_here(self, item: Album | Artist) -> bool:
-        """Return True if this Emby instance is the item's only provider."""
-        return all(
-            mapping.provider_instance == self.instance_id for mapping in item.provider_mappings
-        )
+    def _only_on_emby(self, item: Album | Artist) -> bool:
+        """Return True if Emby is the item's only provider."""
+        # every Emby instance stored its album artists with the same faulty parser
+        return all(mapping.provider_domain == self.domain for mapping in item.provider_mappings)

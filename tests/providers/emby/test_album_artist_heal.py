@@ -191,6 +191,28 @@ async def test_heal_unlinks_shared_artist_from_emby_only_album(
     assert await _linked_artist_names(music_mass) == ["Main"]
 
 
+async def test_heal_unlinks_artist_shared_with_other_emby_instance(
+    music_mass: MusicAssistant, provider: EmbyProvider
+) -> None:
+    """A featured artist that a second Emby instance also maps is unlinked."""
+    album = await _library_album(music_mass)
+    feat = await music_mass.music.artists.get_library_item_by_prov_id("a2", INSTANCE_ID)
+    assert feat is not None
+    await music_mass.music.albums.add_provider_mapping(
+        album.item_id,
+        ProviderMapping(item_id="album1", provider_domain="emby", provider_instance="emby--other"),
+    )
+    await music_mass.music.artists.add_provider_mapping(
+        feat.item_id,
+        ProviderMapping(item_id="a2", provider_domain="emby", provider_instance="emby--other"),
+    )
+
+    with patch.object(MusicProvider, "sync_library", AsyncMock()):
+        await _sync_albums(provider)
+
+    assert await _linked_artist_names(music_mass) == ["Main"]
+
+
 async def test_heal_skips_correct_album(music_mass: MusicAssistant, provider: EmbyProvider) -> None:
     """An album whose artists are already correct is not written."""
     with patch.object(MusicProvider, "sync_library", AsyncMock()):
