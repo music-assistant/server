@@ -476,16 +476,10 @@ class WebsocketClientHandler:
             return
 
         # Authenticate with token
+        revision = self.webserver.session_revision
         user = await self.webserver.auth.authenticate_with_token(token)
         if not user:
-            await self._send_message(
-                ErrorResultMessage(
-                    msg.message_id,
-                    InvalidToken.error_code,
-                    "Invalid or expired token",
-                    translation_key="invalid_token",
-                )
-            )
+            await self._send_invalid_token(msg)
             return
 
         # Security: Deny homeassistant system user on regular (non-Ingress) webserver
@@ -506,6 +500,21 @@ class WebsocketClientHandler:
         self._authenticated_user = user
         self._current_token = token
         self._token_id = token_id
+        self.webserver.register_websocket_client(self)
+
+        # A revocation or access change that finished while this client was still unregistered
+        # did not reach it. Now that later ones will, validate again until none overlapped.
+        while self.webserver.session_revision != revision:
+            revision = self.webserver.session_revision
+            user = await self.webserver.auth.authenticate_with_token(token)
+            if not user:
+                self.webserver.unregister_websocket_client(self)
+                self._authenticated_user = None
+                self._current_token = None
+                self._token_id = None
+                await self._send_invalid_token(msg)
+                return
+            self._authenticated_user = user
         self._logger.info("WebSocket client authenticated as %s", user.username)
 
         # Optionally store the UI locale declared with the auth command and warm it up
@@ -527,8 +536,16 @@ class WebsocketClientHandler:
         # Subscribe to events after successful authentication
         self._subscribe_to_events()
 
-        # Register with webserver for tracking
-        self.webserver.register_websocket_client(self)
+    async def _send_invalid_token(self, msg: CommandMessage) -> None:
+        """Reject an auth command whose token is invalid, expired or revoked."""
+        await self._send_message(
+            ErrorResultMessage(
+                msg.message_id,
+                InvalidToken.error_code,
+                "Invalid or expired token",
+                translation_key="invalid_token",
+            )
+        )
 
     async def _handle_set_locale_command(self, msg: CommandMessage) -> None:
         """

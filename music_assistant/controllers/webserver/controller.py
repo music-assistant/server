@@ -202,6 +202,7 @@ class WebserverController(CoreController):
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
         self.clients: set[WebsocketClientHandler] = set()
+        self._session_revision = 0
         # the URL that the "auto" base_url setting resolves to, detected at setup
         self._auto_base_url: str = ""
         # whether SSL is switched on in the config, resolved at setup
@@ -295,6 +296,11 @@ class WebserverController(CoreController):
         ):
             return external_url
         return self.base_url
+
+    @property
+    def session_revision(self) -> int:
+        """Return a counter bumped whenever live sessions are revoked or their access changes."""
+        return self._session_revision
 
     @property
     def internal_sendspin_url(self) -> str:
@@ -569,6 +575,7 @@ class WebserverController(CoreController):
         :param user_id: ID of the user whose sessions must be updated.
         :param player_filter: The new player filter, or None to leave it untouched.
         """
+        self._session_revision += 1
         for client in list(self.clients):
             user = client.authenticated_user
             if user is None or user.user_id != user_id:
@@ -1596,6 +1603,7 @@ class WebserverController(CoreController):
         :param predicate: Returns True for each client that must be disconnected.
         :param reason: What ended the sessions, included in the log message.
         """
+        self._session_revision += 1
         for client in list(self.clients):
             if not predicate(client):
                 continue

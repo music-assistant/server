@@ -228,6 +228,11 @@ authorization decision; required side effects and credential cleanup must finish
 | Verified logout or mapping denial | Finish lock waits, receipt storage, selection, token deletion and WebSocket disconnection. |
 | Token issuance | Remove unissued token/link rows after cancellation, expiry or failure, retaining the session lock during OIDC cleanup. |
 
+WebSocket authentication does not lock against revocation. It relies on `session_revision`
+(see [WebSocket Authentication](#websocket-authentication)), so any new code path that revokes
+sessions or changes a live user's access must go through `disconnect_websockets_for_token`,
+`disconnect_websockets_for_user` or `update_active_user_filters`, which bump it.
+
 Publish the companion models/frontend packages and update server pins before merging.
 For sibling checkouts, run `pnpm build` in `music-assistant-frontend`, then in the server:
 
@@ -410,9 +415,15 @@ When running as a Home Assistant add-on:
 2. **Auth Command Required**: Until an `auth` command with a valid token succeeds, only public
    commands (such as `auth/login`) are accepted. Ingress connections skip this step: they are
    signed in from the HA headers on connect
-3. **Token Validation**: Token validated and user context set
+3. **Token Validation**: Token validated, user context set and the connection registered for
+   revocation. Validation reads the database before registration, so a token revocation, user
+   disable/delete, role change or player-filter change could finish unseen in between. Every
+   such change bumps `WebserverController.session_revision` after its database write; if the
+   revision moved since validation began, the now-registered connection validates again until
+   one validation completes without a change. A revoked token or disabled user is then rejected
+   with `InvalidToken` and the connection is unregistered; a changed role or filter is adopted.
 4. **Authenticated Session**: All subsequent commands executed in user context
-5. **Auto-Disconnect**: Connection closed on token revocation or user disable
+5. **Auto-Disconnect**: Connection closed on token revocation, user disable/delete or role change
 
 ## Remote Access (WebRTC)
 
