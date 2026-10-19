@@ -763,6 +763,25 @@ async def test_the_cover_key_names_the_text_engine_picked_for_the_concept(
     )
 
 
+async def test_a_missing_concept_engine_keeps_the_current_cover(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """While the picked text engine is away, the cover is kept instead of keyed anew."""
+    _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
+    playlist = _smart_playlist()
+    await _metadata(provider, playlist)
+    cover = playlist.image
+
+    with patch(
+        "music_assistant.providers.playlist_metadata.ai.select_ai_engine",
+        AsyncMock(return_value=None),
+    ):
+        await _metadata(provider, playlist)
+
+    assert playlist.image == cover
+    assert _engine_calls(provider) == 1
+
+
 async def test_preview_asks_for_the_visual_concept_once(
     provider: PlaylistMetadataProvider,
 ) -> None:

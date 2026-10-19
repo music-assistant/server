@@ -1236,7 +1236,8 @@ class AIArtwork:
         """
         Return the cover's file name, which changes with everything that shapes the cover.
 
-        Returns None while a smart playlist's rules can not be read.
+        Returns None while a smart playlist's rules can not be read, or while the text engine
+        picked for the visual concept is unavailable.
         """
         if (rules_digest := await self._rules_digest(playlist)) is None:
             return None
@@ -1245,6 +1246,9 @@ class AIArtwork:
         if self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
             # the engine the concept is written with, also when it is only picked as it is used
             text_engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
+            if text_engine is None and self.provider.config.get_value(CONF_TEXT_ENGINE):
+                # the picked engine is gone for now, so the current cover stays
+                return None
             prompt_engine = text_engine.uid if text_engine else ""
         key = json_dumps(
             [

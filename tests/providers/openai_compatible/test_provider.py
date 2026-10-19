@@ -833,12 +833,18 @@ async def test_other_services_on_the_endpoints_host_are_refused(mass: AsyncMock)
 
 
 @pytest.mark.parametrize(
-    ("addresses", "allowed"), [(["93.184.215.14"], True), (["10.0.0.7"], False)]
+    ("addresses", "allowed"),
+    [
+        (["93.184.215.14"], True),
+        (["10.0.0.7"], False),
+        # a name that does not resolve here is left to the proxy, as it is the one connecting
+        ([], True),
+    ],
 )
 async def test_behind_a_proxy_hosts_are_checked_before_the_download(
     mass: AsyncMock, addresses: list[str], allowed: bool
 ) -> None:
-    """Through a proxy the host is resolved up front, then the shared session downloads it."""
+    """Through a proxy the host is resolved up front, and the proxy is used to download it."""
     mass.http_session.get = MagicMock(
         return_value=_response_cm(response=_download_response([b"png"]))
     )
@@ -848,8 +854,8 @@ async def test_behind_a_proxy_hosts_are_checked_before_the_download(
             return_value={"https": "http://proxy.lan:3128"},
         ),
         patch(
-            "music_assistant.providers.openai_compatible.helpers._image_session"
-        ) as image_session,
+            "music_assistant.providers.openai_compatible.helpers.proxy_bypass", return_value=False
+        ),
         patch(
             "music_assistant.providers.openai_compatible.helpers._host_addresses",
             AsyncMock(return_value=addresses),
@@ -861,8 +867,94 @@ async def test_behind_a_proxy_hosts_are_checked_before_the_download(
             with pytest.raises(InvalidDataError, match="local network"):
                 await _generate_by_url(mass, "https://cdn.example.com/x.png")
 
-    image_session.assert_not_called()
     assert mass.http_session.get.called is allowed
+    if allowed:
+        assert mass.http_session.get.call_args.kwargs["proxy"] == "http://proxy.lan:3128"
+
+
+@pytest.mark.parametrize(
+    ("proxies", "bypassed", "url"),
+    [
+        # a proxy for https only, so an http link goes direct
+        ({"https": "http://proxy.lan:3128"}, False, "http://cdn.example.com/x.png"),
+        # a host the proxy is bypassed for
+        ({"https": "http://proxy.lan:3128"}, True, "https://cdn.example.com/x.png"),
+    ],
+)
+async def test_links_that_go_direct_are_checked_as_they_connect(
+    mass: AsyncMock, proxies: dict[str, str], bypassed: bool, url: str
+) -> None:
+    """A link the proxy is not used for goes through the checked session, without a proxy."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"png"]))
+    )
+    with (
+        patch(
+            "music_assistant.providers.openai_compatible.helpers.getproxies",
+            return_value=proxies,
+        ),
+        patch(
+            "music_assistant.providers.openai_compatible.helpers.proxy_bypass",
+            return_value=bypassed,
+        ),
+        patch(
+            "music_assistant.providers.openai_compatible.helpers._host_addresses", AsyncMock()
+        ) as host_addresses,
+    ):
+        assert await _generate_by_url(mass, url) == b"png"
+
+    assert mass.http_session.get.call_args.kwargs["proxy"] is None
+    # resolved by the session's resolver as it connects, not up front
+    host_addresses.assert_not_awaited()
+
+
+async def test_the_session_trusts_the_endpoint_and_the_proxies(mass: AsyncMock) -> None:
+    """The proxy is often on the local network, so the session's resolver lets it through."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"png"]))
+    )
+    with (
+        patch(
+            "music_assistant.providers.openai_compatible.helpers.getproxies",
+            return_value={"https": "http://proxy.lan:3128", "socks": "socks5://s.lan:1080"},
+        ),
+        patch(
+            "music_assistant.providers.openai_compatible.helpers.proxy_bypass", return_value=False
+        ),
+        patch(
+            "music_assistant.providers.openai_compatible.helpers._host_addresses",
+            AsyncMock(return_value=["93.184.215.14"]),
+        ),
+    ):
+        await _generate_by_url(mass, "https://cdn.example.com/x.png")
+
+    cast("MagicMock", helpers._image_session).assert_called_once_with(
+        mass, [("https", "api.example.com", 443), ("http", "proxy.lan", 3128)]
+    )
+
+
+async def test_an_ipv6_endpoint_links_to_itself(mass: AsyncMock) -> None:
+    """An endpoint by IPv6 address is matched to its own links."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"png"]))
+    )
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(
+            response=_json_response(200, {"data": [{"url": "http://[fd00::5]:8080/x.png"}]})
+        )
+    )
+
+    image, _ = await helpers.image_generation(
+        mass,
+        "http://[fd00::5]:8080/v1",
+        "",
+        model="dall-e-3",
+        prompt="A cat",
+        timeout=10,
+        use_images_endpoint=True,
+    )
+
+    assert image == b"png"
 
 
 async def test_image_link_redirects_are_checked_at_every_hop(mass: AsyncMock) -> None:
@@ -908,7 +1000,7 @@ async def test_the_resolver_refuses_hosts_with_a_local_address(
     addresses: tuple[str, ...],
 ) -> None:
     """A host with any local address, or none at all, is refused as it is connected to."""
-    resolver = helpers.PublicHostResolver(("https", "api.example.com", 443))
+    resolver = helpers.PublicHostResolver([("https", "api.example.com", 443)])
     with (
         patch.object(
             helpers.ThreadedResolver, "resolve", AsyncMock(return_value=_resolved(*addresses))
@@ -920,7 +1012,7 @@ async def test_the_resolver_refuses_hosts_with_a_local_address(
 
 async def test_the_resolver_passes_public_hosts_and_the_endpoint() -> None:
     """Public hosts resolve as usual, and so does the endpoint itself, but not its neighbours."""
-    resolver = helpers.PublicHostResolver(("http", "localai.lan", 8080))
+    resolver = helpers.PublicHostResolver([("http", "localai.lan", 8080)])
     with patch.object(
         helpers.ThreadedResolver,
         "resolve",
