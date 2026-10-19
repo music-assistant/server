@@ -1952,6 +1952,10 @@ class ProtocolLinkingMixin:
                 if val_a_norm.endswith("_mr") and val_a_norm[:-3] == val_b_norm:
                     return True
 
+            # AirPlay receivers can share one IP, so a differing AirPlay id rules out IP matching
+            if conn_type == IdentifierType.AIRPLAY_ID:
+                return False
+
         # Last resort: IP-based matching.
         # Two players on the same IP are very likely the same physical device.
         # This handles two cases:
