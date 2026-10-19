@@ -84,3 +84,64 @@ async def test_genre_albums_follow_the_listing_contract(mass: MusicAssistant) ->
     assert await _albums(limit=2, offset=2) == ["Zebra"]
     with pytest.raises(InvalidDataError):
         await _albums(sort_field=SortField.DURATION)
+
+
+@pytest.mark.parametrize("media_type", [MediaType.TRACK, MediaType.ALBUM])
+async def test_genre_random_seed_stays_stable_across_pages(
+    mass: MusicAssistant, media_type: MediaType
+) -> None:
+    """Genre contents forward their seed to the shared SQL query."""
+    genre_id = await _genre_with(mass, media_type)
+    listing = (
+        mass.music.genres.tracks if media_type == MediaType.TRACK else mass.music.genres.albums
+    )
+    whole = await listing(genre_id, sort_field=SortField.RANDOM, random_seed=0, limit=0)
+    first = await listing(genre_id, sort_field=SortField.RANDOM, random_seed=0, limit=1)
+    rest = await listing(genre_id, sort_field=SortField.RANDOM, random_seed=0, limit=2, offset=1)
+
+    assert [item.item_id for item in first + rest] == [item.item_id for item in whole]
+
+
+@pytest.mark.parametrize("field", [SortField.RANDOM, SortField.RANDOM_PLAY_COUNT])
+@pytest.mark.parametrize("summary", [True, False])
+async def test_seeded_genre_pages_exclude_hidden_rows_before_sampling(
+    mass: MusicAssistant, field: SortField, summary: bool
+) -> None:
+    """Excluded genres must not consume slots in a seeded random page."""
+    controller = mass.music.genres
+    for index in range(6):
+        await controller.add_item_to_library(
+            Genre(
+                item_id="0",
+                provider="library",
+                name=f"Paging Genre {index}",
+                provider_mappings=set(),
+            )
+        )
+    options: dict[str, Any] = {
+        "search": "Paging Genre",
+        "hide_empty": False,
+        "sort_field": field,
+        "random_seed": 0,
+        "summary": summary,
+        "_localized_fallback": False,
+    }
+    before = await controller.library_items(limit=0, **options)
+    excluded = {before[0].item_id, before[-1].item_id}
+    for item_id in excluded:
+        await mass.music.database.execute(
+            "UPDATE genres SET is_excluded = 1 WHERE item_id = :item_id",
+            {"item_id": int(item_id)},
+        )
+    await mass.music.database.commit()
+
+    whole = await controller.library_items(limit=0, **options)
+    pages: list[Genre] = []
+    for offset in range(len(whole)):
+        page = await controller.library_items(limit=1, offset=offset, **options)
+        assert len(page) == 1
+        pages.extend(page)
+
+    expected_ids = [item.item_id for item in before if item.item_id not in excluded]
+    assert [item.item_id for item in whole] == expected_ids
+    assert [item.item_id for item in pages] == expected_ids

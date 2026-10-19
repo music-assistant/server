@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlsplit
 
 from mashumaro.exceptions import InvalidFieldValue, MissingField
@@ -91,6 +91,13 @@ if TYPE_CHECKING:
 CONF_RECOMMENDATION_DAYS = "recommendation_days"
 
 
+class IdentifiedArtist(NamedTuple):
+    """An artist identified on MusicBrainz and whether only its name identified it."""
+
+    artist: MusicBrainzArtist
+    by_name: bool
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -149,6 +156,20 @@ class MusicbrainzProvider(MetadataProvider):
         self, artist: Artist, ref_albums: Sequence[Album], ref_tracks: Sequence[Track]
     ) -> MusicBrainzArtist | None:
         """
+        Identify an artist on MusicBrainz, see :meth:`identify_artist`.
+
+        :param artist: The artist to identify.
+        :param ref_albums: Albums of the artist to identify it through.
+        :param ref_tracks: Tracks of the artist to identify it through.
+        :return: The artist with aliases, tags, genres and URL relations, or None if not found.
+        """
+        identified = await self.identify_artist(artist, ref_albums, ref_tracks)
+        return identified.artist if identified else None
+
+    async def identify_artist(
+        self, artist: Artist, ref_albums: Sequence[Album], ref_tracks: Sequence[Track]
+    ) -> IdentifiedArtist | None:
+        """
         Identify an artist on MusicBrainz.
 
         The artist's own MusicBrainz id wins outright. Otherwise its streaming service
@@ -158,12 +179,14 @@ class MusicbrainzProvider(MetadataProvider):
         :param artist: The artist to identify.
         :param ref_albums: Albums of the artist to identify it through.
         :param ref_tracks: Tracks of the artist to identify it through.
-        :return: The artist with aliases, tags, genres and URL relations, or None if not found.
+        :return: The artist with aliases, tags, genres and URL relations, and whether only
+            its name identified it, or None if not found.
         """
-        if not (mbid := await self._find_artist_mbid(artist, ref_albums, ref_tracks)):
+        if not (found := await self._find_artist_mbid(artist, ref_albums, ref_tracks)):
             return None
+        mbid, by_name = found
         with suppress(InvalidDataError):
-            return await self.get_artist_details(mbid)
+            return IdentifiedArtist(await self.get_artist_details(mbid), by_name)
         return None
 
     async def resolve_release(
@@ -939,22 +962,22 @@ class MusicbrainzProvider(MetadataProvider):
 
     async def _find_artist_mbid(
         self, artist: Artist, ref_albums: Sequence[Album], ref_tracks: Sequence[Track]
-    ) -> str | None:
-        """Find the MusicBrainz id of an artist, the cheapest evidence first."""
+    ) -> tuple[str, bool] | None:
+        """Find the MusicBrainz id of an artist and whether only its name found it."""
         if artist.mbid:
-            return artist.mbid
+            return artist.mbid, False
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
-            return VARIOUS_ARTISTS_MBID
+            return VARIOUS_ARTISTS_MBID, True
         for url in self._reverse_lookup_urls(artist):
             if mbid := await self.get_mbid_by_url(url, MediaType.ARTIST):
-                return mbid
+                return mbid, False
         # the artist credits of reference items MusicBrainz knows by id
         for ref_album in _first(ref_albums, _has_mb_release_id):
             if mb_artist := await self.get_artist_details_by_album(artist.name, ref_album):
-                return mb_artist.id
+                return mb_artist.id, False
         for ref_track in _first(ref_tracks, lambda track: bool(track.mbid)):
             if mb_artist := await self.get_artist_details_by_track(artist.name, ref_track):
-                return mb_artist.id
+                return mb_artist.id, False
         # the artist credits of reference items MusicBrainz knows by barcode or ISRC
         for ref_album in _first(ref_albums, _has_barcode):
             barcode = _external_ids(ref_album, ExternalID.BARCODE, is_valid_barcode)[0]
@@ -963,12 +986,12 @@ class MusicbrainzProvider(MetadataProvider):
                 releases = await self.get_releases_by_barcode(barcode)
             for release in releases:
                 if mb_artist := _matching_artist_credit(release.artist_credit or [], artist.name):
-                    return mb_artist.id
+                    return mb_artist.id, False
         for ref_track in _first(ref_tracks, _has_isrc):
             isrc = _external_ids(ref_track, ExternalID.ISRC, is_valid_isrc)[0]
             for recording in await self.get_recordings_by_isrc(isrc):
                 if mb_artist := _matching_artist_credit(recording.artist_credit, artist.name):
-                    return mb_artist.id
+                    return mb_artist.id, False
         # last resort: a name search on a reference track
         for ref_track in _first(ref_tracks, lambda track: track.album is not None):
             if ref_track.album and (
@@ -976,7 +999,7 @@ class MusicbrainzProvider(MetadataProvider):
                     artist.name, ref_track.album.name, ref_track.name, ref_track.version
                 )
             ):
-                return result[0].id
+                return result[0].id, True
         return None
 
     async def _release_by_barcode(self, barcode: str, album: Album) -> MusicBrainzRelease | None:
