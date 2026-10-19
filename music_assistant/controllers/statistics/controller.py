@@ -57,6 +57,8 @@ _PLAY_HISTORY_EVENT_TYPE_SQL = ", ".join(
     f"'{media_type}'" for media_type in _PLAY_HISTORY_EVENT_TYPES
 )
 # Domain-scoped history must resolve to one account mapping, while exact instances win.
+# Several accounts can map the same domain ID; choosing one prevents a join from
+# multiplying a single play into several events.
 _PROVIDER_MAPPING_JOIN = f"""
     {{mapping}}.media_type = {{media_type}}
     AND {{mapping}}.provider_item_id = {{item_id}}
@@ -105,6 +107,8 @@ _TRACK_HISTORY_CTE = f"""
             AND play_history.timestamp >= :cutoff_timestamp
     )
 """
+# Selecting an artist is not a listening event; artist statistics come from the
+# credits stored on completed track plays, not from artist/container history rows.
 _TRACK_ARTISTS_CTE = f"""
     track_artists AS (
         SELECT DISTINCT
@@ -170,6 +174,8 @@ def cache_statistics(
     """Cache statistics through the shared cache controller, scoped by user and generation."""
 
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+        # A generation in the cache key keeps an in-flight request from repopulating
+        # the current cache with stale results after play history invalidates it.
         @use_cache(expiration=ttl)
         @functools.wraps(func)
         async def cached_method(
@@ -898,6 +904,8 @@ class StatisticsController(CoreController):
                 )
             """
 
+        # Resolve the request as well as history so a provider URI and the library
+        # item shown in rankings have the same count.
         query = f"""
             WITH requested_item AS (
                 SELECT
@@ -1009,6 +1017,8 @@ class StatisticsController(CoreController):
         now = time.time()
 
         if period == "today":
+            # A clock rollback can repeat midnight; the day starts at its first
+            # occurrence, even when the current local time is in the second one.
             return (
                 datetime.fromtimestamp(now, UTC)
                 .astimezone(zone)
