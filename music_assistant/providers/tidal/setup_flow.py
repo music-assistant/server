@@ -17,7 +17,7 @@ from music_assistant_models.errors import LoginFailed
 
 from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
 
-from .accounts import get_account_holders, get_loaded_account_holders, get_winning_account_holder
+from .accounts import get_account_holders, get_loaded_account_holders
 from .auth_manager import TidalAuthManager
 from .constants import (
     CONF_AUTH_TOKEN,
@@ -86,17 +86,22 @@ async def _account_refused(session: SetupSession, user_id: str) -> bool:
     """
     Return whether the account that just signed in may not be used by this flow.
 
-    A new setup is refused if any other instance holds the account. A reconfigure is refused
-    if another instance would keep the account at startup or is running on it right now.
+    A new setup, or a reconfigure that moves onto another account, is refused if any other
+    instance holds the account. Re-linking the account an instance already has is refused if
+    a lower-id instance holds it, even a disabled one since it takes the account over once
+    enabled, or if another instance is running on it right now.
 
     :param session: The setup session driving the flow.
     :param user_id: The Tidal user id that just signed in.
     """
     mass = session.mass
     instance_id = session.context.instance_id
+    holders = get_account_holders(mass, user_id, instance_id)
     if session.context.kind != "reconfigure" or not instance_id:
-        return bool(get_account_holders(mass, user_id, instance_id))
-    return bool(
-        get_winning_account_holder(mass, user_id, instance_id)
-        or get_loaded_account_holders(mass, user_id, instance_id)
+        return bool(holders)
+    stored = mass.config.get_provider_setup_value(instance_id, CONF_USER_ID)
+    if not stored or str(stored) != user_id:
+        return bool(holders)
+    return any(holder.instance_id < instance_id for holder in holders) or bool(
+        get_loaded_account_holders(mass, user_id, instance_id)
     )

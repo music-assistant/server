@@ -20,7 +20,7 @@ HIGH = f"{DOMAIN}--b"
 
 
 def _make_session(
-    accounts: dict[str, str | None],
+    accounts: dict[str, str | int | None],
     *,
     instance_id: str | None = None,
     disabled: frozenset[str] = frozenset(),
@@ -143,18 +143,20 @@ async def test_the_winning_instance_may_reauthenticate_with_a_shared_account(
     finish.assert_awaited_once()
 
 
-async def test_a_disabled_lower_instance_does_not_block_a_reconfigure(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("own_account", ["41", "42"], ids=["moved_onto", "kept"])
+async def test_a_disabled_lower_instance_blocks_a_reconfigure(
+    monkeypatch: pytest.MonkeyPatch, own_account: str
 ) -> None:
-    """A disabled lower-id instance does not hold the account against a reconfigure."""
+    """A disabled lower-id instance would take the account over once enabled, so it holds it."""
     session, finish = _make_session(
-        {LOW: "42", HIGH: "42"}, instance_id=HIGH, disabled=frozenset({LOW})
+        {LOW: "42", HIGH: own_account}, instance_id=HIGH, disabled=frozenset({LOW})
     )
     _sign_in(session, monkeypatch, 42)
 
-    await tidal_flow.run_setup(session)
+    with pytest.raises(AbortFlow, match="account_used_by_other_instance"):
+        await tidal_flow.run_setup(session)
 
-    finish.assert_awaited_once()
+    finish.assert_not_awaited()
 
 
 async def test_a_reconfigure_onto_a_held_account_is_refused(
@@ -170,12 +172,12 @@ async def test_a_reconfigure_onto_a_held_account_is_refused(
     finish.assert_not_awaited()
 
 
-async def test_a_reconfigure_onto_an_account_a_loaded_higher_instance_holds_is_refused(
+async def test_a_running_higher_instance_blocks_relinking_the_same_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A running higher-id instance on the account blocks a lower-id reconfigure."""
+    """A higher-id instance running on the account blocks a lower-id re-link of it."""
     session, finish = _make_session(
-        {LOW: "41", HIGH: "42"}, instance_id=LOW, loaded=frozenset({HIGH})
+        {LOW: "42", HIGH: "42"}, instance_id=LOW, loaded=frozenset({HIGH})
     )
     _sign_in(session, monkeypatch, 42)
 
@@ -187,11 +189,32 @@ async def test_a_reconfigure_onto_an_account_a_loaded_higher_instance_holds_is_r
     get_provider.assert_any_call(HIGH, return_unavailable=True)
 
 
-async def test_a_higher_instance_that_is_not_loaded_does_not_block_a_reconfigure(
+@pytest.mark.parametrize(
+    "disabled", [frozenset(), frozenset({HIGH})], ids=["not_loaded", "disabled"]
+)
+async def test_moving_onto_an_account_a_higher_instance_holds_is_refused(
+    monkeypatch: pytest.MonkeyPatch, disabled: frozenset[str]
+) -> None:
+    """Moving onto any held account would create a new duplicate, whatever the holder's state."""
+    session, finish = _make_session({LOW: "41", HIGH: "42"}, instance_id=LOW, disabled=disabled)
+    _sign_in(session, monkeypatch, 42)
+
+    with pytest.raises(AbortFlow, match="account_used_by_other_instance"):
+        await tidal_flow.run_setup(session)
+
+    finish.assert_not_awaited()
+
+
+async def test_the_winning_instance_may_reauthenticate_beside_a_disabled_duplicate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A higher-id holder that failed to load at startup is not streaming on the account."""
-    session, finish = _make_session({LOW: "41", HIGH: "42"}, instance_id=LOW)
+    """Re-linking its own account is not blocked by a disabled higher-id duplicate."""
+    session, finish = _make_session(
+        {LOW: "42", HIGH: "42"},
+        instance_id=LOW,
+        disabled=frozenset({HIGH}),
+        loaded=frozenset({HIGH}),
+    )
     _sign_in(session, monkeypatch, 42)
 
     await tidal_flow.run_setup(session)
@@ -199,15 +222,25 @@ async def test_a_higher_instance_that_is_not_loaded_does_not_block_a_reconfigure
     finish.assert_awaited_once()
 
 
-async def test_a_disabled_higher_instance_does_not_block_a_reconfigure(
+async def test_an_instance_without_a_stored_account_moving_onto_a_held_one_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A disabled higher-id holder does not block a lower-id reconfigure."""
+    """With no stored account the reconfigure is a move, so any holder refuses it."""
+    session, finish = _make_session({LOW: "42", HIGH: None}, instance_id=HIGH)
+    _sign_in(session, monkeypatch, 42)
+
+    with pytest.raises(AbortFlow, match="account_used_by_other_instance"):
+        await tidal_flow.run_setup(session)
+
+    finish.assert_not_awaited()
+
+
+async def test_a_numeric_stored_account_counts_as_the_same_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auth refreshes can store the user id as a number; re-linking it is not a move."""
     session, finish = _make_session(
-        {LOW: "41", HIGH: "42"},
-        instance_id=LOW,
-        disabled=frozenset({HIGH}),
-        loaded=frozenset({HIGH}),
+        {LOW: 42, HIGH: "42"}, instance_id=LOW, disabled=frozenset({HIGH})
     )
     _sign_in(session, monkeypatch, 42)
 
