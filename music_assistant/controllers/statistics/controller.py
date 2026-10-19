@@ -750,7 +750,7 @@ class StatisticsController(CoreController):
                 FROM {DB_TABLE_ALBUM_TRACKS} as album_tracks
                 INNER JOIN {DB_TABLE_ALBUMS} as albums
                     ON album_tracks.album_id = albums.item_id
-                WHERE albums.year IS NOT NULL
+                WHERE albums.year > 0
                 GROUP BY album_tracks.track_id
             ), history_decades AS (
                 SELECT history_tracks.play_id, (track_decades.year / 10) * 10 AS decade
@@ -964,7 +964,7 @@ class StatisticsController(CoreController):
             return (
                 datetime.fromtimestamp(now, UTC)
                 .astimezone(zone)
-                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
                 .timestamp()
             )
         if period == "week":

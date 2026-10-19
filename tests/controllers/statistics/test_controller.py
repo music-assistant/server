@@ -712,22 +712,25 @@ async def test_play_buckets_follow_iana_timezone(
 
 
 @pytest.mark.parametrize(
-    ("now", "expected"),
+    ("timezone", "now", "expected"),
     [
-        ("2027-01-01T00:30:00", "2026-12-31T23:00:00"),
-        ("2027-03-28T12:00:00", "2027-03-27T23:00:00"),
-        ("2027-10-31T12:00:00", "2027-10-30T22:00:00"),
+        ("Europe/Berlin", "2027-01-01T00:30:00", "2026-12-31T23:00:00"),
+        ("Europe/Berlin", "2027-03-28T12:00:00", "2027-03-27T23:00:00"),
+        ("Europe/Berlin", "2027-10-31T12:00:00", "2027-10-30T22:00:00"),
+        ("America/Havana", "2026-11-01T04:30:00", "2026-11-01T04:00:00"),
+        ("America/Havana", "2026-11-01T05:30:00", "2026-11-01T04:00:00"),
+        ("America/Havana", "2026-11-01T06:30:00", "2026-11-01T04:00:00"),
     ],
 )
 async def test_today_cutoff_uses_local_midnight(
-    mass: MusicAssistant, now: str, expected: str
+    mass: MusicAssistant, timezone: str, now: str, expected: str
 ) -> None:
     """Local midnight uses its own UTC offset, even on a daylight-saving transition day."""
     with patch(
         "music_assistant.controllers.statistics.controller.time.time",
         return_value=datetime.fromisoformat(now).replace(tzinfo=UTC).timestamp(),
     ):
-        cutoff = mass.statistics._get_period_cutoff("today", "Europe/Berlin")
+        cutoff = mass.statistics._get_period_cutoff("today", timezone)
 
     assert cutoff == datetime.fromisoformat(expected).replace(tzinfo=UTC).timestamp()
 
@@ -793,9 +796,20 @@ async def test_statistics_reject_invalid_timezones(mass: MusicAssistant, timezon
 
 
 @pytest.mark.parametrize("history_provider", ["test-provider", "test"])
+@pytest.mark.parametrize(
+    ("album_years", "expected"),
+    [
+        ((1982, 1998, 1985), [("1980s", 2)]),
+        ((0, 1998, 1985), [("1990s", 1), ("1980s", 1)]),
+        ((0, 0, 0), []),
+        ((None, 1998, None), [("1990s", 1)]),
+    ],
+)
 async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums(
     mass: MusicAssistant,
     history_provider: str,
+    album_years: tuple[int | None, ...],
+    expected: list[tuple[str, int]],
 ) -> None:
     """Provider plays map to library tracks and count once despite duplicate album links."""
     user = await mass.webserver.auth.create_user("statistics-decades")
@@ -815,7 +829,7 @@ async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums
         )
 
     album_ids = []
-    for year in (1982, 1998, 1985):
+    for year in album_years:
         album_ids.append(
             await mass.music.database.insert(
                 DB_TABLE_ALBUMS,
@@ -873,7 +887,7 @@ async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums
     ):
         results = await mass.statistics.get_decade_distribution(period="all_time")
 
-    assert [(result.name, result.value) for result in results] == [("1980s", 2)]
+    assert [(result.name, result.value) for result in results] == expected
 
 
 async def test_played_item_ids_reflects_new_history_immediately(mass: MusicAssistant) -> None:
