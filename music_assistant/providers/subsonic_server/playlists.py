@@ -71,14 +71,14 @@ class PlaylistEndpoints:
     async def _create_playlist(self, request: SubsonicRequest) -> dict[str, Any]:
         _require_library_write(request)
         uris = _track_uris(request.get_all("songId"))
+        positions: list[int | None] = []
         if (playlist_id := request.get("playlistId")) is not None:
             ref = _library_playlist_ref(playlist_id)
-            tracks = await self._tracks(ref)
-            await self._remove_positions(ref, [track.position for track in tracks])
+            positions = [track.position for track in await self._tracks(ref)]
         else:
             created = await self.mass.music.playlists.create_playlist(request.require("name"))
             ref = ItemRef(MediaType.PLAYLIST, str(created.item_id))
-        await self._add_tracks(ref, uris)
+        await self._edit_tracks(ref, positions, uris)
         playlist = cast("Playlist", await self.browse.get_item(ref))
         return {"playlist": await self._playlist_payload(playlist, request, include_songs=True)}
 
@@ -97,11 +97,11 @@ class PlaylistEndpoints:
                 ProviderSharing.EVERYONE if public == "true" else ProviderSharing.PRIVATE,
                 owner=playlist.access.owner,
             )
+        positions: list[int | None] = []
         if indexes:
             tracks = await self._tracks(ref)
             positions = [tracks[index].position for index in indexes if index < len(tracks)]
-            await self._remove_positions(ref, positions)
-        await self._add_tracks(ref, uris)
+        await self._edit_tracks(ref, positions, uris)
         return {}
 
     async def _delete_playlist(self, request: SubsonicRequest) -> dict[str, Any]:
@@ -139,14 +139,12 @@ class PlaylistEndpoints:
             owners[owner_id] = user.username if user else owner_id
         return owners[owner_id]
 
-    async def _remove_positions(self, ref: ItemRef, positions: list[int | None]) -> None:
-        # highest position first, so the positions still to remove keep pointing at their item
-        for position in sorted({pos for pos in positions if pos is not None}, reverse=True):
-            await self.mass.music.playlists.remove_playlist_track(ref.item_id, position)
-
-    async def _add_tracks(self, ref: ItemRef, uris: list[str]) -> None:
-        for uri in uris:
-            await self.mass.music.playlists.add_playlist_track(ref.item_id, uri)
+    async def _edit_tracks(
+        self, ref: ItemRef, positions: list[int | None], uris: list[str]
+    ) -> None:
+        to_remove = tuple(sorted({pos for pos in positions if pos is not None}))
+        if to_remove or uris:
+            await self.mass.music.playlists.edit_playlist_tracks(ref.item_id, to_remove, uris)
 
 
 def _require_library_write(request: SubsonicRequest) -> None:

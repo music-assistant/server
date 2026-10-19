@@ -54,8 +54,7 @@ def _endpoints(tracks: list[Track] | None = None) -> tuple[PlaylistEndpoints, Ma
     playlists.create_playlist = AsyncMock(return_value=_playlist("9"))
     playlists.update_playlist = AsyncMock()
     playlists.set_access = AsyncMock()
-    playlists.add_playlist_track = AsyncMock()
-    playlists.remove_playlist_track = AsyncMock()
+    playlists.edit_playlist_tracks = AsyncMock()
     mass.music.remove_item_from_library = AsyncMock()
     mass.webserver.auth.get_user = AsyncMock(return_value=MEMBER)
     return PlaylistEndpoints(BrowseEndpoints(mass)), mass
@@ -98,23 +97,23 @@ async def test_create_playlist_with_songs() -> None:
     endpoints, mass = _endpoints()
     body = await _call(endpoints, "createPlaylist", name="Road trip", songId=["tr-1", "tr-2"])
     mass.music.playlists.create_playlist.assert_awaited_once_with("Road trip")
-    added = [call.args for call in mass.music.playlists.add_playlist_track.await_args_list]
-    assert added == [("9", "library://track/1"), ("9", "library://track/2")]
+    mass.music.playlists.edit_playlist_tracks.assert_awaited_once_with(
+        "9", (), ["library://track/1", "library://track/2"]
+    )
     assert body["playlist"]["name"] == "Road trip"
 
 
 async def test_create_playlist_replaces_songs_of_existing_playlist() -> None:
-    """CreatePlaylist with a playlistId replaces every track, which clients use to reorder."""
+    """CreatePlaylist with a playlistId replaces every track in one edit, as clients reorder."""
     endpoints, mass = _endpoints(tracks=[_track("1", 1), _track("2", 2)])
     await _call(endpoints, "createPlaylist", playlistId="pl-3", songId=["tr-2", "tr-1"])
-    removed = [call.args for call in mass.music.playlists.remove_playlist_track.await_args_list]
-    assert removed == [("3", 2), ("3", 1)]
-    added = [call.args[1] for call in mass.music.playlists.add_playlist_track.await_args_list]
-    assert added == ["library://track/2", "library://track/1"]
+    mass.music.playlists.edit_playlist_tracks.assert_awaited_once_with(
+        "3", (1, 2), ["library://track/2", "library://track/1"]
+    )
 
 
 async def test_update_playlist_removes_by_index_and_adds() -> None:
-    """Subsonic indexes map onto the stored positions; removals happen before additions."""
+    """Subsonic indexes map onto the stored positions, removed and added in one edit."""
     endpoints, mass = _endpoints(tracks=[_track("1", 1), _track("2", 4), _track("3", 7)])
     await _call(
         endpoints,
@@ -123,9 +122,9 @@ async def test_update_playlist_removes_by_index_and_adds() -> None:
         songIndexToRemove=["2", "0"],
         songIdToAdd="tr-9",
     )
-    removed = [call.args for call in mass.music.playlists.remove_playlist_track.await_args_list]
-    assert removed == [("3", 7), ("3", 1)]
-    mass.music.playlists.add_playlist_track.assert_awaited_once_with("3", "library://track/9")
+    mass.music.playlists.edit_playlist_tracks.assert_awaited_once_with(
+        "3", (1, 7), ["library://track/9"]
+    )
 
 
 async def test_update_playlist_name_and_public() -> None:
@@ -138,14 +137,13 @@ async def test_update_playlist_name_and_public() -> None:
     mass.music.playlists.set_access.assert_awaited_once_with(
         "3", ProviderSharing.EVERYONE, owner=MEMBER.user_id
     )
+    mass.music.playlists.edit_playlist_tracks.assert_not_awaited()
 
 
 async def test_refused_removal_propagates() -> None:
     """A removal Music Assistant refuses is not reported as done."""
     endpoints, mass = _endpoints(tracks=[_track("1", 1)])
-    mass.music.playlists.remove_playlist_track = AsyncMock(
-        side_effect=InsufficientPermissions("no")
-    )
+    mass.music.playlists.edit_playlist_tracks = AsyncMock(side_effect=InsufficientPermissions("no"))
     with pytest.raises(InsufficientPermissions):
         await _call(endpoints, "updatePlaylist", playlistId="pl-3", songIndexToRemove="0")
 

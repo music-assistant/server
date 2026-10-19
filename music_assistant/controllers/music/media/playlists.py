@@ -459,17 +459,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
             db_playlist_id, [track_uri], user.user_id if user else None
         )
 
-    async def remove_playlist_track(self, db_playlist_id: str | int, position: int) -> None:
+    async def edit_playlist_tracks(
+        self,
+        db_playlist_id: str | int,
+        positions_to_remove: tuple[int, ...] = (),
+        uris_to_add: list[str] | None = None,
+    ) -> None:
         """
-        Remove (single) item from playlist right away, without queueing a background task.
+        Remove and then add playlist items right away, without queueing a background task.
 
         :param db_playlist_id: Library playlist id.
-        :param position: Provider playlist position of the item to remove.
+        :param positions_to_remove: Provider playlist positions to remove, each at most once.
+        :param uris_to_add: Item URIs to add after the removal.
         """
         user = get_current_user()
-        await self._handle_remove_playlist_tracks(
-            db_playlist_id, (position,), user.user_id if user else None
-        )
+        user_id = user.user_id if user else None
+        if positions_to_remove:
+            await self._handle_remove_playlist_tracks(db_playlist_id, positions_to_remove, user_id)
+        if uris_to_add:
+            await self._handle_add_playlist_tracks(db_playlist_id, uris_to_add, user_id)
 
     async def remove_playlist_tracks(
         self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
