@@ -227,10 +227,12 @@ class TidalMediaManager:
             for item in doc.data_list:
                 item_meta = item.get("meta") or {}
                 item_number = item_meta.get("trackNumber", 0) or 0
-                if item_meta.get("volumeNumber") != volume_number:
-                    volume_number = item_meta.get("volumeNumber")
-                    volume_offset = last_number if item_number > last_number else 0
-                last_number = item_number
+                # an item without a number keeps 0 and leaves the volume's numbering alone
+                if item_number:
+                    if item_meta.get("volumeNumber") != volume_number:
+                        volume_number = item_meta.get("volumeNumber")
+                        volume_offset = last_number if item_number > last_number else 0
+                    last_number = item_number
                 # The items relationship is mixed-type: an album's music
                 # videos appear here too, and parsing one as a track would
                 # yield an id that 404s on playback and shift trackNumber.
@@ -240,7 +242,7 @@ class TidalMediaManager:
                     continue
                 if (track := _parse_or_skip(parse_track_v2, self.provider, doc, resource)) is None:
                     continue
-                track.track_number = item_number - volume_offset
+                track.track_number = item_number - volume_offset if item_number else 0
                 track.disc_number = item_meta.get("volumeNumber", 0) or 0
                 tracks.append(track)
         return tracks
