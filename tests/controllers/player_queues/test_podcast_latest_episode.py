@@ -64,7 +64,7 @@ def _serve(
         for episode in episodes:
             yield episode
 
-    monkeypatch.setattr(mass.music.podcasts, "episodes", _episodes)
+    monkeypatch.setattr(mass.music.podcasts, "iter_episodes", _episodes)
 
 
 async def test_latest_picks_highest_position_from_oldest_first_listing(

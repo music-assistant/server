@@ -44,22 +44,25 @@ _NOISY_CHILD = (
 # Exits on SIGINT, but only after a pause, so a reader is still blocked on stdout
 # once close() stops waiting for it (the tests shorten that wait to well below the
 # pause), and then writes more than a pipe holds: unless something keeps reading,
-# it blocks on the full pipe instead of exiting.
+# it blocks on the full pipe instead of exiting. The handler only flags the signal:
+# SIGINT can land while "ready" is still being flushed, and a write from the handler
+# would then fail as reentrant.
 _SLOW_EXIT_LINE = "bye" * 21
 _SLOW_EXIT_LINES = 5000
 _SLOW_EXIT_CHILD = f"""
 import signal, sys, time
 
-def leave(*_):
+interrupted = []
+signal.signal(signal.SIGINT, lambda *_: interrupted.append(True))
+sys.stdout.write("ready\\n")
+sys.stdout.flush()
+deadline = time.monotonic() + 30
+while not interrupted and time.monotonic() < deadline:
+    time.sleep(0.01)
+if interrupted:
     time.sleep(1)
     sys.stdout.write("{_SLOW_EXIT_LINE}\\n" * {_SLOW_EXIT_LINES})
     sys.stdout.flush()
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, leave)
-sys.stdout.write("ready\\n")
-sys.stdout.flush()
-time.sleep(30)
 """
 
 
@@ -328,6 +331,36 @@ async def test_kill_returns_promptly_with_output_left_in_the_pipes() -> None:
 
     assert proc.returncode is not None
     assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_kill_leaves_a_live_reader_in_charge_of_stdout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A reader still on stdout when the process is killed keeps draining it until EOF.
+
+    asyncio refuses a second concurrent read on a stream, so kill() must leave
+    that pipe to the reader rather than attempt the drain itself and warn about
+    the refused read; the kill closes the pipe, which is what ends the reader.
+    """
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    lines: list[str] = []
+    ready = asyncio.Event()
+    reader = asyncio.create_task(_collect_lines(proc.iter_stdout(), lines, ready))
+    await asyncio.wait_for(ready.wait(), 5)
+
+    started = time.monotonic()
+    await proc.kill()
+
+    assert proc.returncode == -SIGKILL
+    assert time.monotonic() - started < 1
+    await asyncio.wait_for(reader, 5)
+    assert lines == ["ready"]
+    assert "Failed to drain" not in caplog.text
 
 
 @pytest.mark.asyncio

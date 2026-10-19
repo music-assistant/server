@@ -95,7 +95,6 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass.streams.audio_analysis.iter_merged_audio_analysis_rows = MagicMock(
         side_effect=_iter_merged
     )
-    mass.streams.audio_analysis.get_coverage = AsyncMock(return_value=None)
     mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=0)
     return mass
 

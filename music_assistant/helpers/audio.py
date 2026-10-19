@@ -362,11 +362,12 @@ def get_parts_from_position(
     raise IndexError(f"Could not find any candidate part for position {seek_position}")
 
 
-def build_concat_filelist(paths: list[str]) -> str:
+def build_concat_filelist(paths: list[str], verify_ssl: bool = True) -> str:
     """
     Build the file list content for ffmpeg's concat demuxer.
 
     :param paths: The file paths to include, in playback order.
+    :param verify_ssl: Whether the certificate of an https part must be verified.
     """
     lines = []
     for path in paths:
@@ -374,6 +375,10 @@ def build_concat_filelist(paths: list[str]) -> str:
         # path must be written as '\'' to prevent the path being truncated at the quote.
         escaped_path = path.replace("'", "'\\''")
         lines.append(f"file '{escaped_path}'\n")
+        if not verify_ssl and path.startswith("http"):
+            # unlike the cli flag, the demuxer ignores this for a part that never uses TLS
+            # and honours it when a part redirects from http to https
+            lines.append("option tls_verify 0\n")
     return "".join(lines)
 
 

@@ -9,12 +9,15 @@ import logging
 import os
 import os.path
 import posixpath
+import secrets
+import stat
 import urllib.parse
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cached_property
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import aiofiles
@@ -35,6 +38,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     SetupFailedError,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -86,7 +90,12 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.playlists import parse_m3u, parse_pls, sanitize_playlist_filename
+from music_assistant.helpers.playlists import (
+    parse_m3u,
+    parse_pls,
+    sanitize_m3u_value,
+    sanitize_playlist_filename,
+)
 from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.process import open_in_thread
 from music_assistant.helpers.tags import (
@@ -99,6 +108,7 @@ from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
+    is_disc_dir,
     parse_title_and_version,
     try_parse_int,
 )
@@ -159,7 +169,6 @@ from .helpers import (
     get_folder_signature,
     get_relative_path,
     get_valid_isrcs,
-    is_disc_dir,
     is_image_file,
     is_metadata_file,
     open_real_path,
@@ -872,7 +881,11 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
+        if not await self._album_folder_exists(prov_album_id):
+            msg = f"Album folder does not exist: {prov_album_id}"
+            raise MediaNotFoundError(msg)
         parsed_cue_paths: set[str] = set()
+        missing_file_error: FileNotFoundError | None = None
         # early returns below stop iterating this generator before it's exhausted; without an
         # explicit aclose() that leaves its _ondemand_listing_scope() cleanup (a ContextVar
         # reset) to whenever the event loop's async-generator finalizer happens to run, instead
@@ -897,11 +910,18 @@ class LocalFileSystemProvider(MusicProvider):
                             if isinstance(cue_track.album, Album):
                                 return cue_track.album
                         continue
-                    file_item = await self.resolve(prov_mapping.item_id)
+                    try:
+                        file_item = await self.resolve(prov_mapping.item_id)
+                    except FileNotFoundError as err:
+                        # a file moved away that the deletion pass has not unlinked yet
+                        missing_file_error = err
+                        continue
                     tags = await self._parse_tags(file_item)
                     full_track = await self._parse_track(file_item, tags)
                     assert isinstance(full_track.album, Album)
                     return full_track.album
+        if missing_file_error:
+            raise missing_file_error
         msg = f"Album not found: {prov_album_id}"
         raise MediaNotFoundError(msg)
 
@@ -938,6 +958,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
 
         file_item = await self.resolve(prov_playlist_id)
         playlist = Playlist(
@@ -1037,6 +1058,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
 
         file_item = await self.resolve(prov_playlist_id)
         # We are using the checksum of the playlist file here to invalidate the cache
@@ -1175,6 +1197,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
         playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(
             playlist_filename, encoding="utf-8", opener=self._open_file
@@ -1182,11 +1205,13 @@ class LocalFileSystemProvider(MusicProvider):
             playlist_data = await _file.read()
         for file_path in prov_track_ids:
             track = await self.get_track(file_path)
-            playlist_data += f"\n#EXTINF:{track.duration or 0},{track.name}\n{file_path}\n"
+            title = sanitize_m3u_value(track.name)
+            playlist_data += (
+                f"\n#EXTINF:{track.duration or 0},{title}\n{sanitize_m3u_value(file_path)}\n"
+            )
 
         # write playlist file (always in utf-8)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(playlist_data)
+        await self._write_playlist_file(prov_playlist_id, playlist_data)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -1195,6 +1220,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
+        self._check_playlist_path(prov_playlist_id)
         ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
@@ -1214,9 +1240,11 @@ class LocalFileSystemProvider(MusicProvider):
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
         for item in playlist_items:
-            new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(new_playlist_data)
+            title = sanitize_m3u_value(item.title or "")
+            new_playlist_data += (
+                f"\n#EXTINF:{item.length or 0},{title}\n{sanitize_m3u_value(item.path)}\n"
+            )
+        await self._write_playlist_file(prov_playlist_id, new_playlist_data)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
@@ -2216,15 +2244,37 @@ class LocalFileSystemProvider(MusicProvider):
         # "Artist 1" vs "Artist 2"), only an (almost) exact one after normalization
         return bool(nfo_name) and compare_strings(str(nfo_name), name)
 
+    async def _album_folder_exists(self, prov_album_id: str) -> bool:
+        """Return False when a library album's own folder is gone, raise when it can't be told."""
+        db_album = await self.mass.music.albums.get_library_item_by_prov_id(
+            prov_album_id, self.instance_id
+        )
+        # an album not in the library is looked up on disk anyway, and one built from tags
+        # alone has no folder of its own
+        if db_album is None or not any(
+            x.provider_instance == self.instance_id and x.item_id == prov_album_id and x.url
+            for x in db_album.provider_mappings
+        ):
+            return True
+        if await self.exists(prov_album_id):
+            return True
+        if not await self._is_reachable():
+            msg = f"Storage of {self.base_path} is not available"
+            raise ProviderUnavailableError(msg)
+        return False
+
     async def _iter_album_tracks(self, prov_album_id: str) -> AsyncGenerator[Track]:
         """
         Yield an album's tracks, lazily, so a caller needing only the first can stop early.
 
-        Served from the database when this id is already mapped; otherwise (the second,
-        id-changed fetch of a manual "Refresh item" that has just resolved a previously
-        synthetic album onto its real folder, before that mapping is persisted) the folder's
-        own tracks are parsed directly, so the refresh still succeeds instead of raising on a
-        mapping that is only about to exist.
+        Served from the database when this id is already mapped: the library tracks with a
+        file in the album's folder, each carrying only those files, so a recording's file in
+        another album's folder is left out; under an album id that is no folder, the tracks
+        keep all of their files on this provider. Otherwise (the second, id-changed fetch of a
+        manual "Refresh item" that has just resolved a previously synthetic album onto its real
+        folder, before that mapping is persisted) the folder's own tracks are parsed directly,
+        so the refresh still succeeds instead of raising on a mapping that is only about to
+        exist.
 
         :param prov_album_id: This provider's album id (a path, once resolved).
         """
@@ -2233,9 +2283,29 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if db_album is not None:
             album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
+            files = {
+                id(track): {
+                    x for x in track.provider_mappings if x.provider_instance == self.instance_id
+                }
+                for track in album_tracks
+            }
+            # the album's files sit in its folder or in a disc folder below it, as
+            # _scan_folder_tracks finds them
+            in_folder = {
+                track_id: {
+                    x
+                    for x in own
+                    if prov_album_id
+                    in (os.path.dirname(x.item_id), os.path.dirname(os.path.dirname(x.item_id)))
+                }
+                for track_id, own in files.items()
+            }
+            # an album id made up of the artist and album name holds no files
+            if any(in_folder.values()):
+                files = in_folder
             for track in album_tracks:
-                if any(x.provider_instance == self.instance_id for x in track.provider_mappings):
-                    yield track
+                if own := files[id(track)]:
+                    yield replace(track, provider_mappings=own)
             return
         if not await self.exists(prov_album_id):
             msg = f"Album not found: {prov_album_id}"
@@ -2686,8 +2756,8 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.music.albums.remove_item_from_library(album_id)
         # check if any artists need to be cleaned up
         for artist_id in artist_ids:
-            artist_albums = await self.mass.music.artists.albums(artist_id, "library")
-            artist_tracks = await self.mass.music.artists.tracks(artist_id, "library")
+            artist_albums = await self.mass.music.artists.albums(artist_id, "library", limit=1)
+            artist_tracks = await self.mass.music.artists.tracks(artist_id, "library", limit=1)
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
 
@@ -2920,6 +2990,8 @@ class LocalFileSystemProvider(MusicProvider):
             track.metadata.explicit = explicit_tag == "1"
         if recording_mbid := clean_mbid(tags.musicbrainz_recordingid, tags.filename):
             track.mbid = recording_mbid
+        if release_track_mbid := clean_mbid(tags.musicbrainz_releasetrackid, tags.filename):
+            track.external_ids.add((ExternalID.MB_TRACK, release_track_mbid))
 
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
@@ -4238,3 +4310,84 @@ class LocalFileSystemProvider(MusicProvider):
                 if isinstance(path, str):
                     paths.append(path)
         return paths
+
+    def _check_playlist_path(self, prov_playlist_id: str) -> None:
+        """Raise MediaNotFoundError when a path does not name a playlist file."""
+        if PurePosixPath(prov_playlist_id).suffix[1:].lower() not in PLAYLIST_EXTENSIONS:
+            msg = f"Not a playlist file: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
+
+    async def _write_playlist_file(self, file_path: str, data: str) -> None:
+        """Write playlist data to a regular (non-symlink) playlist file inside the library root."""
+        self._check_playlist_path(file_path)
+        relative_path = os.path.relpath(self.get_absolute_path(file_path), self.base_path)
+        parts = [part for part in Path(relative_path).parts if part != "."]
+        msg = f"Playlist is not a regular file inside the library: {file_path}"
+        if not parts or ".." in parts:
+            raise InvalidDataError(msg)
+
+        def _write() -> None:
+            # the root is checked against its resolved location like every read, and every
+            # further component is opened relative to the previous directory without following
+            # symlinks, so what was checked is what gets written, even if the tree changes
+            dir_fd = self._open_file(self.base_path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                for part in parts[:-1]:
+                    next_fd = os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+                    )
+                    os.close(dir_fd)
+                    dir_fd = next_fd
+                name = parts[-1]
+                try:
+                    existing = os.lstat(name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    existing = None
+                old_fd = -1
+                try:
+                    if existing is not None:
+                        if not stat.S_ISREG(existing.st_mode):
+                            raise InvalidDataError(msg)
+                        # replacing the entry must not get around the file's own write permission
+                        probe_flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                        old_fd = os.open(name, probe_flags, dir_fd=dir_fd)
+                    # written to a new file and renamed into place, so no existing inode is
+                    # opened for writing or truncated, whatever else links to it
+                    temp_name = f".playlist-{secrets.token_hex(6)}.tmp"
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                    temp_fd = os.open(temp_name, flags, 0o666, dir_fd=dir_fd)
+                    try:
+                        with os.fdopen(temp_fd, "w", encoding="utf-8") as _file:
+                            if old_fd >= 0:
+                                _copy_file_security(old_fd, _file.fileno())
+                            _file.write(data)
+                        os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    except BaseException:
+                        with contextlib.suppress(OSError):
+                            os.unlink(temp_name, dir_fd=dir_fd)
+                        raise
+                finally:
+                    if old_fd >= 0:
+                        os.close(old_fd)
+            except OSError as err:
+                raise InvalidDataError(msg) from err
+            finally:
+                os.close(dir_fd)
+
+        await asyncio.to_thread(_write)
+
+
+def _copy_file_security(src_fd: int, dst_fd: int) -> None:
+    """Give dst the owner, mode and security attributes (ACLs) of src, as far as allowed."""
+    src_stat = os.fstat(src_fd)
+    # a non-root server cannot change the owner, which is no worse than before
+    with contextlib.suppress(PermissionError):
+        os.fchown(dst_fd, src_stat.st_uid, src_stat.st_gid)
+    os.fchmod(dst_fd, stat.S_IMODE(src_stat.st_mode))
+    # POSIX ACLs and other security metadata live in extended attributes on Linux; not
+    # every filesystem supports them, which must not stop the write
+    if hasattr(os, "listxattr"):
+        with contextlib.suppress(OSError):
+            for attr in os.listxattr(src_fd):
+                with contextlib.suppress(OSError):
+                    os.setxattr(dst_fd, attr, os.getxattr(src_fd, attr))

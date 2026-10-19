@@ -183,6 +183,8 @@ class DummyQueueDJ(
         self._dj_queues: dict[str, Any] = {}
         self._dj_file = tmp_path / "queue_dj.json"
         self._dj_lock = asyncio.Lock()
+        self._unloading = False
+        self.rendered_ahead: list[str] = []
         # the disable path reaches the real clip cleanup, which needs a queue layer;
         # this one holds no queue at all, so cleanup finds nothing to do
         # the mixin declares `mass: MusicAssistant`; a fake stands in for tests, so its own
@@ -195,6 +197,10 @@ class DummyQueueDJ(
         """Record replan requests instead of running them."""
         self.replanned = getattr(self, "replanned", [])
         self.replanned.append(queue_id)
+
+    def _render_ahead(self, queue_id: str) -> None:
+        """Record render-ahead requests instead of rendering."""
+        self.rendered_ahead.append(queue_id)
 
 
 def _dj_harness(tmp_path: Path) -> DummyQueueDJ:
@@ -247,6 +253,9 @@ class ReplanQueueDJ(
         self.player_queues = FakePlayerQueues(queue, items)
         # see DummyQueueDJ.__init__ for why this needs its own annotation
         self.mass: FakeMass = FakeMass(self.player_queues)  # type: ignore[assignment]
+
+    def _render_ahead(self, queue_id: str) -> None:
+        """Skip rendering ahead, which these tests do not exercise."""
 
 
 def _transition_section() -> dict[str, Any]:
@@ -619,6 +628,22 @@ async def test_on_dj_queue_event_auto_arms_a_show_queue(tmp_path: Path) -> None:
     assert state.station_id == "morning_show"
     # armed twice: once by set_queue_dj's own arm, once by the event's usual replan request
     assert dj.replanned == ["q1", "q1"]
+    assert dj.rendered_ahead == ["q1"]
+
+
+async def test_on_dj_queue_event_renders_ahead_only_once_the_dj_is_ready(tmp_path: Path) -> None:
+    """A DJ still clearing the previous host's clips renders nothing ahead."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [])
+    state = dj._arm_dj_state("q1", "amy")
+    event = cast("Any", SimpleNamespace(event=EventType.QUEUE_UPDATED, object_id="q1"))
+
+    await dj._on_dj_queue_event(event)
+    assert dj.rendered_ahead == []
+
+    state.ready = True
+    await dj._on_dj_queue_event(event)
+    assert dj.rendered_ahead == ["q1"]
 
 
 async def test_on_dj_queue_event_does_not_rearm_a_manually_disabled_show(tmp_path: Path) -> None:
@@ -637,6 +662,7 @@ async def test_on_dj_queue_event_does_not_rearm_a_manually_disabled_show(tmp_pat
 
     assert "q1" not in dj._dj_queues
     assert dj._armed_show_queues["q1"] == "morning_show"
+    assert dj.rendered_ahead == []
 
 
 async def test_ending_the_queue_detaches_and_clears_the_armed_record(tmp_path: Path) -> None:
@@ -651,6 +677,8 @@ async def test_ending_the_queue_detaches_and_clears_the_armed_record(tmp_path: P
 
     assert "q1" not in dj._dj_queues
     assert "q1" not in dj._armed_show_queues
+    # the detached DJ's clips are not rendered ahead on its way out
+    assert dj.rendered_ahead == []
 
     # a genuine replay resets the queue before the show is enqueued on it again
     queue.ended = False
