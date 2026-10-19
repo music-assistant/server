@@ -31,10 +31,11 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     create_sample_rates_config_entry,
 )
+from music_assistant.helpers.upnp import AVTransport
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.bose_soundtouch.avt_helpers import avt_play, avt_set_url, avt_stop
 
-from .client import RECONNECT_DELAY
+from .client import RECONNECT_DELAY, STRING_ENCODING
 from .client.schema.enums import Key, PlayStatus, SourceStatus
 from .client.schema.models import Info, NowPlaying, Zone, ZoneMember
 from .const import (
@@ -51,6 +52,9 @@ from .const import (
     PRESET_IDS,
     SOURCE_INVALID,
     SOURCE_STANDBY,
+    UPNP_CONTROL_ENDPOINT,
+    UPNP_PORT,
+    UPNP_USER_AGENT,
     PlayerOptionKeys,
 )
 from .helpers import extract_preset_id, source_id
@@ -213,9 +217,9 @@ class BoseSoundTouchPlayer(Player):
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             # clear any pending AVT state to avoid wedging on rapid play_media
             self.logger.debug("Starting to play %s.", media.title)
-            await avt_stop(self.mass.http_session, self)
-            await avt_set_url(self.mass.http_session, self, player_media=media)
-            await avt_play(self.mass.http_session, self)
+            await self.avt.stop()
+            await self.avt.set_url(media)
+            await self.avt.play()
             self._attr_poll_interval = PLAYBACK_POLL_INTERVAL
 
     async def stop(self) -> None:
@@ -315,6 +319,16 @@ class BoseSoundTouchPlayer(Player):
     def ip_address(self) -> str:
         """Return the address this speaker is currently reached on."""
         return self._client.session_config.ip
+
+    @property
+    def avt(self) -> AVTransport:
+        """UPnP AVTransport of the speaker."""
+        return AVTransport(
+            client=self.mass.http_session,
+            ctrl_url=f"http://{format_ip_for_url(self.ip_address)}:{UPNP_PORT}/{UPNP_CONTROL_ENDPOINT}",
+            user_agent=UPNP_USER_AGENT,
+            encoding=STRING_ENCODING,
+        )
 
     def update_ip_address(self, ip_address: str) -> None:
         """Update the speaker's IP address after a (re)discovery."""
