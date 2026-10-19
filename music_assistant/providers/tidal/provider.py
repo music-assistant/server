@@ -183,6 +183,10 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         if not user_id:
             return
         for holder in get_loaded_account_holders(self.mass, str(user_id), self.instance_id):
+            # registration precedes this hook by several awaits, so a lower instance that
+            # registered meanwhile keeps the account; its own handover unloads this one
+            if holder.instance_id < self.instance_id:
+                continue
             await asyncio.shield(
                 self.mass.unload_provider_with_error(
                     holder.instance_id, account_in_use_error(self.config, self.translation_owner)

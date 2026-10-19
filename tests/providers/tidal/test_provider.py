@@ -441,6 +441,22 @@ async def test_loading_unloads_a_running_higher_holder_with_an_error_naming_this
     assert error.translation_owner == provider.translation_owner
 
 
+async def test_the_handover_never_unloads_a_lower_instance(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """A lower instance that registered while this one finished loading keeps the account."""
+    unload = await _hand_over(
+        provider,
+        mass_mock,
+        {"tidal_a": ("12345", True), "tidal_z": ("12345", True)},
+        frozenset({"tidal_a", "tidal_z"}),
+    )
+
+    unload.assert_awaited_once()
+    assert unload.await_args is not None
+    assert unload.await_args.args[0] == "tidal_z"
+
+
 async def test_the_handover_error_does_not_name_a_private_instance(
     provider: TidalProvider, mass_mock: Mock
 ) -> None:
