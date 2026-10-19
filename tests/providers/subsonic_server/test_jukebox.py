@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -10,7 +11,7 @@ import pytest
 from multidict import MultiDict, MultiDictProxy
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
-from music_assistant_models.media_items import ItemMapping, Track
+from music_assistant_models.media_items import ItemMapping, Radio, Track
 
 from music_assistant.providers.subsonic_server.jukebox import JukeboxEndpoints
 from music_assistant.providers.subsonic_server.request import SubsonicRequest
@@ -93,6 +94,7 @@ class FakePlayerQueues:
     async def play_media(self, queue_id: str, media: list[str], option: QueueOption) -> None:
         """Append tracks without starting playback."""
         assert option == QueueOption.ADD
+        await asyncio.sleep(0)
         for uri in media:
             self.queue.counter += 1
             self.queue.items.append(FakeQueueItem(f"q{self.queue.counter}", _track(uri)))
@@ -304,3 +306,62 @@ async def test_unavailable_player_is_an_error(player: MagicMock | None) -> None:
     with pytest.raises(SubsonicError) as err:
         await _control(jukebox, action="status")
     assert err.value.code == 0
+
+
+async def test_player_outside_the_user_filter_is_refused() -> None:
+    """A user limited to other players may not use the jukebox player."""
+    restricted = User(
+        user_id="r", username="r", role=UserRole.USER, player_filter=["another-player"]
+    )
+    with pytest.raises(SubsonicError) as err:
+        await _control(_jukebox(), user=restricted, action="status")
+    assert err.value.code == 50
+
+
+async def test_items_that_are_not_tracks_stay_out_of_the_playlist() -> None:
+    """A radio station in the queue is not listed and does not shift the indexes."""
+    queue = FakeQueue()
+    radio = Radio(item_id="7", provider="library", name="FIP", provider_mappings=set())
+    queue.items = [
+        FakeQueueItem("radio", cast("Track", radio)),
+        FakeQueueItem("song", _track("library://track/8")),
+    ]
+    queue.current_index = 1
+    queue.state = PlaybackState.PLAYING
+    playlist = (await _control(_jukebox(queue), action="get"))["jukeboxPlaylist"]
+    assert [entry["id"] for entry in playlist["entry"]] == ["tr-8"]
+    assert playlist["currentIndex"] == 0
+
+
+async def test_removing_a_buffered_track_is_an_error() -> None:
+    """A track the player already loaded can not be removed and stays in the playlist."""
+    queue = FakeQueue()
+    jukebox = _jukebox(queue)
+    await _control(jukebox, action="set", id=["tr-1", "tr-2"])
+    await _control(jukebox, action="skip", index=0)
+    queue.buffered_index = 1
+    with pytest.raises(SubsonicError):
+        await _control(jukebox, action="remove", index=1)
+    playlist = (await _control(jukebox, action="get"))["jukeboxPlaylist"]
+    assert [entry["id"] for entry in playlist["entry"]] == ["tr-1", "tr-2"]
+
+
+async def test_long_queues_are_read_page_by_page() -> None:
+    """Every track of a queue longer than one page is part of the playlist."""
+    queue = FakeQueue()
+    queue.items = [FakeQueueItem(f"q{n}", _track(f"library://track/{n}")) for n in range(1200)]
+    queue.current_index = 1100
+    queue.state = PlaybackState.PLAYING
+    playlist = (await _control(_jukebox(queue), action="get"))["jukeboxPlaylist"]
+    assert len(playlist["entry"]) == 1200
+    assert playlist["currentIndex"] == 1100
+
+
+async def test_concurrent_adds_do_not_duplicate_entries() -> None:
+    """Two adds at the same time each append their own track once."""
+    jukebox = _jukebox()
+    await asyncio.gather(
+        _control(jukebox, action="add", id="tr-1"), _control(jukebox, action="add", id="tr-2")
+    )
+    playlist = (await _control(jukebox, action="get"))["jukeboxPlaylist"]
+    assert sorted(entry["id"] for entry in playlist["entry"]) == ["tr-1", "tr-2"]
