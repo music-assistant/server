@@ -3736,8 +3736,11 @@ class LocalFileSystemProvider(MusicProvider):
                         )
                     ]
                 )
-            elif fallback_action == "folder_name" and album_dir:
-                possible_artist_folder = os.path.dirname(album_dir)
+            elif (
+                fallback_action == "folder_name"
+                and album_dir
+                and (possible_artist_folder := os.path.dirname(album_dir))
+            ):
                 log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
                     track_path,
@@ -3753,8 +3756,10 @@ class LocalFileSystemProvider(MusicProvider):
                         )
                     ]
                 )
-            # fallback to track artists (if defined by user)
-            elif fallback_action == "track_artist":
+            # fallback to track artists (if defined by user, or for an album folder at share root)
+            elif fallback_action == "track_artist" or (
+                fallback_action == "folder_name" and album_dir
+            ):
                 log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using track artist(s) as fallback",
                     track_path,
