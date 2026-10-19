@@ -10,15 +10,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     MediaItemImage,
     ProviderMapping,
+    Track,
     UniqueList,
 )
 
 from music_assistant.controllers.music.media.artists import ArtistsController
 
-from .helpers import create_track
+from .helpers import create_album, create_track
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -53,6 +55,33 @@ def _detailed_artist() -> Artist:
         [MediaItemImage(type=ImageType.THUMB, path=ARTIST_IMAGE, provider="spotify_1")]
     )
     return artist
+
+
+def _track_on_album(
+    item_id: str, artist_item_id: str, artist_name: str, album: Album, in_library: bool = True
+) -> Track:
+    """Return a provider track on the given album, credited to a single artist."""
+    track = create_track("spotify_1", item_id, name=item_id, isrc=f"ISRC{item_id}")
+    for mapping in track.provider_mappings:
+        mapping.in_library = in_library
+    track.artists = UniqueList(
+        [
+            Artist(
+                item_id=artist_item_id,
+                provider="spotify_1",
+                name=artist_name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=artist_item_id,
+                        provider_domain="spotify",
+                        provider_instance="spotify_1",
+                    )
+                },
+            )
+        ]
+    )
+    track.album = album
+    return track
 
 
 async def test_track_overwrite_keeps_artist_details(mass: MusicAssistant) -> None:
@@ -182,3 +211,33 @@ async def test_library_artist_listings_query_one_instance_per_streaming_domain(
     queried = {call.args[1] for call in provider_listing.await_args_list}
     # one Spotify instance, and both (non-streaming) filesystem instances
     assert queried == {"spotify_1", "filesystem_local_1", "filesystem_local_2"}
+
+
+async def test_album_artists_only_needs_an_album_in_the_library(mass: MusicAssistant) -> None:
+    """An artist only counts as album artist when one of its own albums is in the library."""
+    library_album = create_album("spotify_1", "kept", "Kept Album", "Album Artist", "album_artist")
+    for mapping in library_album.provider_mappings:
+        mapping.in_library = True
+    # this album is only stored because one of its tracks is in the library
+    track = _track_on_album(
+        "hit",
+        "track_artist",
+        "Track Artist",
+        create_album("spotify_1", "hits", "Hits Album", "Track Artist", "track_artist"),
+    )
+    for artist in (*library_album.artists, *track.artists):
+        assert isinstance(artist, Artist)
+        for mapping in artist.provider_mappings:
+            mapping.in_library = True
+    await mass.music.albums.add_item_to_library(library_album)
+    await mass.music.tracks.add_item_to_library(track)
+    artists = mass.music.artists
+    assert {artist.name for artist in await artists.library_items()} == {
+        "Album Artist",
+        "Track Artist",
+    }
+
+    album_artists = await artists.library_items(album_artists_only=True)
+
+    assert [artist.name for artist in album_artists] == ["Album Artist"]
+    assert await artists.library_count(album_artists_only=True) == 1
