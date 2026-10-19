@@ -163,29 +163,9 @@ def series_index_sort_key(index: str | None) -> tuple[Any, ...]:
     return (0, len(whole_n), whole_n, frac_key, index)
 
 
-# Pad width for library collection TEXT sort (max BookOrbit segment length).
-# Leading zeros keep the value off SQLite's json-numeric REAL path so ``1.10``
-# is not collapsed with ``1.1``. Collection SQL interleaves these with other
-# providers' REAL volumes by whole number (see media/base.py).
-_COLLECTION_SEQUENCE_PAD = _SERIES_INDEX_MAX_LENGTH
-
-
 def collection_sequence_key(value: Any) -> str | None:
-    """
-    Return a TEXT-sortable series index that preserves BookOrbit segment order.
-
-    Zero-padded segments stay on the TEXT path (lossless for the full accepted
-    index range). Library collection ordering groups by whole number so these
-    keys interleave with other providers' numeric sequences.
-    """
-    index = parse_series_index(value)
-    if index is None:
-        return None
-    whole, sep, fraction = index.partition(".")
-    padded = _normalized_integer_segment(whole).zfill(_COLLECTION_SEQUENCE_PAD)
-    if sep:
-        padded += "." + _normalized_integer_segment(fraction).zfill(_COLLECTION_SEQUENCE_PAD)
-    return padded
+    """Return a plain series index for MediaItemCollection.sequence display."""
+    return parse_series_index(value)
 
 
 def parse_browse_path(path: str) -> tuple[int | None, list[str]]:

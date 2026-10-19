@@ -95,28 +95,12 @@ def test_series_index_uses_integer_segments_not_float() -> None:
     assert ordered == ["1", "1.2", "1.10", "2"]
 
 
-def test_collection_sequence_key_preserves_segment_order_as_padded_text() -> None:
-    """Padded collection sequences stay lossless TEXT with BookOrbit segment order."""
-    keys = {
-        value: key
-        for value in ("1.10", "1.2", "1", "2", "1.1", "1.0", "1.1000000001")
-        if (key := collection_sequence_key(value)) is not None
-    }
-    assert sorted(keys.values()) == [
-        keys["1"],
-        keys["1.0"],
-        keys["1.1"],
-        keys["1.2"],
-        keys["1.10"],
-        keys["1.1000000001"],
-        keys["2"],
-    ]
-    # Leading zeros keep the JSON TEXT path (not REAL-cast).
-    assert isinstance(keys["1.10"], str)
-    assert keys["1.10"] == "00000000000000000001.00000000000000000010"
-    assert keys["1"] != keys["1.0"]
-    assert keys["1.1"] != keys["1.10"]
-    assert keys["1.1000000001"] < keys["2"]
+def test_collection_sequence_key_returns_plain_display_index() -> None:
+    """Collection sequences are plain series indices shown to users."""
+    assert collection_sequence_key("1") == "1"
+    assert collection_sequence_key("1.10") == "1.10"
+    assert collection_sequence_key(2) == "2"
+    assert collection_sequence_key("not-an-index") is None
 
 
 @pytest.mark.asyncio

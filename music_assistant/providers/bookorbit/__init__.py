@@ -827,7 +827,7 @@ class BookOrbitProvider(MusicProvider):
     async def _load_catalog_books(
         self, cards_by_id: dict[str, dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
-        """Fetch book details concurrently; cancel siblings when one raises."""
+        """Fetch book details concurrently; skip failures and keep successful books."""
         semaphore = asyncio.Semaphore(CATALOG_DETAIL_CONCURRENCY)
 
         async def _load_book(
@@ -835,16 +835,17 @@ class BookOrbitProvider(MusicProvider):
         ) -> tuple[str, dict[str, Any] | None, Exception | None]:
             try:
                 book = await self._get_book_detail(book_id, card, semaphore)
-            except ClientResponseError as err:
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
                 self.logger.warning("BookOrbit book detail %s failed: %s", book_id, err)
-                # Only record skips inside an active library sync.
+                # Only record skips inside an active library sync (deletion protection).
                 if SYNC_RUN_STATE.get() is not None:
                     self.report_skipped_sync_item(MediaType.AUDIOBOOK, book_id, err)
                 return book_id, None, err
             if book is None or not _audio_files(book):
-                # List claimed audio but detail has none — abort the refresh rather than
-                # publishing a catalog that drops the book (and its sole authors) while
-                # only skip-protecting the audiobook id.
+                # List claimed audio but detail has none — skip this book; sync skips
+                # protect library membership until a later refresh succeeds.
                 no_audio = ValueError("BookOrbit book detail has no audio files")
                 self.logger.warning("BookOrbit book detail %s has no audio files", book_id)
                 if SYNC_RUN_STATE.get() is not None:
@@ -864,25 +865,20 @@ class BookOrbitProvider(MusicProvider):
         try:
             results = await asyncio.gather(*detail_tasks)
         except BaseException:
-            # Connection/timeout errors escape _load_book; cancel siblings so a
-            # retry cannot overlap unfinished fetches after the catalog lock.
+            # Unexpected escape (e.g. cancel during unload); stop siblings before unlock.
             for task in detail_tasks:
                 task.cancel()
             await asyncio.gather(*detail_tasks, return_exceptions=True)
             raise
         finally:
             self._catalog_detail_tasks.difference_update(detail_tasks)
-        detail_errors = [err for _, _, err in results if err is not None]
-        if detail_errors:
-            # Raising aborts sync before the deletion pass; a silent return would
-            # yield an empty catalog on cold start and delete library items.
+        skipped = sum(1 for _, book, _ in results if book is None)
+        if skipped:
             self.logger.warning(
-                "Aborting BookOrbit catalog refresh: %d detail fetch(es) failed",
-                len(detail_errors),
+                "BookOrbit catalog refresh skipped %d book(s); continuing with %d",
+                skipped,
+                len(results) - skipped,
             )
-            raise ProviderUnavailableError(
-                f"BookOrbit catalog refresh incomplete ({len(detail_errors)} detail error(s))."
-            ) from detail_errors[0]
         return {book_id: book for book_id, book, _ in results if book is not None}
 
     async def _get_book_detail(

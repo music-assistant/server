@@ -167,13 +167,10 @@ async def test_refresh_catalog_filters_libraries_and_ebooks(
 
 
 @pytest.mark.asyncio
-async def test_refresh_catalog_aborts_on_detail_fetch_error(
+async def test_refresh_catalog_skips_detail_fetch_error(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
-    """A failed detail fetch must raise and leave the previous catalog untouched."""
-    previous = {str(book_audiobook["id"]): book_audiobook}
-    provider._catalog = previous
-    provider._catalog_refreshed_at = 0.0
+    """A failed detail fetch is skipped; successful books still refresh the catalog."""
 
     async def _get_book(book_id: int) -> dict[str, Any]:
         if book_id == book_multifile["id"]:
@@ -190,19 +187,16 @@ async def test_refresh_catalog_aborts_on_detail_fetch_error(
         raise KeyError(book_id)
 
     cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
-    with pytest.raises(ProviderUnavailableError, match="incomplete"):
-        await provider._refresh_catalog(force=True)
-    assert provider._catalog is previous
+    await provider._refresh_catalog(force=True)
+    assert str(book_audiobook["id"]) in provider._catalog
+    assert str(book_multifile["id"]) not in provider._catalog
 
 
 @pytest.mark.asyncio
-async def test_refresh_catalog_aborts_when_manifest_unavailable(
+async def test_refresh_catalog_skips_when_manifest_unavailable(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
-    """Transient manifest errors must not cache unordered multipart BookDetail."""
-    previous = {str(book_audiobook["id"]): book_audiobook}
-    provider._catalog = previous
-    provider._catalog_refreshed_at = 0.0
+    """Transient manifest errors skip that book and do not cache unordered detail."""
     cache_set = cast("AsyncMock", provider.mass.cache.set)
     cache_set.reset_mock()
 
@@ -217,18 +211,18 @@ async def test_refresh_catalog_aborts_when_manifest_unavailable(
         return manifest_from_book(book_audiobook)
 
     cast("Any", provider._client).get_audiobook_manifest = AsyncMock(side_effect=_manifest)
-    with pytest.raises(ProviderUnavailableError, match="incomplete"):
-        await provider._refresh_catalog(force=True)
-    assert provider._catalog is previous
+    await provider._refresh_catalog(force=True)
+    assert str(book_audiobook["id"]) in provider._catalog
+    assert str(book_multifile["id"]) not in provider._catalog
     cached_ids = {call.kwargs.get("key") for call in cache_set.await_args_list}
     assert str(book_multifile["id"]) not in cached_ids
 
 
 @pytest.mark.asyncio
-async def test_refresh_catalog_cold_start_detail_error_raises(
+async def test_refresh_catalog_cold_start_keeps_successful_books(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
-    """Cold start must not publish an empty catalog after a detail failure."""
+    """Cold start publishes successful books when a sibling detail fetch fails."""
     assert provider._catalog == {}
 
     async def _get_book(book_id: int) -> dict[str, Any]:
@@ -246,28 +240,23 @@ async def test_refresh_catalog_cold_start_detail_error_raises(
         raise KeyError(book_id)
 
     cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
-    with pytest.raises(ProviderUnavailableError, match="incomplete"):
-        await provider._refresh_catalog(force=True)
-    assert provider._catalog == {}
+    await provider._refresh_catalog(force=True)
+    assert str(book_audiobook["id"]) in provider._catalog
+    assert str(book_multifile["id"]) not in provider._catalog
 
 
 @pytest.mark.asyncio
-async def test_fetch_catalog_cancels_pending_detail_fetches_on_error(
+async def test_fetch_catalog_continues_sibling_detail_fetches_on_timeout(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
-    """A failed detail fetch must cancel siblings before releasing the catalog lock."""
+    """A timed-out detail fetch is skipped without cancelling successful siblings."""
     started = asyncio.Event()
     release = asyncio.Event()
-    cancelled = asyncio.Event()
 
     async def _get_book(book_id: int) -> dict[str, Any]:
         if book_id == book_audiobook["id"]:
             started.set()
-            try:
-                await release.wait()
-            except asyncio.CancelledError:
-                cancelled.set()
-                raise
+            await release.wait()
             return book_audiobook
         if book_id == book_multifile["id"]:
             await started.wait()
@@ -277,20 +266,21 @@ async def test_fetch_catalog_cancels_pending_detail_fetches_on_error(
         raise KeyError(book_id)
 
     cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
-    with pytest.raises(TimeoutError, match="detail timeout"):
-        await provider._refresh_catalog(force=True)
-    assert cancelled.is_set()
-    assert provider._catalog == {}
+    refresh = asyncio.create_task(provider._refresh_catalog(force=True))
+    await started.wait()
+    # Give the failing sibling time to timeout and be recorded as skipped.
+    await asyncio.sleep(0)
+    release.set()
+    await refresh
+    assert str(book_audiobook["id"]) in provider._catalog
+    assert str(book_multifile["id"]) not in provider._catalog
 
 
 @pytest.mark.asyncio
-async def test_refresh_catalog_aborts_when_manifest_unmappable(
+async def test_refresh_catalog_skips_when_manifest_unmappable(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
-    """Multipart books with no mappable manifest assets must not be cached unordered."""
-    previous = {str(book_audiobook["id"]): book_audiobook}
-    provider._catalog = previous
-    provider._catalog_refreshed_at = 0.0
+    """Multipart books with no mappable manifest assets are skipped, not cached."""
     cache_set = cast("AsyncMock", provider.mass.cache.set)
     cache_set.reset_mock()
 
@@ -300,22 +290,22 @@ async def test_refresh_catalog_aborts_when_manifest_unmappable(
         return manifest_from_book(book_audiobook)
 
     cast("Any", provider._client).get_audiobook_manifest = AsyncMock(side_effect=_manifest)
-    with pytest.raises(ProviderUnavailableError, match="no mappable playback assets"):
-        await provider._refresh_catalog(force=True)
-    assert provider._catalog is previous
+    await provider._refresh_catalog(force=True)
+    assert str(book_audiobook["id"]) in provider._catalog
+    assert str(book_multifile["id"]) not in provider._catalog
     cached_ids = {call.kwargs.get("key") for call in cache_set.await_args_list}
     assert str(book_multifile["id"]) not in cached_ids
 
 
 @pytest.mark.asyncio
-async def test_refresh_catalog_aborts_when_detail_has_no_audio(
+async def test_refresh_catalog_skips_when_detail_has_no_audio(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
 ) -> None:
     """
-    Audio-listed books whose detail has no audio abort the refresh.
+    Audio-listed books whose detail has no audio are skipped.
 
-    Publishing a catalog that drops that book would omit sole authors/narrators from
-    artist sync; with deletions enabled that recursively removes linked audiobooks.
+    During sync, skipped ids are recorded so deletion does not remove them while
+    the rest of the catalog still refreshes.
     """
     sole_author_book = {
         **book_multifile,
@@ -325,14 +315,6 @@ async def test_refresh_catalog_aborts_when_detail_has_no_audio(
             "narrators": [],
         },
     }
-    previous = {
-        str(book_audiobook["id"]): book_audiobook,
-        str(book_multifile["id"]): sole_author_book,
-    }
-    provider._catalog = previous
-    provider._catalog_refreshed_at = 0.0
-    sole_author_id = f"{AUTHOR_PREFIX}9001"
-    assert sole_author_id in provider._catalog_artists()
 
     skip = Mock()
     provider.report_skipped_sync_item = skip  # type: ignore[method-assign]
@@ -347,13 +329,12 @@ async def test_refresh_catalog_aborts_when_detail_has_no_audio(
     cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
     token = SYNC_RUN_STATE.set(SyncRunState())
     try:
-        with pytest.raises(ProviderUnavailableError, match="incomplete"):
-            await provider._refresh_catalog(force=True)
+        await provider._refresh_catalog(force=True)
     finally:
         SYNC_RUN_STATE.reset(token)
 
-    assert provider._catalog is previous
-    assert sole_author_id in provider._catalog_artists()
+    assert str(book_audiobook["id"]) in provider._catalog
+    assert str(book_multifile["id"]) not in provider._catalog
     skipped_ids = {call.args[1] for call in skip.call_args_list}
     assert str(book_multifile["id"]) in skipped_ids
     assert all(call.args[0] is MediaType.AUDIOBOOK for call in skip.call_args_list)
