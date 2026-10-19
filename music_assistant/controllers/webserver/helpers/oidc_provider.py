@@ -17,6 +17,7 @@ from music_assistant_models.errors import AuthenticationFailed, InvalidDataError
 from slugify import slugify
 
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.util import run_to_completion
 
 from .auth_providers import AuthResult, LoginProvider, LoginProviderConfig
 from .oidc import (
@@ -261,6 +262,9 @@ class OIDCLoginProvider(LoginProvider):
         except (ClientError, TimeoutError, PyJWTError, OIDCProtocolError) as err:
             self.logger.warning("OIDC logout validation failed (%s)", type(err).__name__)
             raise AuthenticationFailed("Invalid OpenID Connect logout token") from err
+        await run_to_completion(self._apply_backchannel_logout(claims))
+
+    async def _apply_backchannel_logout(self, claims: dict[str, Any]) -> None:
         async with self.auth_manager.user_link_lock:
             await self.auth_manager.oidc_sessions.logout(
                 self.client.issuer, self.client.client_id, claims

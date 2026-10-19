@@ -30,6 +30,7 @@ from music_assistant.helpers.util import (
     is_port_in_use,
     join_task,
     load_provider_module,
+    run_to_completion,
     sanitize_http_header_value,
     select_free_port,
     try_parse_duration,
@@ -649,6 +650,46 @@ class TestJoinTask:
 
         release.set()
         assert await task == "done"
+
+
+class TestRunToCompletion:
+    """Required work finishes before its waiter can leave, including repeated cancellation."""
+
+    async def test_returns_the_completed_result(self) -> None:
+        """An uncancelled caller receives the original result."""
+        release = asyncio.Event()
+        release.set()
+        assert await run_to_completion(_gated_task(release, "done")) == "done"
+
+    @pytest.mark.parametrize("fail", [False, True])
+    async def test_cancellation_waits_for_work_and_preserves_errors(self, fail: bool) -> None:
+        """Cancellation cannot abandon required work or hide its failure from diagnostics."""
+        release = asyncio.Event()
+        results: list[str] = []
+
+        async def work() -> None:
+            results.append(await _gated_task(release, "done", fail=fail))
+
+        with collect_loop_errors() as reported:
+            waiter = asyncio.create_task(run_to_completion(work()))
+            try:
+                for _ in range(2):
+                    await asyncio.sleep(0)
+                    waiter.cancel()
+                    await asyncio.wait({waiter}, timeout=0.01)
+                    assert not waiter.done()
+                release.set()
+                if fail:
+                    with pytest.raises(RuntimeError, match="task failed"):
+                        await waiter
+                else:
+                    with pytest.raises(asyncio.CancelledError):
+                        await waiter
+                    assert results == ["done"]
+            finally:
+                release.set()
+                await asyncio.gather(waiter, return_exceptions=True)
+        assert reported == []
 
 
 class TestTaskManager:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import secrets
 import time
@@ -14,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.errors import AuthenticationFailed
 
 from music_assistant.helpers.json import json_dumps
+from music_assistant.helpers.util import run_to_completion
 
 from .oidc import CLOCK_LEEWAY
 
@@ -103,8 +103,7 @@ class OIDCSessionStore:
                 session.ensure_login_active()
             except BaseException:
                 # A token without a saved session link cannot be revoked by IdP logout.
-                await self.auth.database.delete("auth_tokens", {"token_id": token_id})
-                await self.auth.database.delete("oidc_sessions", {"token_id": token_id})
+                await run_to_completion(self._discard_token(token_id))
                 raise
             return token
 
@@ -117,6 +116,22 @@ class OIDCSessionStore:
 
     async def logout(self, issuer: str, client_id: str, claims: dict[str, Any]) -> int:
         """Apply a verified logout, retrying interrupted revocations."""
+        return await run_to_completion(self._apply_logout(issuer, client_id, claims))
+
+    async def revoke_identity(self, issuer: str, client_id: str, subject: str) -> None:
+        """Revoke this identity's sessions when group mapping denies access."""
+        await self.logout(
+            issuer,
+            client_id,
+            # Include accepted ID tokens from a provider whose clock is ahead.
+            {
+                "sub": subject,
+                "iat": time.time() + CLOCK_LEEWAY,
+                "jti": secrets.token_urlsafe(32),
+            },
+        )
+
+    async def _apply_logout(self, issuer: str, client_id: str, claims: dict[str, Any]) -> int:
         logout_id = hashlib.sha256(
             json_dumps([issuer, client_id, claims["jti"]]).encode()
         ).hexdigest()
@@ -148,33 +163,13 @@ class OIDCSessionStore:
                 limit=0,
             )
             if rows:
-                # A cancelled commit must not leave live WebSockets after their tokens disappear.
-                revoke_task = asyncio.create_task(
-                    self._revoke_tokens([row["token_id"] for row in rows])
-                )
-                try:
-                    await asyncio.shield(revoke_task)
-                except asyncio.CancelledError:
-                    while not revoke_task.done():
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await asyncio.shield(revoke_task)
-                    revoke_task.result()
-                    raise
+                await self._revoke_tokens([row["token_id"] for row in rows])
             await self._cleanup()
             return len(rows)
 
-    async def revoke_identity(self, issuer: str, client_id: str, subject: str) -> None:
-        """Revoke this identity's sessions when group mapping denies access."""
-        await self.logout(
-            issuer,
-            client_id,
-            # Include accepted ID tokens from a provider whose clock is ahead.
-            {
-                "sub": subject,
-                "iat": time.time() + CLOCK_LEEWAY,
-                "jti": secrets.token_urlsafe(32),
-            },
-        )
+    async def _discard_token(self, token_id: str) -> None:
+        await self.auth.database.delete("auth_tokens", {"token_id": token_id})
+        await self.auth.database.delete("oidc_sessions", {"token_id": token_id})
 
     async def _revoke_tokens(self, token_ids: list[str]) -> None:
         await self.auth.database.execute_write(

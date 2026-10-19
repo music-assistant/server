@@ -2230,6 +2230,27 @@ async def join_task[T](task: asyncio.Future[T], timeout: float | None = None) ->
     return task.result()
 
 
+async def run_to_completion[T](work: Coroutine[Any, Any, T]) -> T:
+    """
+    Run required work to completion before propagating caller cancellation.
+
+    The caller retains any locks it holds until the work finishes, even after repeated
+    cancellation. A failure in the required work is still propagated.
+
+    :param work: The coroutine that must finish once started.
+    :return: The work's result.
+    """
+    task = asyncio.create_task(work)
+    try:
+        return await join_task(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            with suppress(asyncio.CancelledError):
+                await join_task(task)
+        task.result()
+        raise
+
+
 # Bound for guard_single_request: it only needs ``.mass``, so a structural protocol
 # lets it decorate providers, core controllers and media controllers alike without
 # coupling to their concrete base classes.

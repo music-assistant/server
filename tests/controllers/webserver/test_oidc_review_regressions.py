@@ -280,7 +280,11 @@ async def test_oidc_start_only_translates_expected_failures(
     """Unexpected startup errors reach the server error handler, while provider outages use 503."""
     error = AuthenticationFailed("provider unavailable") if expected else RuntimeError("bug")
     auth = provider.auth_manager
-    request = make_mocked_request("GET", "/auth/oidc/start", headers={"Host": "music.example"})
+    request = make_mocked_request(
+        "GET",
+        "/auth/oidc/start",
+        headers={"Host": "music.example", "X-Forwarded-Proto": "https"},
+    )
     with patch.object(auth, "get_authorization_url", new=AsyncMock(side_effect=error)):
         if expected:
             assert (await auth.webserver._handle_oidc_start(request)).status == 503

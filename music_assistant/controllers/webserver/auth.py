@@ -103,7 +103,7 @@ from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
-from music_assistant.helpers.util import join_task
+from music_assistant.helpers.util import run_to_completion
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -803,7 +803,12 @@ class AuthenticationManager:
             "expires_at": expires_at.isoformat(),
             "is_long_lived": 1 if is_long_lived else 0,
         }
-        await self.database.insert("auth_tokens", token_data)
+        try:
+            await run_to_completion(self.database.insert("auth_tokens", token_data))
+        except BaseException:
+            # The insert may already be durable, but the caller will never receive this token.
+            await run_to_completion(self.database.delete("auth_tokens", {"token_id": token_id}))
+            raise
 
         return token
 
@@ -1309,6 +1314,9 @@ class AuthenticationManager:
             redirect_uri = f"{callback_base_url}/auth/callback/"
         else:
             redirect_uri = f"{callback_base_url}/auth/callback?provider_id={provider_id}"
+        if provider_id == OIDC_PROVIDER_ID and not return_url:
+            # The callback's root fallback would leave a reverse-proxy base path.
+            return_url = callback_base_url
         pending = self.pending_logins.start(
             provider_id,
             transport,
@@ -2171,17 +2179,7 @@ class AuthenticationManager:
                 return
             await self._ensure_not_last_admin(current_row)
             # Retain the lock until both the write and invalidation of cached roles finish.
-            update_task = asyncio.create_task(
-                self._write_user_role_and_disconnect(user_id, new_role)
-            )
-            try:
-                await join_task(update_task)
-            except asyncio.CancelledError:
-                while not update_task.done():
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await join_task(update_task)
-                update_task.result()
-                raise
+            await run_to_completion(self._write_user_role_and_disconnect(user_id, new_role))
 
     async def _write_user_role_and_disconnect(self, user_id: str, new_role: str) -> None:
         """Persist a changed role and close sessions holding the previous role."""
@@ -2765,17 +2763,7 @@ class AuthenticationManager:
                     },
                 )
                 # Once commit starts, finish its in-memory state and migration before cancellation.
-                commit_task = asyncio.create_task(
-                    self._commit_linked_user(connection, user, first_user)
-                )
-                try:
-                    await asyncio.shield(commit_task)
-                except asyncio.CancelledError:
-                    while not commit_task.done():
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await asyncio.shield(commit_task)
-                    commit_task.result()
-                    raise
+                await run_to_completion(self._commit_linked_user(connection, user, first_user))
             except BaseException:
                 await connection.rollback()
                 raise

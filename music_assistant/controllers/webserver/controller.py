@@ -1280,12 +1280,21 @@ class WebserverController(CoreController):
         """Bind a new OIDC sign-in to the browser and redirect to the IdP."""
         return_url = request.query.get("return_url")
         request_host = request.headers.get("X-Forwarded-Host") or request.host
+        request_scheme = request.headers.get("X-Forwarded-Proto", request.scheme).lower()
+        if request_scheme not in ("http", "https"):
+            return web.Response(status=400, text="Invalid request scheme")
         if return_url:
             valid, category = is_allowed_redirect_url(
                 return_url, request, self.base_url, self.external_url
             )
             if not valid or (self.auth.oidc_bootstrap_required and category != "trusted"):
                 return web.Response(status=400, text="Invalid return_url")
+        entry_url = self.auth.get_oidc_start_url(return_url, request_host=request_host)
+        if entry_url is None:
+            return web.Response(status=404, text="OpenID Connect is not configured")
+        # Set the state cookie on the callback origin, even when opened through an alias.
+        if URL(entry_url).origin() != URL(f"{request_scheme}://{request_host}").origin():
+            return web.HTTPFound(entry_url)
         try:
             started = await self.auth.get_authorization_url(
                 OIDC_PROVIDER_ID, return_url, request_host=request_host
@@ -1297,21 +1306,8 @@ class WebserverController(CoreController):
         if not started:
             return web.Response(status=404, text="OpenID Connect is not configured")
         authorization_url, pending = started
-        # Set the state cookie on the callback origin, even when opened through an alias.
-        callback_origin = URL(pending.redirect_uri).origin()
-        request_scheme = request.headers.get("X-Forwarded-Proto", request.scheme).lower()
-        if request_scheme not in ("http", "https"):
-            self.auth.pending_logins.pop(pending.state)
-            return web.Response(status=400, text="Invalid request scheme")
-        entry_origin = URL(f"{request_scheme}://{request_host}").origin()
-        if callback_origin != entry_origin:
-            self.auth.pending_logins.pop(pending.state)
-            entry_url = callback_origin.with_path("/auth/oidc/start")
-            if return_url:
-                entry_url = entry_url.with_query(return_url=return_url)
-            return web.HTTPFound(str(entry_url))
         response = web.HTTPFound(authorization_url)
-        secure_cookie = callback_origin.scheme == "https"
+        secure_cookie = URL(pending.redirect_uri).scheme == "https"
         response.set_cookie(
             _oidc_cookie_name(pending.state, secure=secure_cookie),
             pending.idp_nonce,

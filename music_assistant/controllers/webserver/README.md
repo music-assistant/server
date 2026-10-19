@@ -155,8 +155,11 @@ it finishes the link and first-user effects before propagating cancellation.
 `auth/authorization_url` and `/auth/authorize` return `/auth/oidc/start`, which creates
 single-use state and a nonce bound to the initiating browser by an HttpOnly, SameSite=Lax
 cookie. HTTPS uses Secure `__Host-` cookies; concurrent sign-ins have separate cookies.
-HTTP entry redirects to the configured HTTPS callback origin before setting that cookie;
-reverse-proxy callbacks use the forwarded host and scheme.
+HTTP or alias entry redirects to the canonical `/auth/oidc/start` on the callback origin
+before any sign-in state or cookie is created; reverse-proxy callbacks use the forwarded host
+and scheme. That redirect, the registered callback and the default post-sign-in destination
+all keep the External URL's base path (e.g. `https://example.com/ma`), including escaped
+path segments.
 Return URLs cannot downgrade HTTPS requests or configured HTTPS hosts to HTTP. Local HTTP
 sign-ins and registered native-app callbacks remain available.
 Code exchange uses the exact callback and PKCE verifier. ID tokens require valid signatures,
@@ -181,8 +184,11 @@ Enable back-channel logout and register the absolute HTTPS URL ending in
 The IdP must reach and trust that endpoint. Signed notifications validate issuer/client,
 timestamps, event and subject/session selectors, then revoke matching tokens and disconnect
 WebSockets. A `sid` targets one IdP session; a subject-only notification targets that identity.
-Matching tokens are deleted in one parameterized write before their WebSockets disconnect;
-cancellation waits for both steps to finish. Mapping denial uses the same revocation path.
+Matching tokens are deleted in one parameterized write before their WebSockets disconnect.
+Once a notification is verified, cancellation waits for the whole logout: lock waits, receipt
+storage, session selection, token deletion and disconnection. Mapping denial uses the same
+revocation path, so an expiring sign-in deadline cannot leave the denied identity's tokens or
+WebSockets active.
 Logout tokens require `exp`, as specified by
 [Back-Channel Logout 1.0 incorporating errata set 1, section 2.4](https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken).
 
@@ -210,6 +216,17 @@ After denial, allow 30 seconds for clock skew before retrying. For immediate rev
 IdP logout notifications or disable the MA account; group edits alone are not pushed.
 
 #### Development
+
+Cancellation boundaries use `run_to_completion` (`helpers/util.py`) for work that must finish
+before its caller can release a lock or return. Validation may be cancelled before an
+authorization decision; required side effects and credential cleanup must finish once started.
+
+| Operation | Required outcome before cancellation propagates |
+| --- | --- |
+| Account provisioning | Roll back an incomplete user/link transaction, or finish the commit and first-user effects. |
+| Role changes | Finish the role write and disconnect sessions holding the old role under the role lock. |
+| Verified logout or mapping denial | Finish lock waits, receipt storage, selection, token deletion and WebSocket disconnection. |
+| Token issuance | Remove unissued token/link rows after cancellation, expiry or failure, retaining the session lock during OIDC cleanup. |
 
 Publish the companion models/frontend packages and update server pins before merging.
 For sibling checkouts, run `pnpm build` in `music-assistant-frontend`, then in the server:
