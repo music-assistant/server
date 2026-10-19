@@ -28,7 +28,7 @@ CONF_PASSWORD = "password"  # noqa: S105
 CONF_VERIFY_SSL = "verify_ssl"
 
 AUDIO_FORMATS = frozenset({"m4b", "mp3", "m4a", "opus", "ogg", "flac"})
-CATALOG_TTL_SEC = 60
+CATALOG_TTL_SEC = 15 * 60
 # Bound concurrent BookOrbit book-detail fetches during catalog refresh.
 CATALOG_DETAIL_CONCURRENCY = 8
 # mass.cache category / TTL for raw BookDetail payloads (invalidated via updatedAt checksum).
