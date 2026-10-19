@@ -15,7 +15,13 @@ from time import time
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    AlbumType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -31,8 +37,10 @@ from music_assistant.controllers.music.helpers import (
     discogs_external_id,
     fill_track_from_recording,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.external_ids import is_valid_barcode
+from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
 
@@ -52,11 +60,14 @@ if TYPE_CHECKING:
     from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.media_capabilities import MusicDiscoveryMixin
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz.models import MusicBrainzRelease
 
 # how many reference albums and tracks an artist is identified on MusicBrainz through
 MAX_MUSICBRAINZ_REF_ITEMS = 3
+# how many top track titles an artist is searched on MusicBrainz by, at most
+MAX_TOP_TRACK_TITLES = 25
 _MUSICBRAINZ_ID_TYPES = {
     ExternalID.MB_ALBUM,
     ExternalID.MB_RELEASEGROUP,
@@ -754,26 +765,42 @@ class MetadataEnrichmentMixin:
         ref_albums = _identifying_first(
             await self.mass.music.artists.albums(artist.item_id, artist.provider, limit=None)
         )
-        ref_tracks = _identifying_first(
-            await self.mass.music.artists.tracks(artist.item_id, artist.provider, limit=None)
+        library_tracks = await self.mass.music.artists.tracks(
+            artist.item_id, artist.provider, limit=None
         )
+        ref_tracks = _identifying_first(library_tracks)
         if identified := await musicbrainz.identify_artist(artist, ref_albums, ref_tracks):
             return identified.artist.id, identified.by_name
-        # last resort for library items without identifiers: the providers' top tracks
+        # last resort for library items without identifiers: the artist's top tracks
         tried = {track.uri for track in ref_tracks}
-        top_tracks = _identifying_first(
-            [
-                track
-                for track in await self.mass.music.artists.top_tracks(
-                    artist.item_id, artist.provider, limit=None
-                )
-                if track.uri not in tried
-            ]
-        )
-        if top_tracks and (
-            identified := await musicbrainz.identify_artist(artist, ref_albums, top_tracks)
-        ):
-            return identified.artist.id, identified.by_name
+        # only a music provider ranks its own catalog without a search per track, so the
+        # listing is narrowed to them and never falls back to a metadata provider
+        if ranking := self._ranking_music_providers(artist):
+            top_tracks = _identifying_first(
+                [
+                    track
+                    for track in (
+                        await self.mass.music.artists.get_library_artist_toptracks(
+                            artist.item_id, provider_filter=ranking
+                        )
+                    ).items
+                    if track.uri not in tried
+                ]
+            )
+            if top_tracks and (
+                identified := await musicbrainz.identify_artist(artist, ref_albums, top_tracks)
+            ):
+                return identified.artist.id, identified.by_name
+            tried.update(track.uri for track in top_tracks)
+        if titles := await self._top_track_titles(artist):
+            popular = _identifying_first(_tracks_named(library_tracks, titles, tried))
+            if popular and (
+                identified := await musicbrainz.identify_artist(artist, ref_albums, popular)
+            ):
+                return identified.artist.id, identified.by_name
+            # a title search matches the artist by name only
+            if mb_artist := await musicbrainz.get_artist_by_track_titles(artist.name, titles):
+                return mb_artist.id, True
 
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
@@ -785,6 +812,47 @@ class MetadataEnrichmentMixin:
             ref_tracks_str,
         )
         return None
+
+    def _ranking_music_providers(self, artist: Artist) -> list[str]:
+        """Return the visible instances of the artist's music providers that rank its top tracks."""
+        # a refresh started by a user may only ask the sources that user can see
+        user = get_current_user()
+        visible = visible_music_sources(self.mass, user) if user else None
+        ranking: list[str] = []
+        for mapping in artist.provider_mappings:
+            if visible is not None and mapping.provider_instance not in visible:
+                continue
+            provider = self.mass.get_provider(
+                mapping.provider_instance, provider_type=MusicProvider
+            )
+            if (
+                provider
+                and ProviderFeature.ARTIST_TOPTRACKS in provider.supported_features
+                and mapping.provider_instance not in ranking
+            ):
+                ranking.append(mapping.provider_instance)
+        return ranking
+
+    async def _top_track_titles(self, artist: Artist) -> list[str]:
+        """Return the artist's top track titles from the first metadata or plugin provider with any."""
+        for provider in self.mass.get_providers_supporting_feature(
+            ProviderFeature.ARTIST_TOPTRACKS, priority=(ProviderType.METADATA, ProviderType.PLUGIN)
+        ):
+            try:
+                titles = await cast("MusicDiscoveryMixin", provider).get_artist_toptrack_titles(
+                    artist, MAX_TOP_TRACK_TITLES
+                )
+            except MusicAssistantError as err:
+                self.logger.debug(
+                    "Unable to get top track titles for artist %s from %s: %s",
+                    artist.name,
+                    provider.name,
+                    err,
+                )
+                continue
+            if titles:
+                return titles
+        return []
 
 
 def _fill_album_from_release(
@@ -843,6 +911,30 @@ def _identifying_first[ItemT: Album | Track](items: Sequence[ItemT]) -> list[Ite
         return 2
 
     return sorted(items, key=_rank)[:MAX_MUSICBRAINZ_REF_ITEMS]
+
+
+def _tracks_named(
+    tracks: Sequence[Track], titles: Sequence[str], skip_uris: set[str | None]
+) -> list[Track]:
+    """
+    Return the tracks whose name matches one of the titles, in the order of the titles.
+
+    :param tracks: Tracks of the artist.
+    :param titles: Track titles to look for.
+    :param skip_uris: Uris of tracks to leave out.
+    """
+    named: list[Track] = []
+    seen = set(skip_uris)
+    for title in titles:
+        for track in tracks:
+            if track.uri in seen:
+                continue
+            if compare_strings(track.name, title, True) or compare_strings(
+                track.name, title, False
+            ):
+                named.append(track)
+                seen.add(track.uri)
+    return named
 
 
 def _refresh_timestamp(retry_soon: bool) -> int:
