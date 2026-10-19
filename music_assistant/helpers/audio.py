@@ -755,6 +755,15 @@ def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
     return streamdetails.decoded_audio_format or streamdetails.audio_format
 
 
+def pcm_container_bit_depth(bit_depth: int) -> int:
+    """
+    Return the PCM sample bit depth that matches ``ContentType.from_bit_depth``.
+
+    :param bit_depth: The bit depth of the source, e.g. 8 for probed DSD.
+    """
+    return bit_depth if bit_depth in (16, 24) else 32
+
+
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:

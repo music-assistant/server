@@ -39,7 +39,7 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
-from music_assistant.helpers.audio import arriving_audio_format
+from music_assistant.helpers.audio import arriving_audio_format, pcm_container_bit_depth
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.music_provider import MusicProvider
 
@@ -919,7 +919,7 @@ def _buffer_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
     return AudioFormat(
         content_type=ContentType.from_bit_depth(arriving.bit_depth),
         sample_rate=arriving.sample_rate,
-        bit_depth=arriving.bit_depth,
+        bit_depth=pcm_container_bit_depth(arriving.bit_depth),
         # buffer the stereo fold of a surround source, so audio analysis measures
         # the same audio that is played back rather than the untouched surround mix
         channels=min(arriving.channels, 2),
