@@ -165,6 +165,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_CREATE_RADIOS,
     ProviderFeature.PLAYLIST_CREATE_MIXED,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_MOVE,
 }
 
 
@@ -619,6 +620,25 @@ class BuiltinProvider(MusicProvider):
                 prov_playlist_id,
                 playlist.name,
                 list(existing_items),
+                self._get_playlist_image_url(playlist),
+            )
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of a playlist to another position (both 1-based)."""
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+            items = list(parse_m3u(m3u_data))
+            if not (1 <= from_position <= len(items) and 1 <= to_position <= len(items)):
+                msg = f"Position out of range for a playlist of {len(items)} item(s)"
+                raise InvalidDataError(msg)
+            items.insert(to_position - 1, items.pop(from_position - 1))
+            playlist = await self.get_playlist(prov_playlist_id)
+            await self._write_m3u_file(
+                prov_playlist_id,
+                playlist.name,
+                items,
                 self._get_playlist_image_url(playlist),
             )
 
