@@ -89,6 +89,7 @@ def _controller(*queue_ids: str) -> PlayerQueuesController:
     controller.mass = SimpleNamespace(  # type: ignore[assignment]
         players=SimpleNamespace(
             get_player=lambda _player_id: None,
+            iter_players=lambda **_kwargs: iter(()),
             get_group_and_player_lock=lambda _player_id, **_kwargs: nullcontext(),
         )
     )
@@ -176,6 +177,23 @@ async def test_transfer_onto_a_member_of_a_group_outside_the_filter_is_refused()
         pytest.raises(InsufficientPermissions, match="group"),
     ):
         await controller.transfer_queue(ALLOWED_PLAYER, OTHER_PLAYER)
+
+
+async def test_the_queue_an_allowed_player_plays_from_is_readable_only() -> None:
+    """A queue outside the filter that an allowed player plays from is readable only."""
+    controller = _controller(ALLOWED_PLAYER, OTHER_PLAYER)
+    member = SimpleNamespace(
+        player_id=ALLOWED_PLAYER, private=False, state=SimpleNamespace(active_source=OTHER_PLAYER)
+    )
+    controller.mass.players = SimpleNamespace(  # type: ignore[assignment]
+        get_player={ALLOWED_PLAYER: member}.get, iter_players=lambda: iter([member])
+    )
+    with _restricted_user([ALLOWED_PLAYER]):
+        assert OTHER_PLAYER in [queue.queue_id for queue in controller.all_for_api()]
+        assert controller.get_for_api(OTHER_PLAYER) is not None
+        assert len(controller.items_for_api(OTHER_PLAYER)) == 1
+        with pytest.raises(InsufficientPermissions):
+            controller.clear(OTHER_PLAYER)
 
 
 @pytest.mark.parametrize(

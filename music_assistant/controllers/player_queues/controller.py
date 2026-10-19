@@ -93,6 +93,7 @@ from music_assistant.controllers.player_queues.stream_feeder import StreamFeeder
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
+    player_access_filter,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
@@ -104,6 +105,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models import BackgroundTask
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import (
         ConfigEntry,
         ConfigValueOption,
@@ -302,14 +304,30 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     @api_command("player_queues/all", required_scope=Scope.QUEUES_READ)
     def all_for_api(self) -> tuple[PlayerQueue, ...]:
-        """Return the registered PlayerQueues the current user is allowed to use."""
+        """Return the registered PlayerQueues the current user is allowed to read."""
         current_user = get_current_user()
         return tuple(
-            queue
-            for queue in self.all()
-            if has_player_access(
-                current_user, queue.queue_id, self.mass.players.get_player(queue.queue_id)
-            )
+            queue for queue in self.all() if self.has_read_access(current_user, queue.queue_id)
+        )
+
+    def has_read_access(self, user: User | None, queue_id: str) -> bool:
+        """
+        Return whether the user may read the given queue.
+
+        A user may read the queue of a player they may use, and any queue that one of
+        their players currently plays from (e.g. the queue of a group it is synced to).
+
+        :param user: The user to check, or None for an unauthenticated caller.
+        :param queue_id: The queue to check read access to.
+        """
+        if player_access_filter(user) is None:
+            return True
+        if has_player_access(user, queue_id, self.mass.players.get_player(queue_id)):
+            return True
+        return any(
+            player.state.active_source == queue_id
+            and has_player_access(user, player.player_id, player)
+            for player in self.mass.players.iter_players()
         )
 
     def all(self) -> tuple[PlayerQueue, ...]:
@@ -322,9 +340,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         Return PlayerQueue by queue_id or None if not found.
 
         :param queue_id: The queue to return.
-        :raises InsufficientPermissions: If the current user may not use the queue.
+        :raises InsufficientPermissions: If the current user may not read the queue.
         """
-        self._check_player_permission(queue_id)
+        self._check_queue_read_access(queue_id)
         return self.get(queue_id)
 
     def get(self, queue_id: str) -> PlayerQueue | None:
@@ -373,9 +391,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: The queue to return the items of.
         :param limit: Maximum number of items to return.
         :param offset: Index of the first item to return.
-        :raises InsufficientPermissions: If the current user may not use the queue.
+        :raises InsufficientPermissions: If the current user may not read the queue.
         """
-        self._check_player_permission(queue_id)
+        self._check_queue_read_access(queue_id)
         return self.items(queue_id, limit, offset)
 
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
@@ -2112,6 +2130,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             current_user, queue_id, self.mass.players.get_player(queue_id)
         ):
             msg = f"{current_user.username} does not have access to player {queue_id}"
+            raise InsufficientPermissions(msg)
+
+    def _check_queue_read_access(self, queue_id: str) -> None:
+        """Raise InsufficientPermissions when the current user may not read the queue."""
+        current_user = get_current_user()
+        if current_user and not self.has_read_access(current_user, queue_id):
+            msg = f"{current_user.username} does not have access to queue {queue_id}"
             raise InsufficientPermissions(msg)
 
     @handle_play_action

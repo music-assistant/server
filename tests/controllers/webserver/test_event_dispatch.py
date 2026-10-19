@@ -14,6 +14,7 @@ from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.media_items import Track
 
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
@@ -229,6 +230,32 @@ async def test_shared_speaker_claimed_as_client_stays_filtered(
     client.bind_sendspin_player("living_room")  # a shared, non-private speaker
 
     mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
+    await drain_event_callbacks()
+    assert client._to_write.empty()
+
+
+async def test_queue_events_follow_the_active_source_of_an_allowed_player(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queue outside the filter is delivered only while an allowed player plays from it."""
+    kitchen = SimpleNamespace(
+        player_id="kitchen", private=False, state=SimpleNamespace(active_source="group")
+    )
+    players = SimpleNamespace(get_player={"kitchen": kitchen}.get, iter_players=lambda: [kitchen])
+    monkeypatch.setattr(mass_minimal, "players", players, raising=False)
+    queues = PlayerQueuesController.__new__(PlayerQueuesController)
+    queues.mass = mass_minimal
+    monkeypatch.setattr(mass_minimal, "player_queues", queues, raising=False)
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "group", {"queue_id": "group"})
+    await drain_event_callbacks()
+    assert "group" in get_written_message(client)
+
+    kitchen.state.active_source = "kitchen"
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "group", {"queue_id": "group"})
     await drain_event_callbacks()
     assert client._to_write.empty()
 

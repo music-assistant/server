@@ -595,23 +595,27 @@ class WebsocketClientHandler:
             player_filter = player_access_filter(self._authenticated_user)
             if (
                 player_filter is not None
-                and event.event
-                in (
-                    EventType.PLAYER_ADDED,
-                    EventType.PLAYER_REMOVED,
-                    EventType.PLAYER_UPDATED,
-                    EventType.PLAYER_SLEEP_TIMER_UPDATED,
-                    EventType.QUEUE_ADDED,
-                    EventType.QUEUE_ITEMS_UPDATED,
-                    EventType.QUEUE_TIME_UPDATED,
-                    EventType.QUEUE_UPDATED,
-                )
                 and event.object_id
                 and event.object_id not in player_filter
                 # the private client player this connection announced is always allowed
                 and not own_private_player
             ):
-                return
+                if event.event in (
+                    EventType.PLAYER_ADDED,
+                    EventType.PLAYER_REMOVED,
+                    EventType.PLAYER_UPDATED,
+                    EventType.PLAYER_SLEEP_TIMER_UPDATED,
+                ):
+                    return
+                if event.event in (
+                    EventType.QUEUE_ADDED,
+                    EventType.QUEUE_ITEMS_UPDATED,
+                    EventType.QUEUE_TIME_UPDATED,
+                    EventType.QUEUE_UPDATED,
+                ) and not self.mass.player_queues.has_read_access(
+                    self._authenticated_user, event.object_id
+                ):
+                    return
 
             if event.event == EventType.SETUP_FLOW_UPDATED:
                 # setup flow steps carry prefilled values, OAuth urls and the
