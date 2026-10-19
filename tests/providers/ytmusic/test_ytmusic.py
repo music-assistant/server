@@ -286,9 +286,9 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
     provider.language = "cs"
     mock_ytm = MagicMock()
     mock_ytm.search.return_value = []
-    search = cast("Any", YoutubeMusicProvider._search).__wrapped__
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
-        await search(provider, "test", [MediaType.TRACK], 5, False)
+        await search(provider, "test", [MediaType.TRACK])
 
     assert mock_ytmusic.call_args.kwargs["language"] == "en"
 
@@ -299,9 +299,9 @@ async def test_search_does_not_use_account(provider: YoutubeMusicProvider) -> No
     provider._yt_user = "123"
     mock_ytm = MagicMock()
     mock_ytm.search.return_value = []
-    search = cast("Any", YoutubeMusicProvider._search).__wrapped__
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
-        await search(provider, "test", [MediaType.TRACK], 5, False)
+        await search(provider, "test", [MediaType.TRACK])
 
     assert not mock_ytmusic.call_args.args
     assert "auth" not in mock_ytmusic.call_args.kwargs
@@ -841,15 +841,20 @@ async def test_video_search_setting_defaults_off(provider: YoutubeMusicProvider)
     assert entry.default_value is False
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-async def test_search_passes_video_preference_to_cache(
-    provider: YoutubeMusicProvider, enabled: bool
+@pytest.mark.parametrize(
+    ("changed_key", "cleared"),
+    [("values/include_videos_in_search", True), ("values/log_level", False)],
+)
+async def test_video_search_setting_change_clears_search_caches(
+    provider: YoutubeMusicProvider, changed_key: str, cleared: bool
 ) -> None:
-    """Changing the preference selects a distinct cached search."""
-    cast("MagicMock", provider.config.get_value).return_value = enabled
-    with patch.object(provider, "_search", AsyncMock()) as cached_search:
-        await provider.search("Ocean Eyes", [MediaType.TRACK], 5)
-    cached_search.assert_awaited_once_with("Ocean Eyes", [MediaType.TRACK], 5, enabled)
+    """Toggling the video setting drops search results cached under the previous setting."""
+    provider.mass.music.domain = "music"
+    with patch.object(MusicProvider, "update_config", AsyncMock()):
+        await provider.update_config(MagicMock(), {changed_key})
+    delete = cast("AsyncMock", provider.mass.cache.delete)
+    deleted = {call.kwargs["provider"] for call in delete.await_args_list}
+    assert deleted == ({provider.instance_id, "music"} if cleared else set())
 
 
 def _search_track(item_id: str, result_type: str = "song") -> dict[str, Any]:
@@ -871,9 +876,10 @@ async def test_search_includes_videos_only_when_enabled(
     async def backend(**kwargs: Any) -> list[dict[str, Any]]:
         return [_search_track("Om6ae_QDZgI", "video")] if kwargs["ytm_filter"] == "videos" else []
 
-    search = cast("Any", YoutubeMusicProvider._search).__wrapped__
+    cast("MagicMock", provider.config.get_value).return_value = enabled
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", side_effect=backend) as backend_search:
-        results = await search(provider, "Ocean Eyes", [MediaType.TRACK], 5, enabled)
+        results = await search(provider, "Ocean Eyes", [MediaType.TRACK], 5)
     assert [track.item_id for track in results.tracks] == (["Om6ae_QDZgI"] if enabled else [])
     assert backend_search.await_count == (2 if enabled else 1)
     assert backend_search.call_args_list[0].kwargs["ytm_filter"] == "songs"
@@ -894,27 +900,20 @@ async def test_video_search_interleaves_deduplicates_and_limits(
             ]
         return [_search_track(f"song{index}") for index in range(1, 5)]
 
-    search = cast("Any", YoutubeMusicProvider._search).__wrapped__
+    cast("MagicMock", provider.config.get_value).return_value = True
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", side_effect=backend):
-        results = await search(provider, "query", [MediaType.TRACK], 4, True)
+        results = await search(provider, "query", [MediaType.TRACK], 4)
     assert [track.item_id for track in results.tracks] == ["song1", "song2", "video2", "song3"]
 
 
 async def test_artist_search_does_not_fetch_videos(provider: YoutubeMusicProvider) -> None:
     """The option only adds requests when tracks are requested."""
-    search = cast("Any", YoutubeMusicProvider._search).__wrapped__
+    cast("MagicMock", provider.config.get_value).return_value = True
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
     with patch("music_assistant.providers.ytmusic.search", AsyncMock(return_value=[])) as backend:
-        await search(provider, "query", [MediaType.ARTIST], 5, True)
+        await search(provider, "query", [MediaType.ARTIST], 5)
     backend.assert_awaited_once_with(query="query", ytm_filter="artists", limit=5)
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-def test_video_preference_versions_controller_search_cache(
-    provider: YoutubeMusicProvider, enabled: bool
-) -> None:
-    """New provider instances use the saved preference to select controller caches."""
-    cast("MagicMock", provider.config.get_value).return_value = enabled
-    assert provider.search_cache_key == f"include_videos={enabled}"
 
 
 async def test_stream_from_signed_out_session_keeps_stored_cookie(
