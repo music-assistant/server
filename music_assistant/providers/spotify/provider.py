@@ -1296,9 +1296,10 @@ class SpotifyProvider(MusicProvider):
                 )
         except RetriesExhausted, TimeoutError:
             self.logger.debug("Global session is slow or rate limited, topping up on the dev one")
-            await self._search_pages(
-                search_query, [MediaType.PLAYLIST], limit, global_result, False
-            )
+            if (missing := limit - len(UniqueList(global_result.playlists))) > 0:
+                await self._search_pages(
+                    search_query, [MediaType.PLAYLIST], missing, global_result, False
+                )
         searchresult.playlists = UniqueList(global_result.playlists)[:limit]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:

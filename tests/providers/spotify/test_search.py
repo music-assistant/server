@@ -239,6 +239,8 @@ async def test_search_playlists_keep_throttled_global_pages_past_the_deadline(
     result = await provider.search("chill", [MediaType.PLAYLIST], limit=25)
 
     assert [p.item_id for p in result.playlists] == [*(f"g{i}" for i in range(20)), "p1"]
+    dev_calls = [c.kwargs for c in get_data.await_args_list if not c.kwargs["use_global_session"]]
+    assert [(c["offset"], c["limit"]) for c in dev_calls] == [(0, 5)]
 
 
 @pytest.mark.asyncio
