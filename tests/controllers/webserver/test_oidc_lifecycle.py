@@ -54,10 +54,13 @@ def configure(
 
 
 async def sign_in(
-    provider: OIDCLoginProvider, idp: IdentityProvider, sid: str = "session-one"
+    provider: OIDCLoginProvider,
+    idp: IdentityProvider,
+    sid: str = "session-one",
+    iat: float | None = None,
 ) -> tuple[User, str, OIDCSession]:
     """Complete a signed code exchange and issue a tracked application session."""
-    idp.overrides.update({"sid": sid, "iat": int(utc().timestamp()) - 1})
+    idp.overrides.update({"sid": sid, "iat": int(utc().timestamp()) - 1 if iat is None else iat})
     user = await provider.complete_authorization(idp.pending, {"code": "valid-code"})
     session = idp.pending.oidc_session
     assert session is not None
@@ -147,6 +150,33 @@ async def test_subject_logout_is_bound_to_issuer_client_and_subject(
     assert all([await token_exists(provider, token) for token in others])
     newer = replace(session, issued_at=utc().timestamp() + 1)
     assert await provider.auth_manager.oidc_sessions.create_token(user, "new sign-in", newer)
+
+
+@pytest.mark.parametrize(("session_fraction", "logout_fraction"), [(0.75, 0.25), (0.25, 0.75)])
+async def test_subject_logout_orders_fractional_issued_at_exactly(
+    provider: OIDCLoginProvider,
+    idp: IdentityProvider,
+    session_fraction: float,
+    logout_fraction: float,
+) -> None:
+    """Sub-second NumericDates decide whether a sign-in came before or after a subject logout."""
+    provider = configure(provider)
+    second = int(utc().timestamp()) - 5
+    user, token, session = await sign_in(provider, idp, iat=second + session_fraction)
+    claims = jwt.decode(logout_token(idp), options={"verify_signature": False})
+    claims.pop("sid")
+    claims.update({"sub": session.subject, "iat": second + logout_fraction})
+    await provider.handle_backchannel_logout(
+        jwt.encode(claims, idp.key, algorithm="RS256", headers={"kid": idp.kid})
+    )
+
+    issued_after_logout = session_fraction > logout_fraction
+    assert await token_exists(provider, token) == issued_after_logout
+    if issued_after_logout:
+        assert await provider.auth_manager.oidc_sessions.create_token(user, "late tab", session)
+    else:
+        with pytest.raises(AuthenticationFailed, match="session has ended"):
+            await provider.auth_manager.oidc_sessions.create_token(user, "late tab", session)
 
 
 async def test_logout_replay_and_inflight_callback_remain_safe_after_restart(

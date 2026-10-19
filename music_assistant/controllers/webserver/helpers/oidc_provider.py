@@ -289,7 +289,7 @@ class OIDCLoginProvider(LoginProvider):
                 client_id=self.client.client_id,
                 subject=claims["sub"],
                 session_id=claims.get("sid"),
-                issued_at=int(claims["iat"]),
+                issued_at=claims["iat"],
                 expires_at=claims["exp"],
                 login_expires_at=pending.expires_at,
             )
