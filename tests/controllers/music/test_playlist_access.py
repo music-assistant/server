@@ -869,7 +869,7 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
 async def test_a_music_assistant_playlist_takes_no_uri_of_a_hidden_source(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:
-    """The builtin provider stores the uri as given, so one naming a hidden source is refused."""
+    """The builtin provider stores the uri as given, so one naming a hidden source is left out."""
     target = await _add(playlists, _playlist("Target", PlaylistAccess(owner=MEMBER.user_id)))
     provider = MagicMock(spec=MusicProvider)
     provider.domain = provider.instance_id = "builtin"
@@ -886,15 +886,17 @@ async def test_a_music_assistant_playlist_takes_no_uri_of_a_hidden_source(
     set_music_source_access(music_mass_module, sources)
     try:
         with patch.object(music_mass_module, "get_provider", return_value=provider):
-            # by instance id, and by domain of a service the user has no account of
-            for uri in ("spotify_theirs://track/t1", "qobuz://track/t1"):
-                with pytest.raises(InsufficientPermissions):
-                    await playlists._handle_add_playlist_tracks(
-                        target.item_id, [uri], MEMBER.user_id
-                    )
-            provider.add_playlist_tracks.assert_not_awaited()
+            # by instance id, and by domain of a service the user has no account of; the
+            # rest of the batch is still added
             await playlists._handle_add_playlist_tracks(
-                target.item_id, ["spotify_mine://track/t1", "library://track/1"], MEMBER.user_id
+                target.item_id,
+                [
+                    "spotify_theirs://track/t1",
+                    "spotify_mine://track/t1",
+                    "qobuz://track/t1",
+                    "library://track/1",
+                ],
+                MEMBER.user_id,
             )
         provider.add_playlist_tracks.assert_awaited_once_with(
             next(iter(target.provider_mappings)).item_id,

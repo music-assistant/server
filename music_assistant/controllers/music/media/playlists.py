@@ -1878,12 +1878,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
                 # it stores the uri as given, so one naming a source the user may not see is
-                # refused here (it resolves the items itself, as this user, when read)
+                # left out here (it resolves the items itself, as this user, when read)
                 _, provider_instance_id_or_domain, _ = await parse_uri(uri)
                 if provider_instance_id_or_domain in hidden_sources:
-                    raise InsufficientPermissions(
-                        f"{provider_instance_id_or_domain} is not a music source of this user"
+                    self.logger.warning(
+                        "Not adding %s to playlist %s - not a music source of this user",
+                        uri,
+                        playlist.name,
                     )
+                    continue
                 ids_to_add.append(uri)
                 continue
 
