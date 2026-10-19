@@ -1287,7 +1287,7 @@ class SpotifyProvider(MusicProvider):
     async def _search_playlists_on_global_session(
         self, search_query: str, limit: int, searchresult: SearchResults
     ) -> None:
-        """Search playlists on the global session, or the dev session while it is rate limited."""
+        """Search playlists on the global session, topped up by the dev session if it fails."""
         global_result = SearchResults()
         try:
             async with asyncio.timeout(GLOBAL_SEARCH_TIMEOUT):
@@ -1295,10 +1295,11 @@ class SpotifyProvider(MusicProvider):
                     search_query, [MediaType.PLAYLIST], limit, global_result, True
                 )
         except RetriesExhausted, TimeoutError:
-            self.logger.debug("Global session is rate limited, searching playlists on the dev one")
-            await self._search_pages(search_query, [MediaType.PLAYLIST], limit, searchresult, False)
-            return
-        searchresult.playlists = global_result.playlists
+            self.logger.debug("Global session is slow or rate limited, topping up on the dev one")
+            await self._search_pages(
+                search_query, [MediaType.PLAYLIST], limit, global_result, False
+            )
+        searchresult.playlists = UniqueList(global_result.playlists)[:limit]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
         """Build comma-separated search types string from media types."""
