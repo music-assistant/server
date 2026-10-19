@@ -2447,9 +2447,15 @@ class ProtocolLinkingMixin:
 
         The active output protocol lingers for a few seconds after stop, so a non-idle
         playback state is required to distinguish a real session from a just-stopped one.
+        A device input (e.g. TV) selected while MA was not playing counts as native too.
         """
-        return parent_player.active_output_protocol == "native" and (
-            parent_player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+        if parent_player.state.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            return False
+        if parent_player.active_output_protocol == "native":
+            return True
+        return (
+            parent_player.active_output_protocol is None
+            and parent_player._has_external_source_active()
         )
 
     def _order_members_for_native_join(

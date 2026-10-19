@@ -2648,6 +2648,56 @@ class TestJoinActiveNativeSession:
         assert native_members == []
         assert protocol_domain == "airplay"
 
+    @pytest.mark.parametrize(
+        ("last_mass_source", "active_source", "expected_native", "expected_protocol"),
+        [
+            (None, "tv", ["sonos_b"], []),
+            ("sonos_a", "tv", ["sonos_b"], []),
+            (None, "sonos_a", [], ["airplay_b"]),
+        ],
+    )
+    def test_parent_on_device_input_is_joined_natively(
+        self,
+        mock_mass: MagicMock,
+        last_mass_source: str | None,
+        active_source: str,
+        expected_native: list[str],
+        expected_protocol: list[str],
+    ) -> None:
+        """A parent playing a device input MA never started is joined natively."""
+
+        def _get_raw(
+            player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL and player_id == "sonos_b":
+                return "airplay_b"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+
+        controller, players = self._build_topology(mock_mass)
+        parent = players["sonos_a"]
+        parent._attr_playback_state = PlaybackState.PLAYING
+        parent._attr_active_source = active_source
+        parent.set_active_mass_source(last_mass_source)
+        parent.update_state(signal_event=False)
+        assert parent.active_output_protocol is None
+
+        protocol_members, native_members, _, _ = controller._translate_members_for_protocols(
+            parent_player=parent,
+            player_ids=["sonos_b"],
+            parent_protocol_player=None,
+            parent_protocol_domain=None,
+        )
+
+        assert native_members == expected_native
+        assert protocol_members == expected_protocol
+
     def test_native_active_parent_airplay_only_child_uses_protocol(
         self, mock_mass: MagicMock
     ) -> None:
