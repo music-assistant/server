@@ -54,8 +54,11 @@ from music_assistant.models.music_provider import MusicProvider
 from .constants import (
     ACCOUNT_FLAG_HIGH_QUALITY,
     ADD_FEEDBACK_ENDPOINT,
+    CACHE_CATEGORY_FEEDBACK,
     CONF_QUALITY,
     CONF_TAKEOVER_ACTION,
+    DELETE_FEEDBACK_ENDPOINT,
+    FEEDBACK_CACHE_EXPIRATION,
     LOGIN_ENDPOINT,
     PLAYBACK_RESUMED_ENDPOINT,
     PLAYLIST_FRAGMENT_ENDPOINT,
@@ -318,10 +321,12 @@ class PandoraProvider(MusicProvider):
 
         :param prov_item_id: The track's Pandora id (`TR:…`).
         :param media_type: Media type of the item, only tracks can be rated.
-        :param favorite: True for thumbs up, False for thumbs down, None to clear (ignored).
+        :param favorite: True for thumbs up, False for thumbs down, None to remove the thumb.
         """
-        # clearing is not sent: Pandora removes feedback by the feedback id, which is not kept
-        if media_type != MediaType.TRACK or favorite is None:
+        if media_type != MediaType.TRACK:
+            return
+        if favorite is None:
+            await self._clear_feedback(prov_item_id)
             return
         # Pandora ties feedback to the trackToken it issued with a fragment, and that token
         # decides which station the feedback trains, so only a track still held in a retained
@@ -336,9 +341,12 @@ class PandoraProvider(MusicProvider):
             raise InvalidDataError(f"Pandora does not allow feedback on track {prov_item_id}")
         if not (token := track.get("trackToken")):
             raise InvalidDataError(f"Pandora served track {prov_item_id} without a trackToken")
-        await self._api_request(
+        result = await self._api_request(
             "POST", ADD_FEEDBACK_ENDPOINT, data={"trackToken": token, "isPositive": favorite}
         )
+        # Pandora removes feedback only by the id it answers with here, and by the time a
+        # rating is cleared the fragment that held the track is long gone, so keep the id
+        await self._remember_feedback(prov_item_id, result)
 
     async def takeover_stream(self) -> None:
         """
@@ -603,6 +611,87 @@ class PandoraProvider(MusicProvider):
             return max(served, key=lambda holder: holder[0])[1]
         # never streamed, e.g. a track rated while still queued
         return self._find_track(prov_track_id)
+
+    async def _remember_feedback(self, prov_track_id: str, result: dict[str, Any]) -> None:
+        """
+        Keep the feedback Pandora recorded for a track, so a later clear can delete it.
+
+        :param prov_track_id: The track's Pandora id.
+        :param result: Pandora's addFeedback response.
+        """
+        if not (feedback_id := result.get("feedbackId")):
+            self.logger.warning(
+                "Pandora recorded feedback on track %s without a feedback id; clearing this "
+                "rating will not remove it from Pandora",
+                prov_track_id,
+            )
+            return
+        station_id = result.get("stationId")
+        # Pandora holds one thumb per track and station: a new thumb on the same station
+        # replaces the kept one, a thumb on another station is kept beside it
+        kept = [
+            entry
+            for entry in await self._get_kept_feedback(prov_track_id)
+            if entry.get("stationId") != station_id
+        ]
+        kept.append(
+            {
+                "feedbackId": feedback_id,
+                "stationId": station_id,
+                "isPositive": bool(result.get("isPositive")),
+            }
+        )
+        await self._set_kept_feedback(prov_track_id, kept)
+
+    async def _clear_feedback(self, prov_track_id: str) -> None:
+        """
+        Delete the feedback this provider sent to Pandora for a track, on every station.
+
+        :param prov_track_id: The track's Pandora id.
+        """
+        kept = await self._get_kept_feedback(prov_track_id)
+        if not kept:
+            # rated before feedback ids were kept, or outside Music Assistant
+            self.logger.warning(
+                "No Pandora feedback is known for track %s, so clearing its rating cannot "
+                "remove a thumb on Pandora; remove it in the Pandora app",
+                prov_track_id,
+            )
+            return
+        while kept:
+            entry = kept[0]
+            try:
+                await self._api_request(
+                    "POST",
+                    DELETE_FEEDBACK_ENDPOINT,
+                    data={"feedbackId": entry["feedbackId"], "isPositive": entry["isPositive"]},
+                )
+            except Exception:
+                # keep what is still on Pandora, so another clear can retry it
+                await self._set_kept_feedback(prov_track_id, kept)
+                raise
+            kept.pop(0)
+        await self.mass.cache.delete(
+            prov_track_id, category=CACHE_CATEGORY_FEEDBACK, provider=self.instance_id
+        )
+
+    async def _get_kept_feedback(self, prov_track_id: str) -> list[dict[str, Any]]:
+        """Return the feedback kept for a track, one entry per station."""
+        kept = await self.mass.cache.get(
+            prov_track_id, provider=self.instance_id, category=CACHE_CATEGORY_FEEDBACK
+        )
+        return list(kept) if isinstance(kept, list) else []
+
+    async def _set_kept_feedback(self, prov_track_id: str, kept: list[dict[str, Any]]) -> None:
+        """Store the feedback kept for a track, surviving restarts and cache clears."""
+        await self.mass.cache.set(
+            prov_track_id,
+            kept,
+            expiration=FEEDBACK_CACHE_EXPIRATION,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_FEEDBACK,
+            persistent=True,
+        )
 
     def _parse_station(self, station: dict[str, Any]) -> Radio:
         """Parse a station object into a dynamic radio station."""

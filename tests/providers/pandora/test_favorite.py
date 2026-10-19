@@ -2,17 +2,53 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 
 from music_assistant.providers.pandora import SUPPORTED_FEATURES
-from music_assistant.providers.pandora.constants import ADD_FEEDBACK_ENDPOINT
+from music_assistant.providers.pandora.constants import (
+    ADD_FEEDBACK_ENDPOINT,
+    CACHE_CATEGORY_FEEDBACK,
+    DELETE_FEEDBACK_ENDPOINT,
+)
 from music_assistant.providers.pandora.provider import PandoraProvider
 
 from .test_provider import STATION_ID, _provider, _tracks
+
+
+class _FakeCache:
+    """Stand-in for the cache controller, keyed like it: key, provider and category."""
+
+    def __init__(self) -> None:
+        self.data: dict[tuple[str, str, int], Any] = {}
+        self.persistent: set[tuple[str, str, int]] = set()
+
+    async def get(self, key: str, provider: str = "default", category: int = 0) -> Any:
+        return self.data.get((key, provider, category))
+
+    async def set(
+        self,
+        key: str,
+        data: Any,
+        expiration: int = 0,
+        provider: str = "default",
+        category: int = 0,
+        persistent: bool = False,
+    ) -> None:
+        self.data[(key, provider, category)] = data
+        if persistent:
+            self.persistent.add((key, provider, category))
+
+    async def delete(self, key: str, category: int = 0, provider: str = "default") -> None:
+        self.data.pop((key, provider, category), None)
 
 
 def _feedback_provider(
@@ -28,6 +64,12 @@ def _feedback_provider(
     for track in tracks:
         track.setdefault("trackToken", f"token-{track['pandoraId']}")
     provider = _provider(payloads=[tracks, *later])
+    provider.mass = Mock(cache=_FakeCache())
+    stations = {
+        track["trackToken"]: track.get("stationId")
+        for fragment in (tracks, *later)
+        for track in fragment
+    }
     sent: list[dict[str, Any]] = []
     inner = provider._api_request
 
@@ -35,8 +77,14 @@ def _feedback_provider(
         method: str, url: str, data: dict[str, Any] | None = None, **kw: Any
     ) -> dict[str, Any]:
         if url == ADD_FEEDBACK_ENDPOINT:
-            sent.append(data or {})
-            return {"feedbackId": "fb-1"}
+            body = data or {}
+            sent.append(body)
+            # the parts of Pandora's answer the provider keeps
+            return {
+                "feedbackId": f"fb-{len(sent)}",
+                "stationId": stations.get(body.get("trackToken")),
+                "isPositive": body.get("isPositive"),
+            }
         return await inner(method, url, data, **kw)
 
     provider._api_request = _api  # type: ignore[method-assign, assignment]
@@ -66,12 +114,10 @@ async def test_dislike_sends_thumbs_down() -> None:
 
 @pytest.mark.parametrize(
     ("media_type", "favorite"),
-    [(MediaType.TRACK, None), (MediaType.ALBUM, True), (MediaType.ARTIST, False)],
+    [(MediaType.ALBUM, True), (MediaType.ARTIST, False), (MediaType.ALBUM, None)],
 )
-async def test_clear_and_non_tracks_send_nothing(
-    media_type: MediaType, favorite: bool | None
-) -> None:
-    """Clearing a rating, or rating anything but a track, makes no call to Pandora."""
+async def test_non_tracks_send_nothing(media_type: MediaType, favorite: bool | None) -> None:
+    """Rating or clearing anything but a track makes no call to Pandora."""
     provider, sent = _feedback_provider()
     await provider.get_dynamic_radio_tracks(STATION_ID)
     await provider.set_favorite("TR:S1", media_type, favorite)
@@ -158,3 +204,125 @@ async def test_rating_a_track_not_yet_played_uses_the_freshest_copy() -> None:
     station_a.fetched_at -= 60
     await provider.set_favorite("TR:S1", MediaType.TRACK, True)
     assert sent == [{"trackToken": "b-TR:S1", "isPositive": True}]
+
+
+def _clearing_provider(
+    tracks: list[dict[str, Any]] | None = None,
+    *later: list[dict[str, Any]],
+    fail_deletes: int = 0,
+) -> tuple[PandoraProvider, list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Build a `_feedback_provider` that also records every deleteFeedback body.
+
+    :param fail_deletes: How many deletes fail, from the first, before they succeed.
+    """
+    provider, sent = _feedback_provider(tracks, *later)
+    deleted: list[dict[str, Any]] = []
+    failures = [fail_deletes]
+    inner = provider._api_request
+
+    async def _api(
+        method: str, url: str, data: dict[str, Any] | None = None, **kw: Any
+    ) -> dict[str, Any]:
+        if url == DELETE_FEEDBACK_ENDPOINT:
+            if failures[0]:
+                failures[0] -= 1
+                raise ProviderUnavailableError("Pandora server error")
+            deleted.append(data or {})
+            return {}
+        return await inner(method, url, data, **kw)
+
+    provider._api_request = _api  # type: ignore[method-assign, assignment]
+    return provider, sent, deleted
+
+
+def _cache(provider: PandoraProvider) -> _FakeCache:
+    return cast("_FakeCache", provider.mass.cache)
+
+
+def _kept(provider: PandoraProvider, track_id: str) -> Any:
+    return _cache(provider).data.get((track_id, provider.instance_id, CACHE_CATEGORY_FEEDBACK))
+
+
+@pytest.mark.parametrize("favorite", [True, False])
+async def test_clearing_a_rating_deletes_the_feedback_on_pandora(favorite: bool) -> None:
+    """Like then clear, or dislike then clear: the thumb comes off Pandora too."""
+    provider, sent, deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, favorite)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert len(sent) == 1
+    assert deleted == [{"feedbackId": "fb-1", "isPositive": favorite}]
+    assert _kept(provider, "TR:S1") is None
+
+
+async def test_feedback_is_kept_past_the_fragment_that_held_the_track() -> None:
+    """The id survives restarts and cache clears: a clear can come long after the rating."""
+    provider, _sent, deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, True)
+    assert (
+        "TR:S1",
+        provider.instance_id,
+        CACHE_CATEGORY_FEEDBACK,
+    ) in _cache(provider).persistent
+    provider._sessions.clear()  # the fragment is gone
+    await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert deleted == [{"feedbackId": "fb-1", "isPositive": True}]
+
+
+async def test_a_new_thumb_on_the_same_station_replaces_the_kept_one() -> None:
+    """Like then dislike on one station keeps only the dislike, so a clear deletes just it."""
+    provider, _sent, deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, True)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, False)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert deleted == [{"feedbackId": "fb-2", "isPositive": False}]
+
+
+async def test_clearing_deletes_the_feedback_on_every_station() -> None:
+    """A song rated on two stations loses both thumbs when the rating is cleared."""
+    provider, _sent, deleted = _clearing_provider(_station_tracks("a"), _station_tracks("b"))
+    await provider.get_dynamic_radio_tracks("station-a")
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    await provider.set_favorite("TR:S0", MediaType.TRACK, True)
+    await provider.get_dynamic_radio_tracks("station-b")
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    await provider.set_favorite("TR:S0", MediaType.TRACK, True)
+    await provider.set_favorite("TR:S0", MediaType.TRACK, None)
+    assert [body["feedbackId"] for body in deleted] == ["fb-1", "fb-2"]
+    assert _kept(provider, "TR:S0") is None
+
+
+async def test_clearing_an_unknown_rating_warns_and_sends_nothing() -> None:
+    """A thumb this provider never recorded cannot be deleted, and the log says so."""
+    provider, _sent, deleted = _clearing_provider()
+    await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert deleted == []
+    assert isinstance(provider.logger, Mock)
+    provider.logger.warning.assert_called_once()
+
+
+async def test_a_failed_delete_keeps_the_feedback_for_another_try() -> None:
+    """A delete Pandora did not take leaves the id kept, so clearing again can finish it."""
+    provider, _sent, deleted = _clearing_provider(fail_deletes=1)
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, True)
+    with pytest.raises(ProviderUnavailableError):
+        await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert _kept(provider, "TR:S1") == [
+        {"feedbackId": "fb-1", "stationId": STATION_ID, "isPositive": True}
+    ]
+    await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert deleted == [{"feedbackId": "fb-1", "isPositive": True}]
+
+
+async def test_feedback_without_an_id_is_not_kept() -> None:
+    """If Pandora answers without a feedback id, nothing is kept and the log says why."""
+    provider, _sent, _deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider._remember_feedback("TR:S1", {"stationId": STATION_ID})
+    assert _kept(provider, "TR:S1") is None
+    assert isinstance(provider.logger, Mock)
+    provider.logger.warning.assert_called_once()

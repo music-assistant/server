@@ -7,6 +7,7 @@ STATIONS_ENDPOINT = f"{API_BASE}/station/getStations"
 PLAYLIST_FRAGMENT_ENDPOINT = f"{API_BASE}/playlist/getFragment"
 PLAYBACK_RESUMED_ENDPOINT = f"{API_BASE}/station/playbackResumed"
 ADD_FEEDBACK_ENDPOINT = f"{API_BASE}/station/addFeedback"
+DELETE_FEEDBACK_ENDPOINT = f"{API_BASE}/station/deleteFeedback"
 
 # Pandora Error Code Categories
 # Authentication and authorization failures
@@ -61,3 +62,8 @@ QUALITY_HIGH = "high"
 QUALITY_STANDARD = "standard"
 
 ACCOUNT_FLAG_HIGH_QUALITY = "highQualityStreamingAvailable"
+
+# Feedback sent to Pandora, kept per track so clearing a like or dislike can remove it again:
+# Pandora deletes feedback by its id, and the fragment that held the track is long gone by then
+CACHE_CATEGORY_FEEDBACK = 1
+FEEDBACK_CACHE_EXPIRATION = 86400 * 365 * 10
