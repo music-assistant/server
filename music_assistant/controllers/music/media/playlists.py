@@ -19,6 +19,7 @@ from music_assistant_models.media_items import Playlist, PlaylistSummary
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
 from music_assistant.controllers.tasks.context import (
+    get_current_task,
     update_current_task_progress,
     update_current_task_progress_text,
 )
@@ -740,12 +741,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # actually add the tracks to the playlist on the provider
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
+        task = get_current_task()
+        failures_before = task.failure_count if task else 0
         await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        # the provider reports each item it could not add as a task failure
+        skipped = task.failure_count - failures_before if task else 0
         # reset 'last_refresh' to force a refresh of the playlist's metadata
         # in the next scheduled run of the playlist metadata task
         playlist.metadata.last_refresh = None
         await self.update_item_in_library(db_playlist_id, playlist)
-        update_current_task_progress(100, f"Added {len(ids_to_add)} item(s) to playlist")
+        update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
         self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
