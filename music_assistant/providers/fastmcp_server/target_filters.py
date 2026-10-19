@@ -26,6 +26,8 @@ class TargetKind(StrEnum):
     MUSIC_PROVIDERS = "music_providers"
     MUSIC_REFERENCE = "music_reference"
     MUSIC_REFERENCES = "music_references"
+    # A list of objects that each name a provider in ``provider_instance_id_or_domain``.
+    MUSIC_PROVIDER_ITEMS = "music_provider_items"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +99,7 @@ TARGET_RULES: tuple[TargetRule, ...] = (
     TargetRule("music/*", "providers", TargetKind.MUSIC_PROVIDERS),
     TargetRule("music/*", "provider_instance_ids", TargetKind.MUSIC_PROVIDERS),
     TargetRule("audio_analysis/*", "provider_instance_id_or_domain", TargetKind.MUSIC_PROVIDER),
+    TargetRule("audio_analysis/features/batch", "items", TargetKind.MUSIC_PROVIDER_ITEMS),
     # Provider identities embedded in typed music references.
     TargetRule("music/browse", "path", TargetKind.MUSIC_REFERENCE),
     TargetRule("music/item_by_uri", "uri", TargetKind.MUSIC_REFERENCE),
@@ -142,6 +145,8 @@ def enforce_target_filters(
             continue
         if rule.kind in _REFERENCE_KINDS:
             values = _reference_provider_ids(value)
+        elif rule.kind is TargetKind.MUSIC_PROVIDER_ITEMS:
+            values = _item_provider_ids(value)
         else:
             values = _target_values(value, sequence=rule.kind in _SEQUENCE_KINDS)
         if rule.kind in _PLAYER_KINDS:
@@ -405,6 +410,22 @@ def _reference_provider_ids(value: Any) -> set[str]:
     if isinstance(mappings, list | tuple | set | frozenset):
         for mapping in mappings:
             providers.update(_reference_provider_ids(mapping))
+    return providers
+
+
+def _item_provider_ids(value: Any) -> set[str]:
+    """Collect the provider named by each entry of a batch ``items`` argument."""
+    if isinstance(value, Mapping) or not isinstance(value, list | tuple):
+        value = [value]
+    providers: set[str] = set()
+    for item in value:
+        provider = (
+            item.get("provider_instance_id_or_domain")
+            if isinstance(item, Mapping)
+            else getattr(item, "provider_instance_id_or_domain", None)
+        )
+        if provider is not None:
+            providers.add(str(provider))
     return providers
 
 

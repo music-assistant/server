@@ -48,6 +48,7 @@ def _user(
             "provider_instance_id_or_domain",
             TargetKind.MUSIC_PROVIDER,
         ),
+        ("audio_analysis/features/batch", "items", TargetKind.MUSIC_PROVIDER_ITEMS),
         (
             "music/albums/get",
             "provider_instance_id_or_domain",
@@ -443,3 +444,50 @@ def test_browse_roots_are_matched_by_the_instance_in_their_uri() -> None:
     )
 
     assert result == [allowed, library]
+
+
+def _music_provider(instance_id: str, domain: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        instance_id=instance_id, domain=domain, type=SimpleNamespace(value="music")
+    )
+
+
+def test_audio_analysis_batch_items_are_checked_against_the_provider_filter() -> None:
+    """A forbidden provider nested in batch items is rejected like a top-level one."""
+    providers = {
+        "spotify--user": _music_provider("spotify--user", "spotify"),
+        "tidal--other": _music_provider("tidal--other", "tidal"),
+    }
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda key, **_kw: providers.get(key)
+
+    with pytest.raises(InsufficientPermissions, match="not permitted"):
+        enforce_target_filters(
+            mass,
+            _user(),
+            "audio_analysis/features/batch",
+            {
+                "items": [
+                    {"item_id": "1", "provider_instance_id_or_domain": "spotify--user"},
+                    {"item_id": "2", "provider_instance_id_or_domain": "tidal--other"},
+                ]
+            },
+        )
+
+
+def test_audio_analysis_batch_items_within_the_provider_filter_pass() -> None:
+    """Batch items that only name allowed providers are permitted."""
+    mass = MagicMock()
+    mass.get_provider.return_value = _music_provider("spotify--user", "spotify")
+
+    enforce_target_filters(
+        mass,
+        _user(),
+        "audio_analysis/features/batch",
+        {
+            "items": [
+                {"item_id": "1", "provider_instance_id_or_domain": "spotify--user"},
+                {"item_id": "2", "provider_instance_id_or_domain": "spotify"},
+            ]
+        },
+    )

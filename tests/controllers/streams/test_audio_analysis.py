@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import pathlib
+import re
 import sqlite3
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -18,7 +19,7 @@ import numpy as np
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, Track
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
@@ -2018,3 +2019,136 @@ async def test_get_wave_form_none_without_rms() -> None:
     """wave_form returns None when no AA provider stored RMS energy."""
     c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=120.0)])
     assert await c.get_wave_form("track-1", "test-provider") is None
+
+
+@pytest.mark.asyncio
+async def test_get_features_merges_rhythm_and_descriptors() -> None:
+    """Features combine Smart Fades rhythm/key with Sonic Analysis descriptors."""
+    c = _analysis_controller_with_rows(
+        [
+            _aa_row(SONIC_ANALYSIS_DOMAIN, 1, energy=0.8, valence=0.3, danceability=0.7),
+            _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 2, bpm=124.0, key="A", mode="minor"),
+        ]
+    )
+    result = await c.get_features("track-1", "test-provider")
+    assert result is not None
+    assert result["bpm"] == 124.0
+    assert result["key"] == "A"
+    assert result["mode"] == "minor"
+    assert result["energy"] == pytest.approx(0.8)
+    assert result["valence"] == pytest.approx(0.3)
+    assert result["danceability"] == pytest.approx(0.7)
+    assert result["arousal"] is None
+    assert "beats" not in result
+    assert "rms_energy" not in result
+    assert "clap_embedding" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_features_include_beats() -> None:
+    """Beats and downbeats are returned only when asked for."""
+    c = _analysis_controller_with_rows(
+        [_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=120.0, beats=[0.5, 1.0], downbeats=[0.5])]
+    )
+    result = await c.get_features("track-1", "test-provider", include_beats=True)
+    assert result is not None
+    assert result["beats"] == pytest.approx([0.5, 1.0])
+    assert result["downbeats"] == pytest.approx([0.5])
+
+
+@pytest.mark.asyncio
+async def test_get_features_none_when_not_analyzed() -> None:
+    """A track with no stored analysis returns None."""
+    c = _analysis_controller_with_rows([])
+    assert await c.get_features("track-1", "test-provider") is None
+
+
+def _batch_row(item_id: str, domain: str, row_id: int, **fields: Any) -> dict[str, Any]:
+    """Build an analysis row as returned by the batch query (carries item_id)."""
+    return {**_aa_row(domain, row_id, **fields), "item_id": item_id}
+
+
+@pytest.mark.asyncio
+async def test_get_features_batch_keeps_order_with_one_query_per_provider() -> None:
+    """Batch merges rows in memory, keeps request order and queries once per provider."""
+    c = _analysis_controller_with_rows(
+        [
+            _batch_row("track-2", SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=90.0),
+            _batch_row("track-1", SMART_FADES_ANALYSIS_DOMAIN, 2, bpm=100.0),
+            _batch_row("track-1", SONIC_ANALYSIS_DOMAIN, 3, energy=0.5),
+        ]
+    )
+    result = await c.get_features_batch(
+        [
+            {"item_id": "track-1", "provider_instance_id_or_domain": "test-provider"},
+            {"item_id": "missing", "provider_instance_id_or_domain": "test-provider"},
+            {"item_id": "track-2", "provider_instance_id_or_domain": "test-provider"},
+            {"item_id": "track-1", "provider_instance_id_or_domain": "test-provider"},
+        ]
+    )
+    assert len(result) == 4
+    assert result[0] is not None
+    assert result[0]["bpm"] == 100.0
+    assert result[0]["energy"] == pytest.approx(0.5)
+    assert result[1] is None
+    assert result[2] is not None
+    assert result[2]["bpm"] == 90.0
+    assert result[3] == result[0]
+    db_query = cast("AsyncMock", c.database.get_rows_from_query)
+    assert db_query.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"item_id": "track-1"}, "items[1]: missing or invalid provider_instance_id_or_domain"),
+        ({"provider_instance_id_or_domain": "p"}, "items[1]: missing or invalid item_id"),
+        (
+            {"item_id": "", "provider_instance_id_or_domain": "p"},
+            "items[1]: missing or invalid item_id",
+        ),
+        ("track-1", "items[1]: expected an object"),
+    ],
+)
+async def test_get_features_batch_rejects_malformed_entry_with_index(
+    entry: Any, message: str
+) -> None:
+    """A malformed entry raises an error naming its index instead of returning None."""
+    c = _analysis_controller_with_rows([])
+    with pytest.raises(InvalidDataError, match=re.escape(message)):
+        await c.get_features_batch(
+            [{"item_id": "track-1", "provider_instance_id_or_domain": "test-provider"}, entry]
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_features_batch_rejects_oversized_request() -> None:
+    """Batch requests above the cap are refused."""
+    c = _analysis_controller_with_rows([])
+    items = [{"item_id": str(i), "provider_instance_id_or_domain": "p"} for i in range(101)]
+    with pytest.raises(InvalidDataError, match="At most"):
+        await c.get_features_batch(items)
+
+
+@pytest.mark.asyncio
+async def test_get_features_renames_level_fields() -> None:
+    """Sonic Analysis level approximations are exported as rms_db/rms_range_db/sample_peak_db."""
+    c = _analysis_controller_with_rows(
+        [
+            _aa_row(
+                SONIC_ANALYSIS_DOMAIN,
+                1,
+                loudness_integrated=-8.1,
+                loudness_range=6.2,
+                true_peak=-0.4,
+            )
+        ]
+    )
+    result = await c.get_features("track-1", "test-provider")
+    assert result is not None
+    assert result["rms_db"] == pytest.approx(-8.1)
+    assert result["rms_range_db"] == pytest.approx(6.2)
+    assert result["sample_peak_db"] == pytest.approx(-0.4)
+    for old in ("loudness_integrated", "loudness_range", "true_peak"):
+        assert old not in result
