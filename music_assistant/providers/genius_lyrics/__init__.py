@@ -7,6 +7,7 @@ Used for retrieval of lyrics.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
@@ -14,7 +15,7 @@ from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.compare import compare_strings, loose_compare_strings
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -29,6 +30,9 @@ from lyricsgenius import Genius
 from requests.exceptions import RequestException
 
 from .helpers import clean_song_title, cleanup_lyrics
+
+# Genius credits collaborations as a single combined primary artist ("JAY-Z & Kanye West")
+GENIUS_ARTIST_SPLITTER = re.compile(r"\s*(?:&|,|\bfeat\.|\bft\.)\s*", re.IGNORECASE)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.TRACK_METADATA,
@@ -141,9 +145,9 @@ class GeniusProvider(MetadataProvider):
         if not song:
             return None
         # lyricsgenius falls back to the first search hit, which is often an unrelated song
-        if compare_strings(clean_song_title(song.title), title, strict=False) and (
-            loose_compare_strings(song.artist, artist)
-        ):
+        title_match = compare_strings(clean_song_title(song.title), title)
+        hit_artists = [song.artist, *GENIUS_ARTIST_SPLITTER.split(song.artist)]
+        if title_match and any(compare_strings(name, artist) for name in hit_artists):
             return song
         self.logger.debug(
             "Ignoring Genius hit '%s' by '%s' for '%s' by '%s'",
