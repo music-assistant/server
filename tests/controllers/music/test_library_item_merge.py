@@ -385,7 +385,7 @@ async def test_track_merge_preserves_album_and_artist_relations(mass: MusicAssis
         )
     original_history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER),
     ):
         before = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
@@ -629,7 +629,7 @@ async def test_artist_merge_preserves_history_credit_references(mass: MusicAssis
         )
     original_history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER),
     ):
         before = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")

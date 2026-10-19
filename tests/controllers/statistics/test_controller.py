@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ArtistType, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import AudioFormat, Track
@@ -21,12 +22,35 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
 )
-from music_assistant.controllers.statistics.controller import (
-    MAX_STATISTICS_RESULT_LIMIT,
-    cache_statistics,
-)
+from music_assistant.controllers.statistics.base import MAX_STATISTICS_RESULT_LIMIT
+from music_assistant.controllers.statistics.cache import cache_statistics
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.mass import MusicAssistant
+
+
+async def test_statistics_api_registration_is_unchanged(mass: MusicAssistant) -> None:
+    """All statistics mixins retain their registered commands, parameters and scopes."""
+    expected_parameters = {
+        "statistics/top_items": ("media_type", "period", "limit", "timezone"),
+        "statistics/genre_distribution": ("period", "limit", "timezone"),
+        "statistics/artist_distribution": ("period", "limit", "timezone"),
+        "statistics/plays_over_time": ("period", "granularity", "timezone"),
+        "statistics/listening_activity": ("period", "timezone"),
+        "statistics/listening_time": ("period", "group_by", "limit", "timezone"),
+        "statistics/decade_distribution": ("period", "limit", "timezone"),
+        "statistics/play_history": ("limit", "media_types", "played_after_timestamp", "offset"),
+        "statistics/play_count": ("item_id", "provider", "media_type"),
+        "statistics/played_item_ids": ("media_type", "since_timestamp"),
+    }
+    commands = {
+        command: handler
+        for command, handler in mass.command_handlers.items()
+        if command.startswith("statistics/")
+    }
+    assert commands.keys() == expected_parameters.keys()
+    for command, handler in commands.items():
+        assert tuple(handler.signature.parameters) == expected_parameters[command]
+        assert handler.required_scope == Scope.LIBRARY_READ
 
 
 async def test_top_items_counts_history_not_media_progress(mass: MusicAssistant) -> None:
@@ -58,7 +82,7 @@ async def test_top_items_counts_history_not_media_progress(mass: MusicAssistant)
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
@@ -140,7 +164,7 @@ async def test_top_items_combines_provider_plays_with_library_identity(
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
@@ -201,7 +225,7 @@ async def test_top_items_prefers_exact_instance_over_domain_mapping(mass: MusicA
     )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
@@ -260,7 +284,7 @@ async def test_top_items_artist_tab_counts_track_history(mass: MusicAssistant) -
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")
@@ -385,7 +409,7 @@ async def test_artist_aggregations_merge_provider_artist_mappings(
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         artist_distribution = await mass.statistics.get_artist_distribution(period="all_time")
@@ -477,7 +501,7 @@ async def test_listening_time_keeps_same_named_artists_separate(mass: MusicAssis
     )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_listening_time(period="all_time")
@@ -544,7 +568,7 @@ async def test_genre_distribution_counts_play_history(
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_genre_distribution(period="all_time")
@@ -630,7 +654,8 @@ async def test_statistics_preserve_unavailable_library_history(
     controller = mass.music.get_controller(media_type)
     with (
         patch(
-            "music_assistant.controllers.statistics.controller.get_current_user", return_value=user
+            "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
+            return_value=user,
         ),
         patch(
             "music_assistant_models.media_items.media_item.get_global_cache_value",
@@ -674,7 +699,7 @@ async def test_play_history_supports_stable_offset_pagination(mass: MusicAssista
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_play_history(limit=2, offset=1)
@@ -688,7 +713,7 @@ async def test_play_history_validates_and_caps_pagination(mass: MusicAssistant) 
 
     with (
         patch(
-            "music_assistant.controllers.statistics.controller.get_current_user",
+            "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
             return_value=user,
         ),
         patch.object(
@@ -724,7 +749,7 @@ async def test_statistics_aggregation_limits_are_validated_and_capped(
 
     with (
         patch(
-            "music_assistant.controllers.statistics.controller.get_current_user",
+            "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
             return_value=user,
         ),
         patch.object(
@@ -769,7 +794,7 @@ async def test_play_history_artwork_preserves_provider_instance(mass: MusicAssis
     )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
@@ -805,7 +830,7 @@ async def test_play_trends_exclude_container_history_rows(mass: MusicAssistant) 
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         trend = await mass.statistics.get_plays_over_time(period="all_time")
@@ -834,7 +859,7 @@ async def test_weekly_plays_use_monday_dates_across_year_boundaries(
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_plays_over_time(period="all_time", granularity="week")
@@ -894,7 +919,7 @@ async def test_play_buckets_follow_iana_timezone(
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_plays_over_time(
@@ -924,7 +949,7 @@ async def test_today_cutoff_uses_local_midnight(
 ) -> None:
     """Local midnight uses its own UTC offset, even on a daylight-saving transition day."""
     with patch(
-        "music_assistant.controllers.statistics.controller.time.time",
+        "music_assistant.controllers.statistics.base.time.time",
         return_value=datetime.fromisoformat(now).replace(tzinfo=UTC).timestamp(),
     ):
         cutoff = mass.statistics._get_period_cutoff("today", timezone)
@@ -948,7 +973,7 @@ async def test_statistics_cache_and_heatmap_are_timezone_scoped(mass: MusicAssis
     )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         utc_series = await mass.statistics.get_plays_over_time(period="all_time")
@@ -975,7 +1000,7 @@ async def test_statistics_reject_invalid_timezones(mass: MusicAssistant, timezon
     """Every period-based endpoint rejects invalid IANA zones rather than falling back."""
     user = await mass.webserver.auth.create_user("statistics-invalid-zone")
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         calls = (
@@ -1079,7 +1104,7 @@ async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         results = await mass.statistics.get_decade_distribution(period="all_time")
@@ -1099,7 +1124,7 @@ async def test_played_item_ids_reflects_new_history_immediately(mass: MusicAssis
     )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         assert await mass.statistics.get_played_item_ids(MediaType.TRACK, 0) == set()
@@ -1143,20 +1168,20 @@ async def test_statistics_cache_uses_core_cache_and_scopes_by_user(
         return calls
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=first_user,
     ):
         assert await cached_value(mass.statistics, "shared-args") == 1
     await _wait_for_statistics_cache_entry(mass, first_user.user_id)
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=first_user,
     ):
         assert await cached_value(mass.statistics, "shared-args") == 1
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=second_user,
     ):
         assert await cached_value(mass.statistics, "shared-args") == 2
@@ -1177,13 +1202,13 @@ async def test_statistics_cache_invalidates_only_affected_users(mass: MusicAssis
         return calls
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=first_user,
     ):
         assert await cached_value(mass.statistics) == 1
     await _wait_for_statistics_cache_entry(mass, first_user.user_id)
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=second_user,
     ):
         assert await cached_value(mass.statistics) == 2
@@ -1194,12 +1219,12 @@ async def test_statistics_cache_invalidates_only_affected_users(mass: MusicAssis
     )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=second_user,
     ):
         assert await cached_value(mass.statistics) == 2
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=first_user,
     ):
         assert await cached_value(mass.statistics) == 3
@@ -1223,7 +1248,7 @@ async def test_statistics_cache_global_invalidation_rotates_all_user_keys(
 
     for index, user in enumerate(users, start=1):
         with patch(
-            "music_assistant.controllers.statistics.controller.get_current_user",
+            "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
             return_value=user,
         ):
             assert await cached_value(mass.statistics) == index
@@ -1237,7 +1262,7 @@ async def test_statistics_cache_global_invalidation_rotates_all_user_keys(
 
     for index, user in enumerate(users, start=3):
         with patch(
-            "music_assistant.controllers.statistics.controller.get_current_user",
+            "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
             return_value=user,
         ):
             assert await cached_value(mass.statistics) == index
@@ -1266,7 +1291,7 @@ async def test_statistics_cache_does_not_store_inflight_result_after_invalidatio
         return calls
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         in_flight_query: asyncio.Future[int] = asyncio.ensure_future(query(mass.statistics))
@@ -1286,7 +1311,7 @@ async def test_plays_over_time_does_not_inherit_default_query_limit(
 
     with (
         patch(
-            "music_assistant.controllers.statistics.controller.get_current_user",
+            "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
             return_value=user,
         ),
         patch.object(
@@ -1307,7 +1332,7 @@ async def test_plays_over_time_rejects_unsupported_parameters(mass: MusicAssista
     user = await mass.webserver.auth.create_user("statistics-invalid-granularity")
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         with pytest.raises(InvalidDataError):
@@ -1336,7 +1361,7 @@ async def test_played_item_ids_returns_more_than_database_default_limit(
         )
 
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         result = await mass.statistics.get_played_item_ids(MediaType.TRACK, 0)
@@ -1344,7 +1369,7 @@ async def test_played_item_ids_returns_more_than_database_default_limit(
     assert {item_id for _, item_id in result} == expected_ids
     await _wait_for_statistics_cache_entry(mass, user.user_id, "get_played_item_ids")
     with patch(
-        "music_assistant.controllers.statistics.controller.get_current_user",
+        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
         return_value=user,
     ):
         cached_result = await mass.statistics.get_played_item_ids(MediaType.TRACK, 0)
