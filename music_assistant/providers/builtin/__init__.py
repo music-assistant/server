@@ -583,8 +583,9 @@ class BuiltinProvider(MusicProvider):
                     continue
                 try:
                     entry = await self._build_m3u_entry_from_uri(uri)
-                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                     self.logger.warning("Can't add %s to playlist - item not found", uri)
+                    report_current_task_failure(f"Can't add {uri} to playlist: {err}")
                     continue
                 # check dedup against the newly built entry's providers too
                 new_ids = {entry.path}

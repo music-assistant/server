@@ -2022,9 +2022,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # actually add the tracks to the playlist on the provider
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
+        task = get_current_task()
+        failures_before = task.failure_count if task else 0
         await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        # the provider reports each item it could not add as a task failure
+        skipped = task.failure_count - failures_before if task else 0
         await self._request_metadata_refresh(playlist)
-        update_current_task_progress(100, f"Added {len(ids_to_add)} item(s) to playlist")
+        update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
         self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...], user_id: str | None
