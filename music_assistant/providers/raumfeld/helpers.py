@@ -4,16 +4,41 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
+import aiohttp
 import defusedxml.ElementTree as DefusedET
 
 from music_assistant.helpers.util import try_parse_duration
 
-from .constants import PLAYER_ID_PREFIX
+from .constants import PLAYER_ID_PREFIX, RENDERER_QUERY_TIMEOUT
 
 # DIDL-Lite / metadata XML namespaces used in UPnP TrackMetaData.
 _DC = "{http://purl.org/dc/elements/1.1/}"
 _UPNP = "{urn:schemas-upnp-org:metadata-1-0/upnp/}"
 _DIDL = "{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}"
+_RAUMFELD = "{urn:schemas-raumfeld-com:meta-data/raumfeld}"
+
+# The section the host files a playing item under, mapped to the source id and name Music
+# Assistant knows that service by. A section not listed here is used as it is.
+_SECTION_SOURCES = {
+    "spotify": ("spotify", "Spotify"),
+    "radiotime": ("tunein", "TuneIn"),
+    "tidal": ("tidal", "Tidal"),
+}
+# Source reported for playback the host does not file under any section.
+_UNKNOWN_SOURCE = ("raumfeld", "Raumfeld")
+
+_QUERY_LAST_CHANGE = (
+    '<?xml version="1.0"?>'
+    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+    's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+    '<u:QueryStateVariable xmlns:u="urn:schemas-upnp-org:control-1-0">'
+    "<u:varName>LastChange</u:varName>"
+    "</u:QueryStateVariable></s:Body></s:Envelope>"
+)
+_QUERY_HEADERS = {
+    "Content-Type": 'text/xml; charset="utf-8"',
+    "SOAPACTION": '"urn:schemas-upnp-org:control-1-0#QueryStateVariable"',
+}
 
 
 def serial_to_player_id(serial: str) -> str:
@@ -64,8 +89,9 @@ def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:
     """
     Parse a DIDL-Lite ``TrackMetaData`` XML string into title/artist/album/image.
 
-    Returns a dict with keys ``title``, ``artist``, ``album`` and ``image_url``, each
-    possibly ``None``. Malformed or empty XML yields all-``None`` (never raises).
+    Returns a dict with keys ``title``, ``artist``, ``album``, ``image_url``, ``section``
+    (the service the host files the item under) and ``item_id``, each possibly ``None``.
+    Malformed or empty XML yields all-``None`` (never raises).
 
     :param didl_xml: The DIDL-Lite metadata XML as returned by GetPositionInfo, or None.
     """
@@ -74,6 +100,8 @@ def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:
         "artist": None,
         "album": None,
         "image_url": None,
+        "section": None,
+        "item_id": None,
     }
     if not didl_xml or not didl_xml.strip() or didl_xml.strip().upper() == "NOT_IMPLEMENTED":
         return result
@@ -93,7 +121,106 @@ def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:
     result["artist"] = artist.text if artist is not None else None
     result["album"] = album.text if album is not None else None
     result["image_url"] = image.text if image is not None else None
+    section = node.find(f"{_RAUMFELD}section")
+    result["section"] = section.text if section is not None else None
+    result["item_id"] = item.get("id") if item is not None else None
     return result
+
+
+def external_source(section: str | None) -> tuple[str, str]:
+    """
+    Return the ``(source id, name)`` for playback the host files under a section.
+
+    :param section: The ``raumfeld:section`` of the playing item, or None.
+    """
+    if not section or not section.strip():
+        return _UNKNOWN_SOURCE
+    name = section.strip()
+    return _SECTION_SOURCES.get(name.lower(), (name.lower().replace(" ", "_"), name))
+
+
+def parse_last_change(last_change_xml: str | None) -> dict[str, str]:
+    """
+    Parse an AVTransport ``LastChange`` event into ``{state variable: value}``.
+
+    Malformed or empty XML yields an empty dict (never raises).
+
+    :param last_change_xml: The ``LastChange`` event XML.
+    """
+    if not last_change_xml or not last_change_xml.strip():
+        return {}
+    try:
+        root = DefusedET.fromstring(last_change_xml)
+    except DefusedET.ParseError, ValueError:
+        return {}
+    return {
+        element.tag.rsplit("}", 1)[-1]: value
+        for element in root.iter()
+        if (value := element.get("val")) is not None
+    }
+
+
+def parse_control_url(description_xml: str | None, service: str) -> str | None:
+    """
+    Return the control URL of a service from a UPnP device description, or ``None``.
+
+    :param description_xml: The device description XML.
+    :param service: Part of the service type to look for (e.g. ``AVTransport``).
+    """
+    if not description_xml or not description_xml.strip():
+        return None
+    try:
+        root = DefusedET.fromstring(description_xml)
+    except DefusedET.ParseError, ValueError:
+        return None
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] != "service":
+            continue
+        fields = {child.tag.rsplit("}", 1)[-1]: (child.text or "").strip() for child in element}
+        if service in fields.get("serviceType", ""):
+            return fields.get("controlURL") or None
+    return None
+
+
+async def query_last_change(session: aiohttp.ClientSession, control_url: str) -> dict[str, str]:
+    """
+    Read the current ``LastChange`` state of a renderer's AVTransport service.
+
+    :param session: The HTTP session to use.
+    :param control_url: The AVTransport control URL of the renderer.
+    """
+    async with session.post(
+        control_url,
+        data=_QUERY_LAST_CHANGE,
+        headers=_QUERY_HEADERS,
+        timeout=aiohttp.ClientTimeout(total=RENDERER_QUERY_TIMEOUT),
+    ) as response:
+        if response.status != 200:
+            return {}
+        body = await response.text()
+    return parse_last_change_response(body)
+
+
+def parse_last_change_response(soap_xml: str | None) -> dict[str, str]:
+    """
+    Parse the SOAP response to a ``LastChange`` query into ``{state variable: value}``.
+
+    Malformed or empty XML yields an empty dict (never raises).
+
+    :param soap_xml: The QueryStateVariable response body.
+    """
+    if not soap_xml or not soap_xml.strip():
+        return {}
+    try:
+        root = DefusedET.fromstring(soap_xml)
+    except DefusedET.ParseError, ValueError:
+        return {}
+    # The UPnP specification puts the value in a <return> element; Raumfeld renderers name
+    # it after the variable instead (measured), so accept either.
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] in ("return", "LastChange"):
+            return parse_last_change(element.text)
+    return {}
 
 
 def parse_duration(value: str | None) -> int | None:

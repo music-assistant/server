@@ -21,7 +21,7 @@ from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
 
 # subset of ytmusicapi's accepted search filters that we use
-YTMSearchFilter = Literal["artists", "albums", "songs", "playlists", "podcasts"]
+YTMSearchFilter = Literal["artists", "albums", "songs", "videos", "playlists", "podcasts"]
 
 
 async def get_artist(

@@ -163,6 +163,7 @@ from music_assistant.helpers.provider_access import (
     source_owner,
     visible_music_sources,
     visible_playback_sources,
+    visible_provider,
 )
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
@@ -949,6 +950,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Browse Music providers, searched, sorted and paged.
@@ -967,6 +969,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of items to return; 0 returns them all.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for browsing.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -983,6 +986,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 search=search,
                 sort_field=sort_field,
                 sort_direction=sort_direction,
+                random_seed=random_seed,
             )
             if sort_field == SortField.NAME:
                 # the folders come before the other items, as in a file browser
@@ -1086,6 +1090,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     sort_direction=sort_direction,
                     limit=limit or 0,
                     offset=offset,
+                    random_seed=random_seed,
                 )
             )
             is not None
@@ -1620,6 +1625,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 full_item = await cast(
                     "MediaControllerBase[MediaItemType]", ctrl
                 ).add_item_to_library(full_item)
+                await self._link_genres_if_unmapped(full_item)
         elif (
             favorite
             and (own_mappings := self._write_target_mappings(full_item.provider_mappings))
@@ -1789,6 +1795,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self._import_album_tracks_if_enabled(cast("Album", library_item))
         # perform full metadata scan
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
+        if isinstance(library_item, Artist):
+            library_item = await self.artists.get_merged_library_item(library_item)
+        await self._link_genres_if_unmapped(library_item)
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
@@ -1900,6 +1909,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        if isinstance(library_item, Artist):
+            library_item = await self.artists.get_merged_library_item(library_item)
         # the item's listings (album tracks, ...) are assembled anew from here on, after
         # every change the refresh made
         await invalidate_listings(self.mass, library_item)
@@ -2940,6 +2951,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         sort_direction: SortDirection | None,
         limit: int,
         offset: int,
+        random_seed: int | None = None,
     ) -> list[MediaItemType | BrowseFolder] | None:
         """
         Return a page of one of a provider's standard library folders, read from the library.
@@ -2952,6 +2964,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param sort_direction: Sort direction.
         :param limit: Maximum number of entries to return; 0 returns them all.
         :param offset: Number of entries to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :returns: None while the library holds none of the provider's items of this type,
             so the provider lists the folder itself.
         """
@@ -2969,8 +2982,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sort_field=sort_field if typed_sort else None,
             sort_direction=sort_direction if typed_sort else None,
             summary=False,
+            random_seed=random_seed,
         )
-        if not items and not await controller.library_items(provider=provider.instance_id, limit=1):
+        if not items and not await controller.library_items(
+            provider=provider.instance_id, limit=1, random_seed=random_seed
+        ):
             return None
         page.extend(items)
         return page
@@ -3003,6 +3019,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for allowed_player_id in player_filter:
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
+
+    async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
+        """Link a library item to the genres it carries, if it has no genre links yet."""
+        if item.metadata.genres and not await self.genres.has_genre_mappings(
+            item.media_type, item.item_id
+        ):
+            await self.genres.sync_media_item_genres(
+                item.media_type, item.item_id, set(item.metadata.genres)
+            )
 
     def _write_target_mappings(
         self,
@@ -3055,12 +3080,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param mapping: The provider mapping to resolve.
         """
-        # an unavailable account of a streaming service resolves to another loaded account
-        # of that service, so the account actually serving the mapping is the one to check
-        provider = self.mass.get_provider(mapping.provider_instance)
-        if provider is None or not self._apply_user_provider_filter([provider]):
-            return None
-        return provider
+        return visible_provider(self.mass, mapping.provider_instance, get_current_user())
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """

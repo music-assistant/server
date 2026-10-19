@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature, ProviderSharing
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -31,6 +32,11 @@ from music_assistant.constants import (
     HOMEASSISTANT_SYSTEM_USER,
 )
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
+from music_assistant.controllers.tasks.context import (
+    ACTIVE_TASK_CONTEXT,
+    TaskExecutionContext,
+    report_current_task_failure,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -791,6 +797,53 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
             await playlists._handle_add_playlist_tracks(target.item_id, [], "user-gone")
         with pytest.raises(InsufficientPermissions):
             await playlists._handle_add_playlist_tracks(target.item_id, [], GUEST.user_id)
+
+
+async def test_add_task_does_not_count_items_the_provider_skipped(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """Items the provider reports as skipped are not counted as added."""
+    target = await _add(playlists, _playlist("Partial add", PlaylistAccess(owner=MEMBER.user_id)))
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.available = True
+    provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
+    provider.get_playlist_tracks = AsyncMock(return_value=[])
+
+    async def add_tracks(_prov_playlist_id: str, uris: list[str]) -> None:
+        report_current_task_failure(f"Can't add {uris[-1]}")
+
+    provider.add_playlist_tracks = AsyncMock(side_effect=add_tracks)
+    task = BackgroundTask(name="add")
+    progress_texts: list[str | None] = []
+
+    def add_failure(_task_id: str, _message: str) -> None:
+        task.failure_count += 1
+
+    context = TaskExecutionContext(
+        task_id=task.id,
+        get_task=lambda _task_id: task,
+        update_progress=lambda _task_id, _progress, text: progress_texts.append(text),
+        update_progress_text=lambda _task_id, text: progress_texts.append(text),
+        add_failure=add_failure,
+        update_report=lambda _task_id, _markdown: None,
+    )
+    token = ACTIVE_TASK_CONTEXT.set(context)
+    try:
+        with (
+            patch.object(music_mass_module, "get_provider", return_value=provider),
+            patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+            patch.object(playlists, "_request_metadata_refresh", AsyncMock()),
+        ):
+            await playlists._handle_add_playlist_tracks(
+                target.item_id,
+                ["deezer://track/1", "deezer://track/2", "bandcamp://track/3"],
+                MEMBER.user_id,
+            )
+    finally:
+        ACTIVE_TASK_CONTEXT.reset(token)
+
+    assert progress_texts[-1] == "Added 2 item(s) to playlist"
 
 
 async def test_library_add_command_ignores_a_supplied_record(

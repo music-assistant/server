@@ -320,6 +320,10 @@ and items played on their own):
 - An audiobook or podcast episode played on its own is pinned to the copy it was started from, so
   its progress and resume stay on that account. A single track played on its own has no origin.
 
+A track played from an album, or from the folder that holds one, plays as part of that album: it
+uses the album loudness, and it is not crossfaded into the next track played from the same album
+unless the streams setting `allow_crossfade_same_album` is on.
+
 **Album source.** An album plays all of its tracks from one source. `_resolve_album` asks the Music
 Controller for the album's `playback_listing` (which entry each source lists for each track),
 keeps the sources the playback user may play from, and lets `select_container_source` (in the

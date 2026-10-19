@@ -79,18 +79,22 @@ class YandexSession:
 
         Yandex may answer with an HTML error/redirect page when cookies are
         stale; awaiting ``r.json()`` on that would raise and break the
-        ``_request()`` 401 retry/reauth flow.  Treat any non-200 response or
-        non-JSON body as "cookies invalid" and fall back to ``login_token()``.
+        ``_request()`` 401 retry/reauth flow.  Treat any non-200 response,
+        non-JSON body or connection error as "cookies invalid" and fall back
+        to ``login_token()``.
         """
-        async with self._session.get("https://yandex.ru/quasar?storage=1") as r:
-            if r.status != 200:
-                return await self.login_token()
-            try:
-                resp = await r.json(content_type=None)
-            except aiohttp.ContentTypeError, ValueError:
-                return await self.login_token()
-            if resp.get("storage", {}).get("user", {}).get("uid"):
-                return True
+        try:
+            async with self._session.get("https://yandex.ru/iot?storage=1") as r:
+                if r.status != 200:
+                    return await self.login_token()
+                try:
+                    resp = await r.json(content_type=None)
+                except aiohttp.ContentTypeError, ValueError:
+                    return await self.login_token()
+                if resp.get("storage", {}).get("user", {}).get("uid"):
+                    return True
+        except aiohttp.ClientError:
+            _LOGGER.debug("Cookie check failed, logging in with x-token", exc_info=True)
 
         return await self.login_token()
 

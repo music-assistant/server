@@ -242,7 +242,11 @@ def _parse_share_url(uri: str) -> tuple[MediaType, str, str] | None:
     if host in ("qobuz.com", "www.qobuz.com"):
         # https://www.qobuz.com/us-en/album/{slug}/{id}
         # https://www.qobuz.com/us-en/interpreter/{slug}/{id}
-        return (_QOBUZ_TYPE_MAP[path[1]], "qobuz", path[3])
+        media_type, item_id = _QOBUZ_TYPE_MAP[path[1]], path[3]
+        # some artist links end in a page name (download-streaming-albums) and carry no id
+        if media_type == MediaType.ARTIST and not item_id.isdigit():
+            raise KeyError(item_id)
+        return (media_type, "qobuz", item_id)
     if host == "music.youtube.com":
         return _parse_ytmusic_url(path, query)
     if host in _APPLE_HOSTS:

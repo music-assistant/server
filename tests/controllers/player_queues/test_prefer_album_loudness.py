@@ -45,18 +45,6 @@ LIBRARY_ALBUM = Album(
         )
     },
 )
-OTHER_LIBRARY_ALBUM = Album(
-    item_id="8",
-    provider="library",
-    name="Sketches of Spain",
-    provider_mappings={
-        ProviderMapping(
-            item_id="album-prov-2",
-            provider_domain="spotify",
-            provider_instance="spotify--abc",
-        )
-    },
-)
 PLAYLIST = Playlist(
     item_id="playlist-1",
     provider="spotify--abc",
@@ -69,6 +57,8 @@ PLAYLIST = Playlist(
         )
     },
 )
+ALBUM_ORIGIN = QueueItemOrigin(container=ItemMapping.from_item(LIBRARY_ALBUM))
+PLAYLIST_ORIGIN = QueueItemOrigin(container=ItemMapping.from_item(PLAYLIST))
 # played from the folder that holds the album, pinned to the file in it
 ALBUM_FOLDER_ORIGIN = QueueItemOrigin(
     container=ItemMapping.from_item(LIBRARY_ALBUM),
@@ -117,7 +107,6 @@ def _queue_item(
 def _controller(
     items: list[QueueItem],
     enqueued: list[Album | Playlist | Track] | None = None,
-    library_album: Album | None = None,
     library_track: Track | None = None,
 ) -> PlayerQueuesController:
     """
@@ -125,7 +114,6 @@ def _controller(
 
     :param items: The items the queue holds.
     :param enqueued: The parent media items the user enqueued on it.
-    :param library_album: The library album the items' own album resolves to while loading.
     :param library_track: The library track the items' track resolves to while loading.
     """
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
@@ -145,9 +133,8 @@ def _controller(
     }
     tracks_by_uri = {item.uri: item.media_item for item in items}
     mass = MagicMock()
-    library_items = {MediaType.ALBUM: library_album, MediaType.TRACK: library_track}
     mass.music.get_library_item_by_prov_id = AsyncMock(
-        side_effect=lambda media_type, *_: library_items.get(media_type)
+        side_effect=lambda media_type, *_: library_track if media_type == MediaType.TRACK else None
     )
     mass.music.get_item_by_uri = AsyncMock(side_effect=lambda uri: tracks_by_uri[uri])
     mass.streams.audio.get_stream_details = AsyncMock(return_value=MagicMock(duration=None))
@@ -169,30 +156,30 @@ async def _prefer_album_loudness(
     return cast("bool", get_stream_details.call_args.kwargs["prefer_album_loudness"])
 
 
-async def test_track_of_an_enqueued_album_uses_album_loudness() -> None:
+async def test_track_played_from_an_album_uses_album_loudness() -> None:
     """The tracks of an album the user pressed play on are normalized on the album loudness."""
     items = [
-        _queue_item("track-1", PROVIDER_ALBUM),
-        _queue_item("track-2", PROVIDER_ALBUM),
+        _queue_item("track-1", PROVIDER_ALBUM, origin=ALBUM_ORIGIN),
+        _queue_item("track-2", PROVIDER_ALBUM, origin=ALBUM_ORIGIN),
     ]
-    assert await _prefer_album_loudness(items, 0, enqueued=[LIBRARY_ALBUM])
+    assert await _prefer_album_loudness(items, 0)
 
 
 async def test_shuffled_album_still_uses_album_loudness() -> None:
     """An album played on shuffle is still that album, however its tracks end up ordered."""
     items = [
-        _queue_item("track-1", PROVIDER_ALBUM),
+        _queue_item("track-1", PROVIDER_ALBUM, origin=ALBUM_ORIGIN),
         _queue_item("track-2", OTHER_PROVIDER_ALBUM),
-        _queue_item("track-3", PROVIDER_ALBUM),
+        _queue_item("track-3", PROVIDER_ALBUM, origin=ALBUM_ORIGIN),
     ]
-    assert await _prefer_album_loudness(items, 0, enqueued=[LIBRARY_ALBUM])
+    assert await _prefer_album_loudness(items, 0)
 
 
 async def test_adjacent_playlist_tracks_of_one_album_use_track_loudness() -> None:
     """A playlist that happens to place two tracks of one album together is no album play."""
     items = [
-        _queue_item("track-1", PROVIDER_ALBUM),
-        _queue_item("track-2", PROVIDER_ALBUM),
+        _queue_item("track-1", PROVIDER_ALBUM, origin=PLAYLIST_ORIGIN),
+        _queue_item("track-2", PROVIDER_ALBUM, origin=PLAYLIST_ORIGIN),
     ]
     assert not await _prefer_album_loudness(items, 0, enqueued=[PLAYLIST])
 
@@ -200,7 +187,7 @@ async def test_adjacent_playlist_tracks_of_one_album_use_track_loudness() -> Non
 async def test_track_added_beside_an_enqueued_album_uses_track_loudness() -> None:
     """On a mixed queue only the enqueued album's own tracks play as part of an album."""
     items = [
-        _queue_item("track-1", PROVIDER_ALBUM),
+        _queue_item("track-1", PROVIDER_ALBUM, origin=ALBUM_ORIGIN),
         _queue_item("track-2", OTHER_PROVIDER_ALBUM),
     ]
     enqueued: list[Album | Playlist | Track] = [
@@ -211,60 +198,19 @@ async def test_track_added_beside_an_enqueued_album_uses_track_loudness() -> Non
     assert not await _prefer_album_loudness(items, 1, enqueued=enqueued)
 
 
-async def test_a_different_enqueued_album_does_not_apply() -> None:
-    """Only the album a track actually belongs to counts, not any album on the queue."""
-    items = [_queue_item("track-1", PROVIDER_ALBUM)]
-    assert not await _prefer_album_loudness(items, 0, enqueued=[OTHER_LIBRARY_ALBUM])
+async def test_track_of_an_enqueued_album_played_from_elsewhere_uses_track_loudness() -> None:
+    """
+    An album the user enqueued does not reach its tracks that are played from elsewhere.
 
-
-async def test_queue_without_an_enqueued_album_uses_track_loudness() -> None:
-    """A queue that records no album parent (a browsed folder, a restored queue) is no album play."""
+    Such a track comes from a playlist, from autoplay or is played on its own.
+    """
     items = [
-        _queue_item("track-1", PROVIDER_ALBUM),
+        _queue_item("track-1", PROVIDER_ALBUM, origin=PLAYLIST_ORIGIN),
         _queue_item("track-2", PROVIDER_ALBUM),
     ]
-    assert not await _prefer_album_loudness(items, 0)
-
-
-async def test_library_album_enqueued_matches_the_provider_album_on_the_item() -> None:
-    """The enqueued album and the queue's tracks may hold different shapes of the same album."""
-    items = [_queue_item("track-1", PROVIDER_ALBUM)]
-    assert await _prefer_album_loudness(items, 0, enqueued=[LIBRARY_ALBUM])
-
-
-async def test_provider_album_enqueued_matches_the_library_album_on_the_item() -> None:
-    """The same album seen from both representations is recognised the other way around too."""
-    items = [_queue_item("track-1", LIBRARY_ALBUM)]
-    provider_album = Album(
-        item_id="album-prov-1",
-        provider="spotify--abc",
-        name="Kind of Blue",
-        provider_mappings={
-            ProviderMapping(
-                item_id="album-prov-1",
-                provider_domain="spotify",
-                provider_instance="spotify--abc",
-            )
-        },
-    )
-    assert await _prefer_album_loudness(items, 0, enqueued=[provider_album])
-
-
-async def test_item_without_an_album_uses_track_loudness() -> None:
-    """An item that carries no album at all has no album loudness to prefer."""
-    items = [_queue_item("track-1", None)]
-    assert not await _prefer_album_loudness(items, 0, enqueued=[LIBRARY_ALBUM])
-
-
-async def test_repeat_single_ignores_the_enqueued_album() -> None:
-    """A track repeating on its own is not played as part of the album it was enqueued with."""
-    items = [
-        _queue_item("track-1", PROVIDER_ALBUM),
-        _queue_item("track-2", PROVIDER_ALBUM),
-    ]
-    assert not await _prefer_album_loudness(
-        items, 0, enqueued=[LIBRARY_ALBUM], repeat_mode=RepeatMode.ONE
-    )
+    enqueued: list[Album | Playlist | Track] = [LIBRARY_ALBUM, PLAYLIST]
+    assert not await _prefer_album_loudness(items, 0, enqueued=enqueued)
+    assert not await _prefer_album_loudness(items, 1, enqueued=enqueued)
 
 
 async def test_track_played_from_an_album_folder_uses_album_loudness() -> None:
@@ -310,64 +256,24 @@ async def test_origin_survives_swapping_in_the_library_track() -> None:
 async def test_next_item_is_loaded_with_the_album_decision() -> None:
     """The preload of the item that plays next takes the same decision as the current one."""
     items = [
-        _queue_item("track-1", PROVIDER_ALBUM),
-        _queue_item("track-2", PROVIDER_ALBUM),
+        _queue_item("track-1", PROVIDER_ALBUM, origin=ALBUM_ORIGIN),
+        _queue_item("track-2", PROVIDER_ALBUM, origin=ALBUM_ORIGIN),
     ]
-    controller = _controller(items, enqueued=[LIBRARY_ALBUM])
+    controller = _controller(items)
     await controller.load_next_queue_item(QUEUE_ID, items[0].queue_item_id)
     get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
     assert get_stream_details.call_args.kwargs["prefer_album_loudness"]
 
 
-async def test_enqueued_album_survives_a_restart() -> None:
-    """
-    An album queue restored from cache still plays as an album.
-
-    The decision reads the enqueued parent, which is only recognised as an album while it
-    round-trips as one; a mapping-shaped restore would silently drop to track loudness.
-    """
-    items = [_queue_item("track-1", PROVIDER_ALBUM)]
-    controller = _controller(items, enqueued=[LIBRARY_ALBUM])
+async def test_album_play_survives_a_restart() -> None:
+    """An album queue restored from cache still plays as an album."""
+    items = [_queue_item("track-1", PROVIDER_ALBUM, origin=ALBUM_ORIGIN)]
+    controller = _controller(items)
     queue_data = controller._queue_data[QUEUE_ID]
     restored = PlayerQueueData.from_cache(queue_data.to_cache(), queue_data.items_to_cache())
 
     controller._queue_data[QUEUE_ID] = restored
     await controller._load_item(restored.items[0])
-
-    get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
-    assert get_stream_details.call_args.kwargs["prefer_album_loudness"]
-
-
-async def test_enqueued_provider_album_matches_an_items_slim_library_album() -> None:
-    """
-    A queue item may hold only a slim mapping of its album until it is loaded.
-
-    That mapping carries no provider ids of its own, so it can only be matched against the
-    album the user enqueued once loading resolved it to the full library album.
-    """
-    library_album_mapping = ItemMapping(
-        media_type=MediaType.ALBUM,
-        item_id="7",
-        provider="library",
-        name="Kind of Blue",
-    )
-    provider_album = Album(
-        item_id="album-prov-1",
-        provider="spotify--abc",
-        name="Kind of Blue",
-        provider_mappings={
-            ProviderMapping(
-                item_id="album-prov-1",
-                provider_domain="spotify",
-                provider_instance="spotify--abc",
-            )
-        },
-    )
-    items = [_queue_item("track-1", library_album_mapping)]
-    # loading resolves that slim mapping to the full library album, which does carry them
-    controller = _controller(items, enqueued=[provider_album], library_album=LIBRARY_ALBUM)
-
-    await controller._load_item(items[0])
 
     get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
     assert get_stream_details.call_args.kwargs["prefer_album_loudness"]

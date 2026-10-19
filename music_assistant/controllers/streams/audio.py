@@ -3323,20 +3323,10 @@ class StreamsAudio:
         if next_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: next item is not a track")
             return False
-        # an item picks up its library album only once it is loaded, so a queue fed straight
-        # from a provider can hold the provider album on the side that is not loaded yet.
-        # Matching on the provider mappings recognises both shapes as the same album; the
-        # uri-based equality of the album objects does not.
-        if (
-            isinstance(queue_item.media_item, Track)
-            and isinstance(next_item.media_item, Track)
-            and queue_item.media_item.album
-            and next_item.media_item.album
-            and compare_item_ids(queue_item.media_item.album, next_item.media_item.album)
-            and not self.mass.config.get_raw_core_config_value(
-                "streams", CONF_ALLOW_CROSSFADE_SAME_ALBUM, False
-            )
-        ):
+        allow_same_album = self.mass.config.get_raw_core_config_value(
+            "streams", CONF_ALLOW_CROSSFADE_SAME_ALBUM, False
+        )
+        if not allow_same_album and self._same_album(queue_item, next_item):
             # in general, crossfade is not desired for tracks of the same (gapless) album
             # because we have no accurate way to determine if the album is gapless or not,
             # for now we just never crossfade between tracks of the same album
@@ -4935,6 +4925,37 @@ class StreamsAudio:
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
             )
+        )
+
+    @staticmethod
+    def _same_album(queue_item: QueueItem, next_item: QueueItem) -> bool:
+        """
+        Return whether two queue items are tracks of the same album.
+
+        :param queue_item: The queue item that ends.
+        :param next_item: The queue item that plays after it.
+        """
+        origin, next_origin = queue_item.origin, next_item.origin
+        # played from one album, or from the folder that holds it
+        if (
+            origin
+            and origin.container
+            and origin.container.media_type == MediaType.ALBUM
+            and next_origin
+            and next_origin.container == origin.container
+        ):
+            return True
+        # a playlist or an artist can play an album's tracks in a row as well.
+        # An item picks up its library album only once it is loaded, so a queue fed straight
+        # from a provider can hold the provider album on the side that is not loaded yet.
+        # Matching on the provider mappings recognises both shapes as the same album; the
+        # uri-based equality of the album objects does not.
+        return bool(
+            isinstance(queue_item.media_item, Track)
+            and isinstance(next_item.media_item, Track)
+            and queue_item.media_item.album
+            and next_item.media_item.album
+            and compare_item_ids(queue_item.media_item.album, next_item.media_item.album)
         )
 
     def _select_buffered_crossfade(
