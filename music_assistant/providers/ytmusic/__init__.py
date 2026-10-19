@@ -6,16 +6,18 @@ import asyncio
 import gettext
 import importlib
 import logging
+import secrets
 import time
 from collections import Counter
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 import ytmusicapi
 from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar
@@ -55,7 +57,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi import LikeStatus
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
-from ytmusicapi.exceptions import YTMusicServerError
+from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 from ytmusicapi.parsers.podcasts import Description
 
@@ -90,6 +92,7 @@ from .helpers import (
     get_library_playlists,
     get_library_podcasts,
     get_library_tracks,
+    get_playback_tracking,
     get_playlist,
     get_podcast,
     get_podcast_episode,
@@ -133,6 +136,10 @@ YT_PERSONAL_PODCAST_PLAYLISTS = (
     "SE",  # Episodes for later
     "RDPN",  # New episodes
 )
+# while an episode plays its position is reported at most this often (in seconds)
+PROGRESS_REPORT_INTERVAL = 300
+# characters of the client playback nonce (cpn), YouTube's id for one playback
+CPN_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
 YT_PERSONAL_PLAYLISTS = (
     YT_LIKED_SONGS_PLAYLIST_ID,  # Liked songs
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
@@ -191,6 +198,16 @@ async def setup(
     return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+@dataclass
+class EpisodePlayback:
+    """A playback of a podcast episode as reported to YouTube."""
+
+    cpn: str
+    position: int
+    reported_at: float = 0.0
+    watchtime_url: str | None = None
+
+
 class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Youtube Music."""
 
@@ -203,6 +220,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _yt_dlp_module = None
     _rotate_session: ClientSession | None = None
     _keep_alive_task: asyncio.Task[None] | None = None
+    _episode_playbacks: dict[str, EpisodePlayback]
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -237,6 +255,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self._initialize_headers()
         self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
+        self._episode_playbacks = {}
         # get default language (that is supported by YTM)
         mass_locale = self.mass.metadata.locale
         for lang_code in SUPPORTED_LANGUAGES:
@@ -684,6 +703,82 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         episode = self._parse_podcast_episode(episode_obj, podcast)
         episode.position = 0
         return episode
+
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
+        """
+        Get the resume point YouTube holds for a podcast episode.
+
+        YouTube only reports progress as a whole percentage, so the position is approximate.
+
+        :param item_id: The podcast episode id.
+        :param media_type: The media type of the item.
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            raise NotImplementedError
+        video_id = item_id.split(PODCAST_EPISODE_SPLITTER)[1]
+        try:
+            episode_obj = await get_podcast_episode(
+                video_id, headers=self._headers, user=self._yt_user
+            )
+            percentage = int(episode_obj.get("progressPercentage") or 0)
+            if percentage <= 0:
+                return False, 0, None
+            # the episode page only shows a rounded duration, the (cached) video details the exact one
+            duration = (await self.get_track(video_id)).duration
+        except (YTMusicError, KeyError, MediaNotFoundError) as err:
+            # without YouTube's progress the episode resumes from Music Assistant's own
+            self.logger.debug("Unable to get the progress of episode %s: %s", video_id, err)
+            raise NotImplementedError from err
+        if percentage >= 100:
+            return True, duration * 1000, None
+        return False, duration * percentage * 10, None
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Report the position of a podcast episode to YouTube, so its apps resume from there.
+
+        :param media_type: The media type of the played item.
+        :param prov_item_id: The provider item id.
+        :param fully_played: Whether the item was played to the end.
+        :param position: The last known position in seconds.
+        :param media_item: The played item.
+        :param is_playing: Whether the item is still playing.
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            return
+        video_id = prov_item_id.split(PODCAST_EPISODE_SPLITTER)[1]
+        playback = self._episode_playbacks.get(video_id)
+        if (
+            is_playing
+            and playback
+            and time.monotonic() - playback.reported_at < PROGRESS_REPORT_INTERVAL
+        ):
+            return
+        is_new = playback is None
+        if playback is None:
+            cpn = "".join(secrets.choice(CPN_ALPHABET) for _ in range(16))
+            playback = EpisodePlayback(cpn=cpn, position=position)
+        # stamped before any request, so a failed or slow report is not retried every tick
+        playback.reported_at = time.monotonic()
+        if is_playing:
+            self._episode_playbacks[video_id] = playback
+        else:
+            # a pause, stop or finish ends this playback, a resume starts a new one
+            self._episode_playbacks.pop(video_id, None)
+        if is_new:
+            playback.watchtime_url = await self._start_episode_playback(video_id, playback.cpn)
+        if playback.watchtime_url:
+            await self._report_episode_position(playback, position)
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add an item to the library."""
@@ -1375,6 +1470,44 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         stream_format, rotated = await asyncio.to_thread(_extract_best_stream_url_format)
         self._store_cookies(rotated)
         return stream_format
+
+    async def _start_episode_playback(self, video_id: str, cpn: str) -> str | None:
+        """Announce a new playback of a podcast episode to YouTube and return its report address."""
+        tracking = await get_playback_tracking(video_id, headers=self._headers, user=self._yt_user)
+        playback_url = (tracking or {}).get("videostatsPlaybackUrl", {}).get("baseUrl")
+        watchtime_url = (tracking or {}).get("videostatsWatchtimeUrl", {}).get("baseUrl")
+        if not playback_url or not watchtime_url:
+            self.logger.debug("YouTube offers no playback reporting for episode %s", video_id)
+            return None
+        await self._send_playback_report(playback_url, {"cpn": cpn, "docid": video_id, "cmt": "0"})
+        return str(watchtime_url)
+
+    async def _report_episode_position(self, playback: EpisodePlayback, position: int) -> None:
+        """Report the segment played since the last report of an episode playback to YouTube."""
+        # a backward seek leaves nothing played since the last report
+        start = min(playback.position, position)
+        playback.position = position
+        await self._send_playback_report(
+            str(playback.watchtime_url),
+            {"cpn": playback.cpn, "cmt": str(position), "st": str(start), "et": str(position)},
+        )
+
+    async def _send_playback_report(self, url: str, params: dict[str, str]) -> None:
+        """Send a playback report to one of the tracking addresses YouTube handed out."""
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        # YouTube checks the values it put in the address, so only missing ones are added
+        for key, value in {"ver": "2", **params}.items():
+            query.setdefault(key, [value])
+        try:
+            async with self.mass.http_session.get(
+                parsed._replace(query=urlencode(query, doseq=True)).geturl(),
+                headers=self._headers,
+                cookies=self._cookies,
+            ) as response:
+                response.raise_for_status()
+        except ClientError as err:
+            self.logger.debug("YouTube did not take a playback report: %s", err)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(

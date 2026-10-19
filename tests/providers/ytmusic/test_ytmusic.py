@@ -4,6 +4,7 @@ from http.cookies import SimpleCookie
 from types import SimpleNamespace
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import ytmusicapi
@@ -956,3 +957,147 @@ async def test_late_stream_does_not_overwrite_reconfigured_cookie(
         await provider._get_stream_format("dQw4w9WgXcQ")
 
     update_setup_data.assert_not_called()
+
+
+def _tracking() -> dict[str, Any]:
+    """Return the playback tracking addresses YouTube hands out for a video."""
+    return {
+        "videostatsPlaybackUrl": {"baseUrl": "https://s.youtube.com/api/stats/playback?docid=v1"},
+        "videostatsWatchtimeUrl": {
+            "baseUrl": "https://s.youtube.com/api/stats/watchtime?docid=v1&len=3600"
+        },
+    }
+
+
+def _reported(provider: YoutubeMusicProvider) -> list[dict[str, list[str]]]:
+    """Return the query of every playback report sent, with its address under 'url'."""
+    reports = []
+    for call in cast("MagicMock", provider.mass.http_session.get).call_args_list:
+        url = call.args[0]
+        reports.append({"url": [url.split("?")[0]], **parse_qs(urlparse(url).query)})
+    return reports
+
+
+@pytest.fixture
+def reporting_provider(provider: YoutubeMusicProvider) -> YoutubeMusicProvider:
+    """Return a provider whose playback reports are accepted by YouTube."""
+    provider._cookies = {}
+    provider._episode_playbacks = {}
+    response = MagicMock()
+    provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda *_args, **_kwargs: _ping_context_manager(response=response)
+    )
+    return provider
+
+
+async def _played(
+    provider: YoutubeMusicProvider,
+    position: int,
+    is_playing: bool,
+    media_type: MediaType = MediaType.PODCAST_EPISODE,
+) -> None:
+    """Send a playback report of episode v1 to the provider."""
+    await provider.on_played(
+        media_type=media_type,
+        prov_item_id="pod1|v1",
+        fully_played=False,
+        position=position,
+        media_item=MagicMock(),
+        is_playing=is_playing,
+    )
+
+
+async def test_on_played_reports_episode_playback(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """A playing episode is announced once, its position is throttled and its stop is sent."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ) as mock_tracking:
+        await _played(reporting_provider, 100, is_playing=True)
+        await _played(reporting_provider, 130, is_playing=True)
+        await _played(reporting_provider, 400, is_playing=False)
+
+    mock_tracking.assert_awaited_once()
+    start, first, stop = _reported(reporting_provider)
+    assert start["url"] == ["https://s.youtube.com/api/stats/playback"]
+    assert start["cmt"] == ["0"]
+    assert first["url"] == stop["url"] == ["https://s.youtube.com/api/stats/watchtime"]
+    assert (first["st"], first["et"]) == (["100"], ["100"])
+    assert (stop["st"], stop["et"]) == (["100"], ["400"])
+    assert start["cpn"] == first["cpn"] == stop["cpn"]
+    # the values YouTube put in the address itself stay as they are
+    assert stop["docid"] == ["v1"]
+    assert stop["len"] == ["3600"]
+    assert stop["cmt"] == ["400"]
+    assert not reporting_provider._episode_playbacks
+
+
+async def test_on_played_reports_position_after_interval(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """A playing episode reports its position again once the interval has passed."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ):
+        await _played(reporting_provider, 100, is_playing=True)
+        reporting_provider._episode_playbacks["v1"].reported_at -= 300
+        await _played(reporting_provider, 400, is_playing=True)
+
+    assert len(_reported(reporting_provider)) == 3
+
+
+async def test_on_played_ignores_tracks_and_untracked_episodes(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """Tracks are never reported, and nor is an episode YouTube offers no tracking for."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking", AsyncMock(return_value=None)
+    ) as mock_tracking:
+        await _played(reporting_provider, 100, is_playing=False, media_type=MediaType.TRACK)
+        mock_tracking.assert_not_awaited()
+        await _played(reporting_provider, 100, is_playing=True)
+        await _played(reporting_provider, 130, is_playing=True)
+
+    # an episode without tracking is not asked about again on every tick
+    mock_tracking.assert_awaited_once()
+
+    cast("MagicMock", reporting_provider.mass.http_session.get).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("percentage", "expected"),
+    [(0, (False, 0, None)), (50, (False, 1_800_000, None)), (100, (True, 3_600_000, None))],
+)
+async def test_get_resume_position_from_progress(
+    provider: YoutubeMusicProvider, percentage: int, expected: tuple[bool, int, None]
+) -> None:
+    """The resume point is the share of the episode YouTube reports as played."""
+    with (
+        patch.object(provider, "get_track", AsyncMock(return_value=SimpleNamespace(duration=3600))),
+        patch(
+            "music_assistant.providers.ytmusic.get_podcast_episode",
+            AsyncMock(return_value={"progressPercentage": percentage}),
+        ),
+    ):
+        result = await provider.get_resume_position("pod1|v1", MediaType.PODCAST_EPISODE)
+
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "error", [YTMusicServerError("Server returned HTTP 500"), KeyError("progress")]
+)
+async def test_get_resume_position_unavailable(
+    provider: YoutubeMusicProvider, error: Exception
+) -> None:
+    """When YouTube's progress cannot be read, the episode resumes from MA's own position."""
+    with (
+        patch(
+            "music_assistant.providers.ytmusic.get_podcast_episode", AsyncMock(side_effect=error)
+        ),
+        pytest.raises(NotImplementedError),
+    ):
+        await provider.get_resume_position("pod1|v1", MediaType.PODCAST_EPISODE)
