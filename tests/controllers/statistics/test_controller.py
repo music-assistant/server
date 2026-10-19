@@ -5,13 +5,14 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ArtistType, MediaType
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import AudioFormat, Track
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
     DB_TABLE_CACHE,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -79,6 +80,7 @@ async def test_top_items_combines_provider_plays_with_library_identity(
         {
             "name": "Shared Track",
             "sort_name": "shared track",
+            "duration": 180,
             "metadata": "{}",
             "search_name": "shared track",
             "search_sort_name": "shared track",
@@ -97,6 +99,7 @@ async def test_top_items_combines_provider_plays_with_library_identity(
                 "provider_domain": provider_domain,
                 "provider_instance": provider_instance,
                 "provider_item_id": provider_item_id,
+                "audio_format": serialize_to_json(AudioFormat().to_dict()),
             },
         )
 
@@ -283,9 +286,11 @@ async def test_top_items_artist_tab_counts_track_history(mass: MusicAssistant) -
 
 
 @pytest.mark.parametrize("apple_provider", ["apple_music--account", "apple_music"])
+@pytest.mark.parametrize("duplicate_credit", [False, True])
 async def test_artist_aggregations_merge_provider_artist_mappings(
     mass: MusicAssistant,
     apple_provider: str,
+    duplicate_credit: bool,
 ) -> None:
     """Artist distribution and listening time group all mapped artist identities together."""
     user = await mass.webserver.auth.create_user("statistics-artist-mappings")
@@ -339,6 +344,33 @@ async def test_artist_aggregations_merge_provider_artist_mappings(
                     "provider_item_id": provider_track_id,
                 },
             )
+        artist_credits = [
+            {
+                "item_id": provider_artist_id,
+                "provider": provider_instance,
+                "name": "Shared Artist",
+                "image": {
+                    "type": "thumb",
+                    "path": "https://example.com/artist.jpg",
+                    "provider": "url",
+                    "remotely_accessible": True,
+                },
+            }
+        ]
+        if duplicate_credit:
+            artist_credits.append(
+                {
+                    "item_id": str(library_artist_id),
+                    "provider": "library",
+                    "name": "Alias Artist",
+                    "image": {
+                        "type": "thumb",
+                        "path": "https://example.com/alias.jpg",
+                        "provider": "url",
+                        "remotely_accessible": True,
+                    },
+                }
+            )
         await mass.music.database.insert(
             DB_TABLE_PLAY_HISTORY,
             {
@@ -348,15 +380,7 @@ async def test_artist_aggregations_merge_provider_artist_mappings(
                 "userid": user.user_id,
                 "name": provider_track_id,
                 "timestamp": 1_000,
-                "artists": serialize_to_json(
-                    [
-                        {
-                            "item_id": provider_artist_id,
-                            "provider": provider_instance,
-                            "name": "Shared Artist",
-                        }
-                    ]
-                ),
+                "artists": serialize_to_json(artist_credits),
             },
         )
 
@@ -532,6 +556,105 @@ async def test_genre_distribution_counts_play_history(
 
     assert [(result.name, result.value) for result in results] == [("Rock", 2)]
     assert [(result.name, result.minutes) for result in listening_time] == [("Rock", 8.0)]
+
+
+@pytest.mark.parametrize("media_type", [MediaType.TRACK, MediaType.ARTIST])
+async def test_statistics_preserve_unavailable_library_history(
+    mass: MusicAssistant, media_type: MediaType
+) -> None:
+    """History keeps missing and unavailable library items without offering them as playable."""
+    user = await mass.webserver.auth.create_user("statistics-library-availability")
+    table = DB_TABLE_ARTISTS if media_type == MediaType.ARTIST else DB_TABLE_TRACKS
+    library_ids: dict[str, int] = {}
+    for name in ("Available", "Unavailable", "Deleted"):
+        library_id = await mass.music.database.insert(
+            table,
+            {
+                "name": name,
+                "sort_name": name.casefold(),
+                "metadata": "{}",
+                "search_name": name.casefold(),
+                "search_sort_name": name.casefold(),
+                **(
+                    {"artist_type": ArtistType.SINGER.value}
+                    if media_type == MediaType.ARTIST
+                    else {"duration": 0}
+                ),
+            },
+        )
+        library_ids[name] = library_id
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": media_type.value,
+                "item_id": library_id,
+                "provider_domain": "test",
+                "provider_instance": "test-provider",
+                "provider_item_id": name,
+                "available": name != "Unavailable",
+                "audio_format": serialize_to_json(AudioFormat().to_dict()),
+            },
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": str(library_id),
+                "provider": "library",
+                "media_type": media_type.value,
+                "userid": user.user_id,
+                "name": name,
+                "timestamp": 1_000,
+            },
+        )
+        if media_type == MediaType.ARTIST:
+            await mass.music.database.insert(
+                DB_TABLE_PLAY_HISTORY,
+                {
+                    "item_id": f"track-{library_id}",
+                    "provider": "test-provider",
+                    "media_type": MediaType.TRACK.value,
+                    "userid": user.user_id,
+                    "name": "Credited track",
+                    "timestamp": 1_000,
+                    "artists": serialize_to_json(
+                        [{"item_id": str(library_id), "provider": "library", "name": name}]
+                    ),
+                },
+            )
+
+    await mass.music.database.delete(table, {"item_id": library_ids["Deleted"]})
+    await mass.music.database.delete(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {"media_type": media_type.value, "item_id": library_ids["Deleted"]},
+    )
+    controller = mass.music.get_controller(media_type)
+    with (
+        patch(
+            "music_assistant.controllers.statistics.controller.get_current_user", return_value=user
+        ),
+        patch(
+            "music_assistant_models.media_items.media_item.get_global_cache_value",
+            return_value={"test-provider"},
+        ),
+        patch.object(
+            controller, "get_library_items_by_query", wraps=controller.get_library_items_by_query
+        ) as batch_lookup,
+    ):
+        ranking = await mass.statistics.get_top_items(media_type, period="all_time")
+        history = await mass.statistics.get_play_history(media_types=[media_type])
+        responses = [[result.item for result in ranking], history]
+        if media_type == MediaType.ARTIST:
+            distribution = await mass.statistics.get_artist_distribution(period="all_time")
+            responses.append([result.item for result in distribution])
+
+    for items in responses:
+        assert {item.name: item.available for item in items} == {
+            "Available": True,
+            "Unavailable": False,
+            "Deleted": False,
+        }
+    assert [result.play_count for result in ranking] == [1, 1, 1]
+    assert batch_lookup.await_count == len(responses)
 
 
 async def test_play_history_supports_stable_offset_pagination(mass: MusicAssistant) -> None:

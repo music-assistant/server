@@ -109,9 +109,10 @@ _TRACK_HISTORY_CTE = f"""
 """
 # Selecting an artist is not a listening event; artist statistics come from the
 # credits stored on completed track plays, not from artist/container history rows.
+# Aliases with different display metadata still represent one artist credit per play.
 _TRACK_ARTISTS_CTE = f"""
-    track_artists AS (
-        SELECT DISTINCT
+    normalized_artist_credits AS (
+        SELECT
             play_history.id AS play_id,
             CASE
                 WHEN play_history.provider = 'library'
@@ -156,6 +157,10 @@ _TRACK_ARTISTS_CTE = f"""
             AND play_history.media_type = '{MediaType.TRACK.value}'
             AND play_history.userid = :user_id
             AND play_history.timestamp >= :cutoff_timestamp
+    ), track_artists AS (
+        SELECT play_id, track_id, item_id, provider, MAX(name) AS name, MAX(image) AS image
+        FROM normalized_artist_credits
+        GROUP BY play_id, track_id, item_id, provider
     )
 """
 
@@ -373,6 +378,7 @@ class StatisticsController(CoreController):
                 )
             )
 
+        await self._set_library_item_availability([entry.item for entry in result])
         return result
 
     @cache_statistics()
@@ -491,6 +497,7 @@ class StatisticsController(CoreController):
                 )
             )
 
+        await self._set_library_item_availability([entry.item for entry in result])
         return result
 
     @cache_statistics()
@@ -837,7 +844,7 @@ class StatisticsController(CoreController):
 
         available_providers = ("library", *get_global_cache_value("available_providers", []))
 
-        return [
+        result = [
             ItemMapping.from_dict(
                 {
                     "item_id": db_row["item_id"],
@@ -850,6 +857,8 @@ class StatisticsController(CoreController):
             )
             for db_row in db_rows
         ]
+        await self._set_library_item_availability(result)
+        return result
 
     @cache_statistics()
     @api_command("statistics/play_count", required_scope=Scope.LIBRARY_READ)
@@ -979,6 +988,42 @@ class StatisticsController(CoreController):
         async for row in self.mass.music.database.iter_rows_from_query(query, params):
             played_item_ids.add((row["provider"], row["item_id"]))
         return played_item_ids
+
+    async def _set_library_item_availability(self, items: list[ItemMapping]) -> None:
+        """Apply current library availability to historical item references."""
+        library_items: dict[MediaType, list[ItemMapping]] = {}
+        for item in items:
+            if item.provider == "library":
+                item.available = False
+                library_items.setdefault(item.media_type, []).append(item)
+
+        # History outlives library records; resolve each media type in one batch rather
+        # than dropping deleted items or doing one lookup per historical play.
+        for media_type, references in library_items.items():
+            if media_type not in (
+                MediaType.ARTIST,
+                MediaType.ALBUM,
+                MediaType.TRACK,
+                MediaType.PLAYLIST,
+                MediaType.RADIO,
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST,
+                MediaType.GENRE,
+            ):
+                continue
+            controller = self.mass.music.get_controller(media_type)
+            item_ids = sorted({item.item_id for item in references})
+            params = {f"item_id_{index}": item_id for index, item_id in enumerate(item_ids)}
+            placeholders = ", ".join(f":{key}" for key in params)
+            current_items = await controller.get_library_items_by_query(
+                extra_query_parts=[f"WHERE {controller.db_table}.item_id IN ({placeholders})"],
+                extra_query_params=params,
+                limit=0,
+                in_library_only=False,
+            )
+            available_ids = {item.item_id for item in current_items if item.available}
+            for item in references:
+                item.available = item.item_id in available_ids
 
     async def _iter_local_play_counts(
         self, user_id: str, cutoff_timestamp: float, timezone: str
