@@ -177,7 +177,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         has a provider filter set.
 
         :param favorite_only: Only count the artists the current user likes.
-        :param album_artists_only: Only count artists that have albums.
+        :param album_artists_only: Only count artists credited on an album in the library.
         :param artist_type: Only count artists of this type.
         """
         sql_query = f"SELECT item_id FROM {self.db_table}"
@@ -188,10 +188,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if favorite_only:
             query_parts.append(self._favorite_filter_clause(query_params, True))
         if album_artists_only:
-            query_parts.append(
-                f"item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
-                f"FROM {DB_TABLE_ALBUM_ARTISTS})"
-            )
+            query_parts.append(self._album_artist_clause(query_params))
         if provider_filter := self._ensure_provider_filter(None):
             query_parts.append(
                 self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
@@ -232,7 +229,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param played_only: Filter to only played artists.
-        :param album_artists_only: Only return artists that have albums.
+        :param album_artists_only: Only return artists credited on an album in the library.
         :param artist_type: The artist's type
         :param sort_field: Sort field to use.
         :param sort_direction: Sort direction, the field's default when omitted.
@@ -251,10 +248,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if artist_type:
             extra_query_parts = [f"artist_type = '{artist_type}'"]
         if album_artists_only and artist_type in (None, ArtistType.SINGER):
-            extra_query_parts.append(
-                f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
-                f"from {DB_TABLE_ALBUM_ARTISTS})"
-            )
+            extra_query_parts.append(self._album_artist_clause(extra_query_params))
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -2059,6 +2053,26 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"albums.item_id IN ({track_albums})",
             f"albums.item_id NOT IN ({own_albums})",
         ], query_params
+
+    def _album_artist_clause(self, query_params: dict[str, Any]) -> str:
+        """Return the condition that keeps artists credited on an album in the user's library."""
+        # an album only stored because one of its tracks is in the library does not count,
+        # nor does an album on a music source the current user may not see
+        mapping_conditions = [
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.album_id",
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{MediaType.ALBUM.value}'",
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1",
+        ]
+        if provider_instances := self._ensure_provider_filter(None):
+            mapping_conditions.append(
+                f"{DB_TABLE_PROVIDER_MAPPINGS}.provider_instance IN :album_artist_providers"
+            )
+            query_params["album_artist_providers"] = provider_instances
+        return (
+            f"EXISTS(SELECT 1 FROM {DB_TABLE_ALBUM_ARTISTS} "
+            f"JOIN {DB_TABLE_PROVIDER_MAPPINGS} ON {' AND '.join(mapping_conditions)} "
+            f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {DB_TABLE_ARTISTS}.item_id)"
+        )
 
 
 _SHORT_FORM_TYPES = {AlbumType.SINGLE, AlbumType.EP}

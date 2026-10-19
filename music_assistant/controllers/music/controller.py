@@ -163,6 +163,7 @@ from music_assistant.helpers.provider_access import (
     source_owner,
     visible_music_sources,
     visible_playback_sources,
+    visible_provider,
 )
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
@@ -1624,6 +1625,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 full_item = await cast(
                     "MediaControllerBase[MediaItemType]", ctrl
                 ).add_item_to_library(full_item)
+                await self._link_genres_if_unmapped(full_item)
         elif (
             favorite
             and (own_mappings := self._write_target_mappings(full_item.provider_mappings))
@@ -1795,6 +1797,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         if isinstance(library_item, Artist):
             library_item = await self.artists.get_merged_library_item(library_item)
+        await self._link_genres_if_unmapped(library_item)
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
@@ -3017,6 +3020,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
 
+    async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
+        """Link a library item to the genres it carries, if it has no genre links yet."""
+        if item.metadata.genres and not await self.genres.has_genre_mappings(
+            item.media_type, item.item_id
+        ):
+            await self.genres.sync_media_item_genres(
+                item.media_type, item.item_id, set(item.metadata.genres)
+            )
+
     def _write_target_mappings(
         self,
         provider_mappings: Iterable[ProviderMapping],
@@ -3068,12 +3080,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param mapping: The provider mapping to resolve.
         """
-        # an unavailable account of a streaming service resolves to another loaded account
-        # of that service, so the account actually serving the mapping is the one to check
-        provider = self.mass.get_provider(mapping.provider_instance)
-        if provider is None or not self._apply_user_provider_filter([provider]):
-            return None
-        return provider
+        return visible_provider(self.mass, mapping.provider_instance, get_current_user())
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """

@@ -300,6 +300,34 @@ async def test_reserve_playlist_file_waits_for_in_flight_edit_on_same_id() -> No
     assert order == ["add", "reserve"]
 
 
+async def test_add_playlist_tracks_reports_unresolvable_uri_as_task_failure() -> None:
+    """A URI that can not be resolved is reported on the task instead of dropped silently."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = "stubbed-playlists-dir"
+    prov_any._playlist_generations = {}
+    prov_any._read_m3u_file = AsyncMock(return_value="")
+    prov_any.get_playlist = AsyncMock(side_effect=lambda pid: _make_playlist(pid))
+    prov_any._write_m3u_file = AsyncMock()
+
+    async def build_entry(uri: str) -> PlaylistItem:
+        if uri.startswith("bandcamp://"):
+            raise MediaNotFoundError(uri)
+        return PlaylistItem(path=uri, title=uri)
+
+    prov_any._build_m3u_entry_from_uri = AsyncMock(side_effect=build_entry)
+
+    with patch("music_assistant.providers.builtin.report_current_task_failure") as reported:
+        await prov.add_playlist_tracks(
+            "foo", ["deezer://track/1", "bandcamp://track/2", "deezer://track/3"]
+        )
+
+    written_entries = prov_any._write_m3u_file.await_args.args[2]
+    assert [entry.path for entry in written_entries] == ["deezer://track/1", "deezer://track/3"]
+    reported.assert_called_once()
+    assert "bandcamp://track/2" in reported.call_args.args[0]
+
+
 async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
     """Test that rewriting a playlist after track removal keeps the playlist image."""
     prov = _make_provider()

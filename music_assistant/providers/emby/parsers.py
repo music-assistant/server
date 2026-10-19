@@ -24,6 +24,7 @@ from music_assistant.providers.emby.const import (
     AUDIO_STREAM_CHANNELS,
     AUDIO_STREAM_CODEC,
     AUDIO_STREAM_SAMPLE_RATE,
+    ITEM_KEY_ALBUM_ARTISTS,
     ITEM_KEY_ALBUM_ID,
     ITEM_KEY_ALBUM_NAME,
     ITEM_KEY_ARTIST_ITEMS,
@@ -203,7 +204,8 @@ def parse_album(
 
     # Extract artist info
     artists = UniqueList[Artist | ItemMapping]()
-    if artist_items := item.get(ITEM_KEY_ARTIST_ITEMS):
+    # ArtistItems on an album also holds featured track artists
+    if artist_items := item.get(ITEM_KEY_ALBUM_ARTISTS) or item.get(ITEM_KEY_ARTIST_ITEMS):
         for artist_item in artist_items:
             artist_id = str(artist_item.get(ITEM_KEY_ID))
             artist_name = str(artist_item.get(ITEM_KEY_NAME))

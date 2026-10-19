@@ -1229,9 +1229,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             target_size=25,
             preferred_provider_instances=preferred or allowed,
         )
-        # Drop anything already queued/played
-        queued_set = set(queue_track_items)
-        tracks = [track for track in dynamic_tracks if track not in queued_set]
+        # Drop anything already queued/played, also when queued as another provider's copy
+        queued_keys = {key for item in queue_track_items for key in _track_keys(item)}
+        tracks = [track for track in dynamic_tracks if queued_keys.isdisjoint(_track_keys(track))]
         if allowed is None:
             return tracks
         # steering is only a preference, so drop what the user has no music source for
@@ -1305,3 +1305,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the cancelled buffer stays attached: it marks the source as aborted for
         # the flow stream's accounting and fails is_valid() for any later reuse
         await audio_buffer.clear()
+
+
+def _track_keys(track: Track) -> set[tuple[str, str]]:
+    """Return the (provider instance, item_id) pairs identifying a track across its mappings."""
+    return {(track.provider, track.item_id)} | {
+        (mapping.provider_instance, mapping.item_id) for mapping in track.provider_mappings
+    }
