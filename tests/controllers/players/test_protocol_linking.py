@@ -5239,7 +5239,17 @@ class TestProtocolToUniversalIdentifierFallback:
         # Should NOT be linked to the wrong universal player
         assert sendspin_player.protocol_parent_id != "up_aabbccddeeff"
 
-    def test_airplay_receivers_on_shared_ip_keep_own_universal(self, mock_mass: MagicMock) -> None:
+    @pytest.mark.parametrize(
+        ("mac_1", "mac_2"),
+        [
+            ("02:A8:2C:F9:60:25", "5A:B3:58:62:EC:6C"),
+            # ARP resolved both receivers to the shared host MAC
+            ("B8:27:EB:12:34:56", "B8:27:EB:12:34:56"),
+        ],
+    )
+    def test_airplay_receivers_on_shared_ip_keep_own_universal(
+        self, mock_mass: MagicMock, mac_1: str, mac_2: str
+    ) -> None:
         """Test that a re-registered AirPlay receiver doesn't take a sibling receiver's parent."""
         controller = PlayerController(mock_mass)
 
@@ -5261,14 +5271,14 @@ class TestProtocolToUniversalIdentifierFallback:
             "up_receiver1",
             "Receiver 1",
             protocol_player_ids=["ap02a82cf96025"],
-            identifiers=receiver_ids("ap02a82cf96025", "02:A8:2C:F9:60:25"),
+            identifiers=receiver_ids("ap02a82cf96025", mac_1),
         )
         universal_2 = _create_universal_player(
             mock_mass,
             "up_receiver2",
             "Receiver 2",
             protocol_player_ids=["ap5ab35862ec6c"],
-            identifiers=receiver_ids("ap5ab35862ec6c", "5A:B3:58:62:EC:6C"),
+            identifiers=receiver_ids("ap5ab35862ec6c", mac_2),
         )
 
         airplay_provider = MockProvider("airplay", mass=mock_mass)
@@ -5277,7 +5287,7 @@ class TestProtocolToUniversalIdentifierFallback:
             "ap5ab35862ec6c",
             "Receiver 2",
             player_type=PlayerType.PROTOCOL,
-            identifiers=receiver_ids("ap5ab35862ec6c", "5A:B3:58:62:EC:6C"),
+            identifiers=receiver_ids("ap5ab35862ec6c", mac_2),
         )
 
         mock_mass.players = controller
