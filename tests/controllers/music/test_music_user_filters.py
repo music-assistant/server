@@ -349,3 +349,38 @@ async def test_genre_library_count_ignores_provider_filter(
     with patch(GET_CURRENT_USER, return_value=Mock(provider_filter=[PROV_A])):
         assert await counted_mass.music.genres.library_count() == unfiltered_count
     assert unfiltered_count > 0
+
+
+async def test_album_artists_only_ignores_albums_on_hidden_sources(mass: MusicAssistant) -> None:
+    """An album on a music source the user may not see does not make an album artist."""
+    music_mass = mass
+    # both artists are on the visible source, only their albums differ
+    for artist_name, album_provider in (("Visible Artist", PROV_A), ("Hidden Artist", PROV_B)):
+        artist = await music_mass.music.artists.add_item_to_library(
+            Artist(
+                item_id="0",
+                provider="library",
+                name=artist_name,
+                provider_mappings={_mapping(PROV_A)},
+            )
+        )
+        await music_mass.music.albums.add_item_to_library(
+            Album(
+                item_id="0",
+                provider="library",
+                name=f"{artist_name} Album",
+                provider_mappings={_mapping(album_provider)},
+                artists=UniqueList([artist]),
+            )
+        )
+    artists = music_mass.music.artists
+
+    for provider_filter, expected in (
+        ([PROV_A], ["Visible Artist"]),
+        ([], ["Hidden Artist", "Visible Artist"]),
+    ):
+        with patch(GET_CURRENT_USER, return_value=Mock(provider_filter=provider_filter)):
+            items = await artists.library_items(album_artists_only=True)
+            count = await artists.library_count(album_artists_only=True)
+        assert sorted(artist.name for artist in items) == expected
+        assert count == len(expected)
