@@ -9,6 +9,7 @@ from libopensonic.media import OpenSubsonicExtension
 from libopensonic.media import User as SubsonicUser
 from multidict import MultiDict, MultiDictProxy
 from music_assistant_models.auth import Scope
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_scope,
@@ -28,6 +29,7 @@ from .response import (
     build_error_response,
     build_preflight_response,
     build_response,
+    error_from_exception,
 )
 
 if TYPE_CHECKING:
@@ -92,9 +94,10 @@ class SubsonicApi:
         )
         try:
             result = await self._dispatch(endpoint, params)
-        except SubsonicError as err:
-            self.provider.logger.debug("%s failed with error %s: %s", endpoint, err.code, err)
-            return build_error_response(err, self.mass.version, response_format, callback)
+        except (SubsonicError, MusicAssistantError) as err:
+            error = err if isinstance(err, SubsonicError) else error_from_exception(err)
+            self.provider.logger.debug("%s failed with error %s: %s", endpoint, error.code, err)
+            return build_error_response(error, self.mass.version, response_format, callback)
         if isinstance(result, web.StreamResponse):
             return result
         return build_response(result, self.mass.version, response_format, callback)

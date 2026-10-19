@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -81,11 +80,7 @@ async def test_get_artists_groups_by_letter_and_skips_artists_without_albums() -
         _artist("4", "Björk"),
     ]
 
-    async def iter_artists(**_kwargs: Any) -> AsyncGenerator[Artist]:
-        for artist in artists:
-            yield artist
-
-    mass.music.artists.iter_library_items = iter_artists
+    mass.music.artists.library_items = AsyncMock(return_value=artists)
     body = await _call(endpoints, "getArtists")
     index = body["artists"]["index"]
     assert [entry["name"] for entry in index] == ["#", "A", "B"]
@@ -96,7 +91,7 @@ async def test_get_artists_groups_by_letter_and_skips_artists_without_albums() -
 async def test_get_album_lists_library_and_provider_tracks() -> None:
     """GetAlbum returns every album track, including those only on the provider."""
     endpoints, mass = _endpoints()
-    mass.music.albums.get_library_item = AsyncMock(return_value=_album("5"))
+    mass.music.albums.get = AsyncMock(return_value=_album("5"))
     mass.music.albums.tracks = AsyncMock(
         return_value=[_track("10", duration=100), _track("abc", provider=NAVIDROME, duration=50)]
     )
@@ -120,13 +115,13 @@ async def test_get_album_of_provider_album() -> None:
     album_id = to_subsonic_id(MediaType.ALBUM, "xyz", NAVIDROME)
     body = await _call(endpoints, "getAlbum", id=album_id)
     assert body["album"]["id"] == album_id
-    mass.music.albums.get.assert_awaited_once_with("xyz", NAVIDROME)
+    mass.music.albums.get.assert_awaited_once_with("xyz", NAVIDROME, allow_update_metadata=False)
 
 
 async def test_unknown_item_is_not_found() -> None:
     """A library id that does not exist gives error 70."""
     endpoints, mass = _endpoints()
-    mass.music.albums.get_library_item = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    mass.music.albums.get = AsyncMock(side_effect=MediaNotFoundError("gone"))
     with pytest.raises(SubsonicError) as err:
         await _call(endpoints, "getAlbum", id="al-404")
     assert err.value.code == 70
@@ -145,14 +140,22 @@ async def test_album_list_uses_library_sort_and_stats() -> None:
     assert (kwargs["limit"], kwargs["offset"]) == (5, 10)
 
 
-async def test_album_list_by_year_descending() -> None:
-    """A reversed year range lists the albums from newest to oldest year."""
+async def test_album_list_by_year_descending(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reversed year range lists newest first, limited to the caller's library albums."""
     endpoints, mass = _endpoints()
+    monkeypatch.setattr(
+        "music_assistant.providers.subsonic_server.browse.visible_music_sources",
+        lambda _mass, _user: ["source-b", "source-a"],
+    )
+    mass.music.albums.listing_filter.return_value = ["albums.visible = 1"]
     mass.music.albums.get_library_items_by_query = AsyncMock(return_value=[])
     await _call(endpoints, "getAlbumList2", type="byYear", fromYear="2020", toYear="2010")
     kwargs = mass.music.albums.get_library_items_by_query.await_args.kwargs
     assert kwargs["sort_direction"] == SortDirection.DESC
     assert kwargs["extra_query_params"] == {"year_low": 2010, "year_high": 2020}
+    assert kwargs["provider_filter"] == ["source-a", "source-b"]
+    assert kwargs["in_library_only"] is True
+    assert kwargs["extra_query_parts"][0] == "albums.visible = 1"
 
 
 async def test_album_list_starred_and_unknown_type() -> None:
@@ -193,7 +196,7 @@ async def test_search3_empty_query_lists_everything() -> None:
 async def test_get_cover_art(data: bytes, content_type: str) -> None:
     """Cover art is served as an image, with the requested size rounded up to a thumb size."""
     endpoints, mass = _endpoints()
-    mass.music.albums.get_library_item = AsyncMock(return_value=_album("5"))
+    mass.music.albums.get = AsyncMock(return_value=_album("5"))
     mass.metadata.get_image_data_for_item = AsyncMock(return_value=data)
     response = await _call(endpoints, "getCoverArt", id="al-5", size="300")
     assert isinstance(response, web.Response)
@@ -205,7 +208,7 @@ async def test_get_cover_art(data: bytes, content_type: str) -> None:
 async def test_get_cover_art_missing() -> None:
     """An item without an image gives error 70."""
     endpoints, mass = _endpoints()
-    mass.music.albums.get_library_item = AsyncMock(return_value=_album("5"))
+    mass.music.albums.get = AsyncMock(return_value=_album("5"))
     mass.metadata.get_image_data_for_item = AsyncMock(return_value=None)
     with pytest.raises(SubsonicError) as err:
         await _call(endpoints, "getCoverArt", id="al-5")
@@ -230,3 +233,16 @@ async def test_songs_by_unknown_genre() -> None:
     mass.music.genres.library_items = AsyncMock(return_value=[])
     body = await _call(endpoints, "getSongsByGenre", genre="Polka")
     assert body == {"songsByGenre": {"song": []}}
+
+
+async def test_starred_reads_every_page() -> None:
+    """Favorites are read page by page until a short page, instead of being capped."""
+    endpoints, mass = _endpoints()
+    full_page = [_track(str(index)) for index in range(500)]
+    mass.music.tracks.library_items = AsyncMock(side_effect=[full_page, [_track("500")]])
+    mass.music.albums.library_items = AsyncMock(return_value=[])
+    mass.music.artists.library_items = AsyncMock(return_value=[])
+    body = await _call(endpoints, "getStarred2")
+    assert len(body["starred2"]["song"]) == 501
+    offsets = [call.kwargs["offset"] for call in mass.music.tracks.library_items.await_args_list]
+    assert offsets == [0, 500]

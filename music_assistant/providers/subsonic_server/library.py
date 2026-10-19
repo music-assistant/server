@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_TRACKS
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+
+PAGE_SIZE = 500
 
 
 async def album_track_stats(
@@ -57,3 +59,19 @@ async def artist_album_counts(
         query, {"artist_ids": [int(artist_id) for artist_id in artist_ids]}, limit=0
     )
     return {str(row["artist_id"]): int(row["album_count"]) for row in rows}
+
+
+async def collect_pages[T](fetch: Callable[[int, int], Awaitable[Sequence[T]]]) -> list[T]:
+    """
+    Return every item of a paged listing.
+
+    :param fetch: Returns one page for the given limit and offset.
+    """
+    items: list[T] = []
+    offset = 0
+    while True:
+        page = await fetch(PAGE_SIZE, offset)
+        items.extend(page)
+        if len(page) < PAGE_SIZE:
+            return items
+        offset += PAGE_SIZE

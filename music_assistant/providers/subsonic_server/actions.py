@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
@@ -23,7 +25,19 @@ if TYPE_CHECKING:
     from .browse import BrowseEndpoints
     from .request import EndpointHandler, SubsonicRequest
 
+PLAY_QUEUE_FETCH_CONCURRENCY = 8
 LRC_LINE = re.compile(r"^\[(\d{1,3}):(\d{1,2}(?:\.\d{1,3})?)\](.*)$")
+
+
+@dataclass(frozen=True)
+class SavedPlayQueue:
+    """A play queue a user saved, kept as Subsonic ids and resolved when it is read."""
+
+    ids: list[str]
+    current: str | None
+    position: int
+    changed: str
+    changed_by: str
 
 
 class ActionEndpoints:
@@ -37,7 +51,7 @@ class ActionEndpoints:
         """
         self.browse = browse
         self.mass = browse.mass
-        self._play_queues: dict[str, dict[str, Any]] = {}
+        self._play_queues: dict[str, SavedPlayQueue] = {}
 
     def endpoints(self) -> dict[str, EndpointHandler]:
         """Return the handlers of this group, keyed by endpoint name."""
@@ -94,23 +108,42 @@ class ActionEndpoints:
         return {"lyricsList": {"structuredLyrics": structured}}
 
     async def _get_play_queue(self, request: SubsonicRequest) -> dict[str, Any]:
-        return {"playQueue": self._play_queues.get(request.user.user_id, {"entry": []})}
+        saved = self._play_queues.get(request.user.user_id)
+        if saved is None:
+            return {"playQueue": {"entry": []}}
+        semaphore = asyncio.Semaphore(PLAY_QUEUE_FETCH_CONCURRENCY)
+
+        async def song(subsonic_id: str) -> dict[str, Any] | None:
+            async with semaphore:
+                try:
+                    track = await self.browse.get_item(parse_subsonic_id(subsonic_id))
+                except SubsonicError:
+                    return None
+                return mappers.song(cast("Track", track))
+
+        songs = await asyncio.gather(*(song(subsonic_id) for subsonic_id in saved.ids))
+        play_queue: dict[str, Any] = {
+            "entry": [entry for entry in songs if entry is not None],
+            "changed": saved.changed,
+            "changedBy": saved.changed_by,
+            "username": request.user.username,
+            "position": saved.position,
+        }
+        if saved.current:
+            play_queue["current"] = saved.current
+        return {"playQueue": play_queue}
 
     async def _save_play_queue(self, request: SubsonicRequest) -> dict[str, Any]:
-        entries = []
-        for value in request.get_all("id"):
-            ref = parse_subsonic_id(value, MediaType.TRACK)
-            entries.append(mappers.song(cast("Track", await self.browse.get_item(ref))))
-        play_queue: dict[str, Any] = {
-            "entry": entries,
-            "changed": mappers.iso_timestamp(utc()),
-            "changedBy": request.get("c") or "",
-            "username": request.user.username,
-            "position": request.get_int("position", 0),
-        }
-        if current := request.get("current"):
-            play_queue["current"] = current
-        self._play_queues[request.user.user_id] = play_queue
+        ids = request.get_all("id")
+        for value in ids:
+            parse_subsonic_id(value, MediaType.TRACK)
+        self._play_queues[request.user.user_id] = SavedPlayQueue(
+            ids=ids,
+            current=request.get("current"),
+            position=request.get_int("position", 0),
+            changed=mappers.iso_timestamp(utc()),
+            changed_by=request.get("c") or "",
+        )
         return {}
 
     async def _get_scan_status(self, request: SubsonicRequest) -> dict[str, Any]:

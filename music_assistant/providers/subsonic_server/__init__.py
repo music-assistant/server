@@ -146,7 +146,8 @@ class SubsonicServerProvider(PluginProvider):
         return derive_app_password(self._get_secret(), user_id)
 
     async def _users_visible_to(self, caller: User | None) -> list[User]:
-        if caller is not None and not has_scope(caller, Scope.USERS_READ):
+        # reading other users' accounts is not enough: these passwords let one act as them
+        if caller is not None and not has_scope(caller, Scope.USERS_MANAGE):
             return [caller]
         return [
             user

@@ -11,6 +11,11 @@ import pytest
 from aiohttp import web
 from multidict import MultiDict
 from music_assistant_models.auth import User, UserRole
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.providers.subsonic_server.api import SubsonicApi
@@ -208,3 +213,28 @@ async def test_preflight_request() -> None:
     assert response.headers["Access-Control-Allow-Origin"] == "*"
     assert response.headers["Access-Control-Allow-Headers"] == "content-type"
     assert "POST" in response.headers["Access-Control-Allow-Methods"]
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (MediaNotFoundError("gone"), 70),
+        (InsufficientPermissions("no"), 50),
+        (MusicAssistantError("broken"), 0),
+    ],
+)
+async def test_music_assistant_errors_become_subsonic_errors(
+    error: MusicAssistantError, code: int
+) -> None:
+    """Errors raised by Music Assistant controllers are answered as Subsonic errors."""
+    api = _create_api()
+
+    async def failing(_request: Any) -> dict[str, Any]:
+        raise error
+
+    api._endpoints["ping"] = failing
+    response = await api.handle_request(_request("ping", _credentials(MEMBER)))
+    assert isinstance(response, web.Response)
+    assert response.headers["Access-Control-Allow-Origin"] == "*"
+    assert response.text is not None
+    assert json.loads(response.text)["subsonic-response"]["error"]["code"] == code

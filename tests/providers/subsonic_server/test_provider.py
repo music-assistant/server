@@ -147,3 +147,13 @@ async def test_route_registered_and_removed() -> None:
     assert path == "/rest/*"
     await provider.unload()
     unregister.assert_called_once()
+
+
+async def test_reading_accounts_does_not_reveal_passwords() -> None:
+    """A role that may read users but not manage them only sees its own password."""
+    provider = _create_provider()
+    set_current_user(SERVICE)
+    entries = await provider.get_config_entries()
+    assert _password_entries(entries) == {
+        "app_password_service-id": derive_app_password(SECRET, "service-id")
+    }

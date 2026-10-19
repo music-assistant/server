@@ -11,11 +11,12 @@ from music_assistant_models.enums import MediaType, SortDirection, SortField
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.provider_access import visible_music_sources
 
 from . import mappers
 from .constants import ErrorCode
 from .ids import ItemRef, parse_subsonic_id
-from .library import album_track_stats, artist_album_counts
+from .library import album_track_stats, artist_album_counts, collect_pages
 from .response import SubsonicError
 
 if TYPE_CHECKING:
@@ -86,10 +87,8 @@ class BrowseEndpoints:
         """
         controller = self.mass.music.get_controller(ref.media_type)
         try:
-            if ref.is_library:
-                item = await controller.get_library_item(ref.item_id)
-            else:
-                item = await controller.get(ref.item_id, ref.provider)
+            # get() also applies the access checks, such as the visibility of a playlist
+            item = await controller.get(ref.item_id, ref.provider, allow_update_metadata=False)
         except (MediaNotFoundError, ProviderUnavailableError) as err:
             raise SubsonicError(ErrorCode.NOT_FOUND, str(err)) from err
         return cast("MediaItemType", item)
@@ -99,12 +98,11 @@ class BrowseEndpoints:
         return {"musicFolders": {"musicFolder": [folder.to_dict()]}}
 
     async def _get_artists(self, request: SubsonicRequest) -> dict[str, Any]:
-        artists = [
-            artist
-            async for artist in self.mass.music.artists.iter_library_items(
-                sort_field=SortField.SORT_NAME
+        artists = await collect_pages(
+            lambda limit, offset: self.mass.music.artists.library_items(
+                limit=limit, offset=offset, sort_field=SortField.SORT_NAME
             )
-        ]
+        )
         counts = await artist_album_counts(self.mass, [artist.item_id for artist in artists])
         index: dict[str, list[dict[str, Any]]] = {}
         for artist in artists:
@@ -319,26 +317,44 @@ class BrowseEndpoints:
         from_year = request.get_int("fromYear", 0)
         to_year = request.get_int("toYear", utc().year)
         direction = SortDirection.ASC if from_year <= to_year else SortDirection.DESC
-        albums = await self.mass.music.albums.get_library_items_by_query(
+        controller = self.mass.music.albums
+        params: dict[str, Any] = {
+            "year_low": min(from_year, to_year),
+            "year_high": max(from_year, to_year),
+        }
+        # the same restrictions library_items applies: the caller's sources and listing filter
+        visible_sources = visible_music_sources(self.mass, request.user)
+        albums = await controller.get_library_items_by_query(
             limit=size,
             offset=offset,
             sort_field=SortField.YEAR,
             sort_direction=direction,
-            extra_query_parts=["albums.year BETWEEN :year_low AND :year_high"],
-            extra_query_params={
-                "year_low": min(from_year, to_year),
-                "year_high": max(from_year, to_year),
-            },
+            provider_filter=sorted(visible_sources) if visible_sources is not None else None,
+            extra_query_parts=[
+                *controller.listing_filter(params),
+                "albums.year BETWEEN :year_low AND :year_high",
+            ],
+            extra_query_params=params,
+            in_library_only=True,
         )
         return list(albums)
 
     async def _starred(self) -> dict[str, Any]:
-        artists = await self.mass.music.artists.library_items(favorite=True, limit=MAX_LIST_SIZE)
-        albums = await self.mass.music.albums.library_items(
-            favorite=True, limit=MAX_LIST_SIZE, summary=False
+        music = self.mass.music
+        artists = await collect_pages(
+            lambda limit, offset: music.artists.library_items(
+                favorite=True, limit=limit, offset=offset
+            )
         )
-        tracks = await self.mass.music.tracks.library_items(
-            favorite=True, limit=MAX_LIST_SIZE, summary=False
+        albums = await collect_pages(
+            lambda limit, offset: music.albums.library_items(
+                favorite=True, limit=limit, offset=offset, summary=False
+            )
+        )
+        tracks = await collect_pages(
+            lambda limit, offset: music.tracks.library_items(
+                favorite=True, limit=limit, offset=offset, summary=False
+            )
         )
         counts = await artist_album_counts(self.mass, [artist.item_id for artist in artists])
         return {

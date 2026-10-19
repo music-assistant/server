@@ -38,7 +38,9 @@ def _track(item_id: str = "1") -> Track:
 def _actions() -> tuple[ActionEndpoints, MagicMock]:
     mass = MagicMock()
     mass.music.set_item_favorite = AsyncMock()
-    mass.music.tracks.get_library_item = AsyncMock(side_effect=lambda item_id: _track(item_id))
+    mass.music.tracks.get = AsyncMock(
+        side_effect=lambda item_id, *_args, **_kwargs: _track(item_id)
+    )
     mass.music.get_controller.return_value = mass.music.tracks
     return ActionEndpoints(BrowseEndpoints(mass)), mass
 
@@ -109,12 +111,13 @@ async def test_plain_lyrics_by_song_id() -> None:
 
 
 async def test_play_queue_is_saved_per_user() -> None:
-    """A saved play queue is returned to the same user only."""
-    actions, _ = _actions()
+    """A saved play queue is kept as ids, resolved when read, and returned to the same user only."""
+    actions, mass = _actions()
     assert (await _call(actions, "getPlayQueue"))["playQueue"] == {"entry": []}
     await _call(
         actions, "savePlayQueue", id=["tr-1", "tr-2"], current="tr-2", position=5000, c="Feishin"
     )
+    mass.music.tracks.get.assert_not_awaited()
     play_queue = (await _call(actions, "getPlayQueue"))["playQueue"]
     assert [entry["id"] for entry in play_queue["entry"]] == ["tr-1", "tr-2"]
     assert play_queue["current"] == "tr-2"

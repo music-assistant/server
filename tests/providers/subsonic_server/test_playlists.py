@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -50,7 +49,7 @@ def _endpoints(tracks: list[Track] | None = None) -> tuple[PlaylistEndpoints, Ma
     mass = MagicMock()
     playlists = mass.music.playlists
     mass.music.get_controller.return_value = playlists
-    playlists.get_library_item = AsyncMock(return_value=_playlist())
+    playlists.get = AsyncMock(return_value=_playlist())
     playlists.tracks = AsyncMock(return_value=tracks or [])
     playlists.create_playlist = AsyncMock(return_value=_playlist("9"))
     playlists.update_playlist = AsyncMock()
@@ -76,10 +75,7 @@ async def test_get_playlists() -> None:
     """Library playlists are listed with their track count, duration and owner."""
     endpoints, mass = _endpoints(tracks=[_track("1", 1), _track("2", 2)])
 
-    async def iter_playlists(**_kwargs: Any) -> AsyncGenerator[Playlist]:
-        yield _playlist()
-
-    mass.music.playlists.iter_library_items = iter_playlists
+    mass.music.playlists.library_items = AsyncMock(return_value=[_playlist()])
     body = await _call(endpoints, "getPlaylists")
     entry = body["playlists"]["playlist"][0]
     assert entry["id"] == "pl-3"
@@ -144,27 +140,25 @@ async def test_update_playlist_name_and_public() -> None:
     )
 
 
-async def test_failed_removal_is_reported() -> None:
-    """A refused removal is reported as a Subsonic error."""
+async def test_refused_removal_propagates() -> None:
+    """A removal Music Assistant refuses is not reported as done."""
     endpoints, mass = _endpoints(tracks=[_track("1", 1)])
     mass.music.playlists.remove_playlist_track = AsyncMock(
         side_effect=InsufficientPermissions("no")
     )
-    with pytest.raises(SubsonicError) as err:
+    with pytest.raises(InsufficientPermissions):
         await _call(endpoints, "updatePlaylist", playlistId="pl-3", songIndexToRemove="0")
-    assert err.value.code == 50
 
 
 async def test_permission_errors() -> None:
-    """Guests may not edit; a refused edit and provider playlists give error 50."""
+    """Guests may not edit, a refused edit propagates, provider playlists give error 50."""
     endpoints, mass = _endpoints()
     with pytest.raises(SubsonicError) as err:
         await _call(endpoints, "deletePlaylist", user=GUEST, id="pl-3")
     assert err.value.code == 50
     mass.music.remove_item_from_library = AsyncMock(side_effect=InsufficientPermissions("no"))
-    with pytest.raises(SubsonicError) as err:
+    with pytest.raises(InsufficientPermissions):
         await _call(endpoints, "deletePlaylist", id="pl-3")
-    assert err.value.code == 50
     with pytest.raises(SubsonicError) as err:
         await _call(endpoints, "deletePlaylist", id="pl-pb3BlbnN1YnNvbmljCng")
     assert err.value.code == 50

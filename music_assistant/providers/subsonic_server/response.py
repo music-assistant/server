@@ -8,6 +8,11 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from aiohttp import web
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 
 from .constants import API_VERSION, SERVER_TYPE, XML_NAMESPACE, ErrorCode
 
@@ -34,6 +39,19 @@ class SubsonicError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def error_from_exception(err: MusicAssistantError) -> SubsonicError:
+    """
+    Return the Subsonic error to report for an expected Music Assistant error.
+
+    :param err: The error a controller raised while handling the request.
+    """
+    if isinstance(err, MediaNotFoundError):
+        return SubsonicError(ErrorCode.NOT_FOUND, str(err))
+    if isinstance(err, InsufficientPermissions):
+        return SubsonicError(ErrorCode.NOT_AUTHORIZED, str(err))
+    return SubsonicError(ErrorCode.GENERIC, str(err))
 
 
 def build_response(
