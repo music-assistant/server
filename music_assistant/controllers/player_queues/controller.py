@@ -1291,6 +1291,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # live source both skips the position jump of joining or leaving a group.
         if not queue.active or player.state.active_source not in (queue_id, None):
             return
+        # a stopped player's position is unreliable, keep the last played position
+        if player.state.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            return
         player_elapsed = player.state.corrected_elapsed_time
         if player_elapsed is None:
             return
