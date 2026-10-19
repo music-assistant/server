@@ -379,6 +379,97 @@ async def test_get_album_tracks_keeps_tracks_from_earlier_pages(
     assert tracks[-1].track_number == 13
 
 
+@pytest.mark.parametrize(
+    "item_numbers",
+    [(1, 2, 3, 4, 5), (1, 2, 1, 2, 1)],
+    ids=["album_wide", "per_volume"],
+)
+async def test_get_album_tracks_numbers_tracks_per_volume(
+    media_manager: TidalMediaManager, provider_mock: Mock, item_numbers: tuple[int, ...]
+) -> None:
+    """Test track numbers restart on each volume whichever way Tidal numbers them."""
+    volumes = (1, 1, 2, 2, 3)
+    doc = JsonApiDocument(
+        {
+            "data": [
+                {
+                    "id": str(idx),
+                    "type": "tracks",
+                    "meta": {"volumeNumber": volume, "trackNumber": number},
+                }
+                for idx, (volume, number) in enumerate(zip(volumes, item_numbers, strict=True))
+            ],
+            "included": [
+                {
+                    "id": str(idx),
+                    "type": "tracks",
+                    "attributes": {"title": f"Track {idx}", "duration": "PT3M0S"},
+                }
+                for idx in range(len(volumes))
+            ],
+        }
+    )
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = await media_manager.get_album_tracks("107050976")
+
+    assert [(track.disc_number, track.track_number) for track in tracks] == [
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (2, 2),
+        (3, 1),
+    ]
+
+
+@pytest.mark.parametrize("missing_number", [{"trackNumber": None}, {}], ids=["null", "absent"])
+async def test_get_album_tracks_keeps_zero_for_a_missing_track_number(
+    media_manager: TidalMediaManager, provider_mock: Mock, missing_number: dict[str, Any]
+) -> None:
+    """Test an item without a track number gets 0 and leaves its volume's numbering intact."""
+    metas = [
+        {"volumeNumber": 1, "trackNumber": 1},
+        {"volumeNumber": 1, "trackNumber": 2},
+        {"volumeNumber": 2, "trackNumber": 3},
+        {"volumeNumber": 2, **missing_number},
+        {"volumeNumber": 2, "trackNumber": 4},
+    ]
+    doc = JsonApiDocument(
+        {
+            "data": [
+                {"id": str(idx), "type": "tracks", "meta": meta} for idx, meta in enumerate(metas)
+            ],
+            "included": [
+                {
+                    "id": str(idx),
+                    "type": "tracks",
+                    "attributes": {"title": f"Track {idx}", "duration": "PT3M0S"},
+                }
+                for idx in range(len(metas))
+            ],
+        }
+    )
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = await media_manager.get_album_tracks("107050976")
+
+    assert [(track.disc_number, track.track_number) for track in tracks] == [
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (2, 0),
+        (2, 2),
+    ]
+
+
 async def test_get_album_tracks_fetch_failure_propagates(
     media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
