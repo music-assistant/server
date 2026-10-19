@@ -116,6 +116,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         sort_direction: SortDirection | None = None,
         summary: bool = True,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
         **kwargs: Any,
     ) -> list[Podcast]:
         """
@@ -125,6 +126,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
@@ -154,6 +156,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             in_library_only=True,
             summary=summary,
             reachable_via=reachable_via,
+            random_seed=random_seed,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -178,6 +181,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 in_library_only=True,
                 summary=summary,
                 reachable_via=reachable_via,
+                random_seed=random_seed,
             )
         return result
 
@@ -191,6 +195,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        exclude_item_id: str | None = None,
+        random_seed: int | None = None,
     ) -> list[PodcastEpisode]:
         """
         Return the episodes of a podcast, searched, sorted and paged.
@@ -207,6 +213,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of episodes to return; 0 returns them all.
         :param offset: Number of episodes to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :param exclude_item_id: Episode item ID to omit from the listing.
         :raises InvalidDataError: When the sort field is not offered for podcast episodes.
         """
         # an unsupported sort is rejected before the podcast is fetched
@@ -232,6 +240,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         await self._set_resume_positions(episodes, provider.instance_id)
         if fully_played is not None:
             episodes = [x for x in episodes if bool(x.fully_played) is fully_played]
+        if exclude_item_id is not None:
+            episodes = [x for x in episodes if x.item_id != exclude_item_id]
         return apply_listing(
             episodes,
             ListingType.PODCAST_EPISODES,
@@ -240,6 +250,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def iter_episodes(
@@ -305,6 +316,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Podcast]:
         """
         Return the versions of a podcast on all providers, searched, sorted and paged.
@@ -317,6 +329,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of versions to return; 0 returns them all.
         :param offset: Number of versions to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for versions.
         """
         return await self._versions_listing(
@@ -328,6 +341,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def match_provider(

@@ -202,12 +202,20 @@ class _FakeProvider:
         self.clear_calls = 0
         self.trust_calls: list[bool] = []
         self.allow_input_calls: list[bool] = []
+        self.held_unapproved = False
+        self.held_unpaired = False
         self._gesture = gesture
         self._submit_outcomes = deque(submit_outcomes or [])
         self._token_errors = deque(token_errors or [])
 
     def pairing_config_snapshot(self, client_id: str) -> ManagementResultData | None:
         return self._pairing_config
+
+    def is_held_unapproved(self, client_id: str) -> bool:
+        return self.held_unapproved
+
+    def is_held_unpaired(self, client_id: str) -> bool:
+        return self.held_unpaired
 
     def get_pin_session(self, client_id: str) -> _FakePinSession | None:
         return self.session

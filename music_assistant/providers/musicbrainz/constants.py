@@ -50,7 +50,14 @@ URL_RELATION_ENTITY: dict[MediaType, str] = {
 
 # Provider domains whose items MusicBrainz links to by a canonical share URL, in the
 # order they are reverse-looked up: the most widely linked services first.
-REVERSE_URL_DOMAINS: tuple[str, ...] = ("spotify", "deezer", "tidal", "apple_music", "ytmusic")
+REVERSE_URL_DOMAINS: tuple[str, ...] = (
+    "spotify",
+    "deezer",
+    "tidal",
+    "apple_music",
+    "ytmusic",
+    "qobuz",
+)
 
 # Public catalog hosts whose item URLs MusicBrainz stores as the provider hands them out, so
 # a mapping's own URL can be reverse-looked up. A local server's URL never leaves the house.

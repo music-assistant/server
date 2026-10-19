@@ -10,7 +10,9 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
+    AlbumType,
     ArtistType,
+    MediaType,
     ProviderFeature,
     ProviderSharing,
     SortDirection,
@@ -127,6 +129,57 @@ async def test_library_artist_tracks_follow_the_listing_contract(mass: MusicAssi
         await _tracks(sort_field=SortField.YEAR)
 
 
+async def test_library_artist_tracks_count_matches_listing_filters(
+    mass: MusicAssistant,
+) -> None:
+    """Track counts apply the same artist, provider, search and favorite filters as listings."""
+    for track in (
+        _track("t1", "Zebra", album="Alpha"),
+        _track("t2", "Apple", album="Omega"),
+    ):
+        await mass.music.tracks.add_item_to_library(track)
+    artist_id = await _library_artist_id(mass)
+    tracks = await mass.music.artists.tracks(artist_id, "library")
+    await mass.music.favorites.set(MediaType.TRACK, int(tracks[0].item_id), True, ["user-a"])
+    favorite_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+
+    assert await mass.music.artists.tracks_count(artist_id, "library") == 2
+    assert (
+        await mass.music.artists.tracks_count(
+            artist_id, "library", provider_filter="qobuz_1", search="omega"
+        )
+        == 1
+    )
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=favorite_user,
+    ):
+        assert await mass.music.artists.tracks_count(artist_id, "library", favorite=True) == 1
+
+
+async def test_library_artist_tracks_can_filter_to_the_current_users_favorites(
+    mass: MusicAssistant,
+) -> None:
+    """The favorite-only filter only returns tracks liked by the current user."""
+    for track in (_track("t1", "Zebra"), _track("t2", "Apple")):
+        await mass.music.tracks.add_item_to_library(track)
+    artist_id = await _library_artist_id(mass)
+    tracks = await mass.music.artists.tracks(artist_id, "library")
+    liked_track = tracks[0]
+    favorite_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    await mass.music.favorites.set(
+        MediaType.TRACK, int(liked_track.item_id), True, [favorite_user.user_id]
+    )
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=favorite_user,
+    ):
+        favorites = await mass.music.artists.tracks(artist_id, "library", favorite=True)
+
+    assert [track.item_id for track in favorites] == [liked_track.item_id]
+
+
 async def test_library_artist_albums_follow_the_listing_contract(mass: MusicAssistant) -> None:
     """The library albums of an artist are searched, sorted and paged, by sort name by default."""
     for album in (
@@ -154,6 +207,101 @@ async def test_library_artist_albums_follow_the_listing_contract(mass: MusicAssi
         await _albums(sort_field=SortField.DURATION)
 
 
+async def test_library_artist_album_count_matches_types_and_favorites(
+    mass: MusicAssistant,
+) -> None:
+    """Album counts apply album type and favorite filters before returning the total."""
+    albums = []
+    for item_id, name, album_type in (
+        ("a1", "Album", AlbumType.ALBUM),
+        ("a2", "Single", AlbumType.SINGLE),
+        ("a3", "EP", AlbumType.EP),
+    ):
+        album = _album(item_id, name)
+        album.album_type = album_type
+        albums.append(await mass.music.albums.add_item_to_library(album))
+    artist_id = await _library_artist_id(mass)
+
+    assert await mass.music.artists.albums_count(artist_id, "library") == 3
+    assert (
+        await mass.music.artists.albums_count(
+            artist_id, "library", album_types=[AlbumType.SINGLE, AlbumType.EP]
+        )
+        == 2
+    )
+    favorite_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    await mass.music.favorites.set(
+        MediaType.ALBUM, int(albums[1].item_id), True, [favorite_user.user_id]
+    )
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=favorite_user,
+    ):
+        assert (
+            await mass.music.artists.albums_count(
+                artist_id,
+                "library",
+                album_types=[AlbumType.SINGLE, AlbumType.EP],
+                favorite=True,
+            )
+            == 1
+        )
+
+
+async def test_library_artist_albums_filter_types_before_paging(mass: MusicAssistant) -> None:
+    """Album type filters are applied before the requested page is sliced."""
+    album = _album("a1", "Album")
+    album.album_type = AlbumType.ALBUM
+    single = _album("a2", "Single")
+    single.album_type = AlbumType.SINGLE
+    ep = _album("a3", "EP")
+    ep.album_type = AlbumType.EP
+    for item in (album, single, ep):
+        await mass.music.albums.add_item_to_library(item)
+    artist_id = await _library_artist_id(mass)
+
+    page = await mass.music.artists.albums(
+        artist_id,
+        "library",
+        album_types=[AlbumType.SINGLE, AlbumType.EP],
+        sort_field=SortField.NAME,
+        limit=1,
+        offset=1,
+    )
+
+    assert [item.name for item in page] == ["Single"]
+
+
+async def test_library_artist_albums_filter_favorites_before_paging(
+    mass: MusicAssistant,
+) -> None:
+    """Artist album favorites are scoped to the current user and applied before paging."""
+    albums = [
+        await mass.music.albums.add_item_to_library(_album("a1", "Zebra")),
+        await mass.music.albums.add_item_to_library(_album("a2", "Apple")),
+    ]
+    artist_id = await _library_artist_id(mass)
+    favorite_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    await mass.music.favorites.set(
+        MediaType.ALBUM, int(albums[0].item_id), True, [favorite_user.user_id]
+    )
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=favorite_user,
+    ):
+        page = await mass.music.artists.albums(
+            artist_id,
+            "library",
+            favorite=True,
+            sort_field=SortField.NAME,
+            limit=1,
+            offset=0,
+        )
+
+    assert [item.name for item in page] == ["Zebra"]
+
+
 async def test_appears_on_follows_the_listing_contract(mass: MusicAssistant) -> None:
     """The albums an artist appears on stay newest first by default, and sort, search and page."""
     for index, (name, year) in enumerate((("Early", 1990), ("Late", 2020), ("Middle", 2005))):
@@ -171,6 +319,8 @@ async def test_appears_on_follows_the_listing_contract(mass: MusicAssistant) -> 
     assert await _albums(sort_field=SortField.NAME) == ["Early", "Late", "Middle"]
     assert await _albums(search="mid") == ["Middle"]
     assert await _albums(limit=1, offset=1) == ["Middle"]
+    assert await mass.music.artists.appears_on_count(artist_id, "library") == 3
+    assert await mass.music.artists.appears_on_count(artist_id, "library", search="mid") == 1
     with pytest.raises(InvalidDataError):
         await _albums(sort_field=SortField.DURATION)
 
@@ -218,6 +368,28 @@ async def test_provider_artist_listings_are_assembled_once(
     provider_fetch.assert_awaited_once()
     assert provider_fetch.await_args is not None
     assert provider_fetch.await_args.args == ("artist_x", "qobuz_1")
+
+
+async def test_provider_artist_counts_reuse_the_cached_listing(mass: MusicAssistant) -> None:
+    """Provider artist counts use the existing listing cache rather than refetching per count."""
+    track_fetch = AsyncMock(return_value=Listing(_items("track")))
+    album_fetch = AsyncMock(return_value=_items("album"))
+    with (
+        patch.object(
+            mass,
+            "get_provider",
+            return_value=SimpleNamespace(instance_id="qobuz_1", available=True),
+        ),
+        patch.object(mass.music.artists, "get_provider_artist_tracks", track_fetch),
+        patch.object(mass.music.artists, "get_provider_artist_albums", album_fetch),
+    ):
+        assert await mass.music.artists.tracks_count("count_artist", "qobuz_1") == 3
+        assert await mass.music.artists.tracks_count("count_artist", "qobuz_1") == 3
+        assert await mass.music.artists.albums_count("count_artist", "qobuz_1") == 3
+        assert await mass.music.artists.albums_count("count_artist", "qobuz_1") == 3
+
+    track_fetch.assert_awaited_once_with("count_artist", "qobuz_1")
+    album_fetch.assert_awaited_once_with("count_artist", "qobuz_1")
 
 
 @pytest.mark.parametrize(

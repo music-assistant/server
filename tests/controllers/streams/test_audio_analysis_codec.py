@@ -204,3 +204,44 @@ def test_decode_extra_data_reads_only_the_header() -> None:
     assert decode_extra_data(header) == {"key": "value"}
     assert decode_extra_data(encode(AudioAnalysisData(bpm=120.0))[0]) is None
     assert decode_extra_data(b"[1, 2]") is None
+
+
+def test_decode_unpacks_only_the_requested_arrays() -> None:
+    """With ``arrays`` given the other array fields stay None while the scalars come through."""
+    original = _full_record()
+    header, payload = encode(original)
+
+    partial = decode(header, payload, arrays=("rms_energy", "beats"))
+
+    assert partial.beats == pytest.approx(original.beats)
+    assert partial.rms_energy == pytest.approx(original.rms_energy, abs=1e-3)
+    assert partial.bpm == original.bpm
+    assert partial.extra_data == original.extra_data
+    assert [name for name in ARRAY_FIELDS if getattr(partial, name) is not None] == [
+        "beats",
+        "rms_energy",
+    ]
+    scalars_only = decode(header, payload, arrays=())
+    assert all(getattr(scalars_only, name) is None for name in ARRAY_FIELDS)
+    assert scalars_only.bpm == original.bpm
+
+
+def test_decode_does_not_validate_arrays_it_does_not_unpack() -> None:
+    """Corrupt bytes in an array that is not requested do not reject the record."""
+    corrupt = np.array([0.5, np.nan], dtype="<f4").tobytes()
+    intact = np.array([0.25, 0.75], dtype="<f4").tobytes()
+    header = json_dumps(
+        {
+            "bpm": 120.0,
+            "arrays": [
+                ["beats", "f32", 0, len(corrupt)],
+                ["rms_energy", "f32", len(corrupt), len(intact)],
+            ],
+        }
+    )
+
+    partial = decode(header, corrupt + intact, arrays=("rms_energy",))
+    assert partial.rms_energy == [0.25, 0.75]
+    assert partial.beats is None
+    with pytest.raises(ValueError, match="non-finite"):
+        decode(header, corrupt + intact, arrays=("beats",))

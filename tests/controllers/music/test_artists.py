@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, ImageType, ProviderFeature
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import (
     Album,
     AlbumSummary,
@@ -230,6 +231,36 @@ async def test_appears_on_provider_artist_is_empty(mass: MusicAssistant) -> None
     assert await mass.music.artists.appears_on("guest", "spotify_1") == []
 
 
+async def test_album_artists_only_needs_an_album_in_the_library(mass: MusicAssistant) -> None:
+    """An artist only counts as album artist when one of its own albums is in the library."""
+    library_album = create_album("spotify_1", "kept", "Kept Album", "Album Artist", "album_artist")
+    for mapping in library_album.provider_mappings:
+        mapping.in_library = True
+    # this album is only stored because one of its tracks is in the library
+    track = _track_on_album(
+        "hit",
+        "track_artist",
+        "Track Artist",
+        create_album("spotify_1", "hits", "Hits Album", "Track Artist", "track_artist"),
+    )
+    for artist in (*library_album.artists, *track.artists):
+        assert isinstance(artist, Artist)
+        for mapping in artist.provider_mappings:
+            mapping.in_library = True
+    await mass.music.albums.add_item_to_library(library_album)
+    await mass.music.tracks.add_item_to_library(track)
+    artists = mass.music.artists
+    assert {artist.name for artist in await artists.library_items()} == {
+        "Album Artist",
+        "Track Artist",
+    }
+
+    album_artists = await artists.library_items(album_artists_only=True)
+
+    assert [artist.name for artist in album_artists] == ["Album Artist"]
+    assert await artists.library_count(album_artists_only=True) == 1
+
+
 @pytest.mark.parametrize(
     ("feature", "library_method", "provider_method"),
     [
@@ -296,3 +327,35 @@ async def test_library_artist_listings_query_one_instance_per_streaming_domain(
     queried = {call.args[1] for call in provider_listing.await_args_list}
     # one Spotify instance, and both (non-streaming) filesystem instances
     assert queried == {"spotify_1", "filesystem_local_1", "filesystem_local_2"}
+
+
+async def test_match_provider_skips_the_artists_mappings_on_hidden_sources() -> None:
+    """Matching an artist merged across a hidden source never asks that source."""
+    hidden, own = "plex_theirs", "spotify_mine"
+    ctrl = ArtistsController.__new__(ArtistsController)
+    ctrl.mass = MagicMock()
+    ctrl.logger = logging.getLogger("test.artists.match")
+    ctrl.mass.music.get_visible_provider = MagicMock(
+        side_effect=lambda instance: None if instance == hidden else MagicMock()
+    )
+
+    async def _listing(_item_id: str, provider_instance: str) -> list[Track]:
+        if provider_instance == hidden:
+            raise InsufficientPermissions(f"{hidden} is not a music source of this user")
+        return []
+
+    ctrl.mass.music.artists.tracks = AsyncMock(side_effect=_listing)
+    ctrl.mass.music.artists.albums = AsyncMock(side_effect=_listing)
+    db_artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Shared Artist",
+        provider_mappings={
+            ProviderMapping(item_id="a1", provider_domain="plex", provider_instance=hidden),
+            ProviderMapping(item_id="a2", provider_domain="spotify", provider_instance=own),
+        },
+    )
+
+    assert await ctrl.match_provider(db_artist, MagicMock(name="Tidal")) == []
+    asked = {call.args[1] for call in ctrl.mass.music.artists.tracks.await_args_list}
+    assert asked == {"library", own}

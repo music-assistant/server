@@ -38,6 +38,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import DB_TABLE_ALBUM_TRACKS
 from music_assistant.controllers.music import MusicController
 from music_assistant.helpers.collections import get_collection_item_id
 from music_assistant.mass import MusicAssistant
@@ -748,3 +749,33 @@ async def test_library_artist_types_follow_the_users_sources(music: MusicControl
         assert await music.artists.get_library_artist_types() == [ArtistType.AUTHOR]
     with _as_user(MEMBER):
         assert await music.artists.get_library_artist_types() == []
+
+
+async def test_a_library_track_only_carries_an_album_on_the_users_sources(
+    music: MusicController,
+) -> None:
+    """The album attached to a library track is left out when it lives on hidden sources only."""
+    track = create_track(THEIRS, "t1")
+    track.provider_mappings.add(_mapping(MINE, "t1-mine"))
+    library_track = await music.tracks.add_item_to_library(track)
+    album = await music.albums.add_item_to_library(
+        Album(
+            item_id="a1", provider=THEIRS, name="Album", provider_mappings={_mapping(THEIRS, "a1")}
+        )
+    )
+    await music.database.insert(
+        DB_TABLE_ALBUM_TRACKS,
+        {
+            "track_id": int(library_track.item_id),
+            "album_id": int(album.item_id),
+            "disc_number": 1,
+            "track_number": 1,
+        },
+    )
+
+    with _as_user(OWNER):
+        read = await music.tracks.get(library_track.item_id, "library")
+        assert read.album is not None
+        assert read.album.item_id == album.item_id
+    with _as_user(MEMBER):
+        assert (await music.tracks.get(library_track.item_id, "library")).album is None

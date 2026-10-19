@@ -39,7 +39,11 @@ def _make_player(
     player = cls.__new__(cls)
     player._player_id = "client-1"
     player._provider = cast(
-        "SendspinProvider", SimpleNamespace(pairing_config_snapshot=lambda _client_id: None)
+        "SendspinProvider",
+        SimpleNamespace(
+            pairing_config_snapshot=lambda _client_id: None,
+            is_held_unapproved=lambda _client_id: False,
+        ),
     )
     player.api = cast("SendspinClient", api)
     player.mass = mock.MagicMock()
