@@ -13,6 +13,7 @@ from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache
 from io import StringIO
+from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
@@ -330,8 +331,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             limit=limit,
         )
         if ytm_filter == "songs" and self.config.get_value(CONF_INCLUDE_VIDEOS):
-            # some tracks only exist as a video and never show up on the songs shelf
-            results += await search(query=search_query, ytm_filter="videos", limit=limit)
+            # some tracks only exist as a video; interleave so videos survive the limit cut
+            videos = await search(query=search_query, ytm_filter="videos", limit=limit)
+            results = [item for pair in zip_longest(results, videos) for item in pair if item]
+            results = results[:limit]
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
         albums: list[Album | ItemMapping] = []

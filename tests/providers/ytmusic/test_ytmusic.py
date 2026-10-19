@@ -885,6 +885,20 @@ async def test_search_includes_videos_only_when_enabled(
     assert backend_search.call_args_list[0].kwargs["ytm_filter"] == "songs"
 
 
+async def test_video_search_interleaves_full_shelves(provider: YoutubeMusicProvider) -> None:
+    """Videos keep a place within the limit when the songs shelf is full."""
+
+    async def backend(**kwargs: Any) -> list[dict[str, Any]]:
+        prefix = "video" if kwargs["ytm_filter"] == "videos" else "song"
+        return [_search_track(f"{prefix}{index}", prefix) for index in range(1, 5)]
+
+    cast("MagicMock", provider.config.get_value).return_value = True
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch("music_assistant.providers.ytmusic.search", side_effect=backend):
+        results = await search(provider, "query", [MediaType.TRACK], 4)
+    assert [track.item_id for track in results.tracks] == ["song1", "video1", "song2", "video2"]
+
+
 @pytest.mark.parametrize(
     ("media_types", "ytm_filter"),
     [([MediaType.ARTIST], "artists"), ([MediaType.ARTIST, MediaType.TRACK], None)],
