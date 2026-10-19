@@ -54,6 +54,10 @@ CONF_SENDSPIN_OPT_OUT_PENDING = "sendspin_opt_out_pending"
 SENDSPIN_LINK_WAIT_INTERVAL = 0.5
 SENDSPIN_LINK_WAIT_TRIES = 20
 
+# Seconds to wait for a Cast device to report which app runs, before playback over
+# Sendspin goes ahead on the last status it reported.
+CAST_STATUS_REFRESH_TIMEOUT = 3.0
+
 # Devices known to not work with the Sendspin Cast bridge.
 # Tuple of (manufacturer, model) where "*" is a wildcard.
 # These devices will not get a Sendspin bridge, allowing other protocols
