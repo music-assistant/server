@@ -56,6 +56,9 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player.cloud_queue_id = None
     player.cloud_queue_item_generation = 0
     player._evicted_cloud_queue = None
+    player._flow_queue_id = None
+    player._queue_session_id = None
+    player._hand_over_tasks = set()
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -246,26 +249,30 @@ async def test_on_unload_cancels_an_airplay_group_restore_that_already_started(
 
 
 @pytest.mark.asyncio
-async def test_on_unload_cancels_a_pending_stop_of_a_moved_group(
+async def test_on_unload_cancels_every_pending_hand_over_of_a_moved_group(
     timer_mass: MusicAssistant,
 ) -> None:
-    """Test the stop waiting on a group's new coordinator is aborted when the player is unloaded."""
+    """Test each hand-over waiting on a group's new coordinator is aborted on unload."""
     player, _ = _bind_player(timer_mass)
-    waiting = asyncio.Event()
+    waiting = [asyncio.Event(), asyncio.Event()]
 
-    async def _stop_moved_group() -> None:
-        waiting.set()
+    async def _hand_over(started: asyncio.Event) -> None:
+        started.set()
         await asyncio.sleep(5)
 
-    task_id = f"sonos_stop_moved_group_{player.player_id}"
-    timer_mass.create_task(_stop_moved_group(), task_id=task_id)
-    await waiting.wait()
-    task = timer_mass._tracked_tasks[task_id]
+    tasks = [
+        timer_mass.create_task(_hand_over(started), task_id=f"hand_over_{index}")
+        for index, started in enumerate(waiting)
+    ]
+    player._hand_over_tasks.update(tasks)
+    for started in waiting:
+        await started.wait()
 
     await player.on_unload()
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    for task in tasks:
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio
@@ -788,8 +795,8 @@ def test_a_service_we_did_not_map_gets_a_source_entry_with_its_play_modes() -> N
     # either play or pause being available means the source can be paused and resumed
     assert source.can_play_pause is True
     assert source.can_seek is True
-    # skipping is only offered when the speaker allows it in both directions
-    assert source.can_next_previous is False
+    # one flag for both buttons: kept while either direction works
+    assert source.can_next_previous is True
     # the entry only exists while the speaker plays it, there is no template for it
     assert "Qobuz" not in PLAYER_SOURCE_MAP
 
@@ -864,11 +871,63 @@ def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports(
     assert len([x for x in player._attr_source_list if x.id == "Qobuz"]) == 1
 
 
+@pytest.mark.parametrize(
+    ("flags", "offered"),
+    [
+        ({"canSkip": True, "canSkipToPrevious": False}, True),
+        ({"canSkip": False, "canSkipToPrevious": True}, True),
+        ({"canSkip": False, "canSkipToPrevious": False}, False),
+    ],
+    ids=["first_track", "last_track", "neither"],
+)
+def test_skipping_is_offered_while_either_direction_works(
+    flags: dict[str, bool], offered: bool
+) -> None:
+    """Test the speaker's first and last track keep the buttons; a source with neither has none."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    group = cast("MagicMock", player.client.player.group)
+    group.playback_actions = _actions(flags)
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == "Qobuz")
+    assert source.can_next_previous is offered
+
+
+@pytest.mark.parametrize("available", [True, False], ids=["offered", "not_offered"])
+@pytest.mark.parametrize(
+    ("command", "flag", "speaker_call"),
+    [
+        ("next_track", "canSkip", "skip_to_next_track"),
+        ("previous_track", "canSkipToPrevious", "skip_to_previous_track"),
+    ],
+    ids=["next", "previous"],
+)
+async def test_a_skip_is_sent_only_in_a_direction_the_speaker_offers(
+    command: str, flag: str, speaker_call: str, available: bool
+) -> None:
+    """Test a skip the speaker does not offer is not sent: it refuses it (DISALLOWED_BY_POLICY)."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    # the debug line names the player
+    player._cache = {}
+    player._attr_name = "Office"
+    player._config = MagicMock()
+    player._config.name = None
+    group = cast("MagicMock", player.client.player.group)
+    group.playback_actions = _actions({flag: available})
+    setattr(group, speaker_call, AsyncMock())
+
+    await getattr(player, command)()
+
+    assert getattr(group, speaker_call).await_count == (1 if available else 0)
+
+
 def test_skipping_back_follows_the_deprecated_key_on_older_firmware() -> None:
     """Test a speaker that only reports canSkipBack (before API 1.36.0) still offers skipping."""
     player, _ = _speaker_reporting_paused_qobuz()
     group = cast("MagicMock", player.client.player.group)
-    group.playback_actions = _actions({"canSkip": True, "canSkipBack": True})
+    # only the old key is there to offer skipping at all
+    group.playback_actions = _actions({"canSkip": False, "canSkipBack": True})
 
     player.on_player_event(None)
 
