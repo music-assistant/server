@@ -309,9 +309,7 @@ class RadioController(MediaControllerBase[Radio]):
                 ]
             )
             for prov_item in prov_items
-            if not prov_item.is_dynamic
-            and prov_item.is_endless
-            and loose_compare_strings(radio.name, prov_item.name)
+            if loose_compare_strings(radio.name, prov_item.name)
         }
         # make sure that the 'base' version is NOT included
         for prov_version in radio.provider_mappings:

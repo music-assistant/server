@@ -371,13 +371,6 @@ class MusicAssistant:
         except Exception as err:
             # the parked rows stay where they are and get another chance on the next start
             LOGGER.warning("Could not hand out the migrated favorites: %s", err)
-        # point the sidebar shortcuts at the library items a migration gave a new id. Needs the
-        # auth database, which is not there while the library migrates.
-        try:
-            await self.music.settle_pending_shortcut_rewrites()
-        except Exception as err:
-            # the parked rewrites stay where they are and get another chance on the next start
-            LOGGER.warning("Could not rewrite the migrated sidebar shortcuts: %s", err)
         # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
         # those never resolve, so the frontend cannot render them and the user cannot remove
         # them. Reads the provider config, so it must not wait for the providers to load.

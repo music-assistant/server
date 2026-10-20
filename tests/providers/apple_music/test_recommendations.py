@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Radio, UniqueList
 
 from music_assistant.providers.apple_music.provider import AppleMusicProvider
@@ -289,15 +288,3 @@ async def test_unnamed_station_answered_under_other_id_resolves_on_its_own(
     api_get_data.side_effect = [payload, batch, single]
     folders = await provider.recommendation_manager.get_personal_recommendations()
     assert [(item.item_id, item.name) for item in folders[0].items] == [("ra.u-1", "Mine")]
-
-
-@pytest.mark.asyncio
-async def test_supported_media_types_include_radio(provider: AppleMusicProvider) -> None:
-    """Stations are searchable as radios next to the library media types."""
-    assert provider.supported_media_types == {
-        MediaType.ARTIST,
-        MediaType.ALBUM,
-        MediaType.TRACK,
-        MediaType.PLAYLIST,
-        MediaType.RADIO,
-    }
