@@ -726,46 +726,6 @@ async def test_sync_library_forces_catalog_refresh(provider: BookOrbitProvider) 
 
 
 @pytest.mark.asyncio
-async def test_apply_sole_provider_titles_overwrites_stale_name(
-    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
-) -> None:
-    """Fingerprint-changed sole-provider books must update with overwrite=True for titles."""
-    book_id = str(book_audiobook["id"])
-    provider.base_url = "http://bo"
-    provider._catalog = {book_id: {**book_audiobook, "title": "New Title", "subtitle": None}}
-    mapping = ProviderMapping(
-        item_id=book_id,
-        provider_domain="bookorbit",
-        provider_instance=provider.instance_id,
-        in_library=True,
-        is_unique=True,
-    )
-    library_item = Audiobook(
-        item_id="10",
-        provider="library",
-        name="Old Title",
-        provider_mappings={mapping},
-        duration=1,
-    )
-    update = AsyncMock(return_value=library_item)
-    with (
-        patch.object(
-            provider.mass.music.audiobooks,
-            "get_library_item_by_prov_mappings",
-            AsyncMock(return_value=library_item),
-        ),
-        patch.object(provider.mass.music.audiobooks, "update_item_in_library", update),
-    ):
-        await provider._apply_sole_provider_titles({book_id})
-
-    update.assert_awaited_once()
-    assert update.await_args is not None
-    assert update.await_args.args[0] == "10"
-    assert update.await_args.kwargs["overwrite"] is True
-    assert update.await_args.args[1].name == "New Title"
-
-
-@pytest.mark.asyncio
 async def test_sync_library_persists_applied_mapping_details(
     provider: BookOrbitProvider, book_audiobook: dict[str, Any]
 ) -> None:

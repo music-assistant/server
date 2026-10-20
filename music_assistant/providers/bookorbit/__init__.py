@@ -325,7 +325,12 @@ class BookOrbitProvider(MusicProvider):
             raise
         if not _audio_files(book):
             raise MediaNotFoundError(f"BookOrbit book {prov_audiobook_id} has no audio files")
-        book = await self._book_with_playback_order(book)
+        try:
+            book = await self._book_with_playback_order(book)
+        except (TypeError, ValueError) as err:
+            raise MediaNotFoundError(
+                f"BookOrbit book {prov_audiobook_id} has an unusable audio file list"
+            ) from err
         return parse_audiobook(book, provider_instance_id=self.instance_id, base_url=self.base_url)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -886,15 +891,10 @@ class BookOrbitProvider(MusicProvider):
         ) -> tuple[str, dict[str, Any] | None, Exception | None]:
             try:
                 book = await self._get_book_detail(book_id, card, semaphore)
-            except (
-                ClientResponseError,
-                ClientError,
-                TimeoutError,
-                ProviderUnavailableError,
-                TypeError,
-                ValueError,
-            ) as err:
-                # Per-book HTTP/network errors, missing audio, or a bad multipart file list.
+            except (ClientError, TimeoutError, TypeError, ValueError) as err:
+                # Per-book only: ClientError covers HTTP (incl. ClientResponseError);
+                # TimeoutError for stalled fetches; TypeError/ValueError for a bad id,
+                # missing/invalid manifest, or unusable multipart file list.
                 self.logger.warning("BookOrbit book detail %s failed: %s", book_id, err)
                 # Only record skips inside an active library sync (deletion protection).
                 if SYNC_RUN_STATE.get() is not None:
@@ -969,17 +969,20 @@ class BookOrbitProvider(MusicProvider):
         return book
 
     async def _book_with_playback_order(self, book: dict[str, Any]) -> dict[str, Any]:
-        """Attach manifest ``sortOrder`` to multipart books; propagate manifest errors."""
+        """
+        Attach manifest ``sortOrder`` to multipart books.
+
+        Raises ``TypeError``/``ValueError`` when the manifest cannot establish order
+        (callers skip or map to ``MediaNotFoundError``). HTTP errors from the
+        manifest fetch propagate as ``ClientError``/``TimeoutError``.
+        """
         if len(_audio_files(book)) <= 1:
             return book
         # Do not cache/publish unordered BookDetail when the manifest is unavailable
         # or has no mappable assets: BookDetail omits sortOrder, so file-id order can
         # invent wrong chapter offsets.
         manifest = await self._client.get_audiobook_manifest(int(book["id"]))
-        try:
-            return book_with_manifest_playback_order(book, manifest)
-        except (TypeError, ValueError) as err:
-            raise ProviderUnavailableError(str(err)) from err
+        return book_with_manifest_playback_order(book, manifest)
 
     def _enrich_author(self, author: dict[str, Any]) -> dict[str, Any]:
         """Overlay list-level author fields onto a (possibly cached) book author."""
@@ -1220,47 +1223,3 @@ class BookOrbitProvider(MusicProvider):
             if artist not in found:
                 found.append(artist)
         return found[:limit]
-
-    async def _sync_library_audiobooks(self) -> set[int]:
-        """
-        Sync audiobooks, then overwrite sole-provider titles core otherwise keeps.
-
-        Core ``AudiobooksController._update_library_item`` keeps ``cur_item.name`` unless
-        ``overwrite=True``, so a normal sync update can refresh mappings/metadata while
-        leaving a stale title. Repair titles for books whose ``updatedAt`` fingerprint
-        changed (or was missing) on this run.
-        """
-        fingerprints_before = dict(self._applied_mapping_details)
-        cur_db_ids = await super()._sync_library_audiobooks()
-        changed_ids = {
-            book_id
-            for book_id, book in self._catalog.items()
-            if fingerprints_before.get(book_id) != str(book.get("updatedAt") or "")
-        }
-        await self._apply_sole_provider_titles(changed_ids)
-        return cur_db_ids
-
-    async def _apply_sole_provider_titles(self, book_ids: set[str]) -> None:
-        """Overwrite library titles for sole-provider books whose fingerprint changed."""
-        if not book_ids:
-            return
-        controller = self.mass.music.audiobooks
-        for book_id in book_ids:
-            book = self._catalog.get(book_id)
-            if book is None:
-                continue
-            prov_item = parse_audiobook(
-                book, provider_instance_id=self.instance_id, base_url=self.base_url
-            )
-            library_item = await controller.get_library_item_by_prov_mappings(
-                prov_item.provider_mappings
-            )
-            if library_item is None:
-                continue
-            if {x.provider_instance for x in library_item.provider_mappings} != {self.instance_id}:
-                continue
-            if library_item.name == prov_item.name and (library_item.sort_name or "") == (
-                prov_item.sort_name or ""
-            ):
-                continue
-            await controller.update_item_in_library(library_item.item_id, prov_item, overwrite=True)
