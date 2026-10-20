@@ -313,3 +313,78 @@ async def test_run_setup_reconfigure_blank_password_keeps_stored_and_validates(
             await task
 
         assert collected[CONF_PASSWORD] == "stored-secret"
+
+
+@pytest.mark.asyncio
+async def test_run_setup_reconfigure_keeps_replacement_password_after_retry(
+    aiohttp_server: Any,
+) -> None:
+    """
+    After a failed reconfigure with a new password, a blank-password retry keeps it.
+
+    Secure fields are often cleared on the error form; the in-progress replacement
+    must not be discarded in favour of the originally saved password.
+    """
+    collected: dict[str, Any] = {}
+    login_passwords: list[str] = []
+
+    async def login(request: web.Request) -> web.Response:
+        body = await request.json()
+        login_passwords.append(str(body["password"]))
+        if len(login_passwords) == 1:
+            return web.json_response({"message": "upstream unavailable"}, status=503)
+        resp = web.json_response({"accessToken": "tok"})
+        resp.set_cookie("refresh_token", "ref", path="/")
+        return resp
+
+    async def libraries(_request: web.Request) -> web.Response:
+        return web.json_response([])
+
+    app = web.Application()
+    app.router.add_post("/api/v1/auth/login", login)
+    app.router.add_get("/api/v1/libraries", libraries)
+    server = await aiohttp_server(app)
+    base = str(server.make_url("/")).rstrip("/")
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"instance_id": "bookorbit--test"}
+
+    mass = mock.Mock()
+    async with aiohttp.ClientSession() as http:
+        mass.http_session = http
+        session = _make_session(
+            finish,
+            mass,
+            setup_data={
+                CONF_URL: base,
+                CONF_USERNAME: "u",
+                CONF_PASSWORD: "stored-secret",
+                CONF_VERIFY_SSL: True,
+            },
+        )
+        with _patch_create_clientsession():
+            task = asyncio.create_task(run_setup(session))
+            await _wait_for_form(session)
+            session.handle_submit(
+                {
+                    CONF_URL: base,
+                    CONF_USERNAME: "u",
+                    CONF_PASSWORD: "replacement-secret",
+                    CONF_VERIFY_SSL: True,
+                }
+            )
+            await _wait_for_form(session, with_errors=True)
+            session.handle_submit(
+                {
+                    CONF_URL: base,
+                    CONF_USERNAME: "u",
+                    CONF_PASSWORD: None,
+                    CONF_VERIFY_SSL: True,
+                }
+            )
+            await _wait_for(lambda: session.finished)
+            await task
+
+        assert login_passwords == ["replacement-secret", "replacement-secret"]
+        assert collected[CONF_PASSWORD] == "replacement-secret"

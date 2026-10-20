@@ -21,8 +21,9 @@ from music_assistant_models.media_items import (
 )
 from yarl import URL
 
+from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_DELETIONS
 from music_assistant.controllers.music.media.base import AudiobookSyncDetails
-from music_assistant.models.music_provider import SYNC_RUN_STATE, MusicProvider, SyncRunState
+from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.constants import (
     CACHE_CATEGORY_LIBRARY_FINGERPRINTS,
@@ -33,7 +34,7 @@ from music_assistant.providers.bookorbit.constants import (
     CONF_VERIFY_SSL,
 )
 from music_assistant.providers.bookorbit.helpers import library_may_contain_audio
-from music_assistant.providers.bookorbit.parsers import AUTHOR_PREFIX
+from music_assistant.providers.bookorbit.parsers import AUTHOR_PREFIX, parse_audiobook
 from tests.providers.bookorbit.conftest import manifest_from_book, wire_mass_create_task
 
 
@@ -712,14 +713,14 @@ async def test_sync_library_forces_catalog_refresh(provider: BookOrbitProvider) 
     provider._catalog_refreshed_at = time.monotonic()
     provider._catalog = {"1": {"id": 1}}
 
-    async def _parent_sync(self: MusicProvider, media_type: MediaType) -> None:
+    async def _run_sync(media_type: MediaType) -> None:
         assert media_type == MediaType.AUDIOBOOK
-        async for _ in self.get_library_audiobooks():
+        async for _ in provider.get_library_audiobooks():
             break
 
     with (
         patch.object(provider, "_fetch_catalog", new_callable=AsyncMock) as fetch,
-        patch.object(MusicProvider, "sync_library", _parent_sync),
+        patch.object(provider, "_run_library_sync", _run_sync),
     ):
         await provider.sync_library(MediaType.AUDIOBOOK)
     fetch.assert_awaited_once()
@@ -735,11 +736,11 @@ async def test_sync_library_persists_applied_mapping_details(
     cache = cast("Mock", provider.mass.cache)
     cache.get = AsyncMock(return_value={book_id: "old-fingerprint"})
 
-    async def _parent_sync(_self: MusicProvider, media_type: MediaType) -> None:
-        assert media_type == MediaType.AUDIOBOOK
+    async def _run_sync(_media_type: MediaType) -> None:
+        return
 
     provider._catalog = {book_id: {**book_audiobook, "updatedAt": updated_at}}
-    with patch.object(MusicProvider, "sync_library", _parent_sync):
+    with patch.object(provider, "_run_library_sync", _run_sync):
         await provider.sync_library(MediaType.AUDIOBOOK)
 
     assert provider._applied_mapping_details == {book_id: updated_at}
@@ -755,6 +756,102 @@ async def test_sync_library_persists_applied_mapping_details(
     assert set_kwargs["category"] == CACHE_CATEGORY_LIBRARY_FINGERPRINTS
     assert set_kwargs["data"] == {book_id: updated_at}
     assert set_kwargs["persistent"] is True
+
+
+@pytest.mark.asyncio
+async def test_sync_library_keeps_fingerprint_when_library_write_fails(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """
+    A failed library write must not mark the book's fingerprint as applied.
+
+    Uses the real parent sync path so per-item failures go through SyncRunState.
+    """
+    book_id = str(book_audiobook["id"])
+    old_fp = "2026-01-01T00:00:00.000Z"
+    new_fp = str(book_audiobook.get("updatedAt") or "2026-10-14T20:00:00.000Z")
+    provider._catalog = {book_id: {**book_audiobook, "updatedAt": new_fp}}
+    provider._catalog_refreshed_at = time.monotonic()
+    provider._applied_mapping_details = {book_id: old_fp}
+
+    cache = cast("Mock", provider.mass.cache)
+    cache.get = AsyncMock(return_value={book_id: old_fp})
+    cache.set = AsyncMock()
+
+    mass = cast("Any", provider.mass)
+    mass.music.library_supported = Mock(return_value=True)
+    mass.music.genres.sync_media_item_genres = AsyncMock()
+    mass.music.favorites.record_from_provider = AsyncMock()
+    commit_cm = AsyncMock()
+    commit_cm.__aenter__.return_value = None
+    commit_cm.__aexit__.return_value = None
+    mass.music.database.deferred_commit = Mock(return_value=commit_cm)
+    mass.music.get_controller = Mock(
+        return_value=Mock(get_library_items_by_prov_id=AsyncMock(return_value=[]))
+    )
+
+    sync_details = AudiobookSyncDetails(
+        item_id=10,
+        date_added=datetime(2026, 1, 1, tzinfo=UTC),
+        provider_mappings={
+            ProviderMapping(
+                item_id=book_id,
+                provider_domain="bookorbit",
+                provider_instance=provider.instance_id,
+                in_library=True,
+                is_unique=True,
+            )
+        },
+        artist_links=frozenset(),
+        authors=(),
+        narrators=(),
+        fully_played=None,
+        resume_position_ms=None,
+    )
+    mass.music.audiobooks.get_library_item_sync_details = AsyncMock(return_value=sync_details)
+    mass.music.audiobooks.update_item_in_library = AsyncMock(
+        side_effect=RuntimeError("library write failed")
+    )
+
+    config_values = {
+        "log_level": "GLOBAL",
+        CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key: False,
+    }
+    cast("Any", provider.config).get_value.side_effect = lambda key, default=None: (
+        config_values.get(key, default)
+    )
+
+    with patch.object(provider, "_refresh_catalog", new_callable=AsyncMock):
+
+        async def _one_book() -> Any:
+            yield parse_audiobook(
+                provider._catalog[book_id],
+                provider_instance_id=provider.instance_id,
+                base_url=provider.base_url,
+            )
+
+        provider.get_library_audiobooks = _one_book  # type: ignore[method-assign]
+        await provider.sync_library(MediaType.AUDIOBOOK)
+
+    assert provider._applied_mapping_details == {book_id: old_fp}
+    # Next sync still sees a fingerprint mismatch and retries the update.
+    prov_item = Audiobook(
+        item_id=book_id,
+        provider=provider.instance_id,
+        name="Hatchet",
+        provider_mappings={
+            ProviderMapping(
+                item_id=book_id,
+                provider_domain="bookorbit",
+                provider_instance=provider.instance_id,
+                details=new_fp,
+                in_library=True,
+                is_unique=True,
+            )
+        },
+        duration=100,
+    )
+    assert provider._library_item_needs_update(sync_details, prov_item) is True
 
 
 @pytest.mark.asyncio

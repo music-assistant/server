@@ -6,7 +6,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientError, ClientResponseError, DummyCookieJar, web
 from music_assistant_models.enums import (
@@ -272,14 +272,28 @@ class BookOrbitProvider(MusicProvider):
         self._force_catalog_refresh = media_type == MediaType.AUDIOBOOK
         if media_type == MediaType.AUDIOBOOK:
             await self._load_applied_mapping_details()
+        # Core protects failed items with a known library id via cur_db_ids only, so
+        # SyncRunState.skipped_item_ids is empty for those write failures. Capture
+        # audiobook failures here so fingerprints stay unset for retries.
+        failed_audiobook_ids: set[str] = set()
+        original_handle = self._handle_sync_item_failure
+
+        def _capture_audiobook_failure(
+            failure_media_type: MediaType, item_ref: str | None, err: Exception
+        ) -> None:
+            if failure_media_type == MediaType.AUDIOBOOK and item_ref:
+                # item_ref is a provider id or a full MA uri (.../audiobook/<id>).
+                failed_audiobook_ids.add(item_ref.rsplit("/", 1)[-1])
+            original_handle(failure_media_type, item_ref, err)
+
+        cast("Any", self)._handle_sync_item_failure = _capture_audiobook_failure
         try:
             await super().sync_library(media_type)
         finally:
+            cast("Any", self)._handle_sync_item_failure = original_handle
             self._force_catalog_refresh = False
         if media_type == MediaType.AUDIOBOOK:
-            # Record fingerprints from this successful run so the next sync can skip
-            # unchanged books even though sync-details omit mapping.details.
-            self._seed_applied_mapping_details_from_catalog()
+            self._commit_applied_mapping_details(failed_audiobook_ids)
             await self._save_applied_mapping_details()
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
@@ -570,11 +584,22 @@ class BookOrbitProvider(MusicProvider):
         else:
             self._applied_mapping_details = {}
 
-    def _seed_applied_mapping_details_from_catalog(self) -> None:
-        """Replace in-memory fingerprints with the catalog's current updatedAt values."""
-        self._applied_mapping_details = {
-            book_id: str(book.get("updatedAt") or "") for book_id, book in self._catalog.items()
-        }
+    def _commit_applied_mapping_details(self, skipped_ids: set[str]) -> None:
+        """
+        Record fingerprints for books that synced; keep prior values for failures.
+
+        Core catches per-item library-write errors, so a finished sync does not mean
+        every catalog book was applied. Skipped ids keep their previous fingerprint
+        (or stay absent) so the next sync retries them.
+        """
+        next_details: dict[str, str] = {}
+        for book_id, book in self._catalog.items():
+            if book_id in skipped_ids:
+                if book_id in self._applied_mapping_details:
+                    next_details[book_id] = self._applied_mapping_details[book_id]
+                continue
+            next_details[book_id] = str(book.get("updatedAt") or "")
+        self._applied_mapping_details = next_details
 
     async def _save_applied_mapping_details(self) -> None:
         """Persist last-applied audiobook mapping fingerprints to mass.cache."""

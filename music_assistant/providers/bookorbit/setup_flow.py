@@ -140,16 +140,17 @@ def _same_username(saved: dict[str, Any], submitted: dict[str, Any]) -> bool:
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the connection details and create the provider."""
     errors: dict[str, str | SetupFlowError] | None = None
-    saved_setup_data = dict(session.context.setup_data)
-    setup_data = dict(saved_setup_data)
+    setup_data = dict(session.context.setup_data)
     while True:
         entries = [
             replace(entry, value=setup_data.get(entry.key, entry.value)) for entry in _ENTRIES
         ]
         submitted = await session.form(entries, step_id="user", errors=errors, last_step=True)
-        if not submitted.get(CONF_PASSWORD) and _same_username(saved_setup_data, submitted):
+        # Blank password on retry must keep the in-progress password (e.g. a replacement
+        # entered before a transient validation failure), not only the originally saved one.
+        if not submitted.get(CONF_PASSWORD) and _same_username(setup_data, submitted):
             submitted = dict(submitted)
-            submitted[CONF_PASSWORD] = saved_setup_data.get(CONF_PASSWORD)
+            submitted[CONF_PASSWORD] = setup_data.get(CONF_PASSWORD)
         prior_username = setup_data.get(CONF_USERNAME)
         setup_data.update(
             (key, value)
