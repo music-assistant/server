@@ -999,6 +999,10 @@ class SyncGroupPlayer(Player):
         self.sync_leader = None
         self._update_attributes()
         self.update_state()
+        # members derive active_group from our session; when the dissolve leaves our own
+        # state unchanged (idle grace after the queue ended) no event would refresh them
+        for member_id in self._attr_group_members:
+            self.mass.players.trigger_player_update(member_id)
 
     def _select_sync_leader(
         self,

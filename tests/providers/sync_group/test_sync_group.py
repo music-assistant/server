@@ -619,6 +619,38 @@ class TestActiveProtocolDomain:
         mass.players._handle_set_members.assert_not_awaited()
         mass.players._handle_cmd_stop.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_dissolve_refreshes_members_after_the_session_ends(self) -> None:
+        """
+        Dissolve must trigger a state update for every member once the leader is cleared.
+
+        Members derive active_group from is_active_session. When the idle grace dissolves
+        the group after the queue ran out, the group's own state does not change, so
+        without an explicit trigger the members keep reporting the group as active.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="squeezelite")
+        member = _make_mock_player("member", provider_domain="squeezelite")
+        leader.state.group_members = ["leader", "member"]
+        mass.players.get_player = _player_lookup({"leader": leader, "member": member})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+
+        leader_at_trigger: list[object] = []
+        mass.players.trigger_player_update.side_effect = lambda _pid: leader_at_trigger.append(
+            sgp.sync_leader
+        )
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        triggered = [c.args[0] for c in mass.players.trigger_player_update.call_args_list]
+        assert sorted(triggered) == ["leader", "member"]
+        # the members must recalculate against the ended session, not the old leader
+        assert leader_at_trigger == [None, None]
+
 
 class TestDynamicLeaderSwitch:
     """Test dynamic leader switching behaviour."""
