@@ -32,6 +32,7 @@ from music_assistant.controllers.statistics.queries import (
 )
 from music_assistant.controllers.webserver.helpers import auth_middleware
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.datetime import get_timezone
 
 
 class TimeSeriesMixin(_StatisticsBase):
@@ -279,7 +280,7 @@ class TimeSeriesMixin(_StatisticsBase):
                 AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
             GROUP BY timestamp
         """
-        zone = self._get_timezone(timezone)
+        zone = get_timezone(timezone)
         async for row in self.mass.music.database.iter_rows_from_query(
             query, {"user_id": user_id, "cutoff_timestamp": cutoff_timestamp}
         ):

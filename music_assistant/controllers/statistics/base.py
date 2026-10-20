@@ -5,11 +5,11 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.helpers.datetime import get_timezone
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -67,13 +67,6 @@ class _StatisticsBase(CoreController):
             for item in references:
                 item.available = item.item_id in available_ids
 
-    def _get_timezone(self, timezone: str) -> ZoneInfo:
-        """Resolve an IANA timezone or reject invalid input."""
-        try:
-            return ZoneInfo(timezone)
-        except (ZoneInfoNotFoundError, ValueError) as err:
-            raise InvalidDataError(f"Invalid timezone: {timezone}") from err
-
     def _get_period_cutoff(self, period: str, timezone: str = "UTC") -> float:
         """
         Get the cutoff timestamp for a time period.
@@ -82,7 +75,7 @@ class _StatisticsBase(CoreController):
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         :return: Unix timestamp for the start of the period.
         """
-        zone = self._get_timezone(timezone)
+        zone = get_timezone(timezone)
         now = time.time()
 
         if period == "today":
