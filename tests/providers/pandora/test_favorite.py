@@ -625,6 +625,18 @@ async def test_a_clear_during_a_like_deletes_the_new_feedback() -> None:
     assert _kept(provider, "TR:S1") is None
 
 
+async def test_two_answers_without_a_station_are_both_kept() -> None:
+    """Two answers without a stationId cannot be matched to a station, so both ids are kept."""
+    provider, _sent, deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider._remember_feedback("TR:S1", {"feedbackId": "fb-x", "isPositive": True})
+    await provider._remember_feedback("TR:S1", {"feedbackId": "fb-y", "isPositive": False})
+    assert [entry["feedbackId"] for entry in _kept(provider, "TR:S1")] == ["fb-x", "fb-y"]
+    await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert [body["feedbackId"] for body in deleted] == ["fb-x", "fb-y"]
+    assert _kept(provider, "TR:S1") is None
+
+
 async def test_feedback_recorded_without_a_station_is_still_cleared() -> None:
     """
     An answer without a stationId is kept beside a later thumb on a named station.

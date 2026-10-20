@@ -676,11 +676,12 @@ class PandoraProvider(MusicProvider):
             return
         station_id = result.get("stationId")
         # Pandora holds one thumb per track and station: a new thumb on the same station
-        # replaces the kept one, a thumb on another station is kept beside it
+        # replaces the kept one, a thumb on another station is kept beside it; without a
+        # station the new thumb cannot be matched, so every kept one stays
         kept = [
             entry
             for entry in await self._get_kept_feedback(prov_track_id)
-            if entry.get("stationId") != station_id
+            if station_id is None or entry.get("stationId") != station_id
         ]
         kept.append(
             {
