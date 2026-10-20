@@ -591,7 +591,7 @@ async def test_get_playlist_tracks_force_refresh_keeps_last_modified_cached() ->
 
 @pytest.mark.asyncio
 async def test_station_id_is_not_looked_up_as_playlist() -> None:
-    """A station id is answered locally by the playlist getters, without an API request."""
+    """A station id is answered locally by the playlist getters and artwork, without an API request."""
     provider = _create_provider_mock()
     provider.api_client.get_data = AsyncMock()
     provider.media_manager = AppleMusicMediaManager(provider)
@@ -599,6 +599,7 @@ async def test_station_id_is_not_looked_up_as_playlist() -> None:
     with pytest.raises(MediaNotFoundError):
         await AppleMusicProvider.get_playlist(provider, "ra.123")
     assert await AppleMusicProvider.get_playlist_tracks(provider, "ra.123") == []
+    assert await AppleMusicProvider.resolve_image(provider, "playlist/ra.123") == ""
 
     provider.api_client.get_data.assert_not_awaited()
 

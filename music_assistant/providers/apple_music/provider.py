@@ -226,7 +226,10 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve an artwork token to a freshly signed artwork URL."""
         media_type, _, item_id = path.partition("/")
-        if not is_apple_id(item_id):
+        # a station token from before stations were radios cannot resolve as a playlist
+        if not is_apple_id(item_id) or (
+            media_type == MediaType.PLAYLIST.value and item_id.startswith("ra.")
+        ):
             return ""
         return await self.media_manager.get_artwork_url(media_type, item_id) or ""
 
