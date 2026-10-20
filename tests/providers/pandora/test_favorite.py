@@ -10,7 +10,6 @@ import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
-    MediaNotFoundError,
     ProviderUnavailableError,
 )
 
@@ -133,13 +132,20 @@ async def test_non_tracks_send_nothing(media_type: MediaType, favorite: bool | N
     assert sent == []
 
 
-async def test_unknown_track_is_refused_without_a_call() -> None:
-    """A track no retained fragment holds is refused before any call to Pandora."""
+@pytest.mark.parametrize("favorite", [True, False])
+async def test_rating_a_track_no_fragment_holds_warns_and_sends_nothing(favorite: bool) -> None:
+    """
+    A track rated long after it played (from the library, say) is not sent, and no error is raised.
+
+    Music Assistant has already saved the rating, so the log says why Pandora was not told.
+    """
     provider, sent = _feedback_provider()
     await provider.get_dynamic_radio_tracks(STATION_ID)
-    with pytest.raises(MediaNotFoundError):
-        await provider.set_favorite("TR:nope", MediaType.TRACK, True)
+    await provider.set_favorite("TR:nope", MediaType.TRACK, favorite)
     assert sent == []
+    assert _kept(provider, "TR:nope") is None
+    assert isinstance(provider.logger, Mock)
+    provider.logger.warning.assert_called_once()
 
 
 async def test_track_without_token_is_refused() -> None:

@@ -346,13 +346,16 @@ class PandoraProvider(MusicProvider):
             return
         # Pandora ties feedback to the trackToken it issued with a fragment, and that token
         # decides which station the feedback trains, so only a track still held in a retained
-        # fragment can be rated
+        # fragment can be rated. Pandora has no other way to add a thumb. MA has saved the
+        # rating before calling here, so an error would only confuse: the rating stays in MA.
         track = self._find_rated_track(prov_item_id)
         if track is None:
-            raise MediaNotFoundError(
-                f"Track {prov_item_id} is not in any retained Pandora fragment (not playing, or "
-                "played too long ago to rate)"
+            self.logger.warning(
+                "Track %s is not in any retained Pandora fragment (not playing, or played too "
+                "long ago), so the rating is kept in Music Assistant but not sent to Pandora",
+                prov_item_id,
             )
+            return
         if track.get("allowFeedback") is False:
             raise InvalidDataError(f"Pandora does not allow feedback on track {prov_item_id}")
         if not (token := track.get("trackToken")):
