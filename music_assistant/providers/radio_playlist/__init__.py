@@ -15,7 +15,6 @@ import random
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
-from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -157,10 +156,7 @@ class RadioPlaylistProvider(PluginProvider):
         active_filter = get_track_filter()
         if active_filter is not None:
             base_tracks = [t for t in base_tracks if active_filter.allows(t)] or base_tracks
-        # Collect similar tracks, keeping insertion order (used by the ordered
-        # assembly below when an ordered-similarity provider is active).
-        dynamic_tracks: list[Track] = []
-        seen_dynamic: set[Track] = set(base_tracks)
+        dynamic_tracks: set[Track] = set()
         for allow_lookup in (False, True):
             if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
                 break
@@ -177,38 +173,26 @@ class RadioPlaylistProvider(PluginProvider):
                     # shouldn't abort generation (base tracks can still carry the playlist)
                     continue
                 for track in similar:
-                    if track in seen_dynamic or track.duration > RADIO_TRACK_MAX_DURATION_SECS:
+                    if track in base_tracks or track.duration > RADIO_TRACK_MAX_DURATION_SECS:
                         continue
                     if active_filter is not None and not active_filter.allows(track):
                         continue
-                    seen_dynamic.add(track)
-                    dynamic_tracks.append(track)
+                    dynamic_tracks.add(track)
                 if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
                     break
 
-        # A provider that returns similar tracks best-match-first (declared via
-        # its `ordered_similarity` property, e.g. a sonic-similarity plugin)
-        # makes `dynamic_tracks` meaningfully ordered: preserve that order (its
-        # picks on top, top-up below) instead of the default shuffled mix.
-        if any(
-            getattr(prov, "ordered_similarity", False)
-            for prov in self.mass.get_providers_supporting_feature(ProviderFeature.SIMILAR_TRACKS)
-        ):
-            ordered: list[Track] = list(base_tracks) if include_base_tracks else []
-            ordered += dynamic_tracks[:target_size]
-            return ordered
-
         result: list[Track] = []
+        dynamic_tracks_list = list(dynamic_tracks)
         if include_base_tracks:
             result.append(base_tracks[0])
             if len(base_tracks) > 1:
                 for base_track in base_tracks[1:]:
                     result.append(base_track)
-                    if len(dynamic_tracks) > 2:
-                        result += random.sample(dynamic_tracks, 2)
+                    if len(dynamic_tracks_list) > 2:
+                        result += random.sample(dynamic_tracks_list, 2)
                     else:
-                        result += dynamic_tracks
-        remaining_dynamic = [t for t in dynamic_tracks if t not in result]
+                        result += dynamic_tracks_list
+        remaining_dynamic = [t for t in dynamic_tracks_list if t not in result]
         if remaining_dynamic:
             result += random.sample(remaining_dynamic, min(len(remaining_dynamic), target_size))
         return result
