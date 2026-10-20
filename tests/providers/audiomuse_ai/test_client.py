@@ -106,6 +106,13 @@ class TestErrorHandling:
         with pytest.raises(AudioMuseError, match="failed"):
             await client.similar_tracks("ms-1", 5)
 
+    async def test_timeout_raises_and_health_degrades(self) -> None:
+        """A request timeout is wrapped in AudioMuseError, so health() reports False."""
+        client, _ = _client(exc=TimeoutError())
+        with pytest.raises(AudioMuseError, match="failed"):
+            await client._request("GET", "/api/health")
+        assert await client.health() is False
+
     async def test_health_swallows_errors(self) -> None:
         """health() reports False instead of raising on any failure."""
         client, _ = _client(exc=ClientError("connection refused"))

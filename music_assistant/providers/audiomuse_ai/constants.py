@@ -26,11 +26,14 @@ REQUEST_TIMEOUT = 30
 # Default neighbour count for the SIMILAR_TRACKS hook / API command.
 DEFAULT_SIMILAR_LIMIT = 25
 
-# recommendations() discover-row tunables (mirror the sonic_similarity plugin):
+# Discover-row tunables (mirror the sonic_similarity plugin):
 # seed fan-out bound, per-seed neighbour pull, and visible row length.
 RECOMMEND_SEED_COUNT = 5
 RECOMMEND_PER_SEED_LIMIT = 10
 RECOMMEND_ITEM_LIMIT = 12
+
+# Max concurrent provider lookups for AudioMuse-AI ids missing from the library.
+RESOLVE_CONCURRENCY = 5
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,

@@ -132,6 +132,6 @@ class AudioMuseClient:
                     msg = f"AudioMuse-AI {method} {path} returned {resp.status}: {body}"
                     raise AudioMuseError(msg)
                 return await resp.json()
-        except ClientError as err:
-            msg = f"AudioMuse-AI {method} {path} failed: {err}"
+        except (ClientError, TimeoutError) as err:
+            msg = f"AudioMuse-AI {method} {path} failed: {err!r}"
             raise AudioMuseError(msg) from err

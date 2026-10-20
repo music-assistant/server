@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from music_assistant.providers.audiomuse_ai.client import AudioMuseError
 from music_assistant.providers.audiomuse_ai.constants import (
@@ -18,8 +20,9 @@ from music_assistant.providers.audiomuse_ai.provider import AudioMuseAiPlugin
 
 MEDIA_PROVIDER = "jellyfin--test"
 
-# the undecorated recommendations coroutine (bypasses @use_cache in tests)
-_RECOMMENDATIONS = cast("Any", AudioMuseAiPlugin.recommendations).__wrapped__
+# the undecorated recommendations builder (bypasses @use_cache in tests)
+_BUILD_RECOMMENDATIONS = cast("Any", AudioMuseAiPlugin._get_inspired_recommendations).__wrapped__
+ROW_ID = "inspired_by_recently_played"
 
 
 def _track(item_id: str, mapped_id: str | None = None) -> MagicMock:
@@ -53,8 +56,10 @@ def _provider(
 
     ``library`` maps media-server item ids to the Track stand-ins that
     ``mass.music.tracks.get`` should resolve them to; unknown ids raise
-    MediaNotFoundError like the real controller. ``config_values`` backs
-    ``config.get_value``; ``recent`` backs ``mass.music.recently_played``.
+    MediaNotFoundError like the real controller. Stand-ins whose mapping
+    matches a requested id are also returned by the batched library lookup.
+    ``config_values`` backs ``config.get_value``; ``recent`` backs
+    ``mass.music.recently_played``.
     The setup_data read by ``get_setup_value`` maps to ``MEDIA_PROVIDER``.
     """
     prov = AudioMuseAiPlugin.__new__(AudioMuseAiPlugin)
@@ -69,8 +74,23 @@ def _provider(
             return library[item_id]
         raise MediaNotFoundError(f"not found: {item_id}")
 
+    async def _get_library_items_by_prov_id(
+        provider_instance: str, provider_item_ids: list[str], **_kwargs: Any
+    ) -> list[MagicMock]:
+        return [
+            track
+            for track in (library or {}).values()
+            if any(
+                m.provider_instance == provider_instance and m.item_id in provider_item_ids
+                for m in track.provider_mappings
+            )
+        ]
+
     mass = MagicMock()
     mass.music.tracks.get = AsyncMock(side_effect=_get)
+    mass.music.tracks.get_library_items_by_prov_id = AsyncMock(
+        side_effect=_get_library_items_by_prov_id
+    )
     mass.music.recently_played = AsyncMock(return_value=recent or [])
     mass.config.get = MagicMock(return_value={CONF_MEDIA_PROVIDER: MEDIA_PROVIDER})
     mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
@@ -78,6 +98,7 @@ def _provider(
     prov._client = _mock_client()
     prov._media_provider = str(prov.get_setup_value(CONF_MEDIA_PROVIDER) or "")
     prov._unregister_handles = []
+    cast("Any", prov)._get_inspired_recommendations = partial(_BUILD_RECOMMENDATIONS, prov)
     return prov
 
 
@@ -130,12 +151,13 @@ class TestGetSimilarTracks:
         assert result == []
         client.similar_tracks.assert_not_awaited()
 
-    async def test_api_error_returns_empty(self) -> None:
-        """AudioMuse-AI API failures degrade to an empty result, not an exception."""
+    async def test_api_error_raises_unavailable(self) -> None:
+        """AudioMuse-AI API failures surface as ProviderUnavailableError, not an empty answer."""
         prov = _provider()
         prov._client = _mock_client(similar_tracks=AsyncMock(side_effect=AudioMuseError("boom")))
         seed = _track("1", mapped_id="ms-seed")
-        assert await prov.get_similar_tracks(cast("Any", seed), limit=10) == []
+        with pytest.raises(ProviderUnavailableError):
+            await prov.get_similar_tracks(cast("Any", seed), limit=10)
 
     async def test_not_loaded_returns_empty(self) -> None:
         """Before handle_async_init the client is None -> []."""
@@ -180,14 +202,30 @@ class TestSearch:
         result = await prov.search("sad piano", [MediaType.TRACK], limit=10)
         assert [t.item_id for t in result.tracks] == ["l1"]
 
+    async def test_both_engines_failing_raises(self) -> None:
+        """With every engine down the search raises, so no empty result gets cached."""
+        prov = _provider()
+        prov._client = _mock_client(
+            clap_search=AsyncMock(side_effect=AudioMuseError("down")),
+            lyrics_search=AsyncMock(side_effect=AudioMuseError("down")),
+        )
+        with pytest.raises(ProviderUnavailableError):
+            await prov.search("sad piano", [MediaType.TRACK], limit=10)
+
 
 class TestRecommendations:
     """The 'Inspired by recently played' discover folder."""
 
-    async def test_disabled_returns_empty(self) -> None:
-        """With the discover row disabled no folder is produced."""
+    async def test_row_descriptor_follows_config(self) -> None:
+        """The row is advertised without items only while the discover row is enabled."""
         prov = _provider(config_values={CONF_ENABLE_DISCOVER_ROW: False})
-        assert await _RECOMMENDATIONS(prov) == []
+        assert await prov.get_recommendations() == []
+
+        prov = _provider(config_values={CONF_ENABLE_DISCOVER_ROW: True})
+        folders = await prov.get_recommendations()
+        assert [f.item_id for f in folders] == [ROW_ID]
+        assert not folders[0].items
+        cast("Any", prov.mass).music.recently_played.assert_not_awaited()
 
     async def test_builds_folder_from_recent_seeds(self) -> None:
         """Recent tracks seed similar lookups; the union becomes one folder."""
@@ -204,9 +242,8 @@ class TestRecommendations:
             )
         )
 
-        folders = await _RECOMMENDATIONS(prov)
-        assert len(folders) == 1
-        assert [t.item_id for t in folders[0].items] == ["reco"]
+        items = await prov.get_recommendation_items(ROW_ID)
+        assert [t.item_id for t in items] == ["reco"]
 
     async def test_no_mappable_recent_tracks_returns_empty(self) -> None:
         """Recent tracks that don't map into the configured provider are skipped."""
@@ -216,7 +253,7 @@ class TestRecommendations:
             config_values={CONF_ENABLE_DISCOVER_ROW: True},
             recent=[SimpleNamespace(item_id="recent", provider="library")],
         )
-        assert await _RECOMMENDATIONS(prov) == []
+        assert await prov.get_recommendation_items(ROW_ID) == []
 
 
 class TestHandleSimilarCommand:

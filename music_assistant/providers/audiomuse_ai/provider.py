@@ -9,12 +9,18 @@ the package init and the one-time setup input is collected by ``setup_flow.py``.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, MediaType
-from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import RecommendationFolder, SearchResults
 from music_assistant_models.unique_list import UniqueList
 
@@ -32,6 +38,7 @@ from music_assistant.providers.audiomuse_ai.constants import (
     RECOMMEND_ITEM_LIMIT,
     RECOMMEND_PER_SEED_LIMIT,
     RECOMMEND_SEED_COUNT,
+    RESOLVE_CONCURRENCY,
 )
 
 if TYPE_CHECKING:
@@ -39,7 +46,12 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
-    from music_assistant_models.media_items import Track
+    from music_assistant_models.media_items import (
+        BrowseFolder,
+        ItemMapping,
+        MediaItemType,
+        Track,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -118,14 +130,22 @@ class AudioMuseAiPlugin(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Register the plugin's API commands."""
         self._unregister_handles.append(
-            self.mass.register_api_command("audiomuse_ai/similar", self._handle_similar)
+            self.mass.register_api_command(
+                "audiomuse_ai/similar", self._handle_similar, required_scope=Scope.LIBRARY_READ
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("audiomuse_ai/status", self._handle_status)
+            self.mass.register_api_command(
+                "audiomuse_ai/status", self._handle_status, required_scope=Scope.LIBRARY_READ
+            )
         )
         if bool(self.config.get_value(CONF_ENABLE_TEXT_SEARCH)):
             self._unregister_handles.append(
-                self.mass.register_api_command("audiomuse_ai/search", self._handle_text_search)
+                self.mass.register_api_command(
+                    "audiomuse_ai/search",
+                    self._handle_text_search,
+                    required_scope=Scope.LIBRARY_READ,
+                )
             )
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -145,6 +165,7 @@ class AudioMuseAiPlugin(PluginProvider):
 
         :param track: Full Track (with provider_mappings) from the dispatcher.
         :param limit: Max number of similar tracks to return.
+        :raises ProviderUnavailableError: When the AudioMuse-AI server cannot answer.
         """
         if self._client is None:
             return []
@@ -158,7 +179,7 @@ class AudioMuseAiPlugin(PluginProvider):
             raw = await self._client.similar_tracks(seed, limit)
         except AudioMuseError as err:
             self.logger.warning("Similar tracks lookup failed: %s", err)
-            return []
+            raise ProviderUnavailableError(str(err)) from err
         item_ids = [r["item_id"] for r in raw if r.get("item_id") and r["item_id"] != seed]
         return await self._resolve_tracks(item_ids[:limit])
 
@@ -166,70 +187,13 @@ class AudioMuseAiPlugin(PluginProvider):
     # Cross-provider RECOMMENDATIONS hook (home/discover page)
     # ------------------------------------------------------------------
 
-    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Yield an 'Inspired by recently played' folder for the discover page.
+        Get the 'Inspired by recently played' row descriptor, without items.
 
-        Returns [] when disabled or when no recent track maps into the
-        configured provider — the dispatcher then omits us (no empty card).
+        Returns [] when the discover row is disabled in the plugin config.
         """
-        if self._client is None or not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
-            return []
-        try:
-            recent = await self.mass.music.recently_played(
-                limit=RECOMMEND_SEED_COUNT,
-                media_types=[MediaType.TRACK],
-                fully_played_only=False,
-            )
-        except Exception as err:
-            self.logger.debug("recently_played failed: %s", err)
-            return []
-        if not recent:
-            return []
-
-        # Walk each recent item into a media-server seed id our provider knows.
-        seeds: list[str] = []
-        seen_seeds: set[str] = set()
-        for mapping in recent:
-            try:
-                track = await self.mass.music.tracks.get(
-                    mapping.item_id, mapping.provider, allow_update_metadata=False
-                )
-            except MusicAssistantError:
-                continue
-            seed = self._seed_item_id(track)
-            if seed and seed not in seen_seeds:
-                seeds.append(seed)
-                seen_seeds.add(seed)
-        if not seeds:
-            return []
-
-        # Fan out similar_tracks per seed; union, first occurrence wins (seeds
-        # are already recency-ordered, so earlier seeds get priority).
-        ordered: list[str] = []
-        seen_results: set[str] = set(seeds)
-        for seed in seeds:
-            try:
-                raw = await self._client.similar_tracks(seed, RECOMMEND_PER_SEED_LIMIT)
-            except AudioMuseError as err:
-                self.logger.debug("similar_tracks failed for %s: %s", seed, err)
-                continue
-            for entry in raw:
-                iid = entry.get("item_id")
-                if not iid or iid in seen_results:
-                    continue
-                seen_results.add(iid)
-                ordered.append(iid)
-                if len(ordered) >= RECOMMEND_ITEM_LIMIT:
-                    break
-            if len(ordered) >= RECOMMEND_ITEM_LIMIT:
-                break
-        if not ordered:
-            return []
-
-        items = await self._resolve_tracks(ordered)
-        if not items:
+        if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return []
         return [
             RecommendationFolder(
@@ -238,9 +202,26 @@ class AudioMuseAiPlugin(PluginProvider):
                 name="Inspired by recently played",
                 translation_key="inspired_by_recently_played",
                 icon="mdi-shimmer",
-                items=UniqueList(items),
             ),
         ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for the 'Inspired by recently played' row.
+
+        Returns an empty list for an unknown row, when the row is disabled or
+        when no recent track maps into the configured provider.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != "inspired_by_recently_played":
+            return UniqueList()
+        folder = await self._get_inspired_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
 
     # ------------------------------------------------------------------
     # Free-text SEARCH (CLAP + lyrics)
@@ -281,28 +262,117 @@ class AudioMuseAiPlugin(PluginProvider):
 
         Lookup misses are dropped, preserving input order for the survivors.
         """
+        wanted = set(item_ids)
+        resolved: dict[str, Track] = {}
+        library_items = await self.mass.music.tracks.get_library_items_by_prov_id(
+            provider_instance=self._media_provider,
+            provider_item_ids=item_ids,
+            limit=len(item_ids),
+        )
+        for track in library_items:
+            for mapping in track.provider_mappings:
+                if mapping.provider_instance == self._media_provider and mapping.item_id in wanted:
+                    resolved[mapping.item_id] = track
 
-        async def _one(item_id: str) -> Track | None:
+        semaphore = asyncio.Semaphore(RESOLVE_CONCURRENCY)
+
+        async def _fetch(item_id: str) -> None:
+            async with semaphore:
+                with suppress(MusicAssistantError):
+                    resolved[item_id] = await self.mass.music.tracks.get(
+                        item_id, self._media_provider, allow_update_metadata=False
+                    )
+
+        await asyncio.gather(*(_fetch(i) for i in wanted.difference(resolved)))
+        return [resolved[i] for i in item_ids if i in resolved]
+
+    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
+    async def _get_inspired_recommendations(self) -> RecommendationFolder | None:
+        """Build the 'Inspired by recently played' folder with its items, or None when empty."""
+        if self._client is None or not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
+            return None
+        try:
+            recent = await self.mass.music.recently_played(
+                limit=RECOMMEND_SEED_COUNT,
+                media_types=[MediaType.TRACK],
+                fully_played_only=False,
+            )
+        except Exception as err:
+            self.logger.debug("recently_played failed: %s", err)
+            return None
+        if not recent:
+            return None
+
+        # Walk each recent item into a media-server seed id our provider knows.
+        seeds: list[str] = []
+        seen_seeds: set[str] = set()
+        for mapping in recent:
             try:
-                return await self.mass.music.tracks.get(item_id, self._media_provider)
+                track = await self.mass.music.tracks.get(
+                    mapping.item_id, mapping.provider, allow_update_metadata=False
+                )
             except MusicAssistantError:
-                return None
+                continue
+            seed = self._seed_item_id(track)
+            if seed and seed not in seen_seeds:
+                seeds.append(seed)
+                seen_seeds.add(seed)
+        if not seeds:
+            return None
 
-        resolved = await asyncio.gather(*[_one(i) for i in item_ids])
-        return [t for t in resolved if t is not None]
+        # Fan out similar_tracks per seed; union, first occurrence wins (seeds
+        # are already recency-ordered, so earlier seeds get priority).
+        ordered: list[str] = []
+        seen_results: set[str] = set(seeds)
+        for seed in seeds:
+            try:
+                raw = await self._client.similar_tracks(seed, RECOMMEND_PER_SEED_LIMIT)
+            except AudioMuseError as err:
+                self.logger.debug("similar_tracks failed for %s: %s", seed, err)
+                continue
+            for entry in raw:
+                iid = entry.get("item_id")
+                if not iid or iid in seen_results:
+                    continue
+                seen_results.add(iid)
+                ordered.append(iid)
+                if len(ordered) >= RECOMMEND_ITEM_LIMIT:
+                    break
+            if len(ordered) >= RECOMMEND_ITEM_LIMIT:
+                break
+        if not ordered:
+            return None
+
+        items = await self._resolve_tracks(ordered)
+        if not items:
+            return None
+        return RecommendationFolder(
+            item_id="inspired_by_recently_played",
+            provider=self.instance_id,
+            name="Inspired by recently played",
+            translation_key="inspired_by_recently_played",
+            icon="mdi-shimmer",
+            items=UniqueList(items),
+        )
 
     async def _text_search_item_ids(self, query: str, limit: int) -> list[str]:
-        """Run CLAP + lyrics search, interleave results, dedupe; return item ids."""
+        """
+        Run CLAP + lyrics search, interleave results, dedupe; return item ids.
+
+        :raises ProviderUnavailableError: When both engines failed, so nothing gets cached.
+        """
         if self._client is None:
             return []
         clap, lyrics = await asyncio.gather(
             self._safe_search(self._client.clap_search, query, limit),
             self._safe_search(self._client.lyrics_search, query, limit),
         )
+        if clap is None and lyrics is None:
+            raise ProviderUnavailableError("AudioMuse-AI text search is unavailable")
         ordered: list[str] = []
         seen: set[str] = set()
         # Interleave so neither engine dominates the head of the result list.
-        for clap_entry, lyrics_entry in zip_longest(clap, lyrics):
+        for clap_entry, lyrics_entry in zip_longest(clap or (), lyrics or ()):
             for entry in (clap_entry, lyrics_entry):
                 if entry is None:
                     continue
@@ -317,13 +387,13 @@ class AudioMuseAiPlugin(PluginProvider):
         fn: Callable[[str, int], Awaitable[list[dict[str, Any]]]],
         query: str,
         limit: int,
-    ) -> list[dict[str, Any]]:
-        """Run one text-search call, swallowing API errors into an empty list."""
+    ) -> list[dict[str, Any]] | None:
+        """Run one text-search call, returning None when the engine failed."""
         try:
             return await fn(query, limit)
         except AudioMuseError as err:
             self.logger.debug("Text search failed: %s", err)
-            return []
+            return None
 
     # ------------------------------------------------------------------
     # API commands
