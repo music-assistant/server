@@ -2109,7 +2109,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _get_visible_library_item(self, item_id: int | str) -> Playlist:
         """Return the library playlist, hidden from the caller when it may not see it."""
-        playlist = await self.get_library_item(item_id)
+        # one on music sources the caller may not see is a plain miss, without its name
+        playlist = await self.get_visible_library_item_by_prov_id(str(item_id), "library")
+        if playlist is None:
+            raise MediaNotFoundError(f"playlist not found in library: {item_id}")
         self._check_visible(playlist)
         return playlist
 

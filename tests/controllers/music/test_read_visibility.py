@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemCollection,
     MediaItemType,
+    Playlist,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
@@ -789,3 +790,23 @@ async def test_a_library_track_only_carries_an_album_on_the_users_sources(
         assert read.album.item_id == album.item_id
     with _as_user(MEMBER):
         assert (await music.tracks.get(library_track.item_id, "library")).album is None
+
+
+async def test_a_library_playlist_on_hidden_sources_is_a_plain_miss(music: MusicController) -> None:
+    """A household playlist held only by a hidden source is not found, and its name not told."""
+    playlist = await music.playlists.add_item_to_library(
+        Playlist(
+            item_id="p1",
+            provider=THEIRS,
+            name="Secret Mixtape",
+            provider_mappings={_mapping(THEIRS, "p1")},
+        )
+    )
+
+    with _as_user(OWNER):
+        assert await music.playlists.tracks(playlist.item_id, "library") == []
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError) as err:
+        await music.playlists.tracks(playlist.item_id, "library")
+    assert "Secret Mixtape" not in str(err.value)
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await music.playlists.export_playlist(playlist.item_id)
