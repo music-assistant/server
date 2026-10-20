@@ -71,6 +71,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
+    EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -314,6 +315,7 @@ if TYPE_CHECKING:
     from aiosendspin.models.player import SupportedAudioFormat
     from aiosendspin.noise.trust_store import ServerPairingRecord
     from aiosendspin.server.client import SendspinClient
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
@@ -2823,6 +2825,90 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
             member = self.mass.players.get_player(player_id, True)
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.add_client(member.api)
+
+    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
+        """Handle standalone display Play commands."""
+        super().group_event_cb(group, event)
+        if (
+            isinstance(event, ControllerPlayEvent)
+            and group is self.api.group
+            and self.synced_to is None
+            and group.clients
+            and group.clients[0].client_id == self.player_id
+        ):
+            self.mass.create_task(self._play_static_group())
+
+    _unsub_player_events: Callable[[], None] | None = None
+
+    def _subscribe_client_callbacks(self) -> None:
+        """Subscribe to events and advertise standalone display controls."""
+        super()._subscribe_client_callbacks()
+        if self._unsub_player_events is None:
+            self._unsub_player_events = self.mass.subscribe(
+                self._on_players_changed,
+                (
+                    EventType.PLAYER_ADDED,
+                    EventType.PLAYER_UPDATED,
+                    EventType.PLAYER_REMOVED,
+                    EventType.PLAYER_CONFIG_UPDATED,
+                ),
+            )
+        self._set_display_commands(self.api.group)
+
+    def _unsubscribe_client_callbacks(self) -> None:
+        """Remove client, group, and player event listeners."""
+        super()._unsubscribe_client_callbacks()
+        if self._unsub_player_events is not None:
+            self._unsub_player_events()
+            self._unsub_player_events = None
+
+    def _on_players_changed(self, event: MassEvent) -> None:
+        """Refresh standalone controls when configured playback targets change."""
+        self._set_display_commands(self.api.group)
+
+    def _on_group_changed(self, new_group: SendspinGroup) -> None:
+        """Refresh controls when the display changes groups."""
+        self._set_display_commands(new_group)
+        super()._on_group_changed(new_group)
+
+    def _set_display_commands(self, group: SendspinGroup) -> None:
+        """Advertise standalone Play only with exactly one configured target."""
+        # Supported commands belong to the entire group, so a display follower
+        # must not replace the audio leader's controls, even before membership sync.
+        if (
+            group is self.api.group
+            and group.clients
+            and group.clients[0].client_id == self.player_id
+            and (controller_role := self._controller_role) is not None
+        ):
+            controller_role.set_supported_commands(
+                [MediaCommand.PLAY] if len(self._static_group_targets()) == 1 else []
+            )
+
+    def _static_group_targets(self) -> list[Player]:
+        """Return enabled, available static groups containing this display."""
+        return [
+            player
+            for player in self.mass.players.iter_players(
+                return_unavailable=False, return_disabled=False
+            )
+            if player.type == PlayerType.GROUP
+            and self.player_id in player.state.static_group_members
+        ]
+
+    async def _play_static_group(self) -> None:
+        """Play the single available configured group containing this display."""
+        groups = self._static_group_targets()
+        if len(groups) != 1:
+            self.logger.debug(
+                "Cannot route Play from display %s: expected one available configured group, "
+                "found %s (%s)",
+                self.player_id,
+                len(groups),
+                ", ".join(player.player_id for player in groups) or "none",
+            )
+            return
+        await self.mass.players.cmd_play(groups[0].player_id)
 
 
 class SendspinSourcePlayer(SendspinBasePlayer):

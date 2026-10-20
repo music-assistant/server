@@ -1165,7 +1165,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def get_library_artist_toptracks(
         self,
         item_id: str | int,
-        provider_filter: str | None = None,
+        provider_filter: str | list[str] | None = None,
     ) -> Listing[Track]:
         """
         Return the top tracks for an in-library artist, aggregated across its providers.
@@ -1176,7 +1176,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         incomplete when a provider failed or is not loaded.
 
         :param item_id: The library item ID of the artist.
-        :param provider_filter: Optional provider instance ID to limit the result to.
+        :param provider_filter: Optional provider instance ID, or IDs, to limit the result to.
         """
         ref_item = await self.get_library_item(item_id)
         listings, incomplete = await self._get_library_artist_listings(
