@@ -348,19 +348,21 @@ class PandoraProvider(MusicProvider):
         # Pandora ties feedback to the trackToken it issued with a fragment, and that token
         # decides which station the feedback trains, so only a track still held in a retained
         # fragment can be rated. Pandora has no other way to add a thumb. MA has saved the
-        # rating before calling here, so an error would only confuse: the rating stays in MA.
+        # rating before calling here, so a rating that cannot be sent is logged, not raised:
+        # an error would undo nothing and only confuse.
         track = self._find_rated_track(prov_item_id)
         if track is None:
-            self.logger.warning(
-                "Track %s is not in any retained Pandora fragment (not playing, or played too "
-                "long ago), so the rating is kept in Music Assistant but not sent to Pandora",
+            self._log_unsent_rating(
                 prov_item_id,
+                "it is not in any retained Pandora fragment (not playing, or played too long ago)",
             )
             return
         if track.get("allowFeedback") is False:
-            raise InvalidDataError(f"Pandora does not allow feedback on track {prov_item_id}")
+            self._log_unsent_rating(prov_item_id, "Pandora does not allow feedback on it")
+            return
         if not (token := track.get("trackToken")):
-            raise InvalidDataError(f"Pandora served track {prov_item_id} without a trackToken")
+            self._log_unsent_rating(prov_item_id, "Pandora served it without a trackToken")
+            return
         async with self._feedback_lock:
             result = await self._api_request(
                 "POST", ADD_FEEDBACK_ENDPOINT, data={"trackToken": token, "isPositive": favorite}
@@ -651,6 +653,14 @@ class PandoraProvider(MusicProvider):
             return max(served, key=lambda holder: holder[0])[1]
         # never streamed, e.g. a track rated while still queued
         return self._find_track(prov_track_id)
+
+    def _log_unsent_rating(self, prov_track_id: str, reason: str) -> None:
+        """Log that a rating stays in Music Assistant without reaching Pandora, and why."""
+        self.logger.warning(
+            "The rating on track %s is kept in Music Assistant but not sent to Pandora: %s",
+            prov_track_id,
+            reason,
+        )
 
     async def _remember_feedback(self, prov_track_id: str, result: dict[str, Any]) -> None:
         """

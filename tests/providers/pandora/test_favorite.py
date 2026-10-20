@@ -151,26 +151,29 @@ async def test_rating_a_track_no_fragment_holds_warns_and_sends_nothing(favorite
     provider.logger.warning.assert_called_once()
 
 
-async def test_track_without_token_is_refused() -> None:
-    """A retained track that came without a trackToken cannot be rated."""
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("trackToken", ""), ("allowFeedback", False)],
+)
+@pytest.mark.parametrize("favorite", [True, False])
+async def test_a_track_pandora_cannot_rate_warns_and_sends_nothing(
+    field: str, value: Any, favorite: bool
+) -> None:
+    """
+    A retained track served without a trackToken, or with allowFeedback=False, is not sent.
+
+    As for a track no fragment holds, Music Assistant has already saved the rating, so the log
+    says why Pandora was not told instead of an error the user cannot act on.
+    """
     tracks = _tracks()
-    tracks[0]["trackToken"] = ""
+    tracks[0][field] = value
     provider, sent = _feedback_provider(tracks)
     await provider.get_dynamic_radio_tracks(STATION_ID)
-    with pytest.raises(InvalidDataError):
-        await provider.set_favorite("TR:S0", MediaType.TRACK, True)
+    await provider.set_favorite("TR:S0", MediaType.TRACK, favorite)
     assert sent == []
-
-
-async def test_feedback_disallowed_by_pandora_is_refused() -> None:
-    """A track Pandora marks allowFeedback=False is refused before any call."""
-    tracks = _tracks()
-    tracks[0]["allowFeedback"] = False
-    provider, sent = _feedback_provider(tracks)
-    await provider.get_dynamic_radio_tracks(STATION_ID)
-    with pytest.raises(InvalidDataError):
-        await provider.set_favorite("TR:S0", MediaType.TRACK, False)
-    assert sent == []
+    assert _kept(provider, "TR:S0") is None
+    assert isinstance(provider.logger, Mock)
+    provider.logger.warning.assert_called_once()
 
 
 def _station_tracks(station: str) -> list[dict[str, Any]]:
