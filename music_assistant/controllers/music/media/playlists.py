@@ -73,7 +73,6 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.provider_access import access_allows, visible_music_sources
 from music_assistant.helpers.uri import create_uri, parse_uri
-from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
@@ -155,7 +154,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
-            "music/playlists/playlist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+            "music/playlists/playlist_tracks",
+            self.tracks,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
         )
         self.mass.register_api_command(
             "music/playlists/add_playlist_tracks",
@@ -248,6 +250,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.PLAYLIST_TRACKS, sort_field, sort_direction
         )
+        # a library playlist is served by the exact account its visible mapping names
+        strict_provider_instance |= provider_instance_id_or_domain == "library"
         item_id, provider_instance_id_or_domain, library_item = await self._playlist_source(
             item_id, provider_instance_id_or_domain
         )
@@ -268,7 +272,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             items = await with_user_favorites(self.mass, get_current_user(), listing.items)
         else:
-            # a refresh assembles the listing anew and replaces the cached one
+            # a refresh assembles the listing anew and replaces the cached one; the fill is
+            # pinned to the resolved account, so no other account answers for it dropping
             async with self.mass.cache.handle_refresh(True) if force_refresh else nullcontext():
                 items = await cached_listing(
                     self.mass,
@@ -279,7 +284,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         item_id,
                         provider.instance_id,
                         force_refresh,
-                        strict_provider_instance,
+                        True,
                         library_item,
                     ),
                     item_type=PlaylistPlayableItem,
@@ -314,6 +319,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param allow_dynamic_tracks: Request a fresh sample from dynamic playlists.
         :param strict_provider_instance: Do not fall back to another provider instance.
         """
+        strict_provider_instance |= provider_instance_id_or_domain == "library"
         item_id, provider_instance_id_or_domain, _ = await self._playlist_source(
             item_id, provider_instance_id_or_domain
         )
@@ -1644,25 +1650,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self, provider_instance_id_or_domain: str, strict_provider_instance: bool
     ) -> MediaCatalogMixin | None:
         """
-        Return the provider that lists a playlist, None when no such provider is loaded.
+        Return the provider that lists a playlist, None when it serves no catalog.
 
         :param provider_instance_id_or_domain: The provider instance id or domain.
         :param strict_provider_instance: Only accept this exact instance, and only when it is
             available.
-        :raises ProviderUnavailableError: The exact instance is required but not available.
+        :raises InsufficientPermissions: The source is not one of the user's music sources.
+        :raises ProviderUnavailableError: No provider the user may see serves it.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain,
-            return_unavailable=strict_provider_instance,
+        provider = self.mass.music.resolve_visible_provider(
+            provider_instance_id_or_domain, strict=strict_provider_instance
         )
-        if strict_provider_instance and (
-            provider is None
-            or provider.instance_id != provider_instance_id_or_domain
-            or not provider.available
-        ):
-            raise ProviderUnavailableError(
-                f"Provider {provider_instance_id_or_domain} is not available"
-            )
         return provider if isinstance(provider, MediaCatalogMixin) else None
 
     async def _iter_provider_playlist(
@@ -1673,18 +1671,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         strict_provider_instance: bool,
     ) -> AsyncGenerator[PlaylistPlayableItem]:
         """Yield the items of a provider playlist, page by page."""
+        # the provider is resolved once, so every page is served by the same account
+        provider = self._playlist_provider(provider_instance_id_or_domain, strict_provider_instance)
+        if provider is None:
+            return
         # playlist tracks are not stored in the db, we always fetch them (cached) from the
         # provider. The provider decides how many tracks to return; for a dynamic playlist it
         # returns a bounded sample/batch and terminates by yielding no further pages.
         page = 0
         while True:
-            tracks = await self._get_provider_playlist_tracks(
-                item_id,
-                provider_instance_id_or_domain,
-                page=page,
-                force_refresh=force_refresh,
-                strict_provider_instance=strict_provider_instance,
-            )
+            async with self.mass.cache.handle_refresh(force_refresh):
+                tracks = await provider.get_playlist_tracks(item_id, page=page)
             if not tracks:
                 break
             await self._add_audio_metadata(tracks)
@@ -1750,23 +1747,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return Listing(listing.items, complete=False)
         # the fresh sample a dynamic playlist hands out is never kept
         return Listing(listing.items, complete=not playlist.is_dynamic)
-
-    @guard_single_request
-    async def _get_provider_playlist_tracks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        page: int = 0,
-        force_refresh: bool = False,
-        strict_provider_instance: bool = False,
-    ) -> Sequence[PlaylistPlayableItem]:
-        """Return playlist tracks for the given provider playlist id."""
-        assert provider_instance_id_or_domain != "library"
-        provider = self._playlist_provider(provider_instance_id_or_domain, strict_provider_instance)
-        if provider is None:
-            return []
-        async with self.mass.cache.handle_refresh(force_refresh):
-            return await provider.get_playlist_tracks(item_id, page=page)
 
     async def _add_audio_metadata(self, items: Sequence[PlaylistPlayableItem]) -> None:
         """
@@ -2123,7 +2103,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _get_visible_library_item(self, item_id: int | str) -> Playlist:
         """Return the library playlist, hidden from the caller when it may not see it."""
-        playlist = await self.get_library_item(item_id)
+        # one on music sources the caller may not see is a plain miss, without its name
+        playlist = await self.get_visible_library_item_by_prov_id(str(item_id), "library")
+        if playlist is None:
+            raise MediaNotFoundError(f"playlist not found in library: {item_id}")
         self._check_visible(playlist)
         return playlist
 

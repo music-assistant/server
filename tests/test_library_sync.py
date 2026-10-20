@@ -1247,6 +1247,9 @@ async def test_select_provider_id_prefers_highest_priority_mapping(reverse: bool
     """The subscribed non-streaming source wins over a mapping added by provider matching."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {"spotify_1": Mock(type=ProviderType.MUSIC), "gpodder_1": Mock(type=ProviderType.MUSIC)}
+    )
     ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
 
     mappings = [
@@ -1281,6 +1284,9 @@ def test_select_provider_id_breaks_priority_ties_deterministically(reverse: bool
     """Mappings of equal priority resolve to the same mapping regardless of order."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {"tidal_1": Mock(type=ProviderType.MUSIC), "spotify_1": Mock(type=ProviderType.MUSIC)}
+    )
     ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
 
     mappings = [
@@ -1519,3 +1525,29 @@ def test_select_provider_id_never_substitutes_another_account_of_the_same_servic
         pytest.raises(MediaNotFoundError),
     ):
         ctrl._select_provider_id(item)
+
+
+def test_select_provider_id_skips_a_down_account_for_an_unrestricted_user() -> None:
+    """Without a source filter the first mapping with a loaded instance serves, not a down one."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    down = Mock(type=ProviderType.MUSIC)
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {"spotify_1": down, "spotify_2": Mock(type=ProviderType.MUSIC)}
+    )
+    down.available = False
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance=instance, provider_domain="spotify", item_id=f"{instance}_item"
+            )
+            for instance in ("spotify_1", "spotify_2")
+        ]
+    )
+
+    with patch("music_assistant.controllers.music.media.base.get_current_user", return_value=None):
+        assert ctrl._select_provider_id(item) == ("spotify_2", "spotify_2_item")
+        ctrl.mass.get_provider = _mock_provider_lookup({})
+        with pytest.raises(MediaNotFoundError):
+            ctrl._select_provider_id(item)

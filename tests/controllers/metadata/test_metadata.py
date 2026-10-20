@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.media_items import MediaItemPalette
+
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
+    get_current_user,
+    impersonated_user,
+)
+from tests.controllers.music.helpers import create_track
 
 if TYPE_CHECKING:
     from music_assistant.controllers.metadata import MetaDataController
@@ -82,3 +91,29 @@ async def test_get_image_palette_returns_none_for_unreadable_image(
     monkeypatch.setattr("music_assistant.controllers.metadata.images.get_palette", boom)
     image_id = metadata_controller.compute_image_id("filesystem", "missing.jpg")
     assert await metadata_controller.get_image_palette(image_id) is None
+
+
+async def test_update_metadata_runs_as_the_server(
+    metadata_controller: MetaDataController,
+) -> None:
+    """The refresh fills the household's library item from all sources, not the caller's."""
+    service = User(user_id="user-service", username="ha", role=UserRole.SERVICE)
+    member = User(user_id="user-member", username="member", role=UserRole.USER)
+    refreshing_users: list[User | None] = []
+
+    async def _refresh(*_: object, **__: object) -> None:
+        refreshing_users.append(get_current_user())
+
+    metadata_controller._update_track_metadata = AsyncMock(side_effect=_refresh)  # type: ignore[method-assign]
+    track = create_track("spotify_theirs", "t1")
+    track.item_id, track.provider = "1", "library"
+
+    current_user_token = current_user.set(service)
+    impersonated_user_token = impersonated_user.set(member)
+    try:
+        await metadata_controller.update_metadata(track)
+        assert refreshing_users == [None]
+        assert get_current_user() is member
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
