@@ -7,11 +7,11 @@ plugin computes similarity locally from ``sonic_analysis`` data, this plugin
 delegates all similarity, recommendation, and free-text search to a running
 AudioMuse-AI instance via its REST API.
 
-The two id spaces are bridged by a single fact: AudioMuse-AI keys tracks on the
-media server's native item id, which is the same id Music Assistant stores in
-that server's provider mapping. The ``media_provider`` config entry names which
-Music Assistant provider to map against, so results round-trip back to real
-Tracks via ``mass.music.tracks.get(item_id, media_provider)``.
+AudioMuse-AI keys tracks on the media server's native item id, which Music
+Assistant stores in that server's provider mapping, for some media servers with
+a fixed prefix (see ``ITEM_ID_PREFIXES``). The ``media_provider`` config entry
+names which Music Assistant provider to map against, so results round-trip back
+to real Tracks via ``mass.music.tracks.get(item_id, media_provider)``.
 """
 
 from __future__ import annotations

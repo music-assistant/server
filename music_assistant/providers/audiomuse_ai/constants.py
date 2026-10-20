@@ -20,6 +20,9 @@ CONF_LABEL_STATUS = "status_label"
 # AudioMuse-AI ids are the streaming/file provider's ids, not library numeric ids.
 LIBRARY_DOMAIN = "library"
 
+# Prefix Music Assistant adds to the media-server id AudioMuse-AI stores, per provider domain.
+ITEM_ID_PREFIXES = {"plex": "/library/metadata/"}
+
 # HTTP request timeout (seconds) for every AudioMuse-AI call.
 REQUEST_TIMEOUT = 30
 

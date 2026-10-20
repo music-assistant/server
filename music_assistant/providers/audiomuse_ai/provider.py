@@ -37,6 +37,7 @@ from music_assistant.providers.audiomuse_ai.constants import (
     CONF_LABEL_STATUS,
     CONF_MEDIA_PROVIDER,
     DEFAULT_SIMILAR_LIMIT,
+    ITEM_ID_PREFIXES,
     RECOMMEND_ITEM_LIMIT,
     RECOMMEND_PER_SEED_LIMIT,
     RECOMMEND_SEED_COUNT,
@@ -249,24 +250,28 @@ class AudioMuseAiPlugin(PluginProvider):
     # Identity mapping (MA track <-> AudioMuse-AI media-server item id)
     # ------------------------------------------------------------------
 
-    def _seed_item_id(self, track: Track) -> str | None:
-        """
-        Return the media-server item id for `track` on the configured provider.
+    @property
+    def _id_prefix(self) -> str:
+        """Prefix the configured provider adds to AudioMuse-AI item ids."""
+        # stored config, so the prefix is known while the provider is still (re)loading
+        domain = self.mass.config.get_raw_provider_config_value(self._media_provider, "domain")
+        return ITEM_ID_PREFIXES.get(str(domain), "")
 
-        AudioMuse-AI keys tracks on the same media-server id Music Assistant
-        stores in the matching provider mapping, so a direct lookup suffices.
-        """
+    def _seed_item_id(self, track: Track) -> str | None:
+        """Return the AudioMuse-AI item id for `track` on the configured provider, if mapped."""
         for mapping in track.provider_mappings or ():
             if mapping.provider_instance == self._media_provider:
-                return mapping.item_id
+                return mapping.item_id.removeprefix(self._id_prefix)
         return None
 
-    async def _resolve_tracks(self, item_ids: list[str]) -> list[Track]:
+    async def _resolve_tracks(self, audiomuse_ids: list[str]) -> list[Track]:
         """
         Resolve AudioMuse-AI item ids back to Tracks on the configured provider.
 
         Lookup misses are dropped, preserving input order for the survivors.
         """
+        prefix = self._id_prefix
+        item_ids = [f"{prefix}{iid}" for iid in audiomuse_ids]
         wanted = set(item_ids)
         resolved: dict[str, Track] = {}
         library_items = await self.mass.music.tracks.get_library_items_by_prov_id(
@@ -411,10 +416,9 @@ class AudioMuseAiPlugin(PluginProvider):
         self, item_id: str, limit: int = DEFAULT_SIMILAR_LIMIT
     ) -> dict[str, Any]:
         """
-        Return AudioMuse-AI neighbours for a media-server item id.
+        Return AudioMuse-AI neighbours for a track on the configured provider.
 
-        :param item_id: Media-server item id of the seed track (the same id
-            AudioMuse-AI and the configured provider share).
+        :param item_id: Item id of the seed track on the configured provider.
         :param limit: Max neighbours to return.
         """
         if self._client is None:
@@ -424,8 +428,10 @@ class AudioMuseAiPlugin(PluginProvider):
                 "seed_track_id": item_id,
                 "items": [],
             }
+        prefix = self._id_prefix
+        seed = item_id.removeprefix(prefix)
         try:
-            raw = await self._client.similar_tracks(item_id, limit)
+            raw = await self._client.similar_tracks(seed, limit)
         except AudioMuseError as err:
             return {
                 "analyzed": False,
@@ -435,14 +441,14 @@ class AudioMuseAiPlugin(PluginProvider):
             }
         items = [
             {
-                "item_id": entry.get("item_id"),
+                "item_id": f"{prefix}{entry['item_id']}",
                 "provider": self._media_provider,
                 "name": entry.get("title"),
                 "artist": entry.get("author"),
                 "distance": entry.get("distance"),
             }
             for entry in raw
-            if entry.get("item_id") and entry.get("item_id") != item_id
+            if entry.get("item_id") and entry.get("item_id") != seed
         ]
         return {"analyzed": True, "seed_track_id": item_id, "items": items[:limit]}
 
@@ -453,10 +459,13 @@ class AudioMuseAiPlugin(PluginProvider):
         if self._client is None:
             return {"analyzed": False, "reason": "not_loaded", "query": query, "items": []}
         item_ids = await self._text_search_item_ids(query, limit)
+        prefix = self._id_prefix
         return {
             "analyzed": True,
             "query": query,
-            "items": [{"item_id": iid, "provider": self._media_provider} for iid in item_ids],
+            "items": [
+                {"item_id": f"{prefix}{iid}", "provider": self._media_provider} for iid in item_ids
+            ],
         }
 
     async def _handle_status(self) -> dict[str, Any]:
