@@ -420,7 +420,6 @@ class PandoraProvider(MusicProvider):
                 ) as response,
             ):
                 if response.status != 200:
-                    await self.close()
                     raise LoginFailed(f"Login request failed with status {response.status}")
 
                 response_data = await response.json()
@@ -428,7 +427,6 @@ class PandoraProvider(MusicProvider):
 
                 self._auth_token = response_data.get("authToken")
                 if not self._auth_token:
-                    await self.close()
                     raise LoginFailed("No auth token received from Pandora")
 
                 # What this account is entitled to. Pandora sends config and flags as null
@@ -443,7 +441,6 @@ class PandoraProvider(MusicProvider):
                 )
 
         except aiohttp.ClientError as err:
-            await self.close()
             self.logger.exception("Network error during authentication")
             raise ProviderUnavailableError(
                 "Unable to connect to Pandora for authentication"
@@ -466,7 +463,6 @@ class PandoraProvider(MusicProvider):
             Pass a pre-populated set to prevent specific retry strategies from being attempted.
         """
         if not self._csrf_token or not self._auth_token:
-            await self.close()
             raise LoginFailed("Not authenticated with Pandora")
 
         headers = create_auth_headers(self._csrf_token, self._auth_token)
@@ -542,10 +538,8 @@ class PandoraProvider(MusicProvider):
                 return result
 
         except aiohttp.ClientError as err:
-            await self.close()
             raise ProviderUnavailableError("Unable to connect to Pandora") from err
         except (ValueError, KeyError) as err:
-            await self.close()
             raise InvalidDataError("Invalid response from Pandora") from err
 
     async def _fetch_fragment(self, session: PandoraStationSession) -> PandoraFragment:

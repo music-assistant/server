@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
-from unittest.mock import Mock
+import json
+from typing import Any, Self, cast
+from unittest.mock import AsyncMock, Mock
 
+import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
+    LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
 )
 
 from music_assistant.providers.pandora import SUPPORTED_FEATURES
+from music_assistant.providers.pandora import provider as provider_module
 from music_assistant.providers.pandora.constants import (
     ADD_FEEDBACK_ENDPOINT,
     CACHE_CATEGORY_FEEDBACK,
@@ -549,6 +553,26 @@ class _ProxySession(_Session):
         self.closed = True
 
 
+class _DroppedResponse(_Response):
+    """A request whose connection drops before Pandora answers."""
+
+    def __init__(self) -> None:
+        super().__init__(0, {})
+
+    async def __aenter__(self) -> Self:
+        raise aiohttp.ClientConnectionError("Connection dropped")
+
+
+class _GarbledResponse(_Response):
+    """A 200 answer whose body cannot be read as JSON."""
+
+    def __init__(self) -> None:
+        super().__init__(200, {})
+
+    async def json(self) -> dict[str, Any]:
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+
 @pytest.mark.parametrize(
     ("failure", "error"),
     [
@@ -556,12 +580,14 @@ class _ProxySession(_Session):
         (_Response(400, {"errorString": "OTHER"}), InvalidDataError),
         (_Response(404, {}), MediaNotFoundError),
         (_Response(500, {}), ProviderUnavailableError),
+        (_DroppedResponse(), ProviderUnavailableError),
+        (_GarbledResponse(), InvalidDataError),
     ],
 )
-async def test_a_rejected_request_leaves_the_socks_proxy_session_open(
+async def test_a_failed_request_leaves_the_socks_proxy_session_open(
     failure: _Response, error: type[Exception]
 ) -> None:
-    """A request Pandora rejects behind a SOCKS proxy keeps the session, so the next one works."""
+    """A failed request behind a SOCKS proxy keeps the session, so the next one works."""
     provider = _real_provider([], _CountingThrottler())
     session = _ProxySession([failure, _Response(200, {"ok": True})])
     provider.http_session = session  # type: ignore[assignment]
@@ -593,6 +619,42 @@ async def test_a_rejected_fragment_fetch_leaves_the_socks_proxy_session_open(
         await provider._fetch_fragment(provider._get_or_create_session(STATION_ID))
     assert not session.closed
     assert await provider._api_request("POST", DELETE_FEEDBACK_ENDPOINT, data={}) == {"ok": True}
+
+
+async def test_a_request_before_login_leaves_the_socks_proxy_session_open() -> None:
+    """A request made before login fails without closing the proxy session login will need."""
+    provider = _real_provider([], _CountingThrottler())
+    session = _ProxySession([])
+    provider.http_session = session  # type: ignore[assignment]
+    provider._socks_proxy = True
+    provider._auth_token = None
+    with pytest.raises(LoginFailed):
+        await provider._api_request("POST", DELETE_FEEDBACK_ENDPOINT, data={})
+    assert not session.closed
+
+
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [
+        (_Response(403, {}), LoginFailed),
+        (_Response(200, {}), LoginFailed),
+        (_DroppedResponse(), ProviderUnavailableError),
+    ],
+)
+async def test_a_failed_login_leaves_the_socks_proxy_session_open(
+    monkeypatch: pytest.MonkeyPatch, failure: _Response, error: type[Exception]
+) -> None:
+    """A login that fails behind a SOCKS proxy keeps the session, so the next login works."""
+    provider = _real_provider([], _CountingThrottler())
+    session = _ProxySession([failure, _Response(200, {"authToken": "token"})])
+    provider.http_session = session  # type: ignore[assignment]
+    provider._socks_proxy = True
+    monkeypatch.setattr(provider_module, "get_csrf_token", AsyncMock(return_value="csrf"))
+    with pytest.raises(error):
+        await provider._authenticate("user", "secret")
+    assert not session.closed
+    await provider._authenticate("user", "secret")
+    assert provider._auth_token == "token"
 
 
 async def test_unloading_closes_the_socks_proxy_session() -> None:
