@@ -664,6 +664,21 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         raise NotImplementedError
 
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one track of a playlist to another position.
+
+        Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_MOVE.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param from_position: The current position of the track, 1-based.
+        :param to_position: The position the track ends up at after the move, 1-based.
+        :raises InvalidDataError: A position is outside the playlist.
+        """
+        raise NotImplementedError
+
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """
         Create a new playlist on provider with given name and targeting media_types.
