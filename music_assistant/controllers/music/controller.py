@@ -1657,28 +1657,30 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ):
                 seconds_played = media_item.duration
 
-        # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        for prov_mapping in media_item.provider_mappings:
-            if (
-                user
-                and user.provider_filter
-                and prov_mapping.provider_instance not in user.provider_filter
-            ):
-                continue
-            if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
-                if music_prov.type != ProviderType.MUSIC:
+        # forward to provider(s) to sync resume state (e.g. for audiobooks),
+        # unless a provider reports the play of its own account
+        if not provider_instance_id:
+            for prov_mapping in media_item.provider_mappings:
+                if (
+                    user
+                    and user.provider_filter
+                    and prov_mapping.provider_instance not in user.provider_filter
+                ):
                     continue
-                music_prov = cast("MusicProvider", music_prov)
-                self.mass.create_task(
-                    music_prov.on_played(
-                        media_type=media_item.media_type,
-                        prov_item_id=prov_mapping.item_id,
-                        fully_played=fully_played,
-                        position=seconds_played,
-                        media_item=media_item,
-                        is_playing=is_playing,
+                if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
+                    if music_prov.type != ProviderType.MUSIC:
+                        continue
+                    music_prov = cast("MusicProvider", music_prov)
+                    self.mass.create_task(
+                        music_prov.on_played(
+                            media_type=media_item.media_type,
+                            prov_item_id=prov_mapping.item_id,
+                            fully_played=fully_played,
+                            position=seconds_played,
+                            media_item=media_item,
+                            is_playing=is_playing,
+                        )
                     )
-                )
 
         # also update playcount in library table (if fully played)
         if not fully_played or is_playing:
@@ -1778,27 +1780,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
         )
 
-        # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        for prov_mapping in media_item.provider_mappings:
-            if (
-                user
-                and user.provider_filter
-                and prov_mapping.provider_instance not in user.provider_filter
-            ):
-                continue
-            if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
-                if music_prov.type != ProviderType.MUSIC:
+        # forward to provider(s) to sync resume state (e.g. for audiobooks),
+        # unless a provider reports the play of its own account
+        if not provider_instance_id:
+            for prov_mapping in media_item.provider_mappings:
+                if (
+                    user
+                    and user.provider_filter
+                    and prov_mapping.provider_instance not in user.provider_filter
+                ):
                     continue
-                music_prov = cast("MusicProvider", music_prov)
-                self.mass.create_task(
-                    music_prov.on_played(
-                        media_type=media_item.media_type,
-                        prov_item_id=prov_mapping.item_id,
-                        fully_played=False,
-                        position=0,
-                        media_item=media_item,
+                if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
+                    if music_prov.type != ProviderType.MUSIC:
+                        continue
+                    music_prov = cast("MusicProvider", music_prov)
+                    self.mass.create_task(
+                        music_prov.on_played(
+                            media_type=media_item.media_type,
+                            prov_item_id=prov_mapping.item_id,
+                            fully_played=False,
+                            position=0,
+                            media_item=media_item,
+                        )
                     )
-                )
         # also update playcount in library table
         ctrl = self.get_controller(media_item.media_type)
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
