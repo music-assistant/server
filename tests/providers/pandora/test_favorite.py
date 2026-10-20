@@ -576,3 +576,40 @@ async def test_a_missing_feedback_id_is_recognised_behind_a_socks_proxy() -> Non
             "POST", DELETE_FEEDBACK_ENDPOINT, data={"feedbackId": "1", "isPositive": True}
         )
     assert session.closed
+
+
+async def test_a_clear_during_a_like_deletes_the_new_feedback() -> None:
+    """
+    A clear that arrives while a like waits on Pandora deletes the thumb that like set.
+
+    Without waiting for the like, the clear would find nothing kept and leave the thumb on
+    Pandora while Music Assistant shows the rating cleared.
+    """
+    provider, _sent, deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    (like_answer,) = _hold_answers(provider, ADD_FEEDBACK_ENDPOINT, 1)
+    like = asyncio.create_task(provider.set_favorite("TR:S1", MediaType.TRACK, True))
+    await _settle()
+    clear = asyncio.create_task(provider.set_favorite("TR:S1", MediaType.TRACK, None))
+    await _settle()
+    like_answer.set()
+    await asyncio.gather(like, clear)
+    assert deleted == [{"feedbackId": "fb-1", "isPositive": True}]
+    assert _kept(provider, "TR:S1") is None
+
+
+async def test_feedback_recorded_without_a_station_is_still_cleared() -> None:
+    """
+    An answer without a stationId is kept beside a later thumb on a named station.
+
+    It cannot be matched to the later thumb's station, so a clear deletes both; had both named
+    the same thumb, the second delete would be answered not found and forgotten.
+    """
+    provider, _sent, deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider._remember_feedback("TR:S1", {"feedbackId": "fb-x", "isPositive": True})
+    await provider.set_favorite("TR:S1", MediaType.TRACK, False)
+    assert [entry["stationId"] for entry in _kept(provider, "TR:S1")] == [None, STATION_ID]
+    await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert [body["feedbackId"] for body in deleted] == ["fb-x", "fb-1"]
+    assert _kept(provider, "TR:S1") is None
