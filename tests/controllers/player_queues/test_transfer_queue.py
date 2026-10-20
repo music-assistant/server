@@ -317,9 +317,9 @@ async def test_transfer_queue_carries_pinned_toggle_overrides() -> None:
     assert target_data.queue.autoplay_enabled is False
 
 
-async def test_transfer_queue_releases_the_source_stream_before_the_target_starts() -> None:
+async def test_transfer_queue_waits_for_the_source_teardown_before_the_target_starts() -> None:
     """
-    The source releases its audio buffers before the target starts playing.
+    The target starts only after the source has released its audio.
 
     A single-stream provider would otherwise keep its only slot on the source.
     """
@@ -340,8 +340,9 @@ async def test_transfer_queue_releases_the_source_stream_before_the_target_start
         queue_id="src",
     )
     playing.streamdetails.queue_session_id = "sess-src"
+    source_released = asyncio.Event()
     source_buffer = MagicMock(spec=AudioBuffer)
-    source_buffer.clear = AsyncMock()
+    source_buffer.clear = AsyncMock(side_effect=source_released.wait)
     playing.streamdetails.buffer = source_buffer
     source_queue.current_item = playing
     source_queue.current_index = 0
@@ -353,8 +354,9 @@ async def test_transfer_queue_releases_the_source_stream_before_the_target_start
         "tgt": PlayerQueueData(queue=target_queue),
     }
     ctrl.mass = MagicMock()
-    ctrl.mass.create_task = lambda coro, *_args, **_kwargs: asyncio.get_running_loop().create_task(
-        coro
+    # mass.create_task starts tasks eagerly
+    ctrl.mass.create_task = lambda coro, *_args, **_kwargs: asyncio.Task(
+        coro, loop=asyncio.get_running_loop(), eager_start=True
     )
     ctrl.mass.players.get_group_and_player_lock = MagicMock(return_value=_DummyACM())
     ctrl.mass.players._handle_cmd_stop = AsyncMock()
@@ -376,13 +378,12 @@ async def test_transfer_queue_releases_the_source_stream_before_the_target_start
 
     ctrl.update_items = _update_items  # type: ignore[method-assign]
     ctrl.load = AsyncMock()  # type: ignore[method-assign]
-    released_at_start: list[bool] = []
-    ctrl.resume = AsyncMock(  # type: ignore[method-assign]
-        side_effect=lambda *_args, **_kwargs: released_at_start.append(
-            source_buffer.clear.await_count > 0
-        )
-    )
+    ctrl.resume = AsyncMock()  # type: ignore[method-assign]
 
-    await ctrl.transfer_queue("src", "tgt", auto_play=True)
+    transfer = asyncio.create_task(ctrl.transfer_queue("src", "tgt", auto_play=True))
+    await asyncio.sleep(0.05)
+    ctrl.resume.assert_not_awaited()
 
-    assert released_at_start == [True]
+    source_released.set()
+    await asyncio.wait_for(transfer, 1)
+    ctrl.resume.assert_awaited_once_with("tgt")

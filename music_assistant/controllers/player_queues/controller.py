@@ -1292,7 +1292,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # clear() racing with the target's sync group formation/protocol switching
         if source_queue.state != PlaybackState.IDLE:
             await self.stop(source_queue_id)
-        # stop's own cleanup runs after the items move, so free the provider stream slots now
+        # the target can only get the provider's stream slot once the source's teardown is done
+        if (task := self._queue_data[source_queue_id].audio_cleanup_task) and not task.done():
+            await task
         await self._cleanup_queue_audio_data(source_queue_id)
 
         target_queue.repeat_mode = source_queue.repeat_mode
@@ -2096,7 +2098,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 if queue_data.session_id == session_id:
                     queue_data.session_id = None
                 self.mass.streams.audio_processing.clear(queue_id, session_id)
-                self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
+                queue_data.audio_cleanup_task = self.mass.create_task(
+                    self._cleanup_queue_audio_data(queue_id, session_id)
+                )
 
     @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:
