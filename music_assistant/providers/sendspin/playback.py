@@ -85,7 +85,7 @@ _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
 _JOIN_PROMOTE_TOLERANCE_US = 50_000
 # Abort join catchup if promotion hasn't completed within this.
 _JOIN_PROMOTION_TIMEOUT_S = 15.0
-# Anchor movement that counts as a timeline rebase rather than commit jitter.
+# Anchor movement that publishes elapsed time and refreshes beats right away.
 ANCHOR_REBASE_SIGNIFICANT_US = 500_000
 # Retain committed history this far behind real-time for late-join backfill.
 # This pre-history also warms up ffmpeg's internal filter buffers so the DSP
@@ -875,8 +875,7 @@ class SendspinPlaybackSession:
                     duration_us=pending.duration_us,
                     pcm=pending.pcm,
                 )
-                # aiosendspin moves the schedule forward when the producer falls behind,
-                # so the anchor follows every commit instead of only the first.
+                # aiosendspin moves the schedule forward when the producer falls behind.
                 anchor_us = int(commit_start_us) - self._produced_audio_us
                 async with self._state_lock:
                     self._timeline_start_us = anchor_us

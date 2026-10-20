@@ -10,6 +10,7 @@ from music_assistant.providers.sendspin.player import SendspinPlayer
 
 if TYPE_CHECKING:
     import pytest
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
@@ -35,8 +36,6 @@ def _queue_item() -> QueueItem:
 def _player(monkeypatch: pytest.MonkeyPatch) -> SendspinPlayer:
     """Build a SendspinPlayer with only what _send_beat_schedule touches."""
     player = SendspinPlayer.__new__(SendspinPlayer)
-    # Both are read-only properties on the real class.
-    # One mock for the life of the player: the tests assert on what was pushed to it.
     monkeypatch.setattr(
         SendspinPlayer,
         "_visualizer_role",
@@ -45,7 +44,6 @@ def _player(monkeypatch: pytest.MonkeyPatch) -> SendspinPlayer:
     )
     monkeypatch.setattr(SendspinPlayer, "synced_to", property(lambda _self: None), raising=False)
     monkeypatch.setattr(SendspinPlayer, "player_id", "leader", raising=False)
-    # Re-read after the analysis await to detect a track change that raced with it.
     monkeypatch.setattr(
         SendspinPlayer,
         "state",
@@ -62,8 +60,6 @@ def _player(monkeypatch: pytest.MonkeyPatch) -> SendspinPlayer:
         ),
         raising=False,
     )
-    # Harness-only attributes the monkeypatched properties read back; the real class
-    # declares neither, so they are set through an untyped view of the instance.
     harness = cast("Any", player)
     harness._role_mock = MagicMock()
     harness._live_media = SimpleNamespace(queue_item_id=_QUEUE_ITEM_ID)
@@ -91,14 +87,7 @@ def _player(monkeypatch: pytest.MonkeyPatch) -> SendspinPlayer:
 async def test_a_track_change_during_the_analysis_await_drops_the_stale_publish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """
-    A refresh whose media changed under it must not publish the item it captured.
-
-    The refresh a rebase schedules carries its own task id, so a media update does not
-    cancel it: it can still be inside get_audio_analysis() when the track changes. Left
-    unguarded it would overwrite the new track's schedule and then claim the old item in
-    _last_beat_queue_item_id, which makes the re-push guard swallow the correction.
-    """
+    """A refresh whose track changed during the analysis await publishes nothing."""
     player = _player(monkeypatch)
     harness = cast("Any", player)
     visualizer_role = cast("MagicMock", player._visualizer_role)
@@ -112,16 +101,13 @@ async def test_a_track_change_during_the_analysis_await_drops_the_stale_publish(
     )
 
     await player._send_beat_schedule(
-        cast("object", SimpleNamespace(queue_id="q1")),  # type: ignore[arg-type]
+        cast("PlayerQueue", SimpleNamespace(queue_id="q1")),
         _queue_item(),
         _PROGRESS_MS,
         True,
     )
 
-    # The publish path clears the role's schedule before writing the new one, so an
-    # untouched role is proof this run stopped before it could overwrite item-2's.
+    # Publishing always clears the schedule first.
     visualizer_role.clear_beat_schedule.assert_not_called()
-    # Still naming the item that is actually published, so the next refresh for item-2
-    # is not mistaken for a re-push of it.
     assert player._last_beat_queue_item_id == _QUEUE_ITEM_ID
     assert player._last_beat_anchor_us == _PUBLISHED_ANCHOR_US

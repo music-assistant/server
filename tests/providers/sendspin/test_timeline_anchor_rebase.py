@@ -28,7 +28,7 @@ _PCM_FORMAT = AudioFormat(sample_rate=_SAMPLE_RATE, bit_depth=32, channels=2)
 _SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     sample_rate=_SAMPLE_RATE, bit_depth=32, channels=2, sample_type="float"
 )
-_FRAME_SIZE = 4 * 2  # 32-bit float * 2 channels
+_FRAME_SIZE = 4 * 2
 _CHUNK_BYTES = b"\x00" * (round(_CHUNK_DURATION_US / 1_000_000 * _SAMPLE_RATE) * _FRAME_SIZE)
 _STALL_US = 3_000_000
 # Audio is committed this far ahead of the clock, so now_us() and the commit timestamps
@@ -43,10 +43,6 @@ class _FakePushStream:
         self, commit_timestamps: list[int], now_timestamps: list[int] | None = None
     ) -> None:
         self._commit_timestamps = iter(commit_timestamps)
-        # Default: audio is committed a fixed distance ahead of the clock, so now_us() and
-        # the commit timestamps stay on one timeline the way aiosendspin's shared
-        # RawMonotonicClock keeps them. A caller can script the clock separately to model a
-        # producer running faster than realtime and building a buffer.
         self._now_timestamps = iter(
             now_timestamps
             if now_timestamps is not None
