@@ -39,7 +39,10 @@ from .constants import (
     BROWSE_ITEMS_TO_PATH,
     BROWSE_LIBRARY_BATCH_SIZE,
     CACHE_CATEGORY_BOOK,
+    CACHE_CATEGORY_LIBRARY_FINGERPRINTS,
     CACHE_EXPIRATION_BOOK,
+    CACHE_EXPIRATION_LIBRARY_FINGERPRINTS,
+    CACHE_KEY_LIBRARY_FINGERPRINTS,
     CATALOG_DETAIL_CONCURRENCY,
     CATALOG_TTL_SEC,
     CONF_PASSWORD,
@@ -187,6 +190,8 @@ class BookOrbitProvider(MusicProvider):
         self._library_books: dict[int, list[str]] = {}
         self._author_meta: dict[int, dict[str, Any]] = {}
         self._catalog_detail_tasks: set[asyncio.Task[Any]] = set()
+        # book id -> last ProviderMapping.details applied to the MA library (updatedAt)
+        self._applied_mapping_details: dict[str, str] = {}
 
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from config, log in, and register the stream proxy."""
@@ -265,10 +270,17 @@ class BookOrbitProvider(MusicProvider):
         """Sync library items, refreshing the catalog under the active sync state."""
         # Refresh inside get_library_* so skipped-item protection lands in SyncRunState.
         self._force_catalog_refresh = media_type == MediaType.AUDIOBOOK
+        if media_type == MediaType.AUDIOBOOK:
+            await self._load_applied_mapping_details()
         try:
             await super().sync_library(media_type)
         finally:
             self._force_catalog_refresh = False
+        if media_type == MediaType.AUDIOBOOK:
+            # Record fingerprints from this successful run so the next sync can skip
+            # unchanged books even though sync-details omit mapping.details.
+            self._seed_applied_mapping_details_from_catalog()
+            await self._save_applied_mapping_details()
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Yield audiobooks from the current catalog."""
@@ -513,11 +525,18 @@ class BookOrbitProvider(MusicProvider):
             return True
         # Compare BookOrbit mapping fingerprints (updatedAt / image path) here rather
         # than in core `_check_provider_mappings`, which must stay provider-agnostic.
-        # Sync-details rows omit ``details`` unless core loads them; only compare when
-        # both sides expose a fingerprint so absent sync fields are not false positives.
         lib_details = self._provider_mapping_details(library_item)
         prov_details = self._provider_mapping_details(prov_item)
         if lib_details is not None and prov_details is not None and lib_details != prov_details:
+            return True
+        # Sync-details omit mapping.details. Fall back to last-applied fingerprints
+        # loaded from mass.cache for this sync (missing key => force refresh once).
+        if (
+            lib_details is None
+            and isinstance(prov_item, Audiobook)
+            and prov_details is not None
+            and self._applied_mapping_details.get(prov_item.item_id) != prov_details
+        ):
             return True
         if not self._is_sole_library_provider(library_item):
             return False
@@ -529,6 +548,38 @@ class BookOrbitProvider(MusicProvider):
         return bool(
             hasattr(library_item, "metadata")
             and self._provider_image_paths(library_item) != self._provider_image_paths(prov_item)
+        )
+
+    async def _load_applied_mapping_details(self) -> None:
+        """Load last-applied audiobook mapping fingerprints from mass.cache."""
+        cached = await self.mass.cache.get(
+            key=CACHE_KEY_LIBRARY_FINGERPRINTS,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_LIBRARY_FINGERPRINTS,
+            default=None,
+        )
+        if isinstance(cached, dict):
+            self._applied_mapping_details = {
+                str(item_id): str(details) for item_id, details in cached.items()
+            }
+        else:
+            self._applied_mapping_details = {}
+
+    def _seed_applied_mapping_details_from_catalog(self) -> None:
+        """Replace in-memory fingerprints with the catalog's current updatedAt values."""
+        self._applied_mapping_details = {
+            book_id: str(book.get("updatedAt") or "") for book_id, book in self._catalog.items()
+        }
+
+    async def _save_applied_mapping_details(self) -> None:
+        """Persist last-applied audiobook mapping fingerprints to mass.cache."""
+        await self.mass.cache.set(
+            key=CACHE_KEY_LIBRARY_FINGERPRINTS,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_LIBRARY_FINGERPRINTS,
+            data=self._applied_mapping_details,
+            expiration=CACHE_EXPIRATION_LIBRARY_FINGERPRINTS,
+            persistent=True,
         )
 
     def _provider_mapping_details(self, item: MediaItemType | LibraryItemSyncDetails) -> str | None:
@@ -1169,3 +1220,47 @@ class BookOrbitProvider(MusicProvider):
             if artist not in found:
                 found.append(artist)
         return found[:limit]
+
+    async def _sync_library_audiobooks(self) -> set[int]:
+        """
+        Sync audiobooks, then overwrite sole-provider titles core otherwise keeps.
+
+        Core ``AudiobooksController._update_library_item`` keeps ``cur_item.name`` unless
+        ``overwrite=True``, so a normal sync update can refresh mappings/metadata while
+        leaving a stale title. Repair titles for books whose ``updatedAt`` fingerprint
+        changed (or was missing) on this run.
+        """
+        fingerprints_before = dict(self._applied_mapping_details)
+        cur_db_ids = await super()._sync_library_audiobooks()
+        changed_ids = {
+            book_id
+            for book_id, book in self._catalog.items()
+            if fingerprints_before.get(book_id) != str(book.get("updatedAt") or "")
+        }
+        await self._apply_sole_provider_titles(changed_ids)
+        return cur_db_ids
+
+    async def _apply_sole_provider_titles(self, book_ids: set[str]) -> None:
+        """Overwrite library titles for sole-provider books whose fingerprint changed."""
+        if not book_ids:
+            return
+        controller = self.mass.music.audiobooks
+        for book_id in book_ids:
+            book = self._catalog.get(book_id)
+            if book is None:
+                continue
+            prov_item = parse_audiobook(
+                book, provider_instance_id=self.instance_id, base_url=self.base_url
+            )
+            library_item = await controller.get_library_item_by_prov_mappings(
+                prov_item.provider_mappings
+            )
+            if library_item is None:
+                continue
+            if {x.provider_instance for x in library_item.provider_mappings} != {self.instance_id}:
+                continue
+            if library_item.name == prov_item.name and (library_item.sort_name or "") == (
+                prov_item.sort_name or ""
+            ):
+                continue
+            await controller.update_item_in_library(library_item.item_id, prov_item, overwrite=True)

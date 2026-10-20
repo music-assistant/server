@@ -25,6 +25,8 @@ from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.models.music_provider import SYNC_RUN_STATE, MusicProvider, SyncRunState
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
 from music_assistant.providers.bookorbit.constants import (
+    CACHE_CATEGORY_LIBRARY_FINGERPRINTS,
+    CACHE_KEY_LIBRARY_FINGERPRINTS,
     CONF_PASSWORD,
     CONF_URL,
     CONF_USERNAME,
@@ -534,6 +536,57 @@ def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitPr
     assert provider._library_item_needs_update(library, prov_same) is False
 
 
+def _sync_details_without_mapping_details(provider: BookOrbitProvider) -> AudiobookSyncDetails:
+    """Build sync-details like core does: provider mappings without ``details``."""
+    return AudiobookSyncDetails(
+        item_id=1,
+        date_added=datetime(2026, 1, 1, tzinfo=UTC),
+        provider_mappings={
+            ProviderMapping(
+                item_id="1",
+                provider_domain="bookorbit",
+                provider_instance=provider.instance_id,
+                in_library=True,
+                is_unique=True,
+            )
+        },
+        artist_links=frozenset(),
+        authors=(),
+        narrators=(),
+        fully_played=None,
+        resume_position_ms=None,
+    )
+
+
+def test_library_item_needs_update_uses_applied_fingerprint_cache(
+    provider: BookOrbitProvider,
+) -> None:
+    """When sync-details omit details, compare against last-applied mass.cache fingerprints."""
+    library = _sync_details_without_mapping_details(provider)
+    prov_item = Audiobook(
+        item_id="1",
+        provider=provider.instance_id,
+        name="Hatchet",
+        provider_mappings={
+            ProviderMapping(
+                item_id="1",
+                provider_domain="bookorbit",
+                provider_instance=provider.instance_id,
+                details="2026-10-14T20:00:00.000Z",
+                in_library=True,
+                is_unique=True,
+            )
+        },
+        duration=100,
+    )
+    # Cold start: no applied fingerprint => force refresh once.
+    assert provider._library_item_needs_update(library, prov_item) is True
+    provider._applied_mapping_details = {"1": "2026-10-14T20:00:00.000Z"}
+    assert provider._library_item_needs_update(library, prov_item) is False
+    provider._applied_mapping_details = {"1": "2026-01-01T00:00:00.000Z"}
+    assert provider._library_item_needs_update(library, prov_item) is True
+
+
 def test_library_item_needs_update_when_title_diverges(provider: BookOrbitProvider) -> None:
     """A stale library title must refresh even if updatedAt was already stored."""
     mapping = ProviderMapping(
@@ -670,6 +723,78 @@ async def test_sync_library_forces_catalog_refresh(provider: BookOrbitProvider) 
     ):
         await provider.sync_library(MediaType.AUDIOBOOK)
     fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_apply_sole_provider_titles_overwrites_stale_name(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Fingerprint-changed sole-provider books must update with overwrite=True for titles."""
+    book_id = str(book_audiobook["id"])
+    provider.base_url = "http://bo"
+    provider._catalog = {book_id: {**book_audiobook, "title": "New Title", "subtitle": None}}
+    mapping = ProviderMapping(
+        item_id=book_id,
+        provider_domain="bookorbit",
+        provider_instance=provider.instance_id,
+        in_library=True,
+        is_unique=True,
+    )
+    library_item = Audiobook(
+        item_id="10",
+        provider="library",
+        name="Old Title",
+        provider_mappings={mapping},
+        duration=1,
+    )
+    update = AsyncMock(return_value=library_item)
+    with (
+        patch.object(
+            provider.mass.music.audiobooks,
+            "get_library_item_by_prov_mappings",
+            AsyncMock(return_value=library_item),
+        ),
+        patch.object(provider.mass.music.audiobooks, "update_item_in_library", update),
+    ):
+        await provider._apply_sole_provider_titles({book_id})
+
+    update.assert_awaited_once()
+    assert update.await_args is not None
+    assert update.await_args.args[0] == "10"
+    assert update.await_args.kwargs["overwrite"] is True
+    assert update.await_args.args[1].name == "New Title"
+
+
+@pytest.mark.asyncio
+async def test_sync_library_persists_applied_mapping_details(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Audiobook sync loads and rewrites last-applied updatedAt fingerprints."""
+    book_id = str(book_audiobook["id"])
+    updated_at = str(book_audiobook.get("updatedAt") or "2026-10-14T20:00:00.000Z")
+    cache = cast("Mock", provider.mass.cache)
+    cache.get = AsyncMock(return_value={book_id: "old-fingerprint"})
+
+    async def _parent_sync(_self: MusicProvider, media_type: MediaType) -> None:
+        assert media_type == MediaType.AUDIOBOOK
+
+    provider._catalog = {book_id: {**book_audiobook, "updatedAt": updated_at}}
+    with patch.object(MusicProvider, "sync_library", _parent_sync):
+        await provider.sync_library(MediaType.AUDIOBOOK)
+
+    assert provider._applied_mapping_details == {book_id: updated_at}
+    cache.get.assert_any_await(
+        key=CACHE_KEY_LIBRARY_FINGERPRINTS,
+        provider=provider.instance_id,
+        category=CACHE_CATEGORY_LIBRARY_FINGERPRINTS,
+        default=None,
+    )
+    cache.set.assert_awaited()
+    set_kwargs = cache.set.await_args.kwargs
+    assert set_kwargs["key"] == CACHE_KEY_LIBRARY_FINGERPRINTS
+    assert set_kwargs["category"] == CACHE_CATEGORY_LIBRARY_FINGERPRINTS
+    assert set_kwargs["data"] == {book_id: updated_at}
+    assert set_kwargs["persistent"] is True
 
 
 @pytest.mark.asyncio
