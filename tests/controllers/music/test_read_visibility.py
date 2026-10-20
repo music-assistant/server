@@ -12,6 +12,7 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
     ArtistType,
+    ContentType,
     ExternalID,
     MediaType,
     ProviderFeature,
@@ -27,6 +28,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    AudioFormat,
     MediaItemCollection,
     MediaItemType,
     Podcast,
@@ -696,6 +698,10 @@ async def test_similar_tracks_skip_a_mapping_on_a_hidden_source(music: MusicCont
         music.mass, {MINE: ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.MEMBERS)}
     )
     track = create_track(THEIRS, "t1")
+    # the better quality puts the (hidden) mapping first in line to be asked
+    next(iter(track.provider_mappings)).audio_format = AudioFormat(
+        content_type=ContentType.FLAC, sample_rate=96000, bit_depth=24
+    )
     track.provider_mappings.add(_mapping(MINE, "t1-mine"))
     library_track = await music.tracks.add_item_to_library(track)
     for instance_id in (THEIRS, MINE):
@@ -709,9 +715,13 @@ async def test_similar_tracks_skip_a_mapping_on_a_hidden_source(music: MusicCont
 
     _mock(music, MINE).supported_features = {ProviderFeature.SIMILAR_TRACKS}
     with _as_user(MEMBER):
-        similar = await music.tracks.similar_tracks(library_track.item_id, "library")
-    assert [item.provider for item in similar] == [MINE]
+        # the hidden mapping is no gap in the member's listing: it is complete, kept, and the
+        # second read is served from the cache
+        for _ in range(2):
+            similar = await music.tracks.similar_tracks(library_track.item_id, "library")
+            assert [item.provider for item in similar] == [MINE]
     _mock(music, THEIRS).get_similar_tracks.assert_awaited_once()
+    _mock(music, MINE).get_similar_tracks.assert_awaited_once()
 
 
 async def test_export_radios_lists_only_the_users_sources(music: MusicController) -> None:
