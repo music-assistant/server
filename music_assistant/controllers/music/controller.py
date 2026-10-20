@@ -1917,7 +1917,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
-    async def mark_item_played(  # noqa: PLR0915
+    async def mark_item_played(
         self,
         media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
@@ -2039,15 +2039,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played = media_item.duration
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        # a report of a provider's own account must not reach any other account
-        if not provider_instance_id:
-            await self._forward_play_report(
-                media_item,
-                user,
-                fully_played=fully_played,
-                position=seconds_played,
-                is_playing=is_playing,
-            )
+        await self._forward_play_report(
+            media_item,
+            user,
+            fully_played=fully_played,
+            position=seconds_played,
+            is_playing=is_playing,
+            provider_instance_id=provider_instance_id,
+        )
 
         # also update playcount in library table (if fully played)
         if not fully_played or is_playing or not play_history_written:
@@ -2144,9 +2143,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        # a report of a provider's own account must not reach any other account
-        if not provider_instance_id:
-            await self._forward_play_report(media_item, user, fully_played=False, position=0)
+        await self._forward_play_report(
+            media_item,
+            user,
+            fully_played=False,
+            position=0,
+            provider_instance_id=provider_instance_id,
+        )
 
     @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
@@ -3744,6 +3747,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         fully_played: bool,
         position: int,
         is_playing: bool = False,
+        provider_instance_id: str | None = None,
     ) -> None:
         """
         Report the play to the music sources that may serve this user, once per account.
@@ -3756,6 +3760,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param fully_played: Whether the item was played to the end.
         :param position: The last known position of the item in seconds.
         :param is_playing: Whether the item is still playing.
+        :param provider_instance_id: The provider instance reporting the play of its own
+            account, which then is not reported to any music source.
         """
         # the cached episode listing of a podcast holds the played state its music sources
         # report, so it is assembled anew from what they took in
@@ -3765,6 +3771,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             else None
         )
         allowed = visible_playback_sources(self.mass, user) if user else None
+        if provider_instance_id:
+            # a report of a provider's own account must not reach any other account
+            allowed = []
         reported_to: set[str] = set()
         reports: list[Coroutine[Any, Any, None]] = []
         for prov_mapping in media_item.provider_mappings:

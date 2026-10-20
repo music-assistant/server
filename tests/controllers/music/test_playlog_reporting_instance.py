@@ -13,10 +13,18 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import MediaType, ProviderSharing, ProviderType
-from music_assistant_models.media_items import Artist, AudioFormat, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Artist,
+    AudioFormat,
+    Podcast,
+    PodcastEpisode,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_LISTINGS
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
@@ -181,3 +189,30 @@ async def test_reporting_instance_sync_stays_on_its_account(
     await asyncio.sleep(0)
 
     assert [account.positions for account in accounts] == [{}, {}]
+
+
+async def test_reporting_instance_reset_drops_the_episode_listing(mass: MusicAssistant) -> None:
+    """An episode reset reported by its provider drops the podcast's cached episodes."""
+    podcast = Podcast(
+        item_id="show", provider=INSTANCE_B, name="Show", provider_mappings=_mappings("show")
+    )
+    episode = PodcastEpisode(
+        item_id="episode",
+        provider=INSTANCE_B,
+        name="Episode",
+        position=1,
+        duration=600,
+        provider_mappings=_mappings("episode"),
+        podcast=podcast,
+    )
+    assert podcast.uri is not None
+    await mass.cache.set(
+        "episodes", ["cached"], provider=podcast.uri, category=CACHE_CATEGORY_LISTINGS
+    )
+
+    await mass.music.mark_item_unplayed(episode, provider_instance_id=INSTANCE_B)
+
+    cached = await mass.cache.get(
+        "episodes", provider=podcast.uri, category=CACHE_CATEGORY_LISTINGS
+    )
+    assert cached is None
