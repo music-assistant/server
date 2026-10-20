@@ -55,6 +55,7 @@ def _provider(
     ``mass.music.tracks.get`` should resolve them to; unknown ids raise
     MediaNotFoundError like the real controller. ``config_values`` backs
     ``config.get_value``; ``recent`` backs ``mass.music.recently_played``.
+    The setup_data read by ``get_setup_value`` maps to ``MEDIA_PROVIDER``.
     """
     prov = AudioMuseAiPlugin.__new__(AudioMuseAiPlugin)
     config = MagicMock()
@@ -71,9 +72,11 @@ def _provider(
     mass = MagicMock()
     mass.music.tracks.get = AsyncMock(side_effect=_get)
     mass.music.recently_played = AsyncMock(return_value=recent or [])
+    mass.config.get = MagicMock(return_value={CONF_MEDIA_PROVIDER: MEDIA_PROVIDER})
+    mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
     prov.mass = mass
     prov._client = _mock_client()
-    prov._media_provider = MEDIA_PROVIDER
+    prov._media_provider = str(prov.get_setup_value(CONF_MEDIA_PROVIDER) or "")
     prov._unregister_handles = []
     return prov
 
@@ -192,10 +195,7 @@ class TestRecommendations:
         reco_track = _track("reco", mapped_id="ms-reco")
         prov = _provider(
             library={"recent": recent_track, "ms-reco": reco_track},
-            config_values={
-                CONF_ENABLE_DISCOVER_ROW: True,
-                CONF_MEDIA_PROVIDER: MEDIA_PROVIDER,
-            },
+            config_values={CONF_ENABLE_DISCOVER_ROW: True},
             recent=[SimpleNamespace(item_id="recent", provider="library")],
         )
         prov._client = _mock_client(

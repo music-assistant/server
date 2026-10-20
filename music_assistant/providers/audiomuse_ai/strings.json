@@ -22,5 +22,11 @@
   },
   "manifest": {
     "description": "Library-wide Similar Tracks, an 'Inspired by recently played' discover row, and free-text search, powered by an external AudioMuse-AI server. Requires a running AudioMuse-AI instance pointed at the same media server you use in Music Assistant."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to AudioMuse-AI",
+      "description": "Enter your AudioMuse-AI server and pick the Music Assistant provider that points at the same media server."
+    }
   }
 }

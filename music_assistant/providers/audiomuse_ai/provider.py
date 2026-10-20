@@ -2,8 +2,8 @@
 AudioMuseAiPlugin — the provider class for the AudioMuse-AI plugin.
 
 See the package ``__init__.py`` docstring for the overall design. This module
-holds only the provider class; the framework-facing entry points (``setup``,
-``get_config_entries``) live in the package init.
+holds only the provider class; the framework-facing ``setup`` entry point lives in
+the package init and the one-time setup input is collected by ``setup_flow.py``.
 """
 
 from __future__ import annotations
@@ -12,7 +12,8 @@ import asyncio
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.media_items import RecommendationFolder, SearchResults
 from music_assistant_models.unique_list import UniqueList
@@ -25,6 +26,7 @@ from music_assistant.providers.audiomuse_ai.constants import (
     CONF_BASE_URL,
     CONF_ENABLE_DISCOVER_ROW,
     CONF_ENABLE_TEXT_SEARCH,
+    CONF_LABEL_STATUS,
     CONF_MEDIA_PROVIDER,
     DEFAULT_SIMILAR_LIMIT,
     RECOMMEND_ITEM_LIMIT,
@@ -56,7 +58,7 @@ class AudioMuseAiPlugin(PluginProvider):
         """Initialize the AudioMuse-AI plugin."""
         super().__init__(mass, manifest, config, supported_features)
         self._client: AudioMuseClient | None = None
-        self._media_provider = str(config.get_value(CONF_MEDIA_PROVIDER) or "")
+        self._media_provider = str(self.get_setup_value(CONF_MEDIA_PROVIDER) or "")
         self._unregister_handles: list[Callable[[], None]] = []
 
     async def handle_async_init(self) -> None:
@@ -66,14 +68,14 @@ class AudioMuseAiPlugin(PluginProvider):
         Failures raise SetupFailedError so the loader surfaces a misconfigured
         URL / unreachable server through MA's standard provider-failure UI.
         """
-        base_url = str(self.config.get_value(CONF_BASE_URL) or "").strip()
+        base_url = str(self.get_setup_value(CONF_BASE_URL) or "").strip()
         if not base_url:
             msg = "AudioMuse-AI server URL is not configured"
             raise SetupFailedError(msg)
         if not self._media_provider:
             msg = "No Music Assistant media provider selected for id mapping"
             raise SetupFailedError(msg)
-        token = self.config.get_value(CONF_API_TOKEN)
+        token = self.get_setup_value(CONF_API_TOKEN)
         self._client = AudioMuseClient(
             self.mass.http_session, base_url, str(token) if token else None, self.logger
         )
@@ -81,6 +83,37 @@ class AudioMuseAiPlugin(PluginProvider):
             msg = f"Could not reach AudioMuse-AI server at {base_url}"
             raise SetupFailedError(msg)
         self.logger.info("Connected to AudioMuse-AI at %s", base_url)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the options and connection status entries for this provider instance."""
+        status = await self._handle_status()
+        base_url = status.get("base_url") or "(no URL)"
+        if status.get("reachable"):
+            parts = [f"Connected to {base_url}"]
+            clap = status.get("clap") or {}
+            if isinstance(clap.get("num_embeddings"), int):
+                parts.append(f"{clap['num_embeddings']:,} CLAP embeddings")
+            status_label = " · ".join(parts)
+        else:
+            status_label = f"Cannot reach AudioMuse-AI server at {base_url}"
+        return (
+            ConfigEntry(
+                key=CONF_ENABLE_TEXT_SEARCH,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_DISCOVER_ROW,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_LABEL_STATUS,
+                type=ConfigEntryType.LABEL,
+                label=status_label,
+                category="status",
+            ),
+        )
 
     async def loaded_in_mass(self) -> None:
         """Register the plugin's API commands."""
@@ -351,7 +384,7 @@ class AudioMuseAiPlugin(PluginProvider):
     async def _handle_status(self) -> dict[str, Any]:
         """Return current connection status and CLAP index stats."""
         status: dict[str, Any] = {
-            "base_url": str(self.config.get_value(CONF_BASE_URL) or ""),
+            "base_url": str(self.get_setup_value(CONF_BASE_URL) or ""),
             "media_provider": self._media_provider,
             "text_search_enabled": bool(self.config.get_value(CONF_ENABLE_TEXT_SEARCH)),
             "reachable": False,

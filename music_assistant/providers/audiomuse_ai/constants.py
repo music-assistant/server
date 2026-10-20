@@ -8,7 +8,7 @@ DOMAIN = "audiomuse_ai"
 
 # === Config keys ===
 CONF_BASE_URL = "base_url"
-CONF_API_TOKEN = "api_token"
+CONF_API_TOKEN = "api_token"  # noqa: S105 - config key
 # Instance id of the Music Assistant provider whose item ids match the media
 # server AudioMuse-AI was pointed at — the bridge between the two id spaces.
 CONF_MEDIA_PROVIDER = "media_provider"
