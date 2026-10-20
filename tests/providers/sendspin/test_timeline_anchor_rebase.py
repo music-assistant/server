@@ -192,15 +192,23 @@ async def test_buffered_runahead_keeps_unplayed_history(monkeypatch: pytest.Monk
     assert oldest_start_us >= final_now_us - _HISTORY_KEEP_PAST_US - _CHUNK_DURATION_US
 
 
-async def test_no_rebase_is_reported_on_a_steady_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Commit jitter below the rebase threshold reports no rebase."""
+async def test_small_schedule_moves_add_up_to_one_rebase(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Moves below the threshold report nothing alone but one rebase once they add up."""
     t0 = 5_000_000
-    jitter_us = ANCHOR_REBASE_SIGNIFICANT_US // 10
-    commit_timestamps = [t0 + i * _CHUNK_DURATION_US + (i % 2) * jitter_us for i in range(4)]
+    shift_us = ANCHOR_REBASE_SIGNIFICANT_US * 3 // 5
+    commit_timestamps = [
+        t0,
+        t0 + _CHUNK_DURATION_US,
+        t0 + 2 * _CHUNK_DURATION_US + shift_us,
+        t0 + 3 * _CHUNK_DURATION_US + shift_us,
+        t0 + 4 * _CHUNK_DURATION_US + 2 * shift_us,
+    ]
 
     trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
-    trace.player.on_flow_timeline_rebased.assert_not_called()
+    rebased_at = [i for i, (kind, _) in enumerate(trace.player_calls) if kind == "rebased"]
+    assert len(rebased_at) == 1
+    assert rebased_at[0] == len(trace.player_calls) - 1
 
 
 async def test_rebase_publishes_its_position_step_on_the_same_commit(

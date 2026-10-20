@@ -761,6 +761,7 @@ class SendspinPlaybackSession:
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
         last_elapsed_update_s: float | None = None
+        reported_anchor_us: int | None = None
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
@@ -818,7 +819,7 @@ class SendspinPlaybackSession:
                         raise
 
         async def _commit_pending_chunks() -> None:
-            nonlocal pending_duration_us, last_elapsed_update_s
+            nonlocal pending_duration_us, last_elapsed_update_s, reported_anchor_us
             while True:
                 pending = await pending_chunks.get()
                 if pending is None:
@@ -878,15 +879,17 @@ class SendspinPlaybackSession:
                 # so the anchor follows every commit instead of only the first.
                 anchor_us = int(commit_start_us) - self._produced_audio_us
                 async with self._state_lock:
-                    previous_anchor_us = self._timeline_start_us
                     self._timeline_start_us = anchor_us
                     self._history.append(committed_history_chunk)
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
+                # Compared against the last reported anchor so small moves add up.
                 anchor_rebased = (
-                    previous_anchor_us is not None
-                    and abs(anchor_us - previous_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
+                    reported_anchor_us is not None
+                    and abs(anchor_us - reported_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
                 )
+                if reported_anchor_us is None or anchor_rebased:
+                    reported_anchor_us = anchor_us
                 elapsed_real_s = max(0.0, (commit_now_us - anchor_us) / 1_000_000)
                 # A rebase can step the position backward, which would keep the gate shut.
                 if (
