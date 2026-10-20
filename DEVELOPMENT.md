@@ -100,6 +100,8 @@ sort fields. `music/sort_options` remains the authority for the sorts each listi
 accepting a seed does not add Random to a listing's offered options. Provider methods are
 unchanged; the server applies search, sort and paging to their listings.
 
+For the shared API parameters and client migration notes, see the [listing contract](https://developers.music-assistant.io/listing-contract/).
+
 ## Note on async Python
 The Music Assistant server is fully built in Python. The Python language has no real supported for multi-threading. This is why Music Assistant heavily relies on asyncio to handle blocking IO. It is important to get a good understanding of asynchronous programming before building your first provider. [This](https://www.youtube.com/watch?v=M-UcUs7IMIM) video is an excellent first step in the world of asyncio.
 
