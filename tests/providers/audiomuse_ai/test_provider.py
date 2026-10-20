@@ -9,11 +9,16 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 
 from music_assistant.providers.audiomuse_ai import provider as provider_module
 from music_assistant.providers.audiomuse_ai.client import AudioMuseError
 from music_assistant.providers.audiomuse_ai.constants import (
+    CONF_BASE_URL,
     CONF_ENABLE_DISCOVER_ROW,
     CONF_MEDIA_PROVIDER,
 )
@@ -101,6 +106,28 @@ def _provider(
     prov._unregister_handles = []
     cast("Any", prov)._get_inspired_recommendations = partial(_BUILD_RECOMMENDATIONS, prov)
     return prov
+
+
+class TestHandleAsyncInit:
+    """Provider setup against the AudioMuse-AI server."""
+
+    async def test_rejected_token_raises_login_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reachable server that rejects the token fails setup with LoginFailed."""
+        prov = _provider()
+        prov._client = None
+        cast("Any", prov.mass.config.get).return_value = {
+            CONF_MEDIA_PROVIDER: MEDIA_PROVIDER,
+            CONF_BASE_URL: "http://audiomuse:8000",
+        }
+        client = _mock_client(
+            health=AsyncMock(return_value=True),
+            check_auth=AsyncMock(side_effect=LoginFailed("rejected")),
+        )
+        monkeypatch.setattr(provider_module, "AudioMuseClient", MagicMock(return_value=client))
+        with pytest.raises(LoginFailed):
+            await prov.handle_async_init()
 
 
 class TestSeedItemId:

@@ -100,6 +100,16 @@ class TestErrorHandling:
         with pytest.raises(AudioMuseError, match="503"):
             await client.similar_tracks("ms-1", 5)
 
+    async def test_similar_tracks_404_returns_empty(self) -> None:
+        """An unindexed seed track (404) yields no neighbours instead of an error."""
+        client, _ = _client(_FakeResponse(status=404, text_data="Target track not found"))
+        assert await client.similar_tracks("ms-1", 5) == []
+
+    async def test_lyrics_search_404_returns_empty(self) -> None:
+        """No matching lyrics (404) yields no results instead of an error."""
+        client, _ = _client(_FakeResponse(status=404))
+        assert await client.lyrics_search("rain", 5) == []
+
     async def test_client_error_raises(self) -> None:
         """Aiohttp transport errors are wrapped in AudioMuseError."""
         client, _ = _client(exc=ClientError("connection refused"))

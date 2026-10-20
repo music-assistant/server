@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.audiomuse_ai.constants import REQUEST_TIMEOUT
 
@@ -22,7 +23,16 @@ if TYPE_CHECKING:
 
 
 class AudioMuseError(Exception):
-    """Raised when an AudioMuse-AI API call fails or returns a non-200 status."""
+    """
+    Raised when an AudioMuse-AI API call fails or returns a non-200 status.
+
+    ``status`` holds the HTTP status for a non-200 response, else None.
+    """
+
+    def __init__(self, msg: str, status: int | None = None) -> None:
+        """Initialize the error with an optional HTTP status."""
+        super().__init__(msg)
+        self.status = status
 
 
 class AudioMuseClient:
@@ -57,6 +67,15 @@ class AudioMuseClient:
             return False
         return isinstance(data, dict) and data.get("status") == "ok"
 
+    async def check_auth(self) -> None:
+        """Raise LoginFailed when the server rejects the configured API token."""
+        try:
+            await self._request("GET", "/api/clap/stats")
+        except AudioMuseError as err:
+            if err.status in (401, 403):
+                msg = "AudioMuse-AI rejected the API token"
+                raise LoginFailed(msg) from err
+
     async def similar_tracks(self, item_id: str, limit: int) -> list[dict[str, Any]]:
         """
         Return AudioMuse-AI's nearest tracks for a seed item id.
@@ -64,9 +83,15 @@ class AudioMuseClient:
         :param item_id: Media-server item id of the seed track.
         :param limit: Max neighbours to request (maps to the API's ``n``).
         """
-        data = await self._request(
-            "GET", "/api/similar_tracks", params={"item_id": item_id, "n": limit}
-        )
+        try:
+            data = await self._request(
+                "GET", "/api/similar_tracks", params={"item_id": item_id, "n": limit}
+            )
+        except AudioMuseError as err:
+            # 404 means the seed track is not indexed
+            if err.status == 404:
+                return []
+            raise
         return data if isinstance(data, list) else []
 
     async def clap_search(self, query: str, limit: int) -> list[dict[str, Any]]:
@@ -88,9 +113,15 @@ class AudioMuseClient:
         :param query: Natural-language query.
         :param limit: Max matches to request.
         """
-        data = await self._request(
-            "POST", "/api/lyrics/search/text", json_body={"query": query, "limit": limit}
-        )
+        try:
+            data = await self._request(
+                "POST", "/api/lyrics/search/text", json_body={"query": query, "limit": limit}
+            )
+        except AudioMuseError as err:
+            # 404 means no lyrics matched the query
+            if err.status == 404:
+                return []
+            raise
         return data.get("results", []) if isinstance(data, dict) else []
 
     async def clap_stats(self) -> dict[str, Any]:
@@ -130,7 +161,7 @@ class AudioMuseClient:
                 if resp.status != 200:
                     body = (await resp.text())[:200]
                     msg = f"AudioMuse-AI {method} {path} returned {resp.status}: {body}"
-                    raise AudioMuseError(msg)
+                    raise AudioMuseError(msg, status=resp.status)
                 return await resp.json()
         except (ClientError, TimeoutError) as err:
             msg = f"AudioMuse-AI {method} {path} failed: {err!r}"

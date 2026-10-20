@@ -77,10 +77,10 @@ class AudioMuseAiPlugin(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """
-        Build the HTTP client and verify the server is reachable.
+        Build the HTTP client and verify the server is reachable and accepts the token.
 
-        Failures raise SetupFailedError so the loader surfaces a misconfigured
-        URL / unreachable server through MA's standard provider-failure UI.
+        A misconfigured URL or unreachable server raises SetupFailedError; a
+        rejected API token raises LoginFailed.
         """
         base_url = str(self.get_setup_value(CONF_BASE_URL) or "").strip()
         if not base_url:
@@ -96,6 +96,7 @@ class AudioMuseAiPlugin(PluginProvider):
         if not await self._client.health():
             msg = f"Could not reach AudioMuse-AI server at {base_url}"
             raise SetupFailedError(msg)
+        await self._client.check_auth()
         self.logger.info("Connected to AudioMuse-AI at %s", base_url)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
