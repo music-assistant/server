@@ -225,7 +225,6 @@ class RaumfeldPlayer(Player):
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, renderer_ip)
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
-            PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.SET_MEMBERS,
@@ -239,7 +238,7 @@ class RaumfeldPlayer(Player):
             # Without PAUSE, MA treats pause as stop and, on resume, re-streams the track
             # from the stored position (resume_pos) - which resumes where the user paused.
         }
-        self._attr_powered = self._read_powered()
+        self._update_power()
         # Raumfeld rooms can be (sync-)grouped with any other room of this provider.
         self._attr_can_group_with = {provider.instance_id}
         # expose the room's analog input as a selectable source when it has one
@@ -718,17 +717,18 @@ class RaumfeldPlayer(Player):
         """Follow the power state the host reports, once a power command has settled."""
         if time.time() - self._power_changed_at < POWER_SETTLE_TIME:
             return
-        if (powered := self._read_powered()) is not None:
-            self._attr_powered = powered
-
-    def _read_powered(self) -> bool | None:
-        """Return whether the room is switched on, or ``None`` if the host does not say."""
         try:
             state = self.raumfeld.host.get_room_power_state(self.room)
         except HOST_ERRORS as err:
             self.logger.debug("Failed to read power state for %s: %r", self.room, err)
-            return None
-        return state != POWER_STATE_OFF if state else None
+            return
+        # a room without a power state (Gen 1 speakers with only a physical switch) cannot
+        # be switched on or off remotely, so it gets no power control
+        if not state:
+            self._attr_supported_features.discard(PlayerFeature.POWER)
+            return
+        self._attr_supported_features.add(PlayerFeature.POWER)
+        self._attr_powered = state != POWER_STATE_OFF
 
     async def _update_volume(self, host: hassfeld.RaumfeldHost) -> None:
         """Read this room's volume and mute state, keeping the last value of one not read."""
