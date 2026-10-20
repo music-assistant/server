@@ -57,6 +57,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.collections import has_available_item
 from music_assistant.helpers.compare import (
     compare_album,
@@ -67,6 +68,7 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.provider_access import visible_items
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
     MusicProvider,
@@ -737,8 +739,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 lambda instance_id: self.get_provider_artist_toptracks(item_id, instance_id),
                 item_type=Track,
             )
+        # a metadata provider's ranking can list items on any music source
         return apply_listing(
-            tracks,
+            visible_items(self.mass, tracks, get_current_user()),
             ListingType.ARTIST_TOP_TRACKS,
             search=search,
             sort_field=sort_field,
@@ -868,8 +871,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ),
                 item_type=Artist,
             )
+        # a metadata provider's ranking can list items on any music source
         return apply_listing(
-            artists,
+            visible_items(self.mass, artists, get_current_user()),
             ListingType.SIMILAR_ARTISTS,
             search=search,
             sort_field=sort_field,
