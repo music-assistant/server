@@ -196,3 +196,16 @@ def test_queue_config_similar_autoplay_disabled_without_provider() -> None:
     autoplay = next(entry for entry in entries if entry.key == CONF_AUTOPLAY_MODE)
     similar = next(opt for opt in autoplay.options if opt.value == "similar")
     assert similar.disabled is True
+
+
+def test_queue_config_similar_artists_autoplay_needs_a_provider() -> None:
+    """The 'similar artists' autoplay option is offered when a provider has similar artists."""
+    mass = _mass(similar_tracks=True, smart_fades=True)
+    autoplay = _by_key(queue_config_entries(mass))[CONF_AUTOPLAY_MODE]
+    option = next(opt for opt in autoplay.options if opt.value == "similar_artists")
+    assert option.disabled is True
+
+    mass.music.providers[0].supported_features = {ProviderFeature.SIMILAR_ARTISTS}
+    autoplay = _by_key(queue_config_entries(mass))[CONF_AUTOPLAY_MODE]
+    option = next(opt for opt in autoplay.options if opt.value == "similar_artists")
+    assert option.disabled is False
