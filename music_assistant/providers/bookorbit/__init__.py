@@ -835,9 +835,15 @@ class BookOrbitProvider(MusicProvider):
         ) -> tuple[str, dict[str, Any] | None, Exception | None]:
             try:
                 book = await self._get_book_detail(book_id, card, semaphore)
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:
+            except (
+                ClientResponseError,
+                ClientError,
+                TimeoutError,
+                ProviderUnavailableError,
+                TypeError,
+                ValueError,
+            ) as err:
+                # Per-book HTTP/network errors, missing audio, or a bad multipart file list.
                 self.logger.warning("BookOrbit book detail %s failed: %s", book_id, err)
                 # Only record skips inside an active library sync (deletion protection).
                 if SYNC_RUN_STATE.get() is not None:
