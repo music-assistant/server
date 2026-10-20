@@ -176,6 +176,12 @@ class PandoraProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         await self.close()
+        if is_removed:
+            # the cache cleanup for a removed provider skips persistent entries, and the
+            # feedback ids are kept persistently, so they would outlive the instance
+            await self.mass.cache.delete(
+                None, category=CACHE_CATEGORY_FEEDBACK, provider=self.instance_id
+            )
         await super().unload(is_removed)
 
     async def close(self) -> None:

@@ -57,9 +57,17 @@ class _FakeCache:
         if persistent:
             self.persistent.add((key, provider, category))
 
-    async def delete(self, key: str, category: int = 0, provider: str = "default") -> None:
+    async def delete(
+        self, key: str | None, category: int | None = None, provider: str | None = None
+    ) -> None:
+        """Delete the matching entries; a filter left out (None) matches every value."""
         await asyncio.sleep(0)
-        self.data.pop((key, provider, category), None)
+        for entry in list(self.data):
+            if all(
+                wanted is None or wanted == actual
+                for wanted, actual in zip((key, provider, category), entry, strict=True)
+            ):
+                del self.data[entry]
 
 
 def _feedback_provider(
@@ -513,3 +521,20 @@ async def test_feedback_pandora_no_longer_holds_is_reported_as_not_found(
         await provider._api_request(
             "POST", DELETE_FEEDBACK_ENDPOINT, data={"feedbackId": "1", "isPositive": True}
         )
+
+
+@pytest.mark.parametrize("is_removed", [True, False])
+async def test_removing_the_provider_drops_its_kept_feedback(is_removed: bool) -> None:
+    """
+    Removing the provider deletes its feedback ids; a reload keeps them for later clears.
+
+    They are persistent, which the cache cleanup for a removed provider skips.
+    """
+    provider, _sent, _deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, True)
+    other = ("TR:S1", "pandora--other", CACHE_CATEGORY_FEEDBACK)
+    _cache(provider).data[other] = ["another instance"]
+    await provider.unload(is_removed=is_removed)
+    assert (_kept(provider, "TR:S1") is None) is is_removed
+    assert _cache(provider).data[other] == ["another instance"]
