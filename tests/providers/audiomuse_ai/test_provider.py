@@ -282,6 +282,18 @@ class TestRecommendations:
         items = await prov.get_recommendation_items(ROW_ID)
         assert [t.item_id for t in items] == ["reco"]
 
+    async def test_seed_lookup_failure_raises(self) -> None:
+        """An AudioMuse-AI failure raises instead of caching an empty row over the last one."""
+        recent_track = _track("recent", mapped_id="ms-recent")
+        prov = _provider(
+            library={"recent": recent_track},
+            config_values={CONF_ENABLE_DISCOVER_ROW: True},
+            recent=[SimpleNamespace(item_id="recent", provider="library")],
+        )
+        prov._client = _mock_client(similar_tracks=AsyncMock(side_effect=AudioMuseError("down")))
+        with pytest.raises(ProviderUnavailableError):
+            await prov.get_recommendation_items(ROW_ID)
+
     async def test_no_mappable_recent_tracks_returns_empty(self) -> None:
         """Recent tracks that don't map into the configured provider are skipped."""
         recent_track = _track("recent", mapped_id=None)

@@ -336,8 +336,8 @@ class AudioMuseAiPlugin(PluginProvider):
             try:
                 raw = await self._client.similar_tracks(seed, RECOMMEND_PER_SEED_LIMIT)
             except AudioMuseError as err:
-                self.logger.debug("similar_tracks failed for %s: %s", seed, err)
-                continue
+                # a failed refresh must not replace the cached row with an empty one
+                raise ProviderUnavailableError(str(err)) from err
             for entry in raw:
                 iid = entry.get("item_id")
                 if not iid or iid in seen_results:
