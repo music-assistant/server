@@ -121,7 +121,7 @@
     },
     "ai_descriptions": {
       "label": "Write descriptions with AI",
-      "description": "Give the playlists for AI a short, editorial-style description written by the text engine, inspired by what you play most. It is written once per playlist and put back whenever it gets replaced."
+      "description": "Give the playlists for AI a short, editorial-style description written by the text engine, inspired by its music. It is written once per playlist and put back whenever it gets replaced."
     },
     "ai_playlists": {
       "label": "Playlists for AI",

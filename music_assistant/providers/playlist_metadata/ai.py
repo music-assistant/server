@@ -95,7 +95,6 @@ from .ai_constants import (
     MAX_CONTEXT_ITEMS,
     MAX_CONTEXT_TRACKS,
     MAX_DESCRIPTION_CHARS,
-    MAX_FAVORITES,
     MAX_OUTAGE_RETRIES,
     MAX_SOURCE_PIXELS,
     MAX_TITLE_LINES,
@@ -228,6 +227,7 @@ class AIArtwork:
         self.logger = provider.logger
         self._preview_lock = asyncio.Lock()
         self._store_lock = asyncio.Lock()
+        self._preview_renders: list[asyncio.Future[bytes]] = []
         self._refresh_lock = asyncio.Lock()
         self._refresh_again = False
         self._generated_at = deque()
@@ -289,6 +289,8 @@ class AIArtwork:
         self.mass.cancel_timer(self._task_id("catch_up"))
         for name in ("catch_up", "regenerate", "worker"):
             self.mass.cancel_task(self._task_id(name))
+        for render in self._preview_renders:
+            render.cancel()
         self._stopped = True
         self.mass.tasks.unregister_scheduled_task(
             self._task_id("refresh"), clear_persisted_state=is_removed
@@ -475,12 +477,19 @@ class AIArtwork:
 
             async def render(look: CoverLook) -> bytes:
                 async with slots:
+                    if self._stopped:
+                        raise ActionUnavailable("The provider is unloading")
                     return await self._render(playlist, image_engine, look, context, concept)
 
-            description, results = await asyncio.gather(
-                self._preview_description(playlist, text_engine, context),
-                asyncio.gather(*(render(look) for look in looks), return_exceptions=True),
-            )
+            # kept, so unloading cancels the renders that are still running or waiting
+            self._preview_renders = [asyncio.ensure_future(render(look)) for look in looks]
+            try:
+                description, results = await asyncio.gather(
+                    self._preview_description(playlist, text_engine, context),
+                    asyncio.gather(*self._preview_renders, return_exceptions=True),
+                )
+            finally:
+                self._preview_renders = []
         entries: list[ConfigEntry] = []
         for look, result in zip(looks, results, strict=True):
             if isinstance(result, BaseException):
@@ -526,13 +535,15 @@ class AIArtwork:
         # always moves forward, also for a second press within the same second, while staying
         # ahead of a counter that restarted with an emptied cache
         self._generation = max(self._generation + 1, int(time.time()))
-        await self.mass.cache.set(
-            CACHE_KEY_GENERATION,
-            self._generation,
-            expiration=CACHE_KEEP_SECONDS,
-            provider=self.provider.instance_id,
-            persistent=True,
-        )
+        # one store at a time, of the counter as it is then, so the newest is stored last
+        async with self._store_lock:
+            await self.mass.cache.set(
+                CACHE_KEY_GENERATION,
+                self._generation,
+                expiration=CACHE_KEEP_SECONDS,
+                provider=self.provider.instance_id,
+                persistent=True,
+            )
         self.logger.info("Regenerating all AI covers and descriptions")
         if self._refresh_lock.locked():
             # the running pass may have checked playlists against the old keys already
@@ -1098,7 +1109,6 @@ class AIArtwork:
         query = DESCRIPTION_PROMPT.format(
             name=playlist.name,
             seeds=_description_seeds(context),
-            favorites=await self._favorites(context.artists),
         )
         async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
             answer = await engine.provider.ai_query(query, engine_id=engine.id)
@@ -1150,24 +1160,6 @@ class AIArtwork:
             return None
         shaping = {key: rules.get(key) for key in PROMPT_RULE_KEYS}
         return hashlib.sha1(json_dumps(shaping).encode(), usedforsecurity=False).hexdigest()
-
-    async def _favorites(self, artists: list[str]) -> str:
-        """Return the listener's most-played library tracks by the given artists."""
-        if not artists:
-            return "n/a"
-        try:
-            tracks = await self.mass.music.tracks.most_played_by_artists(
-                artists[:MAX_CONTEXT_ITEMS], limit=MAX_FAVORITES
-            )
-        except Exception as err:
-            self.logger.warning("Could not read the play counts: %s", err, exc_info=err)
-            return "n/a"
-        return (
-            "; ".join(
-                f"{track.artist} - {track.name} ({track.play_count} plays)" for track in tracks
-            )
-            or "n/a"
-        )
 
     async def _concept(self, playlist: Playlist, context: PlaylistContext) -> str:
         """Return the visual concept sentence, written by the prompt engine when one is used."""

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import os
 import time
 from collections.abc import AsyncGenerator, Iterator
@@ -36,7 +37,6 @@ from music_assistant_models.unique_list import UniqueList
 from PIL import Image, ImageDraw
 
 from music_assistant.constants import CONF_LOG_LEVEL
-from music_assistant.controllers.music.media.tracks import TrackPlayCount
 from music_assistant.providers.playlist_metadata import PlaylistMetadataProvider
 from music_assistant.providers.playlist_metadata.ai import _fit_title, _format_template
 from music_assistant.providers.playlist_metadata.ai_constants import (
@@ -1195,12 +1195,7 @@ def test_a_word_wider_than_the_cover_is_split_not_dropped() -> None:
 async def test_writes_a_description_for_a_smart_playlist(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """A smart playlist gets a description from its rules and the listener's play counts."""
-    _mass(provider).music.tracks.most_played_by_artists = AsyncMock(
-        return_value=[
-            TrackPlayCount(item_id=1, name="Brightest Lights", artist="Lane 8", play_count=42)
-        ]
-    )
+    """A smart playlist gets a description from its rules."""
     playlist = _smart_playlist()
     playlist.metadata.description = "[Smart Playlist] Similar to Innerbloom"
 
@@ -1213,10 +1208,7 @@ async def test_writes_a_description_for_a_smart_playlist(
         "What defines it: Innerbloom – RÜFÜS DU SOL; Midnight Sun – Lane 8, Jerro "
         "(genres Melodic House) (years 2015-2019)"
     ) in query
-    assert "(use for flavor, mention at most one): Lane 8 - Brightest Lights (42 plays)" in query
     assert "140 characters max" in query
-    artists = _mass(provider).music.tracks.most_played_by_artists.await_args.args[0]
-    assert artists == ["Ben Böhmer", "RÜFÜS DU SOL", "Lane 8", "Jerro"]
 
 
 async def test_a_stored_description_is_reapplied_without_calling_the_engine(
@@ -1578,6 +1570,61 @@ async def test_only_one_preview_runs_at_a_time(provider: PlaylistMetadataProvide
     assert most_running == 2
 
 
+async def test_unloading_stops_a_running_preview(provider: PlaylistMetadataProvider) -> None:
+    """Covers still waiting in a preview are not generated after the provider unloads."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold", "neon", "gouache"]},
+    )
+    release = asyncio.Event()
+
+    async def generate(*_args: Any, **_kwargs: Any) -> bytes:
+        await release.wait()
+        return _png()
+
+    provider.test_engine.provider.ai_generate_image = AsyncMock(side_effect=generate)  # type: ignore[attr-defined]
+
+    with _no_engine_pickers():
+        preview = asyncio.create_task(provider.handle_config_action(CONF_ACTION_PREVIEW))
+        while _engine_calls(provider) < 2:
+            await asyncio.sleep(0)
+        await provider.unload()
+        release.set()
+        with contextlib.suppress(BaseException):
+            await preview
+
+    # the third style was still waiting for a slot, so it never reached the engine
+    assert _engine_calls(provider) == 2
+
+
+async def test_the_newest_generation_counter_is_stored_last(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Two quick regenerates store the newer counter last."""
+    _mass(provider).create_task = MagicMock(side_effect=lambda coro, **_kw: coro.close())
+    cache = _mass(provider).cache
+    store = cache.set
+    first = True
+
+    async def slow_set(key: str, data: Any, **kwargs: Any) -> None:
+        nonlocal first
+        if key == "generation" and first:
+            # the first store is the slowest, so without the lock it would finish last
+            first = False
+            await asyncio.sleep(0.05)
+        await store(key, data, **kwargs)
+
+    cache.set = slow_set
+
+    await asyncio.gather(
+        provider.handle_config_action(CONF_ACTION_REGENERATE),
+        provider.handle_config_action(CONF_ACTION_REGENERATE),
+    )
+
+    assert await cache.get("generation", provider=INSTANCE_ID) == provider._ai._generation
+
+
 async def test_preview_without_a_description(provider: PlaylistMetadataProvider) -> None:
     """A text engine that fails leaves the description out and still shows the covers."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
@@ -1689,7 +1736,6 @@ def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     mass.storage_path = str(tmp_path / "data")
     mass.call_later = MagicMock()
     mass.cache = _FakeCache()
-    mass.music.tracks.most_played_by_artists = AsyncMock(return_value=[])
     mass.music.playlists.iter_tracks = MagicMock(side_effect=lambda *_: _async_iter([]))
     smart_playlist_provider = MagicMock()
     smart_playlist_provider.domain = "smart_playlist"

@@ -2043,7 +2043,7 @@
   "provider.playlist_metadata.config_categories.ai_preview": "AI cover preview",
   "provider.playlist_metadata.config_entries.ai_custom_prompt.description": "The prompt sent to the image engine. You can use {name} or {title} (the playlist name), {context} (the seeds, era, artists and genres as sentences), {concept} (the visual concept), {artists}, {genres} and {era}.",
   "provider.playlist_metadata.config_entries.ai_custom_prompt.label": "Custom prompt",
-  "provider.playlist_metadata.config_entries.ai_descriptions.description": "Give the playlists for AI a short, editorial-style description written by the text engine, inspired by what you play most. It is written once per playlist and put back whenever it gets replaced.",
+  "provider.playlist_metadata.config_entries.ai_descriptions.description": "Give the playlists for AI a short, editorial-style description written by the text engine, inspired by its music. It is written once per playlist and put back whenever it gets replaced.",
   "provider.playlist_metadata.config_entries.ai_descriptions.label": "Write descriptions with AI",
   "provider.playlist_metadata.config_entries.ai_extra_playlists.description": "Regular playlists that get an AI generated cover and description as well. Smart playlists are always included.",
   "provider.playlist_metadata.config_entries.ai_extra_playlists.label": "Also use AI for",

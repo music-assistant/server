@@ -80,8 +80,6 @@ CATCH_UP_DELAY_SECONDS: Final = 120
 CACHE_KEEP_SECONDS: Final = 10 * 365 * 24 * 3600
 # the prompt asks for 140 characters, this only cuts off a model that ignores that
 MAX_DESCRIPTION_CHARS: Final = 200
-# the listener's most-played tracks by the playlist's artists, to flavor its description
-MAX_FAVORITES: Final = 6
 
 # separates the title from the artists in a seed label, as the smart playlist provider writes it
 SEED_SEPARATOR: Final = " \u2013 "
@@ -265,7 +263,6 @@ CONCEPT_PROMPT: Final = (
 DESCRIPTION_PROMPT: Final = """You write playlist descriptions for the editorial team of a music streaming service.
 Write the description for a personal playlist called "{name}".
 What defines it: {seeds}
-The listener's most-played songs in this lane (use for flavor, mention at most one): {favorites}
 
 Rules:
 - One or two short sentences, 140 characters max in total.
