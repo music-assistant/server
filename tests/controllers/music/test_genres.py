@@ -1,26 +1,29 @@
 """
 Integration tests for the GenreController (V3 schema).
 
-Uses the ``mass`` fixture from ``tests/conftest.py`` which creates a full
-MusicAssistant instance with a real SQLite database in a temporary directory.
+Uses a database-only MusicAssistant instance with a real SQLite database in a
+temporary directory.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
-from collections.abc import AsyncGenerator
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
 import pytest
-from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.enums import AlbumType, MediaType, SortDirection, SortField
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Genre,
+    GenreSummary,
     Podcast,
     ProviderMapping,
     Track,
@@ -33,7 +36,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
@@ -42,45 +45,38 @@ from music_assistant.constants import (
     DEFAULT_PODCAST_GENRE_MAPPING,
 )
 from music_assistant.controllers.music.media.genres import GenreController
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
+
+GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
+# the user whose likes the favorite tests below check
+FAVORITE_USER = User(user_id="genre-fan", username="genre-fan", role=UserRole.USER)
 
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="class")
-async def mass(tmp_path_factory: pytest.TempPathFactory) -> AsyncGenerator[MusicAssistant]:
-    """Class-scoped MusicAssistant instance (one per test class)."""
-    tmp_path = tmp_path_factory.mktemp("genre_tests")
-    storage_path = tmp_path / "data"
-    cache_path = tmp_path / "cache"
-    storage_path.mkdir(parents=True)
-    cache_path.mkdir(parents=True)
-    logging.getLogger("aiosqlite").level = logging.INFO
-    mass_instance = MusicAssistant(str(storage_path), str(cache_path))
-    await mass_instance.start()
-    try:
-        yield mass_instance
-    finally:
-        await mass_instance.stop()
+@pytest.fixture(scope="class", name="mass")
+def mass_fixture(music_mass_class: MusicAssistant) -> MusicAssistant:
+    """Return the class-scoped database-only Music Assistant fixture."""
+    return music_mass_class
 
 
-@pytest.fixture(scope="class")
-async def genre_ctrl(mass: MusicAssistant) -> GenreController:
+@pytest.fixture
+async def genre_ctrl(mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch) -> GenreController:
     """Get the genre controller from a running MusicAssistant instance."""
+    # the database-only server runs no cache database
+    monkeypatch.setattr(mass.cache, "delete", AsyncMock())
     return mass.music.genres
 
 
-def _make_genre(name: str, favorite: bool = False) -> Genre:
+def _make_genre(name: str) -> Genre:
     """Create a Genre object for adding to the library."""
     return Genre(
         item_id="0",
         provider="library",
         name=name,
         provider_mappings=set(),
-        favorite=favorite,
     )
 
 
@@ -252,9 +248,9 @@ class TestGenreCRUD:
         """Update with metadata merges without overwrite flag."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Reggae"))
         update = _make_genre("Reggae")
-        update.favorite = True
+        update.metadata.description = "From Jamaica"
         updated = await genre_ctrl.update_item_in_library(genre.item_id, update, overwrite=False)
-        assert updated.favorite is True
+        assert updated.metadata.description == "From Jamaica"
         assert updated.name == "Reggae"
 
     async def test_update_overwrite(self, genre_ctrl: GenreController) -> None:
@@ -304,6 +300,19 @@ class TestGenreCRUD:
         items = await genre_ctrl.library_items(hide_empty=False)
         names = {g.name for g in items}
         assert {"Alpha", "Beta", "Gamma"}.issubset(names)
+
+    async def test_library_items_summary_includes_alias_count(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Summary items carry the mapped alias count, not the aliases themselves."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("AliasSummaryGenre"))
+        await genre_ctrl.add_alias(genre.item_id, "Alias Summary Rock")
+        items = await genre_ctrl.library_items(hide_empty=False)
+        item = next(g for g in items if g.name == "AliasSummaryGenre")
+        assert isinstance(item, GenreSummary)
+        # the genre's own name is stored as an alias but must not be counted
+        assert item.genre_alias_count == 1
+        assert item.genre_aliases is None
 
     async def test_library_items_search(self, genre_ctrl: GenreController) -> None:
         """Search 'country' returns Country genre but not unrelated ones like Metal."""
@@ -456,12 +465,14 @@ class TestGenreCRUD:
         assert "MT_FilterSharedGenre" not in playlist_names
 
     async def test_library_count(self, genre_ctrl: GenreController) -> None:
-        """Returns correct count; favorite_only=True filters."""
+        """Returns correct count; favorite_only=True counts the user's own likes."""
         await genre_ctrl.add_item_to_library(_make_genre("CountA"))
-        await genre_ctrl.add_item_to_library(_make_genre("CountB", favorite=True))
+        liked = await genre_ctrl.add_item_to_library(_make_genre("CountB"))
+        await genre_ctrl.set_favorite(liked.item_id, True, [FAVORITE_USER.user_id])
         total = await genre_ctrl.library_count()
         assert total >= 2
-        fav = await genre_ctrl.library_count(favorite_only=True)
+        with patch(GET_CURRENT_USER, return_value=FAVORITE_USER):
+            fav = await genre_ctrl.library_count(favorite_only=True)
         assert fav >= 1
         assert fav <= total
 
@@ -843,6 +854,56 @@ class TestSyncMediaItemGenres:
         )
         assert len(rows) == 1
 
+    @pytest.mark.parametrize("names", [{"SyncExcluded"}, {"SyncExcluded", "SyncFresh"}])
+    async def test_sync_keeps_an_excluded_genre_away(
+        self, mass: MusicAssistant, genre_ctrl: GenreController, names: set[str]
+    ) -> None:
+        """A genre the user excluded from an item is not mapped to it again by a sync."""
+        track = await _add_test_track(mass, f"Sync Track Excluded {len(names)}")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncExcluded"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE name = :name",
+            {"name": "SyncExcluded"},
+            limit=1,
+        )
+        excluded_id = int(rows[0]["item_id"])
+        await genre_ctrl.exclude_genre_from_media_item(excluded_id, MediaType.TRACK, track.item_id)
+
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, names)
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        mapped = {int(row["genre_id"]) for row in rows}
+        assert excluded_id not in mapped
+        assert len(mapped) == len(names) - 1
+
+    async def test_sync_of_an_excluded_genre_writes_nothing(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A provider still reporting an excluded genre leaves the item's mappings untouched."""
+        excluded = await genre_ctrl.add_item_to_library(_make_genre("SyncExcludedKnown"))
+        track = await _add_test_track(mass, "Sync Track Excluded Known")
+        await genre_ctrl.sync_media_item_genres(
+            MediaType.TRACK, track.item_id, {"SyncExcludedKnown"}
+        )
+        await genre_ctrl.exclude_genre_from_media_item(
+            excluded.item_id, MediaType.TRACK, track.item_id
+        )
+        genre_ctrl._sync_lookup_cache.clear()
+
+        with patch.object(
+            genre_ctrl, "_find_genres_for_alias", wraps=genre_ctrl._find_genres_for_alias
+        ) as full_path:
+            await genre_ctrl.sync_media_item_genres(
+                MediaType.TRACK, track.item_id, {"SyncExcludedKnown"}
+            )
+
+        full_path.assert_not_called()
+
     async def test_sync_skips_empty_names(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
@@ -888,6 +949,175 @@ class TestSyncMediaItemGenres:
         mapped_genre_ids = {int(r["genre_id"]) for r in rows}
         assert int(genre_a.item_id) in mapped_genre_ids
         assert int(genre_b.item_id) in mapped_genre_ids
+
+    async def test_sync_picks_up_genre_created_between_syncs(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A genre created between syncs re-routes an already-stored alias mapping."""
+        electro = await genre_ctrl.add_item_to_library(_make_genre("SyncElectro"))
+        await genre_ctrl.add_alias(electro.item_id, "SyncWaveAlias")
+        track = await _add_test_track(mass, "Sync Track NewGenre")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncWaveAlias"})
+        # user now creates a genre whose primary name matches the stored alias;
+        # primary-name resolution takes priority, so a re-sync must remap the item
+        new_genre = await genre_ctrl.add_item_to_library(_make_genre("SyncWaveAlias"))
+        genre_ctrl._sync_lookup_cache.clear()  # simulate the cached lookup expiring
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncWaveAlias"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert {int(r["genre_id"]) for r in rows} == {int(new_genre.item_id)}
+
+    async def test_sync_keeps_manual_mapping(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A manually linked genre survives a sync that doesn't report it."""
+        track = await _add_test_track(mass, "Sync Track Manual")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncProv"})
+        manual = await genre_ctrl.add_item_to_library(_make_genre("SyncManual"))
+        await genre_ctrl.add_media_mapping(manual.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncProv"})
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, set())
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id, is_manual FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
+
+    async def test_sync_keeps_manual_flag_when_provider_reports_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A manual mapping the provider also reports stays manual and survives its removal."""
+        manual = await genre_ctrl.add_item_to_library(_make_genre("SyncBoth"))
+        track = await _add_test_track(mass, "Sync Track Both")
+        await genre_ctrl.add_media_mapping(manual.item_id, MediaType.TRACK, track.item_id)
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncBoth"})
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, set())
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id, is_manual FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
+
+
+class TestAddItemLinksGenres:
+    """Tests for the genre links made when an item is added to the library by hand."""
+
+    async def test_new_item_links_its_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A new item added by hand is linked to the genres it carries."""
+        album = _genre_album("Added Genre Album", {"AddedGenreA", "AddedGenreB"})
+        library_album = await _add_by_hand(mass, album)
+        assert await _linked_genre_names(mass, MediaType.ALBUM, library_album.item_id) == {
+            "AddedGenreA",
+            "AddedGenreB",
+        }
+
+    async def test_new_item_links_the_genres_metadata_finds(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A new item added by hand is linked to the genres the metadata update adds."""
+        bare = await _add_by_hand(
+            mass, _genre_album("Enriched Bare Album", set()), {"EnrichedOnlyGenre"}
+        )
+        assert await _linked_genre_names(mass, MediaType.ALBUM, bare.item_id) == {
+            "EnrichedOnlyGenre"
+        }
+        tagged = await _add_by_hand(
+            mass, _genre_album("Enriched Tagged Album", {"EnrichedOwnGenre"}), {"EnrichedExtra"}
+        )
+        assert await _linked_genre_names(mass, MediaType.ALBUM, tagged.item_id) == {
+            "EnrichedOwnGenre",
+            "EnrichedExtra",
+        }
+
+    async def test_artist_merged_during_its_add_keeps_the_older_artists_links(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A new artist merged into an older one while it is added leaves that one's links."""
+        older = await _add_test_artist(mass, "Merged Into Older Artist")
+        await genre_ctrl.sync_media_item_genres(
+            MediaType.ARTIST, older.item_id, {"OlderArtistGenre"}
+        )
+        older.metadata.genres = {"MergedNewArtistGenre"}
+        newer = Artist(
+            item_id="0",
+            provider="library",
+            name="Merged Newer Artist",
+            provider_mappings=_library_provider_mapping(),
+        )
+        newer.metadata.genres = {"MergedNewArtistGenre"}
+        with (
+            patch.object(mass.music, "get_item", AsyncMock(return_value=newer)),
+            patch.object(mass.metadata, "update_metadata", AsyncMock()),
+            patch.object(
+                mass.music.artists, "get_merged_library_item", AsyncMock(return_value=older)
+            ),
+        ):
+            await mass.music.add_item_to_library(newer)
+        assert await _linked_genre_names(mass, MediaType.ARTIST, older.item_id) == {
+            "OlderArtistGenre"
+        }
+
+    async def test_existing_item_keeps_its_genre_links(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Adding an item that is already in the library leaves its genre links alone."""
+        library_album = await _add_by_hand(
+            mass, _genre_album("Added Again Genre Album", {"AddedAgainFirst"})
+        )
+        library_album.metadata.genres = {"AddedAgainSecond"}
+        added_again = await _add_by_hand(mass, library_album, {"AddedAgainEnriched"})
+        assert added_again.item_id == library_album.item_id
+        assert await _linked_genre_names(mass, MediaType.ALBUM, library_album.item_id) == {
+            "AddedAgainFirst"
+        }
+
+    async def test_existing_item_without_genre_links_gets_linked(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Adding an item that is in the library without genre links links its genres."""
+        library_album = await mass.music.albums.add_item_to_library(
+            _genre_album("Unlinked Genre Album", {"UnlinkedGenre"})
+        )
+        await _add_by_hand(mass, library_album)
+        assert await _linked_genre_names(mass, MediaType.ALBUM, library_album.item_id) == {
+            "UnlinkedGenre"
+        }
+
+    async def test_excluded_genre_is_not_linked(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Adding an item again does not link a genre the user excluded from it."""
+        library_album = await _add_by_hand(
+            mass, _genre_album("Excluded Genre Album", {"AddExcludedGenre"})
+        )
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE name = :name",
+            {"name": "AddExcludedGenre"},
+            limit=1,
+        )
+        await genre_ctrl.exclude_genre_from_media_item(
+            int(rows[0]["item_id"]), MediaType.ALBUM, library_album.item_id
+        )
+        await _add_by_hand(mass, library_album)
+        assert await _linked_genre_names(mass, MediaType.ALBUM, library_album.item_id) == set()
+
+    async def test_sync_add_leaves_genres_to_the_sync(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """An item added by a library sync or scan is not linked on add."""
+        album = _genre_album("Synced Genre Album", {"SyncedGenre"})
+        library_album = await mass.music.albums.add_item_to_library(album)
+        assert await _linked_genre_names(mass, MediaType.ALBUM, library_album.item_id) == set()
 
 
 # ===================================================================
@@ -1256,7 +1486,9 @@ class TestRestoreDefaultGenres:
         if not entries_with_aliases:
             pytest.skip("No default genres with aliases configured")
         entry = entries_with_aliases[0]
-        items = await genre_ctrl.library_items(search=entry["genre"], hide_empty=False)
+        items = await genre_ctrl.library_items(
+            search=entry["genre"], hide_empty=False, summary=False
+        )
         assert len(items) > 0
         genre = items[0]
         assert genre.genre_aliases is not None
@@ -1328,6 +1560,84 @@ class TestQueryMethods:
         assert isinstance(tracks, list)
         assert isinstance(albums, list)
         assert isinstance(artists, list)
+
+    async def test_mapped_media_artist_name_sort_adds_media_type_joins(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Typed artist sorting adds the joins required by genre-mapped media."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("MappedArtistSort"))
+        tracks = [
+            await _add_test_track(mass, "Zebra Track"),
+            await _add_test_track(mass, "Apple Track"),
+        ]
+        for track in tracks:
+            await genre_ctrl.add_media_mapping(
+                genre.item_id, MediaType.TRACK, track.item_id, "MappedArtistSort"
+            )
+
+        mapped_tracks, mapped_albums, mapped_artists = await genre_ctrl.mapped_media(
+            genre,
+            sort_field=SortField.ARTIST_NAME,
+            sort_direction=SortDirection.ASC,
+        )
+
+        assert [track.artists[0].name for track in mapped_tracks] == [
+            "Artist for Apple Track",
+            "Artist for Zebra Track",
+        ]
+        assert mapped_albums == []
+        assert mapped_artists == []
+
+    async def test_genre_track_and_album_endpoints_resolve_legacy_artist_sorts(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Public legacy sort keys are resolved before the internal mapped-media query."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("MappedLegacyArtistSort"))
+        apple_artist = await _add_test_artist(mass, "Apple Artist")
+        zebra_artist = await _add_test_artist(mass, "Zebra Artist")
+        tracks = [
+            Track(
+                item_id="0",
+                provider="library",
+                name=f"{artist.name} Track",
+                provider_mappings=_library_provider_mapping(),
+                artists=UniqueList([artist]),
+            )
+            for artist in (zebra_artist, apple_artist)
+        ]
+        albums = [
+            Album(
+                item_id="0",
+                provider="library",
+                name=f"{artist.name} Album",
+                album_type=AlbumType.ALBUM,
+                provider_mappings=_library_provider_mapping(),
+                artists=UniqueList([artist]),
+            )
+            for artist in (zebra_artist, apple_artist)
+        ]
+        tracks = [await mass.music.tracks.add_item_to_library(track) for track in tracks]
+        albums = [await mass.music.albums.add_item_to_library(album) for album in albums]
+        for track in tracks:
+            await genre_ctrl.add_media_mapping(
+                genre.item_id, MediaType.TRACK, track.item_id, "MappedLegacyArtistSort"
+            )
+        for album in albums:
+            await genre_ctrl.add_media_mapping(
+                genre.item_id, MediaType.ALBUM, album.item_id, "MappedLegacyArtistSort"
+            )
+
+        sorted_tracks = await genre_ctrl.tracks(genre.item_id, order_by="track_artist_name")
+        sorted_albums = await genre_ctrl.albums(genre.item_id, order_by="album_artist_name")
+
+        assert [track.artists[0].name for track in sorted_tracks] == [
+            "Apple Artist",
+            "Zebra Artist",
+        ]
+        assert [album.artists[0].name for album in sorted_albums] == [
+            "Apple Artist",
+            "Zebra Artist",
+        ]
 
     async def test_mapped_media_empty(self, genre_ctrl: GenreController) -> None:
         """No mappings returns ([], [], [])."""
@@ -1507,8 +1817,8 @@ class TestBaseClassIntegration:
         """genre_aliases column populates genre_aliases on fetched Genre."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("InlineTest"))
         await genre_ctrl.add_alias(genre.item_id, "Inline Alias")
-        # Fetch via library_items (uses base_query)
-        items = await genre_ctrl.library_items(search="InlineTest", hide_empty=False)
+        # Fetch via library_items (uses base_query); request full items so genre_aliases hydrates
+        items = await genre_ctrl.library_items(search="InlineTest", hide_empty=False, summary=False)
         assert len(items) >= 1
         fetched = items[0]
         assert fetched.genre_aliases is not None
@@ -1528,12 +1838,14 @@ class TestBaseClassIntegration:
         assert ids1.isdisjoint(ids2)
 
     async def test_favorite_filter(self, genre_ctrl: GenreController) -> None:
-        """favorite=True filters correctly."""
-        await genre_ctrl.add_item_to_library(_make_genre("FavYes", favorite=True))
-        await genre_ctrl.add_item_to_library(_make_genre("FavNo", favorite=False))
-        favs = await genre_ctrl.library_items(favorite=True, hide_empty=False)
+        """favorite=True filters on the current user's likes."""
+        liked = await genre_ctrl.add_item_to_library(_make_genre("FavYes"))
+        await genre_ctrl.add_item_to_library(_make_genre("FavNo"))
+        await genre_ctrl.set_favorite(liked.item_id, True, [FAVORITE_USER.user_id])
+        with patch(GET_CURRENT_USER, return_value=FAVORITE_USER):
+            favs = await genre_ctrl.library_items(favorite=True, hide_empty=False)
         assert all(g.favorite for g in favs)
-        assert any(g.name == "FavYes" for g in favs)
+        assert [g.name for g in favs] == ["FavYes"]
 
 
 # ===================================================================
@@ -1778,7 +2090,7 @@ class TestCleanupStaleMappings:
             "(item_id, provider, media_type, name, fully_played, seconds_played, timestamp, userid)"
         )
         await mass.music.database.execute(
-            f"INSERT OR IGNORE INTO {DB_TABLE_PLAYLOG} {cols} "
+            f"INSERT OR IGNORE INTO {DB_TABLE_MEDIA_PROGRESS} {cols} "
             "VALUES (:item_id, 'library', :media_type, 'CsPlaylog1XYZ99', 0, 0, 0, 'testuser')",
             {"item_id": str(genre_id), "media_type": "genre"},
         )
@@ -1790,7 +2102,7 @@ class TestCleanupStaleMappings:
         genre_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
         assert genre_row is None
         playlog_rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type = 'genre' AND item_id = :id",
+            f"SELECT * FROM {DB_TABLE_MEDIA_PROGRESS} WHERE media_type = 'genre' AND item_id = :id",
             {"id": str(genre_id)},
             limit=0,
         )
@@ -1958,7 +2270,7 @@ class TestGenreExclusion:
             "(item_id, provider, media_type, name, fully_played, seconds_played, timestamp, userid)"
         )
         await mass.music.database.execute(
-            f"INSERT OR IGNORE INTO {DB_TABLE_PLAYLOG} {cols} "
+            f"INSERT OR IGNORE INTO {DB_TABLE_MEDIA_PROGRESS} {cols} "
             "VALUES (:item_id, 'library', 'genre', :name, 0, 0, 0, 'testuser')",
             {"item_id": str(genre_id), "name": "CleanupPreservedGenre"},
         )
@@ -1970,7 +2282,7 @@ class TestGenreExclusion:
         assert genre_row is not None, "genre with an exclusion must not be deleted by cleanup"
 
         playlog_rows = await mass.music.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type = 'genre' AND item_id = :id",
+            f"SELECT * FROM {DB_TABLE_MEDIA_PROGRESS} WHERE media_type = 'genre' AND item_id = :id",
             {"id": str(genre_id)},
             limit=0,
         )
@@ -2812,3 +3124,106 @@ class TestDefaultTaxonomySeeding:
         podcast = await genre_ctrl.library_items(content_type="podcast", hide_empty=False, limit=0)
         music_ids = {g.item_id for g in music}
         assert not any(g.item_id in music_ids for g in podcast)
+
+
+class TestGenreIconMetadata:
+    """_get_genre_icon_metadata prefers a taxonomy subfolder icon, falling back to flat."""
+
+    @staticmethod
+    def _make_icons(tmp_path: Path, *rel_paths: str) -> None:
+        for rel in rel_paths:
+            icon = tmp_path / "genres" / rel
+            icon.parent.mkdir(parents=True, exist_ok=True)
+            icon.write_text("<svg/>")
+
+    def test_subfolder_icon_preferred(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """A taxonomy-specific icon wins over the flat one."""
+        self._make_icons(tmp_path, "history.svg", "podcast/history.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("history", MediaType.PODCAST)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/podcast/history.svg"
+
+    def test_falls_back_to_flat(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Without a taxonomy override, the flat/shared icon is used."""
+        self._make_icons(tmp_path, "history.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("history", MediaType.PODCAST)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/history.svg"
+
+    def test_music_uses_flat(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Music genres (content_type None) resolve to the flat path."""
+        self._make_icons(tmp_path, "blues.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("blues", None)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/blues.svg"
+
+    def test_missing_icon_returns_none(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """No matching SVG (subfolder or flat) yields no metadata."""
+        self._make_icons(tmp_path)
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        assert GenreController._get_genre_icon_metadata("nope", MediaType.PODCAST) is None
+
+
+def _genre_album(name: str, genres: set[str]) -> Album:
+    """Create a minimal album carrying the given genres."""
+    album = Album(
+        item_id="0",
+        provider="library",
+        name=name,
+        provider_mappings=_library_provider_mapping(),
+        album_type=AlbumType.ALBUM,
+    )
+    album.metadata.genres = genres
+    return album
+
+
+async def _add_by_hand(
+    mass: MusicAssistant, item: Album, metadata_genres: set[str] | None = None
+) -> Album:
+    """
+    Add an item through the library add command, as a user does by hand.
+
+    :param mass: The MusicAssistant instance.
+    :param item: The item to add.
+    :param metadata_genres: Genres the metadata update adds to the library item.
+    """
+
+    async def _update_metadata(library_item: Album, *_: Any) -> Album:
+        library_item.metadata.genres = (library_item.metadata.genres or set()) | (
+            metadata_genres or set()
+        )
+        return library_item
+
+    with (
+        patch.object(mass.music, "get_item", AsyncMock(return_value=item)),
+        patch.object(mass.metadata, "update_metadata", side_effect=_update_metadata),
+    ):
+        return cast("Album", await mass.music.add_item_to_library(item))
+
+
+async def _linked_genre_names(
+    mass: MusicAssistant, media_type: MediaType, media_id: str | int
+) -> set[str]:
+    """Return the names of the genres linked to a library item."""
+    rows = await mass.music.database.get_rows_from_query(
+        f"SELECT g.name FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} gm "
+        f"JOIN {DB_TABLE_GENRES} g ON g.item_id = gm.genre_id "
+        "WHERE gm.media_id = :mid AND gm.media_type = :mtype",
+        {"mid": int(media_id), "mtype": media_type.value},
+        limit=0,
+    )
+    return {r["name"] for r in rows}

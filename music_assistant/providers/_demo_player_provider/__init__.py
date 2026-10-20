@@ -34,14 +34,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ProviderFeature
 
-from .constants import CONF_NUMBER_OF_PLAYERS
 from .provider import DemoPlayerprovider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -64,36 +62,3 @@ async def setup(
     # you are free to do any preflight checks here and but you must return
     # an instance of your provider.
     return DemoPlayerprovider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    # Config Entries are used to configure the Player Provider if needed.
-    # See the models of ConfigEntry and ConfigValueType for more information what is supported.
-    # The ConfigEntry is a dataclass that represents a single configuration entry.
-    # The ConfigValueType is an Enum that represents the type of value that
-    # can be stored in a ConfigEntry.
-    # If your provider does not need any configuration, you can return an empty tuple.
-    return (
-        # example of a ConfigEntry for the number of players to create
-        ConfigEntry(
-            key=CONF_NUMBER_OF_PLAYERS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of Players",
-            required=True,
-            default_value="2",
-            description="Number of demo players to create.",
-        ),
-    )

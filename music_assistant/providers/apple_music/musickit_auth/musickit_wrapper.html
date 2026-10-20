@@ -15,6 +15,15 @@
     var music_user_token_timestamp = (typeof user_token_timestamp !== 'undefined' ) ? user_token_timestamp : 0;
     var callbackConsumed = false;
     var closing = false;
+    var reloading = false;
+    // token MusicKit already held on page load - may belong to another provider instance
+    var browser_token = "";
+
+    // MusicKit's authorization lives in localStorage, shared by every provider instance on
+    // this origin. Dropping these keys forgets it locally; unauthorize() revokes it at Apple.
+    const MUSICKIT_STORAGE_PREFIX = 'music.';
+    // marks a reload that already dropped the shared session, so we never loop on it
+    const FRESH_SESSION_MARKER = '#new-account';
 
     // The underlying MA auth helper times-out after fixed period so this window can no longer pass back any data so just close it.
     // Self closing windows is anti-pattern user experience but better than leaving non-functioning UI presented
@@ -37,8 +46,19 @@
         }
       }).then(() => {
         music = MusicKit.getInstance();
+        browser_token = (typeof music.musicUserToken === 'string') ? music.musicUserToken : "";
         document.getElementById('signin_button').disabled = false;
-        if (music.isAuthorized) {
+        if (isForeignSession()) {
+          // another instance's session: never hand its token to this one
+          if (!sessionForgotten()) {
+            forgetSessionAndReload();
+            return;
+          }
+          document.getElementById('message').innerHTML = "Not signed in";
+          document.getElementById('sub-message').innerHTML = "Sign in with the Apple Account you want to use for this provider.";
+          document.getElementById('signin_button').style.display = "inline-block";
+          document.getElementById('signout_button').style.display = "none";
+        } else if (music.isAuthorized) {
           // user token must have been issued in last 6 months
           music_user_token_timestamp = Math.max(music_user_token_timestamp, (Date.now() / 1000) - (3600 * 24 * 180));
           document.getElementById('message').innerHTML = "Already signed in";
@@ -59,9 +79,37 @@
       }
     });
 
+    // True when MusicKit is signed in with a session this instance cannot claim as its own.
+    function isForeignSession() {
+      if (!music || !music.isAuthorized) {
+        return false;
+      }
+      return !music_user_token || (browser_token !== "" && browser_token !== music_user_token);
+    }
+
+    function sessionForgotten() {
+      return window.location.hash === FRESH_SESSION_MARKER;
+    }
+
+    // Forget the session locally, leaving the token valid at Apple for other instances.
+    function forgetSessionAndReload() {
+      reloading = true;
+      try {
+        for (const key of Object.keys(window.localStorage)) {
+          if (key.startsWith(MUSICKIT_STORAGE_PREFIX)) {
+            window.localStorage.removeItem(key);
+          }
+        }
+      } catch (error) {
+        console.error("Could not clear the stored MusicKit session: ", error);
+      }
+      window.location.hash = FRESH_SESSION_MARKER;
+      window.location.reload();
+    }
+
     function sendTokenAndCloseWindow() {
-      if (closing) {
-        // anti race condition
+      if (reloading || closing) {
+        // anti race condition; a reload must not end the flow with an empty token
         return;
       }
       closing = true;
@@ -81,6 +129,10 @@
         }
       }
       xmlHttp.open(callback_method, url, true);
+      if (data !== null) {
+        // without this the browser labels the JSON body text/plain and the flow drops it
+        xmlHttp.setRequestHeader('Content-Type', 'application/json');
+      }
       xmlHttp.onreadystatechange = () => {
         if (xmlHttp.readyState === XMLHttpRequest.DONE) {
           callbackConsumed = true;
@@ -109,7 +161,15 @@
       document.getElementById('signin_button').disabled = true;
       document.getElementById('message').innerHTML = "Apple Signin window should open…";
       document.getElementById('sub-message').innerHTML = "If the Apple Music authentication window does not open, please check the MusicKit token and try again.";
+      const foreign_session = isForeignSession();
       music.authorize().then(function (token) {
+        if (foreign_session && token === browser_token) {
+          // MusicKit reused the session we could not clear: that is another instance's account
+          document.getElementById('message').innerHTML = "Could not start a new Apple Music sign-in";
+          document.getElementById('sub-message').innerHTML = "This browser is still signed in with another Apple Account. Please open this page in a private browser window and sign in there.";
+          document.getElementById('signin_button').disabled = false;
+          return;
+        }
         music_user_token = token;
         music_user_token_timestamp = Math.floor(Date.now() / 1000);
         document.getElementById('message').innerHTML = "Successfully signed in to Apple Music";
@@ -126,6 +186,7 @@
     }
 
     function mkSignOutButton() {
+      // only offered for this instance's own session, so revoking at Apple is intended here
       music.unauthorize();
       music_user_token = "";
       music_user_token_timestamp = 0;
@@ -140,14 +201,9 @@
     }
 
     function mkSwitchAccountButton() {
-      music.unauthorize()
       music_user_token = "";
       music_user_token_timestamp = 0;
-      document.getElementById('message').innerHTML = "Not signed in";
-      document.getElementById('sub-message').innerHTML = "Sign in with Apple to allow Music Assistant to access your Apple Music account.";
-      document.getElementById('signin_button').innerHTML = "Sign In";
-      document.getElementById('signin_button').style.display = "inline-block";
-      document.getElementById('signout_button').style.display = "none";
+      forgetSessionAndReload();
     }
   </script>
 </head>
@@ -209,7 +265,7 @@
       </section>
       <div class="privacy-summary__link-container">
         <a class="privacy-summary__link-text privacy-summary__link-text--margin-top typography-caption"
-          onclick="mkSwitchAccountButton();" href="#">Use a different Apple&nbsp;Account</a>
+          onclick="mkSwitchAccountButton(); return false;" href="#">Use a different Apple&nbsp;Account</a>
       </div>
       <footer class="base-footer">
         <p class="base-footer__copyright">© 2025 Music Assistant <span id="mass_version"></span>- Part of the

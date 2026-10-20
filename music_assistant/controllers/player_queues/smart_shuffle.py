@@ -7,12 +7,12 @@ configured recency windows for a queue, takes a single play-history snapshot fro
 engine, and runs the pure ``_arrange`` algorithm. Plain (non-smart) shuffle stays a pure random
 shuffle in the controller.
 
-The algorithm works in two stages:
-- recency tiering: each item is fresh / artist-recently-played / song-recently-played, where a
-  deliberately-duplicated song uses the short duplicate repeat-gap instead of the long song window;
-- within-tier interleave: each distinct song's copies are placed at evenly-spaced fractional
-  positions with a random phase so duplicates spread across the whole span without clustering, then
-  a bounded pass separates directly-adjacent same-artist items.
+The algorithm always keeps recency tiers authoritative. Within each tier, duplicate copies are
+interleaved first. Regular Smart Shuffle then applies its bounded same-artist spacing pass. When
+Smart Fades ordering is enabled and Smart Fades is active, the local transition selector orders one
+batch of upcoming items at a time instead and handles their artist adjacency itself, reordering only
+inside that batch. A shuffle orders the first batch inside its recency tiers, and playback orders the
+next one when it gets close.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ from __future__ import annotations
 import random
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING
+
+from music_assistant_models.media_items import Track
 
 from music_assistant.constants import (
     CONF_PLAYER_QUEUES,
@@ -31,17 +33,27 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
     CONF_SMART_SHUFFLE_ENABLED,
+    CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
+    SMART_FADE_ORDERING_BATCH,
+    SMART_FADE_ORDERING_LEAD,
     SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT,
     SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT,
     SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
 )
-from music_assistant.controllers.player_queues.helpers import space_by_artist
+from music_assistant.controllers.player_queues.helpers import (
+    committed_index,
+    interleave_groups,
+    space_by_artist,
+)
+from music_assistant.controllers.player_queues.smart_fade_ordering import order_queue_items
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant import MusicAssistant
     from music_assistant.controllers.music.recency import RecencySnapshot
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 
@@ -74,18 +86,118 @@ class SmartShuffle:
             == CONF_VALUE_ENABLED
         )
 
-    async def arrange(self, queue: PlayerQueue, items: list[QueueItem]) -> list[QueueItem]:
+    # Only run this extra ordering when the option is on and Smart Crossfade is active.
+    # Turning it off leaves normal Smart Shuffle alone.
+
+    def is_smart_fade_ordering_enabled(self, queue: PlayerQueue) -> bool:
+        """Return whether Smart Fades-aware ordering should run for this queue."""
+        return bool(
+            queue.smart_fades_active
+            and self.mass.config.get_effective_player_queue_config_value(
+                queue.queue_id,
+                CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
+                CONF_VALUE_DISABLED,
+            )
+            == CONF_VALUE_ENABLED
+        )
+
+    async def arrange(
+        self, queue: PlayerQueue, items: list[QueueItem], *, preceding_item: QueueItem | None = None
+    ) -> list[QueueItem]:
         """
         Return the items reordered with recency-aware smart shuffle.
 
+        With Smart Fades ordering only the first batch is ordered for its transitions; playback
+        orders the next batches.
+
         :param queue: The queue being (re)shuffled; its owner scopes the play history.
         :param items: The upcoming queue items to reorder.
+        :param preceding_item: Locked item immediately before ``items``; used as the first anchor.
         """
+        queue_data = self.queues.queue_data(queue.queue_id)
         windows = self.windows()
-        snapshot = await self.mass.music.recency.snapshot(
-            windows, userid=self.queues.queue_data(queue.queue_id).userid
-        )
+        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
+        if self.is_smart_fade_ordering_enabled(queue):
+            arranged = await _arrange_for_smart_fades(
+                self.mass, items, snapshot, windows, preceding_item=preceding_item
+            )
+            queue_data.fade_ordered_until = (
+                arranged[min(len(arranged), SMART_FADE_ORDERING_BATCH) - 1].queue_item_id
+                if arranged
+                else None
+            )
+            return arranged
+        # nothing is ordered for Smart Fades now, so an earlier batch end no longer applies
+        queue_data.fade_ordered_until = None
         return _arrange(items, snapshot, windows)
+
+    def schedule_next_batch(self, queue: PlayerQueue) -> None:
+        """
+        Schedule ordering the next Smart Fades batch once playback gets close to the ordered end.
+
+        :param queue: The queue whose playing item just changed.
+        """
+        if queue.current_index is None or not self._orders_batches(queue):
+            return
+        ordered_until = self.queues.queue_data(queue.queue_id).fade_ordered_until
+        until_index = (
+            self.queues.index_by_id(queue.queue_id, ordered_until) if ordered_until else None
+        )
+        if (
+            until_index is None
+            or not 0 < until_index - queue.current_index <= SMART_FADE_ORDERING_LEAD
+        ):
+            return
+        # the delay folds a burst of skips into a single run
+        self.mass.call_later(
+            5,
+            self.order_next_batch,
+            queue.queue_id,
+            task_id=f"order_next_fade_batch_{queue.queue_id}",
+        )
+
+    async def order_next_batch(self, queue_id: str) -> None:
+        """
+        Order the next batch of upcoming items for Smart Fades, behind the ones ordered before.
+
+        Only the transitions inside the batch change, and items that are not tracks keep their
+        place. Nothing changes without a remembered batch end ahead of the player, or when the
+        queue was edited while the batch was being ordered.
+
+        :param queue_id: The queue to order the next batch for.
+        """
+        if (queue_data := self.queues.queue_data_or_none(queue_id)) is None:
+            return
+        queue = queue_data.queue
+        if (boundary := committed_index(queue)) is None or not self._orders_batches(queue):
+            return
+        items = queue_data.items
+        ordered_until = queue_data.fade_ordered_until
+        until_index = self.queues.index_by_id(queue_id, ordered_until) if ordered_until else None
+        # continue only behind a batch end the player has not reached: anything closer to the
+        # player may have been put there on purpose, like a track to play next
+        if until_index is None or until_index <= boundary:
+            return
+        start = until_index + 1
+        if not (batch := items[start : start + SMART_FADE_ORDERING_BATCH]):
+            return
+        ordered = await order_queue_items(
+            self.mass,
+            batch,
+            get_track=_queue_item_track,
+            get_streamdetails=_queue_item_streamdetails,
+            preceding_item=items[until_index],
+        )
+        if (
+            self.queues.queue_data_or_none(queue_id) is not queue_data
+            or queue_data.items is not items
+            or committed_index(queue) != boundary
+            or not self._orders_batches(queue)
+        ):
+            # the queue was edited, moved on or had the ordering turned off meanwhile
+            return
+        queue_data.fade_ordered_until = ordered[-1].queue_item_id
+        self.queues.update_items(queue_id, [*items[:start], *ordered, *items[start + len(batch) :]])
 
     def windows(self) -> RecencyWindows:
         """Read the configured recency windows (in seconds). These are a global-only setting."""
@@ -108,6 +220,16 @@ class SmartShuffle:
             return int(raw)
         except TypeError, ValueError:
             return default
+
+    def _orders_batches(self, queue: PlayerQueue) -> bool:
+        """Return whether playback orders the queue's upcoming items for Smart Fades per batch."""
+        # a dynamic queue orders each refill batch when it adds it
+        return (
+            queue.shuffle_enabled
+            and not queue.is_dynamic
+            and self.is_enabled(queue.queue_id)
+            and self.is_smart_fade_ordering_enabled(queue)
+        )
 
 
 def _arrange(
@@ -133,6 +255,64 @@ def _arrange(
     return result
 
 
+async def _arrange_for_smart_fades(
+    mass: MusicAssistant,
+    items: list[QueueItem],
+    snapshot: RecencySnapshot,
+    windows: RecencyWindows,
+    *,
+    preceding_item: QueueItem | None,
+) -> list[QueueItem]:
+    """
+    Keep recency tiers fixed and improve the transitions of the first batch of upcoming items.
+
+    The first SMART_FADE_ORDERING_BATCH items are reordered inside their own tier; the items after
+    them keep the regular smart shuffle spacing.
+    """
+    counts = Counter(_song_key(item) for item in items)
+    tiers: dict[int, list[QueueItem]] = {0: [], 1: [], 2: []}
+    for item in items:
+        tiers[_tier(item, counts, snapshot, windows)].append(item)
+
+    result: list[QueueItem] = []
+    preceding = preceding_item
+    budget = SMART_FADE_ORDERING_BATCH
+    for tier in (0, 1, 2):
+        if not (bucket := tiers[tier]):
+            continue
+        # Spread duplicates first. Artist spacing happens in the local selector so we do
+        # not reshuffle the ordered part afterwards.
+        bucket = _interleave(bucket)
+        ordered, rest = bucket[:budget], bucket[budget:]
+        if ordered:
+            ordered = await order_queue_items(
+                mass,
+                ordered,
+                get_track=_queue_item_track,
+                get_streamdetails=_queue_item_streamdetails,
+                preceding_item=preceding,
+            )
+            budget -= len(ordered)
+            preceding = ordered[-1]
+        if rest:
+            rest = _space_artists(
+                rest, preceding=_artist_name_set(preceding) if preceding is not None else None
+            )
+            preceding = rest[-1]
+        result.extend(ordered + rest)
+    return result
+
+
+def _queue_item_track(item: QueueItem | None) -> Track | None:
+    """Return a queue item's Track payload, or None for a non-track boundary."""
+    return item.media_item if item is not None and isinstance(item.media_item, Track) else None
+
+
+def _queue_item_streamdetails(item: QueueItem) -> StreamDetails | None:
+    """Return the stream details a queue item has already resolved, if any."""
+    return item.streamdetails
+
+
 def _tier(
     item: QueueItem,
     counts: Counter[tuple[str, str]],
@@ -155,18 +335,11 @@ def _tier(
 
 
 def _interleave(bucket: list[QueueItem]) -> list[QueueItem]:
-    """Spread each distinct song's copies evenly with a random phase so groups don't clump."""
+    """Spread each distinct song's copies with independently randomized repeat cycles."""
     groups: dict[tuple[str, str], list[QueueItem]] = defaultdict(list)
     for item in bucket:
         groups[_song_key(item)].append(item)
-    positioned: list[tuple[float, QueueItem]] = []
-    for copies in groups.values():
-        phase = random.random()
-        total = len(copies)
-        for offset, item in enumerate(copies):
-            positioned.append(((phase + offset / total) % 1.0, item))
-    positioned.sort(key=lambda entry: entry[0])
-    return [item for _, item in positioned]
+    return interleave_groups(list(groups.values()))
 
 
 def _space_artists(items: list[QueueItem], *, preceding: set[str] | None = None) -> list[QueueItem]:

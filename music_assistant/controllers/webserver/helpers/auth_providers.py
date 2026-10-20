@@ -5,29 +5,46 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import secrets
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
 from urllib.parse import urlparse
 
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_url
+from mashumaro import DataClassDictMixin, field_options
 from music_assistant_models.auth import AuthProviderType, User, UserRole
-from music_assistant_models.errors import AuthenticationFailed
+from music_assistant_models.errors import AuthenticationFailed, RateLimited
+from music_assistant_models.translations import resolve_translation
 
 from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.pkce import pkce_challenge
+from music_assistant.helpers.util import is_public_url, join_task
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.webserver.auth import AuthenticationManager
+    from music_assistant.controllers.webserver.helpers.login_flow import PendingLogin
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
+
+# Progressive (failed attempts, delay in seconds) tiers applied to a single rate limit key
+DEFAULT_DELAY_TIERS: Final[tuple[tuple[int, int], ...]] = ((3, 30), (6, 60), (10, 120), (15, 300))
+DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
+# Tracked keys before expired ones are swept from the rate limiter's bookkeeping
+PRUNE_THRESHOLD: Final = 128
+# Salt for the password hash of a login with an unknown username
+UNKNOWN_USER_ID: Final = "unknown-user"
+# Seconds the URLs Home Assistant reports for itself are reused, and after a failed lookup
+HA_NETWORK_URLS_TTL: Final = 300
+HA_NETWORK_URLS_RETRY: Final = 30
 
 
 def normalize_username(username: str) -> str:
@@ -93,14 +110,14 @@ async def get_ha_user_role(
 
         hass_prov = mass.get_provider("hass")
         if hass_prov is None or not hass_prov.available:
-            raise RuntimeError("Home Assistant provider not available")
+            raise RuntimeError("Home Assistant provider not available")  # noqa: TRY301 - converted to AuthenticationFailed below
 
         if TYPE_CHECKING:
             hass_prov = cast("HomeAssistantProvider", hass_prov)
         # Query HA for user list to check admin status
         result = await hass_prov.hass.send_command("config/auth/list")
         if not result:
-            raise RuntimeError("Failed to retrieve user list from Home Assistant")
+            raise RuntimeError("Failed to retrieve user list from Home Assistant")  # noqa: TRY301 - converted to AuthenticationFailed below
         for ha_user in result:
             if ha_user.get("id") == ha_user_id:
                 # User is admin if they have "system-admin" in their group_ids
@@ -109,71 +126,155 @@ async def get_ha_user_role(
                     LOGGER.debug("HA user %s is admin, granting ADMIN role", ha_user_id)
                     return UserRole.ADMIN
                 return UserRole.USER
-        raise RuntimeError(f"HA user ID {ha_user_id} not found in user list")
+        raise RuntimeError(f"HA user ID {ha_user_id} not found in user list")  # noqa: TRY301 - converted to AuthenticationFailed below
     except Exception as err:
         msg = f"Failed to check HA admin status: {err}"
         raise AuthenticationFailed(msg) from err
 
 
+async def get_or_create_ha_user(
+    mass: MusicAssistant,
+    ha_user_id: str,
+    username: str,
+    display_name: str | None,
+    avatar_url: str | None,
+    *,
+    allow_create: bool,
+) -> User | None:
+    """
+    Get the user of a Home Assistant account, linking or creating it as needed.
+
+    A user not yet linked to the Home Assistant account is matched by username. An enabled
+    user gets its display name and avatar refreshed from the given details, a disabled user
+    is returned untouched for the caller to refuse.
+
+    :param mass: MusicAssistant instance.
+    :param ha_user_id: Home Assistant user ID.
+    :param username: Username to match an unlinked user by, and to create a new user with.
+    :param display_name: Display name from Home Assistant, if any.
+    :param avatar_url: Avatar URL from Home Assistant, if any.
+    :param allow_create: Whether to create a user when none matches.
+    :return: The user, which may be a disabled one, or None if none matches and
+        allow_create is False.
+    :raises AuthenticationFailed: If the role of a new user can not be read from Home Assistant.
+    """
+    auth = mass.webserver.auth
+    # Check if user already linked to HA
+    user = await auth.get_user_by_provider_link(
+        AuthProviderType.HOME_ASSISTANT, ha_user_id, include_disabled=True
+    )
+    linked = user is not None
+    if not user:
+        # Check if a user with this username already exists (from built-in provider)
+        user = await auth.get_user_by_username(username, include_disabled=True)
+    if user:
+        # A disabled user is left untouched, the caller refuses its sign-in
+        if not user.enabled:
+            return user
+        if not linked:
+            # User exists with this username - link them to HA provider
+            await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+        # Update user with HA details if available (HA is source of truth)
+        if display_name or avatar_url:
+            user = await auth.update_user(
+                user,
+                display_name=display_name,
+                avatar_url=avatar_url,
+            )
+        return user
+
+    if not allow_create:
+        return None
+
+    # Determine role based on HA admin status
+    role = await get_ha_user_role(mass, ha_user_id)
+
+    # Create new user
+    username = normalize_username(username)
+    user = await auth.create_user(
+        username=username,
+        role=role,
+        display_name=display_name or username,
+        avatar_url=avatar_url,
+    )
+
+    # Link to Home Assistant
+    await auth.link_user_to_provider(user, AuthProviderType.HOME_ASSISTANT, ha_user_id)
+
+    return user
+
+
 class LoginRateLimiter:
     """Rate limiter for login attempts to prevent brute force attacks."""
 
-    def __init__(self) -> None:
-        """Initialize the rate limiter."""
-        # Track failed attempts per username: {username: [timestamp1, timestamp2, ...]}
+    def __init__(
+        self,
+        delay_tiers: Sequence[tuple[int, int]] = DEFAULT_DELAY_TIERS,
+        tracking_window: timedelta = DEFAULT_TRACKING_WINDOW,
+        warn_threshold: int = 10,
+        alert_threshold: int = 20,
+        subject: str = "username",
+    ) -> None:
+        """
+        Initialize the rate limiter.
+
+        :param delay_tiers: (failed attempts, delay in seconds) pairs in ascending order of
+            attempts. The highest tier whose attempt count is reached sets the delay.
+        :param tracking_window: How long a failed attempt keeps counting towards the tiers.
+        :param warn_threshold: Failed attempts for one key before suspicious activity is logged.
+        :param alert_threshold: Failed attempts for one key before a stronger warning is logged.
+        :param subject: What the keys of this limiter identify, used in log messages.
+        """
+        # Track failed attempts per key: {key: [timestamp1, timestamp2, ...]}
         self._failed_attempts: dict[str, list[datetime]] = {}
-        # Time window for tracking attempts (30 minutes)
-        self._tracking_window = timedelta(minutes=30)
+        self._delay_tiers = tuple(delay_tiers)
+        self._tracking_window = tracking_window
+        self._warn_threshold = warn_threshold
+        self._alert_threshold = alert_threshold
+        self._subject = subject
         # Lock for thread-safe access to _failed_attempts
         self._lock = asyncio.Lock()
 
-    def get_delay(self, username: str) -> int:
+    def get_attempt_count(self, key: str) -> int:
         """
-        Get the delay in seconds before next login attempt is allowed.
+        Get the number of failed attempts for a key inside the tracking window.
 
-        Progressive delays based on failed attempts:
-        - 1-2 attempts: no delay
-        - 3-5 attempts: 30 seconds
-        - 6-9 attempts: 60 seconds
-        - 10-14 attempts: 120 seconds
-        - 15+ attempts: 300 seconds (5 minutes)
+        :param key: The key to count failed attempts for.
+        :return: Number of failed attempts still being tracked.
+        """
+        cutoff_time = utc() - self._tracking_window
+        return sum(1 for timestamp in self._failed_attempts.get(key, ()) if timestamp > cutoff_time)
 
-        :param username: The username attempting to log in.
+    def get_delay(self, key: str) -> int:
+        """
+        Get the delay in seconds before the next attempt for a key is allowed.
+
+        :param key: The key attempting to authenticate.
         :return: Delay in seconds (0 if no delay needed).
         """
-        self._cleanup_old_attempts(username)
+        attempt_count = self.get_attempt_count(key)
+        delay = 0
+        for tier_attempts, tier_delay in self._delay_tiers:
+            if attempt_count >= tier_attempts:
+                delay = tier_delay
+        return delay
 
-        if username not in self._failed_attempts:
-            return 0
-
-        attempt_count = len(self._failed_attempts[username])
-
-        if attempt_count < 3:
-            return 0
-        if attempt_count < 6:
-            return 30
-        if attempt_count < 10:
-            return 60
-        if attempt_count < 15:
-            return 120
-        return 300  # 5 minutes max delay
-
-    async def check_rate_limit(self, username: str) -> tuple[bool, int]:
+    async def check_rate_limit(self, key: str) -> tuple[bool, int]:
         """
-        Check if login attempt is allowed and apply delay if needed.
+        Check if an attempt is allowed and apply delay if needed.
 
-        :param username: The username attempting to log in.
+        :param key: The key attempting to authenticate.
         :return: Tuple of (allowed, delay_seconds). If not allowed, includes remaining delay.
         """
         async with self._lock:
-            self._cleanup_old_attempts(username)
+            self._cleanup_old_attempts(key)
 
-            if username not in self._failed_attempts or not self._failed_attempts[username]:
+            if key not in self._failed_attempts or not self._failed_attempts[key]:
                 return True, 0
 
             # Get the most recent failed attempt
-            last_attempt = self._failed_attempts[username][-1]
-            required_delay = self.get_delay(username)
+            last_attempt = self._failed_attempts[key][-1]
+            required_delay = self.get_delay(key)
 
             if required_delay == 0:
                 return True, 0
@@ -188,60 +289,72 @@ class LoginRateLimiter:
 
             return True, 0
 
-    async def record_failed_attempt(self, username: str) -> None:
+    async def record_failed_attempt(self, key: str) -> None:
         """
-        Record a failed login attempt.
+        Record a failed attempt.
 
-        :param username: The username that failed to log in.
+        :param key: The key that failed to authenticate.
         """
         async with self._lock:
-            self._cleanup_old_attempts(username)
+            self._cleanup_old_attempts(key)
 
-            if username not in self._failed_attempts:
-                self._failed_attempts[username] = []
+            if key not in self._failed_attempts:
+                self._failed_attempts[key] = []
 
-            self._failed_attempts[username].append(utc())
+            self._failed_attempts[key].append(utc())
 
             # Log warning for suspicious activity
-            attempt_count = len(self._failed_attempts[username])
-            if attempt_count == 10:
+            attempt_count = len(self._failed_attempts[key])
+            if attempt_count == self._warn_threshold:
                 LOGGER.warning(
-                    "Suspicious login activity: 10 failed attempts for username '%s'", username
+                    "Suspicious activity: %d failed attempts (%s=%s)",
+                    attempt_count,
+                    self._subject,
+                    key,
                 )
-            elif attempt_count == 20:
+            elif attempt_count == self._alert_threshold:
                 LOGGER.warning(
-                    "High suspicious login activity: 20 failed attempts for username '%s'. "
-                    "Consider manually disabling this account.",
-                    username,
+                    "High suspicious activity: %d failed attempts (%s=%s). "
+                    "Manual intervention may be needed.",
+                    attempt_count,
+                    self._subject,
+                    key,
                 )
 
-    async def clear_attempts(self, username: str) -> None:
+            # A key is only cleaned up when it is used again, and most keys (a one-off
+            # connection, a made-up username) never come back, so sweep the whole map once
+            # it grows past what any legitimate burst of callers produces.
+            if len(self._failed_attempts) > PRUNE_THRESHOLD:
+                for tracked_key in list(self._failed_attempts):
+                    self._cleanup_old_attempts(tracked_key)
+
+    async def clear_attempts(self, key: str) -> None:
         """
-        Clear failed attempts for a username (called after successful login).
+        Clear failed attempts for a key (called after a successful attempt).
 
-        :param username: The username to clear.
+        :param key: The key to clear.
         """
         async with self._lock:
-            if username in self._failed_attempts:
-                del self._failed_attempts[username]
+            if key in self._failed_attempts:
+                del self._failed_attempts[key]
 
-    def _cleanup_old_attempts(self, username: str) -> None:
+    def _cleanup_old_attempts(self, key: str) -> None:
         """
         Remove failed attempts outside the tracking window.
 
-        :param username: The username to clean up.
+        :param key: The key to clean up.
         """
-        if username not in self._failed_attempts:
+        if key not in self._failed_attempts:
             return
 
         cutoff_time = utc() - self._tracking_window
-        self._failed_attempts[username] = [
-            timestamp for timestamp in self._failed_attempts[username] if timestamp > cutoff_time
+        self._failed_attempts[key] = [
+            timestamp for timestamp in self._failed_attempts[key] if timestamp > cutoff_time
         ]
 
-        # Remove username if no attempts left
-        if not self._failed_attempts[username]:
-            del self._failed_attempts[username]
+        # Remove key if no attempts left
+        if not self._failed_attempts[key]:
+            del self._failed_attempts[key]
 
 
 class LoginProviderConfig(TypedDict, total=False):
@@ -261,8 +374,35 @@ class AuthResult:
     success: bool
     user: User | None = None
     error: str | None = None
+    # the key of the error in the common errors strings
+    translation_key: str | None = None
     access_token: str | None = None
     return_url: str | None = None
+
+
+@dataclass
+class AuthFailure(DataClassDictMixin):
+    """A failed sign-in, as returned by the sign-in commands of the API."""
+
+    success: bool = field(default=False, init=False)
+    # in English; an API result carries it in the language of the client
+    error: str
+    # the key of the error in the common errors strings, also sent to the client
+    translation_key: str | None = None
+    translation_args: list[Any] = field(
+        default_factory=list, metadata=field_options(serialize="omit"), repr=False
+    )
+
+    def __post_serialize__(self, d: dict[str, Any]) -> dict[str, Any]:
+        """Localize the error when a resolver for the language of the client is active."""
+        if self.translation_key:
+            localized = resolve_translation(
+                f"errors.{self.translation_key}",
+                params=[str(arg) for arg in self.translation_args] or None,
+            )
+            if localized is not None:
+                d["error"] = localized
+        return d
 
 
 class LoginProvider(ABC):
@@ -309,26 +449,29 @@ class LoginProvider(ABC):
         :param credentials: Provider-specific credentials (username/password, OAuth code, etc).
         """
 
-    async def get_authorization_url(
-        self, redirect_uri: str, return_url: str | None = None
-    ) -> str | None:
-        """
-        Get OAuth authorization URL if applicable.
+    async def supports_remote_app(self) -> bool:
+        """Return whether a sign-in can return to the remote app (app.music-assistant.io)."""
+        return False
 
-        :param redirect_uri: The callback URL for OAuth flow.
-        :param return_url: Optional URL to redirect to after successful login.
+    async def build_authorization_url(self, pending: PendingLogin) -> str | None:
+        """
+        Return the URL the browser opens to sign in, or None when the provider is unreachable.
+
+        :param pending: The started sign-in.
         """
         return None
 
-    async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
+    async def complete_authorization(
+        self, pending: PendingLogin, params: Mapping[str, str]
+    ) -> User:
         """
-        Handle OAuth callback if applicable.
+        Complete a sign-in with the parameters the browser returned with and return its user.
 
-        :param code: OAuth authorization code.
-        :param state: OAuth state parameter for CSRF protection.
-        :param redirect_uri: The callback URL.
+        :param pending: The started sign-in.
+        :param params: The query parameters of the callback.
+        :raises AuthenticationFailed: If the sign-in can not be completed.
         """
-        return AuthResult(success=False, error="OAuth not supported by this provider")
+        raise AuthenticationFailed("OAuth not supported by this provider")
 
 
 class BuiltinLoginProvider(LoginProvider):
@@ -344,6 +487,8 @@ class BuiltinLoginProvider(LoginProvider):
         """
         super().__init__(mass, provider_id, config)
         self._rate_limiter = LoginRateLimiter()
+        # Bounds concurrent password hashing, so a flood of logins cannot saturate the CPU
+        self._hash_semaphore = asyncio.Semaphore(2)
 
     @property
     def provider_type(self) -> AuthProviderType:
@@ -380,37 +525,40 @@ class BuiltinLoginProvider(LoginProvider):
             return AuthResult(
                 success=False,
                 error=f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                translation_key=RateLimited.translation_key,
             )
 
         # First, look up user by username to get user_id
         # This is needed to create the password hash with user_id in the salt
         user_row = await self.auth_manager.database.get_row("users", {"username": username})
-        if not user_row:
-            # Record failed attempt even if username doesn't exist
-            # This prevents username enumeration timing attacks
-            await self._rate_limiter.record_failed_attempt(username)
-            return AuthResult(success=False, error="Invalid username or password")
-
-        user_id = user_row["user_id"]
-
-        # Hash the password using user_id for enhanced security
-        password_hash = self._hash_password(password, user_id)
+        # Hash and verify for an unknown username too, so the response time does not
+        # reveal whether a username exists
+        user_id = user_row["user_id"] if user_row else UNKNOWN_USER_ID
+        password_hash = await self._hash_password(password, user_id)
 
         # Verify the password by checking if provider link exists
         user = await self.auth_manager.get_user_by_provider_link(
-            AuthProviderType.BUILTIN, password_hash
+            AuthProviderType.BUILTIN, password_hash, include_disabled=True
         )
 
-        if not user:
+        if not user_row or not user:
             # Record failed attempt
             await self._rate_limiter.record_failed_attempt(username)
-            return AuthResult(success=False, error="Invalid username or password")
+            return AuthResult(
+                success=False,
+                error="Invalid username or password",
+                translation_key="login_failed",
+            )
 
         # Check if user is enabled
         if not user.enabled:
             # Record failed attempt for disabled accounts too
             await self._rate_limiter.record_failed_attempt(username)
-            return AuthResult(success=False, error="User account is disabled")
+            return AuthResult(
+                success=False,
+                error="User account is disabled",
+                translation_key="user_account_disabled",
+            )
 
         # Successful login - clear any failed attempts
         await self._rate_limiter.clear_attempts(username)
@@ -420,20 +568,18 @@ class BuiltinLoginProvider(LoginProvider):
         self,
         username: str,
         password: str,
-        role: UserRole = UserRole.USER,
+        role: str = UserRole.USER,
         display_name: str | None = None,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new built-in user with password.
 
         :param username: The username.
         :param password: The password (will be hashed).
-        :param role: The user role (default: USER).
+        :param role: The id of the (builtin or custom) role to assign (default: user).
         :param display_name: Optional display name.
         :param player_filter: Optional list of player IDs user has access to.
-        :param provider_filter: Optional list of provider instance IDs user has access to.
         """
         # Create the user
         user = await self.auth_manager.create_user(
@@ -441,11 +587,10 @@ class BuiltinLoginProvider(LoginProvider):
             role=role,
             display_name=display_name,
             player_filter=player_filter,
-            provider_filter=provider_filter,
         )
 
         # Hash password using user_id for enhanced security
-        password_hash = self._hash_password(password, user.user_id)
+        password_hash = await self._hash_password(password, user.user_id)
         await self.auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, password_hash)
 
         return user
@@ -459,7 +604,7 @@ class BuiltinLoginProvider(LoginProvider):
         :param new_password: The new password.
         """
         # Verify old password first using user_id
-        old_password_hash = self._hash_password(old_password, user.user_id)
+        old_password_hash = await self._hash_password(old_password, user.user_id)
         existing_user = await self.auth_manager.get_user_by_provider_link(
             AuthProviderType.BUILTIN, old_password_hash
         )
@@ -468,7 +613,7 @@ class BuiltinLoginProvider(LoginProvider):
             return False
 
         # Update password link with new hash using user_id
-        new_password_hash = self._hash_password(new_password, user.user_id)
+        new_password_hash = await self._hash_password(new_password, user.user_id)
         await self.auth_manager.update_provider_link(
             user, AuthProviderType.BUILTIN, new_password_hash
         )
@@ -483,12 +628,12 @@ class BuiltinLoginProvider(LoginProvider):
         :param new_password: The new password.
         """
         # Hash new password using user_id and update provider link
-        new_password_hash = self._hash_password(new_password, user.user_id)
+        new_password_hash = await self._hash_password(new_password, user.user_id)
         await self.auth_manager.update_provider_link(
             user, AuthProviderType.BUILTIN, new_password_hash
         )
 
-    def _hash_password(self, password: str, user_id: str) -> str:
+    async def _hash_password(self, password: str, user_id: str) -> str:
         """
         Hash password with salt combining user ID and server ID.
 
@@ -497,9 +642,15 @@ class BuiltinLoginProvider(LoginProvider):
         """
         # Combine user_id (random) and server_id for maximum security
         salt = f"{user_id}:{self.mass.server_id}"
-        return hashlib.pbkdf2_hmac(
-            "sha256", password.encode(), salt.encode(), iterations=100000
-        ).hex()
+        await self._hash_semaphore.acquire()
+        hash_task = asyncio.ensure_future(
+            asyncio.to_thread(
+                hashlib.pbkdf2_hmac, "sha256", password.encode(), salt.encode(), 100000
+            )
+        )
+        # the slot stays taken until the hash is done, also when the caller is cancelled
+        hash_task.add_done_callback(lambda _: self._hash_semaphore.release())
+        return (await join_task(hash_task)).hex()
 
 
 class HomeAssistantOAuthProvider(LoginProvider):
@@ -514,8 +665,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
         :param config: Provider-specific configuration.
         """
         super().__init__(mass, provider_id, config)
-        # Store OAuth state -> return_url mapping to support concurrent sessions
-        self._oauth_sessions: dict[str, str | None] = {}
+        self._network_urls: dict[str, str | None] = {}
+        self._network_urls_expires_at = 0.0
+        self._network_urls_lock = asyncio.Lock()
 
     @property
     def allow_self_registration(self) -> bool:
@@ -534,92 +686,69 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
     async def authenticate(self, credentials: dict[str, Any]) -> AuthResult:
         """
-        Not used for OAuth providers - use handle_oauth_callback instead.
+        Not used for OAuth providers - use complete_authorization instead.
 
         :param credentials: Not used.
         """
         return AuthResult(success=False, error="Use OAuth flow for Home Assistant authentication")
 
-    async def get_authorization_url(
-        self, redirect_uri: str, return_url: str | None = None
-    ) -> str | None:
-        """
-        Get Home Assistant OAuth authorization URL using hass_client.
+    async def supports_remote_app(self) -> bool:
+        """Return whether Home Assistant is reachable from outside the home network."""
+        return await self._get_public_ha_url() is not None
 
-        :param redirect_uri: The callback URL.
-        :param return_url: Optional URL to redirect to after successful login.
+    async def build_authorization_url(self, pending: PendingLogin) -> str | None:
         """
-        # Get the correct HA URL (external URL if running as add-on)
-        ha_url = await self._get_external_ha_url()
+        Return the Home Assistant URL the browser opens to sign in.
+
+        Returns None when Home Assistant is not reachable from where the browser returns to.
+
+        :param pending: The started sign-in.
+        """
+        if pending.redirect_target == "app":
+            # the remote browser opens this URL, so it must reach Home Assistant from anywhere
+            ha_url = await self._get_public_ha_url()
+        else:
+            ha_url = await self._get_server_target_ha_url()
         if not ha_url:
             return None
-
-        # If HA URL is still the internal supervisor URL (no external_url in HA config),
-        # infer from redirect_uri (the URL user is accessing MA from)
-        if "supervisor" in ha_url.lower():
-            # Extract scheme and host from redirect_uri to build external HA URL
-            parsed = urlparse(redirect_uri)
-            # HA typically runs on port 8123, but use default ports for HTTPS (443) or HTTP (80)
-            if parsed.scheme == "https":
-                # HTTPS - use default port 443 (no port in URL)
-                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}"
-            else:
-                # HTTP - assume HA runs on default port 8123
-                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
-
-            self.logger.debug(
-                "HA external_url not configured, inferring from callback URL: %s",
-                inferred_ha_url,
-            )
-            ha_url = inferred_ha_url
-
-        state = secrets.token_urlsafe(32)
-        # Store return_url keyed by state to support concurrent OAuth sessions
-        # This prevents race conditions when multiple users/sessions login simultaneously
-        self._oauth_sessions[state] = return_url
-
         # Use base_url of callback as client_id (same as HA provider does)
-        client_id = base_url(redirect_uri)
-
-        # Use hass_client's get_auth_url utility
         return cast(
             "str",
             get_auth_url(
                 ha_url,
-                redirect_uri,
-                client_id=client_id,
-                state=state,
+                pending.redirect_uri,
+                client_id=base_url(pending.redirect_uri),
+                state=pending.state,
+                code_challenge=pkce_challenge(pending.idp_code_verifier),
             ),
         )
 
-    async def handle_oauth_callback(self, code: str, state: str, redirect_uri: str) -> AuthResult:
+    async def complete_authorization(
+        self, pending: PendingLogin, params: Mapping[str, str]
+    ) -> User:
         """
-        Handle Home Assistant OAuth callback using hass_client.
+        Exchange the Home Assistant code of a sign-in and return the user it signs in.
 
-        :param code: OAuth authorization code.
-        :param state: OAuth state parameter.
-        :param redirect_uri: The callback URL.
+        :param pending: The started sign-in.
+        :param params: The query parameters of the callback, with the authorization code.
+        :raises AuthenticationFailed: If the sign-in can not be completed or the user may not
+            sign in.
         """
-        # Verify state and retrieve return_url from session
-        if state not in self._oauth_sessions:
-            return AuthResult(success=False, error="Invalid or expired state parameter")
-
-        # Retrieve and remove the return_url for this session (cleanup)
-        return_url = self._oauth_sessions.pop(state)
-
-        # Get the correct HA URL (external URL if running as add-on)
-        # This must be the same URL used in get_authorization_url
+        if not (code := params.get("code")):
+            raise AuthenticationFailed("No authorization code received")
         ha_url = await self._get_external_ha_url()
         if not ha_url:
-            return AuthResult(success=False, error="Home Assistant URL not configured")
+            raise AuthenticationFailed("Home Assistant URL not configured")
 
         try:
             # Use base_url of callback as client_id (same as HA provider does)
-            client_id = base_url(redirect_uri)
+            client_id = base_url(pending.redirect_uri)
 
             # Use hass_client's get_token utility - no client_secret needed!
             try:
-                token_details = await get_token(ha_url, code, client_id=client_id)
+                token_details = await get_token(
+                    ha_url, code, client_id=client_id, code_verifier=pending.idp_code_verifier
+                )
             except Exception as token_error:
                 self.logger.error(
                     "Failed to get token from HA: %s (client_id: %s, ha_url: %s)",
@@ -627,21 +756,18 @@ class HomeAssistantOAuthProvider(LoginProvider):
                     client_id,
                     ha_url,
                 )
-                return AuthResult(
-                    success=False, error=f"Failed to exchange OAuth code: {token_error}"
-                )
+                raise AuthenticationFailed(
+                    "Home Assistant did not accept the sign-in"
+                ) from token_error
 
             access_token = token_details.get("access_token")
             if not access_token:
-                return AuthResult(success=False, error="No access token received from HA")
+                raise AuthenticationFailed("No access token received from HA")  # noqa: TRY301 - passed through below
 
             # Get the HA user ID from the OAuth token via WebSocket
             ha_user_id = await self._fetch_ha_user_id_via_websocket(ha_url, access_token)
             if not ha_user_id:
-                return AuthResult(
-                    success=False,
-                    error="Failed to get user ID from Home Assistant",
-                )
+                raise AuthenticationFailed("Failed to get user ID from Home Assistant")  # noqa: TRY301 - passed through below
 
             # Get username, display name and avatar from HA provider (has admin access)
             username, display_name, avatar_url = await get_ha_user_details(self.mass, ha_user_id)
@@ -653,18 +779,55 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
             # Get or create user
             user = await self._get_or_create_user(username, display_name, ha_user_id, avatar_url)
-
-            if not user:
-                return AuthResult(
-                    success=False,
-                    error="Self-registration is disabled. Please contact an administrator.",
-                )
-
-            return AuthResult(success=True, user=user, return_url=return_url)
-
-        except Exception as e:
+        except AuthenticationFailed:
+            raise
+        except Exception as err:
             self.logger.exception("Error during Home Assistant OAuth callback")
-            return AuthResult(success=False, error=str(e))
+            raise AuthenticationFailed("The Home Assistant sign-in could not be completed") from err
+
+        if not user:
+            raise AuthenticationFailed(
+                "Self-registration is disabled. Please contact an administrator.",
+                translation_key="self_registration_disabled",
+            )
+        if not user.enabled:
+            raise AuthenticationFailed(
+                "User account is disabled", translation_key="user_account_disabled"
+            )
+        return user
+
+    async def _get_server_target_ha_url(self) -> str | None:
+        """Return the Home Assistant URL for a sign-in that returns to this server."""
+        # Get the correct HA URL (external URL if running as add-on)
+        ha_url = await self._get_external_ha_url()
+        if not ha_url:
+            return None
+
+        # If HA URL is still the internal supervisor URL (no external_url in HA config),
+        # infer from MA's base URL (the add-on runs on the HA host)
+        if "supervisor" in ha_url.lower():
+            # Extract scheme and host from the base URL to build external HA URL
+            parsed = urlparse(self.mass.webserver.base_url)
+            # HA typically runs on port 8123, but use default ports for HTTPS (443) or HTTP (80)
+            if parsed.scheme == "https":
+                # HTTPS - use default port 443 (no port in URL)
+                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}"
+            else:
+                # HTTP - assume HA runs on default port 8123
+                inferred_ha_url = f"{parsed.scheme}://{parsed.hostname}:8123"
+
+            self.logger.debug(
+                "HA external_url not configured, inferring from base URL: %s",
+                inferred_ha_url,
+            )
+            ha_url = inferred_ha_url
+        return ha_url
+
+    async def _get_public_ha_url(self) -> str | None:
+        """Return a Home Assistant URL that is reachable from the internet, if any."""
+        network_urls = await self._get_network_urls()
+        candidates = (network_urls.get("external"), network_urls.get("cloud"), self._ha_url)
+        return next((url for url in candidates if url and is_public_url(url)), None)
 
     async def _get_external_ha_url(self) -> str | None:
         """
@@ -675,9 +838,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
         :return: External URL if available, otherwise None.
         """
-        ha_url = (
-            cast("str", self.config.get("ha_url")).strip() if self.config.get("ha_url") else None
-        )
+        ha_url = self._ha_url
         if not ha_url:
             return None
 
@@ -686,47 +847,61 @@ class HomeAssistantOAuthProvider(LoginProvider):
             # Not using internal URL, return as-is
             return ha_url
 
-        # We're using internal URL - try to get external URL from HA provider
-        ha_provider = self.mass.get_provider("hass")
-        if not ha_provider:
-            # No HA provider available, use configured URL
-            return ha_url
-
-        ha_provider = cast("HomeAssistantProvider", ha_provider)
-
-        try:
-            # Access the hass client from the provider
-            hass_client = ha_provider.hass
-            if not hass_client or not hass_client.connected:
-                return ha_url
-
-            # Get network URLs from Home Assistant using WebSocket API
-            # This command returns internal, external, and cloud URLs
-            network_urls = await hass_client.send_command("network/url")
-
-            if network_urls:
-                # Priority: external > cloud > internal
-                # External is the manually configured external URL
-                # Cloud is the Nabu Casa cloud URL
-                # Internal is the local network URL
-                external_url = network_urls.get("external")
-                cloud_url = network_urls.get("cloud")
-                internal_url = network_urls.get("internal")
-
-                # Use external URL first, then cloud, then internal
-                final_url = cast("str", external_url or cloud_url or internal_url).strip()
-                if final_url:
-                    self.logger.debug(
-                        "Using HA URL for OAuth: %s (from network/url, configured: %s)",
-                        final_url,
-                        ha_url,
-                    )
-                    return final_url
-        except Exception as err:
-            self.logger.warning("Failed to fetch HA network URLs: %s", err, exc_info=True)
+        # External goes before cloud, cloud before internal
+        # External is the manually configured external URL
+        # Cloud is the Nabu Casa cloud URL
+        # Internal is the local network URL
+        network_urls = await self._get_network_urls()
+        if final_url := (
+            network_urls.get("external")
+            or network_urls.get("cloud")
+            or network_urls.get("internal")
+        ):
+            self.logger.debug(
+                "Using HA URL for OAuth: %s (from network/url, configured: %s)",
+                final_url,
+                ha_url,
+            )
+            return final_url
 
         # Fallback to configured URL
         return ha_url
+
+    @property
+    def _ha_url(self) -> str | None:
+        """Return the Home Assistant URL the hass provider is configured with."""
+        ha_url = cast("str | None", self.config.get("ha_url"))
+        return ha_url.strip() if ha_url else None
+
+    async def _get_network_urls(self) -> dict[str, str | None]:
+        """Return the internal, external and cloud URLs Home Assistant reports for itself."""
+        if time.monotonic() < self._network_urls_expires_at:
+            return self._network_urls
+        ha_provider = self.mass.get_provider("hass")
+        if not ha_provider:
+            return {}
+        # the hass provider only creates its client during setup
+        hass_client = getattr(cast("HomeAssistantProvider", ha_provider), "hass", None)
+        if not hass_client or not hass_client.connected:
+            return {}
+        # auth/providers is public, so concurrent calls share one lookup
+        async with self._network_urls_lock:
+            if time.monotonic() < self._network_urls_expires_at:
+                return self._network_urls
+            try:
+                # Get network URLs from Home Assistant using WebSocket API
+                network_urls = await hass_client.send_command("network/url") or {}
+            except Exception as err:
+                self.logger.warning("Failed to fetch HA network URLs: %s", err, exc_info=True)
+                self._network_urls = {}
+                self._network_urls_expires_at = time.monotonic() + HA_NETWORK_URLS_RETRY
+                return {}
+            self._network_urls = {
+                key: url.strip() if isinstance(url, str) and url.strip() else None
+                for key, url in network_urls.items()
+            }
+            self._network_urls_expires_at = time.monotonic() + HA_NETWORK_URLS_TTL
+            return self._network_urls
 
     async def _fetch_ha_user_id_via_websocket(self, ha_url: str, access_token: str) -> str | None:
         """
@@ -759,81 +934,19 @@ class HomeAssistantOAuthProvider(LoginProvider):
         avatar_url: str | None = None,
     ) -> User | None:
         """
-        Get or create a user for Home Assistant OAuth authentication.
-
-        Updates existing users with display_name and avatar_url from HA on each OAuth login
-        (HA is considered the source of truth for these fields).
+        Get or create the user signing in with a Home Assistant account.
 
         :param username: Username from Home Assistant.
         :param display_name: Display name from Home Assistant.
         :param ha_user_id: Home Assistant user ID.
         :param avatar_url: Avatar URL from Home Assistant person entity.
-        :return: User object or None if creation failed.
+        :return: The user, which may be a disabled one, or None if a new user may not register.
         """
-        # Check if user already linked to HA
-        user = await self.auth_manager.get_user_by_provider_link(
-            AuthProviderType.HOME_ASSISTANT, ha_user_id
+        return await get_or_create_ha_user(
+            self.mass,
+            ha_user_id,
+            username,
+            display_name,
+            avatar_url,
+            allow_create=self.allow_self_registration,
         )
-        if user:
-            # Update user with HA details if available (HA is source of truth)
-            if display_name or avatar_url:
-                user = await self.auth_manager.update_user(
-                    user,
-                    display_name=display_name,
-                    avatar_url=avatar_url,
-                )
-            return user
-
-        username = normalize_username(username)
-
-        # Check if a user with this username already exists (from built-in provider)
-        user_row = await self.auth_manager.database.get_row("users", {"username": username})
-        if user_row:
-            # User exists with this username - link them to HA provider
-            user_dict = dict(user_row)
-            existing_user = User(
-                user_id=user_dict["user_id"],
-                username=user_dict["username"],
-                role=UserRole(user_dict["role"]),
-                enabled=bool(user_dict["enabled"]),
-                created_at=datetime.fromisoformat(user_dict["created_at"]),
-                display_name=user_dict["display_name"],
-                avatar_url=user_dict["avatar_url"],
-            )
-
-            # Link existing user to Home Assistant
-            await self.auth_manager.link_user_to_provider(
-                existing_user, AuthProviderType.HOME_ASSISTANT, ha_user_id
-            )
-
-            # Update user with HA details if available (HA is source of truth)
-            if display_name or avatar_url:
-                existing_user = await self.auth_manager.update_user(
-                    existing_user,
-                    display_name=display_name,
-                    avatar_url=avatar_url,
-                )
-
-            return existing_user
-
-        # New HA user - check if self-registration allowed
-        if not self.allow_self_registration:
-            return None
-
-        # Determine role based on HA admin status
-        role = await get_ha_user_role(self.mass, ha_user_id)
-
-        # Create new user
-        user = await self.auth_manager.create_user(
-            username=username,
-            role=role,
-            display_name=display_name or username,
-            avatar_url=avatar_url,
-        )
-
-        # Link to Home Assistant
-        await self.auth_manager.link_user_to_provider(
-            user, AuthProviderType.HOME_ASSISTANT, ha_user_id
-        )
-
-        return user

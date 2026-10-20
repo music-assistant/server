@@ -11,15 +11,20 @@ the multi-source union/dedup directly with mocked sources.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+import logging
+from functools import partial
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import pytest
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    ArtistOrder,
 )
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
@@ -130,10 +135,10 @@ def _track_obj(name: str, version: str = "") -> Track:
     return Track(item_id=name, provider="test", name=name, version=version, provider_mappings=set())
 
 
-def _prov_mapping(instance: str, item_id: str) -> ProviderMapping:
+def _prov_mapping(instance: str, item_id: str, in_library: bool = False) -> ProviderMapping:
     """Create a provider mapping for the given (streaming) provider instance."""
     return ProviderMapping(
-        item_id=item_id, provider_domain="test", provider_instance=instance, in_library=False
+        item_id=item_id, provider_domain="test", provider_instance=instance, in_library=in_library
     )
 
 
@@ -146,6 +151,14 @@ def _fake_queues(selection: str) -> MagicMock:
     """Create a mock standing in for the media resolver, with the artist option preselected."""
     fake = MagicMock()
     fake.mass.config.get_raw_core_config_value = MagicMock(return_value=selection)
+    fake._resolve_library_artist = AsyncMock(
+        return_value=_artist_obj({_prov_mapping("p1", "a1", in_library=True)})
+    )
+    fake.get_artist_order = MagicMock(return_value=ArtistOrder.SHUFFLED_TRACKS)
+    fake._album_order_applies = MagicMock(return_value=False)
+    # the real resolution under the shuffled order
+    fake.resolve_artist_tracks = partial(MediaResolver.resolve_artist_tracks, fake)
+    fake._shuffled_artist_tracks = partial(MediaResolver._shuffled_artist_tracks, fake)
     return fake
 
 
@@ -198,6 +211,35 @@ async def test_prefer_library_falls_back_to_top_tracks() -> None:
     assert {t.name for t in result} == {"Top"}
 
 
+@pytest.mark.parametrize("selection", ["top_tracks", "library_tracks", "prefer_library"])
+@pytest.mark.parametrize("stored_artist", [None, _artist_obj({_prov_mapping("p1", "a1")})])
+async def test_artist_not_in_the_library_plays_all_its_tracks(
+    selection: str, stored_artist: Artist | None
+) -> None:
+    """An artist not in the library, even when stored for a saved track, plays all its tracks."""
+    fake = _fake_queues(selection)
+    fake._resolve_library_artist = AsyncMock(return_value=stored_artist)
+    fake._library_artist_tracks = AsyncMock(return_value=[])
+    fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("All")])
+    fake.mass.music.artists.top_tracks = AsyncMock(return_value=[_track_obj("Top")])
+    artist = Artist(item_id="a1", provider="spotify", name="ABBA", provider_mappings=set())
+
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), artist)
+
+    assert {t.name for t in result} == {"All"}
+
+
+async def test_library_tracks_keeps_a_library_artist_to_its_library_tracks() -> None:
+    """library_tracks never falls back to other tracks for an artist that is in the library."""
+    fake = _fake_queues("library_tracks")
+    fake._library_artist_tracks = AsyncMock(return_value=[])
+    fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("All")])
+
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
+
+    assert result == []
+
+
 async def test_provider_artist_tracks_respects_unique_providers() -> None:
     """_provider_artist_tracks queries only unique providers and aggregates their tracks."""
     fake = _fake_queues("all_tracks")
@@ -210,3 +252,25 @@ async def test_provider_artist_tracks_respects_unique_providers() -> None:
     assert [t.name for t in result] == ["Dancing Queen"]
     # only the unique provider is queried (the duplicate streaming domain is skipped)
     assert fake.mass.music.artists.tracks.await_count == 1
+
+
+async def test_provider_artist_tracks_skips_failing_provider() -> None:
+    """A provider that errors is skipped (and logged); the other providers' tracks are kept."""
+    fake = _fake_queues("all_tracks")
+    artist = _artist_obj({_prov_mapping("p1", "a1"), _prov_mapping("p2", "a2")})
+    fake.mass.music.get_unique_providers = MagicMock(return_value=["p1", "p2"])
+
+    async def _tracks(item_id: str, _provider_instance: str, **_kwargs: Any) -> list[Track]:
+        if item_id == "a2":
+            raise MediaNotFoundError("provider returned garbage")
+        return [_track_obj("Dancing Queen")]
+
+    fake.mass.music.artists.tracks = AsyncMock(side_effect=_tracks)
+
+    result = await MediaResolver._provider_artist_tracks(cast("MediaResolver", fake), artist)
+
+    assert [t.name for t in result] == ["Dancing Queen"]
+    assert fake.mass.music.artists.tracks.await_count == 2
+    # an artist a provider no longer lists is noted, not warned about on every play
+    fake.logger.log.assert_called_once()
+    assert fake.logger.log.call_args.args[0] == logging.DEBUG

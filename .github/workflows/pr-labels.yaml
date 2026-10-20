@@ -5,8 +5,8 @@ name: PR Labels
 # generator knows how to slot into a section. We derive that label
 # from the "Types of changes" checkbox in the PR template and apply
 # it automatically — most external contributors can't label their
-# own PRs. The job fails when zero or more than one checkbox is
-# ticked.
+# own PRs. The job fails when more than one box is ticked, or when
+# none is and the PR doesn't already carry a single known label.
 
 # yamllint disable-line rule:truthy
 on:
@@ -29,11 +29,10 @@ jobs:
   apply_label:
     name: Apply
     runs-on: ubuntu-latest
-    # GitHub-typed bots (Dependabot, etc.) don't follow the PR
-    # template and apply their own labels — skip them outright.
-    # PAT-driven service accounts (e.g. music-assistant-machine)
-    # report user.type == 'User', so we additionally skip below
-    # whenever the PR already carries a known-set label.
+    # GitHub-typed bots (Dependabot, musicassistant-bot[bot], etc.)
+    # don't follow the PR template and apply their own labels, so
+    # skip them outright. Trusted automation can also pre-apply a
+    # known-set label; that is honoured below when no box is ticked.
     if: github.event.pull_request.user.type != 'Bot'
     steps:
       - name: 🏷 Apply label from PR description checkbox
@@ -51,20 +50,6 @@ jobs:
             const current = (context.payload.pull_request.labels || [])
               .map(l => l.name);
 
-            // If the PR already carries exactly one known-set label
-            // (e.g. applied by auto-update-frontend or backport-to-stable
-            // tooling that doesn't use the PR template), trust it and
-            // exit. Zero or 2+ known labels still fall through to the
-            // checkbox-driven path so a stray manual label can't hide
-            // a missing template tick.
-            const alreadyLabelled = current.filter(n => known.includes(n));
-            if (alreadyLabelled.length === 1) {
-              core.info(
-                `Skipping: PR already labelled '${alreadyLabelled[0]}'.`
-              );
-              return;
-            }
-
             // Match a ticked checkbox bullet whose line ends with a
             // backticked label, e.g.  - [x] CI / workflow change — `ci`
             // The PR template puts the canonical label name in
@@ -73,24 +58,37 @@ jobs:
             const re = /^\s*-\s*\[x\][^`\n]*`([^`]+)`/gim;
             const ticked = [];
             for (const m of body.matchAll(re)) {
-              const name = m[1];
+              const name = m[1].trim();
               if (known.includes(name) && !ticked.includes(name)) {
                 ticked.push(name);
               }
             }
 
-            if (ticked.length === 0) {
-              core.setFailed(
-                'No "Types of changes" checkbox is ticked in the PR ' +
-                'description. Edit the description and tick exactly ' +
-                'one box so this PR can be release-noted.'
-              );
-              return;
-            }
             if (ticked.length > 1) {
               core.setFailed(
                 `Multiple "Types of changes" checkboxes are ticked ` +
                 `(${ticked.join(', ')}). Tick exactly one.`
+              );
+              return;
+            }
+
+            // The description is the source of truth, so a ticked box
+            // always wins — that keeps the label in step when someone
+            // reconsiders the type after opening. Only with nothing
+            // ticked do we fall back to a label already on the PR,
+            // covering PRs opened without the template. Two or more
+            // known labels are ambiguous, so those fail rather than
+            // guess.
+            if (ticked.length === 0) {
+              const existing = current.filter(n => known.includes(n));
+              if (existing.length === 1) {
+                core.info(`Skipping: PR already labelled '${existing[0]}'.`);
+                return;
+              }
+              core.setFailed(
+                'No "Types of changes" checkbox is ticked in the PR ' +
+                'description. Edit the description and tick exactly ' +
+                'one box so this PR can be release-noted.'
               );
               return;
             }

@@ -14,7 +14,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 
 from .constants import (
     CONF_CODECS,
@@ -69,12 +69,6 @@ class YandexMusicStreamingManager:
         self.client = provider.client
         self.mass = provider.mass
         self.logger = provider.logger
-
-    def _track_id_from_item_id(self, item_id: str) -> str:
-        """Extract API track ID from item_id (may be track_id@station_id for My Wave)."""
-        if RADIO_TRACK_ID_SEP in item_id:
-            return item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
-        return item_id
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """
@@ -136,9 +130,10 @@ class YandexMusicStreamingManager:
             sample_rate = file_info.get("sample_rate") or 0
             bit_depth = file_info.get("bit_depth") or 0
 
-            if (not sample_rate or not bit_depth) and not needs_decryption:
-                # Probe raw stream headers for real sample_rate/bit_depth
-                probed_sr, probed_bd = await self._probe_stream_params(url, codec)
+            if not sample_rate or not bit_depth:
+                probed_sr, probed_bd = await self._probe_stream_params(
+                    url, codec, decryption_key=file_info.get("key") if needs_decryption else None
+                )
                 sample_rate = sample_rate or probed_sr
                 bit_depth = bit_depth or probed_bd
 
@@ -223,8 +218,135 @@ class YandexMusicStreamingManager:
             expiration=50,  # download-info direct links expire after ~60s
         )
 
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """
+        Return the audio stream via windowed Range requests.
+
+        Handles both raw (direct) and encraw (AES-CTR encrypted) transports.
+        Downloads in windowed Range requests of _RANGE_WINDOW bytes each to prevent
+        Yandex CDN from dropping slow-consumer TCP connections.
+
+        On connection drop: flat short backoff (0.5s/1.0s/2.0s).
+        On read stall: exponential backoff (2s/4s/8s).
+        On URL expiry (HTTP 4xx): re-fetches URL and resumes from bytes_yielded.
+        Retry counter resets after each successful window.
+
+        :param streamdetails: Stream details with URL (and optional decryption key).
+        :param seek_position: Seek offset in seconds for raw transport (0 = from start).
+        :return: Async generator yielding audio bytes.
+        """
+        data = streamdetails.data
+        is_encrypted, key_bytes = self._validate_encryption_key(data)
+        initial_byte_offset = self._calculate_seek_offset(data, seek_position, is_encrypted)
+
+        max_retries = 6
+        bytes_yielded = initial_byte_offset
+        attempt = 0
+        retry_delay: float = 0.0
+
+        while True:
+            if attempt > 0:
+                await asyncio.sleep(retry_delay)
+
+            block_start = (
+                (bytes_yielded // _AES_BLOCK_SIZE) * _AES_BLOCK_SIZE
+                if is_encrypted
+                else bytes_yielded
+            )
+            window_end = block_start + _RANGE_WINDOW - 1
+
+            try:
+                async with self.mass.http_session.get(
+                    data["url"],
+                    headers={"Range": f"bytes={block_start}-{window_end}"},
+                    timeout=_STREAM_TIMEOUT,
+                ) as response:
+                    if response.status in (401, 403, 410):
+                        new_key = await self._handle_expired_url(
+                            streamdetails,
+                            response.status,
+                            bytes_yielded,
+                            attempt,
+                            max_retries,
+                        )
+                        if is_encrypted:
+                            key_bytes = new_key
+                        attempt += 1
+                        retry_delay = 0.0
+                        continue
+                    try:
+                        response.raise_for_status()
+                    except Exception as err:
+                        # Do not embed err.__str__ — aiohttp's ClientResponseError
+                        # includes the signed CDN URL, which carries an expiring
+                        # signature that should not reach logs or the frontend.
+                        raise MediaNotFoundError(
+                            f"Failed to fetch stream: HTTP {response.status}"
+                        ) from err
+
+                    bytes_before = bytes_yielded
+                    if is_encrypted:
+                        if key_bytes is None:
+                            raise MediaNotFoundError("Missing decryption key")
+                        block_skip = bytes_before - block_start
+                        async for chunk in self._decrypt_response_stream(
+                            response,
+                            key_bytes,
+                            _AES_BLOCK_SIZE,
+                            bytes_yielded,
+                        ):
+                            bytes_yielded += len(chunk)
+                            yield chunk
+                    else:
+                        range_ignored = response.status == 200 and block_start > 0
+                        block_skip = bytes_before if range_ignored else 0
+                        async for chunk in self._iter_raw_response(
+                            response,
+                            bytes_before,
+                            block_start,
+                        ):
+                            bytes_yielded += len(chunk)
+                            yield chunk
+
+                    received = (bytes_yielded - bytes_before) + block_skip
+                    if response.status == 200 or received < _RANGE_WINDOW:
+                        return
+                    if self._is_content_range_eof(response.headers, window_end):
+                        return
+                    attempt = 0
+                    retry_delay = 0.0
+
+            except asyncio.CancelledError:
+                raise
+            except (ClientPayloadError, ServerDisconnectedError) as err:
+                attempt, retry_delay = self._handle_stream_error(
+                    err,
+                    attempt,
+                    max_retries,
+                    bytes_yielded,
+                    _TCP_DROP_DELAYS,
+                    "dropped",
+                )
+            except TimeoutError as err:
+                attempt, retry_delay = self._handle_stream_error(
+                    err,
+                    attempt,
+                    max_retries,
+                    bytes_yielded,
+                    _STALL_DELAYS,
+                    "stalled",
+                )
+
+    def _track_id_from_item_id(self, item_id: str) -> str:
+        """Extract API track ID from item_id (may be track_id@station_id for My Wave)."""
+        if RADIO_TRACK_ID_SEP in item_id:
+            return item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
+        return item_id
+
     def _select_best_quality(
-        self, download_infos: list[Any], preferred_quality: str | None
+        self, download_infos: list[DownloadInfo], preferred_quality: str | None
     ) -> DownloadInfo | None:
         """
         Select the best quality download info based on user preference.
@@ -241,7 +363,7 @@ class YandexMusicStreamingManager:
         preferred_normalized = (preferred_quality or "").strip().lower()
 
         # Sort by bitrate descending
-        sorted_infos = sorted(
+        sorted_infos: list[DownloadInfo] = sorted(
             download_infos,
             key=lambda x: x.bitrate_in_kbps or 0,
             reverse=True,
@@ -262,7 +384,7 @@ class YandexMusicStreamingManager:
 
         # Efficient: Prefer lowest bitrate AAC/MP3
         if preferred_normalized == QUALITY_EFFICIENT:
-            sorted_infos_asc = sorted(
+            sorted_infos_asc: list[DownloadInfo] = sorted(
                 download_infos,
                 # ``or float('inf')`` (rather than the previous ``or 999``) makes
                 # the sentinel unambiguous: 999 kbps is conceivably a real
@@ -459,7 +581,9 @@ class YandexMusicStreamingManager:
 
         return 0, 0
 
-    async def _probe_stream_params(self, url: str, codec: str) -> tuple[int, int]:
+    async def _probe_stream_params(
+        self, url: str, codec: str, *, decryption_key: str | None = None
+    ) -> tuple[int, int]:
         """
         Probe audio params by reading the first bytes of the stream.
 
@@ -468,6 +592,7 @@ class YandexMusicStreamingManager:
 
         :param url: Stream URL.
         :param codec: Codec string from API (e.g. "flac-mp4", "flac").
+        :param decryption_key: Hex AES key for encrypted stream headers.
         :return: (sample_rate, bit_depth) or (0, 0) if probing fails.
         """
         codec_lower = (codec or "").lower()
@@ -491,6 +616,11 @@ class YandexMusicStreamingManager:
                 if resp.status not in (200, 206):
                     return 0, 0
                 header_bytes = await resp.content.read(probe_size)
+                if decryption_key:
+                    decryptor = Cipher(
+                        algorithms.AES(bytes.fromhex(decryption_key)), modes.CTR(bytes(16))
+                    ).decryptor()
+                    header_bytes = decryptor.update(header_bytes) + decryptor.finalize()
                 self.logger.debug("Probe read %d bytes for codec=%s", len(header_bytes), codec)
                 result = parser(header_bytes)
                 self.logger.debug("Probe result: sample_rate=%d, bit_depth=%d", *result)
@@ -527,16 +657,13 @@ class YandexMusicStreamingManager:
             attempt + 1,
             max_retries,
         )
-        token = BYPASS_THROTTLER.set(True)
-        try:
+        with request_priority(RequestPriority.HIGH):
             file_info = await self.client.get_track_file_info(
                 track_id,
                 quality=data["fi_quality"],
                 codecs=data["fi_codecs"],
                 transport=data.get("transport", TRANSPORT_RAW),
             )
-        finally:
-            BYPASS_THROTTLER.reset(token)
         if file_info and file_info.get("url"):
             data["url"] = file_info["url"]
             if "decryption_key" in data and file_info.get("key"):
@@ -751,124 +878,3 @@ class YandexMusicStreamingManager:
             bit_rate,
         )
         return byte_offset
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
-        """
-        Return the audio stream via windowed Range requests.
-
-        Handles both raw (direct) and encraw (AES-CTR encrypted) transports.
-        Downloads in windowed Range requests of _RANGE_WINDOW bytes each to prevent
-        Yandex CDN from dropping slow-consumer TCP connections.
-
-        On connection drop: flat short backoff (0.5s/1.0s/2.0s).
-        On read stall: exponential backoff (2s/4s/8s).
-        On URL expiry (HTTP 4xx): re-fetches URL and resumes from bytes_yielded.
-        Retry counter resets after each successful window.
-
-        :param streamdetails: Stream details with URL (and optional decryption key).
-        :param seek_position: Seek offset in seconds for raw transport (0 = from start).
-        :return: Async generator yielding audio bytes.
-        """
-        data = streamdetails.data
-        is_encrypted, key_bytes = self._validate_encryption_key(data)
-        initial_byte_offset = self._calculate_seek_offset(data, seek_position, is_encrypted)
-
-        max_retries = 6
-        bytes_yielded = initial_byte_offset
-        attempt = 0
-        retry_delay: float = 0.0
-
-        while True:
-            if attempt > 0:
-                await asyncio.sleep(retry_delay)
-
-            block_start = (
-                (bytes_yielded // _AES_BLOCK_SIZE) * _AES_BLOCK_SIZE
-                if is_encrypted
-                else bytes_yielded
-            )
-            window_end = block_start + _RANGE_WINDOW - 1
-
-            try:
-                async with self.mass.http_session.get(
-                    data["url"],
-                    headers={"Range": f"bytes={block_start}-{window_end}"},
-                    timeout=_STREAM_TIMEOUT,
-                ) as response:
-                    if response.status in (401, 403, 410):
-                        new_key = await self._handle_expired_url(
-                            streamdetails,
-                            response.status,
-                            bytes_yielded,
-                            attempt,
-                            max_retries,
-                        )
-                        if is_encrypted:
-                            key_bytes = new_key
-                        attempt += 1
-                        retry_delay = 0.0
-                        continue
-                    try:
-                        response.raise_for_status()
-                    except Exception as err:
-                        # Do not embed err.__str__ — aiohttp's ClientResponseError
-                        # includes the signed CDN URL, which carries an expiring
-                        # signature that should not reach logs or the frontend.
-                        raise MediaNotFoundError(
-                            f"Failed to fetch stream: HTTP {response.status}"
-                        ) from err
-
-                    bytes_before = bytes_yielded
-                    if is_encrypted:
-                        if key_bytes is None:
-                            raise MediaNotFoundError("Missing decryption key")
-                        block_skip = bytes_before - block_start
-                        async for chunk in self._decrypt_response_stream(
-                            response,
-                            key_bytes,
-                            _AES_BLOCK_SIZE,
-                            bytes_yielded,
-                        ):
-                            bytes_yielded += len(chunk)
-                            yield chunk
-                    else:
-                        range_ignored = response.status == 200 and block_start > 0
-                        block_skip = bytes_before if range_ignored else 0
-                        async for chunk in self._iter_raw_response(
-                            response,
-                            bytes_before,
-                            block_start,
-                        ):
-                            bytes_yielded += len(chunk)
-                            yield chunk
-
-                    received = (bytes_yielded - bytes_before) + block_skip
-                    if response.status == 200 or received < _RANGE_WINDOW:
-                        return
-                    if self._is_content_range_eof(response.headers, window_end):
-                        return
-                    attempt = 0
-                    retry_delay = 0.0
-
-            except asyncio.CancelledError:
-                raise
-            except (ClientPayloadError, ServerDisconnectedError) as err:
-                attempt, retry_delay = self._handle_stream_error(
-                    err,
-                    attempt,
-                    max_retries,
-                    bytes_yielded,
-                    _TCP_DROP_DELAYS,
-                    "dropped",
-                )
-            except TimeoutError as err:
-                attempt, retry_delay = self._handle_stream_error(
-                    err,
-                    attempt,
-                    max_retries,
-                    bytes_yielded,
-                    _STALL_DELAYS,
-                    "stalled",
-                )

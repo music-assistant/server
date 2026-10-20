@@ -14,11 +14,18 @@ from .constants import UGP_PREFIX
 from .player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
     from music_assistant.models.player import Player
 
 
 class UniversalGroupProvider(PlayerProvider):
     """Universal Group Player Provider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # nothing to configure (for now)
+        return ()
 
     async def create_group_player(
         self, name: str, members: list[str], dynamic: bool = True

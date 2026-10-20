@@ -17,21 +17,20 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
-from zeroconf.asyncio import AsyncZeroconf
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
-from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
+from tests.common import (
+    adopt_bound_sendspin_port,
+    suppress_auto_loaded_providers,
+    suppress_initial_library_sync,
+    use_ephemeral_server_ports,
+    wait_for_boot_to_settle,
+)
 
 NUM_DEMO_PLAYERS = 3
-
-# builtin providers that must not be auto-setup in the hermetic boot: local_audio
-# bridges the host machine's sound devices (built-in speakers, bluetooth, ...) as
-# sendspin players, which would leak real hardware into the player registry
-SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
-
-_orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
 
 
 async def wait_for(predicate: Callable[[], bool], timeout: float = 25.0) -> bool:
@@ -80,15 +79,6 @@ async def play_test_track(mass: MusicAssistant, queue_id: str, track_id: str = "
     await mass.player_queues.play_media(queue_id, track)
 
 
-async def _create_builtin_provider_config_hermetic(
-    self: ProviderConfigMixin, provider_domain: str
-) -> None:
-    """Create builtin provider configs, skipping providers that discover host hardware."""
-    if provider_domain in SUPPRESSED_BUILTIN_PROVIDERS:
-        return
-    await _orig_create_builtin_provider_config(self, provider_domain)
-
-
 def _create_mock_zeroconf() -> MagicMock:
     """Create a mock AsyncZeroconf that prevents real mDNS network I/O."""
     mock_zc = MagicMock(spec=AsyncZeroconf)
@@ -109,9 +99,8 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     Boot a hermetic MusicAssistant with only the fake `test` + demo player providers.
 
     No real network discovery happens: mDNS (zeroconf) and SSDP are mocked, the
-    default device providers (dlna/sonos/...) are suppressed and so is local_audio,
-    which would otherwise register the host's sound devices as players. The `test`
-    music provider and three grouped-capable demo players are configured and ready.
+    default device providers (dlna/sonos/...) are suppressed. The `test` music
+    provider and three grouped-capable demo players are configured and ready.
     """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
@@ -124,6 +113,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     mass_instance.dev_mode = True
 
     with (
+        use_ephemeral_server_ports(),
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
             return_value=_create_mock_zeroconf(),
@@ -132,32 +122,48 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=NonCallableMagicMock(),
         ),
+        # the Sendspin server runs its own zeroconf instance
+        patch("aiosendspin.server.server.AsyncZeroconf", return_value=_create_mock_zeroconf()),
+        patch(
+            "aiosendspin.server.server.AsyncServiceBrowser",
+            return_value=MagicMock(spec=AsyncServiceBrowser),
+        ),
         patch(
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
         ),
-        # hermetic: no real SSDP search and no auto-loaded device providers
+        # hermetic: no real SSDP search
         patch(
             "music_assistant.controllers.discovery.controller.async_upnp_search",
             new=AsyncMock(),
         ),
-        patch("music_assistant.mass.DEFAULT_PROVIDERS", ()),
-        # hermetic: local_audio is a builtin provider that would bridge the host
-        # machine's sound devices (e.g. bluetooth headsets) as extra players
-        patch.object(
-            ProviderConfigMixin,
-            "create_builtin_provider_config",
-            _create_builtin_provider_config_hermetic,
+        # hermetic: MusicBrainz knows none of the fake library items
+        patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_data",
+            new=AsyncMock(return_value=None),
         ),
+        patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_browse_data",
+            new=AsyncMock(return_value=None),
+        ),
+        # hermetic: no auto-loaded device providers and no host-audio bridging
+        suppress_auto_loaded_providers(),
+        # no library sync starting on its own inside a running test
+        suppress_initial_library_sync(),
     ):
-        await mass_instance.start()
-        # configure the fake music + player providers
-        await mass_instance.config.save_provider_config("test", {})
-        await mass_instance.config.save_provider_config(
-            "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
-        )
-        await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
         try:
+            await mass_instance.start()
+            # configure the fake music + player providers
+            await mass_instance.config._create_provider_instance("test", {})
+            await mass_instance.config._create_provider_instance(
+                "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
+            )
+            await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
+            await wait_for_boot_to_settle(mass_instance)
+            adopt_bound_sendspin_port(mass_instance)
             yield mass_instance
         finally:
+            # also stop after a failed boot, or the half-started server's open database
+            # connections keep their non-daemon threads alive and hang the interpreter
+            # at exit (see the same note in tests/conftest.py)
             await mass_instance.stop()

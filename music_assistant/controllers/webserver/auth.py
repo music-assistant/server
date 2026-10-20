@@ -2,63 +2,133 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
 import secrets
+import time
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import jwt as pyjwt
 from music_assistant_models.auth import (
     AuthProviderType,
     AuthToken,
+    Role,
+    Scope,
     User,
     UserAuthProvider,
     UserRole,
 )
 from music_assistant_models.errors import (
+    AuthenticationFailed,
     AuthenticationRequired,
     InsufficientPermissions,
     InvalidDataError,
+    RateLimited,
 )
 
-from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_PLAYERS,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    CUSTOM_ROLE_FORBIDDEN_SCOPES,
+    ROLE_SCOPES,
+    custom_role_scopes,
+    get_current_client_id,
+    get_current_peer_address,
     get_current_token,
     get_current_user,
+    has_scope,
+    set_custom_role_scopes,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
+    AuthFailure,
     AuthResult,
     BuiltinLoginProvider,
     HomeAssistantOAuthProvider,
     HomeAssistantProviderConfig,
     LoginProvider,
+    LoginRateLimiter,
     normalize_username,
+)
+from music_assistant.controllers.webserver.helpers.login_flow import (
+    AUTH_CODE_RE,
+    PKCE_CHALLENGE_RE,
+    AuthTransport,
+    PendingLogin,
+    PendingLoginStore,
+    RedirectTarget,
+    verify_pkce,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
+from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
+from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
+    from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
+    from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
+
+PREF_SIDEBAR_SHORTCUTS = "sidebar.shortcuts"
 
 # Database schema version
 DB_SCHEMA_VERSION = 5
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
-TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
+TOKEN_LONG_LIVED_EXPIRATION = 365  # Long-lived tokens (1 year, no auto-renewal)
+# Max days a sliding short-lived session may live from creation before re-auth.
+TOKEN_ABSOLUTE_MAX_EXPIRATION = 90
+TOKEN_GUEST_EXPIRATION = 1  # Guest sessions: short fixed lifetime, no renewal
+# Days before the absolute cap at which the HA integration token is rotated
+HA_TOKEN_ROTATION_MARGIN = 7
+# Minimum age of a token's stored last_used_at before token activity is persisted again
+TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
+# Max number of (newest first) tokens returned by the auth/tokens command
+TOKEN_LIST_LIMIT = 100
+
+HA_TOKEN_SETTING_KEY = "ha_integration_token"  # noqa: S105 - config key
+HA_TOKEN_NAME = "Home Assistant Integration"  # noqa: S105 - display name
+
+# English names of the builtin user roles, in the order the roles are listed
+BUILTIN_ROLE_NAMES = {
+    UserRole.ADMIN: "Administrator",
+    UserRole.USER: "User",
+    UserRole.GUEST: "Guest",
+    UserRole.SERVICE: "Service",
+}
+ROLE_NAME_MAX_LENGTH = 50
+USERNAME_MIN_LENGTH = 2
 
 # Join code constants (short codes for QR/link-based login)
-JOIN_CODE_LENGTH = 6
+JOIN_CODE_LENGTH = 12
 JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
 JOIN_CODE_DEFAULT_EXPIRY_HOURS = 8
+# Failed exchanges are throttled per calling websocket connection, so one guest fumbling a
+# stale QR code cannot lock out every other guest at a party. Callers that reach the API
+# without a connection identity (the JSON RPC endpoint, in-process callers) share one bucket.
+JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY = "no-connection"
+# Second, server-wide bucket that backstops the per-connection buckets, since a client can
+# start a new connection (and thus a new bucket) at will. The join code itself is what makes
+# guessing infeasible (12 chars over a 32 symbol alphabet is ~2^60, valid for hours), so this
+# ceiling is deliberately far above any plausible party-scale burst of legitimate failures.
+JOIN_CODE_GLOBAL_RATE_LIMIT_KEY = "all-connections"
+JOIN_CODE_GLOBAL_FAILURE_CEILING = 1000
+JOIN_CODE_GLOBAL_COOLDOWN_SECONDS = 60
 
 
 class AuthenticationManager:
@@ -77,6 +147,21 @@ class AuthenticationManager:
         self.logger = LOGGER
         self._has_users: bool = False
         self.jwt_helper: JWTHelper = None  # type: ignore[assignment]
+        self._join_code_rate_limiter = LoginRateLimiter(subject="client")
+        self._join_code_global_rate_limiter = LoginRateLimiter(
+            delay_tiers=((JOIN_CODE_GLOBAL_FAILURE_CEILING, JOIN_CODE_GLOBAL_COOLDOWN_SECONDS),),
+            warn_threshold=JOIN_CODE_GLOBAL_FAILURE_CEILING,
+            alert_threshold=JOIN_CODE_GLOBAL_FAILURE_CEILING * 2,
+            subject="join_codes",
+        )
+        # Stops concurrent exchanges from passing the rate limit check before failures land
+        self._join_code_exchange_lock = asyncio.Lock()
+        self.pending_logins = PendingLoginStore()
+        self._auth_exchange_rate_limiter = LoginRateLimiter(subject="client")
+        # Serialises the read-modify-write of the user access filters
+        self._user_filter_lock = asyncio.Lock()
+        self._custom_roles: dict[str, Role] = {}
+        self._access_revoked_callbacks: list[Callable[[User], None]] = []
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -87,6 +172,7 @@ class AuthenticationManager:
 
         # Create database schema and handle migrations
         await self._setup_database()
+        await self._load_custom_roles()
 
         # Initialize JWT helper with secret key
         jwt_secret = await self._get_or_create_jwt_secret()
@@ -97,7 +183,16 @@ class AuthenticationManager:
 
         self._has_users = await self._has_non_system_users()
 
-        self._schedule_join_code_cleanup()
+        # migrate the Home Assistant system user of pre-existing installs to the service role
+        await self._migrate_system_user_role()
+
+        # repair filters that were left pointing at removed providers/players
+        await self._prune_stale_user_filters()
+
+        # clear rows left behind by user deletions from before those were cleaned up
+        await self._prune_orphaned_user_rows()
+
+        self._schedule_periodic_cleanup()
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
@@ -105,6 +200,7 @@ class AuthenticationManager:
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        set_custom_role_scopes({})
         if self.database:
             await self.database.close()
 
@@ -140,15 +236,20 @@ class AuthenticationManager:
         try:
             payload = self.jwt_helper.decode_token(token, verify_exp=True)
             token_id = payload.get("jti")
-            user_id = payload.get("sub")
-            is_long_lived = payload.get("is_long_lived", False)
+            token_user_id = payload.get("sub")
 
-            if not token_id or not user_id:
+            if not token_id or not token_user_id:
                 return None
 
             token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
             if not token_row:
                 return None
+
+            # Database is source of truth for token metadata, not the (immutable) JWT payload.
+            # A payload/row mismatch means a tampered or stale token: reject rather than trust it.
+            if token_user_id != token_row["user_id"]:
+                return None
+            is_long_lived = bool(token_row["is_long_lived"])
 
             # Database expiration is source of truth
             if token_row["expires_at"]:
@@ -157,23 +258,17 @@ class AuthenticationManager:
                     await self.database.delete("auth_tokens", {"token_id": token_id})
                     return None
 
-            # Update last used timestamp
-            now = utc()
-            updates = {"last_used_at": now.isoformat()}
+            user = await self.get_user(token_row["user_id"])
+            if not user:
+                return None
 
-            if not is_long_lived:
-                # Short-lived token: extend expiration on each use (sliding window)
-                new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-                updates["expires_at"] = new_expires_at.isoformat()
+            updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
+            if updates is None:
+                return None
+            if updates:
+                await self.database.update("auth_tokens", {"token_id": token_id}, updates)
 
-            # Update database
-            await self.database.update(
-                "auth_tokens",
-                {"token_id": token_id},
-                updates,
-            )
-
-            return await self.get_user(user_id)
+            return user
 
         except pyjwt.ExpiredSignatureError:
             if token_id := self.jwt_helper.get_token_id(token):
@@ -198,25 +293,20 @@ class AuthenticationManager:
                 await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
                 return None
 
-        # Implement sliding expiration for short-lived tokens
+        user = await self.get_user(token_row["user_id"])
+        if not user:
+            return None
+
         is_long_lived = bool(token_row["is_long_lived"])
-        now = utc()
-        legacy_updates: dict[str, str] = {"last_used_at": now.isoformat()}
+        legacy_updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
+        if legacy_updates is None:
+            return None
+        if legacy_updates:
+            await self.database.update(
+                "auth_tokens", {"token_id": token_row["token_id"]}, legacy_updates
+            )
 
-        if not is_long_lived and token_row["expires_at"]:
-            # Short-lived token: extend expiration on each use (sliding window)
-            new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-            legacy_updates["expires_at"] = new_expires_at.isoformat()
-
-        # Update last used timestamp and potentially expiration
-        await self.database.update(
-            "auth_tokens",
-            {"token_id": token_row["token_id"]},
-            legacy_updates,
-        )
-
-        # Get user
-        return await self.get_user(token_row["user_id"])
+        return user
 
     async def get_token_id_from_token(self, token: str) -> str | None:
         """
@@ -236,36 +326,49 @@ class AuthenticationManager:
             return None
         return str(token_row["token_id"])
 
-    @api_command("auth/user", required_role="admin")
-    async def get_user(self, user_id: str) -> User | None:
+    @api_command("auth/user", required_scope=Scope.USERS_READ)
+    async def get_user_info(self, user_id: str) -> User | None:
         """
-        Get user by ID (admin only).
+        Get user by ID (requires the users.read scope).
 
         :param user_id: The user ID.
         :return: User object or None if not found.
         """
+        if user := await self.get_user(user_id):
+            return with_derived_provider_filter(self.mass, user)
+        return None
+
+    async def get_user(self, user_id: str, *, include_disabled: bool = False) -> User | None:
+        """
+        Get user by ID, or None if it does not exist (or is disabled, unless included).
+
+        :param user_id: The user ID.
+        :param include_disabled: Also return a disabled user.
+        """
         user_row = await self.database.get_row("users", {"user_id": user_id})
-        if not user_row or not user_row["enabled"]:
+        if not user_row or not (user_row["enabled"] or include_disabled):
             return None
 
         return User(
             user_id=user_row["user_id"],
             username=user_row["username"],
-            role=UserRole(user_row["role"]),
+            role=user_row["role"],
             enabled=bool(user_row["enabled"]),
             created_at=datetime.fromisoformat(user_row["created_at"]),
             display_name=user_row["display_name"],
             avatar_url=user_row["avatar_url"],
             preferences=json_loads(user_row["preferences"]),
             player_filter=json_loads(user_row["player_filter"]),
-            provider_filter=json_loads(user_row["provider_filter"]),
         )
 
-    async def get_user_by_username(self, username: str) -> User | None:
+    async def get_user_by_username(
+        self, username: str, *, include_disabled: bool = False
+    ) -> User | None:
         """
         Get user by username.
 
         :param username: The username.
+        :param include_disabled: Also return a disabled user.
         :return: User object or None if not found.
         """
         username = normalize_username(username)
@@ -274,16 +377,21 @@ class AuthenticationManager:
         if not user_row:
             return None
 
-        return await self.get_user(user_row["user_id"])
+        return await self.get_user(user_row["user_id"], include_disabled=include_disabled)
 
     async def get_user_by_provider_link(
-        self, provider_type: AuthProviderType, provider_user_id: str
+        self,
+        provider_type: AuthProviderType,
+        provider_user_id: str,
+        *,
+        include_disabled: bool = False,
     ) -> User | None:
         """
         Get user by their provider link.
 
         :param provider_type: The auth provider type.
         :param provider_user_id: The user ID from the provider.
+        :param include_disabled: Also return a disabled user.
         """
         link_row = await self.database.get_row(
             "user_auth_providers",
@@ -295,28 +403,26 @@ class AuthenticationManager:
         if not link_row:
             return None
 
-        return await self.get_user(link_row["user_id"])
+        return await self.get_user(link_row["user_id"], include_disabled=include_disabled)
 
     async def create_user(
         self,
         username: str,
-        role: UserRole = UserRole.USER,
+        role: str = UserRole.USER,
         display_name: str | None = None,
         avatar_url: str | None = None,
         preferences: dict[str, Any] | None = None,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new user.
 
         :param username: The username.
-        :param role: The user role (default: USER).
+        :param role: The id of the (builtin or custom) role to assign (default: user).
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param preferences: Optional user preferences dict.
         :param player_filter: Optional list of player IDs user has access to.
-        :param provider_filter: Optional list of provider instance IDs user has access to.
         """
         normalized_username = normalize_username(username)
 
@@ -329,20 +435,18 @@ class AuthenticationManager:
             preferences = {}
         if player_filter is None:
             player_filter = []
-        if provider_filter is None:
-            provider_filter = []
 
         user_data = {
             "user_id": user_id,
             "username": normalized_username,
-            "role": role.value,
+            "role": role,
             "enabled": True,
             "created_at": created_at.isoformat(),
             "display_name": display_name,
             "avatar_url": avatar_url,
             "preferences": json_dumps(preferences),
             "player_filter": json_dumps(player_filter),
-            "provider_filter": json_dumps(provider_filter),
+            "provider_filter": "[]",
         }
 
         await self.database.insert("users", user_data)
@@ -357,7 +461,6 @@ class AuthenticationManager:
             avatar_url=avatar_url,
             preferences=preferences,
             player_filter=player_filter,
-            provider_filter=provider_filter,
         )
 
         # If this is the first non-system user, migrate playlog entries to them
@@ -378,7 +481,7 @@ class AuthenticationManager:
         """
         username = HOMEASSISTANT_SYSTEM_USER
         display_name = "Home Assistant Integration"
-        role = UserRole.USER
+        role = UserRole.SERVICE
 
         normalized_username = normalize_username(username)
 
@@ -401,34 +504,42 @@ class AuthenticationManager:
 
     async def get_homeassistant_system_user_token(self) -> str:
         """
-        Get or create an auth token for the Home Assistant system user.
+        Get the auth token to announce to the Home Assistant integration.
 
-        This method ensures only one active token exists for the HA integration.
-        If an old token exists, it is deleted and a new one is created.
-        The token auto-renews on use (expires after 30 days of inactivity).
+        Returns the same (still valid) token on repeated calls so re-announcing it via
+        Supervisor discovery is idempotent for the HA integration. A replacement is only
+        minted when the current token is missing, expired or revoked, or shortly before
+        it reaches its absolute lifetime cap - allowing seamless rotation as HA reloads
+        with the newly announced token while the old one is still accepted.
 
         :return: Authentication token for the Home Assistant system user.
         """
-        token_name = "Home Assistant Integration"
-
-        # Get the system user
         system_user = await self.get_homeassistant_system_user()
 
-        # Delete any existing tokens with this name to avoid accumulation
-        # We can't retrieve the plain token from the hash, so we always create a new one
-        existing_tokens = await self.database.get_rows(
-            "auth_tokens",
-            {"user_id": system_user.user_id, "name": token_name},
-        )
-        for token_row in existing_tokens:
-            await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+        # Keep the plain token in settings for re-announcing; the jwt_secret next to it can mint any token anyway
+        if token_row := await self.database.get_row("settings", {"key": HA_TOKEN_SETTING_KEY}):
+            token = str(token_row["value"])
+            if await self._can_reuse_ha_integration_token(token, system_user):
+                return token
 
-        # Create a new token for the system user
-        return await self.create_token(
+        # A superseded token stays valid until expiry, so HA keeps working until it reloads
+        token = await self.create_token(
             user=system_user,
-            name=token_name,
+            name=HA_TOKEN_NAME,
             is_long_lived=False,
         )
+        await self.database.insert_or_replace(
+            "settings",
+            {"key": HA_TOKEN_SETTING_KEY, "value": token, "type": "string"},
+        )
+        now = utc()
+        for old_row in await self.database.get_rows(
+            "auth_tokens", {"user_id": system_user.user_id, "name": HA_TOKEN_NAME}
+        ):
+            if old_row["expires_at"] and datetime.fromisoformat(old_row["expires_at"]) <= now:
+                await self.database.delete("auth_tokens", {"token_id": old_row["token_id"]})
+        await self.database.commit()
+        return token
 
     async def link_user_to_provider(
         self,
@@ -585,8 +696,10 @@ class AuthenticationManager:
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., device name).
         :param is_long_lived: Whether this is a long-lived token (default: False).
-            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
-            Long-lived tokens (True): No auto-renewal, expire after 10 years.
+            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity,
+            capped at an absolute maximum lifetime from creation (see TOKEN_ABSOLUTE_MAX_EXPIRATION).
+            Tokens for guest users get a short fixed lifetime instead and never renew.
+            Long-lived tokens (True): No auto-renewal, expire after 1 year.
         :return: JWT token string.
         """
         # Generate unique token ID
@@ -595,18 +708,24 @@ class AuthenticationManager:
         # Calculate expiration based on token type
         created_at = utc()
         if is_long_lived:
-            # Long-lived tokens expire after 10 years (no auto-renewal)
+            # Long-lived tokens expire after 1 year (no auto-renewal)
             expires_at = created_at + timedelta(days=TOKEN_LONG_LIVED_EXPIRATION)
+            jwt_expires_at = expires_at
+        elif user.role == UserRole.GUEST:
+            expires_at = created_at + timedelta(days=TOKEN_GUEST_EXPIRATION)
+            jwt_expires_at = expires_at
         else:
             # Short-lived tokens expire after 30 days (with auto-renewal on use)
             expires_at = created_at + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+            # The exp claim must carry the absolute cap, or it would cut off sliding renewals
+            jwt_expires_at = created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)
 
         # Generate JWT token
         token = self.jwt_helper.encode_token(
             user=user,
             token_id=token_id,
             token_name=name,
-            expires_at=expires_at,
+            expires_at=jwt_expires_at,
             is_long_lived=is_long_lived,
         )
 
@@ -640,8 +759,9 @@ class AuthenticationManager:
         if not token_row:
             raise InvalidDataError("Token not found")
 
-        # Check permissions - users can only revoke their own tokens unless admin
-        if token_row["user_id"] != user.user_id and user.role != UserRole.ADMIN:
+        # Check permissions - users can only revoke their own tokens
+        # unless they hold the users.manage scope
+        if token_row["user_id"] != user.user_id and not has_scope(user, Scope.USERS_MANAGE):
             raise InsufficientPermissions("You can only revoke your own tokens")
 
         await self.database.delete("auth_tokens", {"token_id": token_id})
@@ -655,9 +775,29 @@ class AuthenticationManager:
             token_id,
         )
 
+    def subscribe_user_access_revoked(self, callback: Callable[[User], None]) -> Callable[[], None]:
+        """
+        Subscribe to a user's access being withdrawn.
+
+        Fires on deliberate access withdrawal: bulk token revocation
+        (revoke_tokens_for_user), account disable, and account deletion. Revoking a
+        single token (e.g. a logout) does not fire it, so credentials bound to the
+        account survive a plain logout.
+
+        :param callback: Called with the affected user.
+        :return: Callable that removes the subscription.
+        """
+        self._access_revoked_callbacks.append(callback)
+
+        def _unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._access_revoked_callbacks.remove(callback)
+
+        return _unsubscribe
+
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
-        Revoke all auth tokens for a user.
+        Revoke all auth tokens for a user and disconnect their active connections.
 
         This is an internal method for programmatic use (e.g., when disabling guest access).
         Unlike revoke_token(), this does not require an authenticated user context.
@@ -665,38 +805,43 @@ class AuthenticationManager:
         :param user: The user whose tokens should be revoked.
         :return: Number of tokens revoked.
         """
-        token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
-        if not token_rows:
-            return 0
-
-        # Disconnect any WebSocket connections using these tokens
-        for token_row in token_rows:
-            self.webserver.disconnect_websockets_for_token(token_row["token_id"])
-
-        # Delete all tokens in one go
-        await self.database.execute(
+        cursor = await self.database.execute(
             "DELETE FROM auth_tokens WHERE user_id = :user_id",
             {"user_id": user.user_id},
         )
+        await self.database.commit()
+        self.webserver.disconnect_websockets_for_user(user.user_id)
 
-        self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
-        return len(token_rows)
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.info("Revoked %d token(s) for user '%s'", count, user.username)
+
+        # Notify even with no tokens left: subscribers may hold credentials tied to
+        # this user's access that must be withdrawn regardless.
+        self._notify_user_access_revoked(user)
+
+        return count
 
     @api_command("auth/tokens")
     async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:
         """
         Get current user's auth tokens or another user's tokens (admin only).
 
+        The last_used_at timestamp is persisted at most once per hour, so it may lag
+        actual token usage by up to an hour.
+
         :param user_id: Optional user ID to get tokens for (admin only).
-        :return: List of auth tokens.
+        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT, with an empty
+            token_hash.
         """
         current_user = get_current_user()
         if not current_user:
             return []
 
-        # If user_id is provided and different from current user, require admin
+        # If user_id is provided and different from current user,
+        # require the users.manage scope
         if user_id and user_id != current_user.user_id:
-            if current_user.role != UserRole.ADMIN:
+            if not has_scope(current_user, Scope.USERS_MANAGE):
                 return []
             target_user = await self.get_user(user_id)
             if not target_user:
@@ -705,72 +850,95 @@ class AuthenticationManager:
             target_user = current_user
 
         token_rows = await self.database.get_rows(
-            "auth_tokens", {"user_id": target_user.user_id}, limit=100
+            "auth_tokens",
+            {"user_id": target_user.user_id},
+            order_by="created_at DESC",
+            limit=TOKEN_LIST_LIMIT,
         )
-        return [AuthToken.from_dict(dict(row)) for row in token_rows]
+        return [AuthToken.from_dict({**dict(row), "token_hash": ""}) for row in token_rows]
 
-    @api_command("auth/users", required_role="admin")
+    @api_command("auth/users", required_scope=Scope.USERS_READ)
     async def list_users(self) -> list[User]:
         """
-        Get all users (admin only).
+        Get all users (requires the users.read scope).
 
-        System users are excluded from the list.
+        The Home Assistant system user is listed as well, with the service role.
 
         :return: List of user objects.
         """
         user_rows = await self.database.get_rows("users", limit=1000)
         users = []
         for row in user_rows:
-            # Skip system users
-            if row["username"] == HOMEASSISTANT_SYSTEM_USER:
-                continue
             users.append(
                 User(
                     user_id=row["user_id"],
                     username=row["username"],
-                    role=UserRole(row["role"]),
+                    role=row["role"],
                     enabled=bool(row["enabled"]),
                     created_at=datetime.fromisoformat(row["created_at"]),
                     display_name=row["display_name"],
                     avatar_url=row["avatar_url"],
                     preferences=json_loads(row["preferences"]),
                     player_filter=json_loads(row["player_filter"]),
-                    provider_filter=json_loads(row["provider_filter"]),
                 )
             )
-        return users
+        return [with_derived_provider_filter(self.mass, user) for user in users]
 
-    async def update_user_role(self, user_id: str, new_role: UserRole, admin_user: User) -> bool:
+    async def update_user_role(self, user_id: str, new_role: str, admin_user: User) -> bool:
         """
-        Update a user's role (admin only).
+        Update a user's role (requires the users.manage scope).
+
+        The live sessions of the user are closed when its role changes, so its clients
+        reconnect with the scopes of the new role.
 
         :param user_id: The user ID to update.
-        :param new_role: The new role to assign.
-        :param admin_user: The admin user performing the action.
+        :param new_role: The id of the (builtin or custom) role to assign.
+        :param admin_user: The user performing the action.
+        :raises InvalidDataError: If the role does not exist, if the user is the last enabled
+            administrator, or if the user owns music sources and the new role can not own a
+            music source (it lacks the config.providers.own scope).
         """
-        if admin_user.role != UserRole.ADMIN:
+        if not has_scope(admin_user, Scope.USERS_MANAGE):
             return False
 
+        self._ensure_role_exists(new_role)
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row:
             return False
 
         old_role = user_row["role"]
+        if new_role == old_role:
+            return True
+        # config.providers.own is the scope a member needs to manage the sources it owns. A user
+        # that owns one is not given a role without it, or it would keep the source with no way
+        # left to manage it.
+        user_with_new_role = User(user_id=user_id, username=user_row["username"], role=new_role)
+        if not has_scope(user_with_new_role, Scope.CONFIG_PROVIDERS_OWN) and own_music_sources(
+            self.mass, user_with_new_role
+        ):
+            raise InvalidDataError(
+                "This role can not own a music source.",
+                translation_key="role_can_not_own_music_sources",
+            )
+        await self._ensure_not_last_admin(user_row)
         await self.database.update(
             "users",
             {"user_id": user_id},
-            {"role": new_role.value},
+            {"role": new_role},
         )
+
+        # a session holds the User it authenticated with, so it must reconnect to get the new role
+        self.webserver.disconnect_websockets_for_user(user_id)
         self.logger.info(
             "User role changed: '%s' from '%s' to '%s' by admin '%s'",
             user_row["username"],
             old_role,
-            new_role.value,
+            new_role,
             admin_user.username,
         )
         return True
 
-    @api_command("auth/user/enable", required_role="admin")
+    @api_command("auth/user/enable", required_scope=Scope.USERS_MANAGE)
     async def enable_user(self, user_id: str) -> None:
         """
         Enable user account (admin only).
@@ -784,10 +952,12 @@ class AuthenticationManager:
         )
         self.logger.info("User account enabled (user_id=%s)", user_id)
 
-    @api_command("auth/user/disable", required_role="admin")
+    @api_command("auth/user/disable", required_scope=Scope.USERS_MANAGE)
     async def disable_user(self, user_id: str) -> None:
         """
         Disable user account (admin only).
+
+        The Home Assistant system user can not be disabled.
 
         :param user_id: The user ID.
         """
@@ -799,6 +969,12 @@ class AuthenticationManager:
         if user_id == admin_user.user_id:
             raise InvalidDataError("Cannot disable your own account")
 
+        # Look up the user before disabling (get_user hides disabled accounts)
+        user_row = await self.database.get_row("users", {"user_id": user_id})
+        if not user_row:
+            raise InvalidDataError("User not found")
+        _refuse_system_user(user_row["username"])
+
         await self.database.update(
             "users",
             {"user_id": user_id},
@@ -808,6 +984,12 @@ class AuthenticationManager:
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
 
+        # A disabled account's tokens stop authenticating, so credentials bound to its
+        # access must be withdrawn with them (they return on the next login after enable).
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
+
         self.logger.info("User account disabled (user_id=%s)", user_id)
 
     async def get_login_providers(self) -> list[dict[str, Any]]:
@@ -816,12 +998,14 @@ class AuthenticationManager:
         await self._sync_ha_oauth_provider()
 
         providers = []
-        for provider_id, provider in self.login_providers.items():
+        # a concurrent listing can add or remove the HA provider while this one awaits
+        for provider_id, provider in list(self.login_providers.items()):
             providers.append(
                 {
                     "provider_id": provider_id,
                     "provider_type": provider.provider_type.value,
                     "requires_redirect": provider.requires_redirect,
+                    "supports_remote_app": await provider.supports_remote_app(),
                 }
             )
         return providers
@@ -834,7 +1018,7 @@ class AuthenticationManager:
         provider_id: str = "builtin",
         device_name: str | None = None,
         **extra_credentials: Any,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | AuthFailure:
         """
         Authenticate user with credentials via WebSocket.
 
@@ -864,16 +1048,12 @@ class AuthenticationManager:
                 username or "<not provided>",
                 provider_id,
             )
-            return {
-                "success": False,
-                "error": auth_result.error or "Authentication failed",
-            }
+            return AuthFailure(
+                auth_result.error or "Authentication failed", auth_result.translation_key
+            )
 
         if not auth_result.user:
-            return {
-                "success": False,
-                "error": "Authentication failed: no user returned",
-            }
+            return AuthFailure("Authentication failed: no user returned")
 
         # Create short-lived access token with device name if provided
         token_name = device_name or f"WebSocket Session - {auth_result.user.username}"
@@ -896,7 +1076,7 @@ class AuthenticationManager:
                 "user_id": auth_result.user.user_id,
                 "username": auth_result.user.username,
                 "display_name": auth_result.user.display_name,
-                "role": auth_result.user.role.value,
+                "role": auth_result.user.role,
             },
         }
 
@@ -906,7 +1086,8 @@ class AuthenticationManager:
         Get list of available authentication providers.
 
         Returns information about all available login providers including
-        whether they require OAuth redirect flow.
+        whether they require OAuth redirect flow and whether a sign-in can
+        return to the remote app.
         """
         return await self.get_login_providers()
 
@@ -915,6 +1096,9 @@ class AuthenticationManager:
         self,
         provider_id: str,
         return_url: str | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        redirect_target: str = "server",
     ) -> dict[str, str | None]:
         """
         Get OAuth authorization URL for authentication.
@@ -924,52 +1108,208 @@ class AuthenticationManager:
 
         :param provider_id: The provider ID (e.g., "hass").
         :param return_url: URL to redirect to after OAuth completes.
-        :return: Dictionary with authorization_url.
+        :param code_challenge: PKCE code challenge (unpadded base64url SHA-256) of the
+            client's code verifier, which auth/exchange checks; only with redirect_target "app".
+        :param code_challenge_method: Method of code_challenge, only "S256" is supported.
+        :param redirect_target: Where the browser returns to: "server" (default), or "app"
+            for the remote app, which is only allowed over Remote Access, requires a
+            code_challenge and is completed with auth/exchange.
+        :return: Dictionary with authorization_url, the state of the sign-in and when it
+            expires (ISO 8601), or authorization_url None plus an error when the request is
+            invalid or the provider does not support it.
+        :raises RateLimited: If too many sign-ins are pending.
         """
-        auth_url = await self.get_authorization_url(provider_id, return_url)
-        if not auth_url:
+        if return_url:
+            is_valid, _ = is_allowed_redirect_url(
+                return_url,
+                base_url=self.webserver.base_url,
+                external_url=self.webserver.external_url,
+            )
+            if not is_valid:
+                return {"authorization_url": None, "error": "Invalid return_url"}
+        if (code_challenge or code_challenge_method) and (
+            code_challenge_method != "S256" or not PKCE_CHALLENGE_RE.fullmatch(code_challenge or "")
+        ):
+            return {"authorization_url": None, "error": "Invalid code_challenge"}
+        if redirect_target not in ("server", "app"):
+            return {"authorization_url": None, "error": "Invalid redirect_target"}
+        if code_challenge and redirect_target != "app":
+            return {
+                "authorization_url": None,
+                "error": "code_challenge is only supported with redirect_target app",
+            }
+
+        client = self._get_calling_client()
+        transport = client.auth_transport if client else AuthTransport.DIRECT
+        if redirect_target == "app":
+            if transport is not AuthTransport.REMOTE or not code_challenge:
+                return {
+                    "authorization_url": None,
+                    "error": "redirect_target app requires Remote Access and a code_challenge",
+                }
+            provider = self.login_providers.get(provider_id)
+            if not provider or not await provider.supports_remote_app():
+                return {
+                    "authorization_url": None,
+                    "error": "Provider does not support the remote app",
+                }
+
+        started = await self.get_authorization_url(
+            provider_id,
+            return_url,
+            transport=transport,
+            request_host=client.request_host if client else None,
+            redirect_target=cast("RedirectTarget", redirect_target),
+            code_challenge=code_challenge,
+        )
+        if not started:
             return {
                 "authorization_url": None,
                 "error": "Provider does not support OAuth or does not exist",
             }
-
+        auth_url, pending = started
         return {
             "authorization_url": auth_url,
+            "state": pending.state,
+            "expires_at": (
+                utc() + timedelta(seconds=max(0.0, pending.expires_at - time.monotonic()))
+            ).isoformat(),
         }
 
     async def get_authorization_url(
-        self, provider_id: str, return_url: str | None = None
-    ) -> str | None:
+        self,
+        provider_id: str,
+        return_url: str | None = None,
+        *,
+        transport: AuthTransport = AuthTransport.DIRECT,
+        request_host: str | None = None,
+        redirect_target: RedirectTarget = "server",
+        code_challenge: str | None = None,
+    ) -> tuple[str, PendingLogin] | None:
         """
-        Get OAuth authorization URL for a provider.
+        Start a sign-in with a redirect provider and return its authorization URL.
 
         :param provider_id: The provider ID.
-        :param return_url: Optional URL to redirect to after successful login.
+        :param return_url: Optional (validated) URL to redirect to after successful login.
+        :param transport: How the client that starts the sign-in reaches the server.
+        :param request_host: The host (and any port) the client used to reach the server.
+        :param redirect_target: Where the browser returns to; "app" must be validated first.
+        :param code_challenge: The client's (validated) PKCE S256 code challenge, if any.
+        :return: The authorization URL and the started sign-in, or None when the provider
+            does not exist, needs no redirect or is not reachable.
+        :raises RateLimited: If too many sign-ins are pending.
         """
         provider = self.login_providers.get(provider_id)
         if not provider or not provider.requires_redirect:
             return None
 
-        # Build callback redirect_uri
-        redirect_uri = f"{self.webserver.base_url}/auth/callback?provider_id={provider_id}"
-        return await provider.get_authorization_url(redirect_uri, return_url)
+        callback_base_url = self.webserver.get_auth_callback_base(
+            transport,
+            redirect_target=redirect_target,
+            return_url=return_url,
+            request_host=request_host,
+        )
+        if transport is AuthTransport.REMOTE and redirect_target == "app":
+            # the provider is found from the state, as the app callback serves every provider
+            redirect_uri = f"{callback_base_url}/auth/callback/"
+        else:
+            redirect_uri = f"{callback_base_url}/auth/callback?provider_id={provider_id}"
+        pending = self.pending_logins.start(
+            provider_id,
+            transport,
+            redirect_uri,
+            redirect_target=redirect_target,
+            return_url=return_url,
+            client_code_challenge=code_challenge,
+            idp_code_verifier=secrets.token_urlsafe(64),
+        )
+        auth_url = None
+        try:
+            auth_url = await provider.build_authorization_url(pending)
+        finally:
+            if not auth_url:
+                self.pending_logins.pop(pending.state)
+        return (auth_url, pending) if auth_url else None
 
-    async def handle_oauth_callback(
-        self, provider_id: str, code: str, state: str, redirect_uri: str
-    ) -> AuthResult:
+    async def handle_oauth_callback(self, provider_id: str, code: str, state: str) -> AuthResult:
         """
         Handle OAuth callback.
 
         :param provider_id: The provider ID.
         :param code: OAuth authorization code.
         :param state: OAuth state parameter.
-        :param redirect_uri: The callback URL.
         """
         provider = self.login_providers.get(provider_id)
         if not provider:
             return AuthResult(success=False, error="Invalid provider")
 
-        return await provider.handle_oauth_callback(code, state, redirect_uri)
+        pending = self.pending_logins.pop(state)
+        # a sign-in that returns to the app is completed by the app itself (auth/exchange)
+        if not pending or pending.provider_id != provider_id or pending.redirect_target != "server":
+            return AuthResult(success=False, error="Invalid or expired state parameter")
+        if not AUTH_CODE_RE.fullmatch(code):
+            return AuthResult(success=False, error="Invalid authorization code")
+        try:
+            user = await provider.complete_authorization(pending, {"code": code})
+        except AuthenticationFailed as err:
+            return AuthResult(success=False, error=str(err))
+        return AuthResult(success=True, user=user, return_url=pending.return_url)
+
+    @api_command("auth/exchange", authenticated=False)
+    async def exchange_authorization_code(
+        self, state: str, code: str, code_verifier: str, device_name: str | None = None
+    ) -> dict[str, Any] | AuthFailure:
+        """
+        Complete a sign-in that returned to the remote app, for an access token.
+
+        :param state: The state of the sign-in, as returned by auth/authorization_url.
+        :param code: The authorization code the browser returned with.
+        :param code_verifier: The PKCE code verifier of the code_challenge the sign-in was
+            started with.
+        :param device_name: Optional device name for the token (e.g., "iPhone 15").
+        :return: The same result as auth/login on success, else success False with an error
+            and its translation_key.
+        """
+        rate_limit_key, key_is_exclusive = _client_rate_limit_key()
+        allowed, remaining_delay = await self._auth_exchange_rate_limiter.check_rate_limit(
+            rate_limit_key
+        )
+        if not allowed:
+            self.logger.warning(
+                "Sign-in exchange throttled (client=%s). %d seconds remaining.",
+                rate_limit_key,
+                remaining_delay,
+            )
+            return AuthFailure(
+                f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                RateLimited.translation_key,
+            )
+
+        try:
+            user = await self._complete_app_sign_in(
+                self.pending_logins.pop(state), code, code_verifier
+            )
+        except AuthenticationFailed as err:
+            await self._auth_exchange_rate_limiter.record_failed_attempt(rate_limit_key)
+            self.logger.warning("Sign-in exchange failed: %s", err)
+            return AuthFailure(str(err), err.translation_key, err.translation_args)
+        if key_is_exclusive:
+            await self._auth_exchange_rate_limiter.clear_attempts(rate_limit_key)
+
+        token = await self.create_token(
+            user, is_long_lived=False, name=device_name or f"WebSocket Session - {user.username}"
+        )
+        self.logger.info("User '%s' signed in through the remote app", user.username)
+        return {
+            "success": True,
+            "access_token": token,
+            "user": {
+                "user_id": user.user_id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "role": user.role,
+            },
+        }
 
     @api_command("auth/token/create")
     async def create_long_lived_token(self, name: str, user_id: str | None = None) -> str:
@@ -977,10 +1317,12 @@ class AuthenticationManager:
         Create a new long-lived access token for current user or another user (admin only).
 
         Long-lived tokens are intended for external integrations and API access.
-        They expire after 10 years and do NOT auto-renew on use.
+        They expire after 1 year and do NOT auto-renew on use.
 
         Short-lived tokens (for regular user sessions) are only created during login
         and auto-renew on each use (sliding 30-day expiration window).
+
+        Long-lived tokens cannot be created for guest accounts.
 
         :param name: The name/description for the token (e.g., "Home Assistant", "Mobile App").
         :param user_id: Optional user ID to create token for (admin only).
@@ -990,11 +1332,12 @@ class AuthenticationManager:
         if not current_user:
             raise AuthenticationRequired("Not authenticated")
 
-        # If user_id is provided and different from current user, require admin
+        # If user_id is provided and different from current user,
+        # require the users.manage scope
         if user_id and user_id != current_user.user_id:
-            if current_user.role != UserRole.ADMIN:
+            if not has_scope(current_user, Scope.USERS_MANAGE):
                 raise InsufficientPermissions(
-                    "Admin access required to create tokens for other users"
+                    "The users.manage scope is required to create tokens for other users"
                 )
             target_user = await self.get_user(user_id)
             if not target_user:
@@ -1002,12 +1345,16 @@ class AuthenticationManager:
         else:
             target_user = current_user
 
+        # Guest access is temporary by design, deny tokens that would outlive it
+        if target_user.role == UserRole.GUEST:
+            raise InsufficientPermissions("Long-lived tokens cannot be created for guest accounts")
+
         # Create a long-lived token (only long-lived tokens can be created via this command)
         token = await self.create_token(target_user, name, is_long_lived=True)
         self.logger.info("Created long-lived token '%s' for user '%s'", name, target_user.username)
         return token
 
-    @api_command("auth/user/create", required_role="admin")
+    @api_command("auth/user/create", required_scope=Scope.USERS_MANAGE)
     async def create_user_with_api(
         self,
         username: str,
@@ -1016,32 +1363,25 @@ class AuthenticationManager:
         display_name: str | None = None,
         avatar_url: str | None = None,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new user with built-in authentication (admin only).
 
-        :param username: The username (minimum 2 characters).
+        :param username: The username (minimum 2 characters, must not be in use).
         :param password: The password (minimum 8 characters).
-        :param role: User role - "admin" or "user" (default: "user").
+        :param role: The id of the (builtin or custom) role to assign (default: "user").
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param player_filter: Optional list of player IDs user has access to.
-        :param provider_filter: Optional list of provider instance IDs user has access to.
         :return: Created user object.
         """
         # Validation
-        if not username or len(username) < 2:
-            raise InvalidDataError("Username must be at least 2 characters")
+        await self._ensure_valid_username(username)
 
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")
 
-        # Validate role
-        try:
-            user_role = UserRole(role)
-        except ValueError as err:
-            raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
+        self._ensure_role_exists(role)
 
         # Get built-in provider
         builtin_provider = self.login_providers.get("builtin")
@@ -1052,9 +1392,8 @@ class AuthenticationManager:
         user = await builtin_provider.create_user_with_password(
             username,
             password,
-            role=user_role,
+            role=role,
             player_filter=player_filter,
-            provider_filter=provider_filter,
         )
 
         # Update optional fields if provided
@@ -1068,10 +1407,12 @@ class AuthenticationManager:
         self.logger.info("User created by admin: %s (role: %s)", username, role)
         return user
 
-    @api_command("auth/user/delete", required_role="admin")
+    @api_command("auth/user/delete", required_scope=Scope.USERS_MANAGE)
     async def delete_user(self, user_id: str) -> None:
         """
         Delete user account (admin only).
+
+        The Home Assistant system user can not be deleted.
 
         :param user_id: The user ID.
         """
@@ -1087,13 +1428,34 @@ class AuthenticationManager:
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row:
             raise InvalidDataError("User not found")
+        _refuse_system_user(user_row["username"])
 
-        # Delete user from database
+        # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
+        # key enforcement is off on our connections, so remove those rows here.
+        for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+            await self.database.delete(table, {"user_id": user_id})
+        await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
+        await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
+        # the music sources this user owned or was given access to outlive it
+        self.mass.config.release_user_sources(user_id)
+
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        # The token rows are removed directly rather than through revoke_tokens_for_user,
+        # so nothing else announces the withdrawal for credentials bound to this user.
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
+
+        # the playlists it owned or was given access to outlive it as well; this comes last
+        # so the sockets of the user are gone before the deletion first awaits
+        await self.mass.music.playlists.release_user_playlists(user_id)
+        # its favorites and dislikes do not outlive it
+        await self.mass.music.favorites.release_user(user_id)
 
         self.logger.info(
             "User '%s' deleted by admin '%s'",
@@ -1107,29 +1469,224 @@ class AuthenticationManager:
         current_user_obj = get_current_user()
         if not current_user_obj:
             raise AuthenticationRequired("Not authenticated")
-        return current_user_obj
+        return with_derived_provider_filter(self.mass, current_user_obj)
+
+    @api_command("auth/scopes")
+    async def get_role_scopes(self) -> dict[str, list[str]]:
+        """Get the scopes granted by each of the builtin and custom user roles, by role id."""
+        return {
+            str(role.role_id): sorted(str(scope) for scope in role.scopes)
+            for role in await self.get_roles()
+        }
+
+    @api_command("auth/roles")
+    async def get_roles(self) -> list[Role]:
+        """Get all user roles: the builtin roles first, then the custom roles by name."""
+        builtin_roles = [
+            Role(role_id=role_id, name=name, scopes=sorted(ROLE_SCOPES[role_id]), builtin=True)
+            for role_id, name in BUILTIN_ROLE_NAMES.items()
+        ]
+        custom_roles = sorted(self._custom_roles.values(), key=lambda role: role.name.casefold())
+        return [*builtin_roles, *custom_roles]
+
+    @api_command("auth/role/create", required_scope=Scope.USERS_MANAGE)
+    async def create_role(self, name: str, scopes: list[Scope]) -> Role:
+        """
+        Create a custom user role (requires the users.manage scope).
+
+        A custom role holds the scopes of a guest and those a granted scope is of no use
+        without as well, and is never granted the scopes that stay with the admin role.
+
+        :param name: The name of the role, unique among all roles.
+        :param scopes: The scopes the role grants.
+        :raises InvalidDataError: If the name is invalid or taken, or if a custom role can
+            not be granted one of the scopes.
+        """
+        role = Role(
+            role_id=secrets.token_urlsafe(32),
+            name=self._validate_role_name(name),
+            scopes=custom_role_scopes(scopes),
+        )
+        await self.database.insert(
+            "roles",
+            {
+                "role_id": role.role_id,
+                "name": role.name,
+                "scopes": json_dumps(role.scopes),
+                "created_at": utc().isoformat(),
+            },
+        )
+        await self._load_custom_roles()
+        self.logger.info("Custom role '%s' created", role.name)
+        return role
+
+    @api_command("auth/role/update", required_scope=Scope.USERS_MANAGE)
+    async def update_role(
+        self, role_id: str, name: str | None = None, scopes: list[Scope] | None = None
+    ) -> Role:
+        """
+        Update a custom user role (requires the users.manage scope).
+
+        When its scopes change, the live sessions of the users holding the role are closed,
+        so their clients reconnect with the new scopes.
+
+        :param role_id: The id of the custom role.
+        :param name: The new name of the role (optional).
+        :param scopes: The scopes the role grants from now on (optional).
+        :raises InvalidDataError: If the role is builtin or does not exist, if the name is
+            invalid or taken, or if a custom role can not be granted one of the scopes.
+        """
+        role = self._get_custom_role(role_id)
+        updated_role = Role(
+            role_id=role_id,
+            name=role.name if name is None else self._validate_role_name(name, role_id),
+            scopes=role.scopes if scopes is None else custom_role_scopes(scopes),
+        )
+        changes: dict[str, Any] = {"name": updated_role.name}
+        # the stored scopes only change when new ones are given, so a rename keeps the
+        # scopes of a newer version that this one ignores
+        if scopes is not None:
+            changes["scopes"] = json_dumps(updated_role.scopes)
+        await self.database.update("roles", {"role_id": role_id}, changes)
+        await self._load_custom_roles()
+
+        if updated_role.scopes != role.scopes:
+            # the new scopes apply right away, but a client holds its own copy of the scopes
+            # of each role, which it only reloads when it reconnects
+            for row in await self.database.get_rows("users", {"role": role_id}, limit=0):
+                self.webserver.disconnect_websockets_for_user(row["user_id"])
+        self.logger.info("Custom role '%s' updated", updated_role.name)
+        return updated_role
+
+    @api_command("auth/role/delete", required_scope=Scope.USERS_MANAGE)
+    async def delete_role(self, role_id: str) -> None:
+        """
+        Delete a custom user role (requires the users.manage scope).
+
+        :param role_id: The id of the custom role.
+        :raises InvalidDataError: If the role is builtin or does not exist, or if a user
+            (a disabled one included) still holds it.
+        """
+        role = self._get_custom_role(role_id)
+        if await self.database.get_row("users", {"role": role_id}):
+            raise InvalidDataError(
+                f"The role {role.name} is still assigned to one or more users",
+                translation_key="role_in_use",
+            )
+        await self.database.delete("roles", {"role_id": role_id})
+        await self._load_custom_roles()
+        self.logger.info("Custom role '%s' deleted", role.name)
 
     async def update_user_filters(
         self,
         target_user: User,
         player_filter: list[str] | None,
-        provider_filter: list[str] | None,
     ) -> User:
-        """Update user player and provider filters (helper method)."""
-        updates = {}
-        if player_filter is not None:
-            updates["player_filter"] = json_dumps(player_filter)
-        if provider_filter is not None:
-            updates["provider_filter"] = json_dumps(provider_filter)
+        """Update the player access filter of a user (helper method)."""
+        if player_filter is None:
+            return target_user
+        # the lock the automatic rewrites take as well, so a player that is being removed
+        # cannot overwrite the filter an admin just saved
+        async with self._user_filter_lock:
+            await self.database.update(
+                "users",
+                {"user_id": target_user.user_id},
+                {"player_filter": json_dumps(player_filter)},
+            )
+            self.webserver.update_active_user_filters(
+                target_user.user_id, player_filter=player_filter
+            )
+        # Refresh target user to get updated filters
+        refreshed_user = await self.get_user(target_user.user_id)
+        if not refreshed_user:
+            raise InvalidDataError("Failed to refresh user after filter update")
+        return refreshed_user
 
-        if updates:
-            await self.database.update("users", {"user_id": target_user.user_id}, updates)
-            # Refresh target user to get updated filters
-            refreshed_user = await self.get_user(target_user.user_id)
-            if not refreshed_user:
-                raise InvalidDataError("Failed to refresh user after filter update")
-            return refreshed_user
-        return target_user
+    async def remove_from_user_filters(self, player_ids: Collection[str] = ()) -> None:
+        """
+        Remove the given players from the access filters of all users.
+
+        Call this when a player is permanently removed, so no user is left with an access
+        filter that points at something that no longer exists.
+
+        :param player_ids: IDs of the removed players.
+        """
+        await self._rewrite_user_filters(
+            keep_player=(lambda x: x not in player_ids) if player_ids else None,
+        )
+
+    async def cleanup_user_shortcuts(
+        self,
+        rewrite: Callable[[str], Awaitable[str | None]],
+    ) -> None:
+        """
+        Rewrite or remove sidebar shortcuts from all users' preferences.
+
+        :param rewrite: Called for each shortcut URI. Return the URI to keep it,
+            a different URI to rewrite it, or None to drop it.
+        """
+        async with self._user_filter_lock:
+            for row in await self.database.get_rows("users", limit=0):
+                prefs: dict[str, Any] = json_loads(row["preferences"]) if row["preferences"] else {}
+                shortcuts: list[str] = prefs.get(PREF_SIDEBAR_SHORTCUTS, [])
+                if not shortcuts:
+                    continue
+                remaining: list[str] = []
+                dropped: list[str] = []
+                rewritten: list[str] = []
+                for uri in shortcuts:
+                    new_uri = await rewrite(uri)
+                    if new_uri is None:
+                        dropped.append(uri)
+                    elif new_uri != uri:
+                        remaining.append(new_uri)
+                        rewritten.append(f"{uri} -> {new_uri}")
+                    else:
+                        remaining.append(uri)
+                if remaining == shortcuts:
+                    continue
+                prefs[PREF_SIDEBAR_SHORTCUTS] = remaining
+                await self.database.update(
+                    "users",
+                    {"user_id": row["user_id"]},
+                    {"preferences": json_dumps(prefs)},
+                )
+                if dropped:
+                    LOGGER.info(
+                        "Removed shortcuts from user '%s': %s",
+                        row["username"],
+                        ", ".join(dropped),
+                    )
+                if rewritten:
+                    LOGGER.info(
+                        "Rewrote shortcuts for user '%s': %s",
+                        row["username"],
+                        ", ".join(rewritten),
+                    )
+
+    async def replace_player_in_user_filters(
+        self,
+        old_player_id: str,
+        new_player_id: str,
+        removed_player_ids: Collection[str] = (),
+    ) -> None:
+        """
+        Point the access filters of all users at the replacement of a removed player.
+
+        Call this when a player is automatically replaced by another one, so a user that
+        is restricted to the old player follows the replacement instead of silently
+        ending up with access to every player.
+
+        :param old_player_id: ID of the player that is replaced.
+        :param new_player_id: ID of the player that takes its place, must not be one of
+            the removed players.
+        :param removed_player_ids: IDs of all players whose config is removed, which
+            normally includes the replaced player itself.
+        """
+        await self._rewrite_user_filters(
+            keep_player=(lambda x: x not in removed_player_ids) if removed_player_ids else None,
+            map_player=lambda x: new_player_id if x == old_player_id else x,
+        )
 
     @api_command("auth/user/update")
     async def update_user_profile(
@@ -1142,22 +1699,21 @@ class AuthenticationManager:
         role: str | None = None,
         preferences: dict[str, Any] | None = None,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Update user profile information.
 
         Users can update their own profile. Admins can update any user including role and password.
+        The username, role and password of the Home Assistant system user can not be changed.
 
         :param user_id: User ID to update (optional, defaults to current user).
-        :param username: New username (optional).
+        :param username: New username (optional, minimum 2 characters, must not be in use).
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
-        :param role: New role - "admin" or "user" (optional, set by admin only).
+        :param role: The id of the (builtin or custom) role to assign (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
-        :param provider_filter: List of provider instance IDs user has access to (set by admin only, optional).
         :return: Updated user object.
         """
         current_user_obj = get_current_user()
@@ -1165,11 +1721,13 @@ class AuthenticationManager:
             raise AuthenticationRequired("Not authenticated")
 
         # Determine target user
-        is_admin = current_user_obj.role == UserRole.ADMIN
+        may_manage_users = has_scope(current_user_obj, Scope.USERS_MANAGE)
         if user_id and user_id != current_user_obj.user_id:
-            # Updating another user - requires admin
-            if not is_admin:
-                raise InsufficientPermissions("Admin access required")
+            # Updating another user - requires the users.manage scope
+            if not may_manage_users:
+                raise InsufficientPermissions(
+                    "The users.manage scope is required to update other users"
+                )
             target_user = await self.get_user(user_id)
             if not target_user:
                 raise InvalidDataError("User not found")
@@ -1177,17 +1735,19 @@ class AuthenticationManager:
             # Updating own profile
             target_user = current_user_obj
 
-        # Update role (admin only)
+        if username is not None or password or role:
+            _refuse_system_user(target_user.username)
+        if username is not None:
+            await self._ensure_valid_username(username, target_user.user_id)
+
+        # Update role (requires the users.manage scope)
         if role:
-            if not is_admin:
-                raise InsufficientPermissions("Only admins can update user roles")
+            if not may_manage_users:
+                raise InsufficientPermissions(
+                    "The users.manage scope is required to update user roles"
+                )
 
-            try:
-                new_role = UserRole(role)
-            except ValueError as err:
-                raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
-
-            success = await self.update_user_role(target_user.user_id, new_role, current_user_obj)
+            success = await self.update_user_role(target_user.user_id, role, current_user_obj)
             if not success:
                 raise InvalidDataError("Failed to update role")
 
@@ -1213,19 +1773,21 @@ class AuthenticationManager:
         if preferences is not None:
             target_user = await self.update_user_preferences(target_user, preferences)
 
-        # Update player_filter and provider_filter (admin only)
-        if player_filter is not None or provider_filter is not None:
-            if not is_admin:
-                raise InsufficientPermissions("Only admins can update player/provider filters")
-            target_user = await self.update_user_filters(
-                target_user, player_filter, provider_filter
-            )
+        # Update player_filter (requires the users.manage scope)
+        if player_filter is not None:
+            if not may_manage_users:
+                raise InsufficientPermissions(
+                    "The users.manage scope is required to update player filters"
+                )
+            target_user = await self.update_user_filters(target_user, player_filter)
 
         # Update password if provided
         if password:
-            await self._update_profile_password(target_user, password, is_admin, current_user_obj)
+            await self._update_profile_password(
+                target_user, password, may_manage_users, current_user_obj
+            )
 
-        return target_user
+        return with_derived_provider_filter(self.mass, target_user)
 
     @api_command("auth/logout")
     async def logout(self) -> None:
@@ -1255,7 +1817,7 @@ class AuthenticationManager:
         """
         Get current user's linked authentication providers.
 
-        :return: List of provider links.
+        :return: List of provider links, the builtin link with an empty provider_user_id.
         """
         user = get_current_user()
         if not user:
@@ -1264,9 +1826,13 @@ class AuthenticationManager:
         # Get provider links from database
         rows = await self.database.get_rows("user_auth_providers", {"user_id": user.user_id})
         providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
+        for provider in providers:
+            # the builtin link stores the password hash as its provider user id
+            if provider.provider_type == AuthProviderType.BUILTIN:
+                provider.provider_user_id = ""
         return [p.to_dict() for p in providers]
 
-    @api_command("auth/user/unlink_provider", required_role="admin")
+    @api_command("auth/user/unlink_provider", required_scope=Scope.USERS_MANAGE)
     async def unlink_provider(self, user_id: str, provider_type: str) -> bool:
         """
         Unlink authentication provider from user (admin only).
@@ -1387,8 +1953,30 @@ class AuthenticationManager:
         row = await cursor.fetchone()
         return str(row["code"]) if row else None
 
+    async def get_join_code_expiry(self, code: str, user: User | None = None) -> datetime | None:
+        """
+        Get the expiry datetime for an active join code.
+
+        :param code: The join code to look up.
+        :param user: Optional user that must own the join code.
+        :return: The expiry datetime if the code is active, None otherwise.
+        """
+        query = """
+            SELECT expires_at FROM join_codes
+            WHERE code = :code
+            AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
+            """
+        params: dict[str, Any] = {"code": code.upper(), "now": utc().isoformat()}
+        if user is not None:
+            query += "AND user_id = :user_id "
+            params["user_id"] = user.user_id
+        cursor = await self.database.execute(query + "LIMIT 1", params)
+        row = await cursor.fetchone()
+        return datetime.fromisoformat(str(row["expires_at"])) if row else None
+
     @api_command("auth/join_code/exchange", authenticated=False)
-    async def exchange_join_code(self, code: str) -> dict[str, Any]:
+    async def exchange_join_code(self, code: str) -> dict[str, Any] | AuthFailure:
         """
         Exchange a join code for an access token (public API).
 
@@ -1398,13 +1986,24 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        token = await self._exchange_join_code(code)
+        rate_limit_key, key_is_exclusive = _client_rate_limit_key()
+        async with self._join_code_exchange_lock:
+            if throttled := await self._check_join_code_rate_limit(rate_limit_key):
+                return throttled
 
-        if not token:
-            return {
-                "success": False,
-                "error": "Invalid or expired join code",
-            }
+            token = await self._exchange_join_code(code)
+
+            if not token:
+                await self._join_code_rate_limiter.record_failed_attempt(rate_limit_key)
+                await self._join_code_global_rate_limiter.record_failed_attempt(
+                    JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
+                )
+                return AuthFailure("Invalid or expired join code", "join_code_invalid")
+
+            # A bucket is only cleared when it belongs to one caller alone, so presenting a
+            # valid code never lifts the throttle for anyone else.
+            if key_is_exclusive:
+                await self._join_code_rate_limiter.clear_attempts(rate_limit_key)
 
         # Decode token to get user info
         try:
@@ -1419,12 +2018,9 @@ class AuthenticationManager:
                 },
             }
         except pyjwt.InvalidTokenError:
-            return {
-                "success": False,
-                "error": "Failed to create access token",
-            }
+            return AuthFailure("Failed to create access token")
 
-    @api_command("auth/join_codes", required_role="admin")
+    @api_command("auth/join_codes", required_scope=Scope.USERS_MANAGE)
     async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
         """
         List join codes, optionally filtered by user (admin only).
@@ -1436,7 +2032,7 @@ class AuthenticationManager:
         rows = await self.database.get_rows("join_codes", filter_args, limit=100)
         return [dict(row) for row in rows]
 
-    @api_command("auth/join_code/revoke", required_role="admin")
+    @api_command("auth/join_code/revoke", required_scope=Scope.USERS_MANAGE)
     async def revoke_join_code(self, code_id: str) -> None:
         """
         Revoke a specific join code (admin only).
@@ -1510,6 +2106,7 @@ class AuthenticationManager:
                 avatar_url TEXT,
                 preferences json NOT NULL DEFAULT '{}',
                 player_filter json NOT NULL DEFAULT '[]',
+                -- no longer read, kept only to avoid a schema bump
                 provider_filter json NOT NULL DEFAULT '[]'
             )
             """
@@ -1558,6 +2155,17 @@ class AuthenticationManager:
                 last_used_at TEXT,
                 device_name TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """
+        )
+        # Custom user roles (the builtin roles are defined in code and never stored)
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS roles (
+                role_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                scopes json NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -1677,9 +2285,14 @@ class AuthenticationManager:
                 break
 
         if ha_provider:
-            # Get URL from the HA provider config
-            ha_url = ha_provider.config.get_value("url")
-            assert isinstance(ha_url, str)
+            ha_provider = cast("HomeAssistantProvider", ha_provider)
+            ha_url = ha_provider.url
+            if not ha_url:
+                self.logger.warning(
+                    "Home Assistant provider has no URL configured, "
+                    "Home Assistant OAuth login is not available"
+                )
+                return
             ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
             self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
                 self.mass, "homeassistant", ha_config
@@ -1705,9 +2318,16 @@ class AuthenticationManager:
         if ha_provider:
             # HA provider exists and is available - ensure OAuth provider is registered
             if "homeassistant" not in self.login_providers:
-                # Get URL from the HA provider config
-                ha_url = ha_provider.config.get_value("url")
-                assert isinstance(ha_url, str)
+                ha_provider = cast("HomeAssistantProvider", ha_provider)
+                ha_url = ha_provider.url
+                if not ha_url:
+                    # missing URL must never break the login providers endpoint,
+                    # simply leave the HA OAuth provider unregistered
+                    self.logger.debug(
+                        "Home Assistant provider has no URL configured, "
+                        "Home Assistant OAuth login is not available"
+                    )
+                    return
                 ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
                 self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
                     self.mass, "homeassistant", ha_config
@@ -1726,6 +2346,208 @@ class AuthenticationManager:
         user_rows = await self.database.get_rows("users", limit=10)
         return any(row["username"] != HOMEASSISTANT_SYSTEM_USER for row in user_rows)
 
+    async def _migrate_system_user_role(self) -> None:
+        """Migrate the Home Assistant system user of pre-existing installs to the service role."""
+        user_row = await self.database.get_row(
+            "users", {"username": normalize_username(HOMEASSISTANT_SYSTEM_USER)}
+        )
+        if user_row and user_row["role"] != UserRole.SERVICE.value:
+            await self.database.update(
+                "users", {"user_id": user_row["user_id"]}, {"role": UserRole.SERVICE.value}
+            )
+            self.logger.info(
+                "Updated Home Assistant system user role to %s", UserRole.SERVICE.value
+            )
+
+    async def _load_custom_roles(self) -> None:
+        """Load the custom roles from the database, without scopes a custom role can not hold."""
+        custom_roles: dict[str, Role] = {}
+        for row in await self.database.get_rows("roles", limit=0):
+            try:
+                stored_values = {str(value) for value in json_loads(row["scopes"])}
+            except ValueError, TypeError:
+                # the role stays listed, so an admin can still give it its scopes again
+                self.logger.warning("Custom role '%s' has unreadable scopes", row["name"])
+                stored_values = set()
+            # an unknown scope (of a newer version) or one a custom role may not hold
+            # grants nothing, so only that scope is dropped instead of the entire role
+            if refused := {v for v in stored_values if Scope(v) in CUSTOM_ROLE_FORBIDDEN_SCOPES}:
+                self.logger.warning(
+                    "Ignoring scopes %s of custom role '%s'",
+                    ", ".join(sorted(refused)),
+                    row["name"],
+                )
+            custom_roles[row["role_id"]] = Role(
+                role_id=row["role_id"],
+                name=row["name"],
+                scopes=custom_role_scopes(Scope(value) for value in stored_values - refused),
+            )
+        self._custom_roles = custom_roles
+        set_custom_role_scopes({role.role_id: role.scopes for role in custom_roles.values()})
+
+    def _get_custom_role(self, role_id: str) -> Role:
+        """Return the custom role with the given id, raise for a builtin or unknown role."""
+        if role_id in ROLE_SCOPES:
+            raise InvalidDataError(
+                f"The builtin role {role_id} can not be changed or removed",
+                translation_key="builtin_role_readonly",
+            )
+        if role := self._custom_roles.get(role_id):
+            return role
+        raise InvalidDataError(f"Unknown role: {role_id}", translation_key="role_not_found")
+
+    def _ensure_role_exists(self, role_id: str) -> None:
+        """Raise when neither a builtin nor a custom role has the given id."""
+        if role_id not in ROLE_SCOPES and role_id not in self._custom_roles:
+            raise InvalidDataError(f"Unknown role: {role_id}", translation_key="role_not_found")
+
+    def _validate_role_name(self, name: str, role_id: str | None = None) -> str:
+        """
+        Return the given role name without surrounding whitespace, raise if a role can not have it.
+
+        :param name: The name to validate.
+        :param role_id: The id of the custom role the name is for, None for a new role.
+        """
+        name = name.strip()
+        if not name or len(name) > ROLE_NAME_MAX_LENGTH:
+            raise InvalidDataError(
+                f"A role name must be between 1 and {ROLE_NAME_MAX_LENGTH} characters long",
+                translation_key="role_name_invalid",
+                translation_args=[ROLE_NAME_MAX_LENGTH],
+            )
+        taken = {role.name for role in self._custom_roles.values() if role.role_id != role_id}
+        taken.update(ROLE_SCOPES, BUILTIN_ROLE_NAMES.values())
+        if name.casefold() in {taken_name.casefold() for taken_name in taken}:
+            raise InvalidDataError(
+                f"A role named {name} already exists", translation_key="role_name_taken"
+            )
+        return name
+
+    async def _ensure_valid_username(self, username: str, user_id: str | None = None) -> None:
+        """
+        Raise when the given username is too short, reserved or held by another user.
+
+        A disabled user still holds its name, and a user can always keep its own.
+
+        :param username: The username to check.
+        :param user_id: The id of the user the name is for, None for a new user.
+        """
+        username = normalize_username(username)
+        user_row = await self.database.get_row("users", {"username": username})
+        if user_row and user_row["user_id"] == user_id:
+            return
+        if len(username) < USERNAME_MIN_LENGTH:
+            raise InvalidDataError(
+                f"Username must be at least {USERNAME_MIN_LENGTH} characters",
+                translation_key="username_too_short",
+                translation_args=[USERNAME_MIN_LENGTH],
+            )
+        if user_row or username == HOMEASSISTANT_SYSTEM_USER:
+            raise InvalidDataError(
+                f"The username {username} is already in use", translation_key="username_taken"
+            )
+
+    async def _ensure_not_last_admin(self, user_row: Mapping[str, Any]) -> None:
+        """
+        Raise when the given user is the last enabled administrator.
+
+        :param user_row: The users row of the user that is about to lose its admin rights.
+        """
+        if user_row["role"] != UserRole.ADMIN or not user_row["enabled"]:
+            return
+        if not await self.database.get_count_from_query(
+            "SELECT user_id FROM users WHERE role = :role AND enabled = 1 AND user_id != :user_id",
+            {"role": UserRole.ADMIN.value, "user_id": user_row["user_id"]},
+        ):
+            raise InvalidDataError(
+                "Music Assistant needs at least one enabled administrator",
+                translation_key="last_admin",
+            )
+
+    async def _prune_orphaned_user_rows(self) -> None:
+        """Drop rows in the user-linked tables whose user no longer exists."""
+        # this is optional hygiene, so a failure must never take the server down with it
+        try:
+            total = 0
+            for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+                cursor = await self.database.execute(
+                    f"DELETE FROM {table} WHERE user_id NOT IN (SELECT user_id FROM users)"
+                )
+                total += int(cursor.rowcount)
+            await self.database.commit()
+            if total > 0:
+                self.logger.info("Cleaned up %d row(s) of deleted user(s)", total)
+        except Exception as err:
+            self.logger.warning("Failed to clean up rows of deleted users: %s", err)
+
+    async def _prune_stale_user_filters(self) -> None:
+        """Drop user access filter entries for players that no longer exist."""
+        known_players = set(self.mass.config.get(CONF_PLAYERS, {}))
+        # an empty config section means nothing is configured yet, which must not be
+        # mistaken for everything having been removed
+        await self._rewrite_user_filters(
+            keep_player=(lambda x: x in known_players) if known_players else None,
+        )
+
+    async def _rewrite_user_filters(
+        self,
+        keep_player: Callable[[str], bool] | None,
+        map_player: Callable[[str], str] | None = None,
+    ) -> None:
+        """
+        Rewrite the access filters of all users.
+
+        :param keep_player: Returns False for the player entries that must be dropped.
+        :param map_player: Maps a player entry onto its replacement, applied before keep_player.
+        """
+        if keep_player is None and map_player is None:
+            return
+        # removing a provider wipes the config of its players one by one, so without the lock
+        # those rewrites would read the same filter and each undo the other's removal
+        async with self._user_filter_lock:
+            for row in await self.database.get_rows("users", limit=0):
+                current: list[str] = json_loads(row["player_filter"])
+                remaining: list[str] = []
+                dropped: list[str] = []
+                for entry in current:
+                    mapped = map_player(entry) if map_player else entry
+                    if keep_player and not keep_player(mapped):
+                        dropped.append(entry)
+                    elif mapped not in remaining:
+                        remaining.append(mapped)
+                if remaining == current:
+                    continue
+                if not dropped:
+                    self.logger.info(
+                        "Updated the player_filter of user '%s' to %s",
+                        row["username"],
+                        ", ".join(remaining),
+                    )
+                elif remaining:
+                    self.logger.info(
+                        "Removed %s from the player_filter of user '%s'",
+                        ", ".join(dropped),
+                        row["username"],
+                    )
+                else:
+                    # An empty filter means unrestricted. A user whose entries are all gone is
+                    # deliberately left unrestricted, the alternative being an account that
+                    # can see nothing at all.
+                    self.logger.warning(
+                        "Removed the last entries (%s) from the player_filter of user '%s'. "
+                        "This user is no longer restricted, adjust the access settings if needed.",
+                        ", ".join(dropped),
+                        row["username"],
+                    )
+                await self.database.update(
+                    "users",
+                    {"user_id": row["user_id"]},
+                    {"player_filter": json_dumps(remaining)},
+                )
+                # a session holds its own copy of the User object, so the live ones have to
+                # follow or they keep applying the filter that was just rewritten
+                self.webserver.update_active_user_filters(row["user_id"], player_filter=remaining)
+
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
         Migrate all existing playlog entries to the first user.
@@ -1739,7 +2561,7 @@ class AuthenticationManager:
         try:
             # Update all playlog entries with NULL userid to this user
             await self.mass.music.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
+                f"UPDATE {DB_TABLE_MEDIA_PROGRESS} SET userid = :userid WHERE userid IS NULL",
                 {"userid": user_id},
             )
             await self.mass.music.database.commit()
@@ -1774,6 +2596,42 @@ class AuthenticationManager:
         else:
             self.logger.info("Password changed for user %s", target_user.username)
 
+    async def _check_join_code_rate_limit(self, key: str) -> AuthFailure | None:
+        """
+        Check the join code exchange throttles that apply to the calling client.
+
+        :param key: Rate limit key identifying the calling client.
+        :return: The error result to return to the caller, or None if the attempt may proceed.
+        """
+        limiters = (
+            ("client", self._join_code_rate_limiter, key),
+            ("server", self._join_code_global_rate_limiter, JOIN_CODE_GLOBAL_RATE_LIMIT_KEY),
+        )
+        for scope, limiter, limiter_key in limiters:
+            allowed, remaining_delay = await limiter.check_rate_limit(limiter_key)
+            if allowed:
+                continue
+            # The attempted code is deliberately absent here: it has not been checked yet,
+            # so it may well be a valid one. Each failure that filled the bucket already
+            # logged its own (rejected, and therefore unusable) code.
+            self.logger.warning(
+                "Join code exchange throttled by the %s limit "
+                "(client=%s, client_failures=%d, server_failures=%d). "
+                "%d seconds remaining.",
+                scope,
+                key,
+                self._join_code_rate_limiter.get_attempt_count(key),
+                self._join_code_global_rate_limiter.get_attempt_count(
+                    JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
+                ),
+                remaining_delay,
+            )
+            return AuthFailure(
+                f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                RateLimited.translation_key,
+            )
+        return None
+
     async def _exchange_join_code(self, code: str) -> str | None:
         """
         Exchange a join code for a JWT access token.
@@ -1801,14 +2659,16 @@ class AuthenticationManager:
         await self.database.commit()
 
         if not row:
-            self.logger.warning("Join code exchange rejected (code=%s)", code.upper())
+            self.logger.warning(
+                "Join code exchange rejected (client=%s, code=%s)",
+                get_current_client_id() or JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY,
+                _mask_join_code(code),
+            )
             return None
 
         user = await self.get_user(row["user_id"])
         if not user:
-            self.logger.error(
-                "User not found for join code despite FK constraint (user_id=%s)", row["user_id"]
-            )
+            self.logger.error("User not found for join code (user_id=%s)", row["user_id"])
             return None
 
         device_name = row["device_name"] or "Short Code Login"
@@ -1840,7 +2700,164 @@ class AuthenticationManager:
         if count > 0:
             self.logger.debug("Cleaned up %d expired/exhausted join code(s)", count)
 
-    def _schedule_join_code_cleanup(self) -> None:
-        """Schedule periodic cleanup of expired join codes."""
+    async def _cleanup_expired_tokens(self) -> None:
+        """Delete short-lived auth tokens that expired or outlived their absolute cap."""
+        now = utc()
+        # Both conditions mirror a deletion authenticate_with_token already performs when the
+        # token is used: the sliding expiry, and the absolute cap, which a token renewed late
+        # in its life outlives. Long-lived tokens are left to the user to revoke: they are few
+        # and deliberately created, so they are not what grows this table.
+        cursor = await self.database.execute(
+            """
+            DELETE FROM auth_tokens
+            WHERE is_long_lived = 0
+              AND (expires_at < :now OR created_at < :max_lifetime)
+            """,
+            {
+                "now": now.isoformat(),
+                "max_lifetime": (now - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)).isoformat(),
+            },
+        )
+        await self.database.commit()
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.debug("Cleaned up %d expired auth token(s)", count)
+
+    def _schedule_periodic_cleanup(self) -> None:
+        """Schedule periodic cleanup of expired join codes and auth tokens."""
         self.mass.create_task(self._cleanup_expired_join_codes())
-        self.mass.call_later(86400, self._schedule_join_code_cleanup)
+        self.mass.create_task(self._cleanup_expired_tokens())
+        self.mass.call_later(86400, self._schedule_periodic_cleanup)
+
+    async def _refresh_token_expiration(
+        self, token_row: Mapping[str, Any], user: User, is_long_lived: bool
+    ) -> dict[str, str] | None:
+        """
+        Build the on-use column updates for a token, enforcing the absolute lifetime cap.
+
+        :param token_row: The auth_tokens row for the token being used.
+        :param user: The user owning the token.
+        :param is_long_lived: Whether the token is long-lived.
+        :return: Column updates to apply (empty when the stored activity timestamp is
+            still fresh, so callers can skip the write), or None if the token exceeded
+            its max lifetime (in which case the token row is deleted).
+        """
+        now = utc()
+
+        if not is_long_lived:
+            created_at = datetime.fromisoformat(token_row["created_at"])
+            if now > created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION):
+                await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+                return None
+
+        # The HTTP API authenticates on every request, so persisting activity per use
+        # would cost an UPDATE+commit (an fsync) per request. Skip the write while the
+        # stored timestamp is fresh; last_used_at and the sliding expiration then lag
+        # by at most this interval, which is negligible against the 30-day idle window.
+        if last_used_at := token_row["last_used_at"]:
+            if now - datetime.fromisoformat(last_used_at) < TOKEN_ACTIVITY_PERSIST_INTERVAL:
+                return {}
+
+        updates = {"last_used_at": now.isoformat()}
+        if not is_long_lived and user.role != UserRole.GUEST:
+            # Short-lived token: extend expiration on each use (sliding window)
+            new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+            updates["expires_at"] = new_expires_at.isoformat()
+
+        return updates
+
+    async def _can_reuse_ha_integration_token(self, token: str, system_user: User) -> bool:
+        """Check whether the stored HA integration token is valid and not yet due for rotation."""
+        token_id = self.jwt_helper.get_token_id(token)
+        if not token_id:
+            return False
+        token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
+        if not token_row or token_row["user_id"] != system_user.user_id:
+            return False
+        now = utc()
+        if token_row["expires_at"] and datetime.fromisoformat(token_row["expires_at"]) <= now:
+            return False
+        created_at = datetime.fromisoformat(token_row["created_at"])
+        rotate_after = created_at + timedelta(
+            days=TOKEN_ABSOLUTE_MAX_EXPIRATION - HA_TOKEN_ROTATION_MARGIN
+        )
+        return now < rotate_after
+
+    def _notify_user_access_revoked(self, user: User) -> None:
+        """Dispatch an access withdrawal to subscribers, isolating them from each other."""
+        for callback in list(self._access_revoked_callbacks):
+            self.mass.loop.call_soon(callback, user)
+
+    def _get_calling_client(self) -> WebsocketClientHandler | None:
+        """Return the websocket connection the current command came in on, if any."""
+        client_id = get_current_client_id()
+        return next((c for c in self.webserver.clients if c.client_id == client_id), None)
+
+    async def _complete_app_sign_in(
+        self, pending: PendingLogin | None, code: str, code_verifier: str
+    ) -> User:
+        """
+        Complete a sign-in that returned to the remote app and return its user.
+
+        :param pending: The sign-in the exchange is for, None when unknown or expired.
+        :param code: The authorization code the browser returned with.
+        :param code_verifier: The client's PKCE code verifier.
+        :raises AuthenticationFailed: If the sign-in can not be completed.
+        """
+        if pending is None:
+            raise AuthenticationFailed(
+                "This sign-in is invalid or has expired", translation_key="sign_in_expired"
+            )
+        if not AUTH_CODE_RE.fullmatch(code):
+            raise AuthenticationFailed("Invalid authorization code")
+        if pending.redirect_target != "app" or not pending.client_code_challenge:
+            raise AuthenticationFailed("This sign-in can not be completed with auth/exchange")
+        if not verify_pkce(code_verifier, pending.client_code_challenge):
+            raise AuthenticationFailed("The code_verifier does not match the code_challenge")
+        provider = self.login_providers.get(pending.provider_id)
+        if not provider:
+            raise AuthenticationFailed("The login provider of this sign-in is not available")
+        return await provider.complete_authorization(pending, {"code": code})
+
+
+def _client_rate_limit_key() -> tuple[str, bool]:
+    """
+    Work out which bucket the calling client's failed attempts belong to.
+
+    :return: The rate limit key, and whether that key identifies a single caller
+        exclusively (a shared key must never be cleared on a successful exchange).
+    """
+    if client_id := get_current_client_id():
+        return client_id, True
+    if peer_address := get_current_peer_address():
+        return f"peer:{peer_address}", False
+    return JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY, False
+
+
+def _mask_join_code(code: str) -> str:
+    """
+    Mask a join code so support logs can correlate attempts without exposing a usable code.
+
+    :param code: The join code as supplied by the client.
+    :return: The code with everything past its prefix replaced by asterisks.
+    """
+    normalized = code.upper()
+    return normalized[:4] + "*" * max(len(normalized) - 4, 0)
+
+
+def _refuse_system_user(username: str) -> None:
+    """
+    Refuse a change to the Home Assistant system user.
+
+    The Home Assistant integration signs in with this account, so it can not be deleted,
+    disabled, renamed or given another role or password.
+
+    :param username: The username of the account to change.
+    :raises InvalidDataError: If the username is that of the Home Assistant system user.
+    """
+    if username == HOMEASSISTANT_SYSTEM_USER:
+        raise InvalidDataError(
+            "The Home Assistant system account can not be deleted, disabled, renamed "
+            "or given another role or password.",
+            translation_key="system_user_protected",
+        )

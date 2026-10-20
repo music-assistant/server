@@ -4,28 +4,20 @@
       "label": "HTTP Server Port",
       "description": "Port for the MSX HTTP server."
     },
-    "output_format": {
-      "label": "Audio Output Format",
-      "description": "Audio format for streaming to MSX (mp3, aac, or flac)."
-    },
     "player_idle_timeout": {
       "label": "Player Idle Timeout (minutes)",
       "description": "Unregister MSX players after this many minutes without activity."
     },
     "show_stop_notification": {
-      "label": "Show notification before closing player",
-      "description": "Show confirmation dialog on MSX when stopping playback from MA."
-    },
-    "enable_player_grouping": {
-      "label": "Enable player grouping (experimental)",
-      "description": "Experimental: allow grouping multiple MSX TVs to play the same track simultaneously. Disable if you experience issues with multi-TV setups."
+      "label": "Show playback stopped notification",
+      "description": "Show an informational notice after MSX playback is stopped from MA."
     },
     "group_stream_mode": {
-      "label": "Group Stream Mode",
-      "description": "How to stream audio to grouped players. 'Independent' creates separate streams per TV (more CPU, no sync). 'Shared Buffer' uses one ffmpeg process for all group members (less CPU, better sync).",
+      "label": "Stream Delivery Mode",
+      "description": "How audio reaches the TVs. 'MA Streamserver' redirects TVs directly and is recommended. 'Independent' proxies a separate local ffmpeg stream for compatibility. Redirect falls back to Independent automatically when a direct URL cannot be resolved.",
       "options": {
-        "independent": "Independent (default) - each TV has own stream",
-        "shared": "Shared Buffer - one ffmpeg, multiple readers (less CPU)"
+        "redirect": "MA Streamserver (recommended)",
+        "independent": "Independent local proxy (compatibility)"
       }
     }
   },

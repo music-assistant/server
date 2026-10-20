@@ -10,10 +10,10 @@ from contextlib import suppress
 from datetime import datetime
 from functools import partial
 from threading import get_ident
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.background_task import (
     BackgroundTask,
     TaskMetadata,
@@ -23,9 +23,19 @@ from music_assistant_models.background_task import (
 from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.constants import (
+    CONF_ENTRY_MAX_CONCURRENT_TASKS,
+    CONF_MAX_CONCURRENT_TASKS,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+    set_current_user,
+    set_impersonated_user,
+)
 from music_assistant.helpers.api import api_command
-from music_assistant.models.core_controller import CoreController
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
+from music_assistant.models.core_controller import CORE_DOCS_URL, CoreController
 
 from .constants import (
     ACTIVE_TASK_ID,
@@ -34,6 +44,7 @@ from .constants import (
     DEFAULT_TASK_LOG_LINES,
     MAX_FINISHED_TASK_HISTORY,
     TASK_ACTIVITY_UPDATE_INTERVAL,
+    TASK_CANCEL_TIMEOUT,
     TASK_LIFECYCLE_UPDATE_DEBOUNCE,
     TASK_STATE_CONFIG_KEY,
     TASK_UPDATE_TIMER_ID,
@@ -55,9 +66,13 @@ from .helpers import (
 from .models import ManagedTask
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        CoreConfig,
+    )
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.json import SerializableType
 
 
 class TasksController(CoreController):
@@ -71,6 +86,7 @@ class TasksController(CoreController):
         self.manifest.name = "Background tasks"
         self.manifest.description = "Manage long running scheduled, user and system tasks."
         self.manifest.icon = "playlist-play"
+        self.manifest.documentation = f"{CORE_DOCS_URL}#background-tasks-configuration"
         self._tasks: dict[str, ManagedTask] = {}
         self._pending_task_ids: deque[str] = deque()
         self._log_handler: TaskLogHandler | None = None
@@ -81,10 +97,16 @@ class TasksController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Set up the controller."""
         self.config = config
-        self._max_concurrent_tasks = DEFAULT_MAX_CONCURRENT_TASKS
+        self._max_concurrent_tasks = cast(
+            "int", config.get_value(CONF_MAX_CONCURRENT_TASKS, DEFAULT_MAX_CONCURRENT_TASKS)
+        )
         if self._log_handler is None:
             self._log_handler = TaskLogHandler(self.mass, self._append_task_log)
             logging.getLogger().addHandler(self._log_handler)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        return (CONF_ENTRY_MAX_CONCURRENT_TASKS,)
 
     async def close(self) -> None:
         """Clean up the controller."""
@@ -94,7 +116,21 @@ class TasksController(CoreController):
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
 
-    @api_command("tasks/list")
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        by_status: dict[str, int] = {}
+        for managed in self._tasks.values():
+            status = managed.task_info.status.value
+            by_status[status] = by_status.get(status, 0) + 1
+        return {
+            "total": len(self._tasks),
+            "by_status": by_status,
+            "scheduled": sum(managed.is_scheduled for managed in self._tasks.values()),
+            "pending_queue": len(self._pending_task_ids),
+            "max_concurrent": self._max_concurrent_tasks,
+        }
+
+    @api_command("tasks/list", required_scope=Scope.SYSTEM_READ)
     def list_tasks(self) -> list[BackgroundTask]:
         """Return all visible managed tasks."""
         return self.list_tasks_for_user(get_current_user())
@@ -103,19 +139,19 @@ class TasksController(CoreController):
         """Return tasks visible to the given user."""
         return [managed.task_info for managed in get_visible_tasks(self._tasks.values(), user)]
 
-    @api_command("tasks/get")
+    @api_command("tasks/get", required_scope=Scope.SYSTEM_READ)
     def get_task(self, task_id: str) -> BackgroundTask:
         """Return a single task by id."""
         return self._get_visible_managed_task(task_id, get_current_user()).task_info
 
-    @api_command("tasks/log")
+    @api_command("tasks/log", required_scope=Scope.SYSTEM_READ)
     def get_task_log(self, task_id: str) -> str:
         """Return the log buffer for a single task."""
         return "\n".join(self._get_visible_managed_task(task_id, get_current_user()).task_info.logs)
 
-    @api_command("tasks/run", required_role=UserRole.ADMIN)
+    @api_command("tasks/run", required_scope=Scope.SYSTEM_MANAGE)
     def run_task(self, task_id: str) -> BackgroundTask:
-        """Queue a task for immediate execution."""
+        """Queue a task to run next, ahead of other pending tasks."""
         managed = self._get_managed_task(task_id)
         if not managed.is_scheduled:
             raise InvalidDataError(f"Task {task_id} can not be run manually")
@@ -124,12 +160,13 @@ class TasksController(CoreController):
             managed,
             reset_logs=True,
             run_user_id=user.user_id if user else None,
+            priority=True,
         )
         return managed.task_info
 
-    @api_command("tasks/retry", required_role=UserRole.ADMIN)
+    @api_command("tasks/retry", required_scope=Scope.SYSTEM_MANAGE)
     def retry_task(self, task_id: str) -> BackgroundTask:
-        """Retry a failed or cancelled task."""
+        """Retry a failed or cancelled task, ahead of other pending tasks."""
         managed = self._get_managed_task(task_id)
         if not managed.task_info.allow_retry:
             raise InvalidDataError(f"Task {task_id} can not be retried")
@@ -144,17 +181,18 @@ class TasksController(CoreController):
             managed,
             reset_logs=True,
             run_user_id=user.user_id if user else None,
+            priority=True,
         )
         return managed.task_info
 
-    @api_command("tasks/cancel", required_role=UserRole.ADMIN)
+    @api_command("tasks/cancel", required_scope=Scope.SYSTEM_MANAGE)
     def cancel_task(self, task_id: str) -> BackgroundTask:
         """Cancel a pending or running task."""
         managed = self._get_managed_task(task_id)
         self._cancel_managed_task(managed)
         return managed.task_info
 
-    @api_command("tasks/set_enabled", required_role=UserRole.ADMIN)
+    @api_command("tasks/set_enabled", required_scope=Scope.SYSTEM_MANAGE)
     def set_task_enabled(self, task_id: str, enabled: bool) -> BackgroundTask:
         """Enable or disable automatic scheduling for a recurring task."""
         managed = self._get_managed_task(task_id)
@@ -177,7 +215,7 @@ class TasksController(CoreController):
             self._schedule_task_update(force=True)
         return managed.task_info
 
-    @api_command("tasks/update_schedule", required_role=UserRole.ADMIN)
+    @api_command("tasks/update_schedule", required_scope=Scope.SYSTEM_MANAGE)
     def update_task_schedule(
         self,
         task_id: str,
@@ -202,7 +240,7 @@ class TasksController(CoreController):
             self._schedule_task_update(force=True)
         return managed.task_info
 
-    @api_command("tasks/remove", required_role=UserRole.ADMIN)
+    @api_command("tasks/remove", required_scope=Scope.SYSTEM_MANAGE)
     def remove_task(self, task_id: str) -> None:
         """Remove a finished task from history."""
         managed = self._get_managed_task(task_id)
@@ -211,7 +249,7 @@ class TasksController(CoreController):
         self._tasks.pop(task_id, None)
         self._schedule_task_update(force=True)
 
-    @api_command("tasks/clear_finished", required_role=UserRole.ADMIN)
+    @api_command("tasks/clear_finished", required_scope=Scope.SYSTEM_MANAGE)
     def clear_finished_tasks(self) -> None:
         """Remove finished non-scheduled tasks from history."""
         for task_id in [task_id for task_id, task in self._tasks.items() if task.can_remove]:
@@ -372,6 +410,44 @@ class TasksController(CoreController):
         """
         self._unregister_task(task_id, clear_persisted_state)
 
+    async def unregister_scheduled_task_and_wait(
+        self,
+        task_id: str,
+        clear_persisted_state: bool = True,
+        timeout: float = TASK_CANCEL_TIMEOUT,
+    ) -> bool:
+        """
+        Unregister a recurring scheduled task and wait for a running task to unwind.
+
+        Cancellation is only a request: with plain ``unregister_scheduled_task`` the task
+        can still be running (unwinding) when the caller continues. Use this variant from
+        teardown paths that destroy state the task may still be touching, such as unloading
+        a provider.
+
+        Note that a task blocked in a thread (``asyncio.to_thread`` and friends) unwinds
+        immediately while its thread keeps running, so this does not guarantee that all
+        work of the task has stopped.
+
+        :param task_id: The id of the scheduled task to unregister.
+        :param clear_persisted_state: Whether to remove persisted state from config.
+        :param timeout: Maximum number of seconds to wait for the task to unwind.
+        :return: True if no task was left running, False if the wait timed out.
+        """
+        cancelled_task = self._unregister_task(task_id, clear_persisted_state)
+        if cancelled_task is None:
+            return True
+        if cancelled_task is asyncio.current_task():
+            # the task is cancelling itself (e.g. a sync task that triggers a provider
+            # unload); asyncio refuses a task awaiting itself so just let it unwind
+            return True
+        done, _pending = await asyncio.wait({cancelled_task}, timeout=timeout)
+        if not done:
+            self.logger.warning(
+                "Timeout while waiting for task %s to stop after cancellation", task_id
+            )
+            return False
+        return True
+
     def update_task_progress(
         self, task_id: str, progress: int | None, text: str | None = None
     ) -> None:
@@ -419,6 +495,29 @@ class TasksController(CoreController):
             return
         self.update_task_progress(task_id, progress, text)
 
+    def set_task_report(self, task_id: str, markdown: str | None) -> None:
+        """
+        Set the Markdown report for a task.
+
+        :param task_id: The id of the task to update.
+        :param markdown: Markdown report content or None to clear.
+        """
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(self.set_task_report, task_id, markdown)
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        self._update_task_report(managed, markdown)
+
+    def set_current_task_report(self, markdown: str | None) -> None:
+        """
+        Set the Markdown report for the task active in the current async context.
+
+        :param markdown: Markdown report content or None to clear.
+        """
+        if task_context := ACTIVE_TASK_CONTEXT.get():
+            task_context.set_report(markdown)
+
     def add_task_failure(self, task_id: str, message: str) -> None:
         """
         Record a non-fatal failure for a task.
@@ -455,21 +554,29 @@ class TasksController(CoreController):
                 result.append(managed.task_info)
         return result
 
-    def _unregister_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
-        """Unregister a managed task and cancel any active work."""
+    def _unregister_task(
+        self, task_id: str, clear_persisted_state: bool = True
+    ) -> asyncio.Task[Any] | None:
+        """
+        Unregister a managed task and cancel any active work.
+
+        Returns the cancelled asyncio task if one was still running, so callers can wait
+        for it to unwind. Final bookkeeping for such a task happens in _finalize_task_run.
+        """
         if not (managed := self._tasks.get(task_id)):
-            return
+            return None
         managed.removed = True
         managed.clear_persisted_state_on_remove = clear_persisted_state
         self.mass.cancel_timer(get_task_timer_id(task_id))
         self._remove_from_pending(task_id)
         if managed.current_task and not managed.current_task.done():
             managed.current_task.cancel()
-            return
+            return managed.current_task
         self._tasks.pop(task_id, None)
         if clear_persisted_state:
             self._clear_scheduled_task_state(task_id)
         self._schedule_task_update(force=True)
+        return None
 
     def _get_managed_task(self, task_id: str) -> ManagedTask:
         """Return runtime state for a managed task."""
@@ -482,7 +589,7 @@ class TasksController(CoreController):
         managed = self._get_managed_task(task_id)
         if (
             user is not None
-            and user.role != UserRole.ADMIN
+            and not has_scope(user, Scope.SYSTEM_MANAGE)
             and managed.task_info.user_id != user.user_id
         ):
             raise InvalidDataError(f"Task {task_id} not found")
@@ -500,6 +607,37 @@ class TasksController(CoreController):
         if len(logs) > managed.max_log_lines:
             del logs[: len(logs) - managed.max_log_lines]
         managed.task_info.updated_at = utcnow()
+        self._schedule_task_update()
+
+    def _set_task_report_for_run(
+        self,
+        task_id: str,
+        markdown: str | None,
+        *,
+        run_token: str,
+    ) -> None:
+        """Set a task report only while its originating run is active."""
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(
+                partial(
+                    self._set_task_report_for_run,
+                    task_id,
+                    markdown,
+                    run_token=run_token,
+                )
+            )
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        if managed.run_token != run_token or managed.task_info.status != TaskStatus.RUNNING:
+            return
+        self._update_task_report(managed, markdown)
+
+    def _update_task_report(self, managed: ManagedTask, markdown: str | None) -> None:
+        """Update a managed task report and notify task consumers."""
+        managed.task_info.report = markdown
+        managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
         self._schedule_task_update()
 
     def _append_task_lifecycle_log(
@@ -560,13 +698,26 @@ class TasksController(CoreController):
         *,
         reset_logs: bool,
         run_user_id: str | None = None,
+        priority: bool | None = None,
     ) -> None:
-        """Queue a task for execution."""
+        """Queue a task for execution, at the front of the queue when priority is set."""
         if managed.removed:
             raise InvalidDataError(f"Task {managed.task_info.id} is no longer available")
-        if managed.task_info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        if priority is None:
+            priority = managed.priority
+        if managed.task_info.status == TaskStatus.RUNNING:
+            return
+        if managed.task_info.status == TaskStatus.PENDING:
+            if priority:
+                self._remove_from_pending(managed.task_info.id)
+                self._pending_task_ids.appendleft(managed.task_info.id)
+                managed.task_info.last_run_user_id = run_user_id
+                managed.task_info.updated_at = utcnow()
+                self._persist_scheduled_task_state(managed)
+                self._schedule_task_update(force=True)
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
+        managed.run_token = uuid4().hex
         if reset_logs:
             managed.task_info.logs.clear()
             managed.task_info.progress = None
@@ -574,14 +725,16 @@ class TasksController(CoreController):
             managed.task_info.last_error = None
             managed.task_info.failure_count = 0
             managed.task_info.failure_messages.clear()
+            managed.task_info.report = None
             managed.task_info.finished_at = None
         managed.task_info.status = TaskStatus.PENDING
         managed.task_info.last_run_user_id = run_user_id
         managed.task_info.started_at = None
         managed.task_info.next_run = None
         managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
         if managed.task_info.id not in self._pending_task_ids:
-            if managed.priority:
+            if priority:
                 self._pending_task_ids.appendleft(managed.task_info.id)
             else:
                 self._pending_task_ids.append(managed.task_info.id)
@@ -615,9 +768,19 @@ class TasksController(CoreController):
             update_progress=self.update_task_progress,
             update_progress_text=self.update_task_progress_text,
             add_failure=self.add_task_failure,
+            update_report=partial(
+                self._set_task_report_for_run,
+                run_token=managed.run_token,
+            ),
         )
         token = ACTIVE_TASK_ID.set(task_info.id)
         context_token = ACTIVE_TASK_CONTEXT.set(task_context)
+        # a managed task is a server-side job: it inherits the context of whoever queued it
+        # or of the task that finished before it, so it must not act as that user nor
+        # make its requests with that caller's throttler priority
+        set_current_user(None)
+        set_impersonated_user(None)
+        set_request_priority(RequestPriority.LOW)
         try:
             await managed.handler()
         except asyncio.CancelledError:
@@ -625,7 +788,10 @@ class TasksController(CoreController):
             task_info.last_error = None
             now = utcnow()
             self._append_task_lifecycle_log(
-                task_info.id, level=logging.WARNING, message="Task cancelled", created_at=now
+                task_info.id,
+                level=logging.WARNING,
+                message="Task cancelled",
+                created_at=now,
             )
         except Exception as err:
             task_info.status = TaskStatus.FAILED
@@ -744,6 +910,10 @@ class TasksController(CoreController):
 
     def _set_persisted_task_states(self, states: dict[str, Any]) -> None:
         """Persist runtime state for scheduled tasks."""
+        # this state lives next to the config values rather than inside them, so the core
+        # config block has to be created up front. a bare set() would build the parent
+        # dicts on the fly and leave a block that no longer parses as a CoreConfig.
+        self.mass.config.ensure_core_config_base(self.domain)
         self.mass.config.set(f"core/{self.domain}/{TASK_STATE_CONFIG_KEY}", states)
 
     @staticmethod

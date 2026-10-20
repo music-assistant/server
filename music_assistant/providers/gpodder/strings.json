@@ -1,11 +1,5 @@
 {
   "config_entries": {
-    "label_text": {
-      "label": "Authentication did succeed! Please press save to continue."
-    },
-    "label_gpodder": {
-      "label": "Authentication with gPodder compatible web service, e.g. opodsync:"
-    },
     "url": {
       "label": "gPodder Service URL",
       "description": "URL of gPodder instance."
@@ -22,36 +16,50 @@
       "label": "Device ID",
       "description": "Device ID of user."
     },
-    "label_nextcloud": {
-      "label": "Authentication with Nextcloud with gPodder Sync (nextcloud-gpodder) installed:"
-    },
     "url_nc": {
       "label": "Nextcloud URL",
       "description": "URL of Nextcloud instance."
     },
-    "authenticate_nc": {
-      "label": "(Re)Authenticate with Nextcloud",
-      "description": "This button will redirect you to your Nextcloud instance to authenticate."
-    },
-    "label_general": {
-      "label": "General config:"
-    },
     "max_num_episodes": {
-      "label": "Maximum number of episodes (0 for unlimited)",
-      "description": "Maximum number of episodes to sync per feed. Use 0 for unlimited"
+      "label": "[%key:common::config_entries::max_num_episodes::label%]",
+      "description": "[%key:common::config_entries::max_num_episodes::description%]"
     },
     "verify_ssl": {
       "label": "[%key:common::config_entries::verify_ssl::label%]",
       "description": "[%key:common::config_entries::verify_ssl::description%]"
     },
-    "token": {
-      "label": "token"
+    "method": {
+      "label": "Connection method",
+      "options": {
+        "gpodder": "gpodder / opodsync server",
+        "nextcloud": "Nextcloud (nextcloud-gpodder)"
+      }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Choose how to connect",
+      "description": "Connect to a gpodder/opodsync server, or to Nextcloud with the gPodder Sync app."
     },
-    "using_gpodder": {
-      "label": "using_gpodder"
+    "gpodder": {
+      "title": "gPodder account"
+    },
+    "nextcloud": {
+      "title": "Nextcloud instance"
+    },
+    "nc_approve": {
+      "title": "Approve in Nextcloud"
+    },
+    "nc_polling": {
+      "title": "Waiting for Nextcloud approval",
+      "progress_text": "Waiting for you to grant access in Nextcloud..."
     }
   },
   "manifest": {
     "description": "Subscribe to and fetch podcasts from gPodder."
+  },
+  "errors": {
+    "not_a_nextcloud_instance": "This does not look like a Nextcloud server. Check the URL and try again.",
+    "nextcloud_login_timeout": "The Nextcloud login was not completed in time. Try again."
   }
 }

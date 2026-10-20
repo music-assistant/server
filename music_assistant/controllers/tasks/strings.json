@@ -1,0 +1,13 @@
+{
+  "config_entries": {
+    "max_concurrent_tasks": {
+      "label": "Maximum number of concurrent background tasks",
+      "description": "Controls how many background tasks (e.g. filesystem syncs, playlist imports, metadata refreshes) can run simultaneously. A higher value allows more tasks to run in parallel but increases resource usage. Default: 2."
+    }
+  },
+  "background_task": {},
+  "manifest": {
+    "name": "Background tasks",
+    "description": "Configuration of the core module that manages long running scheduled, user and system tasks."
+  }
+}

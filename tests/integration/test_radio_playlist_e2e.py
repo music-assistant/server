@@ -38,7 +38,7 @@ async def test_radio_playlist_generates_dynamic_playlist(e2e_mass: MusicAssistan
     playlist = await e2e_mass.music.get_item_by_uri(uri)
     assert isinstance(playlist, Playlist)
     assert playlist.is_dynamic
-    assert "Radio" in playlist.name
+    assert playlist.name == f"{seed.name} Endless Mix"
 
     # its tracks are the seed (base) + similar tracks (deterministic via the test provider)
     tracks = await radio_prov.get_playlist_tracks(playlist.item_id)

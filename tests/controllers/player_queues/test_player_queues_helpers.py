@@ -2,20 +2,35 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    MediaItemImage,
+    MediaItemMetadata,
+    Playlist,
+    Radio,
+    Track,
+)
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.helpers import (
+    build_queue_item,
+    find_dynamic_source,
     get_current_playback_speed,
     handle_play_action,
     has_dynamic_source,
+    is_dynamic_source,
+    is_finite_radio,
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -37,6 +52,17 @@ def _playlist(*, is_dynamic: bool, name: str = "PL") -> Playlist:
         name=name,
         provider_mappings=_PROVIDER_MAPPINGS,
         is_dynamic=is_dynamic,
+    )
+
+
+def _radio(*, is_dynamic: bool, is_endless: bool = True, name: str = "R") -> Radio:
+    return Radio(
+        item_id=name.lower(),
+        provider="test",
+        name=name,
+        provider_mappings=_PROVIDER_MAPPINGS,
+        is_dynamic=is_dynamic,
+        is_endless=is_endless,
     )
 
 
@@ -63,6 +89,17 @@ def _queue_item(name: str, *, item_id: str | None = None, **extra_attributes: An
 
 def _queue() -> PlayerQueue:
     return PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+
+
+def _queue_data(
+    *,
+    source_items: list[MediaItemType] | None = None,
+    enqueued_media_items: list[MediaItemType] | None = None,
+) -> PlayerQueueData:
+    queue_data = PlayerQueueData(queue=_queue())
+    queue_data.source_items = source_items or []
+    queue_data.enqueued_media_items = enqueued_media_items or []
+    return queue_data
 
 
 class TestHasDynamicSource:
@@ -96,6 +133,96 @@ class TestHasDynamicSource:
     def test_non_playlist_item(self) -> None:
         """A non-playlist media item is not a dynamic source."""
         assert has_dynamic_source([_track("Song")]) is False
+
+
+class TestIsDynamicSource:
+    """Tests for is_dynamic_source."""
+
+    def test_dynamic_playlist(self) -> None:
+        """A dynamic playlist supplies its own on-demand feed."""
+        assert is_dynamic_source(_playlist(is_dynamic=True)) is True
+
+    def test_non_dynamic_playlist(self) -> None:
+        """A non-dynamic playlist is not a dynamic source."""
+        assert is_dynamic_source(_playlist(is_dynamic=False)) is False
+
+    def test_dynamic_radio(self) -> None:
+        """A dynamic radio station supplies its own on-demand feed."""
+        assert is_dynamic_source(_radio(is_dynamic=True)) is True
+
+    def test_non_dynamic_radio(self) -> None:
+        """A non-dynamic (live-stream) radio is not a dynamic source."""
+        assert is_dynamic_source(_radio(is_dynamic=False)) is False
+
+    def test_finite_radio(self) -> None:
+        """A finite radio station (e.g. an AI Radio show) does not feed the pool."""
+        assert is_dynamic_source(_radio(is_dynamic=False, is_endless=False)) is False
+
+    def test_stream_radio(self) -> None:
+        """A live-stream radio does not feed the pool."""
+        assert is_dynamic_source(_radio(is_dynamic=False, is_endless=True)) is False
+
+    def test_track(self) -> None:
+        """A track is never a dynamic source."""
+        assert is_dynamic_source(_track("Song")) is False
+
+
+class TestIsFiniteRadio:
+    """Tests for is_finite_radio."""
+
+    def test_finite_radio(self) -> None:
+        """A non-dynamic, non-endless station is a fixed tracklist."""
+        assert is_finite_radio(_radio(is_dynamic=False, is_endless=False)) is True
+
+    def test_stream_radio(self) -> None:
+        """A live stream never ends, so it is not finite."""
+        assert is_finite_radio(_radio(is_dynamic=False, is_endless=True)) is False
+
+    def test_dynamic_radio(self) -> None:
+        """A dynamic station (endless or finite) is fed on demand, not played as a tracklist."""
+        assert is_finite_radio(_radio(is_dynamic=True, is_endless=True)) is False
+        assert is_finite_radio(_radio(is_dynamic=True, is_endless=False)) is False
+
+    def test_non_radio(self) -> None:
+        """Only radio stations can be finite radios."""
+        assert is_finite_radio(_track("Song")) is False
+        assert is_finite_radio(_playlist(is_dynamic=False)) is False
+
+
+class TestFindDynamicSource:
+    """Tests for find_dynamic_source."""
+
+    def test_dynamic_radio_source(self) -> None:
+        """A dynamic radio station is found, so an idle queue can refill from it."""
+        station = _radio(is_dynamic=True)
+        queue_data = _queue_data(source_items=[station])
+        assert find_dynamic_source(queue_data) is station
+
+    def test_dynamic_playlist_source(self) -> None:
+        """A dynamic playlist is found the same way."""
+        playlist = _playlist(is_dynamic=True)
+        queue_data = _queue_data(source_items=[playlist])
+        assert find_dynamic_source(queue_data) is playlist
+
+    def test_prefers_the_last_added_source(self) -> None:
+        """The most recently added dynamic source wins."""
+        first = _playlist(is_dynamic=True, name="A")
+        last = _radio(is_dynamic=True, name="B")
+        queue_data = _queue_data(source_items=[first, _track("Song"), last])
+        assert find_dynamic_source(queue_data) is last
+
+    def test_falls_back_to_enqueued_items(self) -> None:
+        """A queue without dynamic sources falls back to what was enqueued on it."""
+        station = _radio(is_dynamic=True)
+        queue_data = _queue_data(source_items=[_track("Song")], enqueued_media_items=[station])
+        assert find_dynamic_source(queue_data) is station
+
+    def test_no_dynamic_source(self) -> None:
+        """A queue of finite items has nothing to refill from."""
+        queue_data = _queue_data(
+            source_items=[_playlist(is_dynamic=False)], enqueued_media_items=[_track("Song")]
+        )
+        assert find_dynamic_source(queue_data) is None
 
 
 class TestGetCurrentPlaybackSpeed:
@@ -134,14 +261,25 @@ class _FakeLock:
         return False
 
 
+class _FakePlayer:
+    def __init__(self, player_id: str) -> None:
+        self.player_id = player_id
+
+
 class _FakePlayers:
-    def get_player_lock(self, queue_id: str, purpose: object) -> _FakeLock:
+    def __init__(self, player_ids: set[str]) -> None:
+        self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
+
+    def get_group_and_player_lock(self, queue_id: str, strict: bool = False) -> _FakeLock:
         return _FakeLock()
+
+    def get_player(self, player_id: str) -> _FakePlayer | None:
+        return self._players.get(player_id)
 
 
 class _FakeMass:
-    def __init__(self) -> None:
-        self.players = _FakePlayers()
+    def __init__(self, player_ids: set[str]) -> None:
+        self.players = _FakePlayers(player_ids)
 
 
 class _FakeQueue:
@@ -152,16 +290,21 @@ class _FakeQueue:
 class _FakeController:
     """Minimal stand-in exposing only what handle_play_action touches."""
 
-    def __init__(self, queues: dict[str, _FakeQueue]) -> None:
-        self.mass = _FakeMass()
+    def __init__(self, queues: dict[str, _FakeQueue], with_players: bool = True) -> None:
+        self.mass = _FakeMass(set(queues) if with_players else set())
         self._queue_data = {
             queue_id: PlayerQueueData(queue=cast("PlayerQueue", queue))
             for queue_id, queue in queues.items()
         }
-        self.signal_calls: list[str] = []
+        self.calls: list[str] = []
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
-        self.signal_calls.append(queue_id)
+        self.calls.append(f"signal:{queue_id}")
+
+    def on_player_update(
+        self, player: _FakePlayer, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        self.calls.append(f"refresh:{player.player_id}")
 
 
 def _flag_value(ctrl: PlayerQueuesController, queue_id: str) -> bool:
@@ -202,7 +345,7 @@ class TestHandlePlayAction:
         sink: list[bool] = []
         assert await _flag_during(cast("PlayerQueuesController", ctrl), "missing", sink) == "done"
         assert sink == [False]
-        assert ctrl.signal_calls == []
+        assert ctrl.calls == []
 
     async def test_sets_and_clears_flag(self) -> None:
         """The in-progress flag is set during the action and cleared afterwards."""
@@ -212,9 +355,19 @@ class TestHandlePlayAction:
         assert await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink) == "done"
         assert sink == [True]
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
-        # signalled once on entry and once on exit
-        assert ctrl.signal_calls == ["q1", "q1"]
+        # signalled once on entry and once on exit, with the queue recalculated
+        # from the player in between so the exit signal carries the result
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
         assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+    async def test_clears_flag_without_player(self) -> None:
+        """A queue without a registered player still clears and signals."""
+        queue = _FakeQueue()
+        ctrl = _FakeController({"q1": queue}, with_players=False)
+        sink: list[bool] = []
+        assert await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink) == "done"
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl.calls == ["signal:q1", "signal:q1"]
 
     async def test_nested_actions_refcount(self) -> None:
         """Nested actions keep the flag set until the outermost one finishes."""
@@ -226,7 +379,7 @@ class TestHandlePlayAction:
         assert sink == [True, True]
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         # only the outermost entry/exit signal an update (inner sees it already in progress)
-        assert ctrl.signal_calls == ["q1", "q1"]
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
         assert ctrl._queue_data["q1"].play_action_refcount == 0
 
     async def test_flag_cleared_on_exception(self) -> None:
@@ -262,3 +415,122 @@ class TestSpaceByArtist:
     def test_empty_input(self) -> None:
         """An empty input yields an empty order."""
         assert space_by_artist([]) == []
+
+
+def _thumb(path: str = "http://img/t.jpg") -> MediaItemImage:
+    return MediaItemImage(
+        type=ImageType.THUMB, path=path, provider="test", remotely_accessible=True
+    )
+
+
+def _heavy_metadata() -> MediaItemMetadata:
+    """Build metadata resembling a fully enriched item (the bulk of a queue item's size)."""
+    return MediaItemMetadata(
+        description="A long track description. " * 20,
+        review="An even longer critical review. " * 20,
+        lyrics="\n".join(f"Lyrics line {index}" for index in range(60)),
+        lrc_lyrics="\n".join(f"[00:{index:02d}.00] line {index}" for index in range(60)),
+        images=UniqueList([_thumb()]),
+        genres={"rock", "indie"},
+    )
+
+
+def _heavy_track() -> Track:
+    return Track(
+        item_id="t1",
+        provider="test",
+        name="Song",
+        duration=210,
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="a1",
+                    provider="test",
+                    name="Artist",
+                    metadata=_heavy_metadata(),
+                    provider_mappings=_PROVIDER_MAPPINGS,
+                )
+            ]
+        ),
+        album=Album(
+            item_id="al1",
+            provider="test",
+            name="Album",
+            metadata=_heavy_metadata(),
+            provider_mappings=_PROVIDER_MAPPINGS,
+        ),
+        metadata=_heavy_metadata(),
+        provider_mappings=_PROVIDER_MAPPINGS,
+    )
+
+
+def _heavy_radio() -> Radio:
+    return Radio(
+        item_id="r1",
+        provider="test",
+        name="Radio One",
+        metadata=_heavy_metadata(),
+        provider_mappings=_PROVIDER_MAPPINGS,
+    )
+
+
+class TestBuildQueueItem:
+    """Tests for build_queue_item."""
+
+    def test_slims_track_metadata(self) -> None:
+        """A track's heavy metadata is dropped while playback-relevant fields are kept."""
+        item = build_queue_item("q1", _heavy_track())
+        assert isinstance(item.media_item, Track)
+        # heavy metadata is dropped
+        assert item.media_item.metadata == MediaItemMetadata()
+        # provider mappings are kept (needed for stream resolution / failover)
+        assert item.media_item.provider_mappings == _PROVIDER_MAPPINGS
+        # the identifiers used to re-hydrate on promotion are kept
+        assert item.media_item.item_id == "t1"
+        assert item.media_item.provider == "test"
+        assert item.media_item.media_type is MediaType.TRACK
+        # artwork survives on the top-level image and artists/album stay slimmed to mappings
+        assert item.image is not None
+        assert item.image.type is ImageType.THUMB
+        assert all(isinstance(artist, ItemMapping) for artist in item.media_item.artists)
+        assert isinstance(item.media_item.album, ItemMapping)
+        # name/duration for compact list rows are kept
+        assert item.name == "Artist - Song"
+        assert item.duration == 210
+
+    def test_reduces_serialized_size(self) -> None:
+        """Slimming a track queue item substantially reduces its serialized size."""
+        fat = len(json.dumps(QueueItem.from_media_item("q1", _heavy_track()).to_dict()))
+        slim = len(json.dumps(build_queue_item("q1", _heavy_track()).to_dict()))
+        assert slim < fat * 0.6
+
+    def test_leaves_non_track_untouched(self) -> None:
+        """Non-track items (e.g. radio) keep their metadata as they are not re-hydrated."""
+        item = build_queue_item("q1", _heavy_radio())
+        assert isinstance(item.media_item, Radio)
+        assert item.media_item.metadata.description
+        assert item.media_item.metadata.images
+
+    def test_records_the_origin(self) -> None:
+        """The origin handed in is kept on the item and survives the persisted cache."""
+        origin = QueueItemOrigin(
+            container=ItemMapping(
+                media_type=MediaType.ALBUM, item_id="a1", provider="test", name="Album"
+            ),
+            provider_instance="test",
+            item_id="t1",
+        )
+        item = build_queue_item("q1", _heavy_track(), origin=origin)
+        assert item.origin == origin
+        assert QueueItem.from_cache(item.to_cache()).origin == origin
+        assert build_queue_item("q1", _heavy_track()).origin is None
+
+    def test_cache_roundtrip_preserves_slim_shape(self) -> None:
+        """A slim track queue item round-trips through the persisted cache unchanged."""
+        restored = QueueItem.from_cache(build_queue_item("q1", _heavy_track()).to_cache())
+        assert isinstance(restored.media_item, Track)
+        assert restored.media_item.metadata == MediaItemMetadata()
+        assert restored.media_item.provider_mappings == _PROVIDER_MAPPINGS
+        assert restored.media_item.item_id == "t1"
+        assert restored.image is not None
+        assert restored.image.type is ImageType.THUMB

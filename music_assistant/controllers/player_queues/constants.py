@@ -2,11 +2,37 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
+from music_assistant_models.enums import AlbumType, MediaType
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
 ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
+
+CONF_DEFAULT_ENQUEUE_ORDER_ARTIST = "default_enqueue_order_artist"
+
+
+class ArtistOrder(StrEnum):
+    """Enum with the orders an artist's tracks can play in."""
+
+    SHUFFLED_TRACKS = "shuffled_tracks"
+    RANDOM_ALBUMS = "random_albums"
+    ALBUMS_BY_RELEASE = "albums_by_release"
+
+    @property
+    def plays_albums(self) -> bool:
+        """Return True when the order plays the artist's albums one after the other."""
+        return self is not ArtistOrder.SHUFFLED_TRACKS
+
+
+ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE = ArtistOrder.SHUFFLED_TRACKS.value
+# the album types an album order leaves out, as their songs are mostly on the artist's albums.
+# A local collection may hold only an artist's compilation, so a library one still plays
+LIBRARY_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE})
+PROVIDER_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE, AlbumType.COMPILATION})
 
 CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
 CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
@@ -16,17 +42,44 @@ CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES = "default_enqueue_option_live_sources"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
 CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK = "default_enqueue_option_audiobook"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
+CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT = "default_enqueue_option_sound_effect"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_episode"
 CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
+CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION = "default_enqueue_option_collection"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
+
+CONF_DEFAULT_CLICK_ACTION_ARTIST = "default_click_action_artist"
+CONF_DEFAULT_CLICK_ACTION_ALBUM = "default_click_action_album"
+CONF_DEFAULT_CLICK_ACTION_TRACK = "default_click_action_track"
+CONF_DEFAULT_CLICK_ACTION_GENRE = "default_click_action_genre"
+CONF_DEFAULT_CLICK_ACTION_RADIO = "default_click_action_radio"
+CONF_DEFAULT_CLICK_ACTION_PLAYLIST = "default_click_action_playlist"
+
+CLICK_ACTION_BROWSE = "browse"
+CLICK_ACTION_PLAY = "play"
+CLICK_ACTION_DEFAULT_VALUE = CLICK_ACTION_BROWSE
+
+CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK = "default_play_action_album_track"
+CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK = "default_play_action_playlist_track"
+
+PLAY_ACTION_PLAY_FROM_HERE = "play_from_here"
+PLAY_ACTION_PLAY_TRACK = "play_track"
+PLAY_ACTION_TRACK_DEFAULT_VALUE = PLAY_ACTION_PLAY_FROM_HERE
 
 CONF_AUTOPLAY_LABEL = "autoplay_label"
 CONF_AUTOPLAY_MODE = "autoplay_mode"
 CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
+CONF_AUTOPLAY_ENABLED = "autoplay_enabled"
 CONF_CROSSFADE_LABEL = "crossfade_label"
+CONF_CROSSFADE_ENABLED = "crossfade_enabled"
+
+# global defaults the per-queue autoplay/crossfade toggles follow when not overridden
+DEFAULT_AUTOPLAY_ENABLED = False
+DEFAULT_CROSSFADE_ENABLED = False
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
+CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES = "smart_shuffle_optimize_smart_fades"
 CONF_SMART_SHUFFLE_SONG_RECENCY = "smart_shuffle_song_recency"
 CONF_SMART_SHUFFLE_ARTIST_RECENCY = "smart_shuffle_artist_recency"
 CONF_SMART_SHUFFLE_DUPLICATE_GAP = "smart_shuffle_duplicate_gap"
@@ -51,6 +104,12 @@ SMART_SHUFFLE_SONG_RECENCY_OPTIONS = (
 )
 SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS = (0, 300, 900, 1800, 3600, 7200)
 SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS = (0, 3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400)
+# Smart Fades ordering reads the stored analysis of every item it orders and only reorders inside a
+# batch of upcoming items, the size of a dynamic refill batch. A shuffle orders the first batch, and
+# playback orders the next one when it gets close, so smart shuffle still decides which tracks play.
+SMART_FADE_ORDERING_BATCH = 25
+# playback orders the next batch while this many ordered items are still ahead of it
+SMART_FADE_ORDERING_LEAD = 5
 
 # Managed-pool sizing: a queue with dynamic sources is kept as a small bounded pool, topped up
 # near the end instead of enqueuing thousands of tracks.
@@ -61,8 +120,30 @@ MANAGED_POOL_MAX = 50
 # deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
 MANAGED_POOL_SOURCE_CAP = 250
 
+# Media types that are not a pool of tracks to shuffle: an album is sequenced by its artist, a
+# podcast or audiobook only makes sense front to back, and a radio station is a single endless
+# stream. Starting one of these plays it as it comes, switching the queue's shuffle off with it,
+# unless the caller asks for shuffle explicitly. Every other type (playlist, artist, genre, ...)
+# keeps whatever the queue is set to. An artist counts as sequenced too when it plays its albums
+# under an album order. Top tracks, an artist without albums, and authors or narrators keep the
+# queue's shuffle.
+ORDERED_MEDIA_TYPES = (
+    MediaType.ALBUM,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST,
+    MediaType.PODCAST_EPISODE,
+    MediaType.RADIO,
+)
+
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
+
+# A play command is only complete once the player actually reports playback: several player
+# implementations return from play_media as soon as the start command is out while the device
+# needs another moment to connect and start (AirPlay anchors its audible start in the future).
+# The play action - and with it the UI's in-progress indication - is held until the player
+# reports PLAYING, capped by this timeout so a player that never reports state can't block.
+PLAYBACK_START_TIMEOUT = 5.0
 
 # The queue's cached state/items are written through a debounced timer, so a burst of updates (or
 # the per-track updates during playback) collapses into a single write instead of hitting the cache
@@ -71,3 +152,15 @@ QUEUE_CACHE_SAVE_DELAY = 5
 # Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
 # mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
 CACHE_FORMAT_VERSION = 1
+
+# Media types that may reach us without a duration, so one determined while streaming is applied.
+# Radio and audio sources would wrongly become seekable. Tracks always carry a duration and a
+# rounded value would affect crossfade and gapless timing.
+PROBED_DURATION_MEDIA_TYPES = (
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)
+
+# A forward skip never lands closer than this to the end of the item. The item then finishes on
+# its own and the queue advances normally.
+SKIP_END_MARGIN = 1

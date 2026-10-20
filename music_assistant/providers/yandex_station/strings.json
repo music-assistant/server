@@ -1,0 +1,76 @@
+{
+  "config_entries": {
+    "remember_session": {
+      "label": "[%key:common::config_entries::remember_session::label%]",
+      "description": "[%key:common::config_entries::remember_session::description%]"
+    },
+    "intercept_feature_enabled": {
+      "label": "Experimental: Enable intercept feature",
+      "description": "Master switch for the intercept feature. When ON, individual stations can be configured (in their player settings) to redirect Alice-initiated playback to another Music Assistant player. When OFF, intercept is fully disabled regardless of per-player settings. Requires the 'yandex_music' music provider to be configured to actually resolve tracks."
+    },
+    "method": {
+      "label": "Login method",
+      "description": "Sign in with a short device code, by scanning a QR code with the Yandex app, or by pasting browser cookies.",
+      "options": {
+        "device": "Device code",
+        "qr": "QR code",
+        "cookies": "Browser cookies"
+      }
+    },
+    "cookies": {
+      "label": "Browser Cookies"
+    },
+    "voice_control": {
+      "label": "Experimental: Voice control integration",
+      "description": "Auto-resume MA queue after voice commands like 'Алиса, стоп' or 'Алиса, дальше'. Experimental — may cause unexpected behavior."
+    },
+    "intercept_enabled": {
+      "label": "Experimental: Intercept native Station playback",
+      "description": "When the Station starts native Yandex Music playback (typically triggered by an Alice voice command, but also a touch on the Station UI), silence the Station (setVolume 0; the Station keeps playing its own queue in the background so we see every next track) and play the same track on the chosen target player. Requires the provider-level intercept feature to be enabled and a configured 'yandex_music' music provider."
+    },
+    "intercept_target_player_id": {
+      "label": "Intercept target player",
+      "description": "Music Assistant player that receives intercepted playback. Lists every registered player except this Station; pause / volume_set / seek mirrors gracefully no-op on players that don't support them."
+    },
+    "ym_instance": {
+      "label": "Yandex account source",
+      "description": "Borrow the Yandex account of a configured Yandex Music provider (single login, one token family) or use this provider's own credentials. When borrowing, authentication is managed in the linked Yandex Music provider.",
+      "options": {
+        "__own__": "Use own credentials (default)"
+      }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Yandex account source",
+      "description": "Borrow the account of a linked Yandex Music provider, or use this provider's own credentials."
+    },
+    "method": {
+      "title": "Log in to Yandex",
+      "description": "Choose a login method and whether to keep the session so tokens refresh automatically."
+    },
+    "cookies": {
+      "title": "Paste browser cookies",
+      "description": "Open passport.yandex.ru/profile, copy the cookies with a \"Copy Cookies\" extension and paste them here. JSON arrays and raw cookie strings are supported."
+    },
+    "scan_qr": {
+      "title": "Scan to sign in",
+      "description": "Scan the QR code with the Yandex app and confirm the login. A fresh code is shown automatically if it expires.",
+      "progress_text": "Waiting for you to scan and confirm in the Yandex app..."
+    },
+    "device_login": {
+      "title": "Enter the code",
+      "description": "Open the verification URL and enter the code shown. A fresh code is shown automatically if it expires.",
+      "progress_text": "Waiting for you to confirm the code in the Yandex app..."
+    },
+    "abort": {
+      "login_denied": "The login request was denied in the Yandex app."
+    }
+  },
+  "errors": {
+    "no_music_token": "Login succeeded but Yandex returned no music token. Please try again."
+  },
+  "manifest": {
+    "description": "Play music on Yandex Station smart speakers via local Glagol protocol."
+  }
+}

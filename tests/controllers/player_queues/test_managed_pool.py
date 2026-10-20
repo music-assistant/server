@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import random
 from collections import Counter
+from itertools import groupby
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
+from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows, song_keys
 from music_assistant.controllers.player_queues.managed_pool import (
     DynamicFillMode,
     DynamicSource,
+    ManagedPool,
     PoolWeightModel,
     allocate_refill,
     gate_tracks,
@@ -45,6 +51,29 @@ def _artist_track(item_id: str, artist: str) -> Track:
         item_id=item_id,
         provider="test",
         name=f"Track {item_id}",
+        duration=60,
+        artists=UniqueList(
+            [
+                ItemMapping(
+                    item_id=artist.lower(),
+                    provider="test",
+                    name=artist,
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        ),
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def _version_track(item_id: str, name: str, artist: str) -> Track:
+    """Build a Track with an explicit title and single named artist."""
+    return Track(
+        item_id=item_id,
+        provider="test",
+        name=name,
         duration=60,
         artists=UniqueList(
             [
@@ -160,6 +189,23 @@ def test_multiplicity_increases_share() -> None:
     assert counts["a"] == 2
 
 
+def test_weighted_sources_are_spread_across_batch() -> None:
+    """A higher-weight source is mixed through the batch instead of emitted as one block."""
+    sources = [
+        _source([f"a{i}" for i in range(20)]),
+        _source([f"b{i}" for i in range(20)], multiplicity=2),
+        _source([f"c{i}" for i in range(20)]),
+        _source([f"d{i}" for i in range(20)]),
+    ]
+    random.seed(0)
+    result = allocate_refill(
+        sources, slots=25, pool_keys=set(), snapshot=_snapshot(), windows=RecencyWindows()
+    )
+    source_ids = [track.item_id[0] for track in result]
+    longest_run = max(sum(1 for _ in run) for _, run in groupby(source_ids))
+    assert longest_run <= 2
+
+
 def test_size_multiplicity_weights_by_catalogue_size() -> None:
     """Under SIZE_MULTIPLICITY, the larger-catalogue source dominates the pool."""
     sources = [
@@ -232,6 +278,49 @@ def test_pool_keys_excluded() -> None:
     assert set(_ids(result)) == {"a", "c"}
 
 
+def test_pool_song_keys_exclude_other_version() -> None:
+    """A different catalog version of an already-queued song is skipped too."""
+    queued = _version_track("amber-1", "Amber", "The Thrillseekers")
+    other_version = _version_track("amber-2", "Amber", "The Thrillseekers")
+    fresh = _version_track("other", "Two Bodies", "Flight Facilities")
+    source = DynamicSource(
+        media_item=_track("seed"),
+        multiplicity=1,
+        fill_mode=DynamicFillMode.TRACKS,
+        candidates=[other_version, fresh],
+    )
+    result = allocate_refill(
+        [source],
+        slots=10,
+        pool_keys={queued},
+        pool_song_keys=song_keys(queued),
+        snapshot=_snapshot(),
+        windows=RecencyWindows(),
+    )
+    assert _ids(result) == ["other"]
+
+
+def test_batch_never_contains_two_versions_of_same_song() -> None:
+    """Two catalog versions of the same song offered in one refill yield only one pick."""
+    sources = [
+        DynamicSource(
+            media_item=_track("seed"),
+            multiplicity=1,
+            fill_mode=DynamicFillMode.DYNAMIC,
+            candidates=[
+                _version_track("amber-1", "Amber", "The Thrillseekers"),
+                _version_track("amber-2", "Amber (Remastered 2019)", "The Thrillseekers"),
+                _version_track("other", "Two Bodies", "Flight Facilities"),
+            ],
+        )
+    ]
+    result = allocate_refill(
+        sources, slots=10, pool_keys=set(), snapshot=_snapshot(), windows=RecencyWindows()
+    )
+    assert len([tid for tid in _ids(result) if tid.startswith("amber")]) == 1
+    assert "other" in _ids(result)
+
+
 def test_never_exceeds_slots() -> None:
     """The result never contains more than the requested number of slots."""
     source = _source([f"a{i}" for i in range(50)])
@@ -261,21 +350,28 @@ def test_all_gated_falls_back_ungated() -> None:
     assert _ids(result) == ["c", "b"]
 
 
-def test_deterministic() -> None:
-    """Same inputs yield an identical allocation (the allocator uses no randomness)."""
+def test_randomized_order_is_reproducible_under_seed() -> None:
+    """A fixed seed reproduces the interleave while a different seed varies it."""
     sources = [
         _source([f"a{i}" for i in range(10)], multiplicity=2),
         _source([f"b{i}" for i in range(10)]),
     ]
     snapshot = _snapshot({"a3": NOW - 10, "b1": NOW - 20})
     windows = RecencyWindows(song_seconds=WEEK, duplicate_gap_seconds=GAP)
+    random.seed(123)
     first = _ids(
         allocate_refill(sources, slots=6, pool_keys=set(), snapshot=snapshot, windows=windows)
     )
+    random.seed(123)
     second = _ids(
         allocate_refill(sources, slots=6, pool_keys=set(), snapshot=snapshot, windows=windows)
     )
+    random.seed(124)
+    third = _ids(
+        allocate_refill(sources, slots=6, pool_keys=set(), snapshot=snapshot, windows=windows)
+    )
     assert first == second
+    assert first != third
 
 
 def test_gate_tracks_drops_recent() -> None:
@@ -341,3 +437,49 @@ def test_artist_recency_not_hard_excluded() -> None:
     snapshot = _snapshot(artists_played={"A": NOW - 600})
     result = allocate_refill([source], slots=5, pool_keys=set(), snapshot=snapshot, windows=windows)
     assert len(result) == 2  # both kept despite the artist being recently heard
+
+
+@pytest.mark.asyncio
+async def test_fill_reconciles_after_smart_fade_reordering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reordering a refill must not skip finite-source bookkeeping."""
+    queues = MagicMock()
+    pool = ManagedPool(queues)
+    queue = MagicMock(queue_id="q1", current_index=None)
+    tail = _artist_track("tail", "Tail Artist")
+    queue_data = SimpleNamespace(
+        queue=queue,
+        userid=None,
+        items=[SimpleNamespace(media_item=tail)],
+    )
+
+    queues.queue_data_or_none.return_value = queue_data
+    queues.recency_windows.return_value = RecencyWindows()
+    queues.smart_fade_ordering_enabled.return_value = True
+    queues.mass.music.recency.snapshot = AsyncMock(return_value=_snapshot())
+
+    source = _source(["a", "b"], fill_mode=DynamicFillMode.TRACKS)
+    pool._collect_sources = AsyncMock(return_value=[source])  # type: ignore[method-assign]
+    reconcile = AsyncMock()
+    pool._reconcile_tracks = reconcile  # type: ignore[method-assign]
+
+    reordered = list(reversed(source.candidates))
+    order_tracks = AsyncMock(return_value=reordered)
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.managed_pool.order_tracks",
+        order_tracks,
+    )
+
+    result = await pool.fill("q1", is_initial=False)
+
+    assert result == reordered
+
+    order_call = order_tracks.await_args
+    assert order_call is not None
+    assert order_call.kwargs["preceding_track"] is tail
+
+    reconcile.assert_awaited_once()
+    call = reconcile.await_args
+    assert call is not None
+    assert call.args[2] == reordered

@@ -15,7 +15,12 @@ exclude-contributors:
   - dependabot[bot]
   - github-actions
   - github-actions[bot]
-  - music-assistant-machine
+  - musicassistant-bot[bot]
+
+# PRs whose title starts with one of these never appear in the release notes
+exclude-title-prefixes:
+  - 'Lokalise'
+  - '[Backport to stable]'
 
 categories:
 
@@ -44,6 +49,7 @@ categories:
       - 'ci'
       - 'documentation'
       - 'maintenance'
+      - 'refactor'
       - 'dependencies'
 
 template: |

@@ -10,7 +10,15 @@
     "po_token_server_url": {
       "label": "PO Token Server URL",
       "description": "The URL to the PO Token server. Can be left as default for most people. \n\n**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**"
+    },
+    "include_videos_in_search": {
+      "label": "Include videos in search results",
+      "description": "Search YouTube Music videos as well as songs, including covers, remixes and live performances. This does not change radio or library imports."
     }
+  },
+  "errors": {
+    "cookies_expired": "Your YouTube Music cookies have expired. Reconfigure this provider with fresh cookies, and close the browser window you exported them from right away.",
+    "po_token_server_unreachable": "The PO Token server is not reachable. Make sure the YT Music PO Token Generator is installed and running."
   },
   "media": {
     "recommendations": {

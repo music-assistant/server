@@ -2,11 +2,12 @@
   "type": "music",
   "domain": "filesystem_local",
   "stage": "stable",
-  "name": "Filesystem (local disk)",
-  "description": "Play music and audiobooks stored on locally connected drives.",
+  "name": "Local files",
+  "description": "Play music, audiobooks and podcasts from folders on this server, connected drives and network shares.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "https://music-assistant.io/music-providers/filesystem/",
+  "documentation": "https://music-assistant.io/music-providers/local-files/",
   "multi_instance": true,
+  "self_service": true,
   "icon": "harddisk"
 }

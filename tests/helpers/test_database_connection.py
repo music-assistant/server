@@ -1,15 +1,22 @@
 """Tests for the DatabaseConnection helper."""
 
 import asyncio
+import logging
 import os
 import pathlib
+import time
 from collections.abc import AsyncGenerator
 from sqlite3 import OperationalError
 from typing import Any
 
 import pytest
 
-from music_assistant.helpers.database import DatabaseConnection, get_sqlite_memory_settings
+from music_assistant.helpers import database
+from music_assistant.helpers.database import (
+    DatabaseConnection,
+    get_sqlite_memory_settings,
+    query_params,
+)
 from music_assistant.mass import MusicAssistant
 
 GIB = 1024**3
@@ -18,11 +25,31 @@ GIB = 1024**3
 TEMP_STORE_FILE = 1
 TEMP_STORE_MEMORY = 2
 
+# keeps sqlite busy for well over the threshold the slow query tests set, without touching a table
+_SLOW_QUERY = (
+    "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 2000000) "
+    "SELECT count(*) FROM cnt"
+)
+
 
 @pytest.fixture
 async def db_connection(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
     """Return an initialized DatabaseConnection backed by a temp file."""
     db = DatabaseConnection(str(tmp_path / "test.db"))
+    await db.setup()
+    yield db
+    await db.close()
+
+
+@pytest.fixture
+async def debug_db(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[DatabaseConnection]:
+    """Return an initialized DatabaseConnection with slow query logging enabled."""
+    monkeypatch.setattr(database, "ENABLE_DEBUG", True)
+    # a fresh tracker per test so neither its sampler task nor its totals outlive this loop
+    monkeypatch.setattr(database, "_loop_stalls", database._LoopStallTracker())
+    db = DatabaseConnection(str(tmp_path / "debug.db"))
     await db.setup()
     yield db
     await db.close()
@@ -83,6 +110,24 @@ async def test_vacuum_spills_temp_storage_to_disk(db_connection: DatabaseConnect
     assert any("temp_store=FILE" in sql for sql in executed[:vacuum_idx])
     assert any("temp_store=memory" in sql for sql in executed[vacuum_idx:])
     assert await _get_temp_store(db_connection) == TEMP_STORE_MEMORY
+
+
+async def test_vacuum_truncates_the_wal(db_with_table: DatabaseConnection) -> None:
+    """Test that vacuum() checkpoints and truncates the WAL so compaction frees disk."""
+    blob = "x" * 1024
+    await db_with_table.upsert_many(
+        "items", [{"name": f"item{i}", "url": blob} for i in range(3000)]
+    )
+    await db_with_table.delete("items")
+
+    db_path = pathlib.Path(db_with_table.db_path)
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    size_before = db_path.stat().st_size
+
+    await db_with_table.vacuum()
+
+    assert not wal_path.exists() or wal_path.stat().st_size < 64 * 1024
+    assert db_path.stat().st_size < size_before
 
 
 async def test_vacuum_restores_temp_store_on_failure(
@@ -334,3 +379,115 @@ async def test_upsert_many_empty_is_noop(db_with_table: DatabaseConnection) -> N
     commits = _count_commits(db_with_table)
     await db_with_table.upsert_many("items", [])
     assert len(commits) == 0
+
+
+async def test_upsert_many_leaves_a_row_with_another_immutable_value_alone(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that a conflicting row is only updated when its immutable columns match."""
+    await db_with_table.insert("items", {"name": "a", "url": "http://a", "plays": 1})
+    # a different value for the immutable column leaves the whole row as is
+    untouched = await db_with_table.upsert_many(
+        "items", [{"name": "a", "url": "http://other", "plays": 2}], immutable=("plays",)
+    )
+    assert untouched == 1
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert (row["url"], row["plays"]) == ("http://a", 1)
+    # the same value updates the row like any upsert
+    untouched = await db_with_table.upsert_many(
+        "items", [{"name": "a", "url": "http://same", "plays": 1}], immutable=("plays",)
+    )
+    assert untouched == 0
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert (row["url"], row["plays"]) == ("http://same", 1)
+
+
+async def test_upsert_many_immutable_column_compares_null_safely(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that a NULL immutable value on both sides still lets the row update."""
+    await db_with_table.insert("items", {"name": "a", "url": "http://a"})
+    untouched = await db_with_table.upsert_many(
+        "items", [{"name": "a", "url": "http://b", "plays": None}], immutable=("plays",)
+    )
+    assert untouched == 0
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert (row["url"], row["plays"]) == ("http://b", None)
+
+
+async def test_upsert_many_omitted_immutable_column_does_not_block_the_update(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that a row leaving out an immutable column still updates the columns it carries."""
+    await db_with_table.insert("items", {"name": "a", "url": "http://a", "plays": 1})
+    await db_with_table.upsert_many(
+        "items", [{"name": "a", "url": "http://b"}], immutable=("plays",)
+    )
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert (row["url"], row["plays"]) == ("http://b", 1)
+
+
+def test_query_params_expands_list_values() -> None:
+    """Test that list params are expanded into placeholders in all placeholder notations."""
+    query, params = query_params(
+        "SELECT * FROM items WHERE id IN :ids AND name = :name",
+        {"ids": [1, 2], "name": "foo"},
+    )
+    assert query == "SELECT * FROM items WHERE id IN (:_param_0,:_param_1) AND name = :name"
+    assert params == {"_param_0": 1, "_param_1": 2, "name": "foo"}
+    # placeholder already wrapped in parens must not end up double-wrapped
+    query, params = query_params("SELECT * FROM items WHERE id IN(:ids)", {"ids": [1, 2]})
+    assert query == "SELECT * FROM items WHERE id IN(:_param_0,:_param_1)"
+    assert params == {"_param_0": 1, "_param_1": 2}
+
+
+def test_query_params_leaves_prefixed_placeholders_untouched() -> None:
+    """Test that expanding a list param does not corrupt placeholders sharing its prefix."""
+    query, params = query_params(
+        "SELECT * FROM items WHERE id IN :ids AND other = :ids_extra",
+        {"ids": [1], "ids_extra": 2},
+    )
+    assert query == "SELECT * FROM items WHERE id IN (:_param_0) AND other = :ids_extra"
+    assert params == {"_param_0": 1, "ids_extra": 2}
+
+
+async def test_slow_query_warning_ignores_event_loop_stalls(
+    debug_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that a query awaited across a blocked event loop is not reported as slow."""
+    monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.2)
+    with caplog.at_level(logging.WARNING, logger="music_assistant.database"):
+        query = asyncio.create_task(debug_db.get_rows_from_query("SELECT 1", limit=0))
+        # let the statement reach the connection thread, then hog the loop so its result
+        # cannot be delivered - exactly what a CPU-bound callback elsewhere would do
+        await asyncio.sleep(0)
+        time.sleep(0.5)  # noqa: ASYNC251  # blocking the loop is what is under test here
+        await query
+    assert "SQL Query took" not in caplog.text
+
+
+async def test_slow_query_warning_still_reports_a_slow_query(
+    debug_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that a query which genuinely keeps sqlite busy is still reported as slow."""
+    monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.02)
+    with caplog.at_level(logging.WARNING, logger="music_assistant.database"):
+        await debug_db.get_rows_from_query(_SLOW_QUERY, limit=0)
+    assert "SQL Query took" in caplog.text
+
+
+async def test_slow_query_warning_survives_a_stall_that_precedes_it(
+    debug_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that a stall ending before a query starts is not discounted from that query."""
+    monkeypatch.setattr(database, "SLOW_QUERY_THRESHOLD", 0.02)
+    with caplog.at_level(logging.WARNING, logger="music_assistant.database"):
+        # the sampler only books this stall once it next wakes, which is after the query below
+        # has already started and taken its own reading
+        time.sleep(0.5)  # noqa: ASYNC251  # stalling the loop is what is under test here
+        await debug_db.get_rows_from_query(_SLOW_QUERY, limit=0)
+    assert "SQL Query took" in caplog.text

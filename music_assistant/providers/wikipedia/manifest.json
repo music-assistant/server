@@ -1,7 +1,7 @@
 {
   "type": "metadata",
   "domain": "wikipedia",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Wikipedia",
   "description": "Provider of multi-lingual artist biographies and other related text.",
   "codeowners": ["@music-assistant"],

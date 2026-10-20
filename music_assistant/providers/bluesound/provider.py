@@ -17,6 +17,7 @@ from .const import MUSP_MDNS_TYPE
 from .player import BluesoundPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -34,6 +35,10 @@ class BluesoundPlayerProvider(PlayerProvider):
     """Bluos compatible player provider, providing support for bluesound speakers."""
 
     player_map: ClassVar[dict[tuple[str, int], str]] = {}
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Set up legacy BluOS devices."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

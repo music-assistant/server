@@ -9,7 +9,7 @@ Future enhancements may include automatic genre detection and AI-generated descr
 Supported artwork templates:
 - artist_mosaic: Dominant artist large in centre, others as smaller tiles around it
 - artist_grid: Equal-sized grid of unique artist images (up to 4)
-- album_grid:  Classic album-cover grid (same as the built-in collage, kept as fallback)
+- album_grid:  Classic album-cover grid (default, also used as fallback)
 - artist_radio: Artist-focused layout with main artist centered on a solid background with overlapping circles of secondary artists
 - artist_banner: Full-bleed artist image with playlist name text overlay (Tidal / Apple Music Essentials style)
 - album_fan:     Up to three album covers as framed photo-print cards in a rotated stack (Apple Music collage style)
@@ -28,13 +28,14 @@ import math
 import os
 import random
 import tempfile
+from collections import Counter
 from io import BytesIO
 from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import (
@@ -64,6 +65,9 @@ SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.PLAYLIST_META
 
 CONF_TEMPLATE: Final[str] = "template"
 CONF_SKIP_PROVIDER_PLAYLISTS: Final[str] = "skip_provider_playlists"
+CONF_ENABLE_GENRE_DETECTION: Final[str] = "enable_genre_detection"
+CONF_GENRE_MIN_THRESHOLD: Final[str] = "genre_min_threshold"
+CONF_GENRE_MAX_COUNT: Final[str] = "genre_max_count"
 
 TEMPLATE_ARTIST_MOSAIC: Final[str] = "artist_mosaic"
 TEMPLATE_ARTIST_GRID: Final[str] = "artist_grid"
@@ -84,47 +88,61 @@ async def setup(
     return PlaylistMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return config entries for the provider."""
-    return (
-        ConfigEntry(
-            key=CONF_TEMPLATE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            default_value=TEMPLATE_ALBUM_GRID,
-            options=[
-                ConfigValueOption(value=TEMPLATE_ALBUM_GRID),
-                ConfigValueOption(value=TEMPLATE_ALBUM_FAN),
-                ConfigValueOption(value=TEMPLATE_ALBUM_GRID_TILTED),
-                ConfigValueOption(value=TEMPLATE_ARTIST_MOSAIC),
-                ConfigValueOption(value=TEMPLATE_ARTIST_GRID),
-                ConfigValueOption(value=TEMPLATE_ARTIST_RADIO),
-                ConfigValueOption(value=TEMPLATE_ARTIST_BANNER),
-            ],
-            value=values.get(CONF_TEMPLATE, TEMPLATE_ALBUM_GRID) if values else TEMPLATE_ALBUM_GRID,
-        ),
-        ConfigEntry(
-            key=CONF_SKIP_PROVIDER_PLAYLISTS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=True,
-            value=values.get(CONF_SKIP_PROVIDER_PLAYLISTS, True) if values else True,
-        ),
-    )
-
-
 class PlaylistMetadataProvider(MetadataProvider):
     """Metadata provider that generates artwork and metadata for library playlists."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for the provider."""
+        return (
+            ConfigEntry(
+                key=CONF_TEMPLATE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=TEMPLATE_ALBUM_GRID,
+                options=[
+                    ConfigValueOption(value=TEMPLATE_ALBUM_GRID),
+                    ConfigValueOption(value=TEMPLATE_ALBUM_FAN),
+                    ConfigValueOption(value=TEMPLATE_ALBUM_GRID_TILTED),
+                    ConfigValueOption(value=TEMPLATE_ARTIST_MOSAIC),
+                    ConfigValueOption(value=TEMPLATE_ARTIST_GRID),
+                    ConfigValueOption(value=TEMPLATE_ARTIST_RADIO),
+                    ConfigValueOption(value=TEMPLATE_ARTIST_BANNER),
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_SKIP_PROVIDER_PLAYLISTS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_GENRE_DETECTION,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_GENRE_MIN_THRESHOLD,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=10,
+                range=(5, 50),
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_GENRE_MAX_COUNT,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=3,
+                range=(1, 10),
+                advanced=True,
+            ),
+        )
 
     @property
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
-        return 90  # Run after theaudiodb/fanart.tv but before builtin collage
+        return 90  # Run after theaudiodb/fanart.tv
 
     _images_dir: str
 
@@ -155,7 +173,7 @@ class PlaylistMetadataProvider(MetadataProvider):
         if not real_file_path.startswith(real_images_dir + os.sep):
             msg = f"Invalid image path: {path}"
             raise FileNotFoundError(msg)
-        if not os.path.isfile(real_file_path):
+        if not Path(real_file_path).is_file():
             msg = f"Playlist art image not found: {path}"
             raise FileNotFoundError(msg)
         # Return bytes directly so MA never passes a bare filename to ffmpeg
@@ -167,33 +185,109 @@ class PlaylistMetadataProvider(MetadataProvider):
 
         :param playlist: The playlist to generate metadata for.
         """
-        skip_provider = self.config.get_value(CONF_SKIP_PROVIDER_PLAYLISTS)
-        if skip_provider:
-            has_builtin = any(pm.provider_domain == "builtin" for pm in playlist.provider_mappings)
-            has_smart_playlist = any(
-                pm.provider_domain == "smart_playlist" for pm in playlist.provider_mappings
-            )
-            if not has_builtin and not has_smart_playlist:
-                # Only skip if playlist has a provider-supplied image (not our generated one)
-                if playlist.metadata.images:
-                    for img in playlist.metadata.images:
-                        if img.type == ImageType.THUMB and not self._is_our_image(img):
-                            return None
+        has_builtin = any(pm.provider_domain == "builtin" for pm in playlist.provider_mappings)
+        if has_builtin and not playlist.is_editable:
+            # a builtin playlist that can not be edited is generated by Music Assistant: its
+            # content keeps changing, so it keeps its static artwork
+            return None
+        is_provider_playlist = not has_builtin and not any(
+            pm.provider_domain == "smart_playlist" for pm in playlist.provider_mappings
+        )
+        # A provider playlist keeps the artwork its service supplies, so only the image types
+        # it lacks are generated.
+        service_image_types = (
+            {img.type for img in playlist.metadata.images or [] if not self._is_our_image(img)}
+            if is_provider_playlist
+            else set()
+        )
+        # our earlier images of a type the service supplies would only hide or replace its artwork
+        await self._cleanup_old_playlist_images(playlist, service_image_types)
+        if ImageType.THUMB in service_image_types and self.config.get_value(
+            CONF_SKIP_PROVIDER_PLAYLISTS
+        ):
+            return None
 
         generated_images: list[MediaItemImage] = []
+        detected_genres: set[str] | None = None
 
-        if thumb_image := await self._generate_and_write(playlist, fanart=False):
+        if ImageType.THUMB not in service_image_types and (
+            thumb_image := await self._generate_and_write(playlist, fanart=False)
+        ):
             generated_images.append(thumb_image)
 
-        if fanart_image := await self._generate_and_write(playlist, fanart=True):
+        if ImageType.FANART not in service_image_types and (
+            fanart_image := await self._generate_and_write(playlist, fanart=True)
+        ):
             generated_images.append(fanart_image)
 
-        if generated_images:
-            await self._cleanup_old_playlist_images(playlist)
+        # Aggregate genres from playlist tracks if enabled
+        if self.config.get_value(CONF_ENABLE_GENRE_DETECTION):
+            detected_genres = await self._analyze_playlist_genres(playlist)
+
+        if generated_images or detected_genres:
+            # Only clean up old images when we have new ones to replace them
+            if generated_images:
+                await self._cleanup_old_playlist_images(
+                    playlist, {img.type for img in generated_images}
+                )
             metadata = MediaItemMetadata()
-            metadata.images = UniqueList(generated_images)
+            if generated_images:
+                metadata.images = UniqueList(generated_images)
+            if detected_genres:
+                metadata.genres = detected_genres
             return metadata
         return None
+
+    async def _analyze_playlist_genres(self, playlist: Playlist) -> set[str] | None:
+        """
+        Analyze playlist tracks and aggregate most common genres.
+
+        :param playlist: The playlist to analyze.
+        :return: Set of detected genres or None if not enough data.
+        """
+        genre_counter: Counter[str] = Counter()
+        track_count = 0
+        max_tracks = 500  # Analyze up to 500 tracks to avoid performance issues
+
+        try:
+            async for track in self.mass.music.playlists.iter_tracks(
+                playlist.item_id,
+                playlist.provider,
+            ):
+                if not isinstance(track, Track):
+                    continue
+
+                track_count += 1
+                if track.metadata and track.metadata.genres:
+                    genre_counter.update(track.metadata.genres)
+
+                if track_count >= max_tracks:
+                    break
+
+            if track_count == 0:
+                return None
+
+            # Calculate threshold and get top genres
+            min_threshold_val = self.config.get_value(CONF_GENRE_MIN_THRESHOLD) or 10
+            max_genre_val = self.config.get_value(CONF_GENRE_MAX_COUNT) or 3
+            min_threshold_pct = (
+                int(min_threshold_val) if isinstance(min_threshold_val, int | float) else 10
+            )
+            max_genre_count = int(max_genre_val) if isinstance(max_genre_val, int | float) else 3
+            required_count = math.ceil(track_count * min_threshold_pct / 100)
+
+            # Get most common genres that meet the threshold
+            detected = {
+                genre
+                for genre, count in genre_counter.most_common(max_genre_count)
+                if count >= required_count
+            }
+
+            return detected if detected else None
+
+        except (KeyError, AttributeError, TypeError, ValueError) as err:
+            LOGGER.debug("Failed to analyze genres for playlist %s: %s", playlist.name, err)
+            return None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -203,30 +297,28 @@ class PlaylistMetadataProvider(MetadataProvider):
         """
         Return True if this image was generated by this plugin.
 
-        Checks both the provider field and whether the path lives inside our images directory.
-        Bare filenames without directory separators are treated as builtin assets, not
-        plugin-generated images.
+        Checks the provider field and whether an absolute path lives inside our images
+        directory. Relative paths are never ours: they are builtin assets or another
+        provider's artwork, such as a cover file next to a filesystem playlist.
         """
         # Remote URLs and data URIs are never ours, regardless of provider
         if img.path.startswith(("http://", "https://", "data:")):
             return False
         if img.provider == self.instance_id:
             return True
-        # A bare filename without any directory separator (e.g. "logo.png", "fanart.jpg")
-        # is a builtin provider asset, not something we generated.
-        if "/" not in img.path and "\\" not in img.path:
+        # We only ever write absolute paths, so anything relative belongs to someone else
+        img_path = Path(img.path)
+        if not img_path.is_absolute():
             return False
         images_dir = Path(self._images_dir).resolve()
-        img_path = Path(img.path)
-        resolved = (
-            img_path.resolve() if img_path.is_absolute() else (images_dir / img_path).resolve()
-        )
         with contextlib.suppress(ValueError):
-            resolved.relative_to(images_dir)
+            img_path.resolve().relative_to(images_dir)
             return True
         return False
 
-    async def _cleanup_old_playlist_images(self, playlist: Playlist) -> None:
+    async def _cleanup_old_playlist_images(
+        self, playlist: Playlist, image_types: set[ImageType]
+    ) -> None:
         """
         Remove old images generated by this provider for the given playlist.
 
@@ -234,11 +326,16 @@ class PlaylistMetadataProvider(MetadataProvider):
         old images are immediately removed rather than waiting for the periodic cleanup.
 
         :param playlist: The playlist whose old images should be removed.
+        :param image_types: The image types to remove.
         """
         if not playlist.metadata.images:
             return
 
-        images_to_remove = [img for img in playlist.metadata.images if self._is_our_image(img)]
+        images_to_remove = [
+            img
+            for img in playlist.metadata.images
+            if img.type in image_types and self._is_our_image(img)
+        ]
         if not images_to_remove:
             return
 
@@ -270,6 +367,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                 )
                 if not exists:
                     stale.append(img)
+            fresh = playlist
             if stale:
                 stale_paths = {img.path for img in stale}
                 fresh = await self.mass.music.playlists.get_library_item(playlist.item_id)
@@ -281,9 +379,8 @@ class PlaylistMetadataProvider(MetadataProvider):
                         fresh.item_id, fresh, overwrite=True
                     )
 
-            # Collect paths still in use after cleanup (use fresh object if we updated it)
-            source = fresh.metadata.images if stale else playlist.metadata.images
-            for img in source or []:
+            # Collect paths still in use after cleanup
+            for img in fresh.metadata.images or []:
                 if self._is_our_image(img):
                     # Normalise to basename: path may be absolute or relative depending on
                     # which version of the plugin wrote the record.
@@ -473,7 +570,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                 smart_rules = None
 
         if not smart_rules or (len(artist_images) < 4 and len(album_image_map) < 4):
-            async for track in self.mass.music.playlists.tracks(
+            async for track in self.mass.music.playlists.iter_tracks(
                 playlist.item_id, playlist.provider
             ):
                 if not isinstance(track, Track):
@@ -543,8 +640,6 @@ class PlaylistMetadataProvider(MetadataProvider):
             return None
 
         # Use timestamp in filename to bust browser cache when tracks change.
-        # Frontend uses absolute path with provider="builtin" so builtin's resolve_image
-        # is bypassed and the file is served directly via os.path.isfile().
         image_type = ImageType.FANART if fanart else ImageType.THUMB
         suffix = "fanart" if fanart else "thumb"
         filename = f"{playlist.item_id}_{int(time())}_{suffix}.jpg"
@@ -586,6 +681,7 @@ class PlaylistMetadataProvider(MetadataProvider):
             results = await self.mass.music.artists.library_items(
                 search=artist.name,
                 limit=1,
+                summary=False,
             )
             if results and results[0].image:
                 return results[0].image
@@ -741,7 +837,7 @@ async def _render_artist_grid(
 
 async def _render_album_grid(mass: MusicAssistant, images: list[MediaItemImage]) -> bytes:
     """
-    Render the classic album-grid template (identical to the built-in collage).
+    Render the classic album-grid template.
 
     250x250 tiles tiled across the canvas, with repetition if needed.
     """
@@ -891,7 +987,7 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         "/Windows/Fonts/arialbd.ttf",
     ]
     for path in font_search_paths:
-        if os.path.exists(path):
+        if Path(path).exists():
             try:
                 return ImageFont.truetype(path, size)
             except OSError:

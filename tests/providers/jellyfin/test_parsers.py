@@ -61,7 +61,7 @@ async def test_parse_artists(
     example: pathlib.Path, connection: Connection, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse artists."""
-    async with aiofiles.open(example) as fp:
+    async with aiofiles.open(example, encoding="utf-8") as fp:
         raw_data = ARTIST_DECODER.decode(await fp.read())
     parsed = parse_artist(_LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
     # sort external Ids to ensure they are always in the same order for snapshot testing
@@ -74,7 +74,7 @@ async def test_parse_albums(
     example: pathlib.Path, connection: Connection, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse albums."""
-    async with aiofiles.open(example) as fp:
+    async with aiofiles.open(example, encoding="utf-8") as fp:
         raw_data = ARTIST_DECODER.decode(await fp.read())
     parsed = parse_album(_LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
     # sort external Ids to ensure they are always in the same order for snapshot testing
@@ -87,7 +87,7 @@ async def test_parse_tracks(
     example: pathlib.Path, connection: Connection, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse tracks."""
-    async with aiofiles.open(example) as fp:
+    async with aiofiles.open(example, encoding="utf-8") as fp:
         raw_data = ARTIST_DECODER.decode(await fp.read())
     parsed = parse_track(_LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
     # sort external Ids to ensure they are always in the same order for snapshot testing
@@ -108,9 +108,9 @@ def test_audio_format_empty_mediastreams() -> None:
     assert hasattr(result, "content_type")
 
 
-def test_audio_format_missing_channels() -> None:
-    """Test audio_format applies default when Channels field is missing."""
-    # Track with MediaStreams but missing Channels
+@pytest.mark.parametrize("channels", [{}, {ITEM_KEY_MEDIA_CHANNELS: 0}])
+def test_audio_format_missing_channels(channels: dict[str, int]) -> None:
+    """Test audio_format applies default when Channels is missing or reported as zero."""
     track: dict[str, Any] = {
         ITEM_KEY_MEDIA_SOURCES: [{ITEM_KEY_CONTAINER: "mp3"}],
         ITEM_KEY_MEDIA_STREAMS: [
@@ -120,6 +120,7 @@ def test_audio_format_missing_channels() -> None:
                 "SampleRate": 48000,
                 "BitDepth": 16,
                 "BitRate": 320000,
+                **channels,
             }
         ],
     }

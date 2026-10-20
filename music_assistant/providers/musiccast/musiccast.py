@@ -188,12 +188,21 @@ class MusicCastZoneDevice:
 
     @property
     def state(self) -> MusicCastPlayerState:
-        """Return the state of the player."""
+        """
+        Return the state of the player.
+
+        A main-sync zone mirrors the driving zone's netusb playback status, since only
+        one zone can hold the shared netusb session at a time.
+        """
         assert self.zone_data is not None
         if self.zone_data.power == "on":
-            if self.is_netusb and self.device.data.netusb_playback == "pause":
+            _main = self.physical_device.zone_devices.get(MC_DEFAULT_ZONE)
+            _tracks_netusb = self.is_netusb or (
+                self.source_id == MC_SOURCE_MAIN_SYNC and _main is not None and _main.is_netusb
+            )
+            if _tracks_netusb and self.device.data.netusb_playback == "pause":
                 return MusicCastPlayerState.PAUSED
-            if self.is_netusb and self.device.data.netusb_playback == "stop":
+            if _tracks_netusb and self.device.data.netusb_playback == "stop":
                 return MusicCastPlayerState.IDLE
             return MusicCastPlayerState.PLAYING
         return MusicCastPlayerState.OFF
@@ -264,7 +273,10 @@ class MusicCastZoneDevice:
     @property
     def group_server(self) -> MusicCastZoneDevice:
         """Return the server of the own group if present, self else."""
-        for entity in self.controller.all_server_devices:
+        # a zone synced to a main, which is a client, also matches that main as local server
+        for entity in sorted(
+            self.controller.all_server_devices, key=lambda entity: not entity.is_network_server
+        ):
             if self.is_part_of_group(entity):
                 return entity
         return self
@@ -372,7 +384,19 @@ class MusicCastZoneDevice:
                 and self.device.ip != group_server.device.ip
                 and self.source_id == MC_SOURCE_MC_LINK
             )
-            or (self.device.ip == group_server.device.ip and self.source_id == MC_SOURCE_MAIN_SYNC)
+            # main_sync follows main, never another zone of the same device
+            or (
+                self.device.ip == group_server.device.ip
+                and group_server.zone_name == MC_DEFAULT_ZONE
+                and self.source_id == MC_SOURCE_MAIN_SYNC
+            )
+            # a zone synced to its main, which is a client of the group
+            or (
+                self.source_id == MC_SOURCE_MAIN_SYNC
+                and (main := self.physical_device.zone_devices.get(MC_DEFAULT_ZONE)) is not None
+                and main is not self
+                and main.is_part_of_group(group_server)
+            )
         )
 
     async def join_players(self, group_members: list[MusicCastZoneDevice]) -> None:
@@ -423,7 +447,15 @@ class MusicCastZoneDevice:
 
         Stops the distribution if device is server. Used for unjoin service.
         """
-        if self.is_server:
+        if self.is_network_client:
+            # a client with main_sync zones also counts as server, it still leaves as client
+            for zone in self.other_zones:
+                if zone.source_id == MC_SOURCE_MAIN_SYNC:
+                    # a zone failing to leave must not keep main in the group
+                    with suppress(MusicCastGroupException):
+                        await zone._client_leave_group()
+            await self._client_leave_group(True)
+        elif self.is_server:
             await self._server_close_group()
         else:
             # this is not as in HA
@@ -474,6 +506,9 @@ class MusicCastZoneDevice:
             await self.device.zone_join(self.zone_name)
             return False
 
+        if self.state == MusicCastPlayerState.OFF:
+            # leaving a local main_sync above puts the zone in standby
+            await self.turn_on()
         await self.device.mc_client_join(server.device.ip, group_id, self.zone_name)
         return True
 
@@ -492,7 +527,8 @@ class MusicCastZoneDevice:
             servers = [
                 server
                 for server in self.controller.all_server_devices
-                if server.device.data.group_id == self.device.data.group_id
+                if server.is_network_server
+                and server.device.data.group_id == self.device.data.group_id
             ]
             await self.device.mc_client_unjoin()
             if servers:
@@ -512,11 +548,16 @@ class MusicCastZoneDevice:
         """
         for client in self.musiccast_group:
             if client != self:
-                await client._client_leave_group()
+                # a client failing to leave must not keep the group open
+                with suppress(MusicCastGroupException):
+                    await client._client_leave_group()
         await self.device.mc_server_group_close()
 
     async def _check_client_list(self) -> None:
         """Let the server check if all its clients are still part of his group."""
+        # a client with main_sync zones also counts as server, but has no group of its own
+        if self.is_network_client:
+            return
         if not self.is_server or self.device.data.group_update_lock.locked():
             return
 

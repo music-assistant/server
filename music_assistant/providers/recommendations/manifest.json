@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "recommendations",
+  "stage": "stable",
+  "name": "Library Recommendations",
+  "description": "Provides standard library-based recommendation rows.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": false
+}

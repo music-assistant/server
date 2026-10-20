@@ -68,14 +68,16 @@ class DBNDownBeatTracker:
                 }
             )
 
-    def __call__(self, activations: NDArray[np.float64]) -> NDArray[np.float64]:
+    def __call__(self, activations: NDArray[np.float64]) -> tuple[NDArray[np.float64], int]:
         """
         Run DBN decoding on beat/downbeat activations.
 
         :param activations: Shape (T, 2), columns [beat_act, downbeat_act].
             Values should be probabilities in (0, 1).
-        :return: Shape (M, 2) array of [time_seconds, beat_position].
-            beat_position is 1 for downbeats, 2..num_beats for other beats.
+        :return: Tuple of (beats, num_beats).
+            beats: Shape (M, 2) array of [time_seconds, beat_position].
+                beat_position is 1 for downbeats, 2..num_beats for other beats.
+            num_beats: Beats per bar of the winning meter hypothesis (0 if no beats found).
         """
         # Threshold: trim leading/trailing silence
         first = 0
@@ -116,12 +118,12 @@ class DBNDownBeatTracker:
             beats = np.nonzero(np.diff(beat_numbers))[0] + 1
 
         if len(beats) == 0:
-            return np.empty((0, 2), dtype=np.float64)
+            return np.empty((0, 2), dtype=np.float64), 0
 
         beat_times = (beats + first) / self.fps
         beat_positions = beat_numbers[beats]
 
-        return np.column_stack([beat_times, beat_positions])
+        return np.column_stack([beat_times, beat_positions]), int(best_hmm["num_beats"])
 
     @staticmethod
     def _build_bar_state_space(
@@ -348,16 +350,16 @@ class DBNDownBeatTracker:
         single_sources[single_states] = tm_states[tm_pointers[single_states]]
 
         # For multi-predecessor states, build padded arrays for vectorized max
-        if len(multi_states) > 0:
-            max_preds = num_preds[multi_states].max()
-            multi_source_pad = np.zeros((len(multi_states), max_preds), dtype=np.int32)
-            multi_logprob_pad = np.full((len(multi_states), max_preds), -np.inf, dtype=np.float32)
-            for i, s in enumerate(multi_states):
-                start = tm_pointers[s]
-                end = tm_pointers[s + 1]
-                n = end - start
-                multi_source_pad[i, :n] = tm_states[start:end]
-                multi_logprob_pad[i, :n] = tm_log_probs[start:end]
+        has_multi = len(multi_states) > 0
+        max_preds = num_preds[multi_states].max() if has_multi else 0
+        multi_source_pad = np.zeros((len(multi_states), max_preds), dtype=np.int32)
+        multi_logprob_pad = np.full((len(multi_states), max_preds), -np.inf, dtype=np.float32)
+        for i, s in enumerate(multi_states):
+            start = tm_pointers[s]
+            end = tm_pointers[s + 1]
+            n = end - start
+            multi_source_pad[i, :n] = tm_states[start:end]
+            multi_logprob_pad[i, :n] = tm_log_probs[start:end]
 
         # Initialize: uniform over all states, ping-pong buffers
         buf_a = np.empty(num_states, dtype=np.float32)
@@ -368,9 +370,7 @@ class DBNDownBeatTracker:
 
         # Pre-compute constant index arrays used every frame
         single_src_idx = single_sources[single_states]
-        has_multi = len(multi_states) > 0
-        if has_multi:
-            arange_multi = np.arange(len(multi_states))
+        arange_multi = np.arange(len(multi_states))
 
         for t in range(num_frames):
             cur_v = buf_b if prev_v is buf_a else buf_a

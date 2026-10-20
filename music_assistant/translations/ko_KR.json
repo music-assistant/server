@@ -95,5 +95,9 @@
   "provider.webdav.config_entries.password.label": "비밀번호",
   "provider.webdav.config_entries.username.label": "사용자 이름",
   "provider.yandex_music.config_entries.delete_wave_preset.action_label": "삭제",
-  "provider.ytmusic.config_entries.username.label": "사용자 이름"
+  "provider.ytmusic.config_entries.username.label": "사용자 이름",
+  "core.dashboard.errors.remote_access_required": "대시보드를 캐스팅하려면 원격 액세스 또는 HTTPS 기반 URL이 필요합니다.",
+  "core.dashboard.manifest.description": "Music Assistant 대시보드를 디스플레이가 있는 기기에 전송합니다.",
+  "core.dashboard.manifest.name": "대시보드",
+  "provider.chromecast.errors.show_dashboard_failed": "{0}에서 대시보드가 표시되지 않았습니다."
 }

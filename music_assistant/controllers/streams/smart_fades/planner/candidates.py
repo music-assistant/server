@@ -1,0 +1,1432 @@
+"""
+Smart Fades - candidate value objects and the timed-candidate factory.
+
+A ``CandidateSpec`` is a generator's declared intent (which tier rung, which
+anchor/entry, which generator produced it) before any plan exists; a
+``Candidate`` is that spec paired with its timed ``TransitionPlan`` and
+computed ``PlanMetrics``, ready for policies to score. The factory builds
+TIMED candidates only - anchor, overlap timing, tempo ramp, trims and metrics.
+EQ is deliberately absent: scoring never needs it, so the winner-only
+``PlanAssembler`` applies it after selection.
+
+Every ``build()`` derives its anchored tail fresh from the immutable
+``TransitionContext``, which is what replaces the old planner's
+restore-pristine/re-anchor scratchpad: two builds of the same spec are
+guaranteed to yield identical candidates.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
+
+from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.filters import ECHO_DECAYS
+from music_assistant.controllers.streams.smart_fades.helpers import (
+    MIN_EFFECTIVE_FADE_BUFFER,
+    SEGUE_ENERGY_FRACTION,
+    SMART_CROSSFADE_DURATION,
+    compute_gradual_tempo_steps,
+    generate_synthetic_timestamps,
+    sustained_energy_floor,
+)
+from music_assistant.controllers.streams.smart_fades.models import (
+    EchoOut,
+    FadeOutTrim,
+    HighPassSweep,
+    PlanMetrics,
+    TempoPlan,
+    TransitionPlan,
+    TransitionStrategy,
+    TransitionStyle,
+    TransitionTier,
+)
+from music_assistant.controllers.streams.smart_fades.structure import point_in_mask
+from music_assistant.controllers.streams.smart_fades.vocal import (
+    collision_metrics,
+    mask_saturated,
+    merge_windows,
+)
+
+from .context import SEGUE_MAX_SECONDS, TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD, choose_tier
+
+if TYPE_CHECKING:
+    import logging
+    from collections.abc import Iterable
+
+    import numpy as np
+    import numpy.typing as npt
+
+    from music_assistant.controllers.streams.smart_fades.models import BandProfile
+    from music_assistant.models.audio_analysis import AudioAnalysisData
+
+    from .context import TransitionContext
+
+# Overlap length per tier, in bars of the outgoing grid (research: real DJ
+# transitions cluster at 32 beats = 8 bars; the doubled 16-bar blend is
+# earned only when FireRed shows both decks near-instrumental, where the
+# long exposure carries no vocal-collision risk)
+_FULL_BLEND_BARS: int = 8
+_INSTRUMENTAL_BLEND_BARS: int = 16
+# vocal duty (unpadded mask coverage) at or under this on BOTH decks
+# qualifies as near-instrumental
+_INSTRUMENTAL_DUTY_MAX: float = 0.05
+# The most of the incoming track's head a candidate may cut beyond what its own
+# overlap plays under the outgoing track: a deeper cut skips audio the listener
+# never hears any part of.
+_MAX_UNHEARD_INTRO_S: float = 2.0
+_TEMPO_BLEND_BARS: int = 8
+# QUICK_FADE bars by BPM incompatibility: (max diff %, bars); beyond -> 1 bar
+_QUICK_FADE_LADDER: tuple[tuple[float, int], ...] = ((12.0, 4), (20.0, 2))
+# QUICK_FADE bars ceiling when the two decks' meters differ
+_CROSS_METER_MAX_BARS: int = 2
+# phrase-aligned rung set every ladder walks, largest first
+RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
+
+# Deep-trim guard: a bar is protected when its low band is silent but its
+# voice/melody bands are active (cutting there beheads a sung intro)
+_TRIM_GUARD_LOW_FLOOR: float = 0.25
+_TRIM_GUARD_VOICE_FLOOR: float = 0.4
+
+# Trim-closing anchors engage only when the audible end sits this much past
+# the energy anchor; below it the default anchor leads the main pass (the
+# rescue pass re-runs this generator ungated when that pass rejects everything)
+_TRIM_CLOSING_MIN_GAP_S: float = 8.0
+
+# Segue overlaps shrink in steps of 2 outgoing bars on a snapped grid, else of
+# 2 seconds, never below the quick fade they replace nor this many seconds, in at
+# most this many steps (a long segue adds its quiet material as one more)
+_SEGUE_STEP_BARS: int = 2
+_SEGUE_STEP_SECONDS: float = 2.0
+_SEGUE_MIN_SECONDS: float = 2.0
+_SEGUE_MAX_SPECS: int = 7
+# a deck sings over a segue window above this vocal duty
+_SINGS_DUTY: float = 0.10
+
+# A filter out sweeps the outgoing high-pass up over 2 to 4 outgoing bars, longest first
+_FILTER_OUT_BARS: tuple[int, ...] = (4, 2)
+_FILTER_OUT_START_HZ: float = 20.0
+_FILTER_OUT_END_HZ: float = 600.0
+# an outgoing kick counts until the cutoff passes the top of the low band its kick bars are
+# read in, the "low" entry of BAND_RMS_BANDS
+_KICK_TOP_HZ: float = 120.0
+# echo taps at or above this level repeat a word audibly over the next track; the softer
+# ones sit under it
+_ECHO_AUDIBLE_DECAY: float = 0.25
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSpec:
+    """A candidate's declared shape: tier rung, anchor/entry choice, and generator provenance."""
+
+    tier: TransitionTier
+    bars: int
+    # buffer-local; None = pristine audible end
+    anchor_s: float | None
+    # None = natural entry
+    entry_s: float | None
+    strategy: TransitionStrategy = TransitionStrategy.ENERGY_ALIGNED
+    # generator name, for scoreboard + tie-break
+    source: str = ""
+    # the tier ladder's top rung; 0 = same as bars
+    ideal_bars: int = 0
+    # the style of a segue or dressed generator, else None until the factory sets the
+    # style it built
+    style: TransitionStyle | None = None
+    # a segue's overlap and the longest overlap of its shrink steps, in seconds
+    overlap_s: float | None = None
+    ideal_overlap_s: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """One fully-built candidate: its spec, timed plan, and computed metrics."""
+
+    spec: CandidateSpec
+    # timed plan, eq_plan neutral until assembly
+    plan: TransitionPlan
+    metrics: PlanMetrics
+    # the tier ladder's top rung for this context
+    ideal_bars: int
+
+
+def earns_instrumental_blend(ctx: TransitionContext) -> bool:
+    """Whether verified near-instrumental decks earn the doubled full-blend overlap."""
+    duties = _vocal_duties(ctx)
+    if duties is None:
+        return False
+    out_duty, in_duty = duties
+    return out_duty <= _INSTRUMENTAL_DUTY_MAX and in_duty <= _INSTRUMENTAL_DUTY_MAX
+
+
+def bars_ladder(ctx: TransitionContext, tier: TransitionTier) -> list[int]:
+    """Candidate bar counts to try for a tier, largest first (shorter rungs fit smaller buffers)."""
+    if tier is TransitionTier.QUICK_FADE:
+        ideal = next(
+            (bars for limit, bars in _QUICK_FADE_LADDER if ctx.bpm_diff_percent <= limit), 1
+        )
+        if ctx.cross_meter:
+            # a mismatched meter has no shared bar grid to blend across; cap short
+            # regardless of how close the tempos happen to be
+            ideal = min(ideal, _CROSS_METER_MAX_BARS)
+    elif tier is TransitionTier.TEMPO_BLEND:
+        ideal = _TEMPO_BLEND_BARS
+    elif earns_instrumental_blend(ctx):
+        ideal = _INSTRUMENTAL_BLEND_BARS
+    else:
+        ideal = _FULL_BLEND_BARS
+    return [bars for bars in RUNG_LADDER if bars <= ideal]
+
+
+class CandidateGenerator(ABC):
+    """One source of candidate specs; generators only emit, the factory validates feasibility."""
+
+    name: str
+
+    @abstractmethod
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit this generator's candidate specs for one transition, best first."""
+
+
+class EnergyLadderGenerator(CandidateGenerator):
+    """Emits the tier's bar-count ladder at each viable anchor, across entry options."""
+
+    name = "energy-ladder"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit one spec per (rung, entry option) at the default, full-band and pinned anchors."""
+        ladder = bars_ladder(ctx, ctx.tier)
+        ideal = ladder[0]
+        # the default anchor is already kick-folded; a pure full-band variant
+        # would let a longer blend win past the kick die-out, defeating the
+        # researched kick handover, so it is deliberately not emitted (trim-closing
+        # may still anchor later when >=8s of audible tail would otherwise be stranded)
+        anchors: list[float | None] = [None]
+        a_pin = _fade_onset_pin(ctx)
+        if a_pin < ctx.default_anchor:
+            anchors.append(a_pin)
+        for anchor in anchors:
+            for bars in ladder:
+                # the default anchor keeps the factory-chosen entry (grid
+                # alignment + rolling intro), exactly like the old energy
+                # candidate; explicit entry options are pin-scoped, like the
+                # old remediation rungs they came from
+                entries = [None] if anchor is None else _entry_options(ctx, bars)
+                for entry in entries:
+                    yield CandidateSpec(
+                        tier=ctx.tier,
+                        bars=bars,
+                        anchor_s=anchor,
+                        entry_s=entry,
+                        source=self.name,
+                        ideal_bars=ideal,
+                    )
+
+
+class CodaAnchorGenerator(CandidateGenerator):
+    """Emits candidates anchored inside the outgoing track's validated coda/outro zone."""
+
+    name = "coda-anchor"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit the zone's fitting rung(s) at the coda anchor, or nothing without a valid zone."""
+        # coda shifting is a vocal-collision remediation: without a vocal
+        # timeline the zone was validated against an empty mask and the old
+        # planner never coda-shifted, so stay inactive on the energy-only path
+        if ctx.vocal_out_placement is None:
+            return
+        if ctx.coda_zone is None or ctx.outgoing_profile is None:
+            return
+        zone = ctx.coda_zone
+        bar_starts = ctx.outgoing_profile.bar_starts
+        in_zone = bar_starts[(bar_starts >= zone.start_s) & (bar_starts <= zone.end_s)]
+        if not len(in_zone):
+            return
+        anchor = float(in_zone[-1]) - ctx.buffer_offset
+        if anchor < MIN_EFFECTIVE_FADE_BUFFER:
+            return
+        bar_a = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        zone_bars = int((zone.end_s - zone.start_s) / bar_a)
+        top_rung = next((n for n in (16, 8, 4, 2) if n <= zone_bars), None)
+        if top_rung is None:
+            return
+        for bars in dict.fromkeys((top_rung, 2)):
+            for entry in _entry_options(ctx, bars):
+                yield CandidateSpec(
+                    tier=ctx.tier,
+                    bars=bars,
+                    anchor_s=anchor,
+                    entry_s=entry,
+                    source=self.name,
+                    ideal_bars=top_rung,
+                )
+
+
+class ProtectiveAnchorGenerator(CandidateGenerator):
+    """Emits the tier's ladder anchored to keep A's last outgoing vocal phrase intact."""
+
+    name = "protective-anchor"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit every ladder rung at the nearest anchor that doesn't truncate A's last phrase."""
+        if ctx.vocal_out_placement is None or not ctx.vocal_out_placement.windows:
+            return
+        target = _outgoing_vocal_end(ctx)
+        anchor = _nearest_protective_anchor(ctx, target)
+        ladder = bars_ladder(ctx, ctx.tier)
+        ideal = ladder[0]
+        bar_seconds = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        for bars in ladder:
+            # the old protection had two re-anchor triggers: cover the last
+            # vocal phrase, and close a short fade's audible-trim gap; emit
+            # both anchors so each stays reachable as a candidate
+            anchors = [anchor]
+            trim_target = ctx.audio_end - bars * bar_seconds
+            if trim_target > anchor:
+                trim_anchor = _nearest_protective_anchor(ctx, trim_target, prefer_earliest=False)
+                if trim_anchor not in anchors:
+                    anchors.append(trim_anchor)
+            # the factory-chosen (beat-aligned) entry leads, as the old
+            # protection rebuild pinned it; explicit groove/natural options
+            # follow so a remediated entry stays reachable too
+            for rung_anchor in anchors:
+                for entry in [None, *_entry_options(ctx, bars)]:
+                    yield CandidateSpec(
+                        tier=ctx.tier,
+                        bars=bars,
+                        anchor_s=rung_anchor,
+                        entry_s=entry,
+                        source=self.name,
+                        ideal_bars=ideal,
+                    )
+
+
+class VocalOnsetEntryGenerator(CandidateGenerator):
+    """Emits an entry that lands B's first vocal onset exactly at the overlap end."""
+
+    name = "vocal-onset-entry"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit the vocal-onset-aligned entry at the tier's ideal rung, or nothing when illegal."""
+        if ctx.vocal_in_placement is None or not ctx.vocal_in_placement.windows:
+            return
+        if mask_saturated(ctx.vocal_in_placement, float(SMART_CROSSFADE_DURATION)):
+            return
+        ideal = bars_ladder(ctx, ctx.tier)[0]
+        bar_b = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
+        entry = ctx.vocal_in_placement.windows[0][0] - ideal * bar_b
+        if entry < 0.0 or point_in_mask(ctx.vocal_in_placement, entry):
+            return
+        a_pin = _fade_onset_pin(ctx)
+        anchors: list[float | None] = [a_pin if a_pin < ctx.default_anchor else None]
+        # the old planner's protection rebuild preserved a remediated entry at
+        # the protective anchor; emitting the combination keeps that reachable
+        if ctx.vocal_out_placement is not None and ctx.vocal_out_placement.windows:
+            protective = _nearest_protective_anchor(
+                ctx, min(ctx.vocal_out_placement.last_end(), ctx.audio_end)
+            )
+            if protective not in anchors and protective != ctx.default_anchor:
+                anchors.append(protective)
+        for anchor in anchors:
+            yield CandidateSpec(
+                tier=ctx.tier,
+                bars=ideal,
+                anchor_s=anchor,
+                entry_s=entry,
+                source=self.name,
+                ideal_bars=ideal,
+            )
+
+
+class RescueAnchorGenerator(CandidateGenerator):
+    """Emits a modest, late-anchored rung as a last resort before the emergency handoff."""
+
+    name = "rescue-anchor"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit 1-2 bar rungs anchored as late as the tail allows, never past A's own vocal end."""
+        full_ladder = bars_ladder(ctx, ctx.tier)
+        bar_seconds = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        last_vocal_end = _outgoing_vocal_end(ctx)
+        for bars in [rung for rung in full_ladder if rung <= 2]:
+            target = min(ctx.audio_end, max(ctx.audio_end - bars * bar_seconds, last_vocal_end))
+            anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=False)
+            for entry in [None, *_entry_options(ctx, bars)]:
+                yield CandidateSpec(
+                    tier=ctx.tier,
+                    bars=bars,
+                    anchor_s=anchor,
+                    entry_s=entry,
+                    source=self.name,
+                    ideal_bars=full_ladder[0],
+                )
+
+
+class TrimClosingAnchorGenerator(CandidateGenerator):
+    """Emits the tier's ladder at that anchor, at the audible end, when a large tail is stranded."""
+
+    name = "trim-closing-anchor"
+
+    def __init__(self, min_gap: float = _TRIM_CLOSING_MIN_GAP_S) -> None:
+        """Initialize the generator with the smallest stranded-tail gap that engages it."""
+        self._min_gap = min_gap
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit every ladder rung at the audible end, or nothing when the trim gap is small."""
+        anchor = ctx.audio_end
+        if anchor - ctx.default_anchor < self._min_gap:
+            return
+        # ctx.tier is decided at the early anchor; the grid can be blendable at the audible end
+        _, tier = choose_tier(ctx.outgoing, ctx.incoming, anchor)
+        ladder = bars_ladder(ctx, tier)
+        for bars in ladder:
+            yield CandidateSpec(
+                tier=tier,
+                bars=bars,
+                anchor_s=anchor,
+                entry_s=None,
+                source=self.name,
+                ideal_bars=ladder[0],
+            )
+
+
+class SegueGenerator(CandidateGenerator):
+    """Emits overlaps of the outgoing quiet tail with the incoming quiet head, longest first."""
+
+    name = "segue"
+
+    def __init__(self, *, allow_blend_context: bool = False) -> None:
+        """
+        Initialize the generator.
+
+        :param allow_blend_context: Also emit for a beatmatchable pair, which otherwise keeps
+            its blend.
+        """
+        self._allow_blend_context = allow_blend_context
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit the segue's shrink steps down to the quick fade it replaces, or nothing."""
+        if ctx.segue is None:
+            return
+        # both decks read near-continuous vocal, so the vocal guard abstains; a segue
+        # there overlaps both voices, so the pair keeps today's transition
+        if not ctx.vocal_collision_reliable:
+            return
+        if ctx.preferred_style is TransitionStyle.BLEND and not self._allow_blend_context:
+            return
+        bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        floor = max(_SEGUE_MIN_SECONDS, bars_ladder(ctx, TransitionTier.QUICK_FADE)[0] * bar_out)
+        if _beatless_long_qualifies(ctx):
+            # two near-instrumental decks, one without a beat, ride a long fade over
+            # loud material too; it is never shorter than the quiet material alone gives
+            ideal = min(SEGUE_MAX_SECONDS, ctx.audio_end)
+        elif ctx.segue.quiet_tail + ctx.segue.quiet_head >= floor:
+            ideal = ctx.segue.overlap
+        else:
+            return
+        step = _SEGUE_STEP_BARS * bar_out if ctx.segue.snapped_out else _SEGUE_STEP_SECONDS
+        overlaps = _segue_steps(ideal, floor, step)
+        if ideal > ctx.segue.overlap >= floor:
+            # the quiet material's own length stays a step, so a long segue that has to
+            # shrink never ships shorter than the quiet material alone would
+            overlaps = sorted({*overlaps, ctx.segue.overlap}, reverse=True)
+        for overlap in overlaps:
+            yield CandidateSpec(
+                tier=ctx.tier,
+                bars=1,
+                anchor_s=ctx.audio_end,
+                entry_s=None,
+                source=self.name,
+                ideal_bars=1,
+                style=TransitionStyle.SEGUE,
+                overlap_s=overlap,
+                ideal_overlap_s=ideal,
+            )
+
+
+class FilterOutGenerator(CandidateGenerator):
+    """Emits filter outs ending where a cut of the pair would end."""
+
+    name = "filter-out"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit 4- and 2-bar filter outs for a pair that can't be beatmatched."""
+        if ctx.tier is not TransitionTier.QUICK_FADE:
+            return
+        # two meters share no bar grid, so a filter out stays as short as their cut
+        ladder = [
+            bars
+            for bars in _FILTER_OUT_BARS
+            if not ctx.cross_meter or bars <= _CROSS_METER_MAX_BARS
+        ]
+        bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        energy_anchor = _dressed_anchor(ctx)
+        for bars in ladder:
+            for anchor in _dressed_anchors(ctx, bars * bar_out):
+                # like the cuts: the energy anchor keeps the factory's entry, the
+                # protective anchors also try the explicit entry options
+                entries = [None] if anchor == energy_anchor else [None, *_entry_options(ctx, bars)]
+                for entry in entries:
+                    yield CandidateSpec(
+                        tier=ctx.tier,
+                        bars=bars,
+                        anchor_s=anchor,
+                        entry_s=entry,
+                        source=self.name,
+                        ideal_bars=ladder[0],
+                        style=TransitionStyle.FILTER_OUT,
+                    )
+
+
+class EchoOutGenerator(CandidateGenerator):
+    """Emits echo outs whose echo ends where a cut of the pair would end."""
+
+    name = "echo-out"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit the echo outs for a pair that can't be beatmatched."""
+        if ctx.tier is not TransitionTier.QUICK_FADE:
+            return
+        echo_length = _echo_length(ctx)
+        # the dry signal stops an echo before the anchor, so that is what clears the vocals
+        for anchor in _dressed_anchors(ctx, echo_length, vocal_margin=echo_length):
+            yield CandidateSpec(
+                tier=ctx.tier,
+                bars=1,
+                anchor_s=anchor,
+                entry_s=None,
+                source=self.name,
+                ideal_bars=1,
+                style=TransitionStyle.ECHO_OUT,
+            )
+
+
+def default_generators() -> tuple[CandidateGenerator, ...]:
+    """Return the standard generator set, in preference order (best first)."""
+    return (
+        EnergyLadderGenerator(),
+        CodaAnchorGenerator(),
+        ProtectiveAnchorGenerator(),
+        VocalOnsetEntryGenerator(),
+        SegueGenerator(),
+        TrimClosingAnchorGenerator(),
+        FilterOutGenerator(),
+        EchoOutGenerator(),
+    )
+
+
+class CandidateFactory:
+    """Builds timed candidates from specs, purely over the transition context."""
+
+    def __init__(self, ctx: TransitionContext, logger: logging.Logger) -> None:
+        """Initialize the factory for one transition."""
+        self._ctx = ctx
+        self._logger = logger
+
+    def build(self, spec: CandidateSpec, *, stretch: bool = True) -> Candidate | None:
+        """
+        Build one complete timed candidate for a spec, or ``None`` when it is infeasible.
+
+        Every timing, tempo and trim decision is derived fresh from the
+        context and the spec's anchor - a candidate never inherits state from
+        a previously built one. Infeasible means the spec's bar count needs
+        more room than the incoming buffer has, or its entry leaves no legal
+        alignment; a 1-bar spec never fails this way, matching the plan floor,
+        except an echo out with no outgoing downbeat to cut on.
+        The returned candidate's spec reflects what was actually built: a
+        re-anchored tail can downgrade the tier and cap the bar count.
+
+        :param spec: The candidate's spec.
+        :param stretch: Allow the gradual tempo ramp; False builds a blend's unstretched variant.
+        """
+        if spec.style is TransitionStyle.SEGUE:
+            return self._build_segue(spec)
+        if spec.style is TransitionStyle.ECHO_OUT:
+            return self._build_echo_out(spec)
+        tail = self._anchored_tail(spec.anchor_s)
+        if spec.style is TransitionStyle.FILTER_OUT:
+            # a filter out keeps its own rungs and its quick fade tier: it never stretches
+            tier, bars = spec.tier, spec.bars
+        else:
+            # a re-anchored tail can downgrade the tier (shorter/irregular grid); the
+            # requested bar count still reflects the old tier, so cap it at the new
+            # tier's largest rung or a long overlap ships without its tempo ramp
+            _, tier = choose_tier(self._ctx.outgoing, self._ctx.incoming, tail.effective_end)
+            bars = min(spec.bars, bars_ladder(self._ctx, tier)[0])
+
+        fadein_start_pos = (
+            spec.entry_s if spec.entry_s is not None else self._choose_fadein_entry(tail, bars)
+        )
+        if bars > 1 and fadein_start_pos is None:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "dropping spec source=%s tier=%s bars=%d anchor=%s: no beat-aligned incoming entry",
+                spec.source,
+                tier,
+                bars,
+                spec.anchor_s,
+            )
+            return None
+        crossfade_duration = self._calculate_crossfade_duration(tail, bars)
+
+        tempo_plan = (
+            self._choose_tempo_ramp(tier, tail, crossfade_duration) if stretch else TempoPlan()
+        )
+        crossfade_duration, fadein_trim_start = self._lock_in_timing(
+            tail, crossfade_duration, fadein_start_pos, tempo_plan
+        )
+        if bars > 1 and fadein_start_pos is not None and fadein_trim_start is None:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "dropping spec source=%s tier=%s bars=%d anchor=%s: "
+                "no legal timing lock for the pinned entry",
+                spec.source,
+                tier,
+                bars,
+                spec.anchor_s,
+            )
+            return None
+        # Rolling-intro alignment: on a full blend with no pinned entry, deepen B's
+        # trim so its groove entry lands at the overlap END (B's intro runs under A,
+        # its drop hits where A's music dies). A sung run that no legal cut clears
+        # is infeasible so the caller's ladder drops to a shorter overlap instead —
+        # except at the 1-bar floor, which must always yield a candidate: there the
+        # un-deepened trim ships as-is.
+        if tier is TransitionTier.FULL_BLEND and spec.entry_s is None:
+            feasible, aligned = self._align_rolling_intro(crossfade_duration, fadein_trim_start)
+            if not feasible:
+                if bars > 1:
+                    self._logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "dropping spec source=%s tier=%s bars=%d anchor=%s: "
+                        "rolling intro: no legal cut clears the sung run",
+                        spec.source,
+                        tier,
+                        bars,
+                        spec.anchor_s,
+                    )
+                    return None
+            else:
+                fadein_trim_start = aligned
+        if (
+            fadein_trim_start is not None
+            and fadein_trim_start > crossfade_duration + _MAX_UNHEARD_INTRO_S
+        ):
+            # deeper than the blend justifies: more of the incoming track would be
+            # skipped than the listener hears blended, so it plays from its head -
+            # unpinned too, so scoring does not treat it as groove-aligned
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "stripping fade-in trim for spec source=%s tier=%s: %.2fs trim exceeds "
+                "the %.2fs overlap",
+                spec.source,
+                tier,
+                fadein_trim_start,
+                crossfade_duration,
+            )
+            fadein_trim_start = None
+            spec = replace(spec, entry_s=None)
+
+        style = spec.style or (
+            TransitionStyle.CUT if tier is TransitionTier.QUICK_FADE else TransitionStyle.BLEND
+        )
+        highpass = None
+        if style is TransitionStyle.FILTER_OUT:
+            # the sweep rides the volume fade; without a stretch input time is rendered time
+            highpass = HighPassSweep(
+                start_s=tail.effective_end - crossfade_duration,
+                end_s=tail.effective_end,
+                start_hz=_FILTER_OUT_START_HZ,
+                end_hz=_FILTER_OUT_END_HZ,
+            )
+        plan = TransitionPlan(
+            tier=tier,
+            fade_out_window=tail.effective_end,
+            crossfade_duration=crossfade_duration,
+            style=style,
+            tempo_plan=tempo_plan,
+            fadeout_trim=tail.fadeout_trim,
+            fadein_trim_start=fadein_trim_start,
+            highpass=highpass,
+        )
+        built_spec = replace(spec, tier=tier, bars=bars, style=style)
+        return Candidate(
+            spec=built_spec,
+            plan=plan,
+            metrics=self._score(built_spec, plan),
+            ideal_bars=spec.ideal_bars or spec.bars,
+        )
+
+    def score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
+        """Score an arbitrary (spec, plan) pair against this context, for a plan edited post-build."""
+        return self._score(spec, plan)
+
+    @property
+    def _bpm_ratio(self) -> float:
+        """Tempo ratio between the incoming and outgoing track."""
+        return self._ctx.incoming.bpm / self._ctx.outgoing.bpm
+
+    def _anchored_tail(self, anchor_s: float | None) -> _AnchoredTail:
+        """Derive the tail state for an anchor, never later than the RMS-audible boundary."""
+        import numpy as np  # noqa: PLC0415
+
+        ctx = self._ctx
+        anchor = anchor_s if anchor_s is not None else ctx.default_anchor
+        effective_end, fadeout_trim = self._tail_end(min(anchor, ctx.audio_end))
+        protective = np.asarray(ctx.protective_downbeats, dtype=np.float32)
+        return _AnchoredTail(
+            effective_end=effective_end,
+            fadeout_trim=fadeout_trim,
+            beats=ctx.outgoing.beats[ctx.outgoing.beats <= effective_end],
+            downbeats=ctx.outgoing.downbeats[ctx.outgoing.downbeats <= effective_end],
+            # protective downbeats reach all the way to audio_end, so they cover
+            # any position an anchor could have chosen
+            extrapolated_downbeats=protective[protective <= effective_end],
+        )
+
+    def _tail_end(self, end: float) -> tuple[float, FadeOutTrim | None]:
+        """Return where the outgoing stream ends for a tail ending at ``end``, and its trim."""
+        ctx = self._ctx
+        # same sub-half-second slack rule as the tail cue: the rendered stream
+        # still ends at the buffer end, so the anchor must follow it
+        if end >= ctx.buffer_duration - 0.5:
+            return ctx.buffer_duration, None
+        return end, FadeOutTrim(end_pos=end, trimmed_seconds=ctx.buffer_duration - end)
+
+    def _choose_fadein_entry(self, tail: _AnchoredTail, crossfade_bars: int) -> float | None:
+        """Choose where the incoming track enters, aligned to its beat grid."""
+
+        def calculate_beat_positions(
+            fade_out_beats: npt.NDArray[np.float32],
+            fade_in_beats: npt.NDArray[np.float32],
+            num_beats: int,
+        ) -> float | None:
+            """Calculate start positions from beat arrays."""
+            if len(fade_out_beats) < num_beats or len(fade_in_beats) < num_beats:
+                return None
+
+            fade_in_slice = fade_in_beats[:num_beats]
+            return float(fade_in_slice[0])
+
+        # Try downbeats first for most musical timing
+        downbeat_positions = calculate_beat_positions(
+            tail.extrapolated_downbeats, self._ctx.incoming.downbeats, crossfade_bars
+        )
+        if downbeat_positions is not None:
+            return downbeat_positions
+
+        # Try regular beats if downbeats insufficient
+        required_beats = crossfade_bars * self._ctx.incoming.beats_per_bar
+        beat_positions = calculate_beat_positions(
+            tail.beats, self._ctx.incoming.beats, required_beats
+        )
+        if beat_positions is not None:
+            return beat_positions
+
+        # Fallback: No beat alignment possible
+        self._logger.log(VERBOSE_LOG_LEVEL, "No beat alignment possible (insufficient beats)")
+        return None
+
+    def _calculate_crossfade_duration(self, tail: _AnchoredTail, crossfade_bars: int) -> float:
+        """Calculate the crossfade duration for a bar count, capped to the audible tail."""
+        downbeats = tail.downbeats
+        bar_seconds = self._ctx.outgoing.beats_per_bar * 60.0 / self._ctx.outgoing.bpm
+        # the downbeat span assumes the anchor sits (near) the last downbeat;
+        # when the grid dies early (unsnapped anchor), the anchor gap would be
+        # added to EVERY rung — a "1-bar" quick fade could span the whole gap
+        if (
+            len(downbeats) > crossfade_bars
+            and tail.effective_end - float(downbeats[-1]) < bar_seconds
+        ):
+            # the real span between downbeats honors the track's own tempo/rubato
+            # more precisely than a constant-BPM estimate
+            musical_duration = float(
+                tail.effective_end - downbeats[len(downbeats) - 1 - crossfade_bars]
+            )
+        else:
+            seconds_per_beat = 60.0 / self._ctx.incoming.bpm
+            musical_duration = crossfade_bars * self._ctx.incoming.beats_per_bar * seconds_per_beat
+
+        # Cap at the audible fade-out room so crossfade_start never goes negative
+        # downstream (effective_end <= SMART_CROSSFADE_DURATION always)
+        actual_duration = min(musical_duration, tail.effective_end)
+
+        if musical_duration > actual_duration:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Constraining crossfade duration from %.1fs to %.1fs (audible tail limit)",
+                musical_duration,
+                actual_duration,
+            )
+
+        return actual_duration
+
+    def _choose_tempo_ramp(
+        self, tier: TransitionTier, tail: _AnchoredTail, crossfade_duration: float
+    ) -> TempoPlan:
+        """Choose the gradual tempo ramp that beatmatches the outgoing track, if any."""
+        if tier is TransitionTier.QUICK_FADE:
+            return TempoPlan()
+        if not 0.1 < self._ctx.bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
+            return TempoPlan()
+        return TempoPlan(steps=self._compute_tempo_steps(tail, crossfade_duration))
+
+    def _compute_tempo_steps(
+        self, tail: _AnchoredTail, crossfade_duration: float
+    ) -> list[tuple[float, float]]:
+        """Compute the gradual tempo ramp in the 10s window before the crossfade."""
+        stretch_duration = 10.0
+        crossfade_start = tail.effective_end - crossfade_duration
+        # A crossfade consuming the whole audible tail leaves no room for a
+        # pre-fade tempo ramp
+        if crossfade_start <= 0:
+            return []
+        stretch_start = max(0.0, crossfade_start - stretch_duration)
+        stretch_end = crossfade_start
+
+        # Collect timing points within the stretch window
+        beats = tail.beats
+        beat_mask = (beats >= stretch_start) & (beats <= stretch_end)
+        db_mask = (tail.extrapolated_downbeats >= stretch_start) & (
+            tail.extrapolated_downbeats <= stretch_end
+        )
+        window_beats = beats[beat_mask] - stretch_start
+        window_downbeats = tail.extrapolated_downbeats[db_mask] - stretch_start
+
+        # >3% BPM diff: beat-level stepping (more steps = smoother)
+        # <=3%: downbeat-level stepping, fall back to beats if too few
+        if self._ctx.bpm_diff_percent > 3.0:
+            stretch_timestamps = window_beats
+        elif len(window_downbeats) >= 2:
+            stretch_timestamps = window_downbeats
+        else:
+            stretch_timestamps = window_beats
+
+        # Fall back to synthetic timestamps when < 2 real timestamps
+        if len(stretch_timestamps) < 2:
+            stretch_timestamps = generate_synthetic_timestamps(
+                stretch_end - stretch_start,
+                self._ctx.outgoing.bpm,
+                beats_per_bar=self._ctx.outgoing.beats_per_bar,
+            )
+
+        tempo_steps = compute_gradual_tempo_steps(
+            start_ratio=1.0,
+            end_ratio=self._bpm_ratio,
+            downbeats=stretch_timestamps,
+        )
+        if not tempo_steps:
+            tempo_steps = [(0.0, self._bpm_ratio)]
+
+        # Shift timestamps back to buffer-relative coordinates for FFmpeg
+        return [(ts + stretch_start, ratio) for ts, ratio in tempo_steps]
+
+    def _lock_in_timing(
+        self,
+        tail: _AnchoredTail,
+        crossfade_duration: float,
+        fadein_start_pos: float | None,
+        tempo_plan: TempoPlan,
+    ) -> tuple[float, float | None]:
+        """
+        Lock the overlap timing: confirm the fade-in entry and snap to downbeats.
+
+        Returns the final crossfade duration (downbeat-snapped and compensated
+        for time-stretch compression) and the fade-in trim position, or ``None``
+        when beat alignment is skipped.
+
+        :param tail: The anchored tail the candidate is built on.
+        :param crossfade_duration: Draft crossfade duration in seconds.
+        :param fadein_start_pos: Chosen entry point in the incoming track, if any.
+        :param tempo_plan: The tempo ramp chosen for this transition.
+        """
+        # Adjust crossfade duration to align with outgoing track's downbeats.
+        # When stretching, only consider downbeats after the stretch window
+        # to ensure the outgoing track has reached the target tempo.
+        crossfade_start = tail.effective_end - crossfade_duration
+        crossfade_duration = self._adjust_crossfade_to_downbeats(
+            tail,
+            crossfade_duration=crossfade_duration,
+            fadein_start_pos=fadein_start_pos,
+            min_downbeat_pos=crossfade_start if tempo_plan else 0.0,
+            render_ratio=self._bpm_ratio if tempo_plan else 1.0,
+        )
+
+        # Compensate crossfade duration for time-stretch compression.
+        # Gate on the tempo plan (not stretch eligibility) so a guard-skipped
+        # stretch doesn't apply a compensation for a stretch that never ran.
+        if tempo_plan:
+            crossfade_duration = crossfade_duration / self._bpm_ratio
+
+        fadein_trim_start: float | None = None
+        if (
+            fadein_start_pos is not None
+            and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION
+        ):
+            fadein_trim_start = fadein_start_pos
+        else:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Skipping beat alignment: not enough audio after trim (%s + %.1fs > %.1fs)",
+                fadein_start_pos,
+                crossfade_duration,
+                SMART_CROSSFADE_DURATION,
+            )
+
+        return crossfade_duration, fadein_trim_start
+
+    def _adjust_crossfade_to_downbeats(
+        self,
+        tail: _AnchoredTail,
+        crossfade_duration: float,
+        fadein_start_pos: float | None,
+        min_downbeat_pos: float = 0.0,
+        render_ratio: float = 1.0,
+    ) -> float:
+        """Adjust crossfade duration to align with outgoing track's downbeats."""
+        # If we don't have downbeats or beat alignment is disabled, return original duration
+        if len(tail.extrapolated_downbeats) == 0 or fadein_start_pos is None:
+            return crossfade_duration
+
+        # Calculate where the crossfade would start in the buffer
+        ideal_start_pos = tail.effective_end - crossfade_duration
+
+        self._logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Downbeat adjustment - ideal_start=%.2fs (effective_end=%.1fs - crossfade=%.2fs), "
+            "fadein_start=%.2fs",
+            ideal_start_pos,
+            tail.effective_end,
+            crossfade_duration,
+            fadein_start_pos,
+        )
+
+        # Find the closest downbeats (earlier and later)
+        earlier_downbeat = None
+        later_downbeat = None
+
+        for downbeat in tail.extrapolated_downbeats:
+            if downbeat < min_downbeat_pos:
+                continue
+            if downbeat <= ideal_start_pos:
+                earlier_downbeat = downbeat
+            elif downbeat > ideal_start_pos and later_downbeat is None:
+                later_downbeat = downbeat
+                break
+
+        # Try earlier downbeat first (longer crossfade)
+        if earlier_downbeat is not None:
+            adjusted_duration = float(tail.effective_end - earlier_downbeat)
+            if fadein_start_pos + adjusted_duration / render_ratio <= SMART_CROSSFADE_DURATION:
+                if abs(adjusted_duration - crossfade_duration) > 0.1:
+                    self._logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
+                        "downbeat at %.2fs (earlier)",
+                        crossfade_duration,
+                        adjusted_duration,
+                        earlier_downbeat,
+                    )
+                return adjusted_duration
+
+        # Try later downbeat (shorter crossfade)
+        if later_downbeat is not None:
+            adjusted_duration = float(tail.effective_end - later_downbeat)
+            if fadein_start_pos + adjusted_duration / render_ratio <= SMART_CROSSFADE_DURATION:
+                if abs(adjusted_duration - crossfade_duration) > 0.1:
+                    self._logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
+                        "downbeat at %.2fs (later)",
+                        crossfade_duration,
+                        adjusted_duration,
+                        later_downbeat,
+                    )
+                return adjusted_duration
+
+        # If no suitable downbeat found, return original duration
+        self._logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Could not adjust crossfade duration to downbeats, using original %.2fs",
+            crossfade_duration,
+        )
+        return crossfade_duration
+
+    def _align_rolling_intro(
+        self, crossfade_duration: float, fadein_trim_start: float | None
+    ) -> tuple[bool, float | None]:
+        """
+        Deepen B's trim when the overlap can't cover its intro (else B's groove lands on dead air).
+
+        Returns ``(feasible, trim)``: ``(False, None)`` when a sung run leaves
+        no legal cut anywhere in the buffer, else the (possibly deepened) trim.
+        """
+        import numpy as np  # noqa: PLC0415
+
+        entry = self._ctx.natural_entry
+        trim = fadein_trim_start or 0.0
+        if entry <= 0.0 or entry - trim <= crossfade_duration:
+            return True, fadein_trim_start
+        if entry > SMART_CROSSFADE_DURATION:
+            # groove enters beyond the buffered head — unreachable defensively
+            return True, fadein_trim_start
+        deep_trim = entry - crossfade_duration
+        downbeats = self._ctx.incoming.downbeats
+        if len(downbeats):
+            deep_trim = float(downbeats[np.argmin(np.abs(downbeats - deep_trim))])
+        guarded = self._guard_deep_trim(deep_trim, crossfade_duration)
+        if guarded is None:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Rolling intro: no legal cut clears the sung run within the buffer; "
+                "dropping to a shorter overlap instead",
+            )
+            return False, None
+        self._logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Rolling intro: trimming %.1fs of pre-groove intro to keep the handover anchored",
+            guarded,
+        )
+        return True, guarded
+
+    def _guard_deep_trim(self, deep_trim: float, crossfade_duration: float) -> float | None:
+        """Push a deep-trim cut off a protected run; ``None`` when no legal cut fits the buffer."""
+        import numpy as np  # noqa: PLC0415
+
+        # the cut is a minimum, so only search later: first unprotected downbeat at/after wins
+        if self._ctx.incoming_profile is None:
+            return deep_trim
+        bar_starts = self._ctx.incoming_profile.bar_starts
+        protected = self._protected_bars(self._ctx.incoming_profile)
+        start_idx = int(np.searchsorted(bar_starts, deep_trim - 1e-6))
+        if start_idx >= len(bar_starts) or not protected[start_idx]:
+            return deep_trim
+        for i in range(start_idx, len(protected)):
+            if protected[i]:
+                continue
+            candidate = float(bar_starts[i])
+            if candidate + crossfade_duration <= SMART_CROSSFADE_DURATION:
+                return candidate
+            break
+        return None
+
+    @staticmethod
+    def _protected_bars(profile: BandProfile) -> npt.NDArray[np.bool_]:
+        """Mark each bar of ``profile`` as protected: low-silent but voice/melody-active."""
+        low = profile.bar_power["low"]
+        low_mid = profile.bar_power["low_mid"]
+        mid = profile.bar_power["mid"]
+        low_silent = low < _TRIM_GUARD_LOW_FLOOR * profile.reference["low"]
+        voice_active = (low_mid >= _TRIM_GUARD_VOICE_FLOOR * profile.reference["low_mid"]) | (
+            mid >= _TRIM_GUARD_VOICE_FLOOR * profile.reference["mid"]
+        )
+        return low_silent & voice_active
+
+    def _build_segue(self, spec: CandidateSpec) -> Candidate:
+        """Build an unsynced segue: B starts the overlap before A's anchor, from its own head."""
+        assert spec.overlap_s is not None  # every segue spec carries its overlap
+        ctx = self._ctx
+        assert ctx.segue is not None  # a segue spec comes from the segue facts
+        tail = self._anchored_tail(spec.anchor_s)
+        plan = TransitionPlan(
+            tier=spec.tier,
+            fade_out_window=tail.effective_end,
+            crossfade_duration=spec.overlap_s,
+            style=TransitionStyle.SEGUE,
+            fadeout_trim=tail.fadeout_trim,
+        )
+        # within the quiet material a side already quiet at its own edge plays as
+        # recorded: fading it again only buries it, while a side still loud there fades
+        # equal-power. A longer overlap reaches loud parts on both sides, so both fade
+        # equal-power (unless the record's own mastered fade covers the outgoing side)
+        # and two loud parts are never summed at full gain
+        within_material = (
+            plan.crossfade_duration <= ctx.segue.quiet_tail + ctx.segue.quiet_head + 1e-6
+        )
+        bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        anchor_media = ctx.buffer_offset + plan.fade_out_window
+        out_quiet = within_material and _quiet_over(
+            ctx.outgoing.analysis, anchor_media - bar_out, anchor_media
+        )
+        if out_quiet or _choose_fadeout_curve(ctx, plan) == "nofade":
+            plan = replace(plan, fadeout_curve="nofade")
+        bar_in = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
+        if within_material and _quiet_over(ctx.incoming.analysis, 0.0, bar_in):
+            plan = replace(plan, fadein_curve="nofade")
+        return Candidate(
+            spec=spec, plan=plan, metrics=self._score(spec, plan), ideal_bars=spec.ideal_bars
+        )
+
+    def _build_echo_out(self, spec: CandidateSpec) -> Candidate | None:
+        """
+        Build an echo out: the dry signal stops on a downbeat and its last beat echoes out.
+
+        The echo ends near the spec's anchor and the next track starts on its first
+        downbeat at the cut, both at full level; ``None`` when no echo fits the buffer or the
+        next track has no first downbeat close enough to drop in on.
+        """
+        import numpy as np  # noqa: PLC0415
+
+        assert spec.anchor_s is not None  # a dressed spec carries its anchor
+        ctx = self._ctx
+        beat = 60.0 / ctx.outgoing.bpm
+        echo_length = len(ECHO_DECAYS) * beat
+        downbeats = np.asarray(ctx.protective_downbeats, dtype=np.float64)
+        # the echo repeats the beat before the cut, so the cut needs a beat of buffer before it
+        fitting = downbeats[(downbeats >= beat) & (downbeats + echo_length <= ctx.buffer_duration)]
+        if not len(fitting):
+            return None
+        cut = float(fitting[np.argmin(np.abs(fitting - (spec.anchor_s - echo_length)))])
+        fade_out_window, fadeout_trim = self._tail_end(cut + echo_length)
+        crossfade_duration = fade_out_window - cut
+        # the next track drops in on its first downbeat: without one close to its start,
+        # the echo has nothing to land on and a filter out or the cut does better
+        if not len(ctx.incoming.downbeats):
+            return None
+        entry = float(ctx.incoming.downbeats[0])
+        if entry > crossfade_duration + _MAX_UNHEARD_INTRO_S:
+            return None
+        plan = TransitionPlan(
+            tier=spec.tier,
+            fade_out_window=fade_out_window,
+            crossfade_duration=crossfade_duration,
+            style=TransitionStyle.ECHO_OUT,
+            fadeout_trim=fadeout_trim,
+            fadein_trim_start=entry,
+            # the taps carry their own decay, and the next track drops in on its downbeat
+            fadeout_curve="nofade",
+            fadein_curve="nofade",
+            echo=EchoOut(cut_s=cut, beat_s=beat),
+        )
+        return Candidate(
+            spec=spec, plan=plan, metrics=self._score(spec, plan), ideal_bars=spec.ideal_bars
+        )
+
+    def _score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
+        """Score a candidate: trims, retained vocals, downbeat alignment, vocal and kick clash."""
+        ctx = self._ctx
+        audible_outgoing_trim = max(0.0, ctx.audio_end - plan.fade_out_window)
+        anchor_on_downbeat = self._is_on_downbeat(plan.outgoing_end)
+        # deliberate extension over the old planner (which never scored the
+        # energy-only path): policies need real trim/downbeat facts on every
+        # candidate; each vocal-dependent field needs only its own deck's mask
+        outgoing_vocal_fade_seconds = 0.0
+        collision_seconds = weighted_collision = 0.0
+        if ctx.vocal_out_scoring is not None:
+            outgoing_windows = self._rendered_outgoing_windows(plan, ctx.vocal_out_scoring.windows)
+            in_fade = [
+                (max(0.0, left), min(plan.crossfade_duration, right))
+                for left, right in outgoing_windows
+                if right > 0.0 and left < plan.crossfade_duration
+            ]
+            outgoing_vocal_fade_seconds = sum(
+                right - left for left, right in merge_windows(in_fade)
+            )
+            if ctx.vocal_in_scoring is not None:
+                if plan.echo is not None:
+                    outgoing_windows += _echoed_windows(ctx.vocal_out_scoring.windows, plan.echo)
+                collision_seconds, weighted_collision = collision_metrics(
+                    outgoing_windows,
+                    self._rendered_incoming_windows(plan, ctx.vocal_in_scoring.windows),
+                    plan.crossfade_duration,
+                )
+        rhythm_clash_bars = 0.0
+        # a blend beatmatches its kicks, so only an unsynced overlap can clash
+        if (
+            plan.style is not TransitionStyle.BLEND
+            and ctx.kick_out is not None
+            and ctx.kick_in is not None
+        ):
+            kick_out = list(ctx.kick_out)
+            if plan.highpass is not None:
+                # the sweep takes the outgoing kick out once its cutoff passes the low band
+                kick_out = _clipped(kick_out, plan.highpass.time_at(_KICK_TOP_HZ))
+            _, weighted_kicks = collision_metrics(
+                self._rendered_outgoing_windows(plan, kick_out),
+                self._rendered_incoming_windows(plan, ctx.kick_in),
+                plan.crossfade_duration,
+            )
+            rhythm_clash_bars = weighted_kicks / (
+                ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+            )
+        return PlanMetrics(
+            strategy=spec.strategy,
+            audible_outgoing_trim=audible_outgoing_trim,
+            outgoing_vocal_fade_seconds=outgoing_vocal_fade_seconds,
+            anchor_on_downbeat=anchor_on_downbeat,
+            collision_seconds=collision_seconds,
+            weighted_collision_seconds=weighted_collision,
+            rhythm_clash_bars=rhythm_clash_bars,
+        )
+
+    def _rendered_outgoing_windows(
+        self, plan: TransitionPlan, windows: Iterable[tuple[float, float]]
+    ) -> list[tuple[float, float]]:
+        """Map buffer-local outgoing windows into rendered crossfade-local seconds."""
+        rendered_anchor = self._rendered_time(plan, plan.fade_out_window)
+        rendered_start = rendered_anchor - plan.crossfade_duration
+        return [
+            (
+                self._rendered_time(plan, left) - rendered_start,
+                self._rendered_time(plan, right) - rendered_start,
+            )
+            for left, right in _clipped(windows, plan.outgoing_end)
+        ]
+
+    @staticmethod
+    def _rendered_incoming_windows(
+        plan: TransitionPlan, windows: Iterable[tuple[float, float]]
+    ) -> list[tuple[float, float]]:
+        """Map head-local incoming windows into the plan's fadein-trim-relative seconds."""
+        trim = plan.fadein_trim_start or 0.0
+        return [(left - trim, right - trim) for left, right in windows]
+
+    @staticmethod
+    def _rendered_time(plan: TransitionPlan, input_time: float) -> float:
+        """Map a buffer-local outgoing input-time position to its rendered-stream position."""
+        clamped = max(0.0, min(input_time, plan.fade_out_window))
+        return clamped - plan.tempo_plan.savings_until(clamped)
+
+    def _is_on_downbeat(self, position: float, tolerance: float = 0.05) -> bool:
+        """Whether a buffer-local position sits within tolerance of an outgoing downbeat."""
+        import numpy as np  # noqa: PLC0415
+
+        downbeats = np.asarray(self._ctx.protective_downbeats, dtype=np.float32)
+        return bool(len(downbeats) and np.min(np.abs(downbeats - position)) <= tolerance)
+
+
+@dataclass(frozen=True, slots=True)
+class _AnchoredTail:
+    """The outgoing tail derived for one anchor: masked grids, trim, and effective end."""
+
+    effective_end: float
+    fadeout_trim: FadeOutTrim | None
+    beats: npt.NDArray[np.float32]
+    downbeats: npt.NDArray[np.float32]
+    extrapolated_downbeats: npt.NDArray[np.float32]
+
+
+def _vocal_duties(ctx: TransitionContext) -> tuple[float, float] | None:
+    """Outgoing/incoming vocal duty fractions the instrumental-blend gate keys on."""
+    if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
+        return None
+    out_duty = sum(right - left for left, right in ctx.vocal_out_scoring.windows) / max(
+        ctx.audio_end, 0.001
+    )
+    in_duty = sum(right - left for left, right in ctx.vocal_in_scoring.windows) / float(
+        SMART_CROSSFADE_DURATION
+    )
+    return out_duty, in_duty
+
+
+def _window_duties(ctx: TransitionContext, seconds: float) -> tuple[float | None, float | None]:
+    """
+    Vocal duty per deck over the window a segue of ``seconds`` spans; None without vocal data.
+
+    :param ctx: The transition context.
+    :param seconds: Overlap length; the outgoing window is the last ``seconds``
+        before the audible end, the incoming window its first ``seconds``.
+    """
+    # mirrors the anchored tail: a sub-half-second gap to the buffer end is not trimmed
+    effective_end = ctx.audio_end
+    if effective_end >= ctx.buffer_duration - 0.5:
+        effective_end = ctx.buffer_duration
+    span = min(seconds, effective_end)
+    if span <= 0.0:
+        return None, None
+    out_duty: float | None = None
+    in_duty: float | None = None
+    if ctx.vocal_out_scoring is not None:
+        out_duty = (
+            sum(
+                max(0.0, min(right, effective_end) - max(left, effective_end - span))
+                for left, right in ctx.vocal_out_scoring.windows
+            )
+            / span
+        )
+    if ctx.vocal_in_scoring is not None:
+        in_duty = (
+            sum(
+                max(0.0, min(right, span) - max(left, 0.0))
+                for left, right in ctx.vocal_in_scoring.windows
+            )
+            / span
+        )
+    return out_duty, in_duty
+
+
+def _dressed_anchor(ctx: TransitionContext) -> float:
+    """Return the outgoing downbeat nearest the energy anchor, where a dressed transition ends."""
+    if not ctx.protective_downbeats:
+        return ctx.default_anchor
+    return min(ctx.protective_downbeats, key=lambda downbeat: abs(downbeat - ctx.default_anchor))
+
+
+def _dressed_anchors(
+    ctx: TransitionContext, length: float, *, vocal_margin: float = 0.0
+) -> list[float]:
+    """
+    Return where a dressed transition may end: the energy anchor and a cut's own anchors.
+
+    :param ctx: The transition context.
+    :param length: The transition's overlap; the anchor nearest the audible end
+        leaves no more than this of the audible tail out.
+    :param vocal_margin: Seconds the anchor past the last outgoing vocal keeps after it.
+    """
+    anchors = [_dressed_anchor(ctx)]
+    if ctx.vocal_out_placement is not None and ctx.vocal_out_placement.windows:
+        anchors.append(_nearest_protective_anchor(ctx, _outgoing_vocal_end(ctx) + vocal_margin))
+    anchors.append(_nearest_protective_anchor(ctx, ctx.audio_end - length, prefer_earliest=False))
+    return list(dict.fromkeys(anchors))
+
+
+def _echo_length(ctx: TransitionContext) -> float:
+    """Return how long an echo out's taps ring at the outgoing tempo, in seconds."""
+    return len(ECHO_DECAYS) * 60.0 / ctx.outgoing.bpm
+
+
+def _echoed_windows(
+    windows: Iterable[tuple[float, float]], echo: EchoOut
+) -> list[tuple[float, float]]:
+    """
+    Return the audible echo taps' copies of the windows in the beat before the cut.
+
+    The copies are in rendered crossfade seconds: an echo out never stretches, so its overlap
+    starts at the cut in input and rendered time.
+
+    :param windows: Outgoing buffer-local windows.
+    :param echo: The plan's echo out.
+    """
+    beat_start = echo.cut_s - echo.beat_s
+    echoed = [
+        (max(left, beat_start) - beat_start, min(right, echo.cut_s) - beat_start)
+        for left, right in windows
+        if right > beat_start and left < echo.cut_s
+    ]
+    return [
+        (left + (tap - 1) * echo.beat_s, right + (tap - 1) * echo.beat_s)
+        for tap, decay in enumerate(ECHO_DECAYS, start=1)
+        if decay >= _ECHO_AUDIBLE_DECAY
+        for left, right in echoed
+    ]
+
+
+def _clipped(windows: Iterable[tuple[float, float]], end: float) -> list[tuple[float, float]]:
+    """Windows cut off at ``end``; those starting at or after it are dropped."""
+    return [(left, min(right, end)) for left, right in windows if left < end]
+
+
+def _fade_onset_pin(ctx: TransitionContext) -> float:
+    """Buffer-local anchor pin ahead of a detected mastered fade, else the default anchor."""
+    if ctx.fade_onset is None:
+        return ctx.default_anchor
+    # never pin inside A's own vocal window: exiting mid-phrase is the exact
+    # defect this pin fixes, so the vocal end floors the pin
+    lead_end = ctx.vocal_out_placement.last_end() if ctx.vocal_out_placement else 0.0
+    onset_local = max(ctx.fade_onset, lead_end)
+    if onset_local < MIN_EFFECTIVE_FADE_BUFFER:
+        return ctx.default_anchor
+    return min(ctx.default_anchor, onset_local)
+
+
+def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
+    """B entries for a rung: groove alignment, intro-keeping 0.0 (bars<=2), then natural entry."""
+    import numpy as np  # noqa: PLC0415
+
+    bar_b = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
+    options: list[float] = []
+    deep = ctx.natural_entry - bars * bar_b
+    if deep > 0.0 and len(ctx.incoming.downbeats):
+        downbeats = ctx.incoming.downbeats
+        snapped = float(downbeats[np.argmin(np.abs(downbeats - deep))])
+        in_mask = ctx.vocal_in_placement is not None and point_in_mask(
+            ctx.vocal_in_placement, snapped
+        )
+        if snapped >= 0.0 and not in_mask:
+            options.append(snapped)
+    # at 1-2 bars the overlap is a handover, not a blend: keeping B's whole
+    # intro (zero trim) lets it build naturally after A's tail rides out; it
+    # goes before the natural entry so a scoring tie prefers keeping the intro
+    if bars <= 2 and ctx.natural_entry > 0.0 and 0.0 not in options:
+        options.append(0.0)
+    if ctx.natural_entry not in options:
+        options.append(ctx.natural_entry)
+    return options
+
+
+def _outgoing_vocal_end(ctx: TransitionContext) -> float:
+    """Return the last outgoing vocal end within the audible tail, or 0.0 without vocal data."""
+    mask = ctx.vocal_out_placement
+    if mask is None or not mask.windows:
+        return 0.0
+    return min(mask.last_end(), ctx.audio_end)
+
+
+def _nearest_protective_anchor(
+    ctx: TransitionContext, target: float, *, prefer_earliest: bool = True
+) -> float:
+    """
+    Protective downbeat at/after target within the RMS-audible boundary.
+
+    :param ctx: The transition context.
+    :param target: Earliest buffer-local position the anchor may take.
+    :param prefer_earliest: Use the first qualifying downbeat (protecting a
+        vocal needs only just enough extra room) instead of the last (closing
+        an audible-trim gap as tightly as possible).
+    """
+    candidates = [
+        downbeat for downbeat in ctx.protective_downbeats if target <= downbeat <= ctx.audio_end
+    ]
+    if candidates:
+        return candidates[0] if prefer_earliest else candidates[-1]
+    return min(target, ctx.audio_end)
+
+
+def _choose_fadeout_curve(ctx: TransitionContext, plan: TransitionPlan) -> str:
+    """Pick ``nofade`` when the overlap sits entirely inside a detected mastered fade."""
+    if ctx.fade_onset is None:
+        return "qsin"
+    crossfade_start = plan.fade_out_window - plan.crossfade_duration
+    if crossfade_start < ctx.fade_onset:
+        return "qsin"
+    bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+    if plan.fade_out_window < ctx.audio_end - bar_out:
+        return "qsin"
+    # the record already fades itself here; don't double it with a second curve
+    return "nofade"
+
+
+def _beatless_long_qualifies(ctx: TransitionContext) -> bool:
+    """Whether a long segue may overlap loud material: one deck kickless, neither singing."""
+    if not (ctx.out_kickless or ctx.in_kickless):
+        return False
+    # a deck without vocal data counts as singing
+    return all(
+        duty is not None and duty <= _SINGS_DUTY for duty in _window_duties(ctx, SEGUE_MAX_SECONDS)
+    )
+
+
+def _segue_steps(ideal: float, floor: float, step: float) -> list[float]:
+    """Segue overlaps from the ideal down in steps, ending on the floor; none below it."""
+    if ideal < floor:
+        return []
+    steps: list[float] = []
+    overlap = ideal
+    while overlap > floor and len(steps) < _SEGUE_MAX_SPECS - 1:
+        steps.append(overlap)
+        overlap -= step
+    steps.append(floor)
+    return steps
+
+
+def _quiet_over(analysis: AudioAnalysisData, start_s: float, end_s: float) -> bool:
+    """Whether a track's median energy over a media-time window sits below the segue level."""
+    import numpy as np  # noqa: PLC0415
+
+    rms = np.asarray(analysis.rms_energy, dtype=np.float32)
+    bin_duration = (analysis.duration or 0.0) / len(rms)
+    first = max(0, int(start_s / bin_duration))
+    last = max(first + 1, int(np.ceil(end_s / bin_duration)))
+    level = float(np.median(rms[first:last]))
+    return level < SEGUE_ENERGY_FRACTION * sustained_energy_floor(rms)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from music_assistant.constants import MASS_LOGGER_NAME
 
@@ -30,6 +30,7 @@ def is_allowed_redirect_url(
     url: str,
     request: web.Request | None = None,
     base_url: str | None = None,
+    external_url: str | None = None,
 ) -> tuple[bool, str]:
     """
     Validate if a redirect URL is allowed for OAuth/auth flows.
@@ -39,13 +40,14 @@ def is_allowed_redirect_url(
     2. Same origin as the request - auto-allowed (trusted)
     3. Localhost (127.0.0.1, ::1, localhost) - auto-allowed (trusted)
     4. Private network IPs (RFC 1918) - auto-allowed (trusted)
-    5. Configured base_url - auto-allowed (trusted)
+    5. Configured base_url or external_url - auto-allowed (trusted)
     6. Matches allowed redirect patterns - auto-allowed (trusted)
     7. Everything else - requires user consent (external)
 
     :param url: The redirect URL to validate.
     :param request: Optional aiohttp request to compare origin.
     :param base_url: Optional configured base URL to allow.
+    :param external_url: Optional configured External URL to allow.
     :return: Tuple of (is_valid, category) where category is:
         - "trusted": Auto-allowed, no consent needed
         - "external": Valid but requires user consent
@@ -90,20 +92,61 @@ def is_allowed_redirect_url(
             LOGGER.debug("Redirect URL trusted (private IP): %s", url)
             return True, "trusted"
 
-        # 4. Configured base_url - always trusted
+        # 4. Configured base_url or external_url - always trusted
         if base_url:
             base_parsed = urlparse(base_url)
             if parsed.netloc == base_parsed.netloc:
                 LOGGER.debug("Redirect URL trusted (base_url): %s", url)
+                return True, "trusted"
+        if external_url:
+            external_parsed = urlparse(external_url)
+            # match the scheme too, the token must not travel over plain http on the internet
+            if (parsed.scheme, parsed.netloc) == (external_parsed.scheme, external_parsed.netloc):
+                LOGGER.debug("Redirect URL trusted (external_url): %s", url)
                 return True, "trusted"
 
         # If we get here, URL is external and requires user consent
         LOGGER.info("Redirect URL is external (requires consent): %s", url)
         return True, "external"
 
-    except Exception as e:
-        LOGGER.exception("Error validating redirect URL: %s", e)
+    except Exception:
+        LOGGER.exception("Error validating redirect URL")
         return False, "blocked"
+
+
+def build_code_redirect_url(
+    return_url: str,
+    token: str,
+    extra_params: dict[str, str] | None = None,
+) -> str:
+    """
+    Build a redirect URL with the auth code appended to the query string.
+
+    The code (and any extra params) are inserted before a possible hash fragment
+    so they end up in the query string rather than inside the fragment.
+
+    :param return_url: The validated destination URL to redirect to.
+    :param token: The auth token to pass along as the ``code`` query parameter.
+    :param extra_params: Optional additional query parameters to append.
+    """
+    params = f"code={quote(token, safe='')}"
+    if extra_params:
+        for key, value in extra_params.items():
+            params += f"&{quote(key, safe='')}={quote(value, safe='')}"
+
+    if "#" in return_url:
+        base_part, hash_part = return_url.split("#", 1)
+        return f"{_append_query_params(base_part, params)}#{hash_part}"
+
+    return _append_query_params(return_url, params)
+
+
+def _append_query_params(base: str, params: str) -> str:
+    """Append query params to a URL part, reusing a trailing ? or & separator if present."""
+    if base.endswith(("?", "&")):
+        return f"{base}{params}"
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}{params}"
 
 
 def _is_private_ip(hostname: str) -> bool:

@@ -1,12 +1,15 @@
 # Shairport-Sync Binaries
 
-This directory should contain the shairport-sync binaries for different platforms.
+This directory contains the bundled shairport-sync binary for macOS development.
 
-## Required Binaries
+Linux deployments do not use bundled binaries: the docker image builds shairport-sync
+from source in `Dockerfile.base` (see the `shairport-builder` stage), and the provider
+finds it via its system PATH lookup. Other Linux installs should install shairport-sync
+via their system package manager.
 
-- `shairport-sync-macos-arm64` - macOS Apple Silicon
-- `shairport-sync-linux-x86_64` - Linux x86_64
-- `shairport-sync-linux-aarch64` - Linux ARM64 (Raspberry Pi, etc.)
+## Bundled Binaries
+
+- `shairport-sync-macos-arm64` - macOS Apple Silicon (local development)
 
 ## Installation Options
 
@@ -114,19 +117,9 @@ cp shairport-sync ../music_assistant/providers/airplay_receiver/bin/shairport-sy
 
 ## Docker Integration
 
-For Docker deployments, it's recommended to add shairport-sync to the Music Assistant base Docker image (`Dockerfile.base`) instead of bundling binaries:
-
-```dockerfile
-# Add to Dockerfile.base runtime stage
-RUN apk add --no-cache \
-    shairport-sync
-```
-
-Alternatively, build from source in the Docker image for the latest version.
-
-## Bundled Binaries
-
-This directory contains pre-built shairport-sync binaries for **local development only**.
+The Music Assistant base image (`Dockerfile.base`, `shairport-builder` stage) builds
+shairport-sync from source with the same configuration as `build_binaries.sh`, so the
+binary is always linked against the image's own libraries.
 
 ### macOS Binary
 - **shairport-sync-macos-arm64** (~262 KB)
@@ -139,20 +132,6 @@ brew install openssl libdaemon libconfig popt libao pulseaudio libsoxr
 For macOS development, it's easier to just install shairport-sync via Homebrew:
 ```bash
 brew install shairport-sync
-```
-
-### Linux Binaries (Alpine/musl)
-- **shairport-sync-linux-x86_64** (~225 KB)
-- **shairport-sync-linux-aarch64** (~261 KB)
-
-These binaries are built with Alpine Linux (musl libc). While musl binaries CAN technically run on glibc systems (Debian/Ubuntu), they require the musl interpreter and musl versions of their dependencies to be installed.
-
-**Recommendation:** For simplest deployment, install shairport-sync via your system's package manager instead of using these binaries.
-
-**If using bundled binaries on Debian/Ubuntu:**
-The plugin's helper will use these binaries if found, but they may require additional packages. If you encounter issues, install shairport-sync via apt instead:
-```bash
-sudo apt-get install shairport-sync
 ```
 
 **For local Linux development:**
@@ -170,7 +149,6 @@ sudo dnf install shairport-sync
 ## Notes
 
 - The helper code in `helpers.py` will automatically:
-  1. Check for bundled binaries in this directory first (macOS only)
-  2. Fall back to system-installed shairport-sync in PATH
-- For production deployments, always use the system package manager
-- Static linking is not feasible due to shairport-sync's numerous dependencies (avahi, openssl, etc.)
+  1. Check for a bundled binary in this directory first (macOS only)
+  2. Fall back to system-installed shairport-sync in PATH (docker image, package managers)
+- Static linking is not feasible due to shairport-sync's numerous dependencies (glib, openssl, etc.)

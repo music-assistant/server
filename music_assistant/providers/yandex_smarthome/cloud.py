@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 
 if TYPE_CHECKING:
-    from ._compat import SecretStr
+    from ya_dialogs_api import SecretStr
 
 from .constants import (
     CLOUD_BASE_URL,
@@ -77,6 +77,14 @@ class CloudManager:
             # Backoff before reconnect (both after errors and clean disconnects)
             await asyncio.sleep(self._reconnect_delay)
             self._reconnect_delay = min(self._reconnect_delay * 2, CLOUD_RECONNECT_MAX)
+
+    async def disconnect(self) -> None:
+        """Stop the connection loop and close WebSocket."""
+        self._running = False
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
+        self._logger.info("Cloud relay disconnected")
 
     async def _connect_once(self) -> None:
         """Single WebSocket connection attempt + message loop."""
@@ -142,14 +150,6 @@ class CloudManager:
                     )
                 except Exception:
                     self._logger.debug("Failed to send error response for %s", request_id)
-
-    async def disconnect(self) -> None:
-        """Stop the connection loop and close WebSocket."""
-        self._running = False
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        self._logger.info("Cloud relay disconnected")
 
 
 # ---------------------------------------------------------------------------

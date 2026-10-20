@@ -13,9 +13,8 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 from zvuk_music import Artist as ZvukArtist
-from zvuk_music import ClientAsync, Collection, StreamQuality
+from zvuk_music import ClientAsync, Collection
 from zvuk_music import CollectionItem as ZvukCollectionItem
-from zvuk_music import DirectStream as ZvukDirectStream
 from zvuk_music import Lyrics as ZvukLyrics
 from zvuk_music import Playlist as ZvukPlaylist
 from zvuk_music import Release as ZvukRelease
@@ -100,10 +99,8 @@ class ZvukMusicClient:
         self._throttler = Throttler(rate_limit=5, period=1.0)
 
     @property
-    def user_id(self) -> str:
-        """Return the user ID."""
-        if self._user_id is None:
-            raise ProviderUnavailableError("Client not initialized, call connect() first")
+    def user_id(self) -> str | None:
+        """Return the user ID, or None when Zvuk does not expose the profile."""
         return self._user_id
 
     async def connect(self) -> None:
@@ -117,9 +114,11 @@ class ZvukMusicClient:
             self._client = await ClientAsync(token=self._token).init()
             if not await self._client.is_authorized():
                 raise LoginFailed("Invalid Zvuk Music token")
-            profile = await self._client.get_profile()
-            if profile and profile.result:
-                self._user_id = str(profile.result.id)
+            profile = self._client.profile
+            if profile is not None:
+                self._user_id = str(profile.id)
+            else:
+                LOGGER.warning("Zvuk profile is unavailable, user ID unknown")
             LOGGER.debug("Connected to Zvuk Music as user %s", self._user_id)
         except UnauthorizedError as err:
             raise LoginFailed("Invalid Zvuk Music token") from err
@@ -131,19 +130,6 @@ class ZvukMusicClient:
         """Disconnect the client."""
         self._client = None
         self._user_id = None
-
-    def _ensure_connected(self) -> ClientAsync:
-        """Ensure the client is connected and return it."""
-        if self._client is None:
-            raise ProviderUnavailableError("Client not connected, call connect() first")
-        return self._client
-
-    async def _get_client(self) -> ClientAsync:
-        """Acquire a throttle slot then return the connected client."""
-        await self._throttler.acquire()
-        return self._ensure_connected()
-
-    # Search
 
     @handle_zvuk_errors(not_found_return=None)
     async def search(
@@ -180,8 +166,6 @@ class ZvukMusicClient:
             profiles=False,
             books=False,
         )
-
-    # Get single items
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_track(self, track_id: str) -> ZvukTrack | None:
@@ -277,8 +261,6 @@ class ZvukMusicClient:
         client = await self._get_client()
         return await client.get_artists([artist_id], with_popular_tracks=True, tracks_limit=limit)
 
-    # Playlists
-
     @handle_zvuk_errors(not_found_return=None)
     async def get_playlist(self, playlist_id: str) -> ZvukPlaylist | None:
         """
@@ -316,8 +298,6 @@ class ZvukMusicClient:
         client = await self._get_client()
         return await client.get_playlist_tracks(playlist_id, limit=limit, offset=offset)
 
-    # Streaming
-
     @handle_zvuk_errors(not_found_return=[])
     async def get_stream_urls(self, track_id: str) -> list[ZvukStream]:
         """
@@ -328,25 +308,6 @@ class ZvukMusicClient:
         """
         client = await self._get_client()
         return await client.get_stream_urls(track_id)
-
-    @handle_zvuk_errors(not_found_return=None)
-    async def get_direct_stream_url(self, track_id: str, quality: str) -> str | None:
-        """
-        Get a direct (non-DRM) stream URL for a track.
-
-        :param track_id: Track ID.
-        :param quality: Quality string — "flac", "high", or "mid".
-        :return: Stream URL string, or None if not found.
-        """
-        client = await self._get_client()
-        result: ZvukDirectStream | None = await client.get_direct_stream_url(
-            track_id, StreamQuality(quality)
-        )
-        if not result:
-            return None
-        return result.stream or None
-
-    # Collection (Library)
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_collection(self) -> Collection | None:
@@ -419,8 +380,6 @@ class ZvukMusicClient:
         """
         client = await self._get_client()
         return await client.get_lyrics(track_id)
-
-    # Library modifications
 
     async def like_track(self, track_id: str) -> bool:
         """
@@ -534,8 +493,6 @@ class ZvukMusicClient:
             LOGGER.error("Error unliking playlist %s: %s", playlist_id, err)
             return False
 
-    # Playlist management
-
     @handle_zvuk_errors()
     async def create_playlist(self, name: str, track_ids: list[str] | None = None) -> str:
         """
@@ -591,3 +548,14 @@ class ZvukMusicClient:
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error updating playlist %s: %s", playlist_id, err)
             return False
+
+    def _ensure_connected(self) -> ClientAsync:
+        """Ensure the client is connected and return it."""
+        if self._client is None:
+            raise ProviderUnavailableError("Client not connected, call connect() first")
+        return self._client
+
+    async def _get_client(self) -> ClientAsync:
+        """Acquire a throttle slot then return the connected client."""
+        await self._throttler.acquire()
+        return self._ensure_connected()

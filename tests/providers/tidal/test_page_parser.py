@@ -13,17 +13,6 @@ FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 PAGE_FIXTURES = list(FIXTURES_DIR.glob("pages/*.json"))
 
 
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.logger = Mock()
-    return provider
-
-
 @pytest.mark.parametrize("example", PAGE_FIXTURES, ids=lambda val: str(val.stem))
 def test_page_parser(example: pathlib.Path, provider_mock: Mock) -> None:
     """Test page parser with fixtures."""
@@ -55,3 +44,26 @@ def test_page_parser(example: pathlib.Path, provider_mock: Mock) -> None:
     assert content_type == MediaType.PLAYLIST
     assert len(items) == 1
     assert items[0].name == "My Mix"
+
+
+def test_track_list_skips_unparsable_track(provider_mock: Mock) -> None:
+    """Test a malformed track does not prevent loading the rest of a page module."""
+    with open(FIXTURES_DIR / "tracks" / "track.json") as f:
+        malformed = json.load(f)
+    malformed["item"]["mediaMetadata"] = "invalid"
+    with open(FIXTURES_DIR / "tracks" / "track.json") as f:
+        valid = json.load(f)
+
+    parser = TidalPageParser(provider_mock)
+    module_info = {
+        "raw_data": {
+            "type": "TRACK_LIST",
+            "pagedList": {"items": [malformed, valid]},
+        }
+    }
+
+    items, content_type = parser.get_module_items(module_info)
+
+    assert content_type == MediaType.TRACK
+    assert len(items) == 1
+    provider_mock.logger.warning.assert_called_once()

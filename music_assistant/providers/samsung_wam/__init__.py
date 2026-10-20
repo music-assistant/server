@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
-from .provider import SamsungWamProvider, get_config_entries
+from .provider import SamsungWamProvider
 
 
 class SpeakerStatusFilter(logging.Filter):
@@ -75,4 +75,4 @@ async def setup(
     return prov
 
 
-__all__ = ["get_config_entries", "setup"]
+__all__ = ["setup"]

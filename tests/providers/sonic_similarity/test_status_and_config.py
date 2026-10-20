@@ -3,27 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+import threading
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.enums import ConfigEntryType, EventType
+from music_assistant_models.errors import ActionUnavailable
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
     from typing import Any
 
-from music_assistant.providers.sonic_similarity import (
-    SonicSimilarityPlugin,
-    _collect_status_text,
-    get_config_entries,
-)
+from music_assistant.providers.sonic_similarity import SonicSimilarityPlugin
 from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
+from music_assistant.providers.sonic_similarity import provider as provider_module
 from music_assistant.providers.sonic_similarity.constants import (
     ACTION_REBUILD_18DIM,
     ACTION_REBUILD_CLAP,
+    CONF_LABEL_STATUS_18DIM,
+    REBUILD_TASK_ID,
     SUPPORTED_FEATURES,
 )
 
@@ -31,30 +31,23 @@ from music_assistant.providers.sonic_similarity.constants import (
 class TestCollectStatusText:
     """Tests for the _collect_status_text helper used by the plugin's status rows."""
 
-    NOT_LOADED = (
-        "Traits engine: not yet loaded",
-        "Character engine: disabled",
-        "Text encoder: disabled",
-    )
-
     @pytest.mark.asyncio
-    async def test_returns_not_loaded_triple_when_instance_id_is_none(
-        self, mock_mass: MagicMock
+    async def test_reports_pending_state_when_index_not_built(
+        self, make_plugin: Callable[..., Any]
     ) -> None:
-        """A None instance_id short-circuits to the not-yet-loaded triple."""
-        assert await _collect_status_text(mock_mass, None) == self.NOT_LOADED
+        """A loaded plugin with no indexed corpus reports empty counts and disabled engines."""
+        plugin = make_plugin()  # no signatures → empty corpus, no search index
 
-    @pytest.mark.asyncio
-    async def test_returns_not_loaded_triple_when_get_provider_returns_non_plugin(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """A non-SonicSimilarityPlugin provider also returns the disabled triple."""
-        mock_mass.get_provider.return_value = MagicMock()
-        assert await _collect_status_text(mock_mass, "iid") == self.NOT_LOADED
+        eighteen, clap, text = plugin._collect_status_text()
+
+        assert "0 tracks indexed" in eighteen
+        assert "corpus stats pending" in eighteen
+        assert clap == "Character engine: disabled"
+        assert text == "Text encoder: disabled"
 
     @pytest.mark.asyncio
     async def test_returns_populated_18dim_status_when_provider_is_loaded(
-        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
+        self, make_plugin: Callable[..., Any]
     ) -> None:
         """Loaded plugin with a primed corpus yields a populated 18-dim status line."""
         plugin = make_plugin(
@@ -63,28 +56,26 @@ class TestCollectStatusText:
                 ("spotify", "b"): [0.2] * 18,
             }
         )
-        mock_mass.get_provider.return_value = plugin
 
-        eighteen, _clap, _text = await _collect_status_text(mock_mass, "iid")
+        eighteen, _clap, _text = plugin._collect_status_text()
 
         assert "2 tracks indexed" in eighteen
         assert ("corpus stats ready" in eighteen) or ("2 signatures cached" in eighteen)
 
     @pytest.mark.asyncio
     async def test_clap_engine_disabled_when_clap_index_is_none(
-        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
+        self, make_plugin: Callable[..., Any]
     ) -> None:
         """Without CLAP enabled the clap status string is the disabled sentinel."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
-        mock_mass.get_provider.return_value = plugin
 
-        _eighteen, clap, _text = await _collect_status_text(mock_mass, "iid")
+        _eighteen, clap, _text = plugin._collect_status_text()
 
         assert clap == "Character engine: disabled"
 
     @pytest.mark.asyncio
     async def test_clap_engine_status_reports_size_when_enabled(
-        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
+        self, make_plugin: Callable[..., Any]
     ) -> None:
         """When CLAP is enabled the clap line reports the index size."""
         plugin = make_plugin(
@@ -92,61 +83,61 @@ class TestCollectStatusText:
             signatures={("spotify", "a"): [0.1] * 18},
         )
         plugin._clap_index.__len__ = MagicMock(return_value=42)
-        mock_mass.get_provider.return_value = plugin
 
-        _eighteen, clap, _text = await _collect_status_text(mock_mass, "iid")
+        _eighteen, clap, _text = plugin._collect_status_text()
 
         assert "42 embeddings indexed" in clap
 
     @pytest.mark.asyncio
     async def test_text_encoder_cold_message_when_enabled_and_encoder_none(
-        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
+        self, make_plugin: Callable[..., Any]
     ) -> None:
         """Text-search-enabled with no encoder loaded reports a cold-state message."""
         plugin = make_plugin(
             text_search_enabled=True,
             signatures={("spotify", "a"): [0.1] * 18},
         )
-        mock_mass.get_provider.return_value = plugin
 
-        _eighteen, _clap, text = await _collect_status_text(mock_mass, "iid")
+        _eighteen, _clap, text = plugin._collect_status_text()
 
         lowered = text.lower()
         assert ("cold" in lowered) or ("downloads on first query" in lowered)
 
+
+class TestGetConfigEntries:
+    """get_config_entries runs on the provider load path, so it reads in-memory state only."""
+
     @pytest.mark.asyncio
-    async def test_coverage_pct_included_when_get_coverage_returns_counts(
+    async def test_status_labels_come_from_memory_without_database_access(
         self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
-        """A real coverage object produces a percentage substring in the 18-dim line."""
-        coverage = SimpleNamespace(analyzed=80, pending=20, stale_version=0, analysis_version=1)
-        mock_mass.streams.audio_analysis.get_coverage = AsyncMock(return_value=coverage)
+        """The status rows render from the index state; no analysis controller call is made."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
-        mock_mass.get_provider.return_value = plugin
 
-        eighteen, _clap, _text = await _collect_status_text(mock_mass, "iid")
+        entries = await plugin.get_config_entries()
 
-        assert "80.0%" in eighteen
+        assert mock_mass.streams.audio_analysis.mock_calls == []
+        assert mock_mass.music.mock_calls == []
+        status_entry = next(e for e in entries if e.key == CONF_LABEL_STATUS_18DIM)
+        assert status_entry.type == ConfigEntryType.LABEL
+        assert "1 tracks indexed" in str(status_entry.label)
 
 
 class TestConfigEntriesActions:
-    """Tests for the action-dispatch branch of get_config_entries."""
+    """Tests for handle_config_action (the one-shot rebuild buttons)."""
 
     @pytest.mark.asyncio
     async def test_action_rebuild_18dim_dispatches_to_provider(
         self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
-        """The 18-dim rebuild action fires create_task once and still returns entries."""
+        """The 18-dim rebuild action fires create_task once and returns None."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
         plugin._rebuild_search_index = AsyncMock()
-        mock_mass.get_provider.return_value = plugin
 
-        entries = await get_config_entries(
-            mock_mass, instance_id="iid", action=ACTION_REBUILD_18DIM
-        )
+        result = await plugin.handle_config_action(ACTION_REBUILD_18DIM)
 
         assert mock_mass.create_task.call_count == 1
-        assert entries
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_action_rebuild_clap_dispatches_when_clap_enabled(
@@ -158,40 +149,23 @@ class TestConfigEntriesActions:
             signatures={("spotify", "a"): [0.1] * 18},
         )
         plugin._rebuild_clap_index_from_database = AsyncMock()
-        mock_mass.get_provider.return_value = plugin
 
-        await get_config_entries(mock_mass, instance_id="iid", action=ACTION_REBUILD_CLAP)
+        await plugin.handle_config_action(ACTION_REBUILD_CLAP)
 
         assert mock_mass.create_task.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_action_rebuild_clap_noops_when_clap_disabled(
+    async def test_action_rebuild_clap_reports_failure_when_index_missing(
         self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
-        """The CLAP rebuild action is a no-op when the index isn't built."""
+        """Without a CLAP index the rebuild action reports failure instead of silently passing."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
-        mock_mass.get_provider.return_value = plugin
 
-        await get_config_entries(mock_mass, instance_id="iid", action=ACTION_REBUILD_CLAP)
+        with pytest.raises(ActionUnavailable) as exc_info:
+            await plugin.handle_config_action(ACTION_REBUILD_CLAP)
 
-        assert mock_mass.create_task.call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_action_without_instance_id_noops(self, mock_mass: MagicMock) -> None:
-        """Without an instance_id the action branch is skipped entirely."""
-        await get_config_entries(mock_mass, instance_id=None, action=ACTION_REBUILD_18DIM)
-
-        assert mock_mass.create_task.call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_action_when_get_provider_returns_wrong_type_noops(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """A non-plugin provider returned from get_provider skips the dispatch."""
-        mock_mass.get_provider.return_value = MagicMock()
-
-        await get_config_entries(mock_mass, instance_id="iid", action=ACTION_REBUILD_18DIM)
-
+        assert exc_info.value.translation_key == "clap_index_unavailable"
+        assert exc_info.value.translation_owner == "provider.sonic_similarity"
         assert mock_mass.create_task.call_count == 0
 
 
@@ -211,27 +185,92 @@ def _build_plugin_for_init(mock_mass: MagicMock) -> Any:
     return SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)
 
 
-class TestHandleAsyncInit:
-    """handle_async_init surfaces rebuild failures as SetupFailedError so MA's loader sees them."""
+class TestDeferredIndexRebuild:
+    """The index builds run as a background task started once the provider is registered."""
 
     @pytest.mark.asyncio
-    async def test_raises_setup_failed_when_rebuild_raises(self, mock_mass: MagicMock) -> None:
-        """A rebuild failure during initial setup must surface as SetupFailedError."""
+    async def test_loaded_in_mass_schedules_the_rebuild_instead_of_awaiting_it(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """loaded_in_mass returns with the indexes still empty and the rebuild task scheduled."""
+        plugin = _build_plugin_for_loaded(mock_mass, clap_enabled=False)
+        plugin._rebuild_search_index = AsyncMock()
+
+        await plugin.loaded_in_mass()
+
+        plugin._rebuild_search_index.assert_not_awaited()
+        mock_mass.create_task.assert_called_once()
+        assert mock_mass.create_task.call_args.kwargs["task_id"] == REBUILD_TASK_ID
+        status = await plugin._handle_status()
+        assert status["index_size"] == 0
+        assert status["has_corpus_stats"] is False
+
+    @pytest.mark.asyncio
+    async def test_rebuild_indexes_runs_traits_then_character(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
+        """With the Character index enabled the two rebuilds run one after the other."""
+        plugin = make_plugin(clap_enabled=True)
+        order: list[str] = []
+
+        async def _traits() -> None:
+            order.append("Traits")
+
+        async def _character() -> None:
+            order.append("Character")
+
+        plugin._rebuild_search_index = _traits
+        plugin._rebuild_clap_index_from_database = _character
+
+        await plugin._rebuild_indexes()
+
+        assert order == ["Traits", "Character"]
+
+    @pytest.mark.asyncio
+    async def test_rebuild_indexes_skips_character_when_disabled(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
+        """Without a Character index only the Traits rebuild runs."""
+        plugin = make_plugin()
+        plugin._rebuild_search_index = AsyncMock()
+        plugin._rebuild_clap_index_from_database = AsyncMock()
+
+        await plugin._rebuild_indexes()
+
+        plugin._rebuild_search_index.assert_awaited_once()
+        plugin._rebuild_clap_index_from_database.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_rebuild_is_reported_by_status_and_label(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A failing background rebuild lands in the status command and the status label."""
         plugin = _build_plugin_for_init(mock_mass)
         plugin._rebuild_search_index = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with pytest.raises(SetupFailedError, match="Traits search index"):
-            await plugin.handle_async_init()
+        await plugin._rebuild_indexes()
+
+        status = await plugin._handle_status()
+        assert status["last_rebuild_error"] == {"Traits": "boom"}
+        assert status["rebuild_in_progress"] is False
+        eighteen, _clap, _text = plugin._collect_status_text()
+        assert "last rebuild failed: boom" in eighteen
 
     @pytest.mark.asyncio
-    async def test_succeeds_when_rebuild_succeeds(self, mock_mass: MagicMock) -> None:
-        """The happy path: rebuild runs once, no exception escapes."""
-        plugin = _build_plugin_for_init(mock_mass)
-        plugin._rebuild_search_index = AsyncMock()
+    async def test_unload_cancels_the_rebuild_before_closing_the_character_index(
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
+    ) -> None:
+        """unload() stops a running rebuild first, so it cannot resume into a closed index."""
+        plugin = make_plugin(clap_enabled=True)
+        plugin._clap_index.close = AsyncMock()
+        order = MagicMock()
+        order.attach_mock(mock_mass.cancel_task, "cancel_task")
+        order.attach_mock(plugin._clap_index.close, "close")
 
-        await plugin.handle_async_init()
+        await plugin.unload()
 
-        plugin._rebuild_search_index.assert_awaited_once()
+        assert [name for name, _args, _kwargs in order.mock_calls] == ["cancel_task", "close"]
+        mock_mass.cancel_task.assert_called_once_with(REBUILD_TASK_ID)
 
 
 def _build_plugin_for_loaded(mock_mass: MagicMock, *, clap_enabled: bool) -> Any:
@@ -313,6 +352,34 @@ class TestSafeRebuild:
             "Character": "clap broke",
         }
 
+    @pytest.mark.asyncio
+    async def test_success_signals_providers_updated(self, mock_mass: MagicMock) -> None:
+        """A finished rebuild signals PROVIDERS_UPDATED so the status labels re-render."""
+        plugin = _build_plugin_for_init(mock_mass)
+
+        async def _ok() -> None:
+            return None
+
+        await plugin._safe_rebuild("Traits", _ok)
+
+        mock_mass.signal_event.assert_called_once_with(
+            EventType.PROVIDERS_UPDATED, data=mock_mass.providers
+        )
+
+    @pytest.mark.asyncio
+    async def test_failure_signals_providers_updated(self, mock_mass: MagicMock) -> None:
+        """A failed rebuild still signals, so the recorded error reaches the status labels."""
+        plugin = _build_plugin_for_init(mock_mass)
+
+        async def _boom() -> None:
+            raise RuntimeError("disk full")
+
+        await plugin._safe_rebuild("Traits", _boom)
+
+        mock_mass.signal_event.assert_called_once_with(
+            EventType.PROVIDERS_UPDATED, data=mock_mass.providers
+        )
+
 
 class TestStatusTextRebuildErrors:
     """_collect_status_text surfaces _last_rebuild_error entries on the matching engine line."""
@@ -322,9 +389,8 @@ class TestStatusTextRebuildErrors:
         """A 18-dim rebuild error is appended to the 18-dim status line."""
         plugin = _build_plugin_for_init(mock_mass)
         plugin._last_rebuild_error["Traits"] = "disk full"
-        mock_mass.get_provider.return_value = plugin
 
-        eighteen, _clap, _text = await _collect_status_text(mock_mass, "iid")
+        eighteen, _clap, _text = plugin._collect_status_text()
 
         assert "last rebuild failed: disk full" in eighteen
 
@@ -335,9 +401,8 @@ class TestStatusTextRebuildErrors:
         plugin._clap_index = MagicMock()
         plugin._clap_index.__len__ = MagicMock(return_value=42)
         plugin._last_rebuild_error["Character"] = "usearch native crash"
-        mock_mass.get_provider.return_value = plugin
 
-        _eighteen, clap, _text = await _collect_status_text(mock_mass, "iid")
+        _eighteen, clap, _text = plugin._collect_status_text()
 
         assert "last rebuild failed: usearch native crash" in clap
 
@@ -363,6 +428,19 @@ def _make_analysis_data() -> Any:
 
 class TestRebuildSearchIndexLocked:
     """The 18-dim rebuild path: corpus stats, atomic swap, versioned file writes."""
+
+    @pytest.mark.asyncio
+    async def test_requests_only_the_arrays_the_vector_reads(self, mock_mass: MagicMock) -> None:
+        """The bulk read unpacks just the two time-series arrays the vector is built from."""
+        plugin = _build_plugin_for_init(mock_mass)
+        mock_mass._iter_merged_audio_analysis_rows_data = []
+
+        await plugin._rebuild_search_index_locked()
+
+        call_kwargs = (
+            mock_mass.streams.audio_analysis.iter_merged_audio_analysis_rows.call_args.kwargs
+        )
+        assert call_kwargs["arrays"] == ("rms_energy", "spectral_centroid")
 
     @pytest.mark.asyncio
     async def test_empty_iter_preserves_prior_state(self, mock_mass: MagicMock) -> None:
@@ -399,6 +477,49 @@ class TestRebuildSearchIndexLocked:
 
         # Prior state preserved — assemble_vector returned None for every row.
         assert plugin._signature_cache == {("spotify", "old"): [0.5] * 18}
+
+    @pytest.mark.asyncio
+    async def test_unload_stops_a_running_build_before_removing_the_index_files(
+        self, mock_mass: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Removing the plugin mid-build cancels the task and waits for the worker to stop."""
+        plugin = _build_plugin_for_init(mock_mass)
+        mock_mass.storage_path = str(tmp_path)
+        mock_mass._iter_merged_audio_analysis_rows_data = [
+            ("track_a", "spotify", _make_analysis_data()),
+            ("track_b", "tidal", _make_analysis_data()),
+        ]
+        in_worker = threading.Event()
+        release_worker = threading.Event()
+        builder = MagicMock()
+
+        def _blocking_add(*_args: Any) -> None:
+            in_worker.set()
+            release_worker.wait(timeout=5)
+
+        builder.add = MagicMock(side_effect=_blocking_add)
+        monkeypatch.setattr(plugin, "_make_empty_index", lambda: builder)
+        save_index = MagicMock()
+        monkeypatch.setattr(provider_module, "save_index", save_index)
+
+        build = asyncio.ensure_future(plugin._rebuild_search_index_locked())
+        # the tracked rebuild task is cancelled by mass.cancel_task; the worker thread is not
+        mock_mass.cancel_task.side_effect = lambda _task_id: build.cancel()
+        await asyncio.get_running_loop().run_in_executor(None, in_worker.wait)
+        unload = asyncio.ensure_future(plugin.unload(is_removed=True))
+        await asyncio.sleep(0)  # unload is now waiting on the worker
+        assert not unload.done()
+        release_worker.set()
+        await unload
+        with pytest.raises(asyncio.CancelledError):
+            await build
+
+        mock_mass.cancel_task.assert_called_once_with(REBUILD_TASK_ID)
+        assert builder.add.call_count == 1
+        save_index.assert_not_called()
+        assert plugin._search_index is None
+        assert plugin.corpus_means is None
+        assert list(tmp_path.glob("*.usearch")) == []
 
     @pytest.mark.asyncio
     async def test_happy_path_populates_state_and_writes_file(

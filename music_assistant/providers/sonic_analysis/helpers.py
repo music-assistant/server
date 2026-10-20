@@ -266,12 +266,14 @@ def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioA
     :param accumulated: All block features accumulated during streaming.
     :param sample_rate: Sample rate used during extraction.
     """
-    onset_env = np.concatenate([[0.0], np.concatenate(accumulated.onset_env_frames)])
-    chroma = np.concatenate(accumulated.chroma_frames, axis=1)
-    rms = np.concatenate(accumulated.rms_frames, axis=1).squeeze()
-    centroid = np.concatenate(accumulated.centroid_frames, axis=1).squeeze()
-    contrast = np.concatenate(accumulated.contrast_frames, axis=1)
-    flatness = np.concatenate(accumulated.flatness_frames, axis=1).squeeze()
+    onset_env = _replace_non_finite(
+        np.concatenate([[0.0], np.concatenate(accumulated.onset_env_frames)])
+    )
+    chroma = _replace_non_finite(np.concatenate(accumulated.chroma_frames, axis=1))
+    rms = _replace_non_finite(np.concatenate(accumulated.rms_frames, axis=1).squeeze())
+    centroid = _replace_non_finite(np.concatenate(accumulated.centroid_frames, axis=1).squeeze())
+    contrast = _replace_non_finite(np.concatenate(accumulated.contrast_frames, axis=1))
+    flatness = _replace_non_finite(np.concatenate(accumulated.flatness_frames, axis=1).squeeze())
 
     energy = _derive_energy(rms)
     loudness_integrated, loudness_range = _derive_loudness(rms)
@@ -290,9 +292,16 @@ def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioA
         harmonic_complexity=harmonic_complexity,
         roughness=roughness,
         rhythmic_regularity=rhythmic_regularity,
-        rms_energy=rms_energy_series,
-        spectral_centroid=spectral_centroid_series,
+        # the model stores plain float lists (numpy-free); convert the analysis arrays
+        rms_energy=rms_energy_series.tolist(),
+        spectral_centroid=spectral_centroid_series.tolist(),
     )
+
+
+def _replace_non_finite(values: np.ndarray) -> np.ndarray:
+    """Replace non-finite feature values with neutral zeros."""
+    np.nan_to_num(values, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    return values
 
 
 def _clamp(value: float) -> float:

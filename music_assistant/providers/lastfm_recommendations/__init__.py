@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueOption,
-    ConfigValueType,
 )
 from music_assistant_models.enums import ConfigEntryType, ExternalID, ProviderFeature
 from music_assistant_models.errors import (
@@ -18,10 +18,11 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import RecommendationFolder, Track, UniqueList
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.throttle_retry import RequestPriority, with_request_priority
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
@@ -43,7 +44,12 @@ from music_assistant.providers.lastfm_recommendations.recommendations import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import Artist, RecommendationFolder
+    from music_assistant_models.media_items import (
+        Artist,
+        BrowseFolder,
+        ItemMapping,
+        MediaItemType,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -64,77 +70,73 @@ async def setup(
     return LastFMRecommendationsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    if action == CONF_ACTION_CLEAR_CACHE and instance_id:
-        provider = mass.get_provider(instance_id)
-        if isinstance(provider, LastFMRecommendationsProvider):
-            await provider.recommendations_manager.clear_cache()
-            mass.create_task(provider._refresh_recommendations())
-
-    return (
-        ConfigEntry(
-            key=CONF_API_KEY,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            value=values.get(CONF_API_KEY) if values else None,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-            value=values.get(CONF_USERNAME) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_PERSONALIZED,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_GLOBAL_CHARTS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_GENRE,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_GEO,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key=CONF_GEO_COUNTRY,
-            type=ConfigEntryType.STRING,
-            default_value="Argentina",
-            options=[ConfigValueOption(country, title=country) for country in GEO_COUNTRIES],
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_CLEAR_CACHE,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_CLEAR_CACHE,
-            category="recommendations",
-            advanced=True,
-            required=False,
-        ),
-    )
-
-
 class LastFMRecommendationsProvider(MetadataProvider):
     """Last.fm Recommendations Provider for Music Assistant."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_USERNAME,
+                type=ConfigEntryType.STRING,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_PERSONALIZED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="recommendations",
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_GLOBAL_CHARTS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="recommendations",
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_GENRE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="recommendations",
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_GEO,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="recommendations",
+            ),
+            ConfigEntry(
+                key=CONF_GEO_COUNTRY,
+                type=ConfigEntryType.STRING,
+                default_value="Argentina",
+                options=[ConfigValueOption(country, title=country) for country in GEO_COUNTRIES],
+                category="recommendations",
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_CLEAR_CACHE,
+                type=ConfigEntryType.ACTION,
+                action=CONF_ACTION_CLEAR_CACHE,
+                category="recommendations",
+                advanced=True,
+                required=False,
+            ),
+        )
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot config action button press."""
+        if action == CONF_ACTION_CLEAR_CACHE:
+            await self.recommendations_manager.clear_cache()
+            self.mass.create_task(self._refresh_recommendations())
+            return None
+        return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -168,31 +170,34 @@ class LastFMRecommendationsProvider(MetadataProvider):
             clear_persisted_state=is_removed,
         )
 
-    async def _refresh_recommendations(self) -> None:
-        """Rebuild recommendation folders."""
-        self._recommendation_folders.clear()
-
-        try:
-            self.logger.info("Building Last.fm recommendations")
-            async for folder in self.recommendations_manager.build_recommendation_folders():
-                self._recommendation_folders.append(folder)
-            self.logger.info(
-                "Last.fm recommendations built (%d folders)",
-                len(self._recommendation_folders),
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        # rows come from the precomputed in-memory folders: no backend I/O
+        return [
+            RecommendationFolder(
+                item_id=folder.item_id,
+                provider=folder.provider,
+                name=folder.name,
+                translation_key=folder.translation_key,
+                translation_params=folder.translation_params,
+                icon=folder.icon,
+                subtitle=folder.subtitle,
             )
-        except (AuthenticationFailed, InvalidToken) as err:
-            self.logger.error(
-                "Last.fm authentication failed — check your API key in the provider settings: %s",
-                err,
-            )
-        except ResourceTemporarilyUnavailable as err:
-            self.logger.warning("Last.fm rate-limited the refresh, will retry later: %s", err)
-        except MusicAssistantError as err:
-            self.logger.warning("Failed to build recommendations: %s", err)
+            for folder in self._recommendation_folders
+        ]
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Return this provider's recommendation folders."""
-        return self._recommendation_folders
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        for folder in self._recommendation_folders:
+            if folder.item_id == item_id:
+                return folder.items
+        return UniqueList()
 
     async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
         """
@@ -239,6 +244,45 @@ class LastFMRecommendationsProvider(MetadataProvider):
         artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
         return await self._get_artist_toptracks(artist.name, artist_mbid, limit)
 
+    async def get_artist_toptrack_titles(self, artist: Artist, limit: int = 25) -> list[str]:
+        """
+        Retrieve the titles of an artist's top tracks from Last.fm, most popular first.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of titles to return.
+        """
+        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
+        return await self._get_artist_toptrack_titles(artist.name, artist_mbid, limit)
+
+    # a background job, also when it runs from the startup timer or a config action: the
+    # music provider searches it fans out must leave headroom for user actions and playback
+    @with_request_priority(RequestPriority.LOW)
+    async def _refresh_recommendations(self) -> None:
+        """Rebuild recommendation folders."""
+        # Build into a local list and swap it in atomically at the end, so a slow,
+        # rate-limited rebuild keeps serving the previous generation's rows instead of
+        # returning empty for folders that haven't been rebuilt yet.
+        new_folders: list[RecommendationFolder] = []
+
+        try:
+            self.logger.info("Building Last.fm recommendations")
+            async for folder in self.recommendations_manager.build_recommendation_folders():
+                new_folders.append(folder)
+            self._recommendation_folders = new_folders
+            self.logger.info(
+                "Last.fm recommendations built (%d folders)",
+                len(self._recommendation_folders),
+            )
+        except (AuthenticationFailed, InvalidToken) as err:
+            self.logger.error(
+                "Last.fm authentication failed — check your API key in the provider settings: %s",
+                err,
+            )
+        except ResourceTemporarilyUnavailable as err:
+            self.logger.warning("Last.fm rate-limited the refresh, will retry later: %s", err)
+        except MusicAssistantError as err:
+            self.logger.warning("Failed to build recommendations: %s", err)
+
     @use_cache(
         CACHE_EXPIRATION_SECONDS,
         category=CACHE_CATEGORY_RESOLVED_ITEMS,
@@ -266,3 +310,14 @@ class LastFMRecommendationsProvider(MetadataProvider):
             artist_name,
         )
         return tracks
+
+    @use_cache(CACHE_EXPIRATION_SECONDS, allow_expired_cache=True)
+    async def _get_artist_toptrack_titles(
+        self, artist_name: str, artist_mbid: str | None, limit: int
+    ) -> list[str]:
+        """Fetch the titles of an artist's top tracks, keyed by name/mbid for caching."""
+        return [
+            raw["name"]
+            for raw in await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
+            if raw.get("name")
+        ]

@@ -33,13 +33,17 @@ async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
         "music_assistant.providers.jellyfin.authenticate_by_name", authenticate_by_name
     ):
         async with wait_for_sync_completion(mass):
-            config = await mass.config.save_provider_config(
+            config = await mass.config._create_provider_instance(
                 "jellyfin",
-                {
-                    "url": "http://localhost",
-                    "username": "username",
-                    "password": "password",
-                },
+                {},
+                # connection details are collected by the setup flow and live in setup_data
+                setup_data=mass.config._encrypt_values(
+                    {
+                        "url": "http://localhost",
+                        "username": "username",
+                        "password": "password",
+                    }
+                ),
             )
             await mass.music.start_sync()
 
@@ -49,7 +53,7 @@ async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
 @pytest.mark.usefixtures("jellyfin_provider")
 async def test_get_artist_albums(mass: MusicAssistant) -> None:
     """Test that get_artist_albums returns albums for a real artist ID."""
-    artists = await mass.music.artists.library_items(search="Ash")
+    artists = await mass.music.artists.library_items(search="Ash", summary=False)
     ash = artists[0]
     prov_mapping = next(m for m in ash.provider_mappings if m.provider_domain == "jellyfin")
     albums = await mass.music.artists.get_provider_artist_albums(

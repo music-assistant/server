@@ -9,14 +9,17 @@ from typing import TYPE_CHECKING, Any, Concatenate, cast
 from aiohttp import ClientConnectionError, ClientPayloadError, ClientTimeout
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
+    LoginFailed,
     MediaNotFoundError,
     RateLimited,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 
+from .helpers.request_counter import RequestCounter, endpoint_family
 from .helpers.utils import is_library_id, translate_media_type_to_apple_type
 
 if TYPE_CHECKING:
@@ -24,7 +27,7 @@ if TYPE_CHECKING:
 
 _APPLE_API_BASE = "https://api.music.apple.com/v1"
 
-_LIBRARY_PAGE_SIZE = 50
+_LIBRARY_PAGE_SIZE = 100
 
 _PAGE_TRUNCATION_RETRIES = 3
 
@@ -42,7 +45,7 @@ def _retry_transient_transport_errors[ClientT, **P, R](
     """
 
     @functools.wraps(func)
-    async def wrapper(self: ClientT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: ClientT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return await func(self, *args, **kwargs)
         except (ClientConnectionError, ClientPayloadError, TimeoutError) as err:
@@ -53,39 +56,122 @@ def _retry_transient_transport_errors[ClientT, **P, R](
     return wrapper
 
 
+def _count_attempts[**P, R](
+    func: Callable[Concatenate[AppleMusicAPIClient, str, P], Awaitable[R]],
+) -> Callable[Concatenate[AppleMusicAPIClient, str, P], Awaitable[R]]:
+    """Count every request attempt and every 429 against its endpoint family."""
+
+    @functools.wraps(func)
+    async def wrapper(
+        self: AppleMusicAPIClient, endpoint: str, /, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        family = endpoint_family(endpoint, kwargs)
+        self.request_counter.record(family, "attempts")
+        try:
+            return await func(self, endpoint, *args, **kwargs)
+        except RateLimited:
+            self.request_counter.record(family, "rate_limited")
+            raise
+
+    return wrapper
+
+
+def _count_retries_exhausted[**P, R](
+    func: Callable[Concatenate[AppleMusicAPIClient, str, P], Awaitable[R]],
+) -> Callable[Concatenate[AppleMusicAPIClient, str, P], Awaitable[R]]:
+    """Count every request that ended in RetriesExhausted, including one skipped by a cooldown."""
+
+    @functools.wraps(func)
+    async def wrapper(
+        self: AppleMusicAPIClient, endpoint: str, /, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        try:
+            return await func(self, endpoint, *args, **kwargs)
+        except RetriesExhausted:
+            self.request_counter.record(endpoint_family(endpoint, kwargs), "retries_exhausted")
+            raise
+
+    return wrapper
+
+
+def _raise_on_auth_error(status: int, endpoint: str) -> None:
+    """
+    Raise LoginFailed when Apple rejected our credentials.
+
+    On catalog endpoints the message blames the app token, since those requests carry no
+    user token. Elsewhere it names both tokens.
+
+    :param status: The HTTP status code returned by Apple.
+    :param endpoint: The endpoint that was called, used in the error message.
+    """
+    if status not in (401, 403):
+        return
+    if endpoint.startswith("catalog/"):
+        raise LoginFailed(
+            f"Apple Music denied access to {endpoint}: the app token is invalid or expired"
+        )
+    raise LoginFailed(
+        f"Apple Music denied access to {endpoint}: the account needs to be signed in again, "
+        "or the app token is invalid"
+    )
+
+
+def _match_language_tag(locale: str, supported_tags: list[str]) -> str | None:
+    """Return the storefront language tag closest to the locale, if any."""
+    # Apple ignores a valid tag the storefront lacks, but rejects a malformed one with a 400.
+    language = locale.split("-", maxsplit=1)[0].lower()
+    for tag in supported_tags:
+        if tag.lower() == locale.lower():
+            return tag
+    for tag in supported_tags:
+        if tag.split("-")[0].lower() == language:
+            return tag
+    return None
+
+
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
 
-    # period=0.25 -> 4 req/s. Raise it if Apple starts returning 429s.
-    throttler = ThrottlerManager(rate_limit=1, period=0.25, initial_backoff=15)
+    # period=0.25 -> 4 req/s. Apple throttles per developer account, so 429s follow the
+    # fleet-wide load on the bundled token, not our rate - and they clear within a second.
+    # 8 attempts keep the 1/2/4/8/16/32/64s ladder spanning ~2 minutes, so a sustained
+    # throttle (or outage) is still ridden out instead of failing the request in ~15s.
+    # Background work fails fast instead: a failed sync just waits for its next run, while
+    # each of its retries re-arms the cooldown that holds back user requests.
+    throttler = ThrottlerManager(
+        rate_limit=1,
+        period=0.25,
+        retry_attempts=8,
+        initial_backoff=1,
+        low_priority_retry_attempts=3,
+    )
 
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize the API client."""
         self.provider = provider
         self.logger = provider.logger
+        self.request_counter = RequestCounter()
+        self._language: str | None = None
 
-    @property
-    def _headers(self) -> dict[str, str]:
-        """Return standard auth headers."""
-        return {
-            "Authorization": f"Bearer {self.provider._music_app_token}",
-            "Music-User-Token": cast("str", self.provider._music_user_token),
-        }
-
+    @_count_retries_exhausted
     @throttle_with_retries
     @_retry_transient_transport_errors
-    async def get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    @_count_attempts
+    async def get_data(self, endpoint: str, /, **kwargs: Any) -> dict[str, Any]:
         """GET data from the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
+        if self._language and "l" not in kwargs:
+            kwargs = {**kwargs, "l": self._language}
         async with (
             self.provider.mass.http_session.get(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 ssl=True,
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404 and "limit" in kwargs and "offset" in kwargs:
                 return {}
             if response.status == 404:
@@ -100,7 +186,7 @@ class AppleMusicAPIClient:
                 raise ResourceTemporarilyUnavailable("Apple Music API Timeout")
             if response.status == 429:
                 self.provider.logger.debug(
-                    "Apple Music Rate Limiter. Headers: %s", response.headers
+                    "Apple Music Rate Limiter on %s. Headers: %s", endpoint, response.headers
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             if response.status == 500:
@@ -111,48 +197,54 @@ class AppleMusicAPIClient:
             response.raise_for_status()
             return cast("dict[str, Any]", await response.json(loads=json_loads))
 
+    @_count_retries_exhausted
     @throttle_with_retries
-    async def delete_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
+    @_count_attempts
+    async def delete_data(self, endpoint: str, /, data: Any = None, **kwargs: Any) -> None:
         """DELETE data from the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
             self.provider.mass.http_session.delete(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
                 self.provider.logger.debug(
-                    "Apple Music Rate Limiter. Headers: %s", response.headers
+                    "Apple Music Rate Limiter on %s. Headers: %s", endpoint, response.headers
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
 
+    @_count_retries_exhausted
     @throttle_with_retries
-    async def put_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
+    @_count_attempts
+    async def put_data(self, endpoint: str, /, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """PUT data to the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
             self.provider.mass.http_session.put(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
                 self.provider.logger.debug(
-                    "Apple Music Rate Limiter. Headers: %s", response.headers
+                    "Apple Music Rate Limiter on %s. Headers: %s", endpoint, response.headers
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
@@ -160,25 +252,28 @@ class AppleMusicAPIClient:
                 return cast("dict[str, Any]", await response.json(loads=json_loads))
             return {}
 
+    @_count_retries_exhausted
     @throttle_with_retries
-    async def post_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
+    @_count_attempts
+    async def post_data(self, endpoint: str, /, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """POST data to the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
             self.provider.mass.http_session.post(
                 url,
-                headers=self._headers,
+                headers=self._headers_for(endpoint),
                 params=kwargs,
                 json=data,
                 ssl=True,
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
                 self.provider.logger.debug(
-                    "Apple Music Rate Limiter. Headers: %s", response.headers
+                    "Apple Music Rate Limiter on %s. Headers: %s", endpoint, response.headers
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
@@ -218,10 +313,21 @@ class AppleMusicAPIClient:
         locale = self.provider.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
         result = await self.get_data("me/storefront", l=language)
-        return cast("str", result["data"][0]["id"])
+        storefront = result["data"][0]
+        self._language = _match_language_tag(
+            locale, storefront["attributes"].get("supportedLanguageTags", [])
+        )
+        return cast("str", storefront["id"])
 
     async def get_ratings(self, item_ids: list[str], media_type: MediaType) -> dict[str, bool]:
-        """Return a mapping of item_id → is_favourite for a list of IDs."""
+        """
+        Return the rating of each of the given items.
+
+        True is a thumbs up, False a thumbs down; an item without a rating is absent.
+
+        :param item_ids: The Apple Music item ids to look up.
+        :param media_type: Media type of the items.
+        """
         if media_type == MediaType.ARTIST:
             raise NotImplementedError(
                 "Ratings are not available for artist in the Apple Music API."
@@ -269,3 +375,11 @@ class AppleMusicAPIClient:
         raise ResourceTemporarilyUnavailable(
             f"Incomplete paged listing for {endpoint} at offset {offset}"
         )
+
+    def _headers_for(self, endpoint: str) -> dict[str, str]:
+        """Return the auth headers for a request to the given endpoint."""
+        headers = {"Authorization": f"Bearer {self.provider._music_app_token}"}
+        # Without the user token, all installs share one Akamai cache variant per catalog URL
+        if not endpoint.startswith("catalog/"):
+            headers["Music-User-Token"] = cast("str", self.provider._music_user_token)
+        return headers

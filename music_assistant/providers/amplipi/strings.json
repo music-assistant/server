@@ -4,5 +4,8 @@
       "label": "Host",
       "description": "The hostname or IP address of the AmpliPi controller (e.g. 'amplipi.local' or '192.168.1.50')."
     }
+  },
+  "errors": {
+    "already_configured": "This AmpliPi controller is already set up in Music Assistant. Each controller can only be added once - enter the address of a different controller, or reconfigure the existing one instead."
   }
 }

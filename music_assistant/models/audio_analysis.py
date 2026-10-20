@@ -1,22 +1,39 @@
 """
 Data model for audio analysis results stored by Audio Analysis providers.
 
-Stays server-local: the numpy.ndarray fields below would force numpy as an
-upstream dep on every consumer of music_assistant_models if this module moved.
-The lightweight AudioAnalysisCoverage shape lives upstream at
-music_assistant_models.audio_analysis instead.
+Stays server-local: the lightweight AudioAnalysisCoverage shape lives upstream
+at music_assistant_models.audio_analysis; this fuller model is only needed by the
+server-side providers and stream controllers that produce and consume it.
+
+The rhythm/spectral fields are plain float lists, not numpy arrays, so importing
+this model never pulls in numpy. The compute code that needs array math (smart
+fades, sonic analysis) converts to numpy at the point of use — keeping numpy off
+every install that only does e.g. loudness normalization.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
-import numpy as np
-import numpy.typing as npt
 from mashumaro import DataClassDictMixin
-from mashumaro.config import BaseConfig
+from music_assistant_models.media_items import AudioMetadata
+
+from music_assistant.helpers.camelot import camelot_key
+
+# extra_data keys that earlier versions used for arrays that are typed fields now; __post_init__
+# lifts them so rows written before the fields existed decode into the same shape.
+_LEGACY_EXTRA_DATA_FIELDS: Final[dict[str, str]] = {
+    "clap_embedding": "clap_embedding",
+    "vocal_activity": "vocal_activity",
+}
+_LEGACY_BAND_RMS_FIELDS: Final[dict[str, str]] = {
+    "low": "band_rms_low",
+    "low_mid": "band_rms_low_mid",
+    "mid": "band_rms_mid",
+    "high": "band_rms_high",
+}
 
 
 class AudioAnalysisError(Exception):
@@ -61,10 +78,10 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # Beats per minute.
     bpm: float | None = None
-    # Array of beat positions in seconds.
-    beats: npt.NDArray[np.float32] | None = None
-    # Array of downbeat (bar start) positions in seconds.
-    downbeats: npt.NDArray[np.float32] | None = None
+    # Beat positions in seconds. Convert to a numpy array for array math.
+    beats: list[float] | None = None
+    # Downbeat (bar start) positions in seconds. Convert to a numpy array for array math.
+    downbeats: list[float] | None = None
     # Number of beats in each bar indicating time signature, e.g. 3 for 3/4 waltz, 4 for 4/4 common time.
     beats_per_bar: int | None = None
 
@@ -77,10 +94,23 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # Spectral & Energy (fixed 1800 bins covering track duration)
 
-    # RMS energy, normalized 0.0-1.0. Fixed 1800 bins.
-    rms_energy: npt.NDArray[np.float32] | None = None
-    # Spectral centroid in Hz. Fixed 1800 bins.
-    spectral_centroid: npt.NDArray[np.float32] | None = None
+    # RMS energy, normalized 0.0-1.0. Fixed 1800 bins. Convert to a numpy array for array math.
+    rms_energy: list[float] | None = None
+    # Spectral centroid in Hz. Fixed 1800 bins. Convert to a numpy array for array math.
+    spectral_centroid: list[float] | None = None
+
+    # Envelopes and embeddings (arrays produced by specific providers)
+
+    # Vocal presence per bin, 0.0-1.0. Fixed 1800 bins. Convert to a numpy array for array math.
+    vocal_activity: list[float] | None = None
+    # Per-band RMS envelopes, normalized 0.0-1.0 against the track peak. Fixed 1800 bins each.
+    # Band edges are defined by BAND_RMS_BANDS in the smart fades controller.
+    band_rms_low: list[float] | None = None
+    band_rms_low_mid: list[float] | None = None
+    band_rms_mid: list[float] | None = None
+    band_rms_high: list[float] | None = None
+    # CLAP audio embedding, 1024 floats, L2-normalized. Convert to a numpy array for array math.
+    clap_embedding: list[float] | None = None
 
     # High-Level Descriptors (all normalized 0.0-1.0)
 
@@ -114,13 +144,44 @@ class AudioAnalysisData(DataClassDictMixin):
     # Catch-all dict for provider-specific data
     extra_data: dict[str, Any] | None = None
 
-    class Config(BaseConfig):  # noqa: D106
-        serialization_strategy = {  # noqa: RUF012  # mashumaro Config attr; ClassVar conflicts with BaseConfig
-            np.ndarray: {
-                "serialize": lambda x: x.tolist(),
-                "deserialize": lambda x: np.asarray(x, dtype=np.float32),
-            }
-        }
+    def __post_init__(self) -> None:
+        """
+        Lift arrays that older rows stored under extra_data into their typed fields.
+
+        Only values actually lifted (or already superseded by a typed field of the
+        same name) are removed from extra_data; anything else under a legacy key
+        (e.g. a non-list value, or an unrecognized band_rms entry) is left in place
+        so it is not silently discarded on the next write. The non-dict guard below
+        is defensive for direct construction only; from_dict validates the field
+        type before this hook runs.
+        """
+        if self.extra_data is not None and not isinstance(self.extra_data, dict):
+            return  # type: ignore[unreachable]
+        if not self.extra_data:
+            if self.extra_data is not None:
+                self.extra_data = None
+            return
+        extra = dict(self.extra_data)
+        for key, field_name in _LEGACY_EXTRA_DATA_FIELDS.items():
+            value = extra.get(key)
+            if isinstance(value, list):
+                if getattr(self, field_name) is None:
+                    setattr(self, field_name, value)
+                del extra[key]
+        band_rms = extra.get("band_rms")
+        if isinstance(band_rms, dict):
+            remaining_band_rms = dict(band_rms)
+            for band, field_name in _LEGACY_BAND_RMS_FIELDS.items():
+                value = band_rms.get(band)
+                if isinstance(value, list):
+                    if getattr(self, field_name) is None:
+                        setattr(self, field_name, value)
+                    del remaining_band_rms[band]
+            if remaining_band_rms:
+                extra["band_rms"] = remaining_band_rms
+            else:
+                del extra["band_rms"]
+        self.extra_data = extra or None
 
     def update(self, new_values: AudioAnalysisData) -> AudioAnalysisData:
         """Merge new analysis data (in-place). Latest-write-wins for non-None fields."""
@@ -130,3 +191,16 @@ class AudioAnalysisData(DataClassDictMixin):
                 continue
             setattr(self, fld.name, new_val)
         return self
+
+    def as_audio_metadata(self) -> AudioMetadata | None:
+        """Return the bpm and musical key as track AudioMetadata, or None when it holds neither."""
+        if self.bpm is None and self.key is None:
+            return None
+        musical_key: str | None = None
+        if self.key is not None:
+            musical_key = f"{self.key} {self.mode}" if self.mode else self.key
+        return AudioMetadata(
+            bpm=self.bpm,
+            musical_key=musical_key,
+            camelot_key=camelot_key(self.key, self.mode),
+        )

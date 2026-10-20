@@ -4,7 +4,7 @@
   "name": "MSX Bridge",
   "description": "Stream music to Smart TVs via Media Station X",
   "codeowners": ["@TrudenBoy"],
-  "requirements": [],
+  "requirements": ["segno==1.6.6"],
   "documentation": "https://music-assistant.io/player-support/msx-bridge",
   "multi_instance": false,
   "stage": "beta",

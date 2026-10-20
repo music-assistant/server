@@ -140,8 +140,8 @@ class SnapcastSocketServer:
                     await self._handle_message(message)
                 except json.JSONDecodeError as err:
                     self._logger.warning("Invalid JSON from control script: %s", err)
-                except Exception as err:
-                    self._logger.exception("Error handling control script message: %s", err)
+                except Exception:
+                    self._logger.exception("Error handling control script message")
         except asyncio.CancelledError:
             pass
         except ConnectionResetError:
@@ -171,7 +171,7 @@ class SnapcastSocketServer:
             result = await self._execute_command(command, args)
             await self._send_result(msg_id, result)
         except Exception as err:
-            self._logger.exception("Error executing command %s: %s", command, err)
+            self._logger.exception("Error executing command %s", command)
             await self._send_error(msg_id, str(err))
 
     async def _execute_command(self, command: str, args: dict[str, Any]) -> Any:

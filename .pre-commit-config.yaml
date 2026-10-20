@@ -4,7 +4,7 @@ repos:
       # gen_requirements_all modifies files so it has to be first
       - id: gen_requirements_all
         name: gen_requirements_all
-        entry: uv run -m scripts.gen_requirements_all
+        entry: scripts/run-in-env.sh -m scripts.gen_requirements_all
         pass_filenames: false
         language: system
         types: [text]
@@ -14,7 +14,7 @@ repos:
       # strings.json authoring files, so it also modifies files and must run early.
       - id: build_translations_source
         name: build_translations_source
-        entry: uv run -m scripts.build_translations
+        entry: scripts/run-in-env.sh -m scripts.build_translations
         pass_filenames: false
         language: system
         types: [text]
@@ -23,7 +23,7 @@ repos:
       # fail when a ConfigEntry hardcodes label/description text instead of using strings.json
       - id: check_config_entries
         name: check_config_entries
-        entry: uv run -m scripts.check_config_entries
+        entry: scripts/run-in-env.sh -m scripts.check_config_entries
         pass_filenames: false
         language: system
         types: [python]
@@ -31,7 +31,7 @@ repos:
 
       - id: check-python-version
         name: Validate pyproject.toml matches .python-version
-        entry: uv run -m scripts.check_python_version
+        entry: scripts/run-in-env.sh -m scripts.check_python_version
         pass_filenames: false
         language: system
         files: ^(\.python-version|pyproject\.toml|scripts/check_python_version\.py)$
@@ -40,7 +40,7 @@ repos:
       # fail when a provider/controller test is a flat file instead of living in its own folder
       - id: check_test_layout
         name: check_test_layout
-        entry: uv run -m scripts.check_test_layout
+        entry: scripts/run-in-env.sh -m scripts.check_test_layout
         pass_filenames: false
         language: system
         files: ^(tests/(providers|controllers)/.+\.py|scripts/check_test_layout\.py)$
@@ -48,25 +48,24 @@ repos:
       # fail when a provider manifest.json misses a mandatory key or is internally inconsistent
       - id: check_manifests
         name: check_manifests
-        entry: uv run -m scripts.check_manifests
+        entry: scripts/run-in-env.sh -m scripts.check_manifests
         pass_filenames: true
         language: system
         types: [json]
         files: ^music_assistant/providers/[^/]+/manifest\.json$
 
-      # fail when a provider icon SVG exceeds the 5 KB budget (existing offenders are baselined)
+      # fail when a provider/controller icon exceeds its size budget (existing offenders baselined)
       - id: check_provider_icons
         name: check_provider_icons
-        entry: uv run -m scripts.check_provider_icons
+        entry: scripts/run-in-env.sh -m scripts.check_provider_icons
         pass_filenames: false
         language: system
-        types: [text]
-        files: ^(music_assistant/providers/.+\.svg|scripts/check_provider_icons\.py|scripts/lint_baseline(s/oversized_provider_icons\.txt|\.py))$
+        files: ^(music_assistant/(providers|controllers)/.+\.(svg|png)|scripts/check_provider_icons\.py|scripts/lint_baseline(s/oversized_provider_icons\.txt|\.py))$
 
       # fail when a browse/recommendation folder hardcodes a label instead of using translation_key
       - id: check_translatable_labels
         name: check_translatable_labels
-        entry: uv run -m scripts.check_translatable_labels
+        entry: scripts/run-in-env.sh -m scripts.check_translatable_labels
         pass_filenames: true
         language: system
         types: [python]
@@ -75,7 +74,7 @@ repos:
       # fail when code calls datetime.now()/utcnow() directly (existing call sites are baselined)
       - id: check_datetime_helpers
         name: check_datetime_helpers
-        entry: uv run -m scripts.check_datetime_helpers
+        entry: scripts/run-in-env.sh -m scripts.check_datetime_helpers
         pass_filenames: false
         language: system
         types: [text]
@@ -84,7 +83,7 @@ repos:
       # fail when async code makes a known-blocking call (existing call sites are baselined)
       - id: check_blocking_io
         name: check_blocking_io
-        entry: uv run -m scripts.check_blocking_io
+        entry: scripts/run-in-env.sh -m scripts.check_blocking_io
         pass_filenames: false
         language: system
         types: [text]
@@ -93,7 +92,7 @@ repos:
       # fail when a class puts a public/dunder method below a private one (existing classes baselined)
       - id: check_method_order
         name: check_method_order
-        entry: uv run -m scripts.check_method_order
+        entry: scripts/run-in-env.sh -m scripts.check_method_order
         pass_filenames: false
         language: system
         types: [text]
@@ -103,7 +102,7 @@ repos:
         name: 🐶 Ruff Linter
         language: system
         types: [python]
-        entry: uv run ruff check --fix
+        entry: scripts/run-in-env.sh ruff check --fix
         require_serial: true
         stages: [pre-commit, pre-push, manual]
 
@@ -111,7 +110,7 @@ repos:
         name: 🐶 Ruff Formatter
         language: system
         types: [python]
-        entry: uv run ruff format
+        entry: scripts/run-in-env.sh ruff format
         require_serial: true
         stages: [pre-commit, pre-push, manual]
 
@@ -119,68 +118,70 @@ repos:
         name: 🐍 Check Python AST
         language: system
         types: [python]
-        entry: uv run check-ast
+        entry: scripts/run-in-env.sh check-ast
 
       - id: check-case-conflict
         name: 🔠 Check for case conflicts
         language: system
-        entry: uv run check-case-conflict
+        entry: scripts/run-in-env.sh check-case-conflict
 
       - id: check-docstring-first
         name: ℹ️  Check docstring is first
         language: system
         types: [python]
-        entry: uv run check-docstring-first
+        entry: scripts/run-in-env.sh check-docstring-first
 
       - id: check-executables-have-shebangs
         name: 🧐 Check that executables have shebangs
         language: system
         types: [text, executable]
-        entry: uv run check-executables-have-shebangs
+        entry: scripts/run-in-env.sh check-executables-have-shebangs
         stages: [pre-commit, pre-push, manual]
 
       - id: check-json
         name: ｛ Check JSON files
         language: system
         types: [json]
-        entry: uv run check-json
+        entry: scripts/run-in-env.sh check-json
         files: ^(music_assistant/.+/manifest\.json)|(tests/providers/.+/fixtures/.+\.json)$
 
       - id: check-merge-conflict
         name: 💥 Check for merge conflicts
         language: system
         types: [text]
-        entry: uv run check-merge-conflict
+        entry: scripts/run-in-env.sh check-merge-conflict
 
       - id: check-symlinks
         name: 🔗 Check for broken symlinks
         language: system
         types: [symlink]
-        entry: uv run check-symlinks
+        entry: scripts/run-in-env.sh check-symlinks
 
       - id: check-toml
         name: ✅ Check TOML files
         language: system
         types: [toml]
-        entry: uv run check-toml
+        entry: scripts/run-in-env.sh check-toml
 
       - id: codespell
         name: ✅ Check code for common misspellings
         language: system
         types: [text]
-        entry: uv run codespell
+        entry: scripts/run-in-env.sh codespell
 
       - id: detect-private-key
         name: 🕵️ Detect Private Keys
         language: system
         types: [text]
-        entry: uv run detect-private-key
+        entry: scripts/run-in-env.sh detect-private-key
+        # frozen throwaway fixture key guarding Remote ID stability
+        exclude: ^tests/helpers/test_webrtc_certificate\.py$
 
       - id: end-of-file-fixer
         name: ⮐ Fix End of Files
         language: system
         types: [text]
-        entry: uv run end-of-file-fixer
+        entry: scripts/run-in-env.sh end-of-file-fixer
         # downloaded Lokalise locale files don't carry a trailing newline; en.json's is
         # guaranteed by build_translations (--check), so skip the whole translations dir
         exclude: ^music_assistant/translations/
@@ -189,7 +190,7 @@ repos:
       - id: no-commit-to-branch
         name: 🛑 Don't commit to stable branch
         language: system
-        entry: uv run no-commit-to-branch
+        entry: scripts/run-in-env.sh no-commit-to-branch
         pass_filenames: false
         always_run: true
         args:
@@ -199,12 +200,12 @@ repos:
         name: ✄ Trim Trailing Whitespace
         language: system
         types: [text]
-        entry: uv run trailing-whitespace-fixer
+        entry: scripts/run-in-env.sh trailing-whitespace-fixer
         stages: [pre-commit, pre-push, manual]
 
       - id: mypy
         name: mypy
-        entry: uv run mypy
+        entry: scripts/run-in-env.sh mypy
         language: system
         types: [python]
         require_serial: true

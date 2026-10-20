@@ -1,0 +1,8 @@
+{
+  "background_task": {
+    "refresh_latest_episodes": "Refresh latest podcast episodes"
+  },
+  "manifest": {
+    "description": "Provides standard library-based recommendation rows."
+  }
+}

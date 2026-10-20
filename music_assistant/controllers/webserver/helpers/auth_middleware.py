@@ -1,27 +1,97 @@
-"""Authentication middleware and helpers for HTTP requests and WebSocket connections."""
+"""Authentication helpers for HTTP requests and WebSocket connections."""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Final, Self, cast
 
-from aiohttp import web
-from music_assistant_models.auth import AuthProviderType, User, UserRole
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    UserNotFoundError,
+)
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    HASSIO_SUPERVISOR_IP,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+)
 
-from .auth_providers import get_ha_user_details, get_ha_user_role
+from .auth_providers import get_ha_user_details, get_or_create_ha_user
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 if TYPE_CHECKING:
+    from aiohttp import web
+
     from music_assistant import MusicAssistant
+    from music_assistant.models.player import Player
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
+
+_GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
+    {
+        Scope.LIBRARY_READ,
+        Scope.PLAYERS_READ,
+        Scope.PLAYERS_CONTROL,
+        Scope.QUEUES_READ,
+        Scope.QUEUES_CONTROL,
+        Scope.PROVIDERS_READ,
+        Scope.CONFIG_PLAYERS_READ,
+    }
+)
+_MEMBER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
+    Scope.LIBRARY_WRITE,
+    Scope.CONFIG_PROVIDERS_READ,
+    Scope.CONFIG_CORE_READ,
+    Scope.USERS_INVITE,
+    Scope.SYSTEM_READ,
+}
+
+# Scopes granted to each of the builtin user roles, which are defined here and never stored.
+# Roles are identified by their (string) role id, admins may create custom roles as well
+# (see set_custom_role_scopes): a role id that is neither builtin nor custom grants no scopes.
+ROLE_SCOPES: Final[Mapping[str, frozenset[Scope]]] = {
+    UserRole.ADMIN: frozenset({Scope.ALL}),
+    UserRole.USER: _MEMBER_SCOPES | {Scope.CONFIG_PROVIDERS_OWN},
+    UserRole.GUEST: _GUEST_SCOPES,
+    # service accounts (such as the Home Assistant integration) get slightly
+    # elevated rights over a regular user, but can not own a music source
+    UserRole.SERVICE: (
+        _MEMBER_SCOPES | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE}
+    ),
+}
+
+# Scopes that stay with the builtin admin role, as each one reaches past a household member
+# into accounts, the private things of other members or the server itself: users.manage sets
+# the password of any user, users.impersonate acts as any user, library.manage manages every
+# playlist including private ones, config.providers.write reconfigures every provider
+# including the Home Assistant plugin that signs users in, config.core.write changes the
+# addresses and sign-up settings of the server and system.manage runs its maintenance
+CUSTOM_ROLE_FORBIDDEN_SCOPES: Final[frozenset[Scope]] = frozenset(
+    {
+        Scope.ALL,
+        Scope.UNKNOWN,
+        Scope.USERS_MANAGE,
+        Scope.USERS_IMPERSONATE,
+        Scope.LIBRARY_MANAGE,
+        Scope.CONFIG_PROVIDERS_WRITE,
+        Scope.CONFIG_CORE_WRITE,
+        Scope.SYSTEM_MANAGE,
+    }
+)
+# Scopes a custom role holds along with a scope that is of no use without them
+_CUSTOM_ROLE_IMPLIED_SCOPES: Final[Mapping[Scope, frozenset[Scope]]] = {
+    Scope.CONFIG_PLAYERS_WRITE: frozenset({Scope.CONFIG_PLAYERS_READ}),
+    Scope.CONFIG_PROVIDERS_OWN: frozenset({Scope.CONFIG_PROVIDERS_READ}),
+}
+# Scopes granted to each of the custom roles, by role id (see set_custom_role_scopes)
+_custom_role_scopes: Final[dict[str, frozenset[Scope]]] = {}
 
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
@@ -30,6 +100,12 @@ current_token: ContextVar[str | None] = ContextVar("current_token", default=None
 impersonated_user: ContextVar[User | None] = ContextVar("impersonated_user", default=None)
 # ContextVar for tracking the sendspin player associated with the current connection
 sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", default=None)
+# ContextVar for tracking the websocket client id associated with the current connection
+current_client_id: ContextVar[str | None] = ContextVar("current_client_id", default=None)
+# ContextVar for tracking the network address a stateless API request came from.
+# A reverse proxy or Home Assistant Ingress presents its own address for every client
+# behind it, so this identifies a caller far less precisely than a client id does.
+current_peer_address: ContextVar[str | None] = ContextVar("current_peer_address", default=None)
 
 
 async def get_authenticated_user(request: web.Request) -> User | None:
@@ -38,74 +114,15 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
     :param request: The aiohttp request.
     """
-    # Check if user is already in context (from middleware)
+    # Return the user resolved by an earlier call on this same request
     if USER_CONTEXT_KEY in request:
         return cast("User | None", request[USER_CONTEXT_KEY])
 
     mass: MusicAssistant = request.app["mass"]
 
     # Check for Home Assistant Ingress connections
-    if is_request_from_ingress(request):
-        ingress_user_id = request.headers.get("X-Remote-User-ID")
-        ingress_username = request.headers.get("X-Remote-User-Name")
-        ingress_display_name = request.headers.get("X-Remote-User-Display-Name")
-
-        # Require all Ingress headers to be present for security
-        if not (ingress_user_id and ingress_username):
-            return None
-
-        # Try to find existing user linked to this HA user ID
-        user = await mass.webserver.auth.get_user_by_provider_link(
-            AuthProviderType.HOME_ASSISTANT, ingress_user_id
-        )
-        if not user:
-            user = await mass.webserver.auth.get_user_by_username(ingress_username)
-            if not user:
-                # New user - fetch details from HA
-                ha_username, ha_display_name, avatar_url = await get_ha_user_details(
-                    mass, ingress_user_id
-                )
-                role = await get_ha_user_role(mass, ingress_user_id)
-                user = await mass.webserver.auth.create_user(
-                    username=ha_username or ingress_username,
-                    role=role,
-                    display_name=ha_display_name or ingress_display_name,
-                    avatar_url=avatar_url,
-                )
-
-            # Link to Home Assistant provider (or create the link if user already existed)
-            await mass.webserver.auth.link_user_to_provider(
-                user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-            )
-
-        # Update user with HA details if available (HA is source of truth)
-        # Fall back to ingress headers if API lookup doesn't return values
-        _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-        final_display_name = ha_display_name or ingress_display_name
-        LOGGER.log(
-            VERBOSE_LOG_LEVEL,
-            "Ingress auth for user %s: ha_display_name=%s, ingress_display_name=%s, "
-            "final_display_name=%s, avatar_url=%s",
-            user.username,
-            ha_display_name,
-            ingress_display_name,
-            final_display_name,
-            avatar_url,
-        )
-        if final_display_name or avatar_url:
-            user = await mass.webserver.auth.update_user(
-                user,
-                display_name=final_display_name,
-                avatar_url=avatar_url,
-            )
-            LOGGER.log(
-                VERBOSE_LOG_LEVEL,
-                "Updated user %s: display_name=%s, avatar_url=%s",
-                user.username,
-                user.display_name,
-                user.avatar_url,
-            )
-
+    if is_request_from_ingress_proxy(request):
+        user = await resolve_ingress_user(mass, request.headers)
         # Store in request context
         request[USER_CONTEXT_KEY] = user
         return user
@@ -136,31 +153,215 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     return user
 
 
-async def require_authentication(request: web.Request) -> User:
+async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str]) -> User | None:
     """
-    Require authentication for a request, raise 401 if not authenticated.
+    Resolve the user of a Home Assistant Ingress request, creating it on a first sign-in.
 
-    :param request: The aiohttp request.
+    :param mass: The MusicAssistant instance.
+    :param headers: The request headers Home Assistant Ingress sets.
+    :return: The user, or None when the headers name no Home Assistant user, the user is not
+        linked yet and Home Assistant can not confirm it, or its account is disabled.
     """
-    user = await get_authenticated_user(request)
-    if not user:
-        raise web.HTTPUnauthorized(
-            text="Authentication required",
-            headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+    ingress_user_id = headers.get("X-Remote-User-ID")
+    ingress_username = headers.get("X-Remote-User-Name")
+    ingress_display_name = headers.get("X-Remote-User-Display-Name")
+
+    # Require all Ingress headers to be present for security
+    if not (ingress_user_id and ingress_username):
+        return None
+
+    ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
+    linked_user = await mass.webserver.auth.get_user_by_provider_link(
+        AuthProviderType.HOME_ASSISTANT, ingress_user_id, include_disabled=True
+    )
+    # an account not linked yet may only be matched or created under a username HA confirms
+    if linked_user is None and ha_username is None:
+        LOGGER.warning(
+            "Refused Home Assistant Ingress sign-in for %s: "
+            "Home Assistant could not confirm the user",
+            ingress_username,
         )
+        return None
+    # Ingress users are created on first sign-in, as HA already authenticated them
+    user = await get_or_create_ha_user(
+        mass,
+        ingress_user_id,
+        ha_username or ingress_username,
+        ha_display_name or ingress_display_name,
+        avatar_url,
+        allow_create=True,
+    )
+    if user and not user.enabled:
+        LOGGER.warning(
+            "Refused Home Assistant Ingress sign-in for %s: "
+            "the Music Assistant account %s is disabled",
+            ingress_username,
+            user.username,
+        )
+        return None
     return user
 
 
-async def require_admin(request: web.Request) -> User:
+def has_scope(user: User, scope: Scope | tuple[Scope, ...]) -> bool:
     """
-    Require admin role for a request, raise 403 if not admin.
+    Check if the given user is granted the given scope (through its role).
 
-    :param request: The aiohttp request.
+    :param user: The user to check.
+    :param scope: The scope required, or a tuple of scopes of which one suffices.
     """
-    user = await require_authentication(request)
-    if user.role != UserRole.ADMIN:
-        raise web.HTTPForbidden(text="Admin access required")
-    return user
+    role_scopes = ROLE_SCOPES.get(user.role)
+    if role_scopes is None:
+        role_scopes = _custom_role_scopes.get(user.role, frozenset())
+    if Scope.ALL in role_scopes:
+        return True
+    if isinstance(scope, tuple):
+        return any(one in role_scopes for one in scope)
+    return scope in role_scopes
+
+
+def custom_role_scopes(scopes: Iterable[Scope]) -> list[Scope]:
+    """
+    Return the sorted scopes a custom role holds when it is granted the given scopes.
+
+    A custom role always holds the scopes of a guest, and the scopes that a granted
+    scope is of no use without.
+
+    :param scopes: The scopes to grant the custom role.
+    :raises InvalidDataError: If a custom role can not be granted one of the scopes.
+    """
+    granted = set(scopes)
+    if refused := granted & CUSTOM_ROLE_FORBIDDEN_SCOPES:
+        raise InvalidDataError(
+            f"A custom role can not be granted {', '.join(sorted(refused))}",
+            translation_key="role_scope_not_allowed",
+        )
+    for scope in list(granted):
+        granted |= _CUSTOM_ROLE_IMPLIED_SCOPES.get(scope, frozenset())
+    return sorted(granted | _GUEST_SCOPES)
+
+
+def set_custom_role_scopes(role_scopes: Mapping[str, Iterable[Scope]]) -> None:
+    """
+    Set the scopes granted by the custom roles, replacing the ones set before.
+
+    :param role_scopes: The scopes each custom role grants, by role id.
+    """
+    _custom_role_scopes.clear()
+    _custom_role_scopes.update(
+        {role_id: frozenset(scopes) for role_id, scopes in role_scopes.items()}
+    )
+
+
+async def resolve_impersonated_user(
+    mass: MusicAssistant,
+    provider_type: AuthProviderType,
+    provider_user_id: str,
+    required: bool = True,
+    required_scope: Scope | tuple[Scope, ...] | None = None,
+) -> User | None:
+    """
+    Resolve and validate the user to impersonate for the current call.
+
+    A builtin user is looked up by user_id or username, users of other auth providers
+    by their provider link. The authenticated caller may always impersonate itself,
+    impersonating another user requires the users.impersonate scope. The target must hold
+    the command's required scope itself, so impersonation never grants more than its role.
+
+    :param mass: The MusicAssistant instance.
+    :param provider_type: The auth provider the user reference belongs to.
+    :param provider_user_id: The user's id at that provider.
+    :param required: Raise if the user cannot be found, instead of
+        resolving to None (no impersonation).
+    :param required_scope: The scope(s) the command requires, None for no check.
+    """
+    authenticated_user = current_user.get()
+    if authenticated_user is None:
+        raise InsufficientPermissions("Authentication is necessary to impersonate another user.")
+    if provider_type == AuthProviderType.BUILTIN:
+        # a builtin identity is the MA account itself: resolve directly instead of through
+        # the provider link table, whose builtin rows hold credentials (password hashes)
+        target_user = await mass.webserver.auth.get_user(provider_user_id)
+        if target_user is None:
+            target_user = await mass.webserver.auth.get_user_by_username(provider_user_id)
+    else:
+        target_user = await mass.webserver.auth.get_user_by_provider_link(
+            provider_type, provider_user_id
+        )
+    if target_user is None:
+        if not required:
+            return None
+        if provider_type == AuthProviderType.BUILTIN:
+            raise UserNotFoundError(
+                f"A user with user id or name {provider_user_id} is not available.",
+                translation_args=[provider_user_id],
+            )
+        raise UserNotFoundError(
+            f"A user linked to {provider_type.value} user id {provider_user_id} is not available.",
+            translation_args=[provider_user_id],
+        )
+    if target_user.user_id != authenticated_user.user_id and not has_scope(
+        authenticated_user, Scope.USERS_IMPERSONATE
+    ):
+        raise InsufficientPermissions(
+            "The users.impersonate scope is required to impersonate another user."
+        )
+    if required_scope and not has_scope(target_user, required_scope):
+        scopes = required_scope if isinstance(required_scope, tuple) else (required_scope,)
+        raise InsufficientPermissions(
+            f"The impersonated user lacks the {' or '.join(map(str, scopes))} scope"
+        )
+    return target_user
+
+
+async def resolve_command_impersonation(
+    mass: MusicAssistant,
+    args: dict[str, Any],
+    required_scope: Scope | tuple[Scope, ...] | None = None,
+) -> User | None:
+    """
+    Pop and resolve the optional impersonation argument for an API command invocation.
+
+    The user argument is either a user_id/username string, or a dict referencing the
+    user by auth provider: {"provider": ..., "user_id": ..., "required": ...}.
+
+    Returns the user to impersonate for the command, or None if no
+    impersonation was requested.
+
+    :param mass: The MusicAssistant instance.
+    :param args: The (mutable) arguments dict of the incoming command.
+    :param required_scope: The scope(s) the command requires; the impersonated user
+        must hold it as well, so impersonation never grants more than its own role.
+    """
+    user_arg = args.pop("user", None)
+    # username is accepted as (deprecated) alias for user
+    username_arg = args.pop("username", None)
+    # deliberately treat None and empty values as "no impersonation requested":
+    # optional fields in automations/scripts commonly template to an empty string
+    target = user_arg or username_arg
+    if not target:
+        return None
+    if isinstance(target, Mapping):
+        return await resolve_impersonated_user(
+            mass, *_parse_provider_user_arg(target), required_scope=required_scope
+        )
+    return await resolve_impersonated_user(
+        mass, AuthProviderType.BUILTIN, str(target), required_scope=required_scope
+    )
+
+
+def _parse_provider_user_arg(value: Mapping[str, Any]) -> tuple[AuthProviderType, str, bool]:
+    """Validate and unpack the dict form of the user impersonation argument."""
+    provider = value.get("provider")
+    user_id = value.get("user_id")
+    required = value.get("required", True)
+    # explicit membership check: AuthProviderType coerces unknown values to BUILTIN
+    if not isinstance(provider, str) or provider not in AuthProviderType:
+        raise InvalidDataError(f"Invalid auth provider type: {provider}")
+    if not isinstance(user_id, str) or not user_id:
+        raise InvalidDataError("A user_id is required to impersonate a user by auth provider.")
+    if not isinstance(required, bool):
+        raise InvalidDataError("The required field of the user argument must be a boolean.")
+    return AuthProviderType(provider), user_id, required
 
 
 def get_current_user() -> User | None:
@@ -172,6 +373,51 @@ def get_current_user() -> User | None:
     if impersonated_user := get_impersonated_user():
         return impersonated_user
     return current_user.get()
+
+
+def is_own_client_player(player: Player | None) -> bool:
+    """
+    Return whether the given player is the private client player the caller connected on.
+
+    A private client player (browser session, desktop or mobile app) is bound to the
+    connection that announced it, so its owner may always use it regardless of their
+    player filter. Only private players qualify, so a shared speaker cannot be claimed
+    by announcing its id.
+
+    :param player: The player to check, or None.
+    """
+    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+
+
+def player_access_filter(user: User | None) -> list[str] | None:
+    """
+    Return the player ids the user is limited to, or None when unrestricted.
+
+    An empty player_filter, or the full-access Scope.ALL, leaves the user unrestricted.
+    The private client player exemption is per player and not reflected here; use
+    has_player_access for an access decision that honors it.
+
+    :param user: The user to check, or None for an unauthenticated caller.
+    """
+    if user is None or has_scope(user, Scope.ALL):
+        return None
+    return user.player_filter or None
+
+
+def has_player_access(user: User | None, player_id: str, player: Player | None = None) -> bool:
+    """
+    Return whether the given user may use the player (or queue) with the given id.
+
+    A user limited to a player_filter may only use the players in it; an empty filter,
+    or the full-access Scope.ALL, leaves the user unrestricted. A user may always use the
+    private client player they connected on, even when it is not in their filter.
+
+    :param user: The user to check, or None for an unauthenticated caller.
+    :param player_id: The id of the player (or queue) to check access to.
+    :param player: The resolved player, when available, to honor the private client exemption.
+    """
+    allowed = player_access_filter(user)
+    return allowed is None or player_id in allowed or is_own_client_player(player)
 
 
 def set_current_user(user: User | None) -> None:
@@ -237,12 +483,63 @@ def set_sendspin_player_id(player_id: str | None) -> None:
     sendspin_player_id.set(player_id)
 
 
+def get_current_client_id() -> str | None:
+    """
+    Get the websocket client id associated with the current connection.
+
+    :return: The client id, or None if not called from within a websocket command.
+    """
+    return current_client_id.get()
+
+
+def set_current_client_id(client_id: str | None) -> None:
+    """
+    Set the websocket client id for the current connection.
+
+    :param client_id: The client id to set.
+    """
+    current_client_id.set(client_id)
+
+
+def get_current_peer_address() -> str | None:
+    """
+    Get the network address the current stateless API request came from.
+
+    :return: The peer address, or None if the caller is not a stateless API request.
+    """
+    return current_peer_address.get()
+
+
+def set_current_peer_address(peer_address: str | None) -> None:
+    """
+    Set the network address for the current stateless API request.
+
+    :param peer_address: The peer address to set.
+    """
+    current_peer_address.set(peer_address)
+
+
+def is_request_from_ingress_proxy(request: web.Request) -> bool:
+    """
+    Check if request was relayed by the Home Assistant Ingress proxy.
+
+    Only such a request may carry trusted X-Remote-User headers: it must arrive on the
+    internal ingress TCP site from the Supervisor's address.
+
+    :param request: The aiohttp request.
+    """
+    if not is_request_from_ingress(request):
+        return False
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    return bool(peername and peername[0] == HASSIO_SUPERVISOR_IP)
+
+
 def is_request_from_ingress(request: web.Request) -> bool:
     """
-    Check if request is coming from Home Assistant Ingress (internal network).
+    Check if request arrived on the internal ingress TCP site (172.30.32.x:8094).
 
-    Security is enforced by socket-level verification (IP/port binding), not headers.
-    Only requests on the internal ingress TCP site (172.30.32.x:8094) are accepted.
+    The site is only reachable from the host network, which is where the Home Assistant
+    integration connects with the system user token.
 
     :param request: The aiohttp request.
     """
@@ -269,100 +566,38 @@ def is_request_from_ingress(request: web.Request) -> bool:
     return False
 
 
-@web.middleware
-async def auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
-    """
-    Authenticate requests and store user in context.
-
-    :param request: The aiohttp request.
-    :param handler: The request handler.
-    """
-    # Skip authentication for ingress requests (HA handles auth)
-    if is_request_from_ingress(request):
-        return cast("web.StreamResponse", await handler(request))
-
-    # Unauthenticated routes (static files, info, login, setup, etc.)
-    unauthenticated_paths = [
-        "/info",
-        "/login",
-        "/setup",
-        "/auth/",
-        "/api-docs/",
-        "/assets/",
-        "/favicon.ico",
-        "/manifest.json",
-        "/index.html",
-        "/",
-    ]
-
-    # Check if path should bypass auth
-    for path_prefix in unauthenticated_paths:
-        if request.path.startswith(path_prefix):
-            return cast("web.StreamResponse", await handler(request))
-
-    # Try to authenticate
-    user = await get_authenticated_user(request)
-
-    # Store user in context (might be None for unauthenticated requests)
-    request[USER_CONTEXT_KEY] = user
-
-    # Let the handler decide if authentication is required
-    # The handler will call require_authentication() if needed
-    return cast("web.StreamResponse", await handler(request))
-
-
 class ImpersonatedUser:
     """
-    Optional impersonated user context manager.
+    Optional impersonated user context manager, for use by internal (server) code.
 
-    Nested use possible.
-    Case A:
-        calling user's role: Admin or User
-        username: username of calling user or None
-        -> impersonated user set to calling user (i.e. no change, nested use)
-    Case B:
-        calling user's role: User
-        username: username of another user
-        -> raises InsufficientPermissions
-    Case C:
-        calling user's role: Admin
-        username: username of another user
-        -> impersonated user set to requested user
+    API commands should instead be registered with the allow_impersonation flag,
+    which handles impersonation centrally in the command dispatch.
+
+    Nested use possible: passing None for the user is a no-op which preserves
+    any impersonation already active in the current context.
     """
 
-    def __init__(self, mass: MusicAssistant, username: str | None) -> None:
-        """Initialize ImpersonatedUser."""
+    def __init__(self, mass: MusicAssistant, user: str | None) -> None:
+        """
+        Initialize ImpersonatedUser.
+
+        :param mass: The MusicAssistant instance.
+        :param user: The user_id or username of the user to impersonate, or None for a no-op.
+        """
         self.mass = mass
-        self.username = username
+        self.user = user
         self.previous_impersonated_user = impersonated_user.get()
-        authenticated_user = current_user.get()
-        if authenticated_user is None:
-            # No authenticated user in context (e.g. playback from a hardware button
-            # or an external protocol). Impersonating another user is not allowed, but a
-            # call without a username is a no-op so anonymous playback keeps working.
-            if username is not None:
-                raise InsufficientPermissions(
-                    "Authentication is necessary to impersonate another user."
-                )
-            return
-        if username is not None:
-            if (
-                authenticated_user.role != UserRole.ADMIN
-                and authenticated_user.username != self.username
-            ):
-                raise InsufficientPermissions("Can only impersonate another user as Admin.")
-        else:
-            self.username = authenticated_user.username
 
     async def __aenter__(self) -> Self:
         """Set the impersonated user if applicable."""
-        if self.username is None:
-            # no-op: nothing to impersonate (no authenticated user, no username)
+        if self.user is None:
+            # no-op: nothing to impersonate (e.g. playback from a hardware button
+            # or an external protocol without a user context)
             return self
-        if user := await self.mass.webserver.auth.get_user_by_username(self.username):
-            set_impersonated_user(user)
-            return self
-        raise InvalidDataError(f"A user with user id or name {self.username} is not available.")
+        set_impersonated_user(
+            await resolve_impersonated_user(self.mass, AuthProviderType.BUILTIN, self.user)
+        )
+        return self
 
     async def __aexit__(
         self,

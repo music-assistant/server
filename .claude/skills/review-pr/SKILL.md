@@ -7,42 +7,24 @@ description: Use when asked to review a GitHub pull request, PR link is shared, 
 
 Review the GitHub pull request: $ARGUMENTS.
 
+This is a read-only review. Report findings in the console — never post comments, approve, or request changes on GitHub, and never modify the code under review.
+
 ## Steps
 
-1. Run `gh pr view` to get PR details and description.
-2. Run `gh pr diff` to see all changes.
-3. Compare the local commit hash with the remote PR head commit.
-   - Make sure to do your work in a git worktree to avoid affecting the checked out branch of the reviewer.
-   - If they don't match, run `gh pr checkout` to check out the PR locally.
-   - **HARD STOP**: If `gh pr checkout` fails for ANY reason, STOP immediately. Do NOT attempt workarounds (git fetch, alternative methods). Do NOT proceed with the review using only diffs. Alert about the failure and wait for instructions.
-   - After checkout, verify the local commit hash matches the remote one. If they still don't match, STOP.
-4. Run `gh pr checks` to see CI status.
-5. Apply the review standards defined in `REVIEW_STANDARDS.md` (located in the same directory as this skill).
-6. Output review feedback to the CONSOLE only. DO NOT act on GitHub (no posting comments, no approving, no requesting changes).
+1. `gh pr view` for the PR details and description.
+2. Create a git worktree and do everything below inside it, so the reviewer's checked-out branch stays untouched (`git worktree add --detach <path>`).
+3. `gh pr checkout` in the worktree, then confirm the local commit hash matches the remote PR head.
+   - **HARD STOP**: if the checkout fails, or the hashes still differ afterwards, stop and report it. No workarounds — not `git fetch`, not reviewing from the diff alone. Wait for instructions.
+4. `gh pr checks` for CI status.
+5. `gh pr diff` for the changes, then read the surrounding code for anything the diff alone can't settle.
+6. Apply `REVIEW_STANDARDS.md`, in the same directory as this skill.
+
+Running tests or linters isn't part of this — CI does that.
 
 ## Output Format
 
-List specific comments per file/line that need attention. Do not list things that are already correct.
+Comments per file and line that need attention. Skip what's already fine.
 
-Each comment:
-1. State the severity ([CRITICAL], [PROBLEM], [SUGGESTION])
-2. State the problem (1 sentence)
-3. Why it matters (1 sentence, if needed)
-4. Suggested fix (snippet or specific action)
+Each comment carries a severity (`[CRITICAL]`, `[PROBLEM]`, `[SUGGESTION]`), states the problem in a sentence, says why it matters when that isn't self-evident, and gives a concrete fix or snippet.
 
-Example:
-> This could generate a `KeyError` if `"name"` does not exist in the `dict`. Consider using `.get("name")` or adding a check.
-
-End with an overall assessment and summary:
-
-```
-Overall assessment: <approve | request changes | comment>
-- [CRITICAL] <issue>
-- [PROBLEM] <issue>
-- [SUGGESTION] <improvement>
-```
-
-## Constraints
-
-- DO NOT make any changes to the code.
-- No need to run tests or linters, just review the code changes.
+Close with an overall assessment — `approve`, `request changes`, or `comment` — followed by the findings grouped by severity.

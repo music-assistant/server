@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
-from aiohttp import BasicAuth, web
-from alexapy import AlexaAPI, AlexaLogin, AlexaProxy
+from aiohttp import BasicAuth
+from alexapy import AlexaAPI, AlexaLogin
+from alexapy.errors import AlexapyError
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -22,11 +24,10 @@ from music_assistant_models.enums import (
     PlayerFeature,
     ProviderFeature,
 )
-from music_assistant_models.errors import ActionUnavailable, LoginFailed
+from music_assistant_models.errors import ActionUnavailable
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
-from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.util import lock
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -34,17 +35,16 @@ from music_assistant.models.player_provider import PlayerProvider
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 CONF_URL = "url"
-CONF_ACTION_AUTH = "auth"
-CONF_AUTH_SECRET = "secret"
+CONF_AUTH_SECRET = "secret"  # noqa: S105 - config key
 CONF_API_BASIC_AUTH_USERNAME = "api_username"
-CONF_API_BASIC_AUTH_PASSWORD = "api_password"
+CONF_API_BASIC_AUTH_PASSWORD = "api_password"  # noqa: S105 - config key
 CONF_API_URL = "api_url"
 CONF_ALEXA_LANGUAGE = "alexa_language"
 
@@ -57,10 +57,20 @@ ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_fr-FR": "music assistant",
     "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
     "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
+    "play_audio_nl-NL": "speel music assistant",
     "play_audio_default": "ask music assistant to play audio",
 }
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()  # no special features supported (yet)
+
+# Volume timings, in seconds.
+VOLUME_SEND_DELAY = 0.5
+VOLUME_POLL_INTERVAL_PLAYING = 5
+VOLUME_POLL_INTERVAL_IDLE = 30
+VOLUME_POLL_HOLD = 2
+VOLUME_READ_MAX_AGE = 2
+VOLUME_READ_TIMEOUT = 5
+VOLUME_STEP_TIMEOUT = 10
 
 
 async def setup(
@@ -68,153 +78,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return AlexaProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    # config flow auth action/step (authenticate button clicked)
-    if action == CONF_ACTION_AUTH and values:
-        async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
-            login = AlexaLogin(
-                url=str(values[CONF_URL]),
-                email=str(values[CONF_USERNAME]),
-                password=str(values[CONF_PASSWORD]),
-                otp_secret=str(values.get(CONF_AUTH_SECRET, "")),
-                outputpath=lambda x: x,
-            )
-
-            # --- Proxy authentication logic using AlexaProxy ---
-            # Build the proxy path and URL
-            proxy_path = "/alexa/auth/proxy/"
-            post_path = "/alexa/auth/proxy/ap/signin/*"
-            base_url = mass.webserver.base_url.rstrip("/")
-            proxy_url = f"{base_url}{proxy_path}"
-
-            # Create AlexaProxy instance
-            proxy = AlexaProxy(login, proxy_url)
-
-            # Handler that delegates to AlexaProxy's all_handler
-            async def proxy_handler(request: web.Request) -> Any:
-                response = await proxy.all_handler(request)
-                if "Successfully logged in" in getattr(response, "text", ""):
-                    # Notify the callback URL
-                    async with aiohttp.ClientSession() as session:
-                        await session.get(auth_helper.callback_url)
-                        _LOGGER.info("Alexa Callback URL: %s", auth_helper.callback_url)
-                    return web.Response(
-                        text="""
-                        <html>
-                            <body>
-                                <h2>Login successful!</h2>
-                                <p>You may now close this window.</p>
-                            </body>
-                        </html>
-                        """,
-                        content_type="text/html",
-                    )
-                return response
-
-            # Register GET for the base proxy path
-            mass.webserver.register_dynamic_route(proxy_path, proxy_handler, "GET")
-            # Register POST for the specific signin helper path
-            mass.webserver.register_dynamic_route(post_path, proxy_handler, "POST")
-
-            try:
-                await auth_helper.authenticate(proxy_url)
-                if await login.test_loggedin():
-                    await save_cookie(login, str(values[CONF_USERNAME]), mass)
-                else:
-                    raise LoginFailed(
-                        "Authentication login failed, please provide logs to the discussion #431."
-                    )
-            except KeyError:
-                # no URL param was found so user probably cancelled the auth
-                pass
-            except Exception as error:
-                raise LoginFailed(f"Failed to authenticate with Amazon '{error}'.")
-            finally:
-                mass.webserver.unregister_dynamic_route(proxy_path, "GET")
-                mass.webserver.unregister_dynamic_route(post_path, "POST")
-
-    return (
-        ConfigEntry(
-            key=CONF_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-            default_value="amazon.com",
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-            value=values.get(CONF_USERNAME) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-            value=values.get(CONF_PASSWORD) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_AUTH_SECRET,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            value=values.get(CONF_AUTH_SECRET) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_AUTH,
-            depends_on=CONF_URL,
-        ),
-        ConfigEntry(
-            key=CONF_API_URL,
-            type=ConfigEntryType.STRING,
-            default_value="http://localhost:5000",
-            required=True,
-            value=values.get(CONF_API_URL) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_API_BASIC_AUTH_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-            value=values.get(CONF_API_BASIC_AUTH_USERNAME) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_API_BASIC_AUTH_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            value=values.get(CONF_API_BASIC_AUTH_PASSWORD) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_ALEXA_LANGUAGE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            options=[
-                ConfigValueOption("en-US"),
-                ConfigValueOption("en-CA"),
-                ConfigValueOption("de-DE"),
-                ConfigValueOption("es-ES"),
-                ConfigValueOption("fr-FR"),
-                ConfigValueOption("fr-CA"),
-                ConfigValueOption("it-IT"),
-                ConfigValueOption("pt-BR"),
-            ],
-            default_value="en-US",  # choose a sensible default
-        ),
-    )
 
 
 async def save_cookie(login: AlexaLogin, username: str, mass: MusicAssistant) -> None:
@@ -335,19 +198,28 @@ async def api_request(
 
     Returns the response text on success or raises `ActionUnavailable` on failure.
     """
-    username = provider.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
-    password = provider.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
+    username = provider.get_setup_value(CONF_API_BASIC_AUTH_USERNAME)
+    password = provider.get_setup_value(CONF_API_BASIC_AUTH_PASSWORD)
 
     auth = None
     if username is not None and password is not None:
         auth = BasicAuth(str(username), str(password))
 
-    api_url = str(provider.config.get_value(CONF_API_URL) or "")
+    api_url = str(provider.get_setup_value(CONF_API_URL) or "")
     url = f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
     return await _request_with_session(
         provider.mass.http_session, method, url, json_data, timeout, auth
     )
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """Return text parsed as a JSON object, or an empty dict if it isn't one."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 class AlexaDevice:
@@ -381,10 +253,20 @@ class AlexaPlayer(Player):
         self._attr_device_info = DeviceInfo()
         self._attr_powered = False
         self._attr_available = True
+        self._attr_needs_poll = True
+        self._echo_volume: int | None = None
+        self._volume_set_at = -math.inf
+        self._volume_sending = False
+        self._volume_retried = False
+        self._volume_task: asyncio.Task[None] | None = None
         # Keep track of the last metadata we pushed to avoid unnecessary uploads
         self._last_meta_checksum: str | None = None
         # Keep last stream url pushed (set in play_media)
         self._last_stream_url: str | None = None
+        # Set once the skill shows it keeps its player screen open across commands.
+        self._skill_keeps_screen_open = False
+        # Requests to the skill go out one at a time, so it gets them in the order of the commands.
+        self._skill_request_lock = asyncio.Lock()
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -412,8 +294,9 @@ class AlexaPlayer(Player):
         """Handle PLAY command on the player."""
         provider = cast("AlexaProvider", self.provider)
 
-        utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
-        await self.api.run_custom(utter)
+        if not await self._send_to_open_screen("resume"):
+            utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
+            await self.api.run_custom(utter)
 
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -422,17 +305,55 @@ class AlexaPlayer(Player):
         """Handle PAUSE command on the player."""
         provider = cast("AlexaProvider", self.provider)
 
-        utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
-        await self.api.run_custom(utter)
+        if not await self._send_to_open_screen("pause"):
+            utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
+            await self.api.run_custom(utter)
 
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        await self.api.set_volume(volume_level / 100)
         self._attr_volume_level = volume_level
+        self._schedule_volume_send()
+
+    @property
+    def poll_interval(self) -> int:
+        """Poll often while playing, when the volume is most likely to change on the Echo."""
+        if self.playback_state == PlaybackState.PLAYING:
+            return VOLUME_POLL_INTERVAL_PLAYING
+        return VOLUME_POLL_INTERVAL_IDLE
+
+    async def poll(self) -> None:
+        """Read the Echo's volume back from Amazon."""
+        set_at = self._volume_set_at
+        if self._volume_sending or self.mass.loop.time() - set_at < VOLUME_POLL_HOLD:
+            return
+        provider = cast("AlexaProvider", self.provider)
+        if provider._volumes_lock.locked():
+            return
+        try:
+            volumes = await provider.get_volumes()
+        except (AlexapyError, aiohttp.ClientError, TimeoutError, ValueError) as err:
+            self.logger.debug("Could not read the volume of %s: %s", self.display_name, err)
+            return
+        if self._volume_sending or self._volume_set_at != set_at:
+            return
+        if (volume := volumes.get(self.device.device_serial_number)) is None:
+            return
+        self._echo_volume = volume
+        if volume == self._attr_volume_level:
+            return
+        self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
+        self._attr_volume_level = volume
         self.update_state()
+
+    async def on_unload(self) -> None:
+        """Drop a volume change still waiting or being sent."""
+        self.mass.cancel_timer(f"alexa_volume_{self.player_id}")
+        if self._volume_task is not None:
+            self._volume_task.cancel()
+        await super().on_unload()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
@@ -446,13 +367,20 @@ class AlexaPlayer(Player):
             "imageUrl": media.image_url,
         }
 
-        await api_request(
-            self.provider,
-            "/ma/push-url",
-            method="POST",
-            json_data=payload,
-            timeout=10,
-        )
+        async with self._skill_request_lock:
+            answer = _parse_json_object(
+                await api_request(
+                    self.provider,
+                    "/ma/push-url",
+                    method="POST",
+                    json_data={**payload, "playerId": self.player_id, "canSkipSpeech": True},
+                    timeout=10,
+                )
+            )
+        # Only a skill that keeps its screen open answers with pageLive (true or false).
+        if "pageLive" in answer:
+            self._skill_keeps_screen_open = True
+        screen_handled = bool(answer.get("pageLive"))
 
         # Save last pushed stream url so metadata updates can reuse it
         self._last_stream_url = stream_url
@@ -474,14 +402,15 @@ class AlexaPlayer(Player):
             ALEXA_LANGUAGE_COMMANDS[ask_command_key],
         )
 
-        await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
+        if not screen_handled:
+            await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_current_media = media
         self.update_state()
 
-    def _on_player_media_updated(self) -> None:
+    def on_player_media_updated(self) -> None:
         """
         Handle callback when the current media of the player is updated.
 
@@ -523,7 +452,92 @@ class AlexaPlayer(Player):
             # store last pushed values
             self._last_meta_checksum = meta_checksum
 
-        self.mass.create_task(_upload_metadata())
+        self.mass.create_task(
+            _upload_metadata(), task_name=f"alexa_upload_metadata_{self.player_id}"
+        )
+
+    def _schedule_volume_send(self, delay: float = VOLUME_SEND_DELAY, retry: bool = False) -> None:
+        """Show the change, and send it once a slider's burst of values stops."""
+        self._volume_set_at = self.mass.loop.time()
+        self._volume_retried = retry
+        self.update_state()
+
+        def _start_send() -> None:
+            if self._volume_task is None or self._volume_task.done():
+                self._volume_task = self.mass.create_task(self._send_volume())
+
+        self.mass.call_later(delay, _start_send, task_id=f"alexa_volume_{self.player_id}")
+
+    async def _send_volume(self) -> None:
+        """Step the Echo to MA's volume, again if that changed while a step was sent."""
+        if self._volume_sending:
+            return
+        provider = cast("AlexaProvider", self.provider)
+        self._volume_sending = True
+        sent = None
+        corrected = False
+        try:
+            volumes = await provider.get_volumes()
+            self._echo_volume = volumes.get(self.device.device_serial_number)
+            while (target := self._attr_volume_level) is not None and target != sent:
+                sent = target
+                if self._echo_volume is None:
+                    await self.api.set_volume(target / 100)
+                elif target == 0 or target != self._echo_volume:
+                    amount = -100 if target == 0 else target - self._echo_volume
+                    self._echo_volume = await provider.step_volume(self.device, amount)
+                    self.logger.debug(
+                        "%s volume: step %+d to %s, now %s",
+                        self.display_name,
+                        amount,
+                        target,
+                        self._echo_volume,
+                    )
+                    if abs(self._echo_volume - target) > 1 and not corrected:
+                        sent, corrected = None, True
+        except (AlexapyError, aiohttp.ClientError, TimeoutError, ValueError) as err:
+            self.logger.warning("Could not set the volume of %s: %s", self.display_name, err)
+            self._echo_volume = None
+            failed = True
+        else:
+            failed = False
+        finally:
+            self._volume_sending = False
+        if failed:
+            if not self._volume_retried:
+                self._schedule_volume_send(VOLUME_READ_MAX_AGE, retry=True)
+            return
+        if self._echo_volume is not None:
+            self._attr_volume_level = self._echo_volume
+        self._volume_set_at = self.mass.loop.time()
+        self.update_state()
+
+    async def _send_to_open_screen(self, command: str) -> bool:
+        """Send pause/resume to the skill's open screen; return True if the screen handled it."""
+        # Waits for a new track still being sent, so the skill gets the track first.
+        async with self._skill_request_lock:
+            # An older skill has no /ma/control: only try once it has shown it keeps its screen open.
+            if not self._skill_keeps_screen_open:
+                return False
+            try:
+                resp = await api_request(
+                    self.provider,
+                    "/ma/control",
+                    method="POST",
+                    json_data={
+                        "playerId": self.player_id,
+                        "command": command,
+                        "canSkipSpeech": True,
+                    },
+                    timeout=5,
+                )
+            except ActionUnavailable, aiohttp.ClientError, TimeoutError:
+                # Don't try again until the skill confirms with its next pageLive answer.
+                self._skill_keeps_screen_open = False
+                return False
+        # pageLive: true means the skill has taken the command over. The skill must apply these
+        # in the order it got them, e.g. a pause right after a new track pauses the new track.
+        return bool(_parse_json_object(resp).get("pageLive"))
 
 
 class AlexaProvider(PlayerProvider):
@@ -532,25 +546,56 @@ class AlexaProvider(PlayerProvider):
     login: AlexaLogin
     devices: dict[str, AlexaDevice]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the config entries for the Alexa provider.
+
+        Amazon credentials, the companion API details and the login are collected by the
+        interactive setup flow (see ``setup_flow.py``); only the language option is
+        configurable here.
+        """
+        return (
+            ConfigEntry(
+                key=CONF_ALEXA_LANGUAGE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=[
+                    ConfigValueOption("en-US"),
+                    ConfigValueOption("en-CA"),
+                    ConfigValueOption("de-DE"),
+                    ConfigValueOption("es-ES"),
+                    ConfigValueOption("fr-FR"),
+                    ConfigValueOption("fr-CA"),
+                    ConfigValueOption("it-IT"),
+                    ConfigValueOption("pt-BR"),
+                    ConfigValueOption("nl-NL"),
+                ],
+                default_value="en-US",  # choose a sensible default
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.devices = {}
+        self._volumes: dict[str, int] | None = None
+        self._volumes_read_at = -math.inf
+        self._volumes_lock = asyncio.Lock()
         self._intents: list[dict[str, Any]] | None = None
         self._invocation_name: str | None = None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         self.login = AlexaLogin(
-            url=str(self.config.get_value(CONF_URL)),
-            email=str(self.config.get_value(CONF_USERNAME)),
-            password=str(self.config.get_value(CONF_PASSWORD)),
+            url=str(self.get_setup_value(CONF_URL)),
+            email=str(self.get_setup_value(CONF_USERNAME)),
+            password=str(self.get_setup_value(CONF_PASSWORD)),
             outputpath=lambda x: x,
         )
 
         cookie_dir = os.path.join(self.mass.storage_path, ".alexa")
         await asyncio.to_thread(os.makedirs, cookie_dir, exist_ok=True)
         cookie_path = os.path.join(
-            cookie_dir, f"alexa_media.{self.config.get_value(CONF_USERNAME)}.pickle"
+            cookie_dir, f"alexa_media.{self.get_setup_value(CONF_USERNAME)}.pickle"
         )
         self.login._cookiefile = [self.login._outputpath(cookie_path)]
 
@@ -580,19 +625,59 @@ class AlexaProvider(PlayerProvider):
                 player = AlexaPlayer(self, player_id, device_object)
                 await self.mass.players.register_or_update(player)
 
+        if self.devices:
+            # builds the csrf header the volume calls need
+            AlexaAPI(next(iter(self.devices.values())), self.login)
         await self._load_intents()
 
-    @lock
-    async def _load_intents(self) -> None:
-        """Load intents from the configured API and cache them on the provider."""
-        resp = await api_request(self, "/alexa/intents", method="GET", timeout=5)
-        data = json.loads(resp)
-        if isinstance(data, dict):
-            # cache invocationName if present
-            self._invocation_name = data.get("invocationName")
-            self._intents = data.get("intents", []) or []
-        else:
-            self._intents = []
+    async def get_volumes(self) -> dict[str, int]:
+        """Return each Echo's volume by serial number, read once per poll round."""
+        async with self._volumes_lock:
+            if self.mass.loop.time() - self._volumes_read_at < VOLUME_READ_MAX_AGE:
+                if self._volumes is None:
+                    raise AlexapyError("volume read failed moments ago")
+                return self._volumes
+            self._volumes = None
+            try:
+                async with asyncio.timeout(VOLUME_READ_TIMEOUT):
+                    # Amazon updates this a few seconds after a change made on the Echo
+                    response = await AlexaAPI._static_request(
+                        "get", self.login, "/api/devices/deviceType/dsn/audio/v1/allDeviceVolumes"
+                    )
+                    if not response:
+                        raise AlexapyError("no volume readback")
+                    body = await response.json(content_type=None)
+                self._volumes = volumes = {
+                    item["dsn"]: item["speakerVolume"]
+                    for item in body.get("volumes", [])
+                    if item.get("dsn") and item.get("speakerVolume") is not None
+                }
+            finally:
+                self._volumes_read_at = self.mass.loop.time()
+            return volumes
+
+    async def step_volume(self, device: AlexaDevice, amount: int) -> int:
+        """Change an Echo's volume by a step and return its new volume."""
+        uri = (
+            f"/api/devices/{device._device_type}/{device.device_serial_number}"
+            "/audio/v2/speakerVolume"
+        )
+        data = {
+            "dsn": device.device_serial_number,
+            "deviceType": device._device_type,
+            "amount": amount,
+            "muted": False,
+            "synchronous": True,
+        }
+        async with self._volumes_lock:
+            async with asyncio.timeout(VOLUME_STEP_TIMEOUT):
+                response = await AlexaAPI._static_request("put", self.login, uri, data=data)
+                body = await response.json(content_type=None) if response else {}
+            if (volume := body.get("speakerVolume")) is None:
+                raise AlexapyError(f"volume step failed: {body.get('error')}")
+            if self._volumes and device.device_serial_number in self._volumes:
+                self._volumes[device.device_serial_number] = int(volume)
+        return int(volume)
 
     async def get_intent_utterance(self, intent_name: str, default: str) -> str:
         """
@@ -613,3 +698,15 @@ class AlexaProvider(PlayerProvider):
                         return f"{inv} {utter}".strip()
                     return utter
         return default
+
+    @lock
+    async def _load_intents(self) -> None:
+        """Load intents from the configured API and cache them on the provider."""
+        resp = await api_request(self, "/alexa/intents", method="GET", timeout=5)
+        data = json.loads(resp)
+        if isinstance(data, dict):
+            # cache invocationName if present
+            self._invocation_name = data.get("invocationName")
+            self._intents = data.get("intents", []) or []
+        else:
+            self._intents = []

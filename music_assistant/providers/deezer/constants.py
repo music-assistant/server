@@ -4,6 +4,7 @@
 
 FLOW_PLAYLIST_ID = "flow"
 FLOW_CONFIG_PREFIX = "flow_config_"
+DEFAULT_FLOW_CONFIG_ID = "default"
 SMART_TRACKLIST_PREFIX = "smart_tracklist_"
 RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
 TOP_CHARTS_PLAYLIST_ID = "top_charts"
@@ -18,10 +19,14 @@ SHAKER_MIX_COVER = "https://cdn-assets.dzcdn.net/shaker/_next/static/media/group
 PERSONAL_ARTIST_PREFIX = "personal_artist_"
 PERSONAL_ALBUM_PREFIX = "personal_album_"
 
+# Bump when personal-item parsing changes to invalidate cached parsed items.
+PERSONAL_METADATA_VERSION = "2"
+
 # -- Pagination page sizes --
 
 FAVORITES_PAGE_SIZE = 50
 AUDIOBOOK_CHAPTERS_PAGE_SIZE = 200
+FLOW_BATCH_COUNT = 2
 
 # -- Browse folder names (used as path segments for routing) --
 
@@ -41,3 +46,11 @@ BROWSE_TOP_ALBUMS = "Top Albums"
 BROWSE_TOP_ARTISTS = "Top Artists"
 BROWSE_TOP_PLAYLISTS = "Top Playlists"
 BROWSE_ALL_FLOWS = "All Flows"
+
+# -- Track decryption --
+
+DECRYPT_KEY_LENGTH = 16
+DECRYPT_KEY_ERROR = (
+    "The Deezer decryption key is missing or invalid. "
+    "Use an official Music Assistant build to play encrypted audio."
+)

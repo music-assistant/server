@@ -4,40 +4,53 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
-from typing import Any
+from copy import deepcopy
+from functools import partial
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import (
     ContentType,
+    MediaType,
     PlaybackState,
     ProviderFeature,
     ProviderType,
+    RepeatMode,
+    SourceControl,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
+    MediaNotFoundError,
     PlayerCommandFailed,
+    PlayerUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+    SetupFailedError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioFormat, AudioSource
+from music_assistant_models.streamdetails import StreamDetails
 from ya_passport_auth import SecretStr
 
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
-from music_assistant.providers.yandex_ynison.config_helpers import list_yandex_music_instances
+from music_assistant.controllers.streams.constants import STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+)
+from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_MASS_PLAYER_ID,
-    CONF_PUBLISH_NAME,
-    CONF_TOKEN,
-    CONF_X_TOKEN,
     CONF_YM_INSTANCE,
-    DEFAULT_DISPLAY_NAME,
     OUTPUT_AUTO,
-    PLAYER_ID_AUTO,
-    YM_INSTANCE_OWN,
 )
+from music_assistant.providers.yandex_ynison.credential_source import YandexMusicCredentialSource
 from music_assistant.providers.yandex_ynison.provider import (
     _API_MAX_RETRIES,
     _COMMAND_IDEMPOTENCY_TTL,
@@ -49,7 +62,13 @@ from music_assistant.providers.yandex_ynison.streaming import (
     PCM_LOSSY_PARAMS,
     make_pcm_format,
 )
-from music_assistant.providers.yandex_ynison.ynison_client import YnisonSendError, YnisonState
+from music_assistant.providers.yandex_ynison.ynison_client import (
+    YnisonClient,
+    YnisonDeviceInfo,
+    YnisonSendError,
+    YnisonState,
+    make_version_block,
+)
 
 
 def _arm_play_media_recorder(provider: YandexYnisonProvider) -> list[tuple[str, str]]:
@@ -77,14 +96,24 @@ def _stub_attr(obj: object, name: str, value: Any) -> None:
     setattr(obj, name, value)
 
 
+def _set_stream_owner(
+    provider: MagicMock,
+    *streamdetails: MagicMock,
+    instance_id: str = "yandex_music--test",
+) -> None:
+    """Assign one exact available Yandex Music owner to stream-details test doubles."""
+    provider.instance_id = instance_id
+    provider.available = True
+    for details in streamdetails:
+        details.provider = instance_id
+
+
 def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
     """Create a mock ProviderConfig."""
     defaults: dict[str, Any] = {
-        CONF_TOKEN: "test-music-token",
-        CONF_YM_INSTANCE: YM_INSTANCE_OWN,
-        CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
+        CONF_YM_INSTANCE: "ym-inst",
+        CONF_MASS_PLAYER_ID: "player1",
         CONF_ALLOW_PLAYER_SWITCH: True,
-        CONF_PUBLISH_NAME: DEFAULT_DISPLAY_NAME,
         CONF_DEVICE_ID: "test-device-uuid",
         "log_level": "GLOBAL",
     }
@@ -92,6 +121,7 @@ def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
         defaults.update(values)
     config = MagicMock()
     config.get_value.side_effect = defaults.get
+    config.values = {}
     # Provider.__init__ now caches the AudioSource which serialises name into a
     # uri/sort_name — both expect real strings, not MagicMock attribute access.
     config.instance_id = "yandex_ynison_test"
@@ -111,8 +141,9 @@ def _make_mock_mass() -> MagicMock:
 
     mass.create_task = MagicMock(side_effect=_create_task)
     mass.subscribe = MagicMock(return_value=MagicMock())
-    mass.get_providers = MagicMock(return_value=[])
+    mass.providers = []
     mass.config.set_raw_provider_config_value = MagicMock()
+    mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
 
     # Cache — return None (miss) by default
     mass.cache.get = AsyncMock(return_value=None)
@@ -127,6 +158,9 @@ def _make_mock_mass() -> MagicMock:
     mass.players.cmd_play = AsyncMock()
     mass.players.cmd_volume_set = AsyncMock()
     mass.players.trigger_player_update = MagicMock()
+    mass.players.get_audio_source_session.return_value = MagicMock(
+        playback_session_id="playback-session"
+    )
 
     # Player queues
     mass.player_queues.play_media = AsyncMock()
@@ -146,12 +180,14 @@ def _make_mock_manifest() -> MagicMock:
     return manifest
 
 
-def _make_provider(player_id: str = PLAYER_ID_AUTO) -> YandexYnisonProvider:
+def _make_provider(player_id: str = "player1") -> YandexYnisonProvider:
     """Create a YandexYnisonProvider with mock dependencies."""
     mass = _make_mock_mass()
     config = _make_mock_config({CONF_MASS_PLAYER_ID: player_id})
     manifest = _make_mock_manifest()
-    return YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+    provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+    provider._credential_source = YandexMusicCredentialSource(mass, provider._ym_instance_id)
+    return provider
 
 
 # ------------------------------------------------------------------
@@ -161,6 +197,112 @@ def _make_provider(player_id: str = PLAYER_ID_AUTO) -> YandexYnisonProvider:
 
 class TestProviderInit:
     """Tests for provider initialization."""
+
+    def test_reads_setup_owned_identity_from_setup_data(self) -> None:
+        """Using ordinary config must not ignore the linked account selected by setup."""
+        mass = _make_mock_mass()
+        mass.config.get.return_value = {
+            CONF_YM_INSTANCE: "ym-primary",
+            CONF_MASS_PLAYER_ID: "living-room",
+        }
+        config = _make_mock_config(
+            {
+                CONF_YM_INSTANCE: "__own__",
+                CONF_MASS_PLAYER_ID: "stale-player",
+            }
+        )
+        player = MagicMock()
+        player.display_name = "Living room"
+        mass.players.get_player.return_value = player
+
+        provider = YandexYnisonProvider(
+            mass,
+            _make_mock_manifest(),
+            config,
+            {ProviderFeature.AUDIO_SOURCE},
+        )
+
+        assert provider._ym_instance_id == "ym-primary"
+        assert provider._default_player_id == "living-room"
+        assert provider._display_name == "Living room"
+
+    async def test_rejects_missing_or_legacy_own_source(self) -> None:
+        """Invalid setup is reported during async initialization, not construction."""
+        for source in (None, "__own__"):
+            mass = _make_mock_mass()
+            mass.config.get.return_value = {
+                CONF_YM_INSTANCE: source,
+                CONF_MASS_PLAYER_ID: "living-room",
+            }
+
+            provider = YandexYnisonProvider(
+                mass,
+                _make_mock_manifest(),
+                _make_mock_config(),
+                {ProviderFeature.AUDIO_SOURCE},
+            )
+            with pytest.raises(LoginFailed, match="Reconfigure this Ynison instance"):
+                await provider.handle_async_init()
+
+    async def test_load_rejects_missing_connected_player(self) -> None:
+        """A legacy setup without a concrete player must fail with a stable typed error."""
+        mass = _make_mock_mass()
+        mass.config.get.return_value = {
+            CONF_YM_INSTANCE: "ym-primary",
+            CONF_MASS_PLAYER_ID: None,
+        }
+        provider = YandexYnisonProvider(
+            mass,
+            _make_mock_manifest(),
+            _make_mock_config(),
+            {ProviderFeature.AUDIO_SOURCE},
+        )
+        _stub_attr(provider, "_resolve_token", AsyncMock(return_value=SecretStr("unused")))
+
+        with pytest.raises(SetupFailedError) as err:
+            await provider.handle_async_init()
+
+        assert err.value.translation_key == "no_connected_player"
+
+    def test_display_name_follows_live_connected_player(self) -> None:
+        """The Ynison device name must be derived from the current player name."""
+        provider = _make_provider("living-room")
+        player = MagicMock()
+        player.display_name = "Kitchen"
+        provider.mass.players.get_player.return_value = player
+
+        assert provider._display_name == "Kitchen"
+
+    def test_display_name_uses_stored_player_name_on_cold_boot(self) -> None:
+        """Provider startup before player registration still advertises its stored name."""
+        provider = _make_provider("living-room")
+        provider.mass.players.get_player.return_value = None
+        provider.mass.config.get_raw_player_config_value.side_effect = lambda player_id, key: (
+            "Stored kitchen" if (player_id, key) == ("living-room", "name") else None
+        )
+
+        assert provider._display_name == "Stored kitchen"
+
+    async def test_player_rename_schedules_one_reload_only_for_changed_name(self) -> None:
+        """A rename must refresh the snapshotted Ynison identity without reload loops."""
+        provider = _make_provider("living-room")
+        player = MagicMock()
+        player.display_name = "Kitchen"
+        provider.mass.players.get_player.return_value = player
+        provider._advertised_name = "Kitchen"
+
+        await provider._on_connected_player_event(MagicMock())
+        provider.mass.call_later.assert_not_called()
+
+        player.display_name = "Dining room"
+        await provider._on_connected_player_event(MagicMock())
+
+        provider.mass.call_later.assert_called_once_with(
+            1,
+            provider.mass.load_provider_config,
+            provider.config,
+            task_id=f"load_provider_{provider.instance_id}",
+        )
 
     def test_audio_source_details(self) -> None:
         """AudioSource should be configured correctly."""
@@ -201,6 +343,36 @@ class TestProviderInit:
 
         assert provider._device_id == "existing-uuid"
 
+    async def test_handle_async_init_uses_mass_http_session(self) -> None:
+        """Ynison must reuse Music Assistant's managed HTTP session."""
+        provider = _make_provider()
+        shared_session = MagicMock()
+        shared_session.closed = False
+        _stub_attr(provider.mass, "http_session", shared_session)
+        _stub_attr(
+            provider,
+            "_resolve_token",
+            AsyncMock(return_value=SecretStr("test-token")),
+        )
+
+        await provider.handle_async_init()
+        assert provider._ynison is not None
+
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.ynison_client.aiohttp.ClientSession",
+                side_effect=AssertionError("private HTTP session created"),
+            ),
+            patch.object(
+                provider._ynison,
+                "_get_redirect_ticket",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("controlled stop"),
+            ),
+            pytest.raises(RuntimeError, match="controlled stop"),
+        ):
+            await provider._ynison.connect()
+
 
 # ------------------------------------------------------------------
 # Player selection
@@ -210,28 +382,20 @@ class TestProviderInit:
 class TestPlayerSelection:
     """Tests for _get_target_player_id."""
 
-    def test_auto_no_players(self) -> None:
-        """Auto mode returns None when no players available."""
-        provider = _make_provider()
+    def test_configured_player_missing(self) -> None:
+        """A missing configured player returns no target instead of choosing another one."""
+        provider = _make_provider("gone-player")
         assert provider._get_target_player_id() is None
 
-    def test_auto_with_playing_player(self) -> None:
-        """Auto mode selects the currently playing player."""
-        provider = _make_provider()
+    def test_other_playing_player_is_never_selected_implicitly(self) -> None:
+        """Removing Auto must prevent playback from jumping to an unrelated player."""
+        provider = _make_provider("gone-player")
+        other = MagicMock()
+        other.player_id = "other-player"
+        other.state.playback_state = PlaybackState.PLAYING
+        provider.mass.players.all_players.return_value = [other]  # type: ignore[attr-defined]
 
-        player1 = MagicMock()
-        player1.player_id = "player1"
-        player1.display_name = "Player 1"
-        player1.state.playback_state = PlaybackState.IDLE
-
-        player2 = MagicMock()
-        player2.player_id = "player2"
-        player2.display_name = "Player 2"
-        player2.state.playback_state = PlaybackState.PLAYING
-
-        provider.mass.players.all_players.return_value = [player1, player2]  # type: ignore[attr-defined]
-
-        assert provider._get_target_player_id() == "player2"
+        assert provider._get_target_player_id() is None
 
     def test_specific_player_exists(self) -> None:
         """Returns configured player when it exists."""
@@ -272,6 +436,108 @@ class TestSourceSelection:
         assert provider._active_player_id == "new-player"
         assert provider._active_session_id == "session_1"
 
+    async def test_on_source_selected_publishes_last_ynison_options(self) -> None:
+        """A newly claimed source session receives the latest remote queue options."""
+        provider = _make_provider()
+        provider._last_shuffle_enabled = True
+        provider._last_repeat_mode = RepeatMode.ALL
+
+        await provider.on_source_selected("main", "new-player", "new-player", "session_1")
+
+        provider.mass.players.update_source_options.assert_called_once_with(
+            "new-player",
+            AUDIO_SOURCE_ID,
+            provider.instance_id,
+            shuffle_enabled=True,
+            repeat_mode=RepeatMode.ALL,
+        )
+
+    async def test_bridge_selection_does_not_stop_its_own_queue_player(self) -> None:
+        """Selecting a bridge consumer for the same owner must leave playback running."""
+        provider = _make_provider()
+        provider._active_player_id = "base-player"
+
+        await provider.on_source_selected(
+            "main",
+            "spb_base-player",
+            "base-player",
+            "session_1",
+        )
+
+        provider.mass.players.cmd_stop.assert_not_awaited()
+        assert provider._active_player_id == "spb_base-player"
+        assert provider._in_use_by_player == "base-player"
+
+    async def test_bridge_owner_is_allowed_when_player_switching_is_disabled(self) -> None:
+        """A configured owner remains valid when its physical consumer is a bridge."""
+        mass = _make_mock_mass()
+        config = _make_mock_config(
+            {
+                CONF_ALLOW_PLAYER_SWITCH: False,
+                CONF_MASS_PLAYER_ID: "base-player",
+            }
+        )
+        provider = YandexYnisonProvider(
+            mass,
+            _make_mock_manifest(),
+            config,
+            {ProviderFeature.AUDIO_SOURCE},
+        )
+        mass.players.get_player.return_value = MagicMock()
+
+        await provider.on_source_selected(
+            "main",
+            "spb_base-player",
+            "base-player",
+            "session_1",
+        )
+        await provider.on_source_selected(
+            "main",
+            "spb_base-player",
+            "base-player",
+            "session_2",
+        )
+
+        mass.player_queues.play_media.assert_not_awaited()
+        assert provider._active_player_id == "spb_base-player"
+        assert provider._in_use_by_player == "base-player"
+        assert provider._active_session_id == "session_2"
+
+    async def test_known_failure_stopping_previous_player_keeps_selection(self) -> None:
+        """A typed player-command failure must not block a new source selection."""
+        provider = _make_provider()
+        provider._active_player_id = "old-player"
+        provider.mass.players.cmd_stop = AsyncMock(side_effect=PlayerCommandFailed("stop failed"))
+
+        await provider.on_source_selected("main", "new-player", "new-player", "session_1")
+
+        assert provider._active_player_id == "new-player"
+        assert provider._in_use_by_player == "new-player"
+
+    async def test_vanished_previous_player_keeps_selection(self) -> None:
+        """A previous player that disappeared during the handoff must not abort selection."""
+        provider = _make_provider()
+        provider._active_player_id = "old-player"
+        provider.mass.players.cmd_stop = AsyncMock(
+            side_effect=PlayerUnavailableError("old-player is gone")
+        )
+
+        await provider.on_source_selected("main", "new-player", "new-player", "session_1")
+
+        assert provider._active_player_id == "new-player"
+        assert provider._in_use_by_player == "new-player"
+
+    async def test_unexpected_failure_stopping_previous_player_propagates(self) -> None:
+        """An unexpected stop error must not be mistaken for an operational failure."""
+        provider = _make_provider()
+        provider._active_player_id = "old-player"
+        provider.mass.players.cmd_stop = AsyncMock(side_effect=RuntimeError("bug"))
+
+        with pytest.raises(RuntimeError, match="bug"):
+            await provider.on_source_selected("main", "new-player", "new-player", "session_1")
+
+        assert provider._active_player_id == "old-player"
+
     async def test_on_source_selected_switching_disabled(self) -> None:
         """Rejects source selection when player switching is disabled."""
         mass = _make_mock_mass()
@@ -290,6 +556,34 @@ class TestSourceSelection:
         mass.player_queues.play_media.assert_awaited()
         assert provider._active_player_id is None
 
+    async def test_on_source_selected_disabled_redirect_not_repeated(self) -> None:
+        """
+        Repeated rejected selections must not re-issue the redirect play_media.
+
+        When player switching is disabled and a non-target player keeps having
+        the source selected (sendspin bridge / sync-group indirection re-triggers
+        the stream under a player id that never equals the configured target),
+        the redirect ``play_media`` must fire at most once per idempotency window.
+        Otherwise every rejection re-issues the redirect, which re-triggers
+        selection, producing an unbounded ``AudioError`` storm.
+        """
+        mass = _make_mock_mass()
+        config = _make_mock_config({CONF_ALLOW_PLAYER_SWITCH: False})
+        manifest = _make_mock_manifest()
+        provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+
+        provider._default_player_id = "default-player"
+        mass.players.get_player.return_value = MagicMock()
+
+        for _ in range(3):
+            with pytest.raises(RuntimeError, match="Player switching is disabled"):
+                await provider.on_source_selected(
+                    "main", "other-player", "other-player", "session_1"
+                )
+
+        # Three rejected selections, but the redirect fired only once.
+        assert mass.player_queues.play_media.await_count == 1
+
 
 # ------------------------------------------------------------------
 # Clear active player
@@ -304,13 +598,78 @@ class TestClearActivePlayer:
         provider = _make_provider()
 
         provider._active_player_id = "some-player"
-        provider._in_use_by_queue = "some-player"
+        provider._in_use_by_player = "some-player"
 
         provider._clear_active_player()
 
         assert provider._active_player_id is None
-        assert provider._in_use_by_queue is None  # type: ignore[unreachable]
+        assert provider._in_use_by_player is None  # type: ignore[unreachable]
         provider.mass.players.trigger_player_update.assert_called_with("some-player")
+
+    def test_gives_the_source_back_to_its_owner(self) -> None:
+        """
+        The player is told to let the source go, not just to stop.
+
+        A session left on the player keeps it publishing Ynison as its source, so its
+        own queue stays inactive and cannot be started again.
+        """
+        provider = _make_provider()
+        provider._active_player_id = "some-player"
+        provider._in_use_by_player = "some-player"
+        provider.mass.players.get_audio_source_session.return_value.playback_session_id = (
+            "generation-7"
+        )
+
+        provider._clear_active_player()
+
+        provider.mass.players.deselect_source.assert_called_once_with(
+            "some-player",
+            provider_instance_id=provider.instance_id,
+            source_id=AUDIO_SOURCE_ID,
+            playback_session_id="generation-7",
+        )
+
+    def test_the_owner_is_released_not_the_consuming_player(self) -> None:
+        """The session hangs off the owner, which is not who consumed the audio."""
+        provider = _make_provider()
+        # a protocol bridge streamed the audio on the owner's behalf
+        provider._active_player_id = "spb_bridge_1"
+        provider._in_use_by_player = "owner-player"
+
+        provider._clear_active_player()
+
+        provider.mass.players.deselect_source.assert_called_once_with(
+            "owner-player",
+            provider_instance_id=provider.instance_id,
+            source_id=AUDIO_SOURCE_ID,
+            playback_session_id="playback-session",
+        )
+
+    def test_nothing_is_released_when_the_source_was_not_in_use(self) -> None:
+        """No owner means no session to give back."""
+        provider = _make_provider()
+        provider._active_player_id = "some-player"
+        provider._in_use_by_player = None
+
+        provider._clear_active_player()
+
+        provider.mass.players.deselect_source.assert_not_called()
+
+    def test_missing_generation_is_forwarded_as_guarded_noop(self) -> None:
+        """The controller receives an empty generation instead of an unscoped release."""
+        provider = _make_provider()
+        provider._active_player_id = "some-player"
+        provider._in_use_by_player = "some-player"
+        provider.mass.players.get_audio_source_session.return_value = None
+
+        provider._clear_active_player()
+
+        provider.mass.players.deselect_source.assert_called_once_with(
+            "some-player",
+            provider_instance_id=provider.instance_id,
+            source_id=AUDIO_SOURCE_ID,
+            playback_session_id=None,
+        )
 
 
 # ------------------------------------------------------------------
@@ -326,9 +685,10 @@ class TestProviderMatching:
         provider = _make_provider()
 
         mock_ym = MagicMock()
+        mock_ym.instance_id = "ym-inst"
         mock_ym.domain = "yandex_music"
         mock_ym.type = ProviderType.MUSIC
-        provider.mass.get_providers.return_value = [mock_ym]  # type: ignore[attr-defined]
+        provider.mass.providers = [mock_ym]  # type: ignore[attr-defined]
 
         await provider._check_yandex_provider_match()
 
@@ -342,7 +702,7 @@ class TestProviderMatching:
         """No linked provider disables playback control."""
         provider = _make_provider()
 
-        provider.mass.get_providers.return_value = []  # type: ignore[attr-defined]
+        provider.mass.providers = []  # type: ignore[attr-defined]
         await provider._check_yandex_provider_match()
 
         assert provider._yandex_provider is None
@@ -383,18 +743,91 @@ class TestYnisonStateHandling:
 
         assert provider._active_player_id == "player1"
 
+    async def test_active_state_publishes_repeat_and_shuffle_options(self) -> None:
+        """Remote queue options are mirrored into the active AudioSource session."""
+        provider = _make_provider()
+        provider._in_use_by_player = "player1"
+        state = YnisonState(
+            active_device_id=provider._device_id,
+            player_state={
+                "status": {"paused": False, "progress_ms": 0, "duration_ms": 200000},
+                "player_queue": {
+                    "current_playable_index": 0,
+                    "playable_list": [{"playable_id": "track1"}],
+                    "shuffle_optional": {"playable_indices": [0]},
+                    "options": {"repeat_mode": "ONE"},
+                },
+            },
+        )
+
+        await provider._handle_ynison_state(state)
+
+        provider.mass.players.update_source_options.assert_called_once_with(
+            "player1",
+            AUDIO_SOURCE_ID,
+            provider.instance_id,
+            shuffle_enabled=True,
+            repeat_mode=RepeatMode.ONE,
+        )
+
+    async def test_omitted_repeat_mode_resets_source_option_to_off(self) -> None:
+        """A peer that omits repeat_mode resets a previously mirrored repeat option."""
+        provider = _make_provider()
+        provider._in_use_by_player = "player1"
+        provider._last_repeat_mode = RepeatMode.ONE
+        state = YnisonState(
+            active_device_id=provider._device_id,
+            player_state={
+                "status": {"paused": True, "progress_ms": 0, "duration_ms": 200000},
+                "player_queue": {
+                    "current_playable_index": 0,
+                    "playable_list": [{"playable_id": "track1"}],
+                    "options": {},
+                },
+            },
+        )
+
+        await provider._handle_ynison_state(state)
+
+        provider.mass.players.update_source_options.assert_called_once_with(
+            "player1",
+            AUDIO_SOURCE_ID,
+            provider.instance_id,
+            shuffle_enabled=False,
+            repeat_mode=RepeatMode.OFF,
+        )
+
+    async def test_other_device_state_does_not_publish_source_options(self) -> None:
+        """A remote player cannot mutate options for Music Assistant's old session."""
+        provider = _make_provider()
+        state = YnisonState(
+            active_device_id="other-device",
+            player_state={
+                "player_queue": {
+                    "current_playable_index": 0,
+                    "playable_list": [{"playable_id": "track1"}],
+                    "shuffle_optional": {"playable_indices": [0]},
+                    "options": {"repeat_mode": "ALL"},
+                }
+            },
+        )
+
+        await provider._handle_ynison_state(state)
+
+        provider.mass.players.update_source_options.assert_not_called()
+
     async def test_clears_on_device_switch(self) -> None:
         """Clears active player when device switches away."""
         provider = _make_provider()
 
         provider._active_player_id = "player1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         state = YnisonState(active_device_id="other-device-id")
         await provider._handle_ynison_state(state)
 
         assert provider._active_player_id is None
-        assert provider._in_use_by_queue is None  # type: ignore[unreachable]
+        assert provider._in_use_by_player is None  # type: ignore[unreachable]
 
     async def test_seek_detected_from_ynison(self) -> None:
         """Detects seek from Yandex app via progress drift."""
@@ -545,7 +978,7 @@ class TestYnisonStateHandling:
         # queue id — bridge players (`spb_*`) wrap the bare ALSA UUID and the
         # MA UI's state machine lives on the bridge.
         provider._active_player_id = "spb_bridge1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         mock_ynison = MagicMock()
         mock_ynison.update_playing_status = AsyncMock()
         mock_ynison.state.is_paused = False
@@ -573,7 +1006,7 @@ class TestYnisonStateHandling:
     async def test_signal_track_completion_advances_index(self) -> None:
         """Track completion advances index and reports status."""
         provider = _make_provider()
-        mock_ynison = MagicMock()
+        mock_ynison = _mock_ynison()
         mock_ynison.state = YnisonState(
             active_device_id=provider._device_id,
             player_state={
@@ -605,10 +1038,253 @@ class TestYnisonStateHandling:
         # Resets actual duration for next track
         assert provider._actual_duration_ms == 0
 
+    async def test_repeat_one_restarts_current_track(self) -> None:
+        """Natural completion under repeat-one restarts the same queue item."""
+        provider = _make_provider()
+        mock_ynison = _mock_ynison()
+        mock_ynison.connected = True
+        mock_ynison.device_id = provider._device_id
+        mock_ynison.state = YnisonState(
+            active_device_id=provider._device_id,
+            player_state={
+                "status": {"paused": False, "progress_ms": 200000, "duration_ms": 200000},
+                "player_queue": {
+                    "current_playable_index": 1,
+                    "playable_list": [{"playable_id": "t1"}, {"playable_id": "t2"}],
+                    "options": {"repeat_mode": "ONE"},
+                },
+            },
+        )
+        mock_ynison.update_playing_status = AsyncMock()
+        mock_ynison.update_player_state = AsyncMock()
+        provider._ynison = mock_ynison
+
+        outcome = await provider._signal_track_completion()
+
+        sent_state = mock_ynison.update_player_state.call_args.kwargs["player_state"]
+        assert outcome == "restart"
+        assert sent_state["player_queue"]["current_playable_index"] == 1
+        assert sent_state["status"]["progress_ms"] == "0"
+
+    async def test_repeat_all_wraps_in_shuffle_order(self) -> None:
+        """Repeat-all wraps from the logical shuffled tail to its first item."""
+        provider = _make_provider()
+        mock_ynison = _mock_ynison()
+        mock_ynison.connected = True
+        mock_ynison.device_id = provider._device_id
+        mock_ynison.state = YnisonState(
+            active_device_id=provider._device_id,
+            player_state={
+                "status": {"paused": False, "progress_ms": 200000, "duration_ms": 200000},
+                "player_queue": {
+                    "current_playable_index": 1,
+                    "playable_list": [
+                        {"playable_id": "t1"},
+                        {"playable_id": "t2"},
+                        {"playable_id": "t3"},
+                    ],
+                    "shuffle_optional": {"playable_indices": [2, 0, 1]},
+                    "options": {"repeat_mode": "ALL"},
+                },
+            },
+        )
+        mock_ynison.update_playing_status = AsyncMock()
+        mock_ynison.update_player_state = AsyncMock()
+        provider._ynison = mock_ynison
+
+        outcome = await provider._signal_track_completion()
+
+        sent_state = mock_ynison.update_player_state.call_args.kwargs["player_state"]
+        assert outcome == "change"
+        assert sent_state["player_queue"]["current_playable_index"] == 2
+
+    async def test_repeat_all_single_item_restarts_without_waiting(self) -> None:
+        """A one-item repeat-all queue restarts because no index change is possible."""
+        provider = _make_provider()
+        mock_ynison = _mock_ynison(
+            _make_ynison_state(
+                current_playable_index=0,
+                playable_list=[{"playable_id": "t1"}],
+            )
+        )
+        mock_ynison.state.player_state["player_queue"]["options"] = {"repeat_mode": "ALL"}
+        provider._ynison = mock_ynison
+
+        assert await provider._signal_track_completion() == "restart"
+
+    async def test_explicit_next_ignores_repeat_one(self) -> None:
+        """A user next command advances even when natural completion repeats one."""
+        provider = _make_provider()
+        mock_ynison = _mock_ynison()
+        mock_ynison.connected = True
+        mock_ynison.device_id = provider._device_id
+        mock_ynison.state = YnisonState(
+            active_device_id=provider._device_id,
+            player_state={
+                "status": {"paused": False, "progress_ms": 1000, "duration_ms": 200000},
+                "player_queue": {
+                    "current_playable_index": 0,
+                    "playable_list": [{"playable_id": "t1"}, {"playable_id": "t2"}],
+                    "options": {"repeat_mode": "ONE"},
+                },
+            },
+        )
+        mock_ynison.update_playing_status = AsyncMock()
+        mock_ynison.update_player_state = AsyncMock()
+        provider._ynison = mock_ynison
+
+        await provider._on_next()
+
+        sent_state = mock_ynison.update_player_state.call_args.kwargs["player_state"]
+        assert sent_state["player_queue"]["current_playable_index"] == 1
+
+    async def test_explicit_next_wraps_repeat_all(self) -> None:
+        """A user next command wraps at the repeat-all queue boundary."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=1,
+            playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}],
+        )
+        state.player_state["player_queue"]["options"] = {"repeat_mode": "ALL"}
+        mock_ynison = _mock_ynison(state)
+        provider._ynison = mock_ynison
+
+        await provider._on_next()
+
+        sent = mock_ynison.update_player_state.call_args.kwargs["player_state"]
+        assert sent["player_queue"]["current_playable_index"] == 0
+
+    async def test_explicit_next_restarts_single_item_repeat_all(self) -> None:
+        """Next restarts the local decoder even when track and index are unchanged."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}],
+            progress_ms=5000,
+        )
+        state.player_state["player_queue"]["options"] = {"repeat_mode": "ALL"}
+        client = _mock_ynison(state)
+        provider._ynison = client
+        provider._yandex_provider = MagicMock()
+        provider._seek_position_ms = 5000
+        decoded_offsets: list[int] = []
+
+        async def decode(
+            _track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del session_params
+            decoded_offsets.append(seek_ms)
+            yield b"\x00" * 4
+            yield b"\x00" * 4
+
+        _stub_attr(provider, "_stream_track", decode)
+        stream = provider.get_audio_stream(MagicMock())
+        try:
+            await anext(stream)
+            await provider._on_next()
+            assert provider._track_changed_event.is_set()
+            await anext(stream)
+            assert decoded_offsets == [5000, 0]
+        finally:
+            await stream.aclose()
+
+        sent = client.update_player_state.call_args.kwargs["player_state"]
+        assert sent["status"]["progress_ms"] == "0"
+        assert sent["player_queue"]["current_playable_index"] == 0
+
+    @pytest.mark.parametrize("repeat_mode", ["ALL", "NONE"])
+    async def test_failed_single_item_next_does_not_restart_local_stream(
+        self, repeat_mode: str
+    ) -> None:
+        """A rejected queue publication cannot move the local decoder."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}],
+        )
+        state.player_state["player_queue"]["options"] = {"repeat_mode": repeat_mode}
+        client = _mock_ynison(state)
+        client.update_player_state.side_effect = YnisonSendError("disconnected")
+        provider._ynison = client
+        provider._seek_position_ms = 5000
+
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            pytest.raises(PlayerCommandFailed, match="queue advance failed"),
+        ):
+            await provider._on_next()
+
+        assert provider._seek_position_ms == 5000
+        assert not provider._track_changed_event.is_set()
+
+    async def test_repeat_none_publishes_terminal_pause(self) -> None:
+        """Finite repeat-off completion leaves Ynison visibly paused at the end."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}],
+            progress_ms=200000,
+            duration_ms=200000,
+        )
+        state.player_state["player_queue"]["options"] = {"repeat_mode": "NONE"}
+        mock_ynison = _mock_ynison(state)
+        provider._ynison = mock_ynison
+
+        outcome = await provider._signal_track_completion()
+
+        assert outcome == "stop"
+        sent_status = mock_ynison.update_player_state.await_args.kwargs["player_state"]["status"]
+        assert sent_status["progress_ms"] == "200000"
+        assert sent_status["duration_ms"] == "200000"
+        assert sent_status["paused"] is True
+        assert mock_ynison.update_player_state.await_args.kwargs["strict"] is True
+
+    @pytest.mark.parametrize("repeat_mode", [None, "NONE"])
+    @pytest.mark.parametrize("queue_size", [1, 3])
+    async def test_explicit_next_at_finite_end_succeeds(
+        self, repeat_mode: str | None, queue_size: int
+    ) -> None:
+        """Publishing the terminal pause at a finite boundary is a successful Next."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=queue_size - 1,
+            playable_list=[{"playable_id": f"t{index}"} for index in range(queue_size)],
+            progress_ms=5000,
+            duration_ms=200000,
+        )
+        if repeat_mode is not None:
+            state.player_state["player_queue"]["options"] = {"repeat_mode": repeat_mode}
+        client = _mock_ynison(state)
+        provider._ynison = client
+
+        await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.NEXT)
+
+        sent = client.update_player_state.call_args.kwargs["player_state"]
+        assert sent["status"]["paused"] is True
+        assert sent["status"]["progress_ms"] == "200000"
+        assert sent["player_queue"]["current_playable_index"] == queue_size - 1
+        assert not provider._track_changed_event.is_set()
+
+    async def test_failed_queue_advance_returns_failure(self) -> None:
+        """Natural completion cannot report a transition that failed to send."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}],
+        )
+        mock_ynison = _mock_ynison(state)
+        mock_ynison.update_player_state.side_effect = YnisonSendError("down")
+        provider._ynison = mock_ynison
+
+        assert await provider._signal_track_completion() == "failed"
+
     async def test_signal_track_completion_no_send_full_state(self) -> None:
         """Track completion never sends full state reset."""
         provider = _make_provider()
-        mock_ynison = MagicMock()
+        mock_ynison = _mock_ynison()
         mock_ynison.state = YnisonState(
             active_device_id=provider._device_id,
             player_state={
@@ -634,7 +1310,7 @@ class TestYnisonStateHandling:
         """Track completion prefers _actual_duration_ms over stale state.duration_ms."""
         provider = _make_provider()
         provider._actual_duration_ms = 300000
-        mock_ynison = MagicMock()
+        mock_ynison = _mock_ynison()
         mock_ynison.state = YnisonState(
             active_device_id=provider._device_id,
             player_state={
@@ -658,7 +1334,7 @@ class TestYnisonStateHandling:
     async def test_signal_track_completion_radio_replenishes_queue(self) -> None:
         """At end of RADIO queue, fetches more tracks via YM API and advances."""
         provider = _make_provider()
-        mock_ynison = MagicMock()
+        mock_ynison = _mock_ynison()
         mock_ynison.state = YnisonState(
             active_device_id=provider._device_id,
             player_state={
@@ -707,10 +1383,35 @@ class TestYnisonStateHandling:
         assert expanded[2]["title"] == "New Track"
         assert expanded[2]["from"] == "radio-src"
 
+    async def test_shuffled_radio_replenishment_advances_to_new_item(self) -> None:
+        """Logical shuffle tail advances to the first appended RADIO item."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=0,
+            playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}],
+        )
+        queue = state.player_state["player_queue"]
+        queue["entity_id"] = "user:wave"
+        queue["entity_type"] = "RADIO"
+        queue["shuffle_optional"] = {"playable_indices": [1, 0]}
+        mock_ynison = _mock_ynison(state)
+        provider._ynison = mock_ynison
+        track = MagicMock(id="t3", title="New", albums=[], cover_uri=None)
+        provider._yandex_provider = MagicMock()
+        provider._yandex_provider.get_rotor_station_tracks = AsyncMock(
+            return_value=([track], "batch")
+        )
+
+        assert await provider._signal_track_completion() == "change"
+
+        sent = mock_ynison.update_player_state.call_args.kwargs["player_state"]
+        assert sent["player_queue"]["current_playable_index"] == 2
+        assert sent["player_queue"]["shuffle_optional"]["playable_indices"] == [1, 0, 2]
+
     async def test_signal_track_completion_radio_no_provider(self) -> None:
         """At end of queue without YM provider, does not crash."""
         provider = _make_provider()
-        mock_ynison = MagicMock()
+        mock_ynison = _mock_ynison()
         mock_ynison.state = YnisonState(
             active_device_id=provider._device_id,
             player_state={
@@ -741,7 +1442,7 @@ class TestYnisonStateHandling:
     async def test_prefetch_on_second_to_last_track(self) -> None:
         """Pre-fetches tracks when playing second-to-last item in queue."""
         provider = _make_provider()
-        mock_ynison = MagicMock()
+        mock_ynison = _mock_ynison()
         mock_ynison.connected = True
         mock_ynison.update_player_state = AsyncMock()
         # 4 tracks, currently at index 2 (second-to-last)
@@ -776,8 +1477,9 @@ class TestYnisonStateHandling:
         )
         provider._yandex_provider = mock_ym_provider
 
-        # Use real create_task so prefetch coroutine actually runs
-        provider.mass.create_task = lambda coro: asyncio.get_event_loop().create_task(coro)  # type: ignore[method-assign, assignment, misc]
+        _stub_attr(provider.mass, "loop", asyncio.get_running_loop())
+        _stub_attr(provider.mass, "_tracked_tasks", {})
+        _stub_attr(provider.mass, "create_task", partial(MusicAssistant.create_task, provider.mass))
 
         # Trigger prefetch
         provider._maybe_prefetch(
@@ -787,6 +1489,7 @@ class TestYnisonStateHandling:
             "RADIO",
         )
         assert provider._prefetch_task is not None
+        assert provider._prefetch_task.get_name() == f"ynison_prefetch_{provider.instance_id}"
         await provider._prefetch_task
 
         # Prefetched list should contain old + new
@@ -797,7 +1500,7 @@ class TestYnisonStateHandling:
     async def test_signal_completion_uses_prefetched(self) -> None:
         """Track completion uses pre-fetched data instead of making API call."""
         provider = _make_provider()
-        mock_ynison = MagicMock()
+        mock_ynison = _mock_ynison()
         mock_ynison.state = YnisonState(
             active_device_id=provider._device_id,
             player_state={
@@ -828,6 +1531,7 @@ class TestYnisonStateHandling:
             {"playable_id": "t5"},
         ]
         provider._prefetched_list = prefetched
+        provider._prefetched_queue_generation = 0
 
         mock_ym_provider = MagicMock()
         mock_ym_provider.get_rotor_station_tracks = AsyncMock()
@@ -970,6 +1674,17 @@ class TestYnisonStateHandling:
         result = await provider._wait_for_track_change("old_track", timeout=0.1)
         assert result is False
 
+    async def test_wait_for_track_change_accepts_new_index_with_duplicate_track(self) -> None:
+        """Advancement is positional when adjacent queue entries share a track ID."""
+        provider = _make_provider()
+        state = _make_ynison_state(
+            current_playable_index=1,
+            playable_list=[{"playable_id": "same"}, {"playable_id": "same"}],
+        )
+        provider._ynison = _mock_ynison(state)
+
+        assert await provider._wait_for_track_change(("same", 0), timeout=0.1)
+
 
 # ------------------------------------------------------------------
 # ------------------------------------------------------------------
@@ -983,13 +1698,14 @@ class TestPCMNormalization:
     async def test_stream_track_always_uses_ffmpeg(self) -> None:
         """_stream_track always normalizes through ffmpeg, even without seek."""
         provider = _make_provider()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
         sd.expiration = 600
         sd.duration = 200
         sd.audio_format = MagicMock()
+        _set_stream_owner(mock_yandex, sd)
         mock_yandex.get_stream_details = AsyncMock(return_value=sd)
 
         async def _fake_audio_stream(_details: object) -> Any:
@@ -1016,25 +1732,78 @@ class TestPCMNormalization:
 
         assert collected == [b"pcm-normalized"]
         mock_ffmpeg.assert_called_once()
+        mock_yandex.acquire_stream_slot.assert_called_once_with(STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT)
         call_kwargs = mock_ffmpeg.call_args
         # Default (no YM provider linked) → lossy profile
         assert call_kwargs.kwargs["output_format"] == provider._normalized_format
         assert call_kwargs.kwargs["output_format"].content_type == ContentType.PCM_S16LE
-        # No seek args when seek_ms=0, but realtime pacing is always present
+        # No seek args when seek_ms=0. The per-track decode no longer paces
+        # itself with -re (spec 0006): MA's realtime pacer is the single pacing
+        # authority, and dropping -re lets a small read-ahead absorb CDN jitter.
         args = call_kwargs.kwargs.get("extra_input_args", [])
-        assert "-re" in args
+        assert "-re" not in args
         assert "-ss" not in args
+
+    async def test_stream_track_preserves_linked_provider_capacity_error(self) -> None:
+        """A linked-provider slot timeout remains typed before the inner ffmpeg starts."""
+        provider = _make_provider()
+        streamdetails = MagicMock()
+        streamdetails.audio_format = AudioFormat(
+            content_type=ContentType.MP3,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+        )
+        linked_provider = MagicMock(spec=MusicProvider)
+        linked_provider.max_concurrent_streams = 1
+        linked_provider.name = "Yandex Music"
+        linked_provider.instance_id = "yandex_music--1"
+        linked_provider.available = True
+        streamdetails.provider = linked_provider.instance_id
+        capacity_error = ProviderStreamLimitError(
+            linked_provider, STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
+        )
+
+        class _UnavailableSlot:
+            async def __aenter__(self) -> None:
+                raise capacity_error
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+        linked_provider.acquire_stream_slot.return_value = _UnavailableSlot()
+
+        async def _raw_stream(_details: object) -> Any:
+            yield b"raw"
+
+        linked_provider.get_audio_stream = _raw_stream
+        provider._yandex_provider = linked_provider
+        _stub_attr(
+            provider,
+            "_get_stream_details_with_retry",
+            AsyncMock(return_value=streamdetails),
+        )
+        _stub_attr(provider, "_update_metadata_from_stream", AsyncMock())
+
+        with pytest.raises(ProviderStreamLimitError):
+            async for _ in provider._stream_track("track:123"):
+                pass
+
+        linked_provider.acquire_stream_slot.assert_called_once_with(
+            STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
+        )
 
     async def test_stream_track_seek_adds_ss_arg(self) -> None:
         """With seek > 0, _stream_track adds -ss to ffmpeg args."""
         provider = _make_provider()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
         sd.expiration = 600
         sd.duration = 200
         sd.audio_format = MagicMock()
+        _set_stream_owner(mock_yandex, sd)
         mock_yandex.get_stream_details = AsyncMock(return_value=sd)
 
         async def _fake_audio_stream(_details: object) -> Any:
@@ -1064,7 +1833,63 @@ class TestPCMNormalization:
         call_kwargs = mock_ffmpeg.call_args
         args = call_kwargs.kwargs.get("extra_input_args", [])
         assert "-ss" in args
-        assert "-re" in args
+        # -re removed in spec 0006 — realtime pacer is the only pacing authority.
+        assert "-re" not in args
+
+    async def test_stream_track_logs_output_rate_and_bit_depth(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """
+        The per-track stream log carries output sample rate AND bit depth.
+
+        Spec 0006 AC6: with the passthrough fast path the declared PCM format
+        IS the delivered audio, so an operator must read the output rate and
+        bit depth — not just the content type — from the one stream log line
+        to tell rate passthrough from a resample.
+        """
+        provider = _make_provider()
+        provider._in_use_by_player = "player1"
+        provider._normalized_params = dict(PCM_LOSSLESS_PARAMS)
+
+        mock_yandex = MagicMock()
+        sd = MagicMock()
+        sd.expiration = 600
+        sd.duration = 200
+        sd.audio_format = MagicMock()
+        _set_stream_owner(mock_yandex, sd)
+        mock_yandex.get_stream_details = AsyncMock(return_value=sd)
+
+        async def _fake_audio_stream(_details: object) -> Any:
+            yield b"raw"
+
+        mock_yandex.get_audio_stream = _fake_audio_stream
+        provider._yandex_provider = mock_yandex
+
+        mock_ynison = MagicMock()
+        mock_ynison.update_playing_status = AsyncMock()
+        mock_ynison.state.is_paused = False
+        provider._ynison = mock_ynison
+
+        async def _fake_ffmpeg(**_kwargs: object) -> Any:
+            yield b"pcm"
+
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.provider.get_ffmpeg_stream",
+                side_effect=_fake_ffmpeg,
+            ),
+            caplog.at_level("INFO"),
+        ):
+            async for _ in provider._stream_track("track:123"):
+                pass
+
+        stream_lines = [
+            r.getMessage() for r in caplog.records if "Streaming track" in r.getMessage()
+        ]
+        assert stream_lines, "expected a 'Streaming track' log line"
+        line = stream_lines[0]
+        assert "44100Hz" in line
+        assert "24bit" in line
 
     async def test_default_format_is_pcm_s16le(self) -> None:
         """Default AudioSource audio_format is PCM s16le (lossy profile)."""
@@ -1076,19 +1901,24 @@ class TestPCMNormalization:
         assert mapping.audio_format.channels == 2
 
     async def test_superb_quality_uses_lossless_profile(self) -> None:
-        """When YM quality=superb, format switches to PCM s24le/48kHz."""
+        """
+        When YM quality=superb and no hint, format is PCM s24le/44.1kHz.
+
+        Spec 0006: the no-hint lossless floor is CD-rate (44.1 kHz), not
+        48 kHz — a missing format hint must not upsample the common case.
+        """
         provider = _make_provider()
 
         mock_yandex = MagicMock()
         mock_yandex.domain = "yandex_music"
         mock_yandex.type = ProviderType.MUSIC
-        mock_yandex.config.get_value = MagicMock(return_value="superb")
+        mock_yandex.get_quality.return_value = "superb"
         provider._yandex_provider = mock_yandex
         provider._update_normalized_format()
 
-        mock_yandex.config.get_value.assert_called_with("quality")
+        mock_yandex.get_quality.assert_called_once_with()
         assert provider._normalized_format.content_type == ContentType.PCM_S24LE
-        assert provider._normalized_format.sample_rate == 48000
+        assert provider._normalized_format.sample_rate == 44100
         assert provider._normalized_format.bit_depth == 24
         # AudioSource is rebuilt with the new audio_format on the provider_mapping
         mapping = next(iter(provider._audio_source.provider_mappings))
@@ -1101,7 +1931,7 @@ class TestPCMNormalization:
         mock_yandex = MagicMock()
         mock_yandex.domain = "yandex_music"
         mock_yandex.type = ProviderType.MUSIC
-        mock_yandex.config.get_value = MagicMock(return_value="balanced")
+        mock_yandex.get_quality.return_value = "balanced"
         provider._yandex_provider = mock_yandex
         provider._update_normalized_format()
 
@@ -1118,11 +1948,11 @@ class TestPCMNormalization:
         mock_yandex = MagicMock()
         mock_yandex.domain = "yandex_music"
         mock_yandex.type = ProviderType.MUSIC
-        mock_yandex.config.get_value = MagicMock(return_value="superb")
+        mock_yandex.get_quality.return_value = "superb"
         provider._yandex_provider = mock_yandex
         provider._update_normalized_format()
 
-        assert provider._normalized_format.sample_rate == 48000
+        assert provider._normalized_format.sample_rate == 44100
         assert provider._normalized_format.bit_depth == 24
         assert provider._normalized_format.content_type == ContentType.PCM_S24LE
 
@@ -1136,7 +1966,7 @@ class TestPCMNormalization:
         mock_yandex = MagicMock()
         mock_yandex.domain = "yandex_music"
         mock_yandex.type = ProviderType.MUSIC
-        mock_yandex.config.get_value = MagicMock(return_value="superb")
+        mock_yandex.get_quality.return_value = "superb"
         provider._yandex_provider = mock_yandex
         provider._update_normalized_format()
 
@@ -1146,7 +1976,7 @@ class TestPCMNormalization:
     async def test_audio_format_not_modified_by_stream(self) -> None:
         """AudioSource audio_format stays fixed (not updated from stream)."""
         provider = _make_provider()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
@@ -1187,10 +2017,10 @@ class TestPCMNormalization:
         assert mapping.audio_format is not original_format
 
     async def test_stream_track_api_error_returns_empty(self) -> None:
-        """If get_stream_details fails, _stream_track yields nothing."""
+        """A typed stream-details failure ends the track without yielding audio."""
         provider = _make_provider()
         mock_yandex = MagicMock()
-        mock_yandex.get_stream_details = AsyncMock(side_effect=Exception("API error"))
+        mock_yandex.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("API error"))
         provider._yandex_provider = mock_yandex
 
         collected: list[bytes] = []
@@ -1217,6 +2047,7 @@ class TestPCMNormalization:
         sd.audio_format = MagicMock()
         sd.to_dict.return_value = {"track_id": "t1"}
         sd.data = {"url": "https://cdn.example.com/audio.mp3"}
+        _set_stream_owner(mock_yandex, sd)
 
         async def fetch_and_null(_track_id: str, _media_type: Any = None) -> Any:
             # Simulate the background unload task firing while we awaited.
@@ -1233,80 +2064,203 @@ class TestPCMNormalization:
         assert collected == []
         assert provider._stream_stop_event.is_set()
 
+    async def test_stream_track_provider_switch_does_not_mix_owners(self) -> None:
+        """Details from the old owner are not handed to a newly linked provider instance."""
+        provider = _make_provider()
+        owner_a = MagicMock()
+        owner_b = MagicMock()
+        streamdetails = MagicMock()
+        streamdetails.expiration = 60
+        streamdetails.audio_format = MagicMock()
+        streamdetails.to_dict.return_value = {}
+        streamdetails.data = None
+        _set_stream_owner(owner_a, streamdetails, instance_id="yandex_music--a")
+        _set_stream_owner(owner_b, instance_id="yandex_music--b")
+
+        async def _fetch_and_switch(_track_id: str, _media_type: Any) -> MagicMock:
+            provider._yandex_provider = owner_b
+            return streamdetails
+
+        owner_a.get_stream_details = AsyncMock(side_effect=_fetch_and_switch)
+        owner_a.get_audio_stream = MagicMock()
+        owner_b.get_audio_stream = MagicMock()
+        provider._yandex_provider = owner_a
+
+        output = [chunk async for chunk in provider._stream_track("track:1")]
+
+        assert output == []
+        assert provider._stream_stop_event.is_set()
+        owner_a.get_audio_stream.assert_not_called()
+        owner_b.get_audio_stream.assert_not_called()
+
+    async def test_stream_track_provider_switch_during_metadata_aborts(self) -> None:
+        """A linked-owner switch during metadata preparation cannot start the old source."""
+        provider = _make_provider()
+        owner_a = MagicMock()
+        owner_b = MagicMock()
+        streamdetails = MagicMock()
+        streamdetails.audio_format = MagicMock()
+        _set_stream_owner(owner_a, streamdetails, instance_id="yandex_music--a")
+        _set_stream_owner(owner_b, instance_id="yandex_music--b")
+        owner_a.get_audio_stream = MagicMock()
+        provider._yandex_provider = owner_a
+        _stub_attr(
+            provider,
+            "_get_stream_details_with_retry",
+            AsyncMock(return_value=streamdetails),
+        )
+
+        async def _switch_owner(*_args: object) -> None:
+            provider._yandex_provider = owner_b
+
+        _stub_attr(provider, "_update_metadata_from_stream", AsyncMock(side_effect=_switch_owner))
+
+        output = [chunk async for chunk in provider._stream_track("track:1")]
+
+        assert output == []
+        assert provider._stream_stop_event.is_set()
+        owner_a.get_audio_stream.assert_not_called()
+
+
+class TestRadioReplenishmentErrors:
+    """Radio queue fallback owns typed MA failures only."""
+
+    async def test_known_ma_error_returns_none(self) -> None:
+        """A provider-reported media failure leaves the radio queue unchanged."""
+        provider = _make_provider()
+        provider._yandex_provider = MagicMock(available=True)
+        provider._yandex_provider.get_rotor_station_tracks = AsyncMock(
+            side_effect=MediaNotFoundError("missing")
+        )
+
+        result = await provider._replenish_radio_queue(
+            "station1", "RADIO", [{"playable_id": "track1"}]
+        )
+
+        assert result is None
+
+    async def test_unexpected_error_propagates(self) -> None:
+        """An internal radio API error must not look like an empty station."""
+        provider = _make_provider()
+        provider._yandex_provider = MagicMock()
+        provider._yandex_provider.get_rotor_station_tracks = AsyncMock(
+            side_effect=RuntimeError("bug")
+        )
+
+        with pytest.raises(RuntimeError, match="bug"):
+            await provider._replenish_radio_queue("station1", "RADIO", [{"playable_id": "track1"}])
+
 
 def _make_ym_provider_stub(
     instance_id: str = "ym-inst",
     token: str | None = None,
     x_token: str | None = None,
 ) -> MagicMock:
-    """Build a stub yandex_music provider with a config exposing token/x_token."""
+    """Build a Yandex Music provider stub exposing setup-owned credentials."""
     values: dict[str, Any] = {"token": token, "x_token": x_token}
     ym_config = MagicMock()
     ym_config.get_value.side_effect = values.get
     ym = MagicMock()
     ym.instance_id = instance_id
+    ym.available = True
     ym.domain = "yandex_music"
     ym.type = ProviderType.MUSIC
     ym.config = ym_config
+    ym.get_setup_value.side_effect = values.get
     return ym
 
 
-class TestResolveTokenOwnMode:
-    """_resolve_token in own mode (manual token, no refresh)."""
+class TestPlayerRateSnap:
+    """
+    _update_normalized_format snaps the declared rate to player capability.
 
-    async def test_returns_stored_token(self) -> None:
-        """Returns the manually configured music token as-is."""
-        provider = _make_provider()
-        provider.config = _make_mock_config(
-            {CONF_TOKEN: "manual-token", CONF_YM_INSTANCE: YM_INSTANCE_OWN}
+    Spec 0006 AC9-11: the auto rate is snapped down to the nearest sample rate
+    the target player supports, so MA's AudioSource passthrough fast path is
+    hit and no second resampling ffmpeg runs. Explicit overrides are never
+    snapped; an unresolvable player leaves the rate as the hint/floor produced.
+    """
+
+    @staticmethod
+    def _hint(sample_rate: int, bit_depth: int = 24) -> AudioFormat:
+        return AudioFormat(
+            content_type=ContentType.PCM_S24LE if bit_depth == 24 else ContentType.PCM_S16LE,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            channels=2,
         )
-        provider._ym_instance_id = None
 
-        result = await provider._resolve_token()
+    @staticmethod
+    def _link_player(provider: YandexYnisonProvider, rates: list[tuple[int, int]]) -> MagicMock:
+        player = MagicMock()
+        player.get_supported_sample_rates = MagicMock(return_value=rates)
+        provider._active_player_id = "p1"
+        provider.mass.players.get_player = MagicMock(return_value=player)  # type: ignore[attr-defined]
+        return player
 
-        assert result.get_secret() == "manual-token"
-
-    async def test_raises_when_no_token(self) -> None:
-        """Raises LoginFailed when CONF_TOKEN and CONF_X_TOKEN are both empty."""
+    async def test_hi_res_rate_snapped_down_to_supported(self) -> None:
+        """A 96 kHz hint on a 48 kHz-max player declares 48 kHz (fast-path hit)."""
         provider = _make_provider()
-        provider.config = _make_mock_config(
-            {CONF_TOKEN: None, CONF_X_TOKEN: None, CONF_YM_INSTANCE: YM_INSTANCE_OWN}
-        )
-        provider._ym_instance_id = None
+        self._link_player(provider, [(44100, 16), (48000, 24)])
+        provider._update_normalized_format(hint=self._hint(96000))
+        assert provider._normalized_format.sample_rate == 48000
+        # bit depth is outside the snap — it follows the hint, not the player.
+        assert provider._normalized_format.bit_depth == 24
 
-        with pytest.raises(LoginFailed, match="No Yandex Music token"):
-            await provider._resolve_token()
-
-    async def test_falls_back_to_x_token_refresh_when_token_missing(self) -> None:
-        """Own mode with stored x_token but no music token refreshes in-memory."""
+    async def test_rate_snapped_to_only_supported_value(self) -> None:
+        """A 48 kHz hint on a 44.1 kHz-only player declares 44.1 kHz."""
         provider = _make_provider()
-        provider.config = _make_mock_config(
-            {CONF_TOKEN: None, CONF_X_TOKEN: "own-x-token", CONF_YM_INSTANCE: YM_INSTANCE_OWN}
-        )
-        provider._ym_instance_id = None
+        self._link_player(provider, [(44100, 16)])
+        provider._update_normalized_format(hint=self._hint(48000))
+        assert provider._normalized_format.sample_rate == 44100
 
-        with patch(
-            "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
-            new_callable=AsyncMock,
-            return_value=SecretStr("refreshed"),
-        ) as mock_refresh:
-            result = await provider._resolve_token()
+    async def test_supported_rate_left_untouched(self) -> None:
+        """A 48 kHz hint on a player that supports 48 kHz is not snapped (AC10)."""
+        provider = _make_provider()
+        self._link_player(provider, [(44100, 16), (48000, 24)])
+        provider._update_normalized_format(hint=self._hint(48000))
+        assert provider._normalized_format.sample_rate == 48000
 
-        assert result.get_secret() == "refreshed"
-        mock_refresh.assert_awaited_once()
-        await_args = mock_refresh.await_args
-        assert await_args is not None
-        sent: SecretStr = await_args.args[0]
-        assert sent.get_secret() == "own-x-token"
+    async def test_no_resolvable_player_keeps_hint_rate(self) -> None:
+        """With no target player the hint rate survives and nothing raises (AC10)."""
+        provider = _make_provider()
+        # default mock: get_player → None, all_players → [] → target player None
+        provider._update_normalized_format(hint=self._hint(96000))
+        assert provider._normalized_format.sample_rate == 96000
+
+    async def test_explicit_override_beats_snap(self) -> None:
+        """Explicit output_sample_rate wins over the player snap (AC11)."""
+        provider = _make_provider()
+        provider._cfg_sample_rate = "96000"
+        self._link_player(provider, [(44100, 16), (48000, 24)])
+        provider._update_normalized_format(hint=self._hint(48000))
+        assert provider._normalized_format.sample_rate == 96000
+
+    async def test_invalid_capability_data_propagates(self) -> None:
+        """A defective player capability implementation cannot select guessed PCM."""
+        provider = _make_provider()
+        player = self._link_player(provider, [])
+        player.get_supported_sample_rates.side_effect = ValueError("invalid capabilities")
+
+        with pytest.raises(ValueError, match="invalid capabilities"):
+            provider._update_normalized_format(hint=self._hint(96000))
+
+    async def test_unexpected_capability_error_propagates(self) -> None:
+        """An internal capability error must not be hidden by rate fallback."""
+        provider = _make_provider()
+        player = self._link_player(provider, [])
+        player.get_supported_sample_rates.side_effect = RuntimeError("bug")
+        player.resolve_output_player.return_value = player
+
+        with pytest.raises(RuntimeError, match="bug"):
+            provider._update_normalized_format(hint=self._hint(96000))
 
 
-class TestResolveTokenBorrowMode:
-    """_resolve_token in borrow mode (reads from linked yandex_music instance)."""
+class TestResolveLinkedToken:
+    """Resolve Ynison authentication from the selected Yandex Music provider."""
 
     async def test_uses_ym_token_when_available(self) -> None:
         """Returns the music token from the linked YM instance config."""
         provider = _make_provider()
-        provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token="ym-music-token")
         _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
 
@@ -1317,7 +2271,6 @@ class TestResolveTokenBorrowMode:
     async def test_refreshes_in_memory_when_only_x_token(self) -> None:
         """Falls back to in-memory refresh via x_token; does not write config."""
         provider = _make_provider()
-        provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token=None, x_token="ym-x-token")
         _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
 
@@ -1334,26 +2287,27 @@ class TestResolveTokenBorrowMode:
     async def test_raises_when_ym_has_no_credentials(self) -> None:
         """Raises LoginFailed when YM instance config has neither token nor x_token."""
         provider = _make_provider()
-        provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token=None, x_token=None)
         _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
 
-        with pytest.raises(LoginFailed, match="no credentials"):
+        with pytest.raises(LoginFailed, match="no usable token"):
             await provider._resolve_token()
 
     async def test_raises_when_ym_instance_unavailable(self) -> None:
-        """Raises LoginFailed with a distinct 'not loaded' message when YM is missing."""
+        """A missing YM instance is a startup-ordering condition — transient error."""
         provider = _make_provider()
-        provider._ym_instance_id = "ym-inst"
         _stub_attr(provider.mass, "get_provider", MagicMock(return_value=None))
 
-        with pytest.raises(LoginFailed, match="not loaded"):
+        with pytest.raises(ResourceTemporarilyUnavailable, match="not loaded"):
             await provider._resolve_token()
 
     async def test_raises_when_linked_provider_is_not_yandex_music(self) -> None:
         """Stale/edited instance id pointing at a non-YM provider yields a clear error."""
         provider = _make_provider()
-        provider._ym_instance_id = "some-other-id"
+        provider._credential_source = YandexMusicCredentialSource(
+            provider.mass,
+            "some-other-id",
+        )
         wrong = _make_ym_provider_stub()
         wrong.domain = "spotify"  # not yandex_music
         _stub_attr(provider.mass, "get_provider", MagicMock(return_value=wrong))
@@ -1365,45 +2319,9 @@ class TestResolveTokenBorrowMode:
 class TestRefreshYnisonToken:
     """_refresh_ynison_token on YnisonClient auth-failure callback."""
 
-    async def test_own_mode_no_x_token_raises_login_failed(self) -> None:
-        """Own mode with neither token nor stored x_token — surface LoginFailed."""
-        provider = _make_provider()
-        provider._ym_instance_id = None
-        # Stub the config: no token, no x_token.
-        provider.config = MagicMock()
-        provider.config.get_value = MagicMock(return_value=None)
-
-        with pytest.raises(LoginFailed, match="Re-authenticate"):
-            await provider._refresh_ynison_token()
-
-    async def test_own_mode_with_stored_x_token_refreshes(self) -> None:
-        """Own mode with CONF_X_TOKEN set refreshes in-memory via passport."""
-        provider = _make_provider()
-        provider._ym_instance_id = None
-        provider.config = MagicMock()
-        provider.config.get_value = MagicMock(
-            side_effect=lambda key: "own-x-token" if key == CONF_X_TOKEN else None
-        )
-
-        with patch(
-            "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
-            new_callable=AsyncMock,
-            return_value=SecretStr("fresh"),
-        ) as mock_refresh:
-            result = await provider._refresh_ynison_token()
-
-        assert result.get_secret() == "fresh"
-        mock_refresh.assert_awaited_once()
-        # The refresh argument is a SecretStr wrapping the stored x_token.
-        await_args = mock_refresh.await_args
-        assert await_args is not None
-        sent: SecretStr = await_args.args[0]
-        assert sent.get_secret() == "own-x-token"
-
-    async def test_borrow_mode_refreshes_from_ym_x_token(self) -> None:
+    async def test_refreshes_from_linked_ym_x_token(self) -> None:
         """Reads x_token from linked YM and refreshes in-memory only."""
         provider = _make_provider()
-        provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token="stale", x_token="ym-x-token")
         _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
         # Ensure config writes are not invoked
@@ -1421,119 +2339,49 @@ class TestRefreshYnisonToken:
         mock_refresh.assert_awaited_once()
         mock_update_config.assert_not_called()
 
-    async def test_borrow_mode_raises_without_x_token(self) -> None:
+    async def test_raises_without_x_token(self) -> None:
         """Raises LoginFailed when YM has no x_token for refresh."""
         provider = _make_provider()
-        provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token="only-token", x_token=None)
         _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
 
-        with pytest.raises(LoginFailed, match="no x_token"):
+        with pytest.raises(LoginFailed, match="Reconfigure Yandex Music authentication"):
             await provider._refresh_ynison_token()
 
-    async def test_borrow_mode_raises_when_ym_not_loaded(self) -> None:
-        """Raises LoginFailed with a distinct 'not loaded' message on reactive refresh."""
+    async def test_raises_when_ym_not_loaded(self) -> None:
+        """A missing YM instance is transient on reactive refresh too."""
         provider = _make_provider()
-        provider._ym_instance_id = "ym-inst"
         _stub_attr(provider.mass, "get_provider", MagicMock(return_value=None))
 
-        with pytest.raises(LoginFailed, match="not loaded"):
+        with pytest.raises(ResourceTemporarilyUnavailable, match="not loaded"):
             await provider._refresh_ynison_token()
 
 
 class TestYandexProviderMatch:
-    """_check_yandex_provider_match obeys _ym_instance_id in borrow mode."""
+    """_check_yandex_provider_match obeys the linked Yandex Music instance id."""
 
-    async def test_borrow_mode_ignores_other_ym_instances(self) -> None:
+    async def test_ignores_other_ym_instances(self) -> None:
         """Does not link to a YM instance with a different instance_id."""
         provider = _make_provider()
         provider._ym_instance_id = "wanted"
         other = _make_ym_provider_stub(instance_id="other")
-        _stub_attr(provider.mass, "get_providers", MagicMock(return_value=[other]))
+        _stub_attr(provider.mass, "providers", [other])
 
         await provider._check_yandex_provider_match()
 
         assert provider._yandex_provider is None
 
-    async def test_borrow_mode_matches_on_instance_id(self) -> None:
+    async def test_matches_on_instance_id(self) -> None:
         """Links to the specific YM instance requested by config."""
         provider = _make_provider()
         provider._ym_instance_id = "wanted"
         wanted = _make_ym_provider_stub(instance_id="wanted")
         other = _make_ym_provider_stub(instance_id="other")
-        _stub_attr(provider.mass, "get_providers", MagicMock(return_value=[other, wanted]))
+        _stub_attr(provider.mass, "providers", [other, wanted])
 
         await provider._check_yandex_provider_match()
 
         assert provider._yandex_provider is wanted
-
-    async def test_own_mode_accepts_any_ym(self) -> None:
-        """In own mode, the first available yandex_music provider is used."""
-        provider = _make_provider()
-        provider._ym_instance_id = None
-        ym = _make_ym_provider_stub(instance_id="any")
-        _stub_attr(provider.mass, "get_providers", MagicMock(return_value=[ym]))
-
-        await provider._check_yandex_provider_match()
-
-        assert provider._yandex_provider is ym
-
-
-# ------------------------------------------------------------------
-# Instance name postfix
-# ------------------------------------------------------------------
-
-
-class TestInstanceNamePostfix:
-    """Tests for instance_name_postfix property."""
-
-    def test_returns_custom_display_name(self) -> None:
-        """Returns display_name when it differs from the default."""
-        config = _make_mock_config({CONF_PUBLISH_NAME: "Living Room"})
-        mass = _make_mock_mass()
-        manifest = _make_mock_manifest()
-        provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
-        assert provider.instance_name_postfix == "Living Room"
-
-    def test_returns_none_for_default_name(self) -> None:
-        """Returns None when display_name is the default (falls back to index)."""
-        provider = _make_provider()
-        assert provider.instance_name_postfix is None
-
-
-# ------------------------------------------------------------------
-# Yandex Music instance enumeration
-# ------------------------------------------------------------------
-
-
-class TestListYandexMusicInstances:
-    """Tests for list_yandex_music_instances."""
-
-    def test_returns_empty_when_none_configured(self) -> None:
-        """Empty list when no yandex_music instances exist."""
-        mass = _make_mock_mass()
-        mass.config.get = MagicMock(return_value={})
-        assert list_yandex_music_instances(mass) == []
-
-    def test_lists_instances_with_display_name(self) -> None:
-        """Returns (instance_id, display_name) pairs for yandex_music domains."""
-        mass = _make_mock_mass()
-        mass.config.get = MagicMock(
-            return_value={
-                "ym-a": {"domain": "yandex_music", "name": "Main Account"},
-                "ym-b": {"domain": "yandex_music", "name": "Family"},
-                "ynison-1": {"domain": "yandex_ynison", "name": "Ynison"},
-            }
-        )
-        result = list_yandex_music_instances(mass)
-        assert sorted(result) == [("ym-a", "Main Account"), ("ym-b", "Family")]
-
-    def test_falls_back_to_instance_id_when_name_missing(self) -> None:
-        """Uses instance_id as display name when 'name' is absent."""
-        mass = _make_mock_mass()
-        mass.config.get = MagicMock(return_value={"ym-a": {"domain": "yandex_music"}})
-        result = list_yandex_music_instances(mass)
-        assert result == [("ym-a", "ym-a")]
 
 
 class TestPCMFrameAlignment:
@@ -1610,6 +2458,33 @@ def _make_ynison_state(
     )
 
 
+def _wire_queue_mutation(mock: MagicMock) -> None:
+    """Adapt transport doubles to the client's synchronous queue-edit callback."""
+    pending: dict[str, Any] | None = None
+
+    def snapshot() -> dict[str, Any]:
+        return deepcopy(
+            pending if pending is not None else mock.state.player_state.get("player_queue", {})
+        )
+
+    mock.queue_snapshot.side_effect = snapshot
+    mock.queue_generation = 0
+
+    async def mutate(mutation: Any, *, expected_generation: int | None = None) -> None:
+        nonlocal pending
+        if expected_generation is not None and expected_generation != mock.queue_generation:
+            raise ResourceTemporarilyUnavailable("Ynison queue changed")
+        player_state = deepcopy(mock.state.player_state)
+        player_state["player_queue"] = snapshot()
+        if mutation(player_state) is False:
+            return
+        player_state["player_queue"]["version"] = make_version_block(mock.device_id)
+        await mock.update_player_state(player_state=player_state, strict=True)
+        pending = deepcopy(player_state["player_queue"])
+
+    mock.mutate_player_state = AsyncMock(side_effect=mutate)
+
+
 def _mock_ynison(
     state: YnisonState | None = None,
     connected: bool = True,
@@ -1618,15 +2493,322 @@ def _mock_ynison(
     """Create a mock YnisonClient with sensible defaults."""
     mock = MagicMock()
     mock.connected = connected
+    mock.in_post_reconnect_settle = False
     mock.state = state or _make_ynison_state()
     mock.device_id = device_id
     mock.update_playing_status = AsyncMock()
     mock.update_player_state = AsyncMock()
+
+    _wire_queue_mutation(mock)
     return mock
 
 
 class TestPlaybackControls:
     """Tests for _on_play, _on_pause, _on_next, _on_previous, _on_seek."""
+
+    async def test_concurrent_next_replenishes_radio_from_updated_tail(self) -> None:
+        """A second RADIO next paginates from the first successfully appended tail."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test"), YnisonDeviceInfo("dev1", "Test"), AsyncMock(), MagicMock()
+        )
+        client.state = _make_ynison_state(playable_list=[{"playable_id": "old"}])
+        client.state.player_state["player_queue"].update(entity_id="station", entity_type="RADIO")
+        client._connected = True
+        client._ws = AsyncMock(closed=False)
+        provider._ynison = client
+        provider._yandex_provider = MagicMock(available=True)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        tails: list[str] = []
+
+        async def fetch(_entity: str, *, queue: str) -> tuple[list[Any], str]:
+            tails.append(queue)
+            entered.set()
+            await release.wait()
+            return [MagicMock(id=f"new{len(tails)}", title="New", albums=[], cover_uri="")], "batch"
+
+        provider._yandex_provider.get_rotor_station_tracks = AsyncMock(side_effect=fetch)
+        tasks = [
+            asyncio.create_task(provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.NEXT))
+            for _ in range(2)
+        ]
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        release.set()
+        await asyncio.gather(*tasks)
+        assert tails == ["old", "new1"]
+        assert client.queue_snapshot()["current_playable_index"] == 2
+
+    async def test_repeat_all_queued_before_terminal_decision_restarts(self) -> None:
+        """A repeat command sent before completion's decision prevents terminal stop."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test"), YnisonDeviceInfo("dev1", "Test"), AsyncMock(), MagicMock()
+        )
+        client.state = _make_ynison_state(playable_list=[{"playable_id": "only"}])
+        client._connected = True
+        provider._ynison = client
+        provider._yandex_provider = MagicMock(available=True)
+        ws = AsyncMock(closed=False)
+        client._ws = ws
+        repeat_task: asyncio.Task[None] | None = None
+
+        async def send(data: str) -> None:
+            nonlocal repeat_task
+            if "update_playing_status" in json.loads(data) and repeat_task is None:
+                repeat_task = asyncio.create_task(
+                    provider.on_source_control(
+                        AUDIO_SOURCE_ID,
+                        SourceControl.REPEAT,
+                        RepeatMode.ALL,
+                    )
+                )
+                await asyncio.sleep(0)
+
+        ws.send_str.side_effect = send
+        outcome = await provider._signal_track_completion()
+        assert repeat_task is not None
+        await repeat_task
+        assert outcome == "restart"
+        sent = json.loads(ws.send_str.call_args.args[0])["update_player_state"]["player_state"]
+        assert sent["player_queue"]["options"]["repeat_mode"] == "ALL"
+        assert sent["status"]["paused"] is False
+
+    async def test_radio_reply_after_peer_replacement_is_discarded(self) -> None:
+        """A late batch from one station cannot overwrite a new peer station."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test"), YnisonDeviceInfo("dev1", "Test"), AsyncMock(), MagicMock()
+        )
+        client.state = _make_ynison_state(playable_list=[{"playable_id": "old"}])
+        client.state.player_state["player_queue"].update(
+            entity_id="old-station", entity_type="RADIO"
+        )
+        client._connected = True
+        ws = AsyncMock(closed=False)
+        client._ws = ws
+        provider._ynison = client
+        provider.mass.create_task = lambda coro, **_kwargs: asyncio.create_task(coro)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fetch(*_args: object, **_kwargs: object) -> tuple[list[Any], str]:
+            started.set()
+            await release.wait()
+            return [MagicMock(id="fetched", title="Fetched", albums=[], cover_uri="")], "batch"
+
+        linked = MagicMock(available=True)
+        linked.get_rotor_station_tracks = AsyncMock(side_effect=fetch)
+        provider._yandex_provider = linked
+        provider._maybe_prefetch(0, [{"playable_id": "old"}], "old-station", "RADIO")
+        await asyncio.wait_for(started.wait(), timeout=1)
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "playable_list": [{"playable_id": "peer-new"}],
+                        "current_playable_index": 0,
+                        "entity_id": "peer-station",
+                        "entity_type": "RADIO",
+                        "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+                    }
+                }
+            }
+        )
+        release.set()
+        assert provider._prefetch_task is not None
+        await asyncio.wait_for(provider._prefetch_task, timeout=1)
+        ws.send_str.assert_not_awaited()
+        assert client.state.current_track_id == "peer-new"
+        assert provider._prefetched_list is None
+
+    @pytest.mark.parametrize("concurrent", [False, True])
+    async def test_repeated_next_before_echo_advances_twice(self, concurrent: bool) -> None:
+        """Consecutive next commands navigate the last successfully sent queue."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test"), YnisonDeviceInfo("dev1", "Test"), AsyncMock(), MagicMock()
+        )
+        client.state = _make_ynison_state(
+            playable_list=[
+                {"playable_id": "one"},
+                {"playable_id": "two"},
+                {"playable_id": "three"},
+            ]
+        )
+        client._connected = True
+        ws = AsyncMock(closed=False)
+        client._ws = ws
+        provider._ynison = client
+        if concurrent:
+            await asyncio.gather(
+                *[provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.NEXT) for _ in range(2)]
+            )
+        else:
+            await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.NEXT)
+            await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.NEXT)
+        updates = [
+            json.loads(call.args[0])["update_player_state"]["player_state"]
+            for call in ws.send_str.call_args_list
+            if "update_player_state" in json.loads(call.args[0])
+        ]
+        assert [ps["player_queue"]["current_playable_index"] for ps in updates] == [1, 2]
+
+    async def test_pending_shuffle_and_repeat_drive_navigation(self) -> None:
+        """Navigation and natural completion honor sent controls before acknowledgement."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test"), YnisonDeviceInfo("dev1", "Test"), AsyncMock(), MagicMock()
+        )
+        client.state = _make_ynison_state(
+            playable_list=[
+                {"playable_id": "one"},
+                {"playable_id": "two"},
+                {"playable_id": "three"},
+            ]
+        )
+        client._connected = True
+        ws = AsyncMock(closed=False)
+        client._ws = ws
+        provider._ynison = client
+        provider._yandex_provider = MagicMock(available=True)
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.random.sample", return_value=[2, 1]
+        ):
+            await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, True)
+        await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.REPEAT, RepeatMode.ONE)
+        await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.NEXT)
+        await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.PREVIOUS)
+        assert await provider._signal_track_completion() == "restart"
+        updates = [
+            json.loads(call.args[0])["update_player_state"]["player_state"]
+            for call in ws.send_str.call_args_list
+            if "update_player_state" in json.loads(call.args[0])
+        ]
+        assert [ps["player_queue"]["current_playable_index"] for ps in updates[-3:]] == [2, 0, 0]
+
+    @pytest.mark.parametrize("shuffle_first", [False, True])
+    async def test_queue_controls_preserve_each_other_before_echo(
+        self, shuffle_first: bool
+    ) -> None:
+        """Rapid repeat and shuffle commands retain both options on the wire."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test-token"),
+            YnisonDeviceInfo(device_id="dev1", title="Test"),
+            AsyncMock(),
+            MagicMock(),
+        )
+        client.state = _make_ynison_state(
+            playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}],
+        )
+        client._connected = True
+        ws = AsyncMock(closed=False)
+        client._ws = ws
+        provider._ynison = client
+        provider._yandex_provider = MagicMock(available=True)
+        commands: list[tuple[SourceControl, bool | RepeatMode]] = [
+            (SourceControl.REPEAT, RepeatMode.ALL),
+            (SourceControl.SHUFFLE, True),
+        ]
+        if shuffle_first:
+            commands.reverse()
+        for action, value in commands:
+            await provider.on_source_control(AUDIO_SOURCE_ID, action, value)
+        sent = json.loads(ws.send_str.call_args.args[0])["update_player_state"]["player_state"]
+        assert sent["player_queue"]["options"]["repeat_mode"] == "ALL"
+        assert sent["player_queue"]["shuffle_optional"]["playable_indices"] == [0, 1]
+
+    @pytest.mark.parametrize("value", [True, False])
+    async def test_source_control_does_not_treat_boolean_as_seek_position(
+        self, value: bool
+    ) -> None:
+        """A shuffle-style boolean payload must not become a zero/one-second seek."""
+        provider = _make_provider()
+        provider._actual_duration_ms = 200000
+        provider._seek_position_ms = 0
+        provider._track_changed_event.clear()
+        state = _make_ynison_state(progress_ms=5000, duration_ms=200000, paused=False)
+        mock_ynison = _mock_ynison(state)
+        provider._ynison = mock_ynison
+
+        await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SEEK, value)
+
+        assert provider._seek_position_ms == 0
+        assert not provider._track_changed_event.is_set()
+        mock_ynison.update_playing_status.assert_not_awaited()
+
+    async def test_source_control_normalizes_float_seek_position(self) -> None:
+        """An internal fractional seek is truncated before reaching Ynison."""
+        provider = _make_provider()
+        provider._actual_duration_ms = 200000
+        provider._seek_position_ms = 0
+        state = _make_ynison_state(progress_ms=5000, duration_ms=200000, paused=False)
+        mock_ynison = _mock_ynison(state)
+        provider._ynison = mock_ynison
+
+        await provider.on_source_control(
+            AUDIO_SOURCE_ID,
+            SourceControl.SEEK,
+            cast("Any", 12.75),
+        )
+
+        assert provider._seek_position_ms == 12000
+        mock_ynison.update_playing_status.assert_awaited_once_with(
+            progress_ms=12000,
+            duration_ms=200000,
+            paused=False,
+            strict=True,
+        )
+
+    async def test_source_control_sets_repeat_mode(self) -> None:
+        """Music Assistant repeat control updates the Ynison queue option."""
+        provider = _make_provider()
+        mock_ynison = _mock_ynison()
+        provider._ynison = mock_ynison
+        provider._yandex_provider = MagicMock(available=True)
+
+        await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.REPEAT, RepeatMode.ONE)
+
+        sent = mock_ynison.update_player_state.call_args.kwargs["player_state"]
+        assert sent["player_queue"]["options"]["repeat_mode"] == "ONE"
+
+    async def test_source_control_sets_shuffle_mapping(self) -> None:
+        """Music Assistant shuffle control publishes a complete index mapping."""
+        provider = _make_provider()
+        state = _make_ynison_state()
+        state.player_state["player_queue"]["playable_list"] = [
+            {"playable_id": "t1"},
+            {"playable_id": "t2"},
+            {"playable_id": "t3"},
+        ]
+        state.player_state["player_queue"]["current_playable_index"] = 1
+        mock_ynison = _mock_ynison(state)
+        provider._ynison = mock_ynison
+        provider._yandex_provider = MagicMock(available=True)
+
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.random.sample", return_value=[2, 0]
+        ):
+            await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, True)
+
+        sent = mock_ynison.update_player_state.call_args.kwargs["player_state"]
+        assert sent["player_queue"]["shuffle_optional"]["playable_indices"] == [1, 2, 0]
+
+    def test_linked_audio_source_advertises_repeat_and_shuffle(self) -> None:
+        """Queue controls are exposed when the linked provider is available."""
+        provider = _make_provider()
+        provider._yandex_provider = MagicMock()
+
+        source = provider._build_audio_source()
+
+        assert source.can_repeat is True
+        assert source.can_shuffle is True
+
+        provider._yandex_provider.available = False
+        source = provider._build_audio_source()
+        assert source.can_repeat is False
+        assert source.can_shuffle is False
 
     async def test_on_play_sends_progress_unpaused(self) -> None:
         """_on_play sends update_playing_status with paused=False."""
@@ -1819,7 +3001,7 @@ class TestPausePlayback:
         """External pause sets the stop event and calls cmd_stop on the queue id."""
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         await provider._pause_playback()
 
@@ -1838,7 +3020,7 @@ class TestPausePlayback:
         """
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         # capture _active_player_id at the moment cmd_stop is invoked —
         # must still be the bridge id (rewrite is post-success).
@@ -1870,8 +3052,8 @@ class TestPausePlayback:
         """
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
-        provider._in_use_by_queue = "player1"
-        provider.mass.players.cmd_stop = AsyncMock(side_effect=RuntimeError("boom"))
+        provider._in_use_by_player = "player1"
+        provider.mass.players.cmd_stop = AsyncMock(side_effect=PlayerCommandFailed("boom"))
 
         await provider._pause_playback()
 
@@ -1884,16 +3066,75 @@ class TestPausePlayback:
         # "successfully paused, expecting resume" state.
         assert provider._externally_paused is False
 
+    async def test_cmd_stop_unavailable_player_keeps_bridge_id(self) -> None:
+        """An unavailable player on external pause is handled like a failed stop."""
+        provider = _make_provider()
+        provider._active_player_id = "spb_bridge1"
+        provider._in_use_by_player = "player1"
+        provider.mass.players.cmd_stop = AsyncMock(side_effect=PlayerUnavailableError("gone"))
+
+        await provider._pause_playback()
+
+        assert provider._active_player_id == "spb_bridge1"
+        assert provider._stream_stop_event.is_set()
+        assert provider._externally_paused is False
+
+    async def test_unexpected_cmd_stop_error_propagates(self) -> None:
+        """An unexpected player-controller error must escape the pause fallback."""
+        provider = _make_provider()
+        provider._active_player_id = "spb_bridge1"
+        provider._in_use_by_player = "player1"
+        provider.mass.players.cmd_stop = AsyncMock(side_effect=RuntimeError("bug"))
+
+        with pytest.raises(RuntimeError, match="bug"):
+            await provider._pause_playback()
+
     async def test_no_active_player_is_a_noop(self) -> None:
         """Pause with no active queue does not call cmd_stop or set the stop event."""
         provider = _make_provider()
         provider._active_player_id = None
-        provider._in_use_by_queue = None
+        provider._in_use_by_player = None
 
         await provider._pause_playback()
 
         assert not provider._stream_stop_event.is_set()
         provider.mass.players.cmd_stop.assert_not_called()
+
+
+class TestStreamTrackErrorHandling:
+    """Expected MA failures end a track while unexpected failures propagate."""
+
+    async def test_stream_details_ma_error_ends_track(self) -> None:
+        """An exhausted operational lookup stops the stream without yielding audio."""
+        provider = _make_provider()
+        linked_provider = MagicMock()
+        _set_stream_owner(linked_provider)
+        provider._yandex_provider = linked_provider
+        _stub_attr(
+            provider,
+            "_get_stream_details_with_retry",
+            AsyncMock(side_effect=RetriesExhausted("unavailable")),
+        )
+
+        chunks = [chunk async for chunk in provider._stream_track("track1")]
+
+        assert chunks == []
+        assert provider._stream_stop_event.is_set()
+
+    async def test_unexpected_stream_details_error_propagates(self) -> None:
+        """An internal lookup bug must not be converted into an ordinary stream end."""
+        provider = _make_provider()
+        linked_provider = MagicMock()
+        _set_stream_owner(linked_provider)
+        provider._yandex_provider = linked_provider
+        _stub_attr(
+            provider,
+            "_get_stream_details_with_retry",
+            AsyncMock(side_effect=RuntimeError("bug")),
+        )
+
+        with pytest.raises(RuntimeError, match="bug"):
+            await anext(provider._stream_track("track1"))
 
 
 # ------------------------------------------------------------------
@@ -1918,7 +3159,7 @@ class TestEchoSuppression:
         self._player(provider)
         provider._current_streaming_track_id = "track1"
         provider._active_player_id = "player1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider._streaming_progress_ms = 1000
         provider._seek_grace_until = 0.0  # grace expired
 
@@ -2029,7 +3270,16 @@ class TestBytesToMs:
     def test_24bit(self) -> None:
         """24-bit stereo 48000Hz: 288000 bytes = 1000ms."""
         provider = _make_provider()
-        provider._normalized_format = make_pcm_format(PCM_LOSSLESS_PARAMS)
+        # Explicit 48000/24 format (decoupled from the no-hint floor constant)
+        # so this exercises the byte→ms math, not whatever rate the floor uses.
+        provider._normalized_format = make_pcm_format(
+            {
+                "content_type": ContentType.PCM_S24LE,
+                "sample_rate": 48000,
+                "bit_depth": 24,
+                "channels": 2,
+            }
+        )
         assert provider._bytes_to_ms(288000) == 1000
 
     def test_zero(self) -> None:
@@ -2055,14 +3305,24 @@ class TestGetStreamDetailsWithRetry:
         sd.expiration = 600
         sd.to_dict.return_value = {"track_id": "t1"}
         sd.data = {"url": "https://cdn.example.com/audio.mp3", "decryption_key": "abc"}
+        _set_stream_owner(mock_yp, sd)
         mock_yp.get_stream_details = AsyncMock(return_value=sd)
         provider._yandex_provider = mock_yp
 
         result = await provider._get_stream_details_with_retry("t1")
         assert result is sd
         mock_yp.get_stream_details.assert_awaited_once()
+        provider.mass.cache.get.assert_awaited_once_with(  # type: ignore[attr-defined]
+            "ynison_sd_yandex_music--test_t1",
+            provider=provider.instance_id,
+            base_class=StreamDetails,
+        )
         # Verify cache.set was called with data field preserved
         provider.mass.cache.set.assert_awaited_once()  # type: ignore[attr-defined]
+        assert (
+            provider.mass.cache.set.call_args.args[0]  # type: ignore[attr-defined]
+            == "ynison_sd_yandex_music--test_t1"
+        )
         cached_value = provider.mass.cache.set.call_args[0][1]  # type: ignore[attr-defined]
         assert cached_value["data"] == sd.data
 
@@ -2073,12 +3333,52 @@ class TestGetStreamDetailsWithRetry:
         cached_sd.expiration = 600
         provider.mass.cache.get = AsyncMock(return_value=cached_sd)  # type: ignore[method-assign]
         mock_yp = MagicMock()
+        _set_stream_owner(mock_yp, cached_sd)
         mock_yp.get_stream_details = AsyncMock()
         provider._yandex_provider = mock_yp
 
         result = await provider._get_stream_details_with_retry("t1")
         assert result is cached_sd
         mock_yp.get_stream_details.assert_not_awaited()
+
+    async def test_cache_owner_mismatch_is_discarded(self) -> None:
+        """Cached details from another linked instance are never leased or streamed."""
+        provider = _make_provider()
+        cached_sd = MagicMock()
+        cached_sd.provider = "yandex_music--other"
+        provider.mass.cache.get = AsyncMock(return_value=cached_sd)  # type: ignore[method-assign]
+        fresh_sd = MagicMock()
+        fresh_sd.expiration = 60
+        fresh_sd.to_dict.return_value = {}
+        fresh_sd.data = None
+        mock_yp = MagicMock()
+        _set_stream_owner(mock_yp, fresh_sd)
+        mock_yp.get_stream_details = AsyncMock(return_value=fresh_sd)
+        provider._yandex_provider = mock_yp
+
+        result = await provider._get_stream_details_with_retry("t1")
+
+        assert result is fresh_sd
+        provider.mass.cache.delete.assert_awaited_once_with(  # type: ignore[attr-defined]
+            "ynison_sd_yandex_music--test_t1",
+            provider=provider.instance_id,
+        )
+        mock_yp.get_stream_details.assert_awaited_once()
+
+    async def test_fresh_owner_mismatch_is_not_retried(self) -> None:
+        """A deterministic provider-owner violation remains actionable and immediate."""
+        provider = _make_provider()
+        streamdetails = MagicMock()
+        streamdetails.provider = "yandex_music--other"
+        mock_yp = MagicMock()
+        _set_stream_owner(mock_yp)
+        mock_yp.get_stream_details = AsyncMock(return_value=streamdetails)
+        provider._yandex_provider = mock_yp
+
+        with pytest.raises(InvalidDataError, match="expected yandex_music--test"):
+            await provider._get_stream_details_with_retry("t1")
+
+        mock_yp.get_stream_details.assert_awaited_once()
 
     async def test_retries_on_failure(self) -> None:
         """Retries on transient error, succeeds on second attempt."""
@@ -2087,7 +3387,10 @@ class TestGetStreamDetailsWithRetry:
         sd = MagicMock()
         sd.expiration = 600
         sd.to_dict.return_value = {"track_id": "t1"}
-        mock_yp.get_stream_details = AsyncMock(side_effect=[RuntimeError("transient"), sd])
+        _set_stream_owner(mock_yp, sd)
+        mock_yp.get_stream_details = AsyncMock(
+            side_effect=[ResourceTemporarilyUnavailable("transient"), sd]
+        )
         provider._yandex_provider = mock_yp
 
         with patch(
@@ -2098,10 +3401,13 @@ class TestGetStreamDetailsWithRetry:
         assert mock_yp.get_stream_details.await_count == 2
 
     async def test_raises_after_max_retries(self) -> None:
-        """Raises RuntimeError after all retries exhausted."""
+        """Raises RetriesExhausted after all transient retries are exhausted."""
         provider = _make_provider()
         mock_yp = MagicMock()
-        mock_yp.get_stream_details = AsyncMock(side_effect=RuntimeError("always fails"))
+        _set_stream_owner(mock_yp)
+        mock_yp.get_stream_details = AsyncMock(
+            side_effect=ResourceTemporarilyUnavailable("always fails")
+        )
         provider._yandex_provider = mock_yp
 
         with (
@@ -2109,15 +3415,28 @@ class TestGetStreamDetailsWithRetry:
                 "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
                 new_callable=AsyncMock,
             ),
-            pytest.raises(RuntimeError, match="failed after"),
+            pytest.raises(RetriesExhausted, match="failed after"),
         ):
             await provider._get_stream_details_with_retry("t1")
         assert mock_yp.get_stream_details.await_count == _API_MAX_RETRIES
+
+    async def test_permanent_error_is_not_retried(self) -> None:
+        """A permanent MA error propagates without consuming the retry budget."""
+        provider = _make_provider()
+        mock_yp = MagicMock()
+        mock_yp.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("missing"))
+        provider._yandex_provider = mock_yp
+
+        with pytest.raises(MediaNotFoundError, match="missing"):
+            await provider._get_stream_details_with_retry("t1")
+
+        mock_yp.get_stream_details.assert_awaited_once()
 
     async def test_cancellation_not_retried(self) -> None:
         """CancelledError propagates immediately, no retry."""
         provider = _make_provider()
         mock_yp = MagicMock()
+        _set_stream_owner(mock_yp)
         mock_yp.get_stream_details = AsyncMock(side_effect=asyncio.CancelledError())
         provider._yandex_provider = mock_yp
 
@@ -2273,7 +3592,7 @@ class TestActivatePlayback:
 
         Simulates the post-`_pause_playback` state: `_stream_stop_event`
         set, `_active_player_id` already demoted to the queue id (the
-        pause path's post-cmd_stop rewrite), `_in_use_by_queue` cleared
+        pause path's post-cmd_stop rewrite), `_in_use_by_player` cleared
         by `on_source_unselected`. `_activate_playback` should fire
         `play_media(queue_id, audio_source.uri)` and clear the stop
         event so the next session is free to run.
@@ -2283,7 +3602,7 @@ class TestActivatePlayback:
         # the queue id (bare UUID) after cmd_stop succeeded.
         provider._stream_stop_event.set()
         provider._active_player_id = "player1"
-        provider._in_use_by_queue = None
+        provider._in_use_by_player = None
 
         player = MagicMock()
         player.player_id = "player1"
@@ -2311,7 +3630,7 @@ class TestActivatePlayback:
         provider._stream_stop_event.clear()
         provider._externally_paused = True
         provider._active_player_id = "player1"
-        provider._in_use_by_queue = None
+        provider._in_use_by_player = None
 
         player = MagicMock()
         player.player_id = "player1"
@@ -2392,10 +3711,12 @@ class TestInvalidateStreamCache:
         provider.mass.cache = MagicMock()
         provider.mass.cache.delete = AsyncMock()
 
-        await provider._invalidate_stream_cache("track:42")
+        await provider._invalidate_stream_cache(
+            "track:42", provider_instance_id="yandex_music--test"
+        )
 
         provider.mass.cache.delete.assert_called_once_with(
-            "ynison_sd_track:42",
+            "ynison_sd_yandex_music--test_track:42",
             provider=provider.instance_id,
         )
 
@@ -2565,91 +3886,77 @@ class TestOnSourceUnselectedStaleRejection:
     async def test_stale_session_id_keeps_claim(self) -> None:
         """A teardown callback from a superseded session must not release the claim."""
         provider = _make_provider()
-        provider._in_use_by_queue = "queue1"
+        provider._in_use_by_player = "queue1"
         provider._active_session_id = "live"
 
         await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "stale")
 
-        assert provider._in_use_by_queue == "queue1"
+        assert provider._in_use_by_player == "queue1"
         assert provider._active_session_id == "live"
 
     async def test_matching_session_id_releases_claim(self) -> None:
         """The live session id matches → lock and session id clear."""
         provider = _make_provider()
-        provider._in_use_by_queue = "queue1"
+        provider._in_use_by_player = "queue1"
         provider._active_session_id = "live"
 
         await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "live")
 
-        assert provider._in_use_by_queue is None
+        assert provider._in_use_by_player is None
         assert provider._active_session_id is None
 
 
-class TestUpdateSourceCapabilitiesStamping:
-    """`_update_source_capabilities` rebuilds and stamps the live queue item."""
+class TestUpdateSourceCapabilitiesRefresh:
+    """`_update_source_capabilities` rebuilds the source and refreshes the session."""
 
-    def _setup_provider_with_queue(self) -> tuple[YandexYnisonProvider, MagicMock, MagicMock]:
+    def _provider_in_use(self) -> YandexYnisonProvider:
         provider = _make_provider()
         # Linked yandex_music provider available → capabilities ON
         provider._yandex_provider = MagicMock()
-        provider._in_use_by_queue = "queue1"
+        provider._in_use_by_player = "player1"
+        provider.mass.players.refresh_source = MagicMock()
+        return provider
 
-        old_source = provider._audio_source
-        queue = MagicMock()
-        current_item = MagicMock()
-        current_item.media_item = old_source
-        queue.current_item = current_item
-        provider.mass.player_queues.get = MagicMock(return_value=queue)
-        provider.mass.player_queues.signal_update = MagicMock()
-        provider.mass.players.trigger_player_update = MagicMock()
-        return provider, queue, current_item
+    def test_a_capability_flip_refreshes_the_session(self) -> None:
+        """
+        The rebuilt source is handed to the session the player publishes from.
 
-    def test_stamps_new_audio_source_with_caps_on(self) -> None:
-        """A capability flip stamps a fresh AudioSource onto the live queue item."""
-        provider, _queue, current_item = self._setup_provider_with_queue()
-        # Mark the old source's media_type explicitly so identity logic accepts it
-        old = provider._audio_source
-        current_item.media_item = AudioSource(
-            item_id=old.item_id,
-            provider=old.provider,
-            name=old.name,
-            provider_mappings=old.provider_mappings,
-            can_play_pause=False,
-            can_seek=False,
-            can_next_previous=False,
-            exclusive=True,
-            allow_external_trigger=True,
-        )
+        The controls a client sees come from the object the session holds, so without
+        this the new flags would not appear until the source was selected again.
+        """
+        provider = self._provider_in_use()
 
         provider._update_source_capabilities()
 
-        new_source = current_item.media_item
-        assert isinstance(new_source, AudioSource)
-        assert new_source.can_play_pause is True
-        assert new_source.can_seek is True
-        assert new_source.can_next_previous is True
-        provider.mass.player_queues.signal_update.assert_called_once_with(
-            "queue1", items_changed=True
-        )
+        provider.mass.players.refresh_source.assert_called_once()
+        player_id, source = provider.mass.players.refresh_source.call_args.args
+        assert player_id == "player1"
+        assert isinstance(source, AudioSource)
+        assert source.can_play_pause is True
+        assert source.can_seek is True
+        assert source.can_next_previous is True
+        # and the provider keeps the same object it published
+        assert provider._audio_source is source
 
-    def test_skips_when_in_use_by_queue_is_none(self) -> None:
-        """When no queue currently consumes our stream, just rebuild and return."""
-        provider, _queue, _current_item = self._setup_provider_with_queue()
-        provider._in_use_by_queue = None
-
-        provider._update_source_capabilities()
-
-        # No stamp on the queue item.
-        provider.mass.player_queues.signal_update.assert_not_called()
-
-    def test_skips_when_queue_lookup_returns_none(self) -> None:
-        """Defensive: queue gone between claim and capability tick → no stamp."""
-        provider, _queue, _current_item = self._setup_provider_with_queue()
-        provider.mass.player_queues.get = MagicMock(return_value=None)
+    def test_nothing_is_refreshed_when_no_player_is_using_it(self) -> None:
+        """With no player holding the source there is no session to refresh."""
+        provider = self._provider_in_use()
+        provider._in_use_by_player = None
 
         provider._update_source_capabilities()
 
-        provider.mass.player_queues.signal_update.assert_not_called()
+        provider.mass.players.refresh_source.assert_not_called()
+
+    def test_the_source_is_still_rebuilt_when_no_player_is_using_it(self) -> None:
+        """The provider's own copy is updated regardless, ready for the next selection."""
+        provider = self._provider_in_use()
+        provider._in_use_by_player = None
+        before = provider._audio_source
+
+        provider._update_source_capabilities()
+
+        assert provider._audio_source is not before
+        assert provider._audio_source.can_play_pause is True
 
 
 class TestPrefetchOrdering:
@@ -2693,6 +4000,38 @@ class TestPrefetchOrdering:
         assert any(c.startswith("play_media:player1") for c in order[1:])
 
 
+class TestPrefetchErrorHandling:
+    """Ordinary format prefetch owns typed MA failures only."""
+
+    async def test_known_ma_error_keeps_current_format(self) -> None:
+        """A provider-reported prefetch failure preserves the session format."""
+        provider = _make_provider()
+        provider._yandex_provider = MagicMock()
+        before = dict(provider._normalized_params)
+        _stub_attr(
+            provider,
+            "_get_stream_details_with_retry",
+            AsyncMock(side_effect=MediaNotFoundError("missing")),
+        )
+
+        await provider._prefetch_format_for_track("track1")
+
+        assert provider._normalized_params == before
+
+    async def test_unexpected_error_propagates(self) -> None:
+        """An internal prefetch error must not be converted into a format fallback."""
+        provider = _make_provider()
+        provider._yandex_provider = MagicMock()
+        _stub_attr(
+            provider,
+            "_get_stream_details_with_retry",
+            AsyncMock(side_effect=RuntimeError("bug")),
+        )
+
+        with pytest.raises(RuntimeError, match="bug"):
+            await provider._prefetch_format_for_track("track1")
+
+
 class TestPrefetchFlowsThroughToStreamDetails:
     """
     `get_stream_details` returns the *prefetched* AudioFormat.
@@ -2718,6 +4057,7 @@ class TestPrefetchFlowsThroughToStreamDetails:
         assert default_rate != 96_000  # sanity: ensure we'll see a change
 
         mock_yandex = MagicMock()
+        _set_stream_owner(mock_yandex)
 
         async def _fake_get_stream_details(_track_id: str, _media_type: MediaType) -> Any:
             sd = MagicMock()
@@ -2731,6 +4071,7 @@ class TestPrefetchFlowsThroughToStreamDetails:
                 channels=2,
             )
             sd.to_dict = MagicMock(return_value={})
+            sd.provider = mock_yandex.instance_id
             return sd
 
         mock_yandex.get_stream_details = AsyncMock(side_effect=_fake_get_stream_details)
@@ -2746,7 +4087,7 @@ class TestPrefetchFlowsThroughToStreamDetails:
         assert provider._normalized_params["bit_depth"] == 24
         # And get_stream_details now reflects that — MA's
         # `_select_audio_source_pcm_format` consumes this.
-        sd = await provider.get_stream_details("main", "queue1")
+        sd = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert sd.audio_format.sample_rate == 96_000
         assert sd.audio_format.bit_depth == 24
@@ -2765,8 +4106,8 @@ class TestPrefetchFlowsThroughToStreamDetails:
         from music_assistant_models.enums import MediaType  # noqa: PLC0415
 
         provider = _make_provider()
-        sd1 = await provider.get_stream_details("main", "queue1")
-        sd2 = await provider.get_stream_details("main", "queue1")
+        sd1 = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
+        sd2 = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
 
         assert sd1.media_type == MediaType.AUDIO_SOURCE
         assert sd1.audio_format == sd2.audio_format  # value-equal
@@ -2780,7 +4121,7 @@ class TestAudioStreamPausedReturn:
         """A paused-at-entry session yields zero chunks and the generator ends."""
         provider = _make_provider()
         provider._yandex_provider = MagicMock()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider._active_session_id = "session-1"
 
         ynison = MagicMock()
@@ -2815,7 +4156,7 @@ class TestNaturalEndDifferentiation:
     def _build(self) -> YandexYnisonProvider:
         provider = _make_provider()
         provider._yandex_provider = MagicMock()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider._active_session_id = "session-1"
         ynison = MagicMock()
         ynison.connected = True
@@ -2885,6 +4226,35 @@ class TestNaturalEndDifferentiation:
         await self._drive_to_exhaustion(provider)
 
         assert calls == [1]
+
+    async def test_failed_natural_navigation_stops_without_waiting_for_track_change(self) -> None:
+        """A failed end-of-track publication stops the stream without a 30-second wait."""
+        provider = self._build()
+        client = _mock_ynison(
+            _make_ynison_state(playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}])
+        )
+        client.update_player_state.side_effect = YnisonSendError("offline")
+        provider._ynison = client
+
+        async def decode(
+            _track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del seek_ms, session_params
+            yield b"\x00" * 4
+
+        _stub_attr(provider, "_stream_track", decode)
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch.object(
+                provider, "_wait_for_track_change", side_effect=AssertionError("unexpected wait")
+            ) as wait,
+        ):
+            await self._drive_to_exhaustion(provider)
+        wait.assert_not_awaited()
+        assert client.update_player_state.await_count == 2
 
     async def test_track_change_during_chunk_loop_suppresses_signal(self) -> None:
         """
@@ -2960,21 +4330,107 @@ class TestNaturalEndDifferentiation:
     # belt-and-braces; intentionally untested.
 
 
-class TestBypassThrottlerScope:
-    """`BYPASS_THROTTLER` is set inside `_stream_track`, NOT inside prefetch."""
+class _TrackingSlot:
+    """Stream-slot double that records acquire/release ordering."""
 
-    async def test_bypass_active_during_in_flight_stream_fetch(self) -> None:
-        """The in-flight stream-details fetch runs with BYPASS_THROTTLER=True."""
+    def __init__(self, events: list[str], index: int) -> None:
+        self._events = events
+        self._index = index
+
+    async def __aenter__(self) -> None:
+        self._events.append(f"acquired-{self._index}")
+
+    async def __aexit__(self, *_args: object) -> None:
+        self._events.append(f"released-{self._index}")
+
+
+class TestLinkedSlotRelease:
+    """The linked provider's stream slot is released as soon as a track stops streaming."""
+
+    @staticmethod
+    def _build() -> YandexYnisonProvider:
         provider = _make_provider()
-        observed: list[bool] = []
+        provider._yandex_provider = MagicMock()
+        provider._in_use_by_player = "player1"
+        provider._active_session_id = "session-1"
+        ynison = MagicMock()
+        ynison.connected = True
+        ynison.state.is_paused = False
+        ynison.state.current_track_id = "track42"
+        provider._ynison = ynison
+        return provider
+
+    async def test_consumer_close_releases_slot(self) -> None:
+        """Closing the audio stream mid-track finalizes the generator holding the slot."""
+        provider = self._build()
+        events: list[str] = []
+
+        async def _endless_stream(
+            _track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del seek_ms, session_params  # signature-compat with _stream_track
+            async with _TrackingSlot(events, 1):
+                while True:
+                    yield b"\x00\x00\x00\x00"
+
+        _stub_attr(provider, "_stream_track", _endless_stream)
+
+        gen = provider.get_audio_stream(MagicMock(), seek_position=0)
+        assert await anext(gen) == b"\x00\x00\x00\x00"
+        assert events == ["acquired-1"]
+
+        await gen.aclose()
+
+        assert events == ["acquired-1", "released-1"]
+
+    async def test_track_change_releases_slot_before_next_track(self) -> None:
+        """A track change never leaves the previous track's slot charged."""
+        provider = self._build()
+        events: list[str] = []
+        invocations = 0
+
+        async def _two_pass_stream(
+            _track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del seek_ms, session_params  # signature-compat with _stream_track
+            nonlocal invocations
+            invocations += 1
+            index = invocations
+            async with _TrackingSlot(events, index):
+                while True:
+                    yield b"\x00\x00\x00\x00"
+                    if index == 1:
+                        provider._track_changed_event.set()
+                    else:
+                        provider._stream_stop_event.set()
+
+        _stub_attr(provider, "_stream_track", _two_pass_stream)
+
+        gen = provider.get_audio_stream(MagicMock(), seek_position=0)
+        with suppress(StopAsyncIteration):
+            async for _ in gen:
+                pass
+
+        assert events == ["acquired-1", "released-1", "acquired-2", "released-2"]
+
+
+class TestPlaybackPriorityScope:
+    """Playback priority is set inside `_stream_track`, NOT inside prefetch."""
+
+    async def test_playback_priority_during_in_flight_stream_fetch(self) -> None:
+        """The in-flight stream-details fetch runs with playback priority."""
+        provider = _make_provider()
+        observed: list[RequestPriority] = []
         mock_yandex = MagicMock()
+        _set_stream_owner(mock_yandex)
 
         async def _fake_get_stream_details(_track_id: str, _media_type: Any) -> Any:
-            observed.append(BYPASS_THROTTLER.get())
+            observed.append(current_priority())
             sd = MagicMock()
             sd.expiration = 0
             sd.duration = 1
             sd.audio_format = MagicMock()
+            sd.provider = mock_yandex.instance_id
             return sd
 
         mock_yandex.get_stream_details = AsyncMock(side_effect=_fake_get_stream_details)
@@ -3004,24 +4460,26 @@ class TestBypassThrottlerScope:
             finally:
                 await gen.aclose()
 
-        assert observed == [True], (
-            f"BYPASS_THROTTLER should be True inside _stream_track, got {observed}"
+        assert observed == [RequestPriority.HIGH], (
+            f"playback priority should apply inside _stream_track, got {observed}"
         )
-        assert BYPASS_THROTTLER.get() is False
+        assert current_priority() is RequestPriority.NORMAL
 
-    async def test_bypass_not_active_during_prefetch(self) -> None:
-        """The prefetch path is intentionally NOT bypassed — opportunistic only."""
+    async def test_playback_priority_not_active_during_prefetch(self) -> None:
+        """The prefetch path intentionally keeps its caller's priority — opportunistic only."""
         provider = _make_provider()
-        observed: list[bool] = []
+        observed: list[RequestPriority] = []
         mock_yandex = MagicMock()
+        _set_stream_owner(mock_yandex)
 
         async def _fake_get_stream_details(_track_id: str, _media_type: Any) -> Any:
-            observed.append(BYPASS_THROTTLER.get())
+            observed.append(current_priority())
             sd = MagicMock()
             sd.expiration = 0
             sd.audio_format = MagicMock()
             sd.audio_format.sample_rate = 44100
             sd.audio_format.bit_depth = 16
+            sd.provider = mock_yandex.instance_id
             return sd
 
         mock_yandex.get_stream_details = AsyncMock(side_effect=_fake_get_stream_details)
@@ -3029,12 +4487,12 @@ class TestBypassThrottlerScope:
 
         await provider._prefetch_format_for_track("track1")
 
-        assert observed == [False], (
-            f"BYPASS_THROTTLER must NOT be set during prefetch, got {observed}"
+        assert observed == [RequestPriority.NORMAL], (
+            f"playback priority must NOT apply during prefetch, got {observed}"
         )
 
-    async def test_bypass_resets_on_exception(self) -> None:
-        """A raise inside the bypassed call must still reset the context-var."""
+    async def test_playback_priority_resets_on_exception(self) -> None:
+        """A raise inside the playback priority call must still reset the context-var."""
         provider = _make_provider()
         mock_yandex = MagicMock()
         mock_yandex.get_stream_details = AsyncMock(side_effect=RuntimeError("boom"))
@@ -3044,16 +4502,10 @@ class TestBypassThrottlerScope:
         mock_ynison.state.is_paused = False
         provider._ynison = mock_ynison
 
-        # _stream_track swallows the exception, sets the stop event, returns.
-        # Patch asyncio.sleep so the inner retry-with-backoff (2s + 4s) does
-        # not block the test in real time.
-        with patch(
-            "music_assistant.providers.yandex_ynison.provider.asyncio.sleep", new=AsyncMock()
-        ):
-            async for _ in provider._stream_track("track1"):
-                pass
+        with pytest.raises(RuntimeError, match="boom"):
+            await anext(provider._stream_track("track1"))
 
-        assert BYPASS_THROTTLER.get() is False
+        assert current_priority() is RequestPriority.NORMAL
 
 
 # ------------------------------------------------------------------
@@ -3065,18 +4517,18 @@ class TestMusicTokenCache:
     """Tests for the in-memory cache around `refresh_music_token`."""
 
     @staticmethod
-    def _own_provider_with_x_token(x_token: str = "xtok-1") -> YandexYnisonProvider:  # noqa: S107 — test fixture value
-        """Construct an own-mode provider whose x_token drives refresh."""
+    def _linked_provider_with_x_token(
+        x_token: str = "xtok-1",  # noqa: S107 — test fixture value
+    ) -> tuple[YandexYnisonProvider, MagicMock]:
+        """Construct a linked provider whose owner's x-token drives refresh."""
         provider = _make_provider()
-        provider._ym_instance_id = None
-        provider.config = _make_mock_config(
-            {CONF_TOKEN: None, CONF_X_TOKEN: x_token, CONF_YM_INSTANCE: YM_INSTANCE_OWN}
-        )
-        return provider
+        owner = _make_ym_provider_stub(token=None, x_token=x_token)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=owner))
+        return provider, owner
 
     async def test_resolve_token_caches_x_token_refresh(self) -> None:
         """Second `_resolve_token` call within TTL is a cache hit."""
-        provider = self._own_provider_with_x_token("xtok-1")
+        provider, _owner = self._linked_provider_with_x_token("xtok-1")
 
         with patch(
             "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
@@ -3092,7 +4544,7 @@ class TestMusicTokenCache:
 
     async def test_resolve_token_refreshes_after_ttl_expires(self) -> None:
         """Time advancing past the TTL forces a fresh refresh."""
-        provider = self._own_provider_with_x_token("xtok-1")
+        provider, _owner = self._linked_provider_with_x_token("xtok-1")
 
         clock = {"now": 1000.0}
         provider._now = lambda: clock["now"]
@@ -3110,7 +4562,7 @@ class TestMusicTokenCache:
 
     async def test_refresh_ynison_token_invalidates_cache(self) -> None:
         """A 401-driven refresh must bypass + drop the cached entry."""
-        provider = self._own_provider_with_x_token("xtok-1")
+        provider, _owner = self._linked_provider_with_x_token("xtok-1")
 
         with patch(
             "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
@@ -3140,7 +4592,7 @@ class TestMusicTokenCache:
 
     async def test_concurrent_resolve_token_calls_refresh_once(self) -> None:
         """Two concurrent `_resolve_token` calls coalesce into one refresh."""
-        provider = self._own_provider_with_x_token("xtok-1")
+        provider, _owner = self._linked_provider_with_x_token("xtok-1")
 
         refresh_started = asyncio.Event()
         refresh_release = asyncio.Event()
@@ -3166,7 +4618,7 @@ class TestMusicTokenCache:
 
     async def test_cache_lru_evicts_oldest_after_four_x_tokens(self) -> None:
         """When a 5th distinct x_token arrives, the oldest entry is evicted."""
-        provider = self._own_provider_with_x_token("xtok-1")
+        provider, owner = self._linked_provider_with_x_token("xtok-1")
 
         async def fake_refresh(x_token: SecretStr) -> SecretStr:
             return SecretStr(f"music-for-{x_token.get_secret()}")
@@ -3176,13 +4628,10 @@ class TestMusicTokenCache:
             side_effect=fake_refresh,
         ):
             for i in range(1, 6):
-                provider.config = _make_mock_config(
-                    {
-                        CONF_TOKEN: None,
-                        CONF_X_TOKEN: f"xtok-{i}",
-                        CONF_YM_INSTANCE: YM_INSTANCE_OWN,
-                    }
-                )
+                owner.get_setup_value.side_effect = {
+                    "token": None,
+                    "x_token": f"xtok-{i}",
+                }.get
                 await provider._resolve_token()
 
         import hashlib  # noqa: PLC0415 — test-local
@@ -3198,7 +4647,7 @@ class TestMusicTokenCache:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """No log record may contain the x_token, the music token, or its hash."""
-        provider = self._own_provider_with_x_token("xtok-secret")
+        provider, _owner = self._linked_provider_with_x_token("xtok-secret")
 
         with (
             caplog.at_level("DEBUG"),
@@ -3290,7 +4739,7 @@ class TestStrictModeDeliverySignal:
                 },
             },
         )
-        mock_ynison = MagicMock()
+        mock_ynison = _mock_ynison()
         mock_ynison.state = state
         mock_ynison.connected = True
         mock_ynison.device_id = provider._device_id
@@ -3394,3 +4843,92 @@ class TestRequireConnectedYnison:
 
         result = provider._require_connected_ynison()
         assert result is mock_yn
+
+
+class TestTrackBoundaryRecovery:
+    """Track completion survives transport recovery without replaying peer state."""
+
+    @pytest.mark.parametrize("during_send", [False, True])
+    async def test_completion_waits_for_reconnect(self, during_send: bool) -> None:
+        """A finite queue advances once after a short WebSocket outage."""
+        provider = _make_provider()
+        client = YnisonClient(
+            SecretStr("test-token"),
+            YnisonDeviceInfo(provider._device_id, "Test player"),
+            AsyncMock(),
+            MagicMock(),
+        )
+        client.state = _make_ynison_state(
+            playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}],
+        )
+        client.state.active_device_id = provider._device_id
+        socket = MagicMock(closed=not during_send, send_str=AsyncMock())
+        client._ws = socket
+        client._connected = during_send
+        provider._ynison = client
+        # The completion heartbeat succeeds; the queue write loses the socket.
+        if during_send:
+            socket.send_str.side_effect = [None, OSError("offline"), None]
+
+        async def reconnect(_delay: float) -> None:
+            client._reset_pending_queue()
+            socket.closed = False
+            client._connected = True
+
+        with (
+            patch(
+                "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+                new=AsyncMock(side_effect=reconnect),
+            ),
+            patch.object(client, "_schedule_reconnect"),
+        ):
+            assert await provider._signal_track_completion() == "change"
+
+        messages = [json.loads(call.args[0]) for call in socket.send_str.await_args_list]
+        successful_queue = messages[-1]["update_player_state"]["player_state"]["player_queue"]
+        assert successful_queue["current_playable_index"] == 1
+        assert client.queue_snapshot()["current_playable_index"] == 1
+
+    async def test_reconnect_does_not_advance_replaced_queue(self) -> None:
+        """Peer replacement during recovery cannot consume a track in the new queue."""
+        provider = _make_provider()
+        client = _mock_ynison(
+            _make_ynison_state(playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}]),
+            connected=False,
+        )
+        provider._ynison = client
+
+        async def replace_queue(_delay: float) -> None:
+            client.state = _make_ynison_state(
+                playable_list=[{"playable_id": "peer1"}, {"playable_id": "peer2"}],
+            )
+            client.connected = True
+
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+            new=AsyncMock(side_effect=replace_queue),
+        ):
+            assert await provider._signal_track_completion() == "failed"
+
+        client.update_player_state.assert_not_awaited()
+
+
+class TestStableOnlySource:
+    """Persisted dynamic settings must not re-enable removed playback behavior."""
+
+    async def test_dynamic_mode_is_not_exposed(self) -> None:
+        """Runtime configuration offers only stable PCM output controls."""
+        provider = _make_provider()
+        entries = await provider.get_config_entries()
+        assert "stream_mode" not in {entry.key for entry in entries}
+
+    def test_legacy_dynamic_setting_does_not_create_dynamic_coordinator(self) -> None:
+        """An old saved dynamic setting is ignored without blocking provider setup."""
+        provider = YandexYnisonProvider(
+            _make_mock_mass(),
+            _make_mock_manifest(),
+            _make_mock_config({"stream_mode": "max_quality_dynamic"}),
+            {ProviderFeature.AUDIO_SOURCE},
+        )
+        assert not hasattr(provider, "_dynamic_task")
+        assert provider._normalized_format.content_type == ContentType.PCM_S16LE

@@ -16,7 +16,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.media_items import ItemMapping, MediaItemType, media_from_dict
+from music_assistant_models.media_items import (
+    ItemMapping,
+    MediaItemType,
+    media_from_dict,
+)
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
@@ -48,22 +52,53 @@ class PlayerQueueData:
     # the parent media items the user enqueued; the seed for autoplay's "similar" mode.
     # Persisted so autoplay survives a restart.
     enqueued_media_items: list[MediaItemType] = field(default_factory=list)
+    # the uris of the albums already credited as played on this queue; an album is credited once
+    # per play of it, so playing the album (or its folder) again arms it again.
+    # Persisted, so a restart does not re-credit the same album play.
+    credited_albums: set[str] = field(default_factory=set)
     # the user this queue plays for (drives per-user recency/filtering). Persisted.
     userid: str | None = None
+    # pinned autoplay/crossfade toggle overrides; None = follow the global default. Persisted.
+    autoplay_override: bool | None = None
+    crossfade_override: bool | None = None
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
     transitioning: bool = False
     play_action_refcount: int = 0
+    # skip seconds awaiting the playback lock and the item they apply to; a burst of presses
+    # is merged into one seek
+    pending_skip_seconds: int = 0
+    pending_skip_item_id: str | None = None
     last_counted_play: str | None = None
     # session_id whose flow stream was fully generated
     flow_buffer_completed: str | None = None
+    # session_id whose flow stream ended because the queue ran out of items, as opposed
+    # to ending early to restart on a format change or a live item
+    flow_queue_exhausted: str | None = None
     # the current stream session id (set when a stream starts, cleared between sessions)
     session_id: str | None = None
     # per-item play log for the active flow-mode stream
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
+    # queue_item_id whose audio was most recently asked to be prepared ahead of its playback
+    next_item_id_preparing: str | None = None
+    # queue_item_id of the last upcoming item placed by Smart Fades ordering; playback orders the
+    # next batch behind it
+    fade_ordered_until: str | None = None
+    # queue_item_id whose audio the player last started fetching. Unlike index_in_buffer,
+    # which the crossfade preload raises to a track the player was never given, this only
+    # moves when audio actually goes out
+    last_served_item_id: str | None = None
+    # queue_item_id of the item whose stream request was last accepted. Moves before any audio
+    # goes out, so a slow item the player gave up on still vouches for the one after it
+    last_requested_item_id: str | None = None
+    # queue_item_ids whose audio reached the player during the current load, plus the item it
+    # was still playing when that load started. The tracker only reports a play for, or ends the
+    # queue on, one of these: a player can name an item it never received (one from its own
+    # cached copy of the queue that the stream server then refused), and nothing of it has played
+    served_item_ids: set[str] = field(default_factory=set)
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False
@@ -94,8 +129,11 @@ class PlayerQueueData:
             "cache_format_version": CACHE_FORMAT_VERSION,
             "queue": queue,
             "enqueued_media_items": [item.to_dict() for item in self.enqueued_media_items],
+            "credited_albums": sorted(self.credited_albums),
             "source_items": [item.to_dict() for item in self.source_items],
             "userid": self.userid,
+            "autoplay_override": self.autoplay_override,
+            "crossfade_override": self.crossfade_override,
         }
 
     @staticmethod
@@ -175,7 +213,10 @@ class PlayerQueueData:
             items=items,
             source_items=source_items,
             enqueued_media_items=enqueued_media_items,
+            credited_albums=set(state_data.get("credited_albums") or []),
             userid=state_data.get("userid"),
+            autoplay_override=state_data.get("autoplay_override"),
+            crossfade_override=state_data.get("crossfade_override"),
         )
 
     @staticmethod

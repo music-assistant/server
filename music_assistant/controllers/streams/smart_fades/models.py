@@ -12,10 +12,14 @@ is buffered.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import itertools
+import math
+from dataclasses import dataclass, field, replace
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.filters import ShelfType
+from music_assistant.controllers.streams.smart_fades.helpers import db_ramp
 
 if TYPE_CHECKING:
     import numpy as np
@@ -24,8 +28,61 @@ if TYPE_CHECKING:
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
+# Band edges (Hz) of the smart_fades ``band_rms_*`` envelopes; None = up to Nyquist.
+# AudioAnalysisData stores exactly these four bands, each as a ``band_rms_<name>`` field.
+BAND_RMS_BANDS: dict[str, tuple[float, float | None]] = {
+    "low": (20.0, 120.0),
+    "low_mid": (120.0, 400.0),
+    "mid": (400.0, 4000.0),
+    "high": (4000.0, None),
+}
+
+
 class SmartFadeNotApplicable(Exception):
     """Raised when the tracks cannot yield a smart crossfade and the caller should fall back."""
+
+
+class TransitionTier(Enum):
+    """How ambitious the transition is, decided from tempo, key and blendability."""
+
+    # stretch range + key compatible: long, fully-featured DJ blend
+    FULL_BLEND = "full_blend"
+    # stretch range but keys clash: shorter energy-anchored blend
+    TEMPO_BLEND = "tempo_blend"
+    # tempos incompatible or material not blendable: short downbeat-snapped fade
+    QUICK_FADE = "quick_fade"
+
+
+class TransitionStyle(StrEnum):
+    """How a transition is timed and rendered."""
+
+    # beatmatched DJ blend on a FULL_BLEND or TEMPO_BLEND tier
+    BLEND = "blend"
+    # loudness segue: the next track starts where the outgoing one has gone quiet
+    SEGUE = "segue"
+    # unsynced short volume fade
+    CUT = "cut"
+    # short fade whose outgoing low end is swept away by a rising high-pass
+    FILTER_OUT = "filter_out"
+    # the outgoing track stops on a downbeat and its last beat echoes out
+    ECHO_OUT = "echo_out"
+
+
+# the short styles that dress a cut with an effect on the outgoing track
+DRESSED_STYLES: frozenset[TransitionStyle] = frozenset(
+    {TransitionStyle.FILTER_OUT, TransitionStyle.ECHO_OUT}
+)
+
+
+class QuickFadeTrigger(StrEnum):
+    """What ruled out a blend and made the tier a quick fade."""
+
+    # the two decks' meters differ, so they share no bar grid
+    METER = "meter"
+    # the tempo gap is beyond the time-stretch range
+    TEMPO = "tempo"
+    # the anchored outgoing tail has too few or too irregular downbeats
+    BEAT_GRID = "beat_grid"
 
 
 @dataclass(slots=True)
@@ -41,6 +98,19 @@ class Deck:
     bpm: float
     beats: npt.NDArray[np.float32]
     downbeats: npt.NDArray[np.float32]
+    # time signature numerator; callers fall back to 4 when analysis omits it
+    beats_per_bar: int = 4
+
+
+@dataclass(slots=True)
+class BandProfile:
+    """Bar-level band-power view of one track, on its own downbeat grid."""
+
+    bar_starts: npt.NDArray[np.float64]
+    bar_power: dict[str, npt.NDArray[np.float64]]
+    total_power: npt.NDArray[np.float64]
+    active: npt.NDArray[np.bool_]
+    reference: dict[str, float]
 
 
 @dataclass(slots=True)
@@ -95,12 +165,27 @@ class TempoPlan:
 
 @dataclass(slots=True)
 class ShelfSchedule:
-    """One shelving-EQ gain schedule for a ShelfFilter."""
+    """One EQ gain schedule for a ShelfFilter (LOW/HIGH) or PeakFilter (PEAK)."""
 
     shelf_type: ShelfType
     frequency: int
     # (time_seconds, gain_db); the step at t=0 sets the initial gain
     steps: list[tuple[float, float]]
+    # PEAK bandwidth in octaves; unused for LOW/HIGH shelves
+    width_oct: float = 0.707
+
+    def gain_at(self, schedule_time: float) -> float:
+        """Interpolate the scheduled gain (dB) at a schedule-time position (clamped at the ends)."""
+        steps = self.steps
+        if schedule_time <= steps[0][0]:
+            return steps[0][1]
+        if schedule_time >= steps[-1][0]:
+            return steps[-1][1]
+        for (t0, g0), (t1, g1) in itertools.pairwise(steps):
+            if t0 <= schedule_time <= t1:
+                frac = (schedule_time - t0) / (t1 - t0) if t1 > t0 else 0.0
+                return g0 + frac * (g1 - g0)
+        return steps[-1][1]
 
 
 @dataclass(slots=True)
@@ -109,11 +194,104 @@ class EqPlan:
 
     # seconds into the rendered crossfade
     swap_at: float
-    # A-side schedules are in input time (pre-stretch), B-side in post-trim time
-    low_out: ShelfSchedule
-    low_in: ShelfSchedule
-    high_out: ShelfSchedule
-    high_in: ShelfSchedule
+    # A-side schedules are in input time (pre-stretch), B-side in post-trim time;
+    # None means the schedule is bypassed (a shelf shallower than the bypass floor)
+    low_out: ShelfSchedule | None
+    low_in: ShelfSchedule | None
+    high_out: ShelfSchedule | None
+    high_in: ShelfSchedule | None
+    # measured mid-band (vocal) handover; None on either side means it is bypassed
+    mid_out: ShelfSchedule | None = None
+    mid_in: ShelfSchedule | None = None
+
+    @classmethod
+    def neutral(cls, swap_at: float = 0.0) -> EqPlan:
+        """Return an EqPlan that renders no shelves at all."""
+        return cls(swap_at=swap_at, low_out=None, low_in=None, high_out=None, high_in=None)
+
+    def with_mid_depth_scaled(self, shrink: float, *, bypass_below_db: float) -> EqPlan:
+        """
+        Return a copy with both mid schedules' depth scaled by ``shrink`` (fraction to KEEP).
+
+        Bypasses the mid swap entirely when scaling drops its depth below ``bypass_below_db``.
+        """
+        if self.mid_out is None and self.mid_in is None:
+            return self
+        source = self.mid_out or self.mid_in
+        assert source is not None  # narrowed by the check above
+        depth = source.steps[-1 if self.mid_out else 0][1]
+        if shrink <= 0.0 or abs(depth * shrink) < abs(bypass_below_db):
+            return replace(self, mid_out=None, mid_in=None)
+        mid_out = self.mid_out
+        mid_in = self.mid_in
+        if mid_out is not None:
+            mid_out = replace(mid_out, steps=[(t, g * shrink) for t, g in mid_out.steps])
+        if mid_in is not None:
+            mid_in = replace(mid_in, steps=[(t, g * shrink) for t, g in mid_in.steps])
+        return replace(self, mid_out=mid_out, mid_in=mid_in)
+
+    def with_low_ramps_steepened(
+        self, swap_at: float, new_len: float, ratio: float, cf_start_input: float
+    ) -> EqPlan:
+        """
+        Return a copy whose low ramps span ``new_len`` centered on ``swap_at``.
+
+        Only the ramp span is tightened; the endpoint gains stay put.
+        """
+        if self.low_out is None and self.low_in is None:
+            return self
+        start_in = max(0.0, swap_at - new_len / 2)
+        new_len_input = new_len * ratio
+        swap_at_input = cf_start_input + swap_at * ratio
+        start_out = max(cf_start_input, swap_at_input - new_len_input / 2)
+
+        low_out = self.low_out
+        if low_out is not None:
+            depth_a = low_out.steps[-1][1]
+            low_out = replace(
+                low_out, steps=[(0.0, 0.0), *db_ramp(start_out, new_len_input, 0.0, depth_a)]
+            )
+        low_in = self.low_in
+        if low_in is not None:
+            depth_b = low_in.steps[0][1]
+            low_in = replace(
+                low_in, steps=[(0.0, depth_b), *db_ramp(start_in, new_len, depth_b, 0.0)]
+            )
+        return replace(self, low_out=low_out, low_in=low_in)
+
+
+@dataclass(frozen=True, slots=True)
+class HighPassSweep:
+    """A high-pass on the outgoing track whose cutoff rises log-spaced over a window."""
+
+    # outgoing buffer-local seconds
+    start_s: float
+    end_s: float
+    start_hz: float
+    end_hz: float
+
+    def time_at(self, hz: float) -> float:
+        """
+        Buffer-local second where the cutoff reaches a frequency, clamped to the window.
+
+        :param hz: The cutoff frequency in Hz.
+        """
+        if hz <= self.start_hz or self.end_s <= self.start_s:
+            return self.start_s
+        if hz >= self.end_hz:
+            return self.end_s
+        share = math.log(hz / self.start_hz) / math.log(self.end_hz / self.start_hz)
+        return self.start_s + share * (self.end_s - self.start_s)
+
+
+@dataclass(frozen=True, slots=True)
+class EchoOut:
+    """The outgoing track's dry signal stops at a cut and its last beat echoes out."""
+
+    # outgoing buffer-local second where the dry signal stops
+    cut_s: float
+    # one outgoing beat: the echoed slice before the cut and the tap spacing
+    beat_s: float
 
 
 @dataclass(slots=True)
@@ -124,6 +302,44 @@ class FadeOutTrim:
     trimmed_seconds: float
 
 
+class TransitionStrategy(StrEnum):
+    """How a vocal-aware plan's final overlap was ultimately decided."""
+
+    # a normal phrased candidate cleared the vocal-collision guard
+    ENERGY_ALIGNED = "energy_aligned"
+    # every phrased candidate was rejected; shipped a plain equal-power volume crossfade
+    FALLBACK_CROSSFADE = "fallback_crossfade"
+    # even the fallback crossfade collided too severely; shipped the click-free
+    # equal-power handoff as the last resort
+    SHORT_VOCAL_HANDOFF = "short_vocal_handoff"
+
+
+@dataclass(frozen=True, slots=True)
+class PlanMetrics:
+    """
+    Per-plan telemetry; every field defaults to its energy-only value.
+
+    The trim and downbeat facts are populated on every plan; the vocal fields
+    (collision, retained vocal time) additionally need both tracks to carry a
+    validated FireRed vocal-activity timeline and keep their defaults on an
+    energy-only plan.
+    """
+
+    strategy: TransitionStrategy = TransitionStrategy.ENERGY_ALIGNED
+    # seconds of RMS-audible outgoing material dropped before the crossfade start
+    audible_outgoing_trim: float = 0.0
+    # seconds of outgoing vocal activity that fall inside the rendered crossfade
+    outgoing_vocal_fade_seconds: float = 0.0
+    # whether the final fade_out_window sits on an outgoing downbeat
+    anchor_on_downbeat: bool = False
+    # simultaneous outgoing/incoming vocal overlap in rendered-crossfade seconds
+    collision_seconds: float = 0.0
+    # gain-weighted overlap (the acrossfade curve's simultaneous-power integral)
+    weighted_collision_seconds: float = 0.0
+    # gain-weighted kick overlap in outgoing bars; 0.0 for a beatmatched blend
+    rhythm_clash_bars: float = 0.0
+
+
 @dataclass(slots=True)
 class TransitionPlan:
     """
@@ -132,11 +348,25 @@ class TransitionPlan:
     All times are in the outgoing track's buffer-local seconds.
     """
 
+    # how ambitious the transition is; drives overlap length, tempo and EQ
+    tier: TransitionTier
     # audible end of the fade-out tail (buffer-local seconds)
     fade_out_window: float
     crossfade_duration: float
-    eq_plan: EqPlan
+    style: TransitionStyle = TransitionStyle.CUT
+    eq_plan: EqPlan = field(default_factory=EqPlan.neutral)
     tempo_plan: TempoPlan = field(default_factory=TempoPlan)
     fadeout_trim: FadeOutTrim | None = None
     # seconds trimmed off the incoming head for beat alignment
     fadein_trim_start: float | None = None
+    fadeout_curve: str = "qsin"
+    fadein_curve: str = "qsin"
+    # outgoing-side effects of a dressed transition
+    highpass: HighPassSweep | None = None
+    echo: EchoOut | None = None
+    metrics: PlanMetrics = field(default_factory=PlanMetrics)
+
+    @property
+    def outgoing_end(self) -> float:
+        """Buffer-local end of the outgoing track's own signal: the anchor, or an echo's cut."""
+        return self.echo.cut_s if self.echo is not None else self.fade_out_window

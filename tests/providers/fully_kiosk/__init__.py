@@ -1,0 +1,1 @@
+"""Fully Kiosk provider tests."""

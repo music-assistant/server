@@ -34,4 +34,4 @@ into the next release notes.
 - [ ] For changes to shared models, the companion PR in `music-assistant/models` is linked.
 - [ ] For changes affecting the UI, the companion PR in `music-assistant/frontend` is linked.
 - [ ] I have read and complied with the project's [AI Policy](https://github.com/music-assistant/.github/blob/main/AI_POLICY.md) for any AI-assisted contributions.
-- [ ] I have raised a PR against the documentation repository targeting the main or beta branch as appropriate.
+- [ ] I have [raised a PR against the documentation repository](https://github.com/music-assistant/music-assistant.io/blob/main/CONTRIBUTING.md) targeting the main or beta branch as appropriate.

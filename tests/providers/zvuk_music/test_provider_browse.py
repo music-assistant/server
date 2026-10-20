@@ -1,4 +1,4 @@
-"""Tests for ZvukMusicProvider browse, recommendations, and playlist management."""
+"""Tests for ZvukMusicProvider browse and playlist management."""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.media_items import BrowseFolder, Playlist, RecommendationFolder
+from music_assistant_models.media_items import BrowseFolder, Playlist
 
-from music_assistant.providers.zvuk_music.constants import PLAYLIST_TRACK_FETCH_LIMIT
 from music_assistant.providers.zvuk_music.provider import ZvukMusicProvider
 
 # ---------------------------------------------------------------------------
@@ -50,7 +49,7 @@ def _make_provider() -> Any:
     provider.remove_playlist_tracks = ZvukMusicProvider.remove_playlist_tracks.__get__(
         provider, ZvukMusicProvider
     )
-    provider.recommendations = ZvukMusicProvider.recommendations.__get__(
+    provider._get_playlist_track_ids = ZvukMusicProvider._get_playlist_track_ids.__get__(
         provider, ZvukMusicProvider
     )
     provider.browse = ZvukMusicProvider.browse.__get__(provider, ZvukMusicProvider)
@@ -65,106 +64,45 @@ def _make_provider() -> Any:
 class TestRemovePlaylistTracks:
     """Tests for ZvukMusicProvider.remove_playlist_tracks()."""
 
+    @staticmethod
+    def _playlist(*track_ids: int) -> Mock:
+        playlist = Mock()
+        playlist.tracks = [_make_track_mock(tid) for tid in track_ids]
+        return playlist
+
     @pytest.mark.asyncio
     async def test_removes_correct_positions_and_calls_update(self) -> None:
-        """Tracks at specified positions are excluded; remaining IDs are passed to update."""
+        """Tracks at the given 1-based positions are excluded; the rest are kept in order."""
         provider = _make_provider()
-        tracks = [
-            _make_track_mock(10),
-            _make_track_mock(20),
-            _make_track_mock(30),
-            _make_track_mock(40),
-        ]
-        provider.client.get_playlist_tracks = AsyncMock(return_value=tracks)
+        provider.client.get_playlist = AsyncMock(return_value=self._playlist(10, 20, 30, 40))
         provider.client.update_playlist = AsyncMock()
 
-        # Remove positions 0 and 2 → keep tracks at positions 1 (id=20) and 3 (id=40)
-        await provider.remove_playlist_tracks("playlist-1", (0, 2))
+        # Remove positions 1 and 3 -> keep id=20 and id=40
+        await provider.remove_playlist_tracks("playlist-1", (1, 3))
 
         provider.client.update_playlist.assert_awaited_once_with("playlist-1", ["20", "40"])
 
     @pytest.mark.asyncio
-    async def test_get_playlist_tracks_called_with_fetch_limit(self) -> None:
-        """get_playlist_tracks is always called with limit=PLAYLIST_TRACK_FETCH_LIMIT."""
+    async def test_reads_current_tracks_from_playlist(self) -> None:
+        """The current track order is read from the playlist itself."""
         provider = _make_provider()
-        provider.client.get_playlist_tracks = AsyncMock(return_value=[])
+        provider.client.get_playlist = AsyncMock(return_value=self._playlist())
         provider.client.update_playlist = AsyncMock()
 
         await provider.remove_playlist_tracks("playlist-2", ())
 
-        provider.client.get_playlist_tracks.assert_awaited_once_with(
-            "playlist-2", limit=PLAYLIST_TRACK_FETCH_LIMIT
-        )
+        provider.client.get_playlist.assert_awaited_once_with("playlist-2")
 
     @pytest.mark.asyncio
     async def test_no_positions_keeps_all_tracks(self) -> None:
         """Removing no positions keeps all track IDs intact."""
         provider = _make_provider()
-        tracks = [_make_track_mock(11), _make_track_mock(22)]
-        provider.client.get_playlist_tracks = AsyncMock(return_value=tracks)
+        provider.client.get_playlist = AsyncMock(return_value=self._playlist(11, 22))
         provider.client.update_playlist = AsyncMock()
 
         await provider.remove_playlist_tracks("playlist-3", ())
 
         provider.client.update_playlist.assert_awaited_once_with("playlist-3", ["11", "22"])
-
-
-# ---------------------------------------------------------------------------
-# Tests for recommendations()
-# ---------------------------------------------------------------------------
-
-
-class TestRecommendations:
-    """Tests for ZvukMusicProvider.recommendations()."""
-
-    @pytest.mark.asyncio
-    async def test_returns_two_folders_when_both_helpers_have_items(self) -> None:
-        """Two RecommendationFolders are returned when both helpers return playlists."""
-        provider = _make_provider()
-        provider._get_for_you_playlists = AsyncMock(return_value=[_make_playlist("3")])
-        provider._get_editorial_playlists = AsyncMock(return_value=[_make_playlist("99")])
-
-        folders = await provider.recommendations()
-
-        assert len(folders) == 2
-        assert all(isinstance(f, RecommendationFolder) for f in folders)
-        assert folders[0].item_id == "for_you"
-        assert folders[1].item_id == "editorial"
-
-    @pytest.mark.asyncio
-    async def test_omits_for_you_folder_when_helper_returns_empty(self) -> None:
-        """The "Made for you" folder is omitted when _get_for_you_playlists returns []."""
-        provider = _make_provider()
-        provider._get_for_you_playlists = AsyncMock(return_value=[])
-        provider._get_editorial_playlists = AsyncMock(return_value=[_make_playlist("99")])
-
-        folders = await provider.recommendations()
-
-        assert len(folders) == 1
-        assert folders[0].item_id == "editorial"
-
-    @pytest.mark.asyncio
-    async def test_omits_editorial_folder_when_helper_returns_empty(self) -> None:
-        """The "Collections" folder is omitted when _get_editorial_playlists returns []."""
-        provider = _make_provider()
-        provider._get_for_you_playlists = AsyncMock(return_value=[_make_playlist("3")])
-        provider._get_editorial_playlists = AsyncMock(return_value=[])
-
-        folders = await provider.recommendations()
-
-        assert len(folders) == 1
-        assert folders[0].item_id == "for_you"
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_when_both_helpers_return_empty(self) -> None:
-        """An empty list is returned when both helpers have no playlists."""
-        provider = _make_provider()
-        provider._get_for_you_playlists = AsyncMock(return_value=[])
-        provider._get_editorial_playlists = AsyncMock(return_value=[])
-
-        folders = await provider.recommendations()
-
-        assert folders == []
 
 
 # ---------------------------------------------------------------------------

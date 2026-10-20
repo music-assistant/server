@@ -1,89 +1,61 @@
-"""ConfigEntry schema for the MCP Server provider."""
+"""Compose Music Assistant ConfigEntry values and surface settings."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
+from .capabilities import Capability
 from .constants import (
-    CONF_CONFIG_READ,
-    CONF_CONFIG_WRITE_CORE,
-    CONF_CONFIG_WRITE_PLAYER,
-    CONF_CONFIG_WRITE_PROVIDER,
-    CONF_CONFIG_WRITE_SECRET,
     CONF_CONNECT_EXTERNAL_URL,
-    CONF_CONTROL_MEDIA,
-    CONF_CONTROL_PLAYBACK,
-    CONF_CONTROL_PLAYERS,
-    CONF_CONTROL_VOLUME,
     CONF_DEBUG_EVENT_BUFFER_CAPACITY,
-    CONF_DEBUG_EVENTS,
-    CONF_DEBUG_INSPECT,
-    CONF_DEBUG_LOGS,
-    CONF_DEBUG_PROVIDERS,
-    CONF_DEBUG_RELOAD,
-    CONF_DELETE_FAVORITES,
-    CONF_DELETE_LIBRARY,
-    CONF_DELETE_PLAYLISTS,
-    CONF_DELETE_QUEUE,
-    CONF_EDIT_FAVORITES,
-    CONF_EDIT_LIBRARY,
-    CONF_EDIT_PLAYLISTS,
-    CONF_EDIT_QUEUE,
+    CONF_DEFAULT_POLICY,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
+    CONF_MANUAL_TOKEN_IDS,
     CONF_MOUNT_PATH,
-    CONF_QUERY_LIBRARY,
-    CONF_QUERY_METADATA,
-    CONF_QUERY_PLAYERS,
-    CONF_QUERY_QUEUE,
+    CONF_POLICY_TOKEN_SUFFIXES,
     CONF_REQUIRE_AUTH,
-    CONF_REQUIRE_CONFIRMATION,
     CONF_RES_LIBRARY,
     CONF_RES_PLAYER,
     CONF_RES_PROMPTS,
     CONF_TRUST_FORWARDED_PROTO,
     DEFAULT_MOUNT_PATH,
 )
+from .policy import PolicyMode, PolicyProfile
+from .policy_config import (
+    INHERIT_POLICY,
+    PolicyToken,
+    policy_mode_key,
+    token_policy_key,
+)
+from .policy_config import (
+    manual_token_ids as normalize_manual_token_ids,
+)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
-
     from music_assistant.mass import MusicAssistant
-
-
-def _bool(key: str, label: str, default: bool, category: str, description: str = "") -> ConfigEntry:
-    return ConfigEntry(
-        key=key,
-        type=ConfigEntryType.BOOLEAN,
-        label=label,
-        default_value=default,
-        category=category,
-        description=description or label,
-        required=False,
-    )
 
 
 def build_config_entries(
     mass: MusicAssistant,
-    values: dict[str, ConfigValueType],
+    mount_path: str,
+    *,
+    tokens: Iterable[Any] = (),
+    manual_token_ids: Iterable[str] = (),
+    stored_value_provider: Callable[[str], Any] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """
-    Return the full ConfigEntry schema for this provider.
-
-    :param mass: MusicAssistant instance, used to compose the info label.
-    :param values: Current config values (may be empty on first setup).
-    """
+    """Return endpoint, resource, prompt, and dynamic v2 policy entries."""
     base_url = mass.webserver.base_url.rstrip("/")
-    raw_mount = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
-    # Mirror ``MCPServerRuntime.__init__``'s normalisation so the info label
-    # always renders a valid URL even if the user dropped the leading slash.
-    mount_path = "/" + raw_mount.strip("/")
-    info_label = f"MCP endpoint: {base_url}{mount_path}\nCreate tokens in Profile → Long-lived access tokens."
-
-    return (
+    mount_path = "/" + mount_path.strip("/")
+    info_label = (
+        f"MCP endpoint: {base_url}{mount_path}\n"
+        "Create tokens in Profile → Long-lived access tokens."
+    )
+    entries: list[ConfigEntry] = [
         ConfigEntry(
             key="info_label",
             type=ConfigEntryType.LABEL,
@@ -110,13 +82,6 @@ def build_config_entries(
             default_value=DEFAULT_MOUNT_PATH,
             category="server",
             advanced=True,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_REQUIRE_CONFIRMATION,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            category="server",
             required=False,
         ),
         ConfigEntry(
@@ -151,241 +116,116 @@ def build_config_entries(
             advanced=True,
             required=False,
         ),
-        # Query permissions
-        _bool(
-            CONF_QUERY_LIBRARY,
-            "Query library",
-            True,
-            "query_permissions",
-            "Search music, browse library, get artists/albums/tracks/playlists.",
-        ),
-        _bool(
-            CONF_QUERY_QUEUE,
-            "Query queue",
-            True,
-            "query_permissions",
-            "Read the current queue state for any player.",
-        ),
-        _bool(
-            CONF_QUERY_PLAYERS,
-            "Query players",
-            True,
-            "query_permissions",
-            "List players and read their state and capabilities.",
-        ),
-        _bool(
-            CONF_QUERY_METADATA,
-            "Query metadata",
-            True,
-            "query_permissions",
-            "Get lyrics, recommendations, and similar tracks.",
-        ),
-        # Control permissions
-        _bool(
-            CONF_CONTROL_PLAYBACK,
-            "Control playback",
-            False,
-            "control_permissions",
-            "Play, pause, stop, seek, next/previous, play media.",
-        ),
-        _bool(
-            CONF_CONTROL_VOLUME,
-            "Control volume",
-            False,
-            "control_permissions",
-            "Set volume, volume up/down, mute, group volume.",
-        ),
-        _bool(
-            CONF_CONTROL_PLAYERS,
-            "Control players",
-            False,
-            "control_permissions",
-            "Power players on/off, select source.",
-        ),
-        _bool(
-            CONF_CONTROL_MEDIA,
-            "Play announcements / mark played",
-            False,
-            "control_permissions",
-            "Send TTS announcements, mark items as played.",
-        ),
-        # Edit permissions
-        _bool(
-            CONF_EDIT_LIBRARY,
-            "Add items to library",
-            False,
-            "edit_permissions",
-            "Add tracks, albums, artists, or playlists to the library.",
-        ),
-        _bool(
-            CONF_EDIT_QUEUE,
-            "Edit queue",
-            False,
-            "edit_permissions",
-            "Move queue items, save queue as playlist.",
-        ),
-        _bool(
-            CONF_EDIT_PLAYLISTS,
-            "Create / modify playlists",
-            False,
-            "edit_permissions",
-            "Create playlists, add tracks, reorder.",
-        ),
-        _bool(
-            CONF_EDIT_FAVORITES,
-            "Add to favorites",
-            False,
-            "edit_permissions",
-            "Mark items as favorites.",
-        ),
-        # Delete permissions
-        _bool(
-            CONF_DELETE_LIBRARY,
-            "Remove items from library",
-            False,
-            "delete_permissions",
-            "Remove tracks, albums, artists, or playlists from the library.",
-        ),
-        _bool(
-            CONF_DELETE_QUEUE,
-            "Clear queue / remove items",
-            False,
-            "delete_permissions",
-            "Remove queue items or clear the queue.",
-        ),
-        _bool(
-            CONF_DELETE_PLAYLISTS,
-            "Delete playlists / remove tracks",
-            False,
-            "delete_permissions",
-            "Delete playlists, remove tracks from playlists.",
-        ),
-        _bool(
-            CONF_DELETE_FAVORITES,
-            "Remove from favorites",
-            False,
-            "delete_permissions",
-            "Remove items from favorites.",
-        ),
-        # Resources / prompts
-        _bool(
-            CONF_RES_LIBRARY,
-            "Expose library:// resources",
-            True,
-            "mcp_resources",
-            "URI-addressable read-only views of artists, albums, tracks, playlists.",
-        ),
-        _bool(
-            CONF_RES_PLAYER,
-            "Expose player:// and queue:// resources",
-            True,
-            "mcp_resources",
-            "URI-addressable views of players and queues.",
-        ),
-        _bool(
-            CONF_RES_PROMPTS,
-            "Expose canned prompts",
-            True,
-            "mcp_resources",
-            "Pre-defined prompts: find_and_play, party_playlist, now_playing_summary.",
-        ),
-        # Debug namespace — all off-by-default. See specs/inprogress/0005-debug-namespace.md.
-        _bool(
-            CONF_DEBUG_INSPECT,
-            "Debug: inspect raw player/queue/provider state",
-            False,
-            "debug",
-            "Exposes raw runtime state of players, queues, and providers via MCP. "
-            "Intended for development and troubleshooting. Disable in production.",
-        ),
-        _bool(
-            CONF_DEBUG_LOGS,
-            "Debug: tail musicassistant.log",
-            False,
-            "debug",
-            "Allows MCP clients to read the tail of MA's log file with filters. "
-            "Common token patterns are redacted. Intended for troubleshooting. "
-            "Disable in production.",
-        ),
-        _bool(
-            CONF_DEBUG_EVENTS,
-            "Debug: read recent MA events",
-            False,
-            "debug",
-            "Subscribes to MA's event bus at provider startup and exposes a "
-            "ring buffer over MCP. Memory cost is bounded by the buffer "
-            "capacity. Intended for troubleshooting. Disable in production.",
-        ),
-        _bool(
-            CONF_DEBUG_PROVIDERS,
-            "Debug: inspect configured providers",
-            False,
-            "debug",
-            "Exposes provider state, masked configuration, registered "
-            "webserver routes, installed package versions, and a health "
-            "summary roll-up. Intended for troubleshooting. Disable in "
-            "production.",
-        ),
-        _bool(
-            CONF_DEBUG_RELOAD,
-            "Debug: reload a provider instance",
-            False,
-            "debug",
-            "Allows MCP clients to unload and reload provider instances, "
-            "INTERRUPTING ANY ACTIVE STREAMS on the affected provider. "
-            "Each call requires elicitation confirmation. Intended for "
-            "provider-development iteration. Disable in production.",
-        ),
+        _policy_selector(CONF_DEFAULT_POLICY, None, allow_inherit=False),
         ConfigEntry(
-            key=CONF_DEBUG_EVENT_BUFFER_CAPACITY,
-            type=ConfigEntryType.INTEGER,
-            default_value=500,
-            range=(50, 5000),
-            category="debug",
+            key=CONF_POLICY_TOKEN_SUFFIXES,
+            type=ConfigEntryType.STRING,
+            default_value=[],
+            multi_value=True,
+            hidden=True,
+            category="policy",
             required=False,
+            value=(
+                stored_value_provider(CONF_POLICY_TOKEN_SUFFIXES)
+                if stored_value_provider is not None
+                else None
+            ),
         ),
-        # Config namespace — all off-by-default. See specs/inprogress/0006-config-read-write.md.
-        _bool(
-            CONF_CONFIG_READ,
-            "Config: read core/provider/player settings",
-            False,
-            "mcp_config",
-            "Exposes read access to MA core, provider, and player configuration "
-            "over MCP (secrets stay masked). Disable in production unless needed.",
-        ),
-        _bool(
-            CONF_CONFIG_WRITE_PROVIDER,
-            "Config: edit provider settings",
-            False,
-            "mcp_config",
-            "Allows MCP clients to change provider configuration and trigger "
-            "provider config actions. Changes may reload the provider and "
-            "interrupt its streams. Disable in production.",
-        ),
-        _bool(
-            CONF_CONFIG_WRITE_CORE,
-            "Config: edit core settings",
-            False,
-            "mcp_config",
-            "Allows MCP clients to change MA core controller configuration "
-            "(webserver, streams, cache, ...). Core changes may RESTART "
-            "subsystems and interrupt ALL playback. Disable in production.",
-        ),
-        _bool(
-            CONF_CONFIG_WRITE_PLAYER,
-            "Config: edit player settings",
-            False,
-            "mcp_config",
-            "Allows MCP clients to change per-player configuration and DSP. Disable in production.",
-        ),
-        _bool(
-            CONF_CONFIG_WRITE_SECRET,
-            "Config: allow writing secret values",
-            False,
-            "mcp_config",
-            "Required IN ADDITION to a category write flag before any "
-            "SECURE_STRING (password/token) value can be written. With this "
-            "off, secret writes are rejected while non-secret edits still "
-            "work. Keep off unless deliberately rotating credentials.",
-        ),
+    ]
+    entries.extend(_custom_matrix(CONF_DEFAULT_POLICY))
+    entries.append(
+        ConfigEntry(
+            key=CONF_MANUAL_TOKEN_IDS,
+            type=ConfigEntryType.STRING,
+            default_value=[],
+            multi_value=True,
+            category="policy",
+            required=False,
+            advanced=True,
+        )
     )
+
+    rendered: dict[str, PolicyToken] = {}
+    for token in tokens:
+        token_id = str(getattr(token, "token_id", "")).strip()
+        if token_id:
+            rendered[token_id] = PolicyToken(token_id, str(getattr(token, "name", token_id)))
+    for token_id in normalize_manual_token_ids(manual_token_ids):
+        rendered.setdefault(token_id, PolicyToken(token_id, f"Manual MCP token ·{token_id[-8:]}"))
+    for token in sorted(rendered.values(), key=lambda value: (value.name, value.token_id)):
+        selector = token_policy_key(token.token_id)
+        selector_entry = _policy_selector(selector, token.name, allow_inherit=True)
+        if stored_value_provider is not None:
+            selector_entry.value = stored_value_provider(selector)
+        entries.append(selector_entry)
+        matrix = _custom_matrix(selector, token.token_id)
+        if stored_value_provider is not None:
+            for entry in matrix:
+                entry.value = stored_value_provider(entry.key)
+        entries.extend(matrix)
+
+    entries.extend(
+        (
+            _bool(CONF_RES_LIBRARY, True, "mcp_resources"),
+            _bool(CONF_RES_PLAYER, True, "mcp_resources"),
+            _bool(CONF_RES_PROMPTS, True, "mcp_resources"),
+            ConfigEntry(
+                key=CONF_DEBUG_EVENT_BUFFER_CAPACITY,
+                type=ConfigEntryType.INTEGER,
+                default_value=500,
+                range=(50, 5000),
+                category="debug",
+                required=False,
+            ),
+        )
+    )
+    return tuple(entries)
+
+
+def _bool(key: str, default: bool, category: str) -> ConfigEntry:
+    """Build one optional boolean provider entry."""
+    return ConfigEntry(
+        key=key,
+        type=ConfigEntryType.BOOLEAN,
+        default_value=default,
+        category=category,
+        required=False,
+    )
+
+
+def _policy_selector(key: str, label: str | None, *, allow_inherit: bool) -> ConfigEntry:
+    """Build one profile selector."""
+    values = ([INHERIT_POLICY] if allow_inherit else []) + [
+        profile.value for profile in PolicyProfile
+    ]
+    return ConfigEntry(
+        key=key,
+        type=ConfigEntryType.STRING,
+        default_value=INHERIT_POLICY if allow_inherit else PolicyProfile.SAFE_QUERIES.value,
+        options=[ConfigValueOption(value=value) for value in values],
+        translation_key="policy_token" if label is not None else None,
+        translation_params=[label] if label is not None else None,
+        category="policy",
+        required=False,
+    )
+
+
+def _custom_matrix(selector_key: str, token_id: str | None = None) -> list[ConfigEntry]:
+    """Build the conditional 26-capability Custom matrix for one selector."""
+    options = [ConfigValueOption(value=mode.value) for mode in PolicyMode]
+    return [
+        ConfigEntry(
+            key=policy_mode_key(capability, token_id),
+            type=ConfigEntryType.STRING,
+            default_value=PolicyMode.DENY.value,
+            options=options,
+            advanced=True,
+            depends_on=selector_key,
+            depends_on_value=PolicyProfile.CUSTOM.value,
+            translation_key="policy_capability",
+            translation_params=[str(capability)],
+            category="policy",
+            required=False,
+        )
+        for capability in Capability
+    ]

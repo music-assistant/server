@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.media_items import Album
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -53,9 +54,10 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     mass.cache = MagicMock()
-    # @use_cache on recommendations() awaits cache.get; return a miss so the
-    # wrapped method runs. cache.set is fire-and-forget via create_task (mocked).
+    # @use_cache on _get_inspired_recommendations() awaits cache.get_with_freshness; return a
+    # miss so the wrapped method runs. cache.set is fire-and-forget via create_task (mocked).
     mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.create_task = MagicMock()  # fire-and-forget; we assert it was called
     mass.get_provider = MagicMock(return_value=None)
 
@@ -65,7 +67,6 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass.music.tracks = MagicMock()
     mass.music.tracks.get = AsyncMock()
     mass.music.database = MagicMock()
-    mass.music.database.get_count_from_query = AsyncMock(return_value=0)
 
     # tasks controller (scheduled background jobs)
     mass.tasks = MagicMock()
@@ -94,7 +95,7 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass.streams.audio_analysis.iter_merged_audio_analysis_rows = MagicMock(
         side_effect=_iter_merged
     )
-    mass.streams.audio_analysis.get_coverage = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=0)
     return mass
 
 
@@ -146,6 +147,7 @@ def make_plugin(
         manifest.instance_id = "test-instance-id"
         manifest.domain = "sonic_similarity"
         config = MagicMock()
+        config.instance_id = "test-instance-id"
         config_values = {
             "log_level": "GLOBAL",
             "enable_clap_index": clap_enabled,
@@ -192,6 +194,7 @@ def make_track(
     name: str = "Test Track",
     artists: Iterable[str] = (),
     album_year: int | None = None,
+    genres: Iterable[str] = (),
 ) -> MagicMock:
     """
     Return a Track-like MagicMock with the attributes our code reads.
@@ -209,6 +212,8 @@ def make_track(
         with a ``.name`` attribute.
     :param album_year: When given, attaches an Album mock with this year;
         otherwise ``album`` is None.
+    :param genres: Iterable of genre names exposed via ``metadata.genres``;
+        empty leaves ``metadata.genres`` None (matching _track_genres' empty case).
     """
     track = MagicMock()
     track.item_id = item_id
@@ -216,11 +221,15 @@ def make_track(
     track.name = name
     track.artists = [_artist_mock(a) for a in artists]
     if album_year is not None:
-        album = MagicMock()
+        # spec=Album so the rerank's isinstance(track.album, Album) check passes.
+        album = MagicMock(spec=Album)
         album.year = album_year
         track.album = album
     else:
         track.album = None
+    metadata = MagicMock()
+    metadata.genres = list(genres) or None
+    track.metadata = metadata
     mapping = MagicMock()
     mapping.item_id = item_id
     mapping.provider_instance = provider
@@ -255,27 +264,42 @@ def make_analysis_row(
     provider: str = "spotify",
     clap_embedding: Any = None,
     aa_provider_domain: str = "sonic_analysis",
+    legacy_shape: bool = False,
 ) -> dict[str, Any]:
     """
     Build an audio_analysis DB row dict in the shape iter_audio_analysis_rows yields.
 
     :param item_id: Track id (matches a key in ``_signature_cache``).
     :param provider: Provider instance the row belongs to.
-    :param clap_embedding: Value stored under ``extra_data["clap_embedding"]``.
+    :param clap_embedding: Value stored under the ``clap_embedding`` field.
         Use a 1024-element list of floats for happy paths; pass None to
         simulate rows that lack an embedding.
     :param aa_provider_domain: Defaults to ``"sonic_analysis"``, the
         single AA-provider the plugin reads in tests.
+    :param legacy_shape: Nest ``clap_embedding`` under ``extra_data`` instead
+        of storing it at the top level, matching rows written before the
+        typed field existed.
     """
-    import json  # noqa: PLC0415
+    from music_assistant.controllers.streams.audio_analysis_codec import (  # noqa: PLC0415
+        encode,
+    )
+    from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
 
-    extra_data: dict[str, Any] = {}
-    if clap_embedding is not None:
-        extra_data["clap_embedding"] = clap_embedding
-    analysis_payload = {"extra_data": extra_data}
+    analysis_payload: dict[str, Any]
+    if legacy_shape:
+        extra_data: dict[str, Any] = {}
+        if clap_embedding is not None:
+            extra_data["clap_embedding"] = clap_embedding
+        analysis_payload = {"extra_data": extra_data}
+    else:
+        analysis_payload = {}
+        if clap_embedding is not None:
+            analysis_payload["clap_embedding"] = clap_embedding
+    header, payload = encode(AudioAnalysisData.from_dict(analysis_payload))
     return {
         "item_id": item_id,
         "provider": provider,
         "aa_provider_domain": aa_provider_domain,
-        "analysis_data": json.dumps(analysis_payload),
+        "header": header,
+        "payload": payload,
     }

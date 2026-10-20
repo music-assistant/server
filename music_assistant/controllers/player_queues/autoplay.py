@@ -1,10 +1,12 @@
 """
 Autoplay helper for the Player Queues controller.
 
-Autoplay keeps a queue playing once it runs out by appending a fresh batch of tracks.
-This helper resolves the configured Autoplay mode for a queue and produces the next
-batch of tracks for the library- and playlist-based modes. The similar-tracks (radio)
-modes reuse the controller's existing dynamic-radio machinery.
+Autoplay is the single "keep going" switch of a queue; what it appends depends on the media
+type of the item that is ending. Music continues with a fresh batch of tracks, a podcast
+episode or audiobook with its own successor, and a live source is left alone. This helper
+resolves the configured Autoplay mode for a queue and produces the next batch of tracks for
+the library- and playlist-based modes. The similar-tracks (radio) modes reuse the controller's
+existing dynamic-radio machinery.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from contextlib import suppress
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, SortField
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
@@ -36,6 +38,16 @@ AUTOPLAY_BATCH_SIZE = 25
 GENRE_SEED_ITEM_COUNT = 3
 # media types that carry a useful genre signal for the library mix
 GENRE_SEED_MEDIA_TYPES = (MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST)
+# media types that end on their own but have a natural successor of their own: Autoplay
+# continues these with the next episode/book instead of appending music
+AUTOPLAY_SERIES_MEDIA_TYPES = (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+# media types Autoplay does not apply to: a live source has no natural end (stopping it means
+# the source stopped, not that the queue ran out) and a sound effect is a one-off
+AUTOPLAY_EXCLUDED_MEDIA_TYPES = (
+    MediaType.RADIO,
+    MediaType.AUDIO_SOURCE,
+    MediaType.SOUND_EFFECT,
+)
 
 
 class AutoplayMode(StrEnum):
@@ -96,7 +108,8 @@ class Autoplay:
                 candidates += await self.mass.music.tracks.library_items(
                     genre=genre_ids,
                     limit=AUTOPLAY_BATCH_SIZE * 3,
-                    order_by="random_play_count",
+                    sort_field=SortField.RANDOM_PLAY_COUNT,
+                    summary=False,
                 )
         # top up with a whole-library random mix when the genre selection yields too few usable
         # tracks (gauge on the deduped result so unavailable/excluded matches don't mask a shortfall)
@@ -105,7 +118,8 @@ class Autoplay:
             with suppress(MusicAssistantError):
                 candidates += await self.mass.music.tracks.library_items(
                     limit=AUTOPLAY_BATCH_SIZE * 3,
-                    order_by="random_play_count",
+                    sort_field=SortField.RANDOM_PLAY_COUNT,
+                    summary=False,
                 )
             result = self._dedupe(candidates, exclude)
         return result

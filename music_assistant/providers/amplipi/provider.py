@@ -16,16 +16,21 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AMPLIPI_API_ERRORS,
     CONF_HOST,
+    CONF_MDNS_NAME,
     EXCLUDED_SELECTABLE_STREAM_TYPES,
     MA_STREAM_NAME,
     MA_STREAM_TYPE,
     POLL_INTERVAL,
 )
+from .mdns import controller_id, controller_matches_host
 from .player import AmpliPiZonePlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from pyamplipi.models import Status
     from pyamplipi.models import Stream as AmpliPiStream
+    from zeroconf import ServiceStateChange
+    from zeroconf.asyncio import AsyncServiceInfo
 
 
 def _ma_stream_source_id(stream: AmpliPiStream) -> int | None:
@@ -65,13 +70,17 @@ class AmpliPiPlayerProvider(PlayerProvider):
     # create duplicate streams, while different sources still proceed in parallel
     _stream_locks: dict[int, asyncio.Lock]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._players = {}
         self._ma_streams = {}
         self._streams = []
         self._stream_locks = {}
-        host = cast("str", self.config.get_value(CONF_HOST))
+        host = cast("str", self.get_setup_value(CONF_HOST))
         if host.startswith(("http://", "https://")):
             # a full URL is used as-is, but a schemed host with no path (e.g.
             # "https://amplipi.local") still needs the AmpliPi "/api" base appended
@@ -118,6 +127,17 @@ class AmpliPiPlayerProvider(PlayerProvider):
         # NOTE: we deliberately do not call api.close(): the AmpliPi client was created with
         # Music Assistant's shared http_session, and pyamplipi's close() would close that
         # session, tearing down networking for the rest of Music Assistant.
+
+    async def on_mdns_service_state_change(
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    ) -> None:
+        """Handle an AmpliPi controller announcing itself on mDNS."""
+        if info is None or self.get_setup_value(CONF_MDNS_NAME) is not None:
+            return
+        host = cast("str", self.get_setup_value(CONF_HOST))
+        if controller_matches_host(info, host):
+            self.logger.debug("Recording %s as the controller behind %s", name, host)
+            self._update_setup_data(CONF_MDNS_NAME, controller_id(info))
 
     async def ensure_stream(self, source_id: int, url: str) -> int:
         """

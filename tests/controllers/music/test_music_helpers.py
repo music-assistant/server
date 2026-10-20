@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from music_assistant_models.enums import MediaType
+from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import Artist, ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.controllers.music.helpers import sort_search_result
+from music_assistant.controllers.music.helpers import preferred_thumb, sort_search_result
 
 
 def _mapping(item_id: str, name: str, provider: str = "spotify") -> ItemMapping:
@@ -98,3 +101,54 @@ def test_all_items_preserved_with_matches_first() -> None:
     assert result[1] is streaming_match
     assert non_match in result
     assert len(result) == 3
+
+
+def _image(provider: str, image_type: str = "thumb", remote: bool = False) -> dict[str, Any]:
+    """Build a stored (raw) image of the given provider."""
+    return {
+        "type": image_type,
+        "path": f"{provider}-cover",
+        "provider": provider,
+        "remotely_accessible": remote,
+    }
+
+
+async def test_preferred_thumb_skips_the_artwork_of_a_hidden_source() -> None:
+    """A user is shown the artwork of their own source, not of one hidden from them."""
+    await set_global_cache_values({"available_providers": {"sonic_a", "sonic_b"}})
+    images = [_image("sonic_b"), _image("sonic_a")]
+    assert preferred_thumb(images, {"sonic_b"}) == _image("sonic_a")
+    assert preferred_thumb(images, {"sonic_a"}) == _image("sonic_b")
+
+
+async def test_preferred_thumb_keeps_a_remotely_accessible_image_of_a_hidden_source() -> None:
+    """A remotely accessible image needs no provider to resolve it, so it can be shown."""
+    await set_global_cache_values({"available_providers": {"sonic_a", "sonic_b"}})
+    remote = _image("sonic_b", remote=True)
+    assert preferred_thumb([remote, _image("sonic_a")], {"sonic_b"}) == remote
+
+
+async def test_preferred_thumb_skips_the_artwork_of_an_unloaded_provider() -> None:
+    """Artwork of a provider that is not loaded can not be resolved, so it is passed over."""
+    await set_global_cache_values({"available_providers": {"sonic_a"}})
+    images = [_image("sonic_b"), _image("sonic_a")]
+    assert preferred_thumb(images, set()) == _image("sonic_a")
+
+
+def test_preferred_thumb_treats_every_provider_as_loaded_without_a_cache() -> None:
+    """Without the providers cache every provider counts as loaded, like MediaItem.available."""
+    images = [_image("sonic_b"), _image("sonic_a")]
+    assert preferred_thumb(images, set()) == _image("sonic_b")
+    assert preferred_thumb(images, {"sonic_b"}) == _image("sonic_a")
+
+
+def test_preferred_thumb_falls_back_to_the_first_thumb() -> None:
+    """With no thumb the viewer can be shown, the first thumb is returned."""
+    images = [_image("sonic_b", image_type="fanart"), _image("sonic_b"), _image("sonic_c")]
+    assert preferred_thumb(images, {"sonic_b", "sonic_c"}) == _image("sonic_b")
+
+
+def test_preferred_thumb_without_thumbs() -> None:
+    """Images without any thumb (or no images at all) yield no thumb."""
+    assert preferred_thumb([_image("sonic_a", image_type="fanart")], set()) is None
+    assert preferred_thumb(None, set()) is None

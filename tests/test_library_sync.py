@@ -8,8 +8,16 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import EventType, MediaType, ProviderType
-from music_assistant_models.errors import InsufficientPermissions
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import (
+    EventType,
+    MediaType,
+    ProviderSharing,
+    ProviderType,
+)
+from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
+from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_BACK
@@ -22,6 +30,7 @@ from music_assistant.models.music_provider import (
     CACHE_CATEGORY_PREV_LIBRARY_IDS,
     MusicProvider,
 )
+from tests.common import set_music_source_access
 
 # --- Helpers ---
 
@@ -57,7 +66,7 @@ def create_mock_album(
     provider_mappings: list[ProviderMapping] | None = None,
     provider: str = "library",
     name: str = "Test Album",
-    favorite: bool = False,
+    favorite: bool | None = None,
 ) -> Mock:
     """
     Create a mock Album media item.
@@ -66,7 +75,7 @@ def create_mock_album(
     :param provider_mappings: The provider mappings to set.
     :param provider: The provider string (e.g. 'library', 'spotify').
     :param name: The album name.
-    :param favorite: Whether the item is favorited.
+    :param favorite: The favorite state the source reports, None for none.
     """
     album = Mock(spec=Album)
     album.item_id = item_id
@@ -75,6 +84,7 @@ def create_mock_album(
     album.media_type = MediaType.ALBUM
     album.favorite = favorite
     album.provider_mappings = UniqueList(provider_mappings or [])
+    album.metadata = Mock(images=None)
     return album
 
 
@@ -82,6 +92,23 @@ def create_mock_album(
 async def _noop_deferred_commit() -> AsyncGenerator[None]:
     """Stand-in for DatabaseConnection.deferred_commit on mocked databases."""
     yield
+
+
+def _answer_lookups_with(mass: Mock, provider_mock: Mock) -> None:
+    """
+    Let the registry answer every lookup with this provider, as the instance asked for.
+
+    A library write resolves the exact instance instead of widening to a sibling account,
+    so a provider mock needs to carry the instance_id of the mapping being written and to
+    say it is available.
+    """
+    provider_mock.available = True
+
+    def _get_provider(instance_id: str, **_kwargs: object) -> Mock:
+        provider_mock.instance_id = instance_id
+        return provider_mock
+
+    mass.get_provider.side_effect = _get_provider
 
 
 # --- Group 1: Optimistic in_library on add ---
@@ -109,6 +136,7 @@ async def test_add_item_to_library_sets_in_library_true() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     mass.get_provider.return_value = provider_mock
     mass.metadata = AsyncMock()
 
@@ -142,6 +170,7 @@ async def test_add_item_to_library_sets_in_library_even_when_sync_back_disabled(
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     mass.get_provider.return_value = provider_mock
     mass.metadata = AsyncMock()
 
@@ -174,6 +203,7 @@ async def test_add_item_to_library_sets_in_library_even_when_edit_not_supported(
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
+    music_ctrl.genres = AsyncMock()
     mass.get_provider.return_value = provider_mock
     mass.metadata = AsyncMock()
 
@@ -213,7 +243,8 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    music_ctrl.genres = AsyncMock()
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -222,7 +253,7 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
     ):
         await music_ctrl.add_item_to_library(album)
 
-    provider_mock.import_album_tracks.assert_called_once_with("album_xyz", album.name)
+    provider_mock.import_album_tracks.assert_called_once_with("album_xyz", album)
     mass.create_task.assert_called_once_with(sentinel)
 
 
@@ -245,7 +276,8 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    music_ctrl.genres = AsyncMock()
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -293,7 +325,8 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    music_ctrl.genres = AsyncMock()
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -302,7 +335,7 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
     ):
         await music_ctrl.add_item_to_library(input_album)
 
-    provider_mock.import_album_tracks.assert_called_once_with("album_xyz", library_album.name)
+    provider_mock.import_album_tracks.assert_called_once_with("album_xyz", library_album)
     mass.create_task.assert_called_once_with(sentinel)
 
 
@@ -333,6 +366,7 @@ async def test_refresh_item_preserves_in_library_state() -> None:
     # use TRACK media_type for the returned library_item to skip album-tracks branch
     returned_item = Mock()
     returned_item.media_type = MediaType.TRACK
+    returned_item.provider_mappings = set()
 
     ctrl_mock = AsyncMock()
     ctrl_mock.get_provider_item = AsyncMock(return_value=fresh_item)
@@ -342,6 +376,7 @@ async def test_refresh_item_preserves_in_library_state() -> None:
     mass = Mock()
     mass.get_provider.return_value = Mock()
     mass.metadata = AsyncMock()
+    mass.cache.delete = AsyncMock()
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -376,6 +411,7 @@ async def test_refresh_item_preserves_in_library_false() -> None:
 
     returned_item = Mock()
     returned_item.media_type = MediaType.TRACK
+    returned_item.provider_mappings = set()
 
     ctrl_mock = AsyncMock()
     ctrl_mock.get_provider_item = AsyncMock(return_value=fresh_item)
@@ -385,6 +421,7 @@ async def test_refresh_item_preserves_in_library_false() -> None:
     mass = Mock()
     mass.get_provider.return_value = Mock()
     mass.metadata = AsyncMock()
+    mass.cache.delete = AsyncMock()
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -419,6 +456,7 @@ async def test_refresh_item_respects_provider_set_in_library() -> None:
 
     returned_item = Mock()
     returned_item.media_type = MediaType.TRACK
+    returned_item.provider_mappings = set()
 
     ctrl_mock = AsyncMock()
     ctrl_mock.get_provider_item = AsyncMock(return_value=fresh_item)
@@ -428,6 +466,7 @@ async def test_refresh_item_respects_provider_set_in_library() -> None:
     mass = Mock()
     mass.get_provider.return_value = Mock()
     mass.metadata = AsyncMock()
+    mass.cache.delete = AsyncMock()
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -459,6 +498,7 @@ async def test_refresh_item_non_library_item_skips_update() -> None:
 
     mass = Mock()
     mass.get_provider.return_value = Mock()
+    mass.cache.delete = AsyncMock()
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -677,25 +717,24 @@ def _create_controller_for_filter_tests() -> Mock:
     ctrl.media_type = MediaType.ALBUM
     ctrl.db_table = "albums"
     ctrl._apply_filters = MediaControllerBase._apply_filters.__get__(ctrl)
+    ctrl._provider_filter_clause = MediaControllerBase._provider_filter_clause.__get__(ctrl)
     return ctrl
 
 
 async def test_apply_filters_in_library_only_without_provider_filter() -> None:
     """
-    Test that in_library_only adds a JOIN on provider_mappings with in_library=1.
+    Test that in_library_only adds an EXISTS filter on provider_mappings with in_library=1.
 
-    When no provider_filter is set but in_library_only=True, a JOIN on
+    When no provider_filter is set but in_library_only=True, an EXISTS subquery on
     provider_mappings should be added with the in_library=1 condition.
     """
     ctrl = _create_controller_for_filter_tests()
     query_parts: list[str] = []
     query_params: dict[str, object] = {}
-    join_parts: list[str] = []
 
     ctrl._apply_filters(
         query_parts=query_parts,
         query_params=query_params,
-        join_parts=join_parts,
         favorite=None,
         search=None,
         genre_ids=None,
@@ -703,27 +742,31 @@ async def test_apply_filters_in_library_only_without_provider_filter() -> None:
         in_library_only=True,
     )
 
-    assert len(join_parts) == 1
-    assert "provider_mappings.in_library = 1" in join_parts[0]
+    assert len(query_parts) == 1
     assert "provider_media_type" in query_params
+    # pin the exact clause: library_count() shares this builder
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND provider_mappings.in_library = 1)"
+    )
 
 
 async def test_apply_filters_in_library_only_with_provider_filter() -> None:
     """
-    Test that in_library_only with provider_filter adds both conditions to the JOIN.
+    Test that in_library_only with provider_filter adds both conditions to the EXISTS.
 
-    When both in_library_only=True and a provider_filter are set, the JOIN should
-    include both the provider condition and the in_library=1 condition.
+    When both in_library_only=True and a provider_filter are set, the EXISTS subquery
+    should include both the provider condition and the in_library=1 condition.
     """
     ctrl = _create_controller_for_filter_tests()
     query_parts: list[str] = []
     query_params: dict[str, object] = {}
-    join_parts: list[str] = []
 
     ctrl._apply_filters(
         query_parts=query_parts,
         query_params=query_params,
-        join_parts=join_parts,
         favorite=None,
         search=None,
         genre_ids=None,
@@ -731,28 +774,32 @@ async def test_apply_filters_in_library_only_with_provider_filter() -> None:
         in_library_only=True,
     )
 
-    assert len(join_parts) == 1
-    assert "provider_mappings.in_library = 1" in join_parts[0]
-    assert "provider_filter_0" in query_params
+    assert len(query_parts) == 1
     assert query_params["provider_filter_0"] == "spotify_1"
+    # pin the exact clause: library_count() shares this builder
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND provider_mappings.in_library = 1 "
+        "AND (provider_mappings.provider_instance = :provider_filter_0))"
+    )
 
 
 async def test_apply_filters_no_in_library_filter_by_default() -> None:
     """
-    Test that no provider_mappings JOIN is added when in_library_only is False.
+    Test that no provider_mappings filter is added when in_library_only is False.
 
-    Without a provider_filter or in_library_only flag, no JOIN on
+    Without a provider_filter or in_library_only flag, no filter on
     provider_mappings should be added.
     """
     ctrl = _create_controller_for_filter_tests()
     query_parts: list[str] = []
     query_params: dict[str, object] = {}
-    join_parts: list[str] = []
 
     ctrl._apply_filters(
         query_parts=query_parts,
         query_params=query_params,
-        join_parts=join_parts,
         favorite=None,
         search=None,
         genre_ids=None,
@@ -760,25 +807,23 @@ async def test_apply_filters_no_in_library_filter_by_default() -> None:
         in_library_only=False,
     )
 
-    assert len(join_parts) == 0
+    assert len(query_parts) == 0
 
 
 async def test_apply_filters_provider_filter_without_in_library() -> None:
     """
     Test that provider_filter without in_library_only omits the in_library clause.
 
-    When a provider_filter is set but in_library_only is False, the JOIN should
-    filter by provider but NOT include the in_library=1 condition.
+    When a provider_filter is set but in_library_only is False, the EXISTS subquery
+    should filter by provider but NOT include the in_library=1 condition.
     """
     ctrl = _create_controller_for_filter_tests()
     query_parts: list[str] = []
     query_params: dict[str, object] = {}
-    join_parts: list[str] = []
 
     ctrl._apply_filters(
         query_parts=query_parts,
         query_params=query_params,
-        join_parts=join_parts,
         favorite=None,
         search=None,
         genre_ids=None,
@@ -786,9 +831,15 @@ async def test_apply_filters_provider_filter_without_in_library() -> None:
         in_library_only=False,
     )
 
-    assert len(join_parts) == 1
-    assert "in_library" not in join_parts[0]
-    assert "provider_filter_0" in query_params
+    assert len(query_parts) == 1
+    assert query_params["provider_filter_0"] == "spotify_1"
+    # pin the exact clause: library_count() shares this builder
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND (provider_mappings.provider_instance = :provider_filter_0))"
+    )
 
 
 # --- Group 5: set_provider_mappings behavior ---
@@ -799,6 +850,7 @@ def mock_controller() -> Mock:
     """Create a mock MediaControllerBase for set_provider_mappings tests."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.media_type = MediaType.ALBUM
+    ctrl.logger = Mock()
     ctrl.mass = Mock()
     ctrl.mass.music.database.delete = AsyncMock()
     ctrl.mass.music.database.upsert_many = AsyncMock()
@@ -820,6 +872,34 @@ async def test_set_provider_mappings_overwrite_deletes_and_reinserts(
 
     mock_controller.mass.music.database.delete.assert_called_once()
     mock_controller.mass.music.database.upsert_many.assert_called_once()
+
+
+async def test_set_provider_mappings_overwrite_keeps_existing_when_empty(
+    mock_controller: Mock,
+) -> None:
+    """
+    Test that overwrite=True with no mappings leaves the existing mappings untouched.
+
+    :param mock_controller: Mock MediaControllerBase instance.
+    """
+    await mock_controller.set_provider_mappings(1, [], overwrite=True)
+
+    mock_controller.mass.music.database.delete.assert_not_called()
+    mock_controller.mass.music.database.upsert_many.assert_not_called()
+    mock_controller.logger.warning.assert_called_once()
+
+
+async def test_set_provider_mappings_no_mappings_is_noop(mock_controller: Mock) -> None:
+    """
+    Test that an empty mappings set without overwrite writes nothing.
+
+    :param mock_controller: Mock MediaControllerBase instance.
+    """
+    await mock_controller.set_provider_mappings(1, [], overwrite=False)
+
+    mock_controller.mass.music.database.delete.assert_not_called()
+    mock_controller.mass.music.database.upsert_many.assert_not_called()
+    mock_controller.logger.warning.assert_not_called()
 
 
 async def test_set_provider_mappings_upsert_preserves_null_in_library(
@@ -869,8 +949,10 @@ async def test_set_provider_mappings_upsert_writes_explicit_in_library(
 async def test_library_items_default_filters_in_library_only() -> None:
     """Test that library_items passes in_library_only=True by default."""
     ctrl = Mock(spec=MediaControllerBase)
+    ctrl.media_type = MediaType.TRACK
     ctrl._ensure_provider_filter = Mock(return_value=None)
     ctrl.get_library_items_by_query = AsyncMock(return_value=[])
+    ctrl.resolve_sort = MediaControllerBase.resolve_sort.__get__(ctrl)
     ctrl.library_items = MediaControllerBase.library_items.__get__(ctrl)
 
     await ctrl.library_items()
@@ -878,6 +960,37 @@ async def test_library_items_default_filters_in_library_only() -> None:
     ctrl.get_library_items_by_query.assert_called_once()
     call_kwargs = ctrl.get_library_items_by_query.call_args[1]
     assert call_kwargs["in_library_only"] is True
+
+
+async def test_library_items_defaults_to_summary() -> None:
+    """library_items defaults to summary=True so list endpoints return slim rows."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.media_type = MediaType.TRACK
+    ctrl._ensure_provider_filter = Mock(return_value=None)
+    ctrl.get_library_items_by_query = AsyncMock(return_value=[])
+    ctrl.resolve_sort = MediaControllerBase.resolve_sort.__get__(ctrl)
+    ctrl.library_items = MediaControllerBase.library_items.__get__(ctrl)
+
+    await ctrl.library_items()
+
+    call_kwargs = ctrl.get_library_items_by_query.call_args[1]
+    assert call_kwargs["summary"] is True
+
+
+SPOTIFY_USER = User(user_id="user-a", username="user-a", role=UserRole.USER)
+
+
+def _restrict_to_spotify(mass: Mock) -> None:
+    """Give the mocked server two private music sources, only one owned by SPOTIFY_USER."""
+    set_music_source_access(
+        mass,
+        {
+            "spotify_1": ProviderAccess(
+                owner=SPOTIFY_USER.user_id, sharing=ProviderSharing.PRIVATE
+            ),
+            "qobuz_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
 
 
 def test_ensure_provider_filter_keeps_plugin_provider_mappings() -> None:
@@ -888,11 +1001,12 @@ def test_ensure_provider_filter_keeps_plugin_provider_mappings() -> None:
         Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
         Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
     ]
+    _restrict_to_spotify(ctrl.mass)
     ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         result = ctrl._ensure_provider_filter(None)
 
@@ -909,12 +1023,13 @@ def test_ensure_provider_filter_rejects_unallowed_music_provider() -> None:
         Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
         Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
     ]
+    _restrict_to_spotify(ctrl.mass)
     ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
 
     with (
         patch(
             "music_assistant.controllers.music.media.base.get_current_user",
-            return_value=Mock(provider_filter=["spotify_1"]),
+            return_value=SPOTIFY_USER,
         ),
         pytest.raises(InsufficientPermissions),
     ):
@@ -929,19 +1044,20 @@ def test_ensure_provider_filter_allows_explicit_non_music_provider() -> None:
         Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
         Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
     ]
+    _restrict_to_spotify(ctrl.mass)
     ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         result = ctrl._ensure_provider_filter("smart_playlist_1")
 
     assert result == ["smart_playlist_1"]
 
 
-def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() -> None:
-    """Test that only plugin providers are auto-allowed when user filter is active."""
+def test_ensure_provider_filter_auto_allows_non_music_providers() -> None:
+    """Non-music providers (metadata, plugin) are household-wide and always kept."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
     ctrl.mass.providers = [
@@ -949,30 +1065,40 @@ def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() 
         Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
         Mock(instance_id="meta_1", type=ProviderType.METADATA),
     ]
+    _restrict_to_spotify(ctrl.mass)
     ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         result = ctrl._ensure_provider_filter(None)
 
     assert result is not None
     assert "spotify_1" in result
     assert "smart_playlist_1" in result
-    assert "meta_1" not in result
+    assert "meta_1" in result
+
+
+def _mock_provider_lookup(providers: dict[str, Mock]) -> Mock:
+    """Return a get_provider mock that resolves exact instances only, like the real one does."""
+    for instance_id, provider in providers.items():
+        provider.instance_id = instance_id
+        provider.available = True
+    return Mock(side_effect=lambda instance, **_kwargs: providers.get(instance))
 
 
 def test_select_provider_id_prefers_allowed_music_over_plugin() -> None:
     """Test that allowed music mappings are preferred over plugin mappings."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
-    ctrl.mass.get_provider = Mock(
-        side_effect=lambda instance: {
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {
             "smart_playlist_1": Mock(type=ProviderType.PLUGIN),
             "spotify_1": Mock(type=ProviderType.MUSIC),
-        }.get(instance)
+        }
     )
+    _restrict_to_spotify(ctrl.mass)
     ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
 
     item = create_mock_album(
@@ -992,7 +1118,7 @@ def test_select_provider_id_prefers_allowed_music_over_plugin() -> None:
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         provider_instance, provider_item = ctrl._select_provider_id(item)
 
@@ -1004,12 +1130,13 @@ def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None
     """Test that plugin mapping is selected if no allowed music mapping exists."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
-    ctrl.mass.get_provider = Mock(
-        side_effect=lambda instance: {
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {
             "smart_playlist_1": Mock(type=ProviderType.PLUGIN),
             "qobuz_1": Mock(type=ProviderType.MUSIC),
-        }.get(instance)
+        }
     )
+    _restrict_to_spotify(ctrl.mass)
     ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
 
     item = create_mock_album(
@@ -1029,12 +1156,157 @@ def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         provider_instance, provider_item = ctrl._select_provider_id(item)
 
     assert provider_instance == "smart_playlist_1"
     assert provider_item == "plugin_item"
+
+
+def test_select_provider_id_refuses_an_item_only_on_hidden_sources() -> None:
+    """A user with no mapping of their own can not reach the item at all."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = _mock_provider_lookup({"qobuz_1": Mock(type=ProviderType.MUSIC)})
+    _restrict_to_spotify(ctrl.mass)
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="qobuz_1",
+                provider_domain="qobuz",
+                item_id="music_item",
+            )
+        ]
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.music.media.base.get_current_user",
+            return_value=SPOTIFY_USER,
+        ),
+        pytest.raises(MediaNotFoundError) as err,
+    ):
+        ctrl._select_provider_id(item)
+
+    assert err.value.translation_key == "media_not_available_for_user"
+
+
+def test_select_provider_id_keeps_an_allowed_mapping_next_to_a_hidden_one() -> None:
+    """A restricted user still gets the mapping on their own music source."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {
+            "qobuz_1": Mock(type=ProviderType.MUSIC),
+            "spotify_1": Mock(type=ProviderType.MUSIC),
+        }
+    )
+    _restrict_to_spotify(ctrl.mass)
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="qobuz_1",
+                provider_domain="qobuz",
+                item_id="hidden_item",
+            ),
+            create_provider_mapping(
+                provider_instance="spotify_1",
+                provider_domain="spotify",
+                item_id="music_item",
+            ),
+        ]
+    )
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=SPOTIFY_USER,
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "spotify_1"
+    assert provider_item == "music_item"
+
+
+@pytest.fixture
+async def non_streaming_gpodder() -> AsyncGenerator[None]:
+    """Mark gpodder_1 as a non-streaming provider in the global cache for the test."""
+    previous = get_global_cache_value("non_streaming_providers")
+    await set_global_cache_values({"non_streaming_providers": {"gpodder_1"}})
+    yield
+    await set_global_cache_values({"non_streaming_providers": previous})
+
+
+@pytest.mark.usefixtures("non_streaming_gpodder")
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_select_provider_id_prefers_highest_priority_mapping(reverse: bool) -> None:
+    """The subscribed non-streaming source wins over a mapping added by provider matching."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    mappings = [
+        create_provider_mapping(
+            provider_instance="spotify_1",
+            provider_domain="spotify",
+            item_id="spotify_show",
+        ),
+        create_provider_mapping(
+            provider_instance="gpodder_1",
+            provider_domain="gpodder",
+            item_id="gpodder_feed",
+            in_library=True,
+        ),
+    ]
+    if reverse:
+        mappings.reverse()
+    item = create_mock_album(provider_mappings=mappings)
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=None,
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "gpodder_1"
+    assert provider_item == "gpodder_feed"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_select_provider_id_breaks_priority_ties_deterministically(reverse: bool) -> None:
+    """Mappings of equal priority resolve to the same mapping regardless of order."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    mappings = [
+        create_provider_mapping(
+            provider_instance="tidal_1",
+            provider_domain="tidal",
+            item_id="tidal_item",
+        ),
+        create_provider_mapping(
+            provider_instance="spotify_1",
+            provider_domain="spotify",
+            item_id="spotify_item",
+        ),
+    ]
+    if reverse:
+        mappings.reverse()
+    item = create_mock_album(provider_mappings=mappings)
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=None,
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "spotify_1"
+    assert provider_item == "spotify_item"
 
 
 async def test_get_library_item_does_not_filter_in_library() -> None:
@@ -1071,6 +1343,7 @@ async def test_update_item_in_library_skips_non_music_providers() -> None:
                     item_id="abc",
                 )
             ],
+            metadata=Mock(images=None),
         )
     )
 
@@ -1162,6 +1435,7 @@ async def test_provider_sync_suppresses_per_item_events() -> None:
     with (
         patch.object(MusicController, "active_sync_tasks", new_callable=PropertyMock) as tasks,
         patch.object(music_ctrl, "_queue_database_cleanup_task"),
+        patch.object(music_ctrl, "cleanup_library_shortcuts", Mock()),
     ):
         tasks.return_value = []
         await run_sync()
@@ -1173,3 +1447,75 @@ async def test_provider_sync_suppresses_per_item_events() -> None:
     assert SUPPRESS_MEDIA_ITEM_UPDATES.get() is False
     await ctrl.add_item_to_library(create_mock_album(provider="spotify"))
     assert events == [EventType.MUSIC_SYNC_COMPLETED, EventType.MEDIA_ITEM_ADDED]
+
+
+async def test_concurrent_add_rechecks_match_inside_lock() -> None:
+    """Concurrent adds create one row and update it with the second provider item."""
+    library_item = create_mock_album(provider="library")
+    library_item.uri = "library://album/1"
+    ctrl, _mass = _create_event_capture_controller(library_item, [])
+    both_initial_checks_complete = asyncio.Event()
+    initial_checks = 0
+    library_id: int | None = None
+
+    async def get_match(_item: Mock) -> int | None:
+        nonlocal initial_checks
+        if library_id is not None:
+            return library_id
+        initial_checks += 1
+        if initial_checks <= 2:
+            if initial_checks == 2:
+                both_initial_checks_complete.set()
+            await both_initial_checks_complete.wait()
+            return None
+        return library_id
+
+    async def add_item(_item: Mock) -> int:
+        nonlocal library_id
+        library_id = 1
+        return library_id
+
+    ctrl._get_library_item_by_match.side_effect = get_match
+    ctrl._add_library_item.side_effect = add_item
+
+    results = await asyncio.gather(
+        ctrl.add_item_to_library(create_mock_album(provider="spotify")),
+        ctrl.add_item_to_library(create_mock_album(provider="qobuz")),
+    )
+
+    assert len(results) == 2
+    assert all(result is library_item for result in results)
+    ctrl._add_library_item.assert_awaited_once()
+    ctrl._update_library_item.assert_awaited_once()
+
+
+def test_select_provider_id_never_substitutes_another_account_of_the_same_service() -> None:
+    """An allowed mapping whose instance is unavailable is not served by a sibling account."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {
+            "spotify_1": Mock(type=ProviderType.MUSIC),
+            "spotify_2": Mock(type=ProviderType.MUSIC),
+        }
+    )
+    ctrl.mass.get_provider("spotify_1").available = False
+    _restrict_to_spotify(ctrl.mass)
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="spotify_1", provider_domain="spotify", item_id="music_item"
+            ),
+        ]
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.music.media.base.get_current_user",
+            return_value=SPOTIFY_USER,
+        ),
+        pytest.raises(MediaNotFoundError),
+    ):
+        ctrl._select_provider_id(item)

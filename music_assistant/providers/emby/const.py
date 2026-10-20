@@ -1,7 +1,7 @@
 """Constants for Emby provider."""
 
 # Emby API item keys
-AUTH_ACCESS_TOKEN = "AccessToken"
+AUTH_ACCESS_TOKEN = "AccessToken"  # noqa: S105 - response field name
 AUTH_USER = "User"
 
 ITEMS = "Items"
@@ -14,6 +14,7 @@ ITEM_KEY_NAME = "Name"
 ITEM_KEY_ALBUM_ID = "AlbumId"
 ITEM_KEY_ALBUM_NAME = "Album"
 ITEM_KEY_ARTIST_ITEMS = "ArtistItems"
+ITEM_KEY_ALBUM_ARTISTS = "AlbumArtists"
 ITEM_KEY_IMAGE_TAGS = "ImageTags"
 ITEM_KEY_DATE_CREATED = "DateCreated"
 ITEM_KEY_PRODUCTION_YEAR = "ProductionYear"
@@ -27,6 +28,7 @@ ITEM_KEY_INDEX_NUMBER = "IndexNumber"
 ITEM_KEY_PARENT_INDEX_NUMBER = "ParentIndexNumber"
 ITEM_KEY_USER_DATA = "UserData"
 ITEM_KEY_PRIMARY_IMAGE_ITEM_ID = "PrimaryImageItemId"
+ITEM_KEY_PRIMARY_IMAGE_TAG = "PrimaryImageTag"
 ITEM_KEY_GENRES = "Genres"
 
 USER_DATA_KEY_IS_FAVORITE = "IsFavorite"
@@ -57,8 +59,11 @@ ALBUM_FIELDS = [
     "Name",
     "Artists",
     "ArtistItems",
+    "AlbumArtists",
     "Overview",
     "ImageTags",
+    "PrimaryImageItemId",
+    "PrimaryImageTag",
     "DateCreated",
     "ProductionYear",
     "Genres",

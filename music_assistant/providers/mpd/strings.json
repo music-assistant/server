@@ -11,5 +11,11 @@
   },
   "manifest": {
     "description": "Stream music from Music Assistant to any device running MPD (Music Player Daemon)."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to MPD",
+      "description": "Enter the password configured on this MPD server."
+    }
   }
 }

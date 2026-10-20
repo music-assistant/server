@@ -21,6 +21,7 @@ class TaskExecutionContext:
     update_progress: Callable[[str, int | None, str | None], None]
     update_progress_text: Callable[[str, str | None], None]
     add_failure: Callable[[str, str], None]
+    update_report: Callable[[str, str | None], None]
 
     @property
     def task(self) -> BackgroundTask:
@@ -44,6 +45,10 @@ class TaskExecutionContext:
     def record_failure(self, message: str) -> None:
         """Record a non-fatal failure for the current task."""
         self.add_failure(self.task_id, message)
+
+    def set_report(self, markdown: str | None) -> None:
+        """Set the Markdown report for the current task."""
+        self.update_report(self.task_id, markdown)
 
 
 ACTIVE_TASK_CONTEXT: ContextVar[TaskExecutionContext | None] = ContextVar(
@@ -104,3 +109,9 @@ def report_current_task_failure(message: str) -> None:
     """Record a non-fatal failure for the current async/thread context."""
     if task_context := get_current_task_context():
         task_context.record_failure(message)
+
+
+def set_current_task_report(markdown: str | None) -> None:
+    """Set the Markdown report for the current async/thread context."""
+    if task_context := get_current_task_context():
+        task_context.set_report(markdown)

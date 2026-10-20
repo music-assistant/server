@@ -9,6 +9,7 @@ and listens for player commands.
 
 import json
 import logging
+import os
 import socket
 import sys
 import threading
@@ -78,6 +79,9 @@ class MusicAssistantControl:
         logger.info("Shutdown requested by server")
         self.stop()
         self._shutdown_event.set()
+        # force exit; the main thread is blocked in sys.stdin.readline()
+        sys.stdout.flush()
+        os._exit(0)
 
     def handle_snapcast_request(self, request: dict[str, Any]) -> None:
         """Handle (JSON RPC) message from Snapcast."""
@@ -99,6 +103,7 @@ class MusicAssistantControl:
                     "id": id,
                 }
             )
+            return
 
         if cmd == "Control":
             command = request["params"]["command"]
@@ -138,10 +143,6 @@ class MusicAssistantControl:
                     queue_id=queue_id,
                     repeat_mode=LOOP_STATUS_MAP_REVERSE[value],
                 )
-            # if "volume" in properties:
-            #     self.send_request("core.mixer.set_volume", {"volume": int(properties["volume"])})
-            # if "mute" in properties:
-            #     self.send_request("core.mixer.set_mute", {"mute": properties["mute"]})
         elif cmd == "GetProperties":
 
             def handle_result(result: dict[str, Any]) -> None:
@@ -236,7 +237,7 @@ class MusicAssistantControl:
             logger.error(f"Invalid JSON: {e}")
             return
 
-        if data.get("command") == "shutdown":
+        if data.get("event") == "shutdown":
             self.shutdown()
             return
 
@@ -382,14 +383,25 @@ if __name__ == "__main__":
             line = sys.stdin.readline()
             if not line:  # EOF
                 break
+            request: Any = None
             try:
-                ctrl.handle_snapcast_request(json.loads(line))
-            except Exception as e:
+                request = json.loads(line)
+                ctrl.handle_snapcast_request(request)
+            except json.JSONDecodeError as e:
                 send(
                     {
                         "jsonrpc": "2.0",
                         "error": {"code": -32700, "message": "Parse error", "data": str(e)},
-                        "id": id,
+                        "id": None,
+                    }
+                )
+            except (KeyError, TypeError, AttributeError, ValueError) as e:
+                # malformed request (e.g. missing params), reply instead of dying
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32603, "message": "Internal error", "data": str(e)},
+                        "id": request.get("id") if isinstance(request, dict) else None,
                     }
                 )
     finally:

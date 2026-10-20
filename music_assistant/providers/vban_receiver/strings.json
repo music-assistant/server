@@ -41,6 +41,12 @@
       "description": "Log VBAN stream statistics when DEBUG/VERBOSE logging is enabled. Target numbers not being hit will result in audio glitches/dropouts and is indicative of a low power device unable to keep up with the incoming stream rate."
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Configure VBAN Receiver",
+      "description": "Enter the remote VBAN sender details, stream format and local receiver endpoint."
+    }
+  },
   "manifest": {
     "description": "VBAN protocol receiver - receive PCM-over-UDP streams from a VBAN protocol sender"
   },

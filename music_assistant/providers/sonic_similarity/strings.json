@@ -74,5 +74,8 @@
   },
   "manifest": {
     "description": "Powers library-wide Similar Tracks, radio mode, and a discover-page row using local audio signatures. Requires both sonic_analysis (perceptual scalars + CLAP embedding) and smart_fades (BPM + musical key) — vector assembly skips tracks missing either signal."
+  },
+  "errors": {
+    "clap_index_unavailable": "The Character index is not available; check the provider logs and reload the provider before rebuilding."
   }
 }

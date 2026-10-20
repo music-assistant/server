@@ -61,7 +61,7 @@ def test_returns_none_when_hash_drifts() -> None:
 
 
 def test_returns_none_when_cache_file_missing() -> None:
-    """Missing .npz → returns None and warns; the loader will fall back to the full text encoder."""
+    """Missing .npz → returns None and warns; _load_clap turns that into a setup failure."""
     p, fake_logger = _make_provider()
 
     with patch(

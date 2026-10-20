@@ -7,16 +7,17 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import ProviderMapping
+from music_assistant_models.media_items import Playlist, ProviderMapping
 from music_assistant_models.media_items import Track as MATrack
+from yandex_music import Track as YandexTrack
 
-from music_assistant.providers.yandex_music import (
-    _delete_wave_preset_action,
-    _save_wave_preset_action,
-)
+from music_assistant.providers.yandex_music.browse import _BrowseRouter
 from music_assistant.providers.yandex_music.constants import (
+    CONF_ACTION_DELETE_WAVE_PRESET,
+    CONF_ACTION_SAVE_WAVE_PRESET,
+    MY_WAVE_PLAYLIST_ID,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_WAVE,
 )
@@ -74,6 +75,40 @@ def test_wave_state_is_per_instance_isolated() -> None:
     assert b.settings == {}
 
 
+@pytest.mark.asyncio
+async def test_get_my_wave_playlist_is_dynamic() -> None:
+    """My Wave is dynamic so the queue requests fresh Rotor batches."""
+    provider = Mock(spec=YandexMusicProvider)
+    provider.instance_id = "yandex_music_instance"
+    provider.domain = "yandex_music"
+
+    playlist = await YandexMusicProvider.get_playlist(provider, MY_WAVE_PLAYLIST_ID)
+
+    assert playlist.is_dynamic is True
+
+
+@pytest.mark.asyncio
+async def test_browse_root_exposes_my_wave_as_playlist() -> None:
+    """Playing My Wave from Browse preserves the dynamic playlist as the queue source."""
+    provider = Mock(spec=YandexMusicProvider)
+    provider.instance_id = "yandex_music_instance"
+    provider.domain = "yandex_music"
+    provider.supported_features = {ProviderFeature.BROWSE}
+    provider._get_user_wave_presets = Mock(return_value=[])
+    my_wave = await YandexMusicProvider.get_playlist(
+        provider,
+        MY_WAVE_PLAYLIST_ID,
+    )
+    provider.get_playlist = AsyncMock(return_value=my_wave)
+
+    provider._browse_router = _BrowseRouter(provider)
+    items = await YandexMusicProvider.browse(provider, f"{provider.instance_id}://")
+
+    assert isinstance(items[0], Playlist)
+    assert items[0].is_dynamic is True
+    provider.get_playlist.assert_awaited_once_with(MY_WAVE_PLAYLIST_ID)
+
+
 # -- _fetch_rotor_session_batch (session-API helper) --------------------------
 
 
@@ -83,7 +118,7 @@ async def test_fetch_rotor_session_batch_starts_session_on_first_call() -> None:
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
     provider.client.rotor_session_new = AsyncMock(
-        return_value=("sess_1", ["track1", "track2"], "batch_a")
+        return_value=("sess_1", ["track1", "track2"], "batch_a", False)
     )
     provider.client.rotor_session_tracks = AsyncMock()
     wave = _WaveState()
@@ -105,7 +140,7 @@ async def test_fetch_rotor_session_batch_passes_wave_settings_to_session_new() -
     """Session creation forwards wave.settings (diversity/moodEnergy/language) as seeds."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=("s", [], "b"))
+    provider.client.rotor_session_new = AsyncMock(return_value=("s", [], "b", False))
     wave = _WaveState()
     wave.settings = {"diversity": "discover", "moodEnergy": "calm"}
 
@@ -121,7 +156,7 @@ async def test_fetch_rotor_session_batch_paginates_via_session_tracks_after_firs
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
     provider.client.rotor_session_new = AsyncMock()
-    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t3"], "batch_b"))
+    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t3"], "batch_b", False))
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.last_track_id = "42"
@@ -141,7 +176,7 @@ async def test_fetch_rotor_session_batch_returns_empty_when_session_new_fails() 
     """When session creation returns None session_id, wave is not mutated and result is empty."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=(None, [], None))
+    provider.client.rotor_session_new = AsyncMock(return_value=(None, [], None, False))
     wave = _WaveState()
 
     tracks, batch_id = await YandexMusicProvider._fetch_rotor_session_batch(
@@ -158,7 +193,7 @@ async def test_fetch_rotor_session_batch_works_with_track_seed_station() -> None
     """get_similar_tracks uses station 'track:{id}' — same session machinery."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=("s", ["t"], "b"))
+    provider.client.rotor_session_new = AsyncMock(return_value=("s", ["t"], "b", False))
     wave = _WaveState()
 
     await YandexMusicProvider._fetch_rotor_session_batch(provider, wave, "track:9999")
@@ -216,7 +251,7 @@ async def test_fetch_rotor_session_batch_resolves_wave_mode_preset_settings() ->
     """A station key like 'user:onyourwave#discover' translates to settingDiversity=discover."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=("sess_1", [], "batch_a"))
+    provider.client.rotor_session_new = AsyncMock(return_value=("sess_1", [], "batch_a", False))
     wave = _WaveState()
 
     await YandexMusicProvider._fetch_rotor_session_batch(
@@ -234,7 +269,7 @@ async def test_fetch_rotor_session_batch_preset_merges_with_explicit_wave_settin
     """Explicit wave.settings overrides preset settings on the same key."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=("s", [], "b"))
+    provider.client.rotor_session_new = AsyncMock(return_value=("s", [], "b", False))
     wave = _WaveState()
     wave.settings = {"diversity": "popular"}  # overrides preset
 
@@ -252,7 +287,7 @@ async def test_fetch_rotor_session_batch_unknown_preset_strips_suffix_no_setting
     """Unknown '#<x>' suffix is stripped from the station key and no extra settings are sent."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_new = AsyncMock(return_value=(None, [], None))
+    provider.client.rotor_session_new = AsyncMock(return_value=(None, [], None, False))
     wave = _WaveState()
 
     await YandexMusicProvider._fetch_rotor_session_batch(
@@ -274,7 +309,7 @@ async def test_prefetch_rotor_session_fills_prefetched_when_idle() -> None:
     """With an active session + cursor and no prefetched tracks, fills wave.prefetched."""
     provider = Mock(spec=YandexMusicProvider)
     provider.client = AsyncMock()
-    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t1", "t2"], "batch_b"))
+    provider.client.rotor_session_tracks = AsyncMock(return_value=(["t1", "t2"], "batch_b", False))
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.last_track_id = "42"
@@ -513,7 +548,27 @@ def test_get_user_wave_presets_drops_whitespace_only_values() -> None:
 # -- save / delete preset actions --------------------------------------------
 
 
-def test_save_wave_preset_action_appends_and_clears_draft() -> None:
+def _action_provider(values: dict[str, ConfigValueType]) -> Mock:
+    """
+    Build a provider stub whose config reads/writes go through *values*.
+
+    Mirrors how ``handle_config_action`` reads draft/preset fields via
+    ``get_config_value`` and persists results via ``_update_config_value``.
+    """
+    provider = Mock(spec=YandexMusicProvider)
+    provider.get_config_value = Mock(
+        side_effect=lambda key, default=None, **_kw: values.get(key, default)
+    )
+
+    def _update(key: str, value: ConfigValueType, **_kw: object) -> None:
+        values[key] = value
+
+    provider._update_config_value = Mock(side_effect=_update)
+    provider.get_config_entries = AsyncMock(return_value=())
+    return provider
+
+
+async def test_save_wave_preset_action_appends_and_clears_draft() -> None:
     """Save action writes the draft into JSON storage and clears draft fields."""
     values: dict[str, ConfigValueType] = {
         "wave_preset_draft_name": "Morning",
@@ -523,7 +578,9 @@ def test_save_wave_preset_action_appends_and_clears_draft() -> None:
         "wave_presets_data": "",
     }
 
-    _save_wave_preset_action(values)
+    await YandexMusicProvider.handle_config_action(
+        _action_provider(values), CONF_ACTION_SAVE_WAVE_PRESET
+    )
 
     stored_raw = values["wave_presets_data"]
     assert isinstance(stored_raw, str)
@@ -536,7 +593,7 @@ def test_save_wave_preset_action_appends_and_clears_draft() -> None:
     assert values["wave_preset_draft_language"] == ""
 
 
-def test_save_wave_preset_action_overwrites_same_name() -> None:
+async def test_save_wave_preset_action_overwrites_same_name() -> None:
     """Saving with an existing name replaces the prior entry — no duplicates."""
     values: dict[str, ConfigValueType] = {
         "wave_preset_draft_name": "Morning",
@@ -549,7 +606,9 @@ def test_save_wave_preset_action_overwrites_same_name() -> None:
         ),
     }
 
-    _save_wave_preset_action(values)
+    await YandexMusicProvider.handle_config_action(
+        _action_provider(values), CONF_ACTION_SAVE_WAVE_PRESET
+    )
 
     stored_raw = values["wave_presets_data"]
     assert isinstance(stored_raw, str)
@@ -559,7 +618,7 @@ def test_save_wave_preset_action_overwrites_same_name() -> None:
     assert morning == {"name": "Morning", "diversity": "favorite"}
 
 
-def test_save_wave_preset_action_rejects_blank_name() -> None:
+async def test_save_wave_preset_action_rejects_blank_name() -> None:
     """Save without a preset name raises InvalidDataError and changes nothing."""
     values: dict[str, ConfigValueType] = {
         "wave_preset_draft_name": "   ",
@@ -567,11 +626,13 @@ def test_save_wave_preset_action_rejects_blank_name() -> None:
     }
 
     with pytest.raises(InvalidDataError):
-        _save_wave_preset_action(values)
+        await YandexMusicProvider.handle_config_action(
+            _action_provider(values), CONF_ACTION_SAVE_WAVE_PRESET
+        )
     assert values["wave_presets_data"] == ""
 
 
-def test_delete_wave_preset_action_removes_by_name() -> None:
+async def test_delete_wave_preset_action_removes_by_name() -> None:
     """Delete action drops the selected preset and clears the selector."""
     values: dict[str, ConfigValueType] = {
         "wave_preset_to_delete": "Morning",
@@ -581,7 +642,9 @@ def test_delete_wave_preset_action_removes_by_name() -> None:
         ),
     }
 
-    _delete_wave_preset_action(values)
+    await YandexMusicProvider.handle_config_action(
+        _action_provider(values), CONF_ACTION_DELETE_WAVE_PRESET
+    )
 
     stored_raw = values["wave_presets_data"]
     assert isinstance(stored_raw, str)
@@ -589,7 +652,7 @@ def test_delete_wave_preset_action_removes_by_name() -> None:
     assert values["wave_preset_to_delete"] == ""
 
 
-def test_delete_wave_preset_action_requires_selection() -> None:
+async def test_delete_wave_preset_action_requires_selection() -> None:
     """No selection → InvalidDataError; storage untouched."""
     values: dict[str, ConfigValueType] = {
         "wave_preset_to_delete": "",
@@ -597,7 +660,9 @@ def test_delete_wave_preset_action_requires_selection() -> None:
     }
 
     with pytest.raises(InvalidDataError):
-        _delete_wave_preset_action(values)
+        await YandexMusicProvider.handle_config_action(
+            _action_provider(values), CONF_ACTION_DELETE_WAVE_PRESET
+        )
     assert values["wave_presets_data"] == '[{"name": "Keep"}]'
 
 
@@ -682,6 +747,7 @@ async def test_send_wave_feedback_uses_session_api_when_session_id_present() -> 
     wave = _WaveState()
     wave.session_id = "sess_1"
     wave.batch_id = "batch_a"
+    wave.remember_track_batch([YandexTrack(id=100)], "batch_a")
 
     result = await YandexMusicProvider._send_wave_feedback(
         provider, wave, "user:onyourwave", "trackStarted", track_id="100"
