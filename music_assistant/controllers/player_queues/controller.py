@@ -1292,6 +1292,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # clear() racing with the target's sync group formation/protocol switching
         if source_queue.state != PlaybackState.IDLE:
             await self.stop(source_queue_id)
+        # stop's own cleanup runs after the items move, so free the provider stream slots now
+        await self._cleanup_queue_audio_data(source_queue_id)
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
