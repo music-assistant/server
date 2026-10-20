@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 from unittest.mock import Mock
 
@@ -25,13 +26,19 @@ from .test_provider import STATION_ID, _provider, _tracks
 
 
 class _FakeCache:
-    """Stand-in for the cache controller, keyed like it: key, provider and category."""
+    """
+    Stand-in for the cache controller, keyed like it: key, provider and category.
+
+    Each call yields to the event loop first, as the real one does while it reaches its
+    database, so overlapping ratings can interleave here too.
+    """
 
     def __init__(self) -> None:
         self.data: dict[tuple[str, str, int], Any] = {}
         self.persistent: set[tuple[str, str, int]] = set()
 
     async def get(self, key: str, provider: str = "default", category: int = 0) -> Any:
+        await asyncio.sleep(0)
         return self.data.get((key, provider, category))
 
     async def set(
@@ -43,11 +50,13 @@ class _FakeCache:
         category: int = 0,
         persistent: bool = False,
     ) -> None:
+        await asyncio.sleep(0)
         self.data[(key, provider, category)] = data
         if persistent:
             self.persistent.add((key, provider, category))
 
     async def delete(self, key: str, category: int = 0, provider: str = "default") -> None:
+        await asyncio.sleep(0)
         self.data.pop((key, provider, category), None)
 
 
@@ -326,3 +335,93 @@ async def test_feedback_without_an_id_is_not_kept() -> None:
     assert _kept(provider, "TR:S1") is None
     assert isinstance(provider.logger, Mock)
     provider.logger.warning.assert_called_once()
+
+
+def _hold_answers(provider: PandoraProvider, url: str, count: int) -> list[asyncio.Event]:
+    """
+    Hold back Pandora's answer to the next `count` requests to `url` until each event is set.
+
+    The request itself goes through at once, so Pandora applies it in the order it was sent
+    while the provider waits for the answer, as with a slow response.
+    """
+    gates = [asyncio.Event() for _ in range(count)]
+    waiting = list(gates)
+    inner = provider._api_request
+
+    async def _api(
+        method: str, url_: str, data: dict[str, Any] | None = None, **kw: Any
+    ) -> dict[str, Any]:
+        result = await inner(method, url_, data, **kw)
+        if url_ == url and waiting:
+            await waiting.pop(0).wait()
+        return result
+
+    provider._api_request = _api  # type: ignore[method-assign, assignment]
+    return gates
+
+
+async def _settle() -> None:
+    """Let every started task run until it blocks."""
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+async def test_a_like_during_a_clear_keeps_its_feedback() -> None:
+    """
+    A like that lands while a clear waits on Pandora is kept once the clear finishes.
+
+    Clears run as background tasks, so a like can come in while one is still deleting.
+    """
+    provider, _sent, deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, True)
+    (delete_answer,) = _hold_answers(provider, DELETE_FEEDBACK_ENDPOINT, 1)
+    clear = asyncio.create_task(provider.set_favorite("TR:S1", MediaType.TRACK, None))
+    await _settle()
+    like = asyncio.create_task(provider.set_favorite("TR:S1", MediaType.TRACK, True))
+    await _settle()
+    delete_answer.set()
+    await asyncio.gather(clear, like)
+    assert deleted == [{"feedbackId": "fb-1", "isPositive": True}]
+    assert _kept(provider, "TR:S1") == [
+        {"feedbackId": "fb-2", "stationId": STATION_ID, "isPositive": True}
+    ]
+
+
+async def test_overlapping_thumbs_keep_the_last_one() -> None:
+    """
+    Dislike then like, with the dislike answered last: the like is kept, as on Pandora.
+
+    Pandora holds whichever thumb it received last, so that is the one a clear must delete.
+    """
+    provider, _sent, _deleted = _clearing_provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    (dislike_answer,) = _hold_answers(provider, ADD_FEEDBACK_ENDPOINT, 1)
+    dislike = asyncio.create_task(provider.set_favorite("TR:S1", MediaType.TRACK, False))
+    await _settle()
+    like = asyncio.create_task(provider.set_favorite("TR:S1", MediaType.TRACK, True))
+    await _settle()
+    dislike_answer.set()
+    await asyncio.gather(dislike, like)
+    assert _kept(provider, "TR:S1") == [
+        {"feedbackId": "fb-2", "stationId": STATION_ID, "isPositive": True}
+    ]
+
+
+async def test_overlapping_thumbs_on_two_stations_are_both_kept() -> None:
+    """Thumbs on two stations answered together each keep their id, so a clear finds both."""
+    provider, _sent, _deleted = _clearing_provider(_station_tracks("a"), _station_tracks("b"))
+    answers = _hold_answers(provider, ADD_FEEDBACK_ENDPOINT, 2)
+    await provider.get_dynamic_radio_tracks("station-a")
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    on_a = asyncio.create_task(provider.set_favorite("TR:S0", MediaType.TRACK, True))
+    await _settle()
+    await provider.get_dynamic_radio_tracks("station-b")
+    await provider.get_stream_details("TR:S0", MediaType.TRACK)
+    on_b = asyncio.create_task(provider.set_favorite("TR:S0", MediaType.TRACK, True))
+    await _settle()
+    for answer in answers:
+        answer.set()
+    await asyncio.gather(on_a, on_b)
+    kept = _kept(provider, "TR:S0")
+    assert sorted(entry["stationId"] for entry in kept) == ["a", "b"]

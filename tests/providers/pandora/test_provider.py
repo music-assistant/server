@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Self
 from unittest.mock import AsyncMock, Mock
@@ -70,6 +71,7 @@ def _provider(
     provider._sessions = {}
     provider._high_quality_available = False
     provider.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
+    provider._feedback_lock = asyncio.Lock()
     pending = list(payloads or [_tracks()])
     station_list = stations or []
 

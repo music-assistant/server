@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import TYPE_CHECKING, Any
@@ -102,6 +103,8 @@ class PandoraProvider(MusicProvider):
     _high_quality_available: bool = False
     # per instance: Pandora limits the account, and each instance logs in to its own
     throttler: ThrottlerManager
+    # held across a whole rating or clear, see set_favorite
+    _feedback_lock: asyncio.Lock
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -151,6 +154,7 @@ class PandoraProvider(MusicProvider):
         self._sessions = {}
         # every request takes a slot, the login included
         self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
+        self._feedback_lock = asyncio.Lock()
 
         # Authenticate with Pandora
         username = str(self.get_setup_value(CONF_USERNAME) or "")
@@ -332,8 +336,13 @@ class PandoraProvider(MusicProvider):
         """
         if media_type != MediaType.TRACK:
             return
+        # Ratings change one at a time: each reads the kept feedback, waits on Pandora and writes
+        # it back, so an overlapping one (MA runs dislikes and clears as background tasks) would
+        # overwrite what the other kept. The track is looked up before waiting, so a refusal
+        # never waits and the token is the one served when the user rated.
         if favorite is None:
-            await self._clear_feedback(prov_item_id)
+            async with self._feedback_lock:
+                await self._clear_feedback(prov_item_id)
             return
         # Pandora ties feedback to the trackToken it issued with a fragment, and that token
         # decides which station the feedback trains, so only a track still held in a retained
@@ -348,12 +357,13 @@ class PandoraProvider(MusicProvider):
             raise InvalidDataError(f"Pandora does not allow feedback on track {prov_item_id}")
         if not (token := track.get("trackToken")):
             raise InvalidDataError(f"Pandora served track {prov_item_id} without a trackToken")
-        result = await self._api_request(
-            "POST", ADD_FEEDBACK_ENDPOINT, data={"trackToken": token, "isPositive": favorite}
-        )
-        # Pandora removes feedback only by the id it answers with here, and by the time a
-        # rating is cleared the fragment that held the track is long gone, so keep the id
-        await self._remember_feedback(prov_item_id, result)
+        async with self._feedback_lock:
+            result = await self._api_request(
+                "POST", ADD_FEEDBACK_ENDPOINT, data={"trackToken": token, "isPositive": favorite}
+            )
+            # Pandora removes feedback only by the id it answers with here, and by the time a
+            # rating is cleared the fragment that held the track is long gone, so keep the id
+            await self._remember_feedback(prov_item_id, result)
 
     async def takeover_stream(self) -> None:
         """
