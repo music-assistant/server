@@ -1398,6 +1398,10 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         # belong to, and the words for classical and chamber music in other languages join
         await _move_more_classical_genre_aliases(database, logger)
 
+    if prev_version <= 69:
+        # apple music radio stations are dynamic radios instead of dynamic playlists
+        await _move_apple_music_stations_to_radios(database)
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active
@@ -1955,3 +1959,114 @@ async def _drop_audiobookshelf_image_tokens(database: DatabaseConnection) -> Non
                 await database.update(
                     table, {id_column: db_row[id_column]}, {column: serialize_to_json(value)}
                 )
+
+
+async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> None:
+    """Move the library playlists and plays of Apple Music radio stations to radios."""
+    copied_columns = (
+        "name",
+        "sort_name",
+        "metadata",
+        "play_count",
+        "last_played",
+        "timestamp_added",
+        "timestamp_modified",
+        "search_name",
+        "search_sort_name",
+    )
+    if (
+        {"media_type", "item_id", "provider_domain", "provider_item_id"}
+        <= await _table_columns(database, DB_TABLE_PROVIDER_MAPPINGS)
+        and set(copied_columns) <= await _table_columns(database, DB_TABLE_PLAYLISTS)
+        and {*copied_columns, "is_dynamic", "is_endless"}
+        <= await _table_columns(database, DB_TABLE_RADIOS)
+    ):
+        # (table, id column, scope) of every row that refers to a library item by its id
+        references = [
+            (table, id_column, scope)
+            for table, id_column, scope in (
+                (DB_TABLE_PROVIDER_MAPPINGS, "item_id", ""),
+                (DB_TABLE_FAVORITES, "item_id", ""),
+                (DB_TABLE_EXTERNAL_ID_LOOKUP, "item_id", ""),
+                (DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, "media_id", ""),
+                (DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, "media_id", ""),
+                (DB_TABLE_MEDIA_PROGRESS, "item_id", " AND provider = 'library'"),
+                (DB_TABLE_PLAY_HISTORY, "item_id", " AND provider = 'library'"),
+            )
+            if {"media_type", id_column, *(("provider",) if scope else ())}
+            <= await _table_columns(database, table)
+        ]
+        for row in await database.get_rows_from_query(
+            f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "WHERE media_type = 'playlist' AND provider_domain = 'apple_music' "
+            "AND provider_item_id GLOB 'ra.*'",
+            limit=0,
+        ):
+            playlist = await database.get_row(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
+            if playlist is None:
+                continue
+            values = {column: playlist[column] for column in copied_columns}
+            values["metadata"] = _station_radio_metadata(values["metadata"])
+            radio_id = await database.insert(
+                DB_TABLE_RADIOS,
+                {
+                    **{key: value for key, value in values.items() if value is not None},
+                    "is_dynamic": True,
+                    "is_endless": True,
+                },
+            )
+            for table, id_column, scope in references:
+                where = f"media_type = 'playlist' AND {id_column} = :old_id{scope}"
+                params = {"old_id": row["item_id"], "new_id": radio_id}
+                await database.execute(
+                    f"UPDATE OR IGNORE {table} SET media_type = 'radio', {id_column} = :new_id "
+                    f"WHERE {where}",
+                    params,
+                )
+                await database.execute(f"DELETE FROM {table} WHERE {where}", params)
+            await database.delete(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
+    # plays of a station outside the library are keyed by the station id
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        columns = await _table_columns(database, table)
+        if not {"media_type", "item_id", "provider"} <= columns:
+            continue
+        where = (
+            "media_type = 'playlist' AND item_id GLOB 'ra.*' "
+            "AND (provider = 'apple_music' OR provider GLOB 'apple_music--*')"
+        )
+        await database.execute(f"UPDATE OR IGNORE {table} SET media_type = 'radio' WHERE {where}")
+        await database.execute(f"DELETE FROM {table} WHERE {where}")
+        if "image" in columns:
+            await database.execute(
+                f"UPDATE {table} SET image = REPLACE(image, "
+                '\'"path":"playlist/ra.\', \'"path":"radio/ra.\') '
+                "WHERE media_type = 'radio' AND image GLOB '*\"path\":\"playlist/ra.*'"
+            )
+
+
+def _station_radio_metadata(metadata: Any) -> Any:
+    """Return station playlist metadata with its artwork tokens turned into radio tokens."""
+    try:
+        value = json_loads(metadata)
+    except ValueError:
+        return metadata
+    images = value.get("images") if isinstance(value, dict) else None
+    changed = False
+    for image in images if isinstance(images, list) else []:
+        if (
+            isinstance(image, dict)
+            and not image.get("remotely_accessible")
+            and isinstance(path := image.get("path"), str)
+            and path.startswith("playlist/ra.")
+        ):
+            image["path"] = f"radio/{path.removeprefix('playlist/')}"
+            changed = True
+    return serialize_to_json(value) if changed else metadata
+
+
+async def _table_columns(database: DatabaseConnection, table: str) -> set[str]:
+    """Return the column names of a table, empty when the table does not exist."""
+    return {
+        x["name"]
+        for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+    }

@@ -52,6 +52,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     RecommendationFolder,
     SearchResults,
     SoundEffect,
@@ -3127,6 +3128,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return SearchResults(audiobooks=[cast("Audiobook", item)])
         if media_type == MediaType.PODCAST:
             return SearchResults(podcasts=[cast("Podcast", item)])
+        if media_type == MediaType.RADIO:
+            return SearchResults(radio=[cast("Radio", item)])
         return SearchResults()
 
     async def _search_provider(
