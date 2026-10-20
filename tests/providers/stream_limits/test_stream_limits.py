@@ -25,6 +25,7 @@ from music_assistant.providers.radioparadise.provider import RadioParadiseProvid
 from music_assistant.providers.rain_mood import RainyMoodProvider
 from music_assistant.providers.somafm import SomaFMProvider
 from music_assistant.providers.sverigesradio import SverigesRadio
+from music_assistant.providers.tidal.provider import TidalProvider
 from music_assistant.providers.tunein import TuneInProvider
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
 
@@ -46,6 +47,7 @@ def _limit(provider_cls: type[MusicProvider]) -> int | None:
         (YoutubeMusicProvider, 3),
         (AppleMusicProvider, 1),
         (PandoraProvider, 1),
+        (TidalProvider, 1),
     ],
 )
 def test_provider_stream_limit_defaults_and_overrides(

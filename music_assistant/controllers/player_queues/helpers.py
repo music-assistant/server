@@ -5,17 +5,25 @@ from __future__ import annotations
 import functools
 import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard
 
-from music_assistant_models.media_items import MediaItemMetadata, Playlist, Radio, Track
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.enums import MediaType
+from music_assistant_models.media_items import (
+    ItemMapping,
+    MediaItemMetadata,
+    Playlist,
+    Radio,
+    Track,
+)
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
-from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
-from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
+from music_assistant.controllers.player_queues.constants import ArtistOrder
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
     from music_assistant_models.media_items import (
+        Album,
         BrowseFolder,
         MediaItemType,
         PlayableMediaItemType,
@@ -25,8 +33,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.models.player import Player
-
-_SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
 
 class CompareState(TypedDict):
@@ -74,15 +80,18 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     """
     Decorator for queue playback actions.
 
-    Acquires the shared playback lock for the queue's player (re-entrant)
-    and sets ATTR_PLAY_ACTION_IN_PROGRESS on the queue while the action runs.
+    Acquires the playback lock for the queue's player, preceded by that of the group
+    holding the player (both re-entrant), and sets ATTR_PLAY_ACTION_IN_PROGRESS on the
+    queue while the action runs. The locks are taken strictly: the action waits for a
+    running one to finish and fails with ResourceBusyError when that takes too long,
+    rather than run alongside it.
     Uses an internal refcount so nested actions don't clear the flag prematurely.
 
     :param func: The function to wrap.
     """  # noqa: D401
 
     @functools.wraps(func)
-    async def wrapper(self: PlayActionHostT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: PlayActionHostT, /, *args: P.args, **kwargs: P.kwargs) -> R:
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
@@ -90,7 +99,10 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
         if queue_data is None:
             return await func(self, *args, **kwargs)
         queue = queue_data.queue
-        async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
+        # a play action on the queue of a player captured by a (sync)group releases the
+        # player from it first, which takes the group's lock - so that one is taken before
+        # the player's own (see PlayerController.get_group_and_player_lock)
+        async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
             prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
             try:
                 queue_data.play_action_refcount += 1
@@ -118,6 +130,11 @@ def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist 
     return isinstance(item, Playlist | Radio) and item.is_dynamic
 
 
+def is_finite_radio(item: MediaItemType | BrowseFolder) -> TypeGuard[Radio]:
+    """Return True for a radio station with a fixed tracklist the queue plays out and ends."""
+    return isinstance(item, Radio) and not item.is_endless and not item.is_dynamic
+
+
 def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
     """
     Return the queue's most recently added dynamic source, if it has one.
@@ -138,7 +155,9 @@ def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
     return any(is_dynamic_source(item) for item in source_items)
 
 
-def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:
+def build_queue_item(
+    queue_id: str, media_item: PlayableMediaItemType, origin: QueueItemOrigin | None = None
+) -> QueueItem:
     """
     Build a QueueItem for enqueueing, keeping its media item slim.
 
@@ -149,8 +168,10 @@ def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueI
 
     :param queue_id: The id of the queue the item is created for.
     :param media_item: The source media item to enqueue.
+    :param origin: Where the item was played from, when it was played from a container.
     """
     queue_item = QueueItem.from_media_item(queue_id, media_item)
+    queue_item.origin = origin
     if isinstance(queue_item.media_item, Track):
         # the list-row artwork is already captured on QueueItem.image, so dropping the
         # track's metadata here does not lose anything the queue listing still needs
@@ -158,41 +179,68 @@ def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueI
     return queue_item
 
 
-def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
-    """Sort tracks by the given sort key."""
-    key_map: dict[str, tuple[Any, bool]] = {
-        "position_desc": (lambda t: getattr(t, "position", 0) or 0, True),
-        "name": (lambda t: (t.sort_name or t.name or "").lower(), False),
-        "artist": (
-            lambda t: (
-                (t.artists[0].sort_name or t.artists[0].name).lower()
-                if hasattr(t, "artists") and t.artists
-                else ""
-            ),
-            False,
-        ),
-        "album": (
-            lambda t: (
-                (t.album.sort_name or t.album.name).lower()
-                if hasattr(t, "album") and t.album
-                else ""
-            ),
-            False,
-        ),
-        "duration": (lambda t: getattr(t, "duration", 0) or 0, False),
-        "duration_desc": (lambda t: getattr(t, "duration", 0) or 0, True),
-        "track_number": (
-            lambda t: (
-                getattr(t, "disc_number", 0) or 0,
-                getattr(t, "track_number", 0) or 0,
-            ),
-            False,
-        ),
-    }
-    if sort_by in key_map:
-        key_fn, reverse = key_map[sort_by]
-        return sorted(tracks, key=key_fn, reverse=reverse)
-    return list(tracks)
+def origin_for(
+    container: MediaItemType, item: MediaItemType, *, pin: bool = True
+) -> QueueItemOrigin:
+    """
+    Return the origin of an item that was played from the given container.
+
+    The container is always recorded. The item is pinned to the copy the container listed
+    when asked to, except for a library item, whose listing names no copy, and for an entry
+    of a Music Assistant (builtin) playlist, which carries an arbitrary provider identity.
+
+    :param container: The album, playlist, artist, genre, podcast or station the item was
+        played from.
+    :param item: The item as the container listed it.
+    :param pin: Whether to pin the item to the listed copy.
+    """
+    pinned = pin and item.provider != "library" and not _is_builtin_playlist(container)
+    return QueueItemOrigin(
+        container=ItemMapping.from_item(container),
+        provider_instance=item.provider if pinned else None,
+        item_id=item.item_id if pinned else None,
+    )
+
+
+def played_from_album(queue_item: QueueItem) -> ItemMapping | None:
+    """
+    Return the album a queue item was played from, if it was played from one.
+
+    An item played from an album folder, or from a disc subfolder of one, was played from
+    that album.
+
+    :param queue_item: The queue item to check.
+    """
+    container = queue_item.origin.container if queue_item.origin else None
+    if container is None or container.media_type != MediaType.ALBUM:
+        return None
+    return container
+
+
+def album_release_order(album: Album) -> tuple[bool, int, str, str]:
+    """
+    Return the sort key for release order: oldest first, albums without a year last.
+
+    :param album: The album to sort.
+    """
+    return (
+        not album.year,
+        album.year or 0,
+        album.name.casefold(),
+        (album.version or "").casefold(),
+    )
+
+
+def order_albums(albums: list[Album], order: ArtistOrder) -> list[Album]:
+    """
+    Return the albums in the artist order: by release for the release order, else shuffled.
+
+    :param albums: The albums to order.
+    :param order: The artist order.
+    """
+    if order is ArtistOrder.ALBUMS_BY_RELEASE:
+        return sorted(albums, key=album_release_order)
+    return random.sample(albums, len(albums))
 
 
 def get_current_playback_speed(queue: PlayerQueue) -> float:
@@ -230,7 +278,7 @@ def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
     for items in groups:
         total = len(items)
         for offset, item in enumerate(items):
-            positioned.append(((offset + random.random()) / total, item))
+            positioned.append(((offset + random.random()) / total, item))  # noqa: S311 - shuffle order
     positioned.sort(key=lambda entry: entry[0])
     return [item for _, item in positioned]
 
@@ -269,3 +317,11 @@ def space_by_artist(artist_sets: list[set[str]], *, preceding: set[str] | None =
         if not changed:
             break
     return order
+
+
+def _is_builtin_playlist(item: MediaItemType) -> bool:
+    """Return True if the item is a playlist Music Assistant keeps itself."""
+    return isinstance(item, Playlist) and (
+        item.provider == "builtin"
+        or any(mapping.provider_domain == "builtin" for mapping in item.provider_mappings)
+    )

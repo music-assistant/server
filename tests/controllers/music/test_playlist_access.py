@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature, ProviderSharing
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -31,6 +32,11 @@ from music_assistant.constants import (
     HOMEASSISTANT_SYSTEM_USER,
 )
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
+from music_assistant.controllers.tasks.context import (
+    ACTIVE_TASK_CONTEXT,
+    TaskExecutionContext,
+    report_current_task_failure,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -59,6 +65,9 @@ async def playlists(
     )
     # the database-only server runs no cache database
     monkeypatch.setattr(music_mass_module.cache, "delete", AsyncMock())
+    # remove_item_from_library routes audio analysis cleanup through the AA controller
+    music_mass_module.streams = MagicMock()
+    music_mass_module.streams.audio_analysis.delete_audio_analysis = AsyncMock()
     return music_mass_module.music.playlists
 
 
@@ -206,13 +215,15 @@ async def test_get_and_tracks_hide_a_playlist_the_caller_may_not_see(
 
     with _as_user(OWNER):
         assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
-        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+        assert await playlists.tracks(builtin_id, "builtin") == []
+        assert [x async for x in playlists.iter_tracks(builtin_id, "builtin")] == []
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await playlists.get(added.item_id, "library")
-    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
-        _ = [x async for x in playlists.tracks(added.item_id, "library")]
-    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
-        _ = [x async for x in playlists.tracks(builtin_id, "builtin")]
+    for item_id, provider in ((added.item_id, "library"), (builtin_id, "builtin")):
+        with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+            await playlists.tracks(item_id, provider)
+        with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+            _ = [x async for x in playlists.iter_tracks(item_id, provider)]
 
 
 async def test_internal_callers_see_every_playlist(playlists: PlaylistController) -> None:
@@ -222,7 +233,7 @@ async def test_internal_callers_see_every_playlist(playlists: PlaylistController
 
     with _as_user(None):
         assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
-        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+        assert await playlists.tracks(builtin_id, "builtin") == []
         playlists.check_removal_allowed(added)
 
 
@@ -317,17 +328,17 @@ async def test_search_results_are_cached_per_user(
 async def test_favorite_removal_hides_hidden_playlists(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:
-    """The shared favorite flag of a playlist is only changed by someone who may see it."""
+    """The favorite of a playlist is only changed by someone who may see it."""
     added = await _add(playlists, _playlist("Favorite", PlaylistAccess(owner=OWNER.user_id)))
-    await playlists.set_favorite(added.item_id, True)
+    await playlists.set_favorite(added.item_id, True, [OWNER.user_id])
     remove = music_mass_module.music.remove_item_from_favorites
 
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await remove(MediaType.PLAYLIST, added.item_id)
-    assert (await playlists.get_library_item(added.item_id)).favorite is True
     with _as_user(OWNER):
+        assert (await playlists.get_library_item(added.item_id)).favorite is True
         await remove(MediaType.PLAYLIST, added.item_id)
-    assert (await playlists.get_library_item(added.item_id)).favorite is False
+        assert (await playlists.get_library_item(added.item_id)).favorite is None
 
 
 async def test_sync_lookups_stay_unfiltered(playlists: PlaylistController) -> None:
@@ -372,6 +383,30 @@ async def test_create_playlist_records_the_creator_as_owner(
         created = await playlists.create_playlist("Created", media_types=[MediaType.TRACK])
 
     assert created.access == expected
+
+
+@pytest.mark.parametrize("name", ["AC/DC Mix", "Rock... Mix", "Back\\slash"])
+async def test_create_playlist_accepts_path_characters_in_the_name(
+    playlists: PlaylistController, music_mass_module: MusicAssistant, name: str
+) -> None:
+    """A playlist name may contain slashes and dots; the provider receives it unchanged."""
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.name = "Music Assistant"
+    provider.supported_features = {
+        ProviderFeature.PLAYLIST_CREATE_TRACKS,
+        ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    }
+    provider.create_playlist = AsyncMock(return_value=_playlist(name))
+
+    with (
+        _as_user(None),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+    ):
+        await playlists.create_playlist(name, media_types=[MediaType.TRACK])
+
+    provider.create_playlist.assert_awaited_once_with(name, media_types={MediaType.TRACK})
 
 
 async def test_owner_shares_its_playlist(
@@ -762,6 +797,53 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
             await playlists._handle_add_playlist_tracks(target.item_id, [], "user-gone")
         with pytest.raises(InsufficientPermissions):
             await playlists._handle_add_playlist_tracks(target.item_id, [], GUEST.user_id)
+
+
+async def test_add_task_does_not_count_items_the_provider_skipped(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """Items the provider reports as skipped are not counted as added."""
+    target = await _add(playlists, _playlist("Partial add", PlaylistAccess(owner=MEMBER.user_id)))
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.available = True
+    provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
+    provider.get_playlist_tracks = AsyncMock(return_value=[])
+
+    async def add_tracks(_prov_playlist_id: str, uris: list[str]) -> None:
+        report_current_task_failure(f"Can't add {uris[-1]}")
+
+    provider.add_playlist_tracks = AsyncMock(side_effect=add_tracks)
+    task = BackgroundTask(name="add")
+    progress_texts: list[str | None] = []
+
+    def add_failure(_task_id: str, _message: str) -> None:
+        task.failure_count += 1
+
+    context = TaskExecutionContext(
+        task_id=task.id,
+        get_task=lambda _task_id: task,
+        update_progress=lambda _task_id, _progress, text: progress_texts.append(text),
+        update_progress_text=lambda _task_id, text: progress_texts.append(text),
+        add_failure=add_failure,
+        update_report=lambda _task_id, _markdown: None,
+    )
+    token = ACTIVE_TASK_CONTEXT.set(context)
+    try:
+        with (
+            patch.object(music_mass_module, "get_provider", return_value=provider),
+            patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+            patch.object(playlists, "_request_metadata_refresh", AsyncMock()),
+        ):
+            await playlists._handle_add_playlist_tracks(
+                target.item_id,
+                ["deezer://track/1", "deezer://track/2", "bandcamp://track/3"],
+                MEMBER.user_id,
+            )
+    finally:
+        ACTIVE_TASK_CONTEXT.reset(token)
+
+    assert progress_texts[-1] == "Added 2 item(s) to playlist"
 
 
 async def test_library_add_command_ignores_a_supplied_record(

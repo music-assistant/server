@@ -13,6 +13,30 @@
       "label": "Allow crossfade between tracks from the same album",
       "description": "Enabling this option allows for crossfading between tracks that are part of the same album."
     },
+    "stream_source_mode": {
+      "label": "Which source plays",
+      "description": "How Music Assistant picks the copy to play when a track is available from more than one source, such as your own files and a streaming service.",
+      "options": {
+        "best_quality": "Best quality",
+        "prefer_local": "Prefer local",
+        "best_quality_per_track": "Best quality for every track"
+      },
+      "option_descriptions": {
+        "best_quality": "Play the highest quality copy. An album plays all of its tracks from one source, and a playlist or folder plays from the source it comes from.",
+        "prefer_local": "Play from your local and self-hosted sources (files, Plex, Subsonic, ...) before streaming services, then pick the highest quality. An album plays all of its tracks from one source, and a playlist or folder plays from the source it comes from.",
+        "best_quality_per_track": "Pick the highest quality copy for every track on its own, even inside an album, playlist or folder."
+      }
+    },
+    "upgrade_below_quality": {
+      "label": "Upgrade copies below",
+      "description": "When the copy chosen by the setting above is below this quality, play a better copy if the track has one, and search your other streaming services once for a match.",
+      "options": {
+        "off": "Off",
+        "lossy_high": "High-bitrate lossy",
+        "lossless": "Lossless",
+        "hires": "Hi-res"
+      }
+    },
     "smart_fades_log_level": {
       "label": "Smart Fades Log level",
       "description": "Log level for the Smart Fades mixer and analyzer."
@@ -22,10 +46,26 @@
       "description": "This IP address is communicated to players where to find this server.\nThe default \"auto\" automatically selects the server's primary IP address at startup.\nSet an explicit IP address if the auto-detected one cannot be reached by players on the local network (for example when running in Docker with bridged networking), otherwise audio streaming will not work."
     },
     "volume_normalization_radio": {
-      "label": "Volume normalization method for radio streams"
+      "label": "Volume normalization method for radio streams",
+      "options": {
+        "disabled": "Disabled",
+        "dynamic": "Dynamic",
+        "measurement_only": "Measured loudness",
+        "fallback_fixed_gain": "Fallback fixed gain",
+        "fixed_gain": "Fixed gain",
+        "fallback_dynamic": "Fallback dynamic"
+      }
     },
     "volume_normalization_tracks": {
-      "label": "Volume normalization method for tracks"
+      "label": "Volume normalization method for tracks",
+      "options": {
+        "disabled": "Disabled",
+        "dynamic": "Dynamic",
+        "measurement_only": "Measured loudness",
+        "fallback_fixed_gain": "Fallback fixed gain",
+        "fixed_gain": "Fixed gain",
+        "fallback_dynamic": "Fallback dynamic"
+      }
     },
     "volume_normalization_fixed_gain_radio": {
       "label": "Fixed/fallback gain adjustment for radio streams"

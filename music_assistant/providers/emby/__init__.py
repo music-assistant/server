@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientError, ClientResponseError
 from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
@@ -19,15 +19,18 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderPermissionDenied,
 )
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    ItemMapping,
     MediaItemType,
     Playlist,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -65,8 +68,10 @@ if TYPE_CHECKING:
 
 from music_assistant.constants import (
     APPLICATION_NAME,
+    CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_IP_ADDRESS,
     CONF_PASSWORD,
+    CONF_PROVIDERS,
     CONF_USERNAME,
 )
 
@@ -158,6 +163,27 @@ class EmbyProvider(MusicProvider):
         """Return True if provider supports streaming."""
         return False
 
+    async def sync_library(self, media_type: MediaType) -> None:
+        """
+        Run library sync for this provider.
+
+        :param media_type: The media type to sync.
+        """
+        await super().sync_library(media_type)
+        # TODO: remove after 2.13 release
+        heal_key = (
+            f"{CONF_PROVIDERS}/{self.instance_id}/values/{CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING}"
+        )
+        if media_type != MediaType.ALBUM or not self.mass.config.get(heal_key):
+            return
+        try:
+            await self._heal_album_artists()
+        except (MusicAssistantError, ClientError) as err:
+            # the album sync itself succeeded; keep the marker so the next sync retries
+            self.logger.warning("Could not unlink featured album artists: %s", err)
+            return
+        self.mass.config.remove(heal_key)
+
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         url = urljoin(self._base_url, path.lstrip("/"))
         try:
@@ -215,7 +241,7 @@ class EmbyProvider(MusicProvider):
         return [parse_artist(self.instance_id, self, item) for item in items]
 
     async def _search_playlist(self, search_query: str, limit: int) -> list[Playlist]:
-        items = await self._search_items(search_query, "Playlist", [], limit)
+        items = await self._search_items(search_query, "Playlist", ["ImageTags"], limit)
         return [parse_playlist(self.instance_id, self, item) for item in items]
 
     @use_cache(60 * 15)
@@ -382,6 +408,7 @@ class EmbyProvider(MusicProvider):
                 "ParentId": lib[ITEM_KEY_ID],
                 "IncludeItemTypes": "Playlist",
                 "EnableUserData": "true",
+                "Fields": "ImageTags",
                 "Recursive": "true",
             }
             page = 0
@@ -479,7 +506,7 @@ class EmbyProvider(MusicProvider):
         """Get playlist by provider playlist id."""
         playlist = await self._get(
             f"Users/{self._user_id}/Items/{prov_playlist_id}",
-            params={"EnableUserData": "true"},
+            params={"EnableUserData": "true", "Fields": "ImageTags"},
         )
 
         return parse_playlist(self.instance_id, self, playlist)
@@ -605,3 +632,55 @@ class EmbyProvider(MusicProvider):
         if not isinstance(items, list):
             raise InvalidDataError(f"Emby {item_type} response contains no item list")
         return items
+
+    async def _heal_album_artists(self) -> None:
+        """Unlink the featured track artists that earlier syncs stored as album artists."""
+        removed = 0
+        async for prov_album in self.get_library_albums():
+            if not prov_album.artists:
+                continue
+            db_album = await self.mass.music.albums.get_library_item_by_prov_id(
+                prov_album.item_id, self.instance_id
+            )
+            if db_album is None:
+                continue
+            # full library artists, as linking an ItemMapping on overwrite resets the artist
+            keep: dict[str, Artist] = {}
+            for prov_artist in prov_album.artists:
+                db_artist = await self.mass.music.artists.get_library_item_by_prov_id(
+                    prov_artist.item_id, self.instance_id
+                )
+                if db_artist is None:
+                    # an album artist the old sync never linked, e.g. Various Artists
+                    new_artist = (
+                        self.mass.music.artists.artist_from_item_mapping(prov_artist)
+                        if isinstance(prov_artist, ItemMapping)
+                        else prov_artist
+                    )
+                    db_artist = await self.mass.music.artists.add_item_to_library(new_artist)
+                keep[str(db_artist.item_id)] = db_artist
+            album_is_emby_only = self._only_on_emby(db_album)
+            album_removed = 0
+            for linked in db_album.artists:
+                if str(linked.item_id) in keep:
+                    continue
+                library_artist = await self.mass.music.artists.get_library_item(linked.item_id)
+                if album_is_emby_only or self._only_on_emby(library_artist):
+                    album_removed += 1
+                    continue
+                # another provider knows both the album and the artist and may have linked it
+                keep[str(library_artist.item_id)] = library_artist
+            if {str(artist.item_id) for artist in db_album.artists} == set(keep):
+                continue
+            db_album.artists = UniqueList(keep.values())
+            # every overwritten column gets the library album's own value, so only artists change
+            await self.mass.music.albums.update_item_in_library(
+                db_album.item_id, db_album, overwrite=True
+            )
+            removed += album_removed
+        self.logger.info("Unlinked %d featured artist(s) from library albums", removed)
+
+    def _only_on_emby(self, item: Album | Artist) -> bool:
+        """Return True if Emby is the item's only provider."""
+        # every Emby instance stored its album artists with the same faulty parser
+        return all(mapping.provider_domain == self.domain for mapping in item.provider_mappings)

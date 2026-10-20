@@ -1,4 +1,9 @@
-"""Controller for distributing audio analysis to providers."""
+"""
+Controller for distributing audio analysis to providers.
+
+Analysis rows live in `audio_analysis.db` on a connection of their own; its lifecycle
+lives in `AudioAnalysisDatabaseMixin`.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +14,10 @@ import logging
 import os
 import sys
 import time
-from collections.abc import AsyncGenerator, Iterable, Mapping
+from collections import defaultdict
+from collections.abc import AsyncGenerator, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from itertools import batched
 from math import isfinite
 from typing import TYPE_CHECKING, Any
 
@@ -19,21 +26,30 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import AudioMetadata
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
-    DB_TABLE_AUDIO_ANALYSIS,
-    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_PROVIDER_MAPPINGS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    FILESYSTEM_PROVIDER_DOMAINS,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     MASS_LOGGER_NAME,
 )
+from music_assistant.controllers.streams.audio_analysis_codec import (
+    decode,
+    decode_extra_data,
+    encode,
+)
+from music_assistant.controllers.streams.audio_analysis_database import AudioAnalysisDatabaseMixin
 from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarded, AudioBufferEOF
+from music_assistant.controllers.streams.constants import (
+    AA_TABLE_ANALYSIS,
+    AA_TABLE_FAILURES,
+)
+from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.audio import pcm_container_bit_depth
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
-from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
@@ -80,24 +96,25 @@ ANALYSIS_MIN_COMPLETENESS_RATIO = 0.9
 # on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
 MODEL_IDLE_UNLOAD_SECONDS = 300
 MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
-# Background analysis is deliberately limited to the user's own files: pulling a streaming
-# service's catalogue for audio nobody asked to hear is not something we do. Keep it that way.
-FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
-    "filesystem_local",
-    "filesystem_smb",
-    "filesystem_nfs",
-)
+
+# TEMP table on the analysis connection holding the library's filesystem track keys while a
+# candidate query runs; filled in batches of this size.
+_CANDIDATE_TRACKS_TABLE = "candidate_tracks"
+_CANDIDATE_KEYS_BATCH_SIZE = 5000
+# Item ids per audio-metadata lookup query, well below SQLite's bound-variable limit.
+_AUDIO_METADATA_BATCH_SIZE = 500
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.media_items import AudioFormat, Track
+    from music_assistant_models.media_items import AudioFormat, AudioMetadata, Track
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.controllers.streams.controller import StreamsController
+    from music_assistant.helpers.database import DatabaseConnection
 
 
 def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
@@ -111,15 +128,18 @@ def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
 def _parse_row(
     row: Mapping[str, Any],
     unparsable_ids: list[Any] | None = None,
+    *,
+    arrays: Collection[str] | None = None,
 ) -> AudioAnalysisData | None:
     """
-    Parse a single audio_analysis row's analysis_data, logging and skipping on error.
+    Parse a single audio_analysis row's packed record, logging and skipping on error.
 
     :param row: The audio_analysis row to parse.
     :param unparsable_ids: When given, the id of a row that fails to parse is appended.
+    :param arrays: The array fields to unpack (see :func:`decode`); None unpacks them all.
     """
     try:
-        return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
+        return decode(row["header"], row["payload"], arrays=arrays)
     except (IndexError, KeyError, TypeError, ValueError) as err:
         row_id = _get_row_value(row, "id")
         # the error itself may embed the full (huge) field value, so log only
@@ -143,21 +163,24 @@ def _merged_from_rows(
     available_aa_domains: set[str],
     priority: tuple[str, ...] | None = None,
     unparsable_ids: list[Any] | None = None,
+    *,
+    arrays: Collection[str] | None = None,
 ) -> AudioAnalysisData | None:
     """
     Fold audio_analysis rows into one merged result.
 
-    Rows from AA providers not in available_aa_domains, and rows whose analysis_data
+    Rows from AA providers not in available_aa_domains, and rows whose packed record
     is unparsable, are always skipped. Returns None when no usable row remains.
 
     :param rows: audio_analysis rows ordered oldest-first; each must carry
-        aa_provider_domain and analysis_data.
+        aa_provider_domain, header and payload.
     :param available_aa_domains: AA provider domains currently available.
     :param priority: When None, merge all available providers' rows with latest-write-wins
         (non-None fields). When a tuple of AA provider domains is given, only those domains
         are considered and the first-listed domain wins each per-field conflict.
-    :param unparsable_ids: When given, ids of rows whose analysis_data fails to parse
+    :param unparsable_ids: When given, ids of rows whose packed record fails to parse
         are appended.
+    :param arrays: The array fields to unpack (see :func:`decode`); None unpacks them all.
     """
     merged = AudioAnalysisData()
     found = False
@@ -165,7 +188,7 @@ def _merged_from_rows(
         for row in rows:
             if row["aa_provider_domain"] not in available_aa_domains:
                 continue
-            if (row_data := _parse_row(row, unparsable_ids)) is None:
+            if (row_data := _parse_row(row, unparsable_ids, arrays=arrays)) is None:
                 continue
             merged.update(row_data)
             found = True
@@ -179,7 +202,7 @@ def _merged_from_rows(
         domain = row["aa_provider_domain"]
         if domain not in wanted_set or domain in by_domain:
             continue
-        if (row_data := _parse_row(row, unparsable_ids)) is None:
+        if (row_data := _parse_row(row, unparsable_ids, arrays=arrays)) is None:
             continue
         by_domain[domain] = row_data
     for domain in reversed(wanted):
@@ -216,7 +239,7 @@ def _nice_analysis_worker() -> None:
         os.setpriority(os.PRIO_PROCESS, 0, ANALYSIS_THREAD_NICE)
 
 
-class AudioAnalysisController:
+class AudioAnalysisController(AudioAnalysisDatabaseMixin):
     """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
     def __init__(self, streams: StreamsController) -> None:
@@ -224,6 +247,10 @@ class AudioAnalysisController:
         self.streams = streams
         self.mass = streams.mass
         self.logger = self.mass.logger.getChild("audio_analysis")
+        self._database: DatabaseConnection | None = None
+        self._database_ready = False
+        # Serializes use of the TEMP table that holds the library's filesystem track keys.
+        self._candidate_keys_lock = asyncio.Lock()
         self._active_sessions: dict[str, set[str]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
         # Realtime session key -> queue id, insertion-ordered, so the session cap is applied
@@ -260,22 +287,25 @@ class AudioAnalysisController:
 
     async def close(self) -> None:
         """Drain in-flight sessions and chunk workers on shutdown."""
-        tasks = list(self._workers.values())
-        self._workers.clear()
-        if self._idle_unload_task is not None:
-            tasks.append(self._idle_unload_task)
-            self._idle_unload_task = None
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        for session_key in list(self._active_sessions):
-            self._cancel_providers(session_key)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if self.analysis_executor is not None:
-            # A running CPU-bound thread can't be cancelled, so shut down without waiting on it.
-            self.analysis_executor.shutdown(wait=False, cancel_futures=True)
-            self.analysis_executor = None
+        try:
+            tasks = list(self._workers.values())
+            self._workers.clear()
+            if self._idle_unload_task is not None:
+                tasks.append(self._idle_unload_task)
+                self._idle_unload_task = None
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            for session_key in list(self._active_sessions):
+                self._cancel_providers(session_key)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if self.analysis_executor is not None:
+                # A running CPU-bound thread can't be cancelled, so shut down without waiting on it.
+                self.analysis_executor.shutdown(wait=False, cancel_futures=True)
+                self.analysis_executor = None
+        finally:
+            await self.close_database()
 
     def ensure_inference_runtime_configured(self) -> None:
         """
@@ -336,6 +366,8 @@ class AudioAnalysisController:
     @property
     def providers(self) -> list[AudioAnalysisProvider]:
         """Return all available audio analysis providers."""
+        if not self._database_ready:
+            return []
         return [
             prov
             for prov in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
@@ -425,6 +457,7 @@ class AudioAnalysisController:
         :param media_type: The media type of the item being analyzed.
         :raises ValueError: When a float field of the analysis holds a non-finite value.
         """
+        self._require_database()
         # non-finite floats serialize to JSON null, which corrupts the stored row;
         # refuse them here so a bad payload can never poison the database
         if (field_name := _first_non_finite_field(analysis)) is not None:
@@ -435,16 +468,17 @@ class AudioAnalysisController:
         if not isinstance(provider, MusicProvider):
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        data_json = json_dumps(analysis.to_dict())
-        await self.mass.music.database.insert_or_replace(
-            DB_TABLE_AUDIO_ANALYSIS,
+        header, payload = encode(analysis)
+        await self.database.insert_or_replace(
+            AA_TABLE_ANALYSIS,
             {
                 "media_type": media_type.value,
                 "item_id": item_id,
                 "provider": prov_key,
                 "aa_provider_domain": aa_provider_domain,
-                "analysis_data": data_json,
                 "analysis_version": analysis_version,
+                "header": header,
+                "payload": payload,
             },
         )
         await self.clear_analysis_failure(
@@ -478,6 +512,7 @@ class AudioAnalysisController:
         :param analysis_version: The AA provider's algorithm version at failure time.
         :param media_type: The media type of the item.
         """
+        self._require_database()
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             self.logger.debug(
@@ -486,8 +521,8 @@ class AudioAnalysisController:
             )
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        await self.mass.music.database.insert_or_replace(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+        await self.database.insert_or_replace(
+            AA_TABLE_FAILURES,
             {
                 "media_type": media_type.value,
                 "item_id": item_id,
@@ -516,6 +551,7 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider whose failure to clear.
         :param media_type: The media type of the item.
         """
+        self._require_database()
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             self.logger.debug(
@@ -524,8 +560,8 @@ class AudioAnalysisController:
             )
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        await self.mass.music.database.delete(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+        await self.database.delete(
+            AA_TABLE_FAILURES,
             {
                 "item_id": item_id,
                 "provider": prov_key,
@@ -533,6 +569,26 @@ class AudioAnalysisController:
                 "media_type": media_type.value,
             },
         )
+
+    async def delete_audio_analysis(
+        self,
+        item_id: str,
+        provider_key: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """
+        Delete every AA provider's analysis and failure rows for one provider mapping.
+
+        :param item_id: Provider-native item ID.
+        :param provider_key: Stored music-provider key (domain or instance_id).
+        :param media_type: The media type of the item.
+        """
+        self._require_database()
+        for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+            await self.database.delete(
+                table,
+                {"media_type": media_type.value, "item_id": item_id, "provider": provider_key},
+            )
 
     async def get_audio_analysis(
         self,
@@ -558,18 +614,20 @@ class AudioAnalysisController:
             (e.g. loudness_integrated) is written by several providers with different
             semantics, so the authoritative source is selected.
         """
-        provider = self.mass.get_provider(provider_instance_id_or_domain)
-        if not isinstance(provider, MusicProvider):
+        if not self._database_ready:
             return None
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        rows = await self.mass.music.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS,
+        if (prov_key := self._analysis_provider_key(provider_instance_id_or_domain)) is None:
+            return None
+        rows = await self.database.get_rows_from_query(
+            f"SELECT id, aa_provider_domain, CAST(header AS BLOB) AS header, payload "
+            f"FROM {AA_TABLE_ANALYSIS} "
+            "WHERE item_id = :item_id AND provider = :provider AND media_type = :media_type "
+            "ORDER BY timestamp_created ASC",
             {
                 "item_id": item_id,
                 "provider": prov_key,
                 "media_type": media_type.value,
             },
-            order_by="timestamp_created ASC",
         )
         if not rows:
             return None
@@ -580,7 +638,7 @@ class AudioAnalysisController:
         # corrupt rows would otherwise block re-analysis forever (their stored
         # analysis_version still gates new sessions), so drop them right away
         for row_id in unparsable_ids:
-            await self.mass.music.database.delete(DB_TABLE_AUDIO_ANALYSIS, {"id": row_id})
+            await self.database.delete(AA_TABLE_ANALYSIS, {"id": row_id})
         if unparsable_ids:
             self.logger.info(
                 "Deleted %d corrupt audio_analysis row(s) for %s/%s; "
@@ -595,23 +653,123 @@ class AudioAnalysisController:
         """
         Return AudioMetadata (bpm, musical key) for a track, or None when no analysis exists.
 
-        Provider mappings are tried best-quality first; per field the Smart Fades AA
-        provider is preferred over other AA providers.
+        Provider mappings are tried in the order playback would pick them; per field the
+        Smart Fades AA provider is preferred over other AA providers.
 
         :param track: The track to look up stored analysis data for.
         """
         priority = TRACK_EXPORT_AA_PRIORITY
-        for mapping in sorted(track.provider_mappings, key=lambda m: m.quality, reverse=True):
+        for mapping in rank_provider_mappings(track.provider_mappings):
             analysis = await self.get_audio_analysis(
                 mapping.item_id, mapping.provider_instance, priority=priority
             )
-            if analysis is None or (analysis.bpm is None and analysis.key is None):
-                continue
-            musical_key: str | None = None
-            if analysis.key is not None:
-                musical_key = f"{analysis.key} {analysis.mode}" if analysis.mode else analysis.key
-            return AudioMetadata(bpm=analysis.bpm, musical_key=musical_key)
+            if analysis is not None and (metadata := analysis.as_audio_metadata()) is not None:
+                return metadata
         return None
+
+    async def get_tracks_audio_metadata(
+        self, tracks: Sequence[Track]
+    ) -> list[AudioMetadata | None]:
+        """
+        Return AudioMetadata (bpm, musical key) for many tracks at once.
+
+        Each entry matches what get_track_audio_metadata returns for that track. Only the
+        scalars are read from the stored headers, in a few queries instead of one per track.
+
+        :param tracks: The tracks to look up stored analysis data for.
+        :returns: One entry per given track, in the same order; None where no analysis exists.
+        """
+        results: list[AudioMetadata | None] = [None] * len(tracks)
+        if not self._database_ready or not tracks:
+            return results
+        available_aa_domains = self._available_aa_domains()
+        wanted_domains = [d for d in TRACK_EXPORT_AA_PRIORITY if d in available_aa_domains]
+        if not wanted_domains:
+            return results
+
+        prov_keys: dict[str, str | None] = {}
+        ranked_keys: list[list[tuple[str, str]]] = []
+        item_ids_by_prov_key: dict[str, set[str]] = defaultdict(set)
+        for track in tracks:
+            track_keys: list[tuple[str, str]] = []
+            for mapping in rank_provider_mappings(track.provider_mappings):
+                instance = mapping.provider_instance
+                if instance not in prov_keys:
+                    prov_keys[instance] = self._analysis_provider_key(instance)
+                if (prov_key := prov_keys[instance]) is None:
+                    continue
+                track_keys.append((prov_key, mapping.item_id))
+                item_ids_by_prov_key[prov_key].add(mapping.item_id)
+            ranked_keys.append(track_keys)
+
+        domain_params = {f"domain{i}": domain for i, domain in enumerate(wanted_domains)}
+        domain_placeholders = ",".join(f":{name}" for name in domain_params)
+        # rows arrive lowest priority first, so folding them in order lets the
+        # first-listed domain win each field, as in _merged_from_rows
+        priority_order = " ".join(f"WHEN :{name} THEN {i}" for i, name in enumerate(domain_params))
+        analysis_by_key: dict[tuple[str, str], AudioAnalysisData] = defaultdict(AudioAnalysisData)
+        for prov_key, item_ids in item_ids_by_prov_key.items():
+            for chunk in batched(item_ids, _AUDIO_METADATA_BATCH_SIZE, strict=False):
+                params: dict[str, Any] = {f"id{i}": item_id for i, item_id in enumerate(chunk)}
+                id_placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
+                rows = await self.database.get_rows_from_query(
+                    "SELECT item_id, json_extract(header, '$.bpm') AS bpm, "
+                    "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode "
+                    f"FROM {AA_TABLE_ANALYSIS} "
+                    "WHERE provider = :provider AND media_type = :media_type "
+                    f"AND aa_provider_domain IN ({domain_placeholders}) "
+                    f"AND item_id IN ({id_placeholders}) AND json_valid(header) "
+                    f"ORDER BY CASE aa_provider_domain {priority_order} END DESC",
+                    {
+                        **params,
+                        **domain_params,
+                        "provider": prov_key,
+                        "media_type": MediaType.TRACK.value,
+                    },
+                    limit=0,
+                )
+                for row in rows:
+                    analysis_by_key[(prov_key, row["item_id"])].update(
+                        AudioAnalysisData(
+                            bpm=None if row["bpm"] is None else float(row["bpm"]),
+                            key=row["key"],
+                            mode=row["mode"],
+                        )
+                    )
+
+        metadata_by_key: dict[tuple[str, str], AudioMetadata | None] = {}
+        for index, track_keys in enumerate(ranked_keys):
+            for key in track_keys:
+                if key not in metadata_by_key:
+                    analysis = analysis_by_key.get(key)
+                    metadata_by_key[key] = analysis.as_audio_metadata() if analysis else None
+                if (metadata := metadata_by_key[key]) is not None:
+                    results[index] = metadata
+                    break
+        return results
+
+    async def get_vocal_onset(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> float | None:
+        """
+        Return the second at which singing starts, from the stored analysis, or None when unknown.
+
+        :param item_id: Provider-native item ID from streamdetails.item_id.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param media_type: The media type of the item.
+        """
+        # imported here: the smart_fades package imports this module
+        from music_assistant.controllers.streams.smart_fades.vocal import (  # noqa: PLC0415
+            first_vocal_onset,
+        )
+
+        analysis = await self.get_audio_analysis(
+            item_id, provider_instance_id_or_domain, media_type
+        )
+        return first_vocal_onset(analysis) if analysis is not None else None
 
     @api_command("audio_analysis/wave_form")
     async def get_wave_form(
@@ -658,6 +816,8 @@ class AudioAnalysisController:
         :param loudness_album: Optional album-level integrated loudness in LUFS.
         :param media_type: The media type of the item.
         """
+        if not self._database_ready:
+            return
         if loudness is None or not isfinite(loudness) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
             return
         if (
@@ -691,6 +851,8 @@ class AudioAnalysisController:
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
         :param aa_provider_domain: Domain of the AA provider whose rows to fetch.
         """
+        if not self._database_ready:
+            return []
         if not track_item_ids:
             return []
         provider = self.mass.get_provider(
@@ -707,26 +869,23 @@ class AudioAnalysisController:
         params["media_type"] = MediaType.TRACK.value
 
         query = (
-            f"SELECT analysis_data FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            # fetch the header as blob: the sqlite driver raises on corrupt non-UTF-8
+            # TEXT, and the codec reads bytes just as well
+            f"SELECT CAST(header AS BLOB) AS header FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :domain "
             f"AND media_type = :media_type "
             f"AND provider = :provider "
             f"AND item_id IN ({placeholders})"
         )
-        rows = await self.mass.music.database.get_rows_from_query(
-            query, params, limit=len(track_item_ids)
-        )
+        rows = await self.database.get_rows_from_query(query, params, limit=len(track_item_ids))
 
         results: list[dict[str, Any]] = []
         for row in rows:
             try:
-                data = json_loads(row["analysis_data"])
+                extra = decode_extra_data(row["header"])
             except ValueError, TypeError:
                 continue
-            if not isinstance(data, dict):
-                continue
-            extra = data.get("extra_data")
-            if isinstance(extra, dict):
+            if extra is not None:
                 results.append(extra)
         return results
 
@@ -745,22 +904,26 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider.
         :param media_type: The media type of the item.
         """
+        self._require_database()
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             return None
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        row = await self.mass.music.database.get_row(
-            DB_TABLE_AUDIO_ANALYSIS,
+        rows = await self.database.get_rows_from_query(
+            f"SELECT analysis_version FROM {AA_TABLE_ANALYSIS} "
+            "WHERE item_id = :item_id AND provider = :provider "
+            "AND aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
             {
                 "item_id": item_id,
                 "provider": prov_key,
                 "aa_provider_domain": aa_provider_domain,
                 "media_type": media_type.value,
             },
+            limit=1,
         )
-        if not row:
+        if not rows:
             return None
-        return int(row["analysis_version"])
+        return int(rows[0]["analysis_version"])
 
     async def get_audio_analysis_count(
         self,
@@ -773,8 +936,9 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider whose rows to count.
         :param media_type: The media type to count rows for.
         """
-        return await self.mass.music.database.get_count_from_query(
-            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
+        self._require_database()
+        return await self.database.get_count_from_query(
+            f"SELECT id FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
             {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
         )
@@ -787,21 +951,22 @@ class AudioAnalysisController:
         """
         Stream audio_analysis rows for a given aa_provider_domain.
 
-        analysis_data is yielded as raw bytes rather than str, and may hold data
-        that fails a strict UTF-8 decode; callers are responsible for handling that.
+        Rows carry the stored record as its ``header``/``payload`` pair; use
+        :func:`_parse_row` to turn one into an AudioAnalysisData.
 
         :param aa_provider_domain: Domain of the AA provider whose rows to yield.
         :param media_type: The media type to filter rows by.
         """
-        # fetch as blob: the sqlite driver raises OperationalError on corrupt
-        # non-UTF-8 TEXT; raw bytes defer decoding to the consumer
+        self._require_database()
+        # fetch the header as blob: the sqlite driver raises OperationalError on corrupt
+        # non-UTF-8 TEXT, which would abort the whole scan; decode() takes str or bytes
         query = (
             f"SELECT id, media_type, item_id, provider, aa_provider_domain, "
-            f"CAST(analysis_data AS BLOB) AS analysis_data, analysis_version, timestamp_created "
-            f"FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"CAST(header AS BLOB) AS header, payload, analysis_version, timestamp_created "
+            f"FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type"
         )
-        async for row in self.mass.music.database.iter_rows_from_query(
+        async for row in self.database.iter_rows_from_query(
             query,
             {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
         ):
@@ -812,6 +977,8 @@ class AudioAnalysisController:
         primary_aa_domain: str,
         media_type: MediaType = MediaType.TRACK,
         priority: tuple[str, ...] | None = None,
+        *,
+        arrays: Collection[str] | None = None,
     ) -> AsyncGenerator[tuple[str, str, AudioAnalysisData]]:
         """
         Yield one merged AudioAnalysisData per track present in primary_aa_domain.
@@ -836,7 +1003,11 @@ class AudioAnalysisController:
         :param priority: AA provider domains the merged values must come from, first-listed
             wins per-field conflicts (see get_audio_analysis). When None, all available
             providers are merged latest-write-wins.
+        :param arrays: The array fields to unpack; every other array field is left None on
+            the yielded records. None unpacks them all. A consumer that needs only a few
+            arrays saves most of the decode work of a fully analysed track.
         """
+        self._require_database()
         available_aa_domains = self._available_aa_domains()
         if primary_aa_domain not in available_aa_domains:
             LOGGER.warning(
@@ -850,13 +1021,13 @@ class AudioAnalysisController:
         # ORDER BY (item_id, provider, ts) lets us fold each track in one streaming pass.
         query = (
             f"SELECT item_id, provider, aa_provider_domain, "
-            # fetch as blob: the sqlite driver raises OperationalError on corrupt
-            # non-UTF-8 TEXT; raw bytes let _parse_row skip just the bad row
-            f"CAST(aa1.analysis_data AS BLOB) AS analysis_data, id "
-            f"FROM {DB_TABLE_AUDIO_ANALYSIS} aa1 "
+            # fetch the header as blob: the sqlite driver raises OperationalError on corrupt
+            # non-UTF-8 TEXT; bytes let _parse_row skip just the bad row
+            f"CAST(aa1.header AS BLOB) AS header, aa1.payload AS payload, id "
+            f"FROM {AA_TABLE_ANALYSIS} aa1 "
             f"WHERE aa1.media_type = :media_type "
             f"AND EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa2 "
+            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} aa2 "
             f"    WHERE aa2.item_id = aa1.item_id "
             f"    AND aa2.provider = aa1.provider "
             f"    AND aa2.aa_provider_domain = :primary_aa_domain "
@@ -866,20 +1037,22 @@ class AudioAnalysisController:
         )
         current_key: tuple[str, str] | None = None
         current_group: list[Mapping[str, Any]] = []
-        async for row in self.mass.music.database.iter_rows_from_query(
+        async for row in self.database.iter_rows_from_query(
             query,
             {"media_type": media_type.value, "primary_aa_domain": primary_aa_domain},
         ):
             key = (row["item_id"], row["provider"])
             if current_key is not None and key != current_key:
-                merged = _merged_from_rows(current_group, available_aa_domains, priority)
+                merged = _merged_from_rows(
+                    current_group, available_aa_domains, priority, arrays=arrays
+                )
                 if merged is not None:
                     yield (*current_key, merged)
                 current_group = []
             current_key = key
             current_group.append(row)
         if current_key is not None:
-            merged = _merged_from_rows(current_group, available_aa_domains, priority)
+            merged = _merged_from_rows(current_group, available_aa_domains, priority, arrays=arrays)
             if merged is not None:
                 yield (*current_key, merged)
 
@@ -893,6 +1066,7 @@ class AudioAnalysisController:
             streaming-provider tracks are never considered for background analysis
             and are excluded.
         """
+        self._require_database()
         provider = self.mass.get_provider(
             aa_domain,
             provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
@@ -907,12 +1081,12 @@ class AudioAnalysisController:
         # NULL analysis_version (pre-versioning rows) is treated as stale: SQLite
         # evaluates `NULL < N` as NULL (falsy), so it must be matched explicitly.
         stale_query = (
-            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"SELECT id FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_domain "
             f"  AND media_type = :media_type "
             f"  AND (analysis_version IS NULL OR analysis_version < :current_version)"
         )
-        stale_version = await self.mass.music.database.get_count_from_query(
+        stale_version = await self.database.get_count_from_query(
             stale_query,
             {
                 "aa_domain": aa_domain,
@@ -934,10 +1108,9 @@ class AudioAnalysisController:
 
         :param aa_domain: When given, only failures for this AA provider domain are returned.
         """
+        self._require_database()
         match = {"aa_provider_domain": aa_domain} if aa_domain is not None else None
-        rows = await self.mass.music.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES, match, limit=0
-        )
+        rows = await self.database.get_rows(AA_TABLE_FAILURES, match, limit=0)
         return [
             {
                 "item_id": r["item_id"],
@@ -966,6 +1139,7 @@ class AudioAnalysisController:
         :param provider: Stored music-provider key (domain or instance_id) to clear.
         :param aa_domain: AA provider domain to clear.
         """
+        self._require_database()
         match: dict[str, Any] = {}
         if item_id is not None:
             match["item_id"] = item_id
@@ -975,12 +1149,10 @@ class AudioAnalysisController:
             match["aa_provider_domain"] = aa_domain
         if not match:
             return 0
-        rows = await self.mass.music.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES, match, limit=0
-        )
+        rows = await self.database.get_rows(AA_TABLE_FAILURES, match, limit=0)
         count = len(rows)
         if count:
-            await self.mass.music.database.delete(DB_TABLE_AUDIO_ANALYSIS_FAILURES, match)
+            await self.database.delete(AA_TABLE_FAILURES, match)
         return count
 
     async def _run_background_scan(self) -> None:
@@ -1005,58 +1177,62 @@ class AudioAnalysisController:
         )
 
         concurrency = self._get_scan_concurrency()
-        semaphore = asyncio.Semaphore(concurrency)
         provider_by_domain = {p.domain: p for p in providers}
+        pending = iter(candidates)
 
         processed = 0
-        deferred = 0
 
         async def _run_one(candidate: dict[str, Any]) -> None:
-            nonlocal processed, deferred
-            async with semaphore:
-                if time.monotonic() >= run_deadline:
-                    deferred += 1
-                    return
+            nonlocal processed
+            item_id = candidate["item_id"]
+            provider_instance = candidate["provider_instance"]
+            missing = candidate["missing_domains"]
 
-                item_id = candidate["item_id"]
-                provider_instance = candidate["provider_instance"]
-                missing = candidate["missing_domains"]
-
-                music_prov = self.mass.get_provider(provider_instance, provider_type=MusicProvider)
-                if music_prov is None or not music_prov.available:
-                    self.logger.debug(
-                        "Skipping %s: music provider %s unavailable", item_id, provider_instance
-                    )
-                    return
-
-                try:
-                    streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
-                except Exception as err:
-                    # Provider method with an open-ended failure surface; any failure
-                    # just skips this scan candidate.
-                    self.logger.debug("Skipping %s: stream details failed: %s", item_id, err)
-                    return
-
-                if streamdetails.stream_type != StreamType.LOCAL_FILE:
-                    return
-                if not isinstance(streamdetails.path, str) or not streamdetails.path:
-                    return
-
-                providers_for_track = [
-                    p
-                    for p in (provider_by_domain.get(d) for d in missing)
-                    if p is not None and p.available
-                ]
-                if not providers_for_track:
-                    return
-
-                await self._run_background_streaming_for_track(
-                    streamdetails,
-                    providers_for_track,
+            music_prov = self.mass.get_provider(provider_instance, provider_type=MusicProvider)
+            if music_prov is None or not music_prov.available:
+                self.logger.debug(
+                    "Skipping %s: music provider %s unavailable", item_id, provider_instance
                 )
-                processed += 1
+                return
 
-        await asyncio.gather(*(_run_one(c) for c in candidates))
+            try:
+                streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
+            except Exception as err:
+                # Provider method with an open-ended failure surface; any failure
+                # just skips this scan candidate.
+                self.logger.debug("Skipping %s: stream details failed: %s", item_id, err)
+                return
+
+            if streamdetails.stream_type != StreamType.LOCAL_FILE:
+                return
+            if not isinstance(streamdetails.path, str) or not streamdetails.path:
+                return
+
+            providers_for_track = [
+                p
+                for p in (provider_by_domain.get(d) for d in missing)
+                if p is not None and p.available
+            ]
+            if not providers_for_track:
+                return
+
+            await self._run_background_streaming_for_track(
+                streamdetails,
+                providers_for_track,
+            )
+            processed += 1
+
+        async def _worker() -> None:
+            while time.monotonic() < run_deadline:
+                candidate = next(pending, None)
+                if candidate is None:
+                    return
+                await _run_one(candidate)
+
+        await asyncio.gather(*(_worker() for _ in range(concurrency)))
+
+        # Whatever the workers never pulled is what the run budget cut short.
+        deferred = sum(1 for _ in pending)
 
         elapsed = time.monotonic() - scan_started
         if deferred:
@@ -1145,9 +1321,11 @@ class AudioAnalysisController:
             return
 
         # Override content_type so ffmpeg decodes rather than re-muxing the source codec.
+        source_bit_depth = streamdetails.audio_format.bit_depth
         pcm_format = dataclasses.replace(
             streamdetails.audio_format,
-            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
+            content_type=ContentType.from_bit_depth(source_bit_depth),
+            bit_depth=pcm_container_bit_depth(source_bit_depth),
         )
 
         accepted = await self._start_analysis_on_providers(
@@ -1219,7 +1397,6 @@ class AudioAnalysisController:
         # row counts as up-to-date only when its analysis_version is non-NULL and >= the
         # provider's current version, so missing and stale-version rows both surface.
         aa_domains = list(aa_provider_versions)
-        fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         aa_select_terms = " UNION ALL ".join(
             f"SELECT :aa_{i} AS aa_provider_domain, :ver_{i} AS current_version"
             for i in range(len(aa_domains))
@@ -1237,21 +1414,19 @@ class AudioAnalysisController:
             f"SELECT pm.provider_item_id AS item_id, "
             f"       pm.provider_instance AS provider_instance, "
             f"       GROUP_CONCAT(possible.aa_provider_domain) AS missing_domains "
-            f"FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            f"FROM temp.{_CANDIDATE_TRACKS_TABLE} pm "
             f"CROSS JOIN ({aa_select_terms}) possible "
-            f"WHERE pm.media_type = :media_type "
-            f"  AND pm.provider_domain IN ({fs_inline}) "
-            f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
-            f"    WHERE aa.item_id = pm.provider_item_id "
-            f"      AND aa.provider = pm.provider_instance "
-            f"      AND aa.aa_provider_domain = possible.aa_provider_domain "
-            f"      AND aa.media_type = :media_type "
-            f"      AND aa.analysis_version IS NOT NULL "
-            f"      AND aa.analysis_version >= possible.current_version"
+            f"WHERE NOT EXISTS ("
+            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} an "
+            f"    WHERE an.item_id = pm.provider_item_id "
+            f"      AND an.provider = pm.provider_instance "
+            f"      AND an.aa_provider_domain = possible.aa_provider_domain "
+            f"      AND an.media_type = :media_type "
+            f"      AND an.analysis_version IS NOT NULL "
+            f"      AND an.analysis_version >= possible.current_version"
             f"  ) "
             f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS_FAILURES} f "
+            f"    SELECT 1 FROM {AA_TABLE_FAILURES} f "
             f"    WHERE f.item_id = pm.provider_item_id "
             f"      AND f.provider = pm.provider_instance "
             f"      AND f.aa_provider_domain = possible.aa_provider_domain "
@@ -1261,7 +1436,8 @@ class AudioAnalysisController:
             f"  ) "
             f"GROUP BY pm.provider_item_id, pm.provider_instance"
         )
-        rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+        async with self._filesystem_track_keys(filesystem_domains):
+            rows = await self.database.get_rows_from_query(query, params, limit=limit)
         results: list[dict[str, Any]] = []
         for r in rows:
             missing_raw = r["missing_domains"]
@@ -1281,22 +1457,19 @@ class AudioAnalysisController:
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return 0
-        fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         query = (
-            f"SELECT pm.provider_item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
-            f"WHERE pm.media_type = :media_type "
-            f"  AND pm.provider_domain IN ({fs_inline}) "
-            f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
-            f"    WHERE aa.item_id = pm.provider_item_id "
-            f"      AND aa.provider = pm.provider_instance "
-            f"      AND aa.aa_provider_domain = :aa_domain "
-            f"      AND aa.media_type = :media_type "
-            f"      AND aa.analysis_version IS NOT NULL "
-            f"      AND aa.analysis_version >= :current_version"
+            f"SELECT pm.provider_item_id FROM temp.{_CANDIDATE_TRACKS_TABLE} pm "
+            f"WHERE NOT EXISTS ("
+            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} an "
+            f"    WHERE an.item_id = pm.provider_item_id "
+            f"      AND an.provider = pm.provider_instance "
+            f"      AND an.aa_provider_domain = :aa_domain "
+            f"      AND an.media_type = :media_type "
+            f"      AND an.analysis_version IS NOT NULL "
+            f"      AND an.analysis_version >= :current_version"
             f"  ) "
             f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS_FAILURES} f "
+            f"    SELECT 1 FROM {AA_TABLE_FAILURES} f "
             f"    WHERE f.item_id = pm.provider_item_id "
             f"      AND f.provider = pm.provider_instance "
             f"      AND f.aa_provider_domain = :aa_domain "
@@ -1305,15 +1478,55 @@ class AudioAnalysisController:
             f"      AND (f.next_retry IS NULL OR f.next_retry > :now)"
             f"  )"
         )
-        return await self.mass.music.database.get_count_from_query(
-            query,
-            {
-                "media_type": MediaType.TRACK.value,
-                "aa_domain": aa_domain,
-                "current_version": current_version,
-                "now": int(utc_timestamp()),
-            },
-        )
+        async with self._filesystem_track_keys(filesystem_domains):
+            return await self.database.get_count_from_query(
+                query,
+                {
+                    "media_type": MediaType.TRACK.value,
+                    "aa_domain": aa_domain,
+                    "current_version": current_version,
+                    "now": int(utc_timestamp()),
+                },
+            )
+
+    @contextlib.asynccontextmanager
+    async def _filesystem_track_keys(
+        self, filesystem_domains: Iterable[str]
+    ) -> AsyncGenerator[None]:
+        """
+        Hold the library's filesystem track keys in a TEMP table on the analysis connection.
+
+        library.db is opened exclusively by the music connection, so the keys are copied
+        over instead of joined across databases.
+
+        :param filesystem_domains: Provider domains whose tracks are candidates.
+        """
+        fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
+        async with self._candidate_keys_lock:
+            database = self.database
+            await database.execute(
+                f"CREATE TEMP TABLE IF NOT EXISTS {_CANDIDATE_TRACKS_TABLE}("
+                "provider_item_id TEXT NOT NULL, provider_instance TEXT NOT NULL, "
+                "PRIMARY KEY(provider_item_id, provider_instance))"
+            )
+            await database.execute(f"DELETE FROM temp.{_CANDIDATE_TRACKS_TABLE}")
+            batch: list[dict[str, Any]] = []
+            async for row in self.mass.music.database.iter_rows_from_query(
+                "SELECT provider_item_id, provider_instance "
+                f"FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                f"WHERE media_type = :media_type AND provider_domain IN ({fs_inline})",
+                {"media_type": MediaType.TRACK.value},
+            ):
+                batch.append(dict(row))
+                if len(batch) >= _CANDIDATE_KEYS_BATCH_SIZE:
+                    await database.upsert_many(f"temp.{_CANDIDATE_TRACKS_TABLE}", batch)
+                    batch = []
+            await database.upsert_many(f"temp.{_CANDIDATE_TRACKS_TABLE}", batch)
+            try:
+                yield
+            finally:
+                await database.execute(f"DELETE FROM temp.{_CANDIDATE_TRACKS_TABLE}")
+                await database.commit()
 
     async def _start_analysis_on_providers(
         self,
@@ -1459,7 +1672,7 @@ class AudioAnalysisController:
                 )
                 return prov_id, (err.reason, err.retry_at)
             except Exception as err:
-                # process_pcm_chunk is provider-implemented (torch/numpy/ffmpeg); evict
+                # process_pcm_chunk is implemented by the provider (torch/numpy/ffmpeg), so evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
                 return prov_id, (
@@ -1494,8 +1707,8 @@ class AudioAnalysisController:
 
         Reads at its own pace from the buffer's retained window. On clean end-of-stream the
         providers are finalized, unless the source ended far short of the expected duration.
-        If the reader falls a full window behind playback (the chunk it needs has been
-        evicted) or the buffer is torn down first, the session is dropped.
+        If the reader falls behind the played audio the buffer keeps (the chunk it needs has
+        been evicted) or the buffer is torn down first, the session is dropped.
 
         :param session_key: Active-session key for this worker.
         :param audio_buffer: The shared playback buffer to read PCM from.
@@ -1573,6 +1786,13 @@ class AudioAnalysisController:
         except ValueError, TypeError:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))
+
+    def _analysis_provider_key(self, provider_instance_id_or_domain: str) -> str | None:
+        """Return the provider key analysis rows are stored under, or None when not loaded."""
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
+            return None
+        return provider.domain if provider.is_streaming_provider else provider.instance_id
 
     def _available_aa_domains(self) -> set[str]:
         """Return available AA provider domains plus the virtual provider-loudness domain."""

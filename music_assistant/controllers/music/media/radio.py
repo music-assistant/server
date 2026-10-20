@@ -8,8 +8,9 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature, SortDirection, SortField
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -23,7 +24,10 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_radio,
@@ -50,7 +54,7 @@ if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.media_capabilities import MediaCatalogMixin
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -90,6 +94,7 @@ class RadioController(MediaControllerBase[Radio]):
         SELECT
             {self._summary_base_columns()},
             {self.db_table}.is_dynamic,
+            {self.db_table}.is_endless,
             json_extract({self.db_table}.metadata, '$.description') AS description,
             {self._provider_mappings_query()} AS provider_mappings
             FROM {self.db_table}"""
@@ -97,14 +102,18 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def radio_tracks(self, item_id: str, provider_instance_id_or_domain: str) -> list[Track]:
         """
-        Return a fresh batch of tracks for a dynamic radio station.
+        Return the preview/listing for a tracklisted radio station, dynamic or finite.
 
         :param item_id: The provider (or library) item id of the station.
         :param provider_instance_id_or_domain: The provider instance id or domain the
             item id belongs to ("library" for a library item).
         """
         radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        return await self.dynamic_tracks(radio)
+        if radio.is_dynamic:
+            return await self.dynamic_tracks(radio)
+        if not radio.is_endless:
+            return await self.tracks(radio)
+        raise UnsupportedFeaturedException(f"{radio.name} has no tracklist")
 
     async def dynamic_tracks(self, radio: Radio) -> list[Track]:
         """
@@ -114,16 +123,24 @@ class RadioController(MediaControllerBase[Radio]):
         """
         if not radio.is_dynamic:
             raise UnsupportedFeaturedException(f"{radio.name} is not a dynamic radio station")
-        provider_instance_id_or_domain, item_id = (
-            self._select_provider_id(radio)
-            if radio.provider == "library"
-            else (radio.provider, radio.item_id)
-        )
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        return await cast("MusicProvider | PluginProvider", provider).get_dynamic_radio_tracks(
-            item_id
-        )
+        catalog, item_id = self._catalog_provider(radio)
+        return await catalog.get_dynamic_radio_tracks(item_id)
+
+    async def tracks(self, radio: Radio) -> list[Track]:
+        """
+        Return the complete tracklist of an already resolved finite radio station.
+
+        :param radio: The finite station to fetch the tracklist for.
+        """
+        if radio.is_dynamic or radio.is_endless:
+            raise UnsupportedFeaturedException(f"{radio.name} has no finite tracklist")
+        catalog, item_id = self._catalog_provider(radio)
+        tracks: list[Track] = []
+        page = 0
+        while batch := await catalog.get_radio_tracks(item_id, page):
+            tracks.extend(batch)
+            page += 1
+        return tracks
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
@@ -154,7 +171,9 @@ class RadioController(MediaControllerBase[Radio]):
         user = get_current_user()
         return self.mass.tasks.run_background_task(
             name=f"Import {len(parsed_items)} radio stations",
-            handler=lambda: self._handle_import_radios(parsed_items),
+            handler=lambda: self._handle_import_radios(
+                parsed_items, user.user_id if user else None
+            ),
             translation_key="import_radios",
             translation_owner=self.translation_owner,
             translation_args=[len(parsed_items)],
@@ -171,30 +190,38 @@ class RadioController(MediaControllerBase[Radio]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Radio]:
-        """Return all versions of a radio station we can find on all providers."""
-        radio = await self.get(item_id, provider_instance_id_or_domain)
-        if radio.is_dynamic:
-            # a dynamic station is its provider's own, so a same-named station is a different one
-            return []
-        # perform a search on all provider(types) to collect all versions/variants
-        all_versions = {
-            prov_item.item_id: prov_item
-            for prov_items in await asyncio.gather(
-                *[
-                    self.search(radio.name, provider_domain)
-                    for provider_domain in self.mass.music.get_unique_providers()
-                ]
-            )
-            for prov_item in prov_items
-            if loose_compare_strings(radio.name, prov_item.name)
-        }
-        # make sure that the 'base' version is NOT included
-        for prov_version in radio.provider_mappings:
-            all_versions.pop(prov_version.item_id, None)
+        """
+        Return the versions of a radio station on all providers, searched, sorted and paged.
 
-        # return the aggregated result
-        return list(all_versions.values())
+        :param item_id: The station id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param search: Only list the versions whose name contains this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; 0 returns them all.
+        :param offset: Number of versions to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        return await self._versions_listing(
+            item_id,
+            provider_instance_id_or_domain,
+            lambda provider_id: self._assemble_versions(item_id, provider_id),
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+            random_seed=random_seed,
+        )
 
     async def match_provider(
         self, db_radio: Radio, provider: MusicProvider, strict: bool = True
@@ -224,7 +251,7 @@ class RadioController(MediaControllerBase[Radio]):
                 fallback=search_result_item,
             )
             if compare_radio(db_radio, prov_radio, strict=strict):
-                # 100% match
+                # exact match
                 matches.extend(prov_radio.provider_mappings)
         if not matches:
             self.logger.debug(
@@ -242,8 +269,8 @@ class RadioController(MediaControllerBase[Radio]):
         """
         if db_radio.provider != "library":
             return  # Matching only supported for database items
-        if db_radio.is_dynamic:
-            # matching a dynamic station by name would link an unrelated radio stream to it
+        if db_radio.is_dynamic or not db_radio.is_endless:
+            # matching a tracklisted station by name would link an unrelated stream to it
             return
 
         # try to find match on all providers
@@ -263,6 +290,34 @@ class RadioController(MediaControllerBase[Radio]):
                 await self.add_provider_mappings(db_radio.item_id, match)
                 cur_provider_domains.add(provider.domain)
 
+    async def _assemble_versions(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> list[Radio]:
+        """Return all versions of a radio station we can find on all providers."""
+        radio = await self.get(item_id, provider_instance_id_or_domain)
+        if radio.is_dynamic or not radio.is_endless:
+            # a tracklisted station (dynamic or finite) is its provider's own, so a
+            # same-named station is a different one
+            return []
+        # perform a search on all provider(types) to collect all versions/variants
+        all_versions = {
+            prov_item.item_id: prov_item
+            for prov_items in await asyncio.gather(
+                *[
+                    self.search(radio.name, provider_domain)
+                    for provider_domain in self.mass.music.get_unique_providers()
+                ]
+            )
+            for prov_item in prov_items
+            if loose_compare_strings(radio.name, prov_item.name)
+        }
+        # make sure that the 'base' version is NOT included
+        for prov_version in radio.provider_mappings:
+            all_versions.pop(prov_version.item_id, None)
+
+        # return the aggregated result
+        return list(all_versions.values())
+
     async def _add_library_item(self, item: Radio, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""
         assert self.mass.music.database is not None  # For type checking
@@ -271,7 +326,6 @@ class RadioController(MediaControllerBase[Radio]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(
@@ -279,6 +333,7 @@ class RadioController(MediaControllerBase[Radio]):
                 ),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
                 "is_dynamic": item.is_dynamic,
+                "is_endless": item.is_endless,
             },
         )
         # update/set external id lookup table
@@ -314,6 +369,7 @@ class RadioController(MediaControllerBase[Radio]):
                 if update.date_added
                 else UNSET,
                 "is_dynamic": update.is_dynamic,
+                "is_endless": update.is_endless,
             },
         )
         # update/set external id lookup table
@@ -329,15 +385,36 @@ class RadioController(MediaControllerBase[Radio]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> RadioSummary:
+    def _catalog_provider(self, radio: Radio) -> tuple[MediaCatalogMixin, str]:
+        """Return the catalog provider serving the station and its item id on that provider."""
+        provider_instance_id_or_domain, item_id = (
+            self._select_provider_id(radio)
+            if radio.provider == "library"
+            else (radio.provider, radio.item_id)
+        )
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
+        return cast("MediaCatalogMixin", provider), item_id
+
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> RadioSummary:
         """Parse a raw summary db row into a RadioSummary object."""
-        item = cast("RadioSummary", super()._parse_summary_row(db_row))
+        item = cast("RadioSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.is_dynamic = bool(db_row["is_dynamic"])
+        item.is_endless = bool(db_row["is_endless"])
         item.metadata.description = db_row["description"]
         return item
 
-    async def _handle_import_radios(self, parsed_items: list[PlaylistItem]) -> None:
+    async def _handle_import_radios(
+        self, parsed_items: list[PlaylistItem], user_id: str | None
+    ) -> None:
         """Add the parsed M3U entries to the library, one station at a time."""
+        if user_id:
+            if (user := await self.mass.webserver.auth.get_user(user_id)) is None:
+                raise InsufficientPermissions("The user that queued this import no longer exists")
+            # the task runs outside the session of the user that queued it
+            set_current_user(user)
         total = len(parsed_items)
         for index, item in enumerate(parsed_items):
             update_current_task_progress_from_index(
@@ -405,4 +482,6 @@ class RadioController(MediaControllerBase[Radio]):
         # the refetch also discards anything set on the object passed in, so the exported
         # favorite goes onto the library item
         if (item.metadata or {}).get("favorite") == "true":
-            await self.set_favorite(library_item.item_id, True)
+            await self.set_favorite(
+                library_item.item_id, True, await self.mass.music.acting_user_ids()
+            )

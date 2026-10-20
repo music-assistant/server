@@ -2,27 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from dataclasses import dataclass, replace
+from time import time
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import aiohttp
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    AlbumType,
+    ExternalID,
+    ListingType,
+    MediaType,
+    ProviderFeature,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
-    RetriesExhausted,
+    ProviderUnavailableError,
 )
-from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.helpers import create_safe_string, create_uri
 from music_assistant_models.media_items import (
     Album,
     AlbumSummary,
     Artist,
     ItemMapping,
-    MediaItemImage,
     ProviderMapping,
     Track,
     UniqueList,
@@ -30,43 +39,73 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
 from music_assistant.controllers.music.helpers import (
+    fill_track_from_recording,
     metadata_for_update,
     provider_mappings_for_update,
+    provider_mappings_from_urls,
     search_name_match_clause,
 )
+from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
+from music_assistant.controllers.music.listing_cache import Listing, cached_listing
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
     AlbumMatchEvidence,
     album_tracks_have_positions,
     compare_album_evidence,
     compare_artists,
+    compare_strings,
     loose_compare_strings,
     strip_album_retail_suffix,
 )
 from music_assistant.helpers.database import UNSET
-from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.helpers.uri import share_url_provider
+from music_assistant.models.music_provider import (
+    PROVIDER_FETCH_ERRORS,
+    MusicProvider,
+    provider_fetch_log_level,
+)
+from music_assistant.providers.musicbrainz.provider import (
+    is_digital_release,
+    relation_urls,
+    release_matches_album,
+)
 
-from .base import MediaControllerBase
+from .album_tracks import AlbumListing, album_listing, album_track_backfills, mapped_album_listing
+from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
-    from music_assistant.providers.musicbrainz.models import MusicBrainzBarcodeRelease
+    from music_assistant.providers.musicbrainz.models import (
+        MusicBrainzBarcodeRelease,
+        MusicBrainzRecording,
+        MusicBrainzRelease,
+    )
 
 
-# expected failures from a provider album-track lookup: a missing item or a transient
-# provider/transport outage. Either leaves that tracklist unavailable so the (best-effort,
-# multi-provider) match can continue rather than aborting the whole operation.
-_ALBUM_TRACK_LOOKUP_ERRORS = (
-    MediaNotFoundError,
-    RetriesExhausted,
-    TimeoutError,
-    aiohttp.ClientError,
+# on top of the fetch failures, a MusicBrainz lookup tolerates an HTTP status error: unlike
+# a music provider, MusicBrainz has no account whose failure must surface, and the evidence
+# it supplies is optional
+_MUSICBRAINZ_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
+    *PROVIDER_FETCH_ERRORS,
+    aiohttp.ClientResponseError,
 )
+
+# how many seconds the duration of one and the same track may differ between sources
+_TRACK_DURATION_TOLERANCE = 8
+
+# how many of a release group's official editions are looked up on the music providers,
+# likeliest first: each one costs a MusicBrainz release lookup and a barcode fan-out
+_MAX_EDITION_LOOKUPS = 3
 
 
 @dataclass
@@ -104,6 +143,7 @@ class AlbumsController(MediaControllerBase[Album]):
         SELECT
             albums.*,
             {self._external_ids_query()} AS external_ids,
+            {self._favorite_query()} AS favorite,
             {self._provider_mappings_query()} AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
@@ -168,33 +208,41 @@ class AlbumsController(MediaControllerBase[Album]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         album_types: list[AlbumType] | None = None,
         *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
         **kwargs: Any,
     ) -> list[Album]:
         """
         Get in-database albums.
 
-        :param favorite: Filter by favorite status.
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
-        :param album_types: Filter by album types.
         :param genre: Filter by genre id(s).
+        :param played_only: Filter to only played albums.
+        :param album_types: Filter by album types.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         :param reachable_via: Restrict results to items with a provider mapping reachable
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
         """
+        field, direction = self.resolve_sort(sort_field, sort_direction, order_by)
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
@@ -202,15 +250,13 @@ class AlbumsController(MediaControllerBase[Album]):
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
         artist_table_joined = False
-        # optional album type filter
         if album_types:
             extra_query_parts.append("albums.album_type IN :album_types")
             extra_query_params["album_types"] = [x.value for x in album_types]
-        if order_by and "album_artist_name" in order_by:
-            # join artist table to allow sorting on artist name
+        if field == SortField.ARTIST_NAME:
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
+                "JOIN artists ON artists.item_id = album_artists.artist_id"
             )
             artist_table_joined = True
         if search and " - " in search:
@@ -222,24 +268,30 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts.append(
                 search_name_match_clause("albums", title_str, "search_title", extra_query_params)
             )
-            artist_clause = "AND " + search_name_match_clause(
-                "artists", artist_str, "search_artist", extra_query_params
-            )
-            # use join with artists table to filter on artist name
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
-                if not artist_table_joined
-                else artist_clause
-            )
-            artist_table_joined = True
+            if not artist_table_joined:
+                extra_join_parts.append(
+                    "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                    "JOIN artists ON artists.item_id = album_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", artist_str, "search_artist", extra_query_params
+                    )
+                )
+                artist_table_joined = True
+            else:
+                extra_query_parts.append(
+                    search_name_match_clause(
+                        "artists", artist_str, "search_artist", extra_query_params
+                    )
+                )
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            sort_field=field,
+            sort_direction=direction,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
@@ -248,6 +300,7 @@ class AlbumsController(MediaControllerBase[Album]):
             in_library_only=True,
             summary=summary,
             reachable_via=reachable_via,
+            random_seed=random_seed,
         )
 
         # Calculate how many more items we need to reach the original limit
@@ -256,22 +309,27 @@ class AlbumsController(MediaControllerBase[Album]):
         if search and len(result) < 25 and not offset and remaining_limit > 0:
             # append artist items to result
             search = create_safe_string(search, True, True)
-            artist_clause = "AND " + search_name_match_clause(
-                "artists", search, "search_artist", extra_query_params
-            )
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
-                if not artist_table_joined
-                else artist_clause
-            )
+            if not artist_table_joined:
+                extra_join_parts.append(
+                    "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                    "JOIN artists ON artists.item_id = album_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", search, "search_artist", extra_query_params
+                    )
+                )
+            else:
+                extra_query_parts.append(
+                    search_name_match_clause("artists", search, "search_artist", extra_query_params)
+                )
             existing_uris = {item.uri for item in result}
 
             for album in await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=remaining_limit,
-                order_by=order_by,
+                sort_field=field,
+                sort_direction=direction,
                 provider_filter=self._provider_filter_considering_reachability(
                     provider, reachable_via
                 ),
@@ -281,6 +339,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 in_library_only=True,
                 summary=summary,
                 reachable_via=reachable_via,
+                random_seed=random_seed,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if album.uri not in existing_uris:
@@ -299,14 +358,14 @@ class AlbumsController(MediaControllerBase[Album]):
         Restricted to the providers the current user is allowed to see when that user
         has a provider filter set.
 
-        :param favorite_only: Only count albums marked as favorite.
+        :param favorite_only: Only count the albums the current user likes.
         :param album_types: Only count albums of these types.
         """
         sql_query = f"SELECT item_id FROM {self.db_table}"
         query_parts: list[str] = []
         query_params: dict[str, Any] = {}
         if favorite_only:
-            query_parts.append("favorite = 1")
+            query_parts.append(self._favorite_filter_clause(query_params, True))
         if album_types:
             query_parts.append("albums.album_type IN :album_types")
             query_params["album_types"] = [x.value for x in album_types]
@@ -327,13 +386,12 @@ class AlbumsController(MediaControllerBase[Album]):
                 raise MusicAssistantError("Album still has tracks linked")
             with contextlib.suppress(MediaNotFoundError):
                 await self.mass.music.tracks.remove_item_from_library(db_track.item_id)
+        # remove the item before its relations so failed analysis cleanup leaves it intact
+        await super().remove_item_from_library(item_id)
         # delete entry(s) from albumtracks table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"album_id": db_id})
         # delete entry(s) from album artists table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_ARTISTS, {"album_id": db_id})
-        # delete the album itself from db
-        # this will raise if the item still has references and recursive is false
-        await super().remove_item_from_library(item_id)
 
     async def set_release_group(
         self,
@@ -371,135 +429,237 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+        favorite: bool | None = None,
+        random_seed: int | None = None,
     ) -> list[Track]:
-        """Return album tracks for the given provider album id."""
+        """
+        Return the tracks of an album, searched, sorted and paged.
+
+        The whole album is assembled from the library and the providers once and served
+        from the cache for a while; a refresh of the album assembles it anew.
+
+        :param item_id: The album id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param in_library_only: Only list the tracks that are in the library.
+        :param search: Only list the tracks whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the disc and track order (TRACK_NUMBER) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of tracks to return; 0 returns them all.
+        :param offset: Number of tracks to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :param favorite: Only list the tracks the current user likes (True) or dislikes (False).
+        :raises InvalidDataError: When the sort field is not offered for album tracks.
+        """
+        # an unsupported sort is rejected before the album is assembled
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ALBUM_TRACKS, sort_field, sort_direction
+        )
         # always check if we have a library item for this album
         library_album = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if not library_album:
-            album_tracks = await self._get_provider_album_tracks(
+            # keyed and fetched by the one instance the selector resolves to
+            provider = self.mass.get_provider(provider_instance_id_or_domain)
+            if provider is None:
+                return []
+            tracks = await cached_listing(
+                self.mass,
+                ListingType.ALBUM_TRACKS,
+                create_uri(MediaType.ALBUM, provider.instance_id, item_id),
+                lambda: self._list_provider_album(item_id, provider.instance_id),
+                item_type=Track,
+            )
+        else:
+            # respect the current user's provider filter (if any) for both the
+            # in-library tracks and the live provider fetches
+            allowed_providers = self._ensure_provider_filter(None)
+            if in_library_only:
+                tracks = await self.get_library_album_tracks(
+                    library_album.item_id, provider_filter=allowed_providers
+                )
+            else:
+                tracks = await cached_listing(
+                    self.mass,
+                    ListingType.ALBUM_TRACKS,
+                    cast("str", library_album.uri),
+                    lambda: self._assemble_album_tracks(library_album, allowed_providers),
+                    item_type=Track,
+                    narrowed_to=allowed_providers,
+                )
+        if favorite is not None:
+            tracks = [track for track in tracks if track.favorite is favorite]
+        return apply_listing(
+            tracks,
+            ListingType.ALBUM_TRACKS,
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+            random_seed=random_seed,
+        )
+
+    async def playback_listing(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+    ) -> AlbumListing:
+        """
+        Return the tracks to play for an album, and the entry each of its sources lists for them.
+
+        The tracks are those of the album's tracks listing, in its order. A library album is
+        assembled anew from its sources' listings; without listings (an album outside the
+        library, or only its library tracks) each track is listed under its own copies.
+
+        :param item_id: The album id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param in_library_only: Only list the tracks that are in the library.
+        :param sort_field: Sort field, the disc and track order (TRACK_NUMBER) when omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :raises InvalidDataError: When the sort field is not offered for album tracks.
+        """
+        # an unsupported sort is rejected before the album is assembled
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.ALBUM_TRACKS, sort_field, sort_direction
+        )
+        if not in_library_only and (
+            library_album := await self.get_library_item_by_prov_id(
                 item_id, provider_instance_id_or_domain
             )
-            # some album-track listings omit the parent album and its image; backfill both
-            # from the provider album so the queue shows the album name and artwork.
-            if album_tracks and (not album_tracks[0].album or not album_tracks[0].image):
-                prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-                album_mapping = ItemMapping.from_item(prov_album)
-                for track in album_tracks:
-                    if prov_album.image and not track.image:
-                        track.metadata.add_image(prov_album.image)
-                    if track.album is None:
-                        track.album = album_mapping
-            return album_tracks
-
-        # respect the current user's provider filter (if any) for both the
-        # in-library tracks and the live provider fetches below
-        allowed_providers = self._ensure_provider_filter(None)
-        db_items = await self.get_library_album_tracks(
-            library_album.item_id, provider_filter=allowed_providers
-        )
-        result: list[Track] = list(db_items)
-        if in_library_only:
-            # return in-library items only
-            return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
-
-        # return all (unique) items from all providers
-        # because we are returning the items from all providers combined,
-        # we need to make sure that we don't return duplicates
-        unique_ids: set[str] = {f"{x.disc_number}.{x.track_number}" for x in db_items}
-        unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
-        for db_item in db_items:
-            unique_ids.update(x.item_id for x in db_item.provider_mappings)
-        # where each provider track landed in the result, so a playable copy from another
-        # provider can take the place of an unplayable one
-        provider_slots: dict[str, int] = {}
-        for provider_mapping in library_album.provider_mappings:
-            if (
-                allowed_providers is not None
-                and provider_mapping.provider_instance not in allowed_providers
-            ):
-                continue
-            provider_tracks = await self._get_provider_album_tracks(
-                provider_mapping.item_id, provider_mapping.provider_instance
+        ):
+            assembled, _ = await self._assemble(library_album, self._ensure_provider_filter(None))
+            return replace(
+                assembled,
+                tracks=apply_listing(
+                    assembled.tracks,
+                    ListingType.ALBUM_TRACKS,
+                    sort_field=sort_field,
+                    sort_direction=sort_direction,
+                ),
             )
-            for provider_track in provider_tracks:
-                # In some cases (looking at you YTM) the disc/track number is not obtained from
-                # library_tracks. Ensure to update the disc/track number when interacting with
-                # album tracks
-                db_track = next(
-                    (
-                        x
-                        for x in db_items
-                        if x.sort_name == provider_track.sort_name
-                        and x.version == provider_track.version
-                    ),
-                    None,
-                )
-                if (
-                    db_track
-                    and db_track.track_number == 0
-                    and db_track.track_number != provider_track.track_number
-                ):
-                    await self._set_album_track(
-                        db_id=int(library_album.item_id),
-                        db_track_id=int(db_track.item_id),
-                        track=provider_track,
-                    )
-                if provider_track.item_id in unique_ids:
-                    continue
-                unique_id = f"{provider_track.disc_number}.{provider_track.track_number}"
-                if unique_id in unique_ids:
-                    continue
-                unique_id = f"{provider_track.name.lower()}.{provider_track.version.lower()}"
-                slot = provider_slots.get(unique_id)
-                if unique_id in unique_ids and (
-                    slot is None or result[slot].available or not provider_track.available
-                ):
-                    continue
-                unique_ids.add(unique_id)
-                provider_track.album = library_album
-                # always prefer album image
-                album_images = [library_album.image] if library_album.image else []
-                track_images: list[MediaItemImage] = provider_track.metadata.images or []
-                provider_track.metadata.images = UniqueList(album_images + track_images)
-                if slot is None:
-                    provider_slots[unique_id] = len(result)
-                    result.append(provider_track)
-                else:
-                    result[slot] = provider_track
-        # NOTE: we need to return the results sorted on disc/track here
-        # to ensure the correct order at playback
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
+        return mapped_album_listing(
+            await self.tracks(
+                item_id,
+                provider_instance_id_or_domain,
+                in_library_only,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+                limit=None,
+            )
+        )
 
     async def versions(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> UniqueList[Album]:
-        """Return all versions of an album we can find on all providers."""
-        album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        streaming_search_query = (
-            f"{album.artists[0].name} - {album.name}" if album.artists else album.name
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+        random_seed: int | None = None,
+    ) -> list[Album]:
+        """
+        Return the versions of an album on all providers, searched, sorted and paged.
+
+        :param item_id: The album id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        :param search: Only list the versions whose name or artist name contains this text.
+        :param sort_field: Sort field, the order the providers list them in (ORIGINAL) when
+            omitted.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of versions to return; 0 returns them all.
+        :param offset: Number of versions to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :raises InvalidDataError: When the sort field is not offered for versions.
+        """
+        return await self._versions_listing(
+            item_id,
+            provider_instance_id_or_domain,
+            lambda provider_id: self._assemble_versions(item_id, provider_id),
+            search=search,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
+            random_seed=random_seed,
         )
-        result: UniqueList[Album] = UniqueList()
-        for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
-            if not provider or not isinstance(provider, MusicProvider):
-                continue
-            if MediaType.ALBUM not in provider.supported_media_types:
-                continue
-            # TODO: filter by artists in db for non-streaming providers
-            search_query = streaming_search_query if provider.is_streaming_provider else album.name
-            result.extend(
-                prov_item
-                for prov_item in await self.search(search_query, provider_id)
-                if loose_compare_strings(album.name, prov_item.name)
-                and compare_artists(prov_item.artists, album.artists, any_match=True)
-                # make sure that the 'base' version is NOT included
-                and not album.provider_mappings.intersection(prov_item.provider_mappings)
+
+    async def resolve_musicbrainz_release_group(
+        self, release_group_id: str, allow_update_metadata: bool = True
+    ) -> Album:
+        """
+        Return the album a MusicBrainz release group is, on one of the user's music providers.
+
+        The group's likeliest official editions are tried in turn, and the album is the first
+        one a music provider has, found through the links MusicBrainz keeps or, failing
+        those, by the edition's barcode. An album already in the library is returned as the
+        library album.
+
+        :param release_group_id: MusicBrainz release group id.
+        :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
+        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        :raises MediaNotFoundError: None of the user's music providers has the album.
+        """
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            raise ProviderUnavailableError("MusicBrainz is not available")
+        # a heavily reissued album has more editions than one page holds, of which the
+        # likeliest few are wanted rather than the whole set
+        editions = [
+            release
+            for release in await musicbrainz.browse_releases_by_release_group(
+                release_group_id, complete=False
             )
-        return result
+            if release.status == "Official"
+        ]
+        # the digital editions of one group carry different ids on the providers, so each
+        # edition's own links and barcode are tried, never those of the whole group; the
+        # editions linked to the user's own services go first, as only those resolve by link
+        services = {source.domain for source in self.mass.music.providers if source.available}
+        ranked = sorted(editions, key=lambda edition: _streaming_edition_rank(edition, services))
+        for edition in ranked[:_MAX_EDITION_LOOKUPS]:
+            try:
+                release = await musicbrainz.get_release_details(edition.id)
+            except InvalidDataError as err:
+                # a stale edition costs nothing but its turn
+                self.logger.debug("Release %s could not be looked up: %s", edition.id, err)
+                continue
+            # a link names one loaded instance of a service, while the user may only be
+            # handed an album from a music source it may see
+            linked = _within_sources(
+                await provider_mappings_from_urls(
+                    self.mass, relation_urls(release.relations), MediaType.ALBUM, set()
+                ),
+                self.mass.music.providers,
+            )
+            if album := await self._first_available_album(
+                linked, release_group_id, allow_update_metadata
+            ):
+                return album
+            # a barcode lookup fans out over every provider, so it is spent only when none
+            # of the links resolves; a linked provider is asked too, as its link may be stale
+            by_barcode = await self._album_candidates_by_barcode(release)
+            if album := await self._first_available_album(
+                by_barcode, release_group_id, allow_update_metadata
+            ):
+                return album
+        msg = f"Release group {release_group_id} is not available on any music provider"
+        raise MediaNotFoundError(
+            msg,
+            translation_key="album_not_available_on_music_services",
+            translation_owner=self.translation_owner,
+        )
 
     async def get_library_album_tracks(
         self,
@@ -517,6 +677,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # base query returns this album's disc/track numbers for tracks that
         # appear on multiple albums
         return await self.mass.music.tracks.get_library_items_by_query(
+            limit=0,
             provider_filter=provider_filter,
             extra_query_parts=[
                 f"tracks.item_id IN (SELECT track_id FROM {DB_TABLE_ALBUM_TRACKS} "
@@ -524,6 +685,55 @@ class AlbumsController(MediaControllerBase[Album]):
             ],
             extra_query_params={"album_id": db_id, "preferred_album_id": db_id},
         )
+
+    async def link_album_tracks(
+        self,
+        album: Album,
+        db_tracks: Sequence[Track],
+        release: MusicBrainzRelease | None,
+        *,
+        link_providers: bool = True,
+    ) -> None:
+        """
+        Carry an album's MusicBrainz identity and provider links over to its library tracks.
+
+        The library tracks at a matching position on the release get its recording id and
+        ISRCs. For each provider the album is mapped to but one or more of its library
+        tracks are not, the provider's tracklist is matched to the library tracks by ISRC
+        or position and the matching provider tracks are linked.
+
+        :param album: The library album.
+        :param db_tracks: The album's library tracks.
+        :param release: The album's MusicBrainz release, if it was identified.
+        :param link_providers: Whether to link the tracks to the album's providers too.
+        """
+        if not db_tracks:
+            return
+        # one tracklist per streaming service, its first mapping standing for it; a local
+        # server pushes its own track mappings when it syncs, so its tracklist is left alone
+        album_mappings: dict[str, ProviderMapping] = {}
+        for mapping in sorted(
+            album.provider_mappings,
+            key=lambda x: (x.provider_domain, x.provider_instance, x.item_id),
+        ):
+            provider = self.mass.get_provider(
+                mapping.provider_instance, provider_type=MusicProvider
+            )
+            if provider is None or not provider.is_streaming_provider:
+                continue
+            album_mappings.setdefault(mapping.provider_domain, mapping)
+        track_domains = [
+            {x.provider_domain for x in track.provider_mappings} for track in db_tracks
+        ]
+        async with self.mass.music.database.deferred_commit():
+            if release is not None:
+                await self._link_tracks_to_release(db_tracks, release)
+            if not link_providers:
+                return
+            for domain, mapping in album_mappings.items():
+                if all(domain in domains for domains in track_domains):
+                    continue
+                await self._link_tracks_to_provider_album(db_tracks, mapping)
 
     async def add_item_mapping_as_album_to_library(self, item: ItemMapping) -> Album:
         """
@@ -541,10 +751,11 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         Try to find a match on the given (streaming) provider for a (database) album.
 
-        Links albums of different providers/qualities together. Sparse provider search
-        results only rule out a confident non-match; a candidate that still looks
-        ambiguous is confirmed against the full provider album, its tracklist and, as a
-        last resort, MusicBrainz before its provider mapping is accepted.
+        Links albums of different providers/qualities together. A provider that supports
+        barcode lookups is asked for the album by barcode before it is searched. Sparse
+        provider search results only rule out a confident non-match; a candidate that
+        still looks ambiguous is confirmed against the full provider album, its tracklist
+        and, as a last resort, MusicBrainz before its provider mapping is accepted.
         """
         return await self._match_provider(db_album, provider, strict, _BaseTracksMemo())
 
@@ -562,9 +773,17 @@ class AlbumsController(MediaControllerBase[Album]):
         # resolve the base tracklist at most once for the whole match operation
         base_tracks_memo = _BaseTracksMemo()
         # try to find match on all providers
-        processed_domains = set()
+        cur_provider_domains = {
+            x.provider_domain for x in db_album.provider_mappings if x.available
+        }
+        # the links MusicBrainz keeps name the album on the other providers outright, so
+        # those providers are linked first and only the remaining ones are searched
+        if musicbrainz := self._musicbrainz_link_provider():
+            cur_provider_domains |= await self._link_musicbrainz_entity(
+                db_album, lambda: musicbrainz.resolve_release(db_album)
+            )
         for provider in self.mass.music.providers:
-            if provider.domain in processed_domains:
+            if provider.domain in cur_provider_domains:
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
@@ -576,27 +795,23 @@ class AlbumsController(MediaControllerBase[Album]):
             if match := await self._match_provider(db_album, provider, True, base_tracks_memo):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_album.item_id, match)
-                processed_domains.add(provider.domain)
+                cur_provider_domains.add(provider.domain)
 
     def album_from_item_mapping(self, item: ItemMapping) -> Album:
         """Create an Album object from an ItemMapping object."""
-        domain, instance_id = None, None
+        # a library item mapping references an item already in the library, which has no
+        # mapping to itself, so only a resolvable provider yields a real provider mapping
+        provider_mappings: list[dict[str, Any]] = []
         if prov := self.mass.get_provider(item.provider):
-            domain = prov.domain
-            instance_id = prov.instance_id
-        return Album.from_dict(
-            {
-                **item.to_dict(),
-                "provider_mappings": [
-                    {
-                        "item_id": item.item_id,
-                        "provider_domain": domain,
-                        "provider_instance": instance_id,
-                        "available": item.available,
-                    }
-                ],
-            }
-        )
+            provider_mappings.append(
+                {
+                    "item_id": item.item_id,
+                    "provider_domain": prov.domain,
+                    "provider_instance": prov.instance_id,
+                    "available": item.available,
+                }
+            )
+        return Album.from_dict({**item.to_dict(), "provider_mappings": provider_mappings})
 
     async def _add_library_item(self, item: Album, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
@@ -609,7 +824,6 @@ class AlbumsController(MediaControllerBase[Album]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "version": item.version,
-                "favorite": item.favorite,
                 "album_type": item.album_type,
                 "year": item.year,
                 "metadata": serialize_to_json(item.metadata),
@@ -685,6 +899,239 @@ class AlbumsController(MediaControllerBase[Album]):
             return await prov.get_album_tracks(item_id)
         return []
 
+    async def _list_provider_album(self, item_id: str, provider_instance_id: str) -> Listing[Track]:
+        """Return the tracks of an album that is not in the library, as the provider lists them."""
+        album_tracks = await self._get_provider_album_tracks(item_id, provider_instance_id)
+        await self._backfill_album_on_tracks(album_tracks, item_id, provider_instance_id)
+        return Listing(album_tracks)
+
+    async def _assemble_album_tracks(
+        self, library_album: Album, allowed_providers: list[str] | None
+    ) -> Listing[Track]:
+        """
+        Return the tracks of a library album: its library tracks plus what its providers add.
+
+        :param library_album: The library album.
+        :param allowed_providers: The provider instances the listing is limited to, if any.
+        """
+        assembled, complete = await self._assemble(library_album, allowed_providers)
+        return Listing(assembled.tracks, complete=complete)
+
+    async def _assemble(
+        self, library_album: Album, allowed_providers: list[str] | None
+    ) -> tuple[AlbumListing, bool]:
+        """
+        Assemble a library album from its library tracks and its providers' listings.
+
+        A failing provider lookup leaves the listing incomplete, and is only raised when it
+        leaves nothing to play; a source that is not loaded leaves it incomplete as well.
+
+        :param library_album: The library album.
+        :param allowed_providers: The provider instances the listing is limited to, if any.
+        :return: The tracks with the entry each source lists for them, and whether every
+            source answered.
+        """
+        db_items = await self.get_library_album_tracks(
+            library_album.item_id, provider_filter=allowed_providers
+        )
+        # return all (unique) items from all providers
+        # because we are returning the items from all providers combined,
+        # we need to make sure that we don't return duplicates
+        listings: list[tuple[str, list[Track]]] = []
+        lookup_error: Exception | None = None
+        unanswered = False
+        fetched: set[tuple[str, str]] = set()
+        for provider_mapping in library_album.provider_mappings:
+            if not provider_mapping.available or (
+                allowed_providers is not None
+                and provider_mapping.provider_instance not in allowed_providers
+            ):
+                continue
+            # an unavailable mapped instance hands the lookup to another account of the
+            # service, which would list the album a second time over
+            own_instance = self.mass.get_provider(provider_mapping.provider_instance)
+            # a source that is not loaded (yet) answers nothing, so the listing is not kept
+            unanswered = unanswered or own_instance is None
+            own_lookup = (
+                own_instance is not None
+                and own_instance.instance_id == provider_mapping.provider_instance
+            )
+            served_by = (
+                own_instance.instance_id if own_instance else provider_mapping.provider_instance
+            )
+            listing = (served_by, provider_mapping.item_id)
+            if listing in fetched:
+                continue
+            fetched.add(listing)
+            try:
+                provider_tracks = await self._get_provider_album_tracks(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing provider must not take the whole album down: the tracks
+                # from the library and the other providers are still playable
+                lookup_error = err
+                if own_lookup and isinstance(err, MediaNotFoundError):
+                    await self.mass.music.mark_provider_mapping_unavailable(
+                        library_album, provider_mapping
+                    )
+                self.logger.log(
+                    provider_fetch_log_level(err),
+                    "Unable to fetch tracks for album %s from provider %s: %s",
+                    library_album.name,
+                    provider_mapping.provider_instance,
+                    err,
+                )
+                continue
+            listings.append((served_by, provider_tracks))
+        for db_track, source in album_track_backfills(
+            db_items, [provider_tracks for _, provider_tracks in listings]
+        ):
+            await self._set_album_track(
+                db_id=int(library_album.item_id),
+                db_track_id=int(db_track.item_id),
+                track=source,
+            )
+            db_track.disc_number = source.disc_number
+            db_track.track_number = source.track_number
+        assembled = album_listing(db_items, listings)
+        # a reference to the album, which carries no user's favorite state
+        album_mapping = ItemMapping.from_item(library_album)
+        for track in assembled.tracks:
+            if track.provider != "library":
+                track.album = album_mapping
+        # a source's own entry of a track plays in its place when that source plays the album
+        for own_entries in assembled.own_entries.values():
+            for entry in own_entries.values():
+                entry.album = album_mapping
+        if lookup_error is not None and not any(track.available for track in assembled.tracks):
+            # nothing could be played at all, so surface the reason instead of an empty list
+            raise lookup_error
+        return assembled, lookup_error is None and not unanswered
+
+    async def _assemble_versions(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> UniqueList[Album]:
+        """Return all versions of an album we can find on all providers."""
+        album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        streaming_search_query = (
+            f"{album.artists[0].name} - {album.name}" if album.artists else album.name
+        )
+        result: UniqueList[Album] = UniqueList()
+        for provider_id in self.mass.music.get_unique_providers():
+            provider = self.mass.get_provider(provider_id)
+            if not provider or not isinstance(provider, MusicProvider):
+                continue
+            if MediaType.ALBUM not in provider.supported_media_types:
+                continue
+            # TODO: filter by artists in db for non-streaming providers
+            search_query = streaming_search_query if provider.is_streaming_provider else album.name
+            result.extend(
+                prov_item
+                for prov_item in await self.search(search_query, provider_id)
+                if loose_compare_strings(album.name, prov_item.name)
+                and compare_artists(prov_item.artists, album.artists, any_match=True)
+                # make sure that the 'base' version is NOT included
+                and not album.provider_mappings.intersection(prov_item.provider_mappings)
+            )
+            if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
+                # Call the specialized function in addition to searching to
+                # handle cases where the provider hasn't merged the album
+                # variants
+                if mapped_id := next(
+                    (
+                        p.item_id
+                        for p in album.provider_mappings
+                        if p.provider_instance == provider.instance_id
+                    ),
+                    None,
+                ):
+                    result.extend(await provider.get_album_versions(mapped_id))
+        return result
+
+    async def _backfill_album_on_tracks(
+        self, album_tracks: list[Track], item_id: str, provider_instance_id_or_domain: str
+    ) -> None:
+        """
+        Fill in the parent album and its image on provider album tracks that omit them.
+
+        :param album_tracks: The album tracks as listed by the provider.
+        :param item_id: The provider album id.
+        :param provider_instance_id_or_domain: The provider the album tracks come from.
+        """
+        # some album-track listings omit the parent album and its image; backfill both
+        # from the provider album so the queue shows the album name and artwork.
+        if not album_tracks or (album_tracks[0].album and album_tracks[0].image):
+            return
+        prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        album_mapping = ItemMapping.from_item(prov_album)
+        for track in album_tracks:
+            if prov_album.image and not track.image:
+                track.metadata.add_image(prov_album.image)
+            if track.album is None:
+                track.album = album_mapping
+
+    async def _verify_musicbrainz_mapping(self, db_item: Album, mapping: ProviderMapping) -> bool:
+        """Return True if a linked album exists on the provider, checked for Apple Music only."""
+        # MusicBrainz links Apple Music albums per storefront, so a linked album may not
+        # exist in the user's storefront; the other providers' catalogs are worldwide
+        if mapping.provider_domain != "apple_music":
+            return True
+        try:
+            await self.get_provider_item(
+                mapping.item_id, mapping.provider_instance, allow_fallback=False
+            )
+        except MusicAssistantError, aiohttp.ClientError, TimeoutError:
+            return False
+        return True
+
+    async def _link_tracks_to_release(
+        self, db_tracks: Sequence[Track], release: MusicBrainzRelease
+    ) -> None:
+        """Fill the recording ids and ISRCs of a release in on the library tracks at its positions."""
+        recordings = {
+            (medium.position, track.position): track.recording
+            for medium in release.media
+            for track in medium.tracks
+            if track.position and track.recording
+        }
+        for db_track in db_tracks:
+            # a digital release stores its single disc as disc 0 or 1
+            recording = recordings.get((db_track.disc_number or 1, db_track.track_number))
+            if recording is None or not _recording_matches_track(recording, db_track):
+                continue
+            changed = fill_track_from_recording(db_track, recording)
+            if not changed and db_track.metadata.last_musicbrainz_lookup is not None:
+                continue
+            db_track.metadata.last_musicbrainz_lookup = int(time())
+            await self.mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
+
+    async def _link_tracks_to_provider_album(
+        self, db_tracks: Sequence[Track], mapping: ProviderMapping
+    ) -> None:
+        """Link the tracks of a provider album to the library tracks they are."""
+        try:
+            provider_tracks = await self._get_provider_album_tracks(
+                mapping.item_id, mapping.provider_instance
+            )
+        except PROVIDER_FETCH_ERRORS as err:
+            self.logger.debug(
+                "Album tracks unavailable for %s on %s: %s",
+                mapping.item_id,
+                mapping.provider_instance,
+                err,
+            )
+            return
+        for db_track in db_tracks:
+            if any(
+                x.provider_domain == mapping.provider_domain for x in db_track.provider_mappings
+            ):
+                continue
+            if provider_track := _matching_provider_track(db_track, provider_tracks):
+                await self.mass.music.tracks.add_unclaimed_provider_mappings(
+                    db_track.item_id, provider_track.provider_mappings
+                )
+
     def _library_match_names(self, item: Album | ItemMapping) -> list[str]:
         """Return the normalized album names, with and without a spelled-out retail suffix."""
         base_name = create_safe_string(strip_album_retail_suffix(item.name), True, True)
@@ -720,13 +1167,23 @@ class AlbumsController(MediaControllerBase[Album]):
         strict: bool,
         base_tracks_memo: _BaseTracksMemo,
     ) -> list[ProviderMapping]:
-        """Search one provider and return the mappings of every confirmed album match."""
+        """Match one provider by barcode, then by search, and return the confirmed mappings."""
         self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
         matches: list[ProviderMapping] = []
-        search_str = (
-            f"{db_album.artists[0].name} - {db_album.name}" if db_album.artists else db_album.name
-        )
-        for search_result_item in await self.search(search_str, provider.instance_id):
+        if ProviderFeature.ALBUM_BY_EXTERNAL_ID in provider.supported_features:
+            matches = await self._match_provider_by_barcode(
+                db_album, provider, strict, base_tracks_memo
+            )
+        # a barcode hit makes the search unnecessary
+        search_results: list[Album] = []
+        if not matches:
+            search_str = (
+                f"{db_album.artists[0].name} - {db_album.name}"
+                if db_album.artists
+                else db_album.name
+            )
+            search_results = await self.search(search_str, provider.instance_id)
+        for search_result_item in search_results:
             if not search_result_item.available:
                 continue
             # a sparse search result only rules out a confident non-match; a MATCH or an
@@ -755,6 +1212,132 @@ class AlbumsController(MediaControllerBase[Album]):
             )
         return matches
 
+    async def _match_provider_by_barcode(
+        self,
+        db_album: Album,
+        provider: MusicProvider,
+        strict: bool,
+        base_tracks_memo: _BaseTracksMemo,
+    ) -> list[ProviderMapping]:
+        """Return the mappings of the provider album one of the base album's barcodes resolves to."""
+        # the order only makes the choice of looked-up barcodes deterministic
+        for barcode in sorted(_canonical_album_barcodes(db_album))[:MAX_EXTERNAL_ID_MATCH_LOOKUPS]:
+            try:
+                prov_album = await provider.get_album_by_external_id(barcode, ExternalID.BARCODE)
+                if prov_album is None:
+                    continue
+                # a lookup result can be a simplified object, so fetch the full provider album
+                prov_album = await self.get_provider_item(
+                    prov_album.item_id, prov_album.provider, fallback=prov_album
+                )
+            except EXTERNAL_ID_LOOKUP_ERRORS as err:
+                self.logger.debug(
+                    "Barcode %s lookup on provider %s failed: %s", barcode, provider.name, err
+                )
+                continue
+            if not prov_album.available:
+                continue
+            # the queried barcode is the query, not evidence: it is left out of the scored
+            # copy so name, artist, year and the tracklist decide, while a second,
+            # independently agreeing barcode still counts
+            candidate = replace(
+                prov_album,
+                external_ids={
+                    (kind, value)
+                    for kind, value in prov_album.external_ids
+                    if not (kind == ExternalID.BARCODE and barcode_to_upc(value) == barcode)
+                },
+            )
+            evidence = await self._resolve_album_evidence(
+                db_album, candidate, provider, strict, base_tracks_memo
+            )
+            if evidence == AlbumMatchEvidence.MATCH:
+                return list(prov_album.provider_mappings)
+        return []
+
+    async def _album_candidates_by_barcode(
+        self, release: MusicBrainzRelease
+    ) -> list[ProviderMapping]:
+        """
+        Return the mappings of the albums the music providers find by a release's barcode.
+
+        Only an album that is the release, by title and primary artist, counts.
+
+        :param release: The MusicBrainz release, with its barcode and artist credits.
+        """
+        if not release.barcode or not is_valid_barcode(release.barcode):
+            return []
+        upc = barcode_to_upc(release.barcode)
+        providers = [
+            provider
+            for provider in self.mass.music.providers
+            if provider.supports_feature(ProviderFeature.ALBUM_BY_EXTERNAL_ID)
+        ]
+        hits = await asyncio.gather(
+            *(self._album_by_barcode(provider, upc) for provider in providers)
+        )
+        candidates: list[ProviderMapping] = []
+        for provider, hit in zip(providers, hits, strict=True):
+            if hit is None:
+                continue
+            # a barcode gets reused, and a provider answers with the first album carrying it
+            if not release_matches_album(release, hit):
+                self.logger.debug(
+                    "Barcode %s on provider %s is album %s, not %s",
+                    upc,
+                    provider.name,
+                    hit.name,
+                    release.title,
+                )
+                continue
+            candidates.extend(hit.provider_mappings)
+        return candidates
+
+    async def _album_by_barcode(self, provider: MusicProvider, upc: str) -> Album | None:
+        """Return the album a provider finds by a barcode, if it has one and answers."""
+        try:
+            return await provider.get_album_by_external_id(upc, ExternalID.BARCODE)
+        except EXTERNAL_ID_LOOKUP_ERRORS as err:
+            self.logger.debug(
+                "Barcode %s lookup on provider %s failed: %s", upc, provider.name, err
+            )
+            return None
+
+    async def _first_available_album(
+        self,
+        candidates: Sequence[ProviderMapping],
+        release_group_id: str,
+        allow_update_metadata: bool,
+    ) -> Album | None:
+        """Return the first candidate its provider still serves as an album, if any."""
+        for candidate in candidates:
+            try:
+                if library_album := await self.get_library_item_by_prov_id(
+                    candidate.item_id, candidate.provider_instance
+                ):
+                    return await self.get(
+                        library_album.item_id,
+                        "library",
+                        allow_update_metadata=allow_update_metadata,
+                    )
+                # the candidate names one of the user's own sources, so an unavailable one
+                # must not fall back to another account of the same service
+                return await self.get_provider_item(
+                    candidate.item_id,
+                    candidate.provider_instance,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
+                )
+            except EXTERNAL_ID_LOOKUP_ERRORS as err:
+                self.logger.debug(
+                    "Release group %s is not available as album %s on %s: %s",
+                    release_group_id,
+                    candidate.item_id,
+                    candidate.provider_instance,
+                    err,
+                )
+        return None
+
     async def _resolve_album_evidence(
         self,
         db_album: Album,
@@ -780,7 +1363,7 @@ class AlbumsController(MediaControllerBase[Album]):
         base_tracks = await self._resolve_base_album_tracks(db_album, base_tracks_memo)
         try:
             compare_tracks = await provider.get_album_tracks(prov_album.item_id)
-        except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+        except PROVIDER_FETCH_ERRORS as err:
             # the candidate tracklist is unavailable: treat it as absent and let MusicBrainz decide
             self.logger.debug(
                 "Album tracks unavailable for %s on %s: %s",
@@ -843,7 +1426,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider_tracks = await self._get_provider_album_tracks(
                     mapping.item_id, mapping.provider_instance
                 )
-            except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+            except PROVIDER_FETCH_ERRORS as err:
                 # this mapping's tracklist is unavailable: try the next existing mapping
                 self.logger.debug(
                     "Base album tracks unavailable for %s on %s: %s",
@@ -880,7 +1463,7 @@ class AlbumsController(MediaControllerBase[Album]):
         try:
             for barcode in sorted(base_barcodes | compare_barcodes):
                 releases_by_barcode[barcode] = await musicbrainz.get_releases_by_barcode(barcode)
-        except (RetriesExhausted, InvalidDataError, TimeoutError, aiohttp.ClientError) as err:
+        except _MUSICBRAINZ_LOOKUP_ERRORS as err:
             self.logger.debug(
                 "MusicBrainz barcode lookup failed while matching album %s: %s",
                 base_album.name,
@@ -979,9 +1562,19 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
 
-    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AlbumSummary:
+    def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str:
+        """Return the ORDER BY clause for a sort field, ARTIST_NAME through the artists join."""
+        if field == SortField.ARTIST_NAME:
+            if direction == SortDirection.DESC:
+                return "artists.search_name DESC, year DESC"
+            return "artists.search_name ASC, year DESC"
+        return super()._get_sort_sql(field, direction)
+
+    def _parse_summary_row(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> AlbumSummary:
         """Parse a raw summary db row into an AlbumSummary object."""
-        item = cast("AlbumSummary", super()._parse_summary_row(db_row))
+        item = cast("AlbumSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.year = db_row["year"]
         item.album_type = AlbumType(db_row["album_type"])
@@ -996,6 +1589,52 @@ def _canonical_album_barcodes(album: Album) -> set[str]:
         for external_id_type, value in album.external_ids
         if external_id_type == ExternalID.BARCODE and is_valid_barcode(value)
     }
+
+
+def _streaming_edition_rank(
+    release: MusicBrainzBarcodeRelease, services: set[str]
+) -> tuple[bool, bool, bool, bool, str]:
+    """
+    Return the sort key ranking a group's official editions, the one the user's services carry first.
+
+    :param release: The edition as the release group browse lists it.
+    :param services: The domains of the music services the user may see.
+    """
+    linked = {
+        service
+        for url in relation_urls(release.relations)
+        if (service := share_url_provider(url, MediaType.ALBUM))
+    }
+    return (
+        not linked & services,
+        not is_digital_release(release),
+        not linked,
+        release.country not in ("XW", "XE"),
+        release.date or "9999",
+    )
+
+
+def _within_sources(
+    candidates: Iterable[ProviderMapping], sources: Sequence[MusicProvider]
+) -> list[ProviderMapping]:
+    """
+    Return the candidates that name one of the given music sources.
+
+    A candidate stays on its own instance when that is an available source; otherwise it
+    moves to the first available instance the sources have of its service, failing that to
+    the first there is. One on a service they do not include is left out.
+    """
+    available = {source.instance_id for source in sources if source.available}
+    first_by_domain: dict[str, str] = {}
+    for source in sorted(sources, key=lambda source: not source.available):
+        first_by_domain.setdefault(source.domain, source.instance_id)
+    within: list[ProviderMapping] = []
+    for candidate in candidates:
+        if candidate.provider_instance in available:
+            within.append(candidate)
+        elif instance := first_by_domain.get(candidate.provider_domain):
+            within.append(replace(candidate, provider_instance=instance))
+    return within
 
 
 def _unambiguous_release_ids(
@@ -1019,4 +1658,51 @@ def _release_group_ids(
         release.release_group.id
         for barcode in barcodes
         for release in releases_by_barcode.get(barcode, [])
+    }
+
+
+def _recording_matches_track(recording: MusicBrainzRecording, track: Track) -> bool:
+    """Return whether a release's recording is the given library track, by title and length."""
+    if not compare_strings(recording.title, track.name, strict=False):
+        return False
+    if recording.length is None or not track.duration:
+        return True
+    return abs(recording.length / 1000 - track.duration) <= _TRACK_DURATION_TOLERANCE
+
+
+def _matching_provider_track(db_track: Track, provider_tracks: Sequence[Track]) -> Track | None:
+    """Return the provider track that is the given library track: by ISRC, else by position."""
+    isrcs = _isrcs(db_track)
+    if isrcs:
+        # an ISRC is occasionally reused, so the durations must agree as well
+        for provider_track in provider_tracks:
+            if isrcs & _isrcs(provider_track) and _durations_agree(db_track, provider_track):
+                return provider_track
+    if not db_track.track_number:
+        return None
+    # a digital release stores its single disc as disc 0 or 1
+    position = (db_track.disc_number or 1, db_track.track_number)
+    for provider_track in provider_tracks:
+        if (
+            (provider_track.disc_number or 1, provider_track.track_number) == position
+            and compare_strings(provider_track.name, db_track.name, strict=False)
+            and _durations_agree(db_track, provider_track)
+        ):
+            return provider_track
+    return None
+
+
+def _durations_agree(track: Track, other: Track) -> bool:
+    """Return whether two tracks' durations are within tolerance, an unknown duration passing."""
+    if not track.duration or not other.duration:
+        return True
+    return abs(track.duration - other.duration) <= _TRACK_DURATION_TOLERANCE
+
+
+def _isrcs(track: Track) -> set[str]:
+    """Return a track's valid ISRCs in canonical form."""
+    return {
+        normalize_external_id(ExternalID.ISRC, value)
+        for id_type, value in track.external_ids
+        if id_type == ExternalID.ISRC and is_valid_isrc(value)
     }

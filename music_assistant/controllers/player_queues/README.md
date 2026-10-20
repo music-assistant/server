@@ -19,6 +19,7 @@ docstrings.
 - [Radio and Dynamic Continuation](#radio-and-dynamic-continuation)
 - [Smart Shuffle and Smart Fades Ordering](#smart-shuffle-and-smart-fades-ordering)
 - [Track Resolution](#track-resolution)
+- [Queue Item Origin](#queue-item-origin)
 - [Play Counting and Resume](#play-counting-and-resume)
 - [Module Layout](#module-layout)
 - [Configuration](#configuration)
@@ -59,8 +60,9 @@ and the targets for playback, and coordinates with several sibling controllers:
   reconciles itself against real player state. The `queue_id` is the `player_id`.
 - **Streams Controller (`mass.streams`)** — resolves a `QueueItem`'s stream details when loading
   and pre-loading items, and provides the audio-buffer primitive. It also drives next-track buffer
-  warming: from inside the active-track streaming pipeline, near the end of the current track, it
-  calls back into the queue controller to prepare the next item's audio buffer.
+  warming: near the end of the item being streamed, or once a realtime source has delivered all
+  of its audio, it calls back into the queue controller to prepare the audio buffer of the item
+  that follows the streamed one.
 - **Config Controller (`mass.config`)** — supplies this controller's own core config values
   (default enqueue options and selection modes), read back at enqueue time.
 - **Cache Controller (`mass.cache`)** — persists and restores each queue's `PlayerQueueData` (its
@@ -78,7 +80,7 @@ and the targets for playback, and coordinates with several sibling controllers:
 | `PlayerQueuesController` | The controller: owns all live `PlayerQueueData` records, exposes the API commands, and bridges player events to queue state. Subclass of `CoreController`. |
 | `PlayerQueue` (models) | The **wire snapshot** of a queue — a simplified, client-facing view that is shared with API clients over the websocket. Carries the client-relevant playback state and behaviour flags: playback state, shuffle/repeat/crossfade/autoplay, flow mode, the `sources` (as `ItemMapping`s), the current item and index, and elapsed time. It holds no server-only state and is not itself cache-serialized. |
 | `PlayerQueueData` (server) | The **complete, server-held state** of a queue (`state.py`). Wraps the wire `PlayerQueue` and adds the state that never leaves the server: the ordered `QueueItem` list, the full media items behind the dynamic `sources`, the enqueued parent items, the owning user, the transient stream-session fields, and runtime-only bookkeeping. Owns the cache (de)serialization for the pair. One per `queue_id`. |
-| `QueueItem` | A single playable entry: the media-item reference, its resolved stream details, an ordering index, and per-item `extra_attributes` (e.g. playback speed). Serializable to and from the cache. |
+| `QueueItem` | A single playable entry: the media-item reference, where it was played from (`origin`), its resolved stream details, an ordering index, and per-item `extra_attributes` (e.g. playback speed). Serializable to and from the cache. |
 | `Player` / `PlayerMedia` | `Player` is the device whose real-time state the queue is reconciled against (state, active source, corrected elapsed time, type). `PlayerMedia` is the resolved playback payload (uri, images, ...) handed to the player for a queue item. |
 | `MediaItemType` family | The source media abstractions (track, album, artist, playlist, podcast, podcast episode, audiobook, genre, browse folder, item mapping) that the controller expands/resolves into concrete tracks and `QueueItem`s before enqueueing. |
 
@@ -116,7 +118,8 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   user left it across everything they play, except when the media carries an order of its own:
   starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
   with *play* or *replace* switches shuffle off, because those are sequenced content rather than a
-  pool of tracks. An explicit `shuffle` argument on `play_media` always wins, and the first item of
+  pool of tracks. An artist counts as sequenced too when it plays its albums under an album
+  order. Top tracks, an artist without albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
   a batch decides for the whole batch — it is the only media type known before the items are
   resolved. Switching shuffle off goes through `set_shuffle`, so the items that stay in the queue
   are restored to their original order rather than left shuffled behind a queue that now reads
@@ -155,15 +158,25 @@ are dropped.
 
 Transport and playback actions on a given queue are serialized through the player's shared playback
 lock, obtained from the Player Controller. That lock is re-entrant, so nested actions on the same
-queue do not deadlock. While an action is in progress an "action in progress" flag is surfaced on
-the queue and reported to subscribers.
+queue do not deadlock. Play actions take it strictly: a request waits for the running one to finish,
+up to 120 seconds per lock, and then fails with a busy error rather than run alongside it (the player
+controller's own commands fall back to running without the lock after 30 seconds, to survive a hung
+provider call). The next-track handover takes the same strict lock and only checks the queue once it
+holds it, so a track handed to the player after a wait is still the one that follows the playing one.
+Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
+the player has the track, and hands over the real next track when an edit changed it meanwhile.
+While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
+subscribers.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
-player-update callbacks are skipped while a queue is mid-transition. Background and delayed work —
-preloading the next item, buffer preparation, radio fill, resume-on-idle, delayed clear/resume — is
-dispatched as tasks or timers rather than run inline, and the relevant tasks/timers are cancelled on
-player removal and on stop so stale work cannot enqueue after a queue has stopped. Long passes (such
-as a full shuffle) yield to the event loop while running.
+player-update callbacks are skipped while a queue is mid-transition. A load that shuffles prepares
+its new items from the list it started with, so `update_items` keeps the queue on its current item:
+when the player moved on in the meantime, the index follows that item to where it now sits.
+Background and delayed work — preloading the next item, buffer preparation, radio fill,
+resume-on-idle, delayed clear/resume — is dispatched as tasks or timers rather than run inline, and
+the relevant tasks/timers are cancelled on player removal and on stop so stale work cannot enqueue
+after a queue has stopped. Long passes (such as a full shuffle) yield to the event loop while
+running.
 
 ## Player-to-Queue State Reconciliation
 
@@ -185,17 +198,25 @@ signalled events + cache write.
 To make playback gapless and to support crossfades, the controller anticipates the upcoming item:
 it computes the next index, pre-resolves that item's stream details via the Streams Controller, and
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
-of this enqueue path — it is triggered by the Streams Controller near the end of the current track,
-via a callback into the queue controller. Stale buffers and crossfade data are cleaned up when the
-queue stops, is cleared, or advances. Every buffer records the session that claimed it, and a stop
-leaves alone only what the session playing *now* claimed, so playback that restarted before the
-stop got that far keeps its audio. Everything else goes, including what sessions that ended
-earlier left behind: sessions rotate without a stop, so a claim that is no longer current marks
-audio nobody will come back for. A clear or a replace drops the items themselves, so all of their
-audio goes with them.
+of this enqueue path — it is triggered by the Streams Controller near the end of the streamed track,
+via a callback into the queue controller, and always targets the item after the streamed one.
+Stale buffers and crossfade data are cleaned up when the queue stops, is cleared, or advances. Every
+buffer records the session that claimed it, and a stop leaves alone only what the session playing
+*now* claimed, so playback that restarted before the stop got that far keeps its audio. Everything
+else goes, including what sessions that ended earlier left behind: sessions rotate without a stop,
+so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
+drops the items themselves, so all of their audio goes with them.
+
+A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
+When playback on another queue finds no free provider stream slot and one of those buffers holds
+one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
+source stream. Preparing the next track ahead of time never stops a paused queue. A player that
+could not be told to stop still shows paused on a stream its queue has ended, so play starts the
+queue again there rather than unpausing the player.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
-(Next-track audio-buffer warming is driven separately by the streams pipeline near track end.)
+(Next-track audio-buffer warming is driven separately by the streams pipeline, relative to the
+streamed item.)
 
 ## Radio and Dynamic Continuation
 
@@ -240,12 +261,20 @@ Fades already has to improve the order of upcoming tracks. Recency stays in char
 are selected.
 
 In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
-part it already considers safe to move. Within each recency tier, the full movable population can
-be considered when choosing the next track. The last fixed track is used as the starting point.
+part it already considers safe to move, one batch of `SMART_FADE_ORDERING_BATCH` tracks at a time
+(the size of a dynamic refill batch). A shuffle orders the first batch inside its recency tiers.
+When playback gets close to the last ordered track, the next batch is ordered in the background:
+only its transitions change, items that are not tracks (such as DJ clips) keep their place, and the
+result is written back only if the queue did not change meanwhile. Tracks only move inside their
+batch, so Smart Shuffle keeps deciding which tracks play next: ordering a whole queue at once
+favours tracks that already have analysis, which for streaming providers are the tracks played
+before. The batch end is only kept in memory; after a restart, or once playback has passed it, the
+rest of the queue keeps the regular Smart Shuffle order until the next shuffle. The last fixed track
+is used as the starting point.
 
 In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
-accepted batch from the existing queue tail. Both modes consider every remaining track in the run
-being ordered; Dynamic Mode simply orders one refill batch at a time.
+accepted batch from the existing queue tail. Both modes order one batch at a time and consider every
+track in it.
 
 No analysis is started for this. Unknown data stays neutral. The score uses tempo, graded Camelot
 key affinity and end-to-start RMS energy. These are ranking signals, not filters. A silent outgoing
@@ -265,11 +294,63 @@ images.
 Data flow: media item → Music/Metadata controller lookups → `Track`/`QueueItem` list and
 `PlayerMedia`.
 
+## Queue Item Origin
+
+Every queue item records where it was played from in `QueueItem.origin`: the container (album,
+playlist, podcast, folder, ...) as an `ItemMapping`, and the copy that container listed for the
+item as a `(provider_instance, item_id)` pair, the pin. When the Streams Controller picks the copy
+to stream, the pinned one comes first, so an album, playlist or folder plays from its own source
+rather than from the best copy elsewhere (the streams README describes the full order and the
+settings that change it).
+
+The origin is captured at enqueue time, as the container is expanded: `MediaResolver` returns a
+`ResolvedItem(item, origin)` for every item it resolves, and `build_queue_item` stores the origin
+on the queue item. `_load_item` keeps it when it swaps in the full library track. The pins follow
+these rules (`helpers.origin_for` for a container's entries, `MediaResolver` for folders, albums
+and items played on their own):
+
+- A playlist or podcast pins each entry to its own provider copy, and so does a dynamic source
+  for the tracks it adds once the queue has run out. A library item names no copy and an entry of
+  a builtin (Music Assistant) playlist an arbitrary one, so neither is pinned; the container is
+  still recorded.
+- A folder pins each file it lists, and a library track standing in for a file to its copy under
+  that folder. An album folder, or a disc subfolder of one, records the library album as its
+  container, so it plays with album loudness like the album itself. An album inside a played
+  folder (an album folder below it, or an album a folder lists) plays as part of the folder it
+  sits in: its tracks keep their pins but record that folder.
+- An artist, a genre or a finite radio station records itself without pinning anything.
+- An audiobook or podcast episode played on its own is pinned to the copy it was started from, so
+  its progress and resume stay on that account. A single track played on its own has no origin.
+
+A track played from an album, or from the album's own folder, plays as part of that album: it
+uses the album loudness, and it is not crossfaded into the next track played from the same album
+unless the streams setting `allow_crossfade_same_album` is on. The first of those tracks to play to
+the end counts the album as played, once until the album is played again.
+
+**Album source.** An album plays all of its tracks from one source. `_resolve_album` asks the Music
+Controller for the album's `playback_listing` (which entry each source lists for each track),
+keeps the sources the playback user may play from, and lets `select_container_source` (in the
+streams controller's `stream_sources.py`) choose one: local sources first in the prefer-local
+mode, then the playback user's own accounts, then a source that lists every library track, then
+quality. Each track is pinned to the chosen source's entry; a track that source lacks plays as the
+album lists it. When every track is to be ranked on its own (the `best_quality_per_track` mode) no
+source is chosen and nothing is pinned, and a track outside the library plays the best entry any
+of the album's sources lists. The source is chosen at enqueue time, so a changed source mode
+applies to the albums queued after it; only `best_quality_per_track` also reaches the albums
+already queued, as it ignores their pins at playback. The upgrade threshold is applied at
+playback, so it reaches them as well.
+
+Data flow: media item → `ResolvedItem`s with their origin → `QueueItem.origin` → the pinned copy
+first when the stream is selected.
+
 ## Play Counting and Resume
 
-The controller decides when a track counts as played and reports it to the Music Controller. Plays
-are de-duplicated using a last-counted-play marker (with album-level handling) so a track is not
-double-counted on the end-of-queue idle transition. It also computes and applies resume positions
+The controller decides when a track counts as played and reports it to the Music Controller. Only
+an item whose audio actually reached the player (recorded when its first chunk is served) is ever
+reported as played or taken as the item the queue ended on, so an item a player merely names from
+its own cached copy of the queue is never credited and never ends the queue.
+Plays are de-duplicated using a last-counted-play marker (with album-level handling) so a track is
+not double-counted on the end-of-queue idle transition. It also computes and applies resume positions
 for audiobooks and podcast episodes, and restores a previously playing queue from the play log.
 
 Data flow: playback-progress reports / idle transitions → should-count decision → record play count;
@@ -310,7 +391,7 @@ player_queues/
 │                   #   snapshot + items, source/enqueued media, user, stream-session + runtime fields)
 │                   #   and the cache (de)serialization the wire model no longer carries
 ├── helpers.py      # stateless utility layer: the previous-state snapshot type, the playback-lock /
-│                   #   in-progress-flag decorator, and pure helpers (sort, dynamic-source detection,
+│                   #   in-progress-flag decorator, and pure helpers (album order, dynamic-source detection,
 │                   #   current playback speed). Never imports the controller; the play-action
 │                   #   decorator types it via a local Protocol (_PlayActionHost) to avoid a cycle
 ├── strings.json    # localization manifest: translatable name + description of the core module
@@ -335,7 +416,11 @@ mechanism) that configure default enqueue behaviour, in three groups:
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
 - **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
-  prefer library, all tracks).
+  prefer library, all tracks), and the order an artist plays in: shuffled tracks, or its albums
+  in random or release order. The artist selection picks the artist's own albums, and each album
+  plays as it does on its own, following the album selection. The album orders leave out singles,
+  and the compilations found only on a provider. They fall back to shuffled tracks for the top
+  tracks selection or an artist without albums.
 - **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
   clicked (*browse* or *play*), and what the play button on a track row inside an album
   or playlist starts (*play from here* or *play track*).

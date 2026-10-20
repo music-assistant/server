@@ -108,6 +108,7 @@ def test_mark_ended_on_an_itemless_queue_clears_it() -> None:
 def test_clear_still_empties_the_queue() -> None:
     """An explicit clear keeps emptying the queue, and an emptied queue is not "ended"."""
     ctrl, queue = _controller()
+    queue.next_item = ctrl._queue_data[QUEUE_ID].items[0]
 
     ctrl.clear(QUEUE_ID)
 
@@ -116,6 +117,7 @@ def test_clear_still_empties_the_queue() -> None:
     assert queue.current_index is None
     assert queue.current_item is None
     assert queue.ended is False
+    assert queue.next_item is None
 
 
 async def test_play_on_an_ended_queue_restarts_from_the_beginning() -> None:
@@ -303,7 +305,12 @@ async def test_adding_a_batch_to_a_finished_queue_reports_what_follows() -> None
 def _tracker(*items: Any) -> Any:
     """Build a playback tracker stand-in owning a queue holding the given items."""
     tracker = MagicMock()
-    tracker._queue_data = {QUEUE_ID: SimpleNamespace(items=list(items), flow_mode_stream_log=[])}
+    # the item the player stopped on ("i1" in the stop states) had its audio served
+    tracker._queue_data = {
+        QUEUE_ID: SimpleNamespace(
+            items=list(items), flow_mode_stream_log=[], served_item_ids={"i1"}
+        )
+    }
     return tracker
 
 

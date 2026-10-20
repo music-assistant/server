@@ -4,7 +4,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
-from music_assistant.providers.ard_audiothek import SUPPORTED_FEATURES, ARDAudiothek
+from music_assistant.providers.ard_audiothek import (
+    SUPPORTED_FEATURES,
+    ARDAudiothek,
+    _parse_podcast_episode,
+)
 from music_assistant.providers.ard_audiothek.database_queries import show_length_query
 
 
@@ -55,10 +59,13 @@ async def test_episode_positions_run_oldest_to_newest() -> None:
     provider = _provider(episodes)
 
     with patch("music_assistant.providers.ard_audiothek._parse_podcast_episode") as parse:
-        parse.side_effect = lambda *args: Mock(item_id=args[3], position=args[5])
+        parse.side_effect = lambda *args: Mock(
+            item_id=args[2]["coreId"], podcast=Mock(item_id=args[3]), position=args[5]
+        )
         parsed = [ep async for ep in provider.get_podcast_episodes("show-1")]
 
     assert {ep.item_id: ep.position for ep in parsed} == {"a": 1, "b": 2, "c": 3}
+    assert {ep.podcast.item_id for ep in parsed} == {"show-1"}
 
 
 async def test_depublished_and_audioless_episodes_are_skipped() -> None:
@@ -72,7 +79,9 @@ async def test_depublished_and_audioless_episodes_are_skipped() -> None:
     provider = _provider(episodes)
 
     with patch("music_assistant.providers.ard_audiothek._parse_podcast_episode") as parse:
-        parse.side_effect = lambda *args: Mock(item_id=args[3], position=args[5])
+        parse.side_effect = lambda *args: Mock(
+            item_id=args[2]["coreId"], podcast=Mock(item_id=args[3]), position=args[5]
+        )
         parsed = [ep async for ep in provider.get_podcast_episodes("show-1")]
 
     assert {ep.item_id: ep.position for ep in parsed} == {"a": 1, "c": 2}
@@ -89,7 +98,9 @@ async def test_episodes_are_ranked_across_every_page() -> None:
     provider = _provider(episodes)
 
     with patch("music_assistant.providers.ard_audiothek._parse_podcast_episode") as parse:
-        parse.side_effect = lambda *args: Mock(item_id=args[3], position=args[5])
+        parse.side_effect = lambda *args: Mock(
+            item_id=args[2]["coreId"], podcast=Mock(item_id=args[3]), position=args[5]
+        )
         parsed = [ep async for ep in provider.get_podcast_episodes("show-1")]
 
     assert len(parsed) == 600
@@ -98,3 +109,18 @@ async def test_episodes_are_ranked_across_every_page() -> None:
         "e0599": 1,
         "e0000": 600,
     }
+
+
+def test_episode_gets_the_publish_date() -> None:
+    """The publish date of an episode becomes its release date."""
+    episode = _parse_podcast_episode(
+        "ard_audiothek",
+        "ard_audiothek--test",
+        _episode("c", "2026-08-31T18:00:00+02:00"),
+        "show-1",
+        "My Show",
+        1,
+        (False, 0),
+    )
+
+    assert episode.metadata.release_date == datetime(2026, 8, 31, 16, tzinfo=UTC)

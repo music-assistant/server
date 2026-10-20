@@ -682,7 +682,7 @@ class TestDefaultProtocolSelection:
         controller = MagicMock()
         controller.get_player.side_effect = protocol_players.get
         controller.mass.config.get_raw_player_config_value.return_value = preferred
-        controller._is_protocol_grouped.return_value = False
+        controller._get_grouped_output_protocol.return_value = None
         controller.logger = MagicMock()
         return controller
 

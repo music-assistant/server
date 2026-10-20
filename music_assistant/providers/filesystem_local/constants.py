@@ -11,6 +11,19 @@ from music_assistant_models.enums import ConfigEntryType, ImageType
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
 
+# Hidden conf: Do we still need to promote authors/ narrators to full artists?
+CONF_AUTHOR_NARRATOR_REPARSE_DONE = "author_narrator_reparse_done"
+
+# Hidden conf: Do we still need to store the folder signature of multi-file audiobooks?
+CONF_CHAPTER_FOLDER_REPARSE_DONE = "chapter_folder_reparse_done"
+
+# Hidden conf: Do we still need to prune dead mappings/ images of albums and artists?
+CONF_STALE_REFS_PRUNE_DONE = "stale_refs_prune_done"
+
+# Use a prefix: Authors/ narrators cannot be distinguished by their file path, like music artists.
+AUTHOR_ID_PREFIX: Final[str] = "author:"
+NARRATOR_ID_PREFIX: Final[str] = "narrator:"
+
 CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,
@@ -27,10 +40,12 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
 )
 
 
+# the folder a new source is offered by default, where the caller may use it
+DEFAULT_MEDIA_FOLDER: Final[str] = "/media"
+
 CONF_ENTRY_PATH = ConfigEntry(
     key="path",
-    type=ConfigEntryType.STRING,
-    default_value="/media",
+    type=ConfigEntryType.FOLDER,
 )
 
 CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
@@ -197,8 +212,6 @@ METADATA_FILE_CACHE_EXPIRATION: Final[int] = 86400 * 365 * 10  # ~permanent for 
 # how long a podcast episode listing that lost a file to a parse failure is cached for:
 # the missing episode cannot reappear any sooner than this
 PARTIAL_LISTING_CACHE_EXPIRATION: Final[int] = 300
-
-DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
 
 # how often storage that went away during a scan is re-checked, so the provider comes
 # back within minutes instead of waiting for the next scheduled sync

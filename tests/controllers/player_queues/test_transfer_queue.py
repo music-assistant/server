@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import AlbumType, PlaybackState, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.media_items import Album, Track
+from music_assistant_models.media_items import Album, ItemMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -209,9 +210,10 @@ async def test_transfer_queue_carries_the_album_credit_bookkeeping() -> None:
         album_type=AlbumType.ALBUM,
     )
     track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set(), album=album)
+    item = QueueItem.from_media_item("src", track)
+    item.origin = QueueItemOrigin(container=ItemMapping.from_item(album))
     source_data = fake._queue_data["src"]
-    source_data.enqueued_media_items = [album]
-    source_data.credited_albums = {album}
+    source_data.credited_albums = {"library://album/a1"}
 
     await PlayerQueuesController.transfer_queue(
         cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
@@ -219,12 +221,12 @@ async def test_transfer_queue_carries_the_album_credit_bookkeeping() -> None:
 
     target_data = fake._queue_data["tgt"]
     # the target holds its own copy, so the source's set no longer drives it
-    assert target_data.credited_albums == {album}
+    assert target_data.credited_albums == {"library://album/a1"}
     assert target_data.credited_albums is not source_data.credited_albums
     # and the album is not credited a second time on the new player
     assert (
-        PlayerQueuesController._claim_enqueued_album_credit(
-            cast("PlayerQueuesController", fake), target_data, track
+        PlayerQueuesController._claim_album_credit(
+            cast("PlayerQueuesController", fake), target_data, item
         )
         is None
     )
@@ -250,6 +252,18 @@ async def test_transfer_queue_carries_the_source_shuffle() -> None:
     )
 
     assert fake.get("tgt").shuffle_enabled is True
+
+
+async def test_transfer_queue_carries_where_the_smart_fades_ordering_ended() -> None:
+    """The target keeps ordering Smart Fades batches behind the same item as the source did."""
+    fake = _shuffle_controller(source_shuffle_enabled=True)
+    fake._queue_data["src"].fade_ordered_until = "item-24"
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake._queue_data["tgt"].fade_ordered_until == "item-24"
 
 
 async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:

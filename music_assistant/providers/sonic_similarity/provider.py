@@ -11,7 +11,6 @@ the package init.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -26,11 +25,7 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
-from music_assistant_models.errors import (
-    ActionUnavailable,
-    MusicAssistantError,
-    SetupFailedError,
-)
+from music_assistant_models.errors import ActionUnavailable, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -41,9 +36,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
+from music_assistant.controllers.streams.audio_analysis import (
+    SMART_FADES_ANALYSIS_DOMAIN,
+    _parse_row,
+)
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
@@ -62,10 +59,10 @@ from music_assistant.providers.sonic_similarity.constants import (
     CONF_SIMILAR_DIVERSITY,
     CONF_SIMILAR_PRESET,
     CONF_SIMILAR_TRACKS_ENGINE,
-    EXTRA_DATA_CLAP_EMBEDDING,
     METADATA_BONUS_SCALE,
     PERIODIC_REFRESH_INTERVAL_HOURS,
     PERIODIC_REFRESH_TASK_ID,
+    REBUILD_TASK_ID,
     RECOMMEND_ITEM_LIMIT,
     RECOMMEND_PER_SEED_LIMIT,
     RECOMMEND_SEED_COUNT,
@@ -92,6 +89,7 @@ from music_assistant.providers.sonic_similarity.similarity import (
     merge_union_results,
 )
 from music_assistant.providers.sonic_similarity.vectors import (
+    VECTOR_ARRAY_FIELDS,
     VECTOR_DIMENSIONS,
     assemble_vector,
     build_debug_breakdown,
@@ -141,10 +139,12 @@ class SonicSimilarityPlugin(PluginProvider):
         # Per-label last error from fire-and-forget rebuild tasks.
         self._last_rebuild_error: dict[str, str] = {}
         self._last_seen_row_count: int = 0
+        # The thread building and saving the Traits index, kept so unload() can wait for it.
+        self._index_build: asyncio.Future[Any] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        status_18, status_clap, status_text = await self._collect_status_text()
+        status_18, status_clap, status_text = self._collect_status_text()
 
         return (
             # === Generic: the two opt-in engine toggles ===
@@ -303,28 +303,8 @@ class SonicSimilarityPlugin(PluginProvider):
             return None
         return await super().handle_config_action(action)
 
-    async def handle_async_init(self) -> None:
-        """
-        Build the 18-dim search index before the provider is registered.
-
-        Failures here raise SetupFailedError so the loader surfaces them through
-        MA's standard provider-failure UI (a silent failure in loaded_in_mass
-        would be swallowed by its fire-and-forget task wrapper).
-        """
-        self.logger.info("Sonic Similarity initializing, building search index...")
-        try:
-            await self._rebuild_search_index()
-        except Exception as err:
-            msg = f"Failed to build Traits search index: {err}"
-            raise SetupFailedError(msg) from err
-        self.logger.info(
-            "Search index ready: %d signatures cached, corpus_stats=%s",
-            len(self._signature_cache),
-            self.corpus_means is not None,
-        )
-
     async def loaded_in_mass(self) -> None:
-        """Register similarity API commands and set up the optional CLAP engine."""
+        """Register the API commands, load the optional CLAP engine and start the index builds."""
         self._unregister_handles.append(
             self.mass.register_api_command(
                 "sonic_similarity/similar", self._handle_similar, required_scope=Scope.LIBRARY_READ
@@ -359,8 +339,7 @@ class SonicSimilarityPlugin(PluginProvider):
                         required_scope=Scope.LIBRARY_READ,
                     )
                 )
-                await self._rebuild_clap_index_from_database()
-                self.logger.info("Character index ready: %d embeddings", len(self._clap_index))
+                self.logger.info("Character index loaded: %d embeddings", len(self._clap_index))
             except Exception:
                 # CLAP is optional — failure must not block the 18-dim engine.
                 self.logger.exception(
@@ -387,9 +366,22 @@ class SonicSimilarityPlugin(PluginProvider):
             schedule=TaskSchedule.hourly(every=PERIODIC_REFRESH_INTERVAL_HOURS),
             allow_retry=True,
         )
+        # Both rebuilds read every analysis row in the library, so they run as their own
+        # task: this post-load step gates the provider's readiness and must not wait on
+        # library-proportional work.
+        self.mass.create_task(self._rebuild_indexes(), task_id=REBUILD_TASK_ID)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister API commands; delete on-disk indexes when the provider is uninstalled."""
+        self.unloading = True
+        self.mass.cancel_task(REBUILD_TASK_ID)
+        if self._index_build is not None and not self._index_build.done():
+            # cancelling the task does not stop the build thread; it stops itself on the
+            # flag above, so wait for it rather than tear down underneath a running save
+            try:
+                await self._index_build
+            except Exception as err:
+                self.logger.debug("Traits index build failed during unload: %s", err, exc_info=err)
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
@@ -608,7 +600,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # on task_id while a load is in flight, and re-attempts after a previous load failed.
         if self._text_encoder is None:
             self.mass.create_task(
-                self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
+                self._get_text_encoder(), task_id="sonic_similarity_text_encoder_warm"
             )
             return SearchResults()
         emb_np = await self._embed_text_query(search_query)
@@ -627,27 +619,16 @@ class SonicSimilarityPlugin(PluginProvider):
         )
         return SearchResults(tracks=[t for t in resolved if t is not None])
 
-    async def _collect_status_text(self) -> tuple[str, str, str]:
+    def _collect_status_text(self) -> tuple[str, str, str]:
         """
         Return (18-dim, CLAP, text-encoder) label-text triples for the plugin page.
 
         Each string is single-line, safe to render in a LABEL config entry, and
-        degrades gracefully depending on the current engine/index state.
+        degrades gracefully depending on the current engine/index state. Built from
+        in-memory state only: this runs on the provider load path.
         """
-        eighteen = "Traits engine: not yet loaded"
         clap = "Character engine: disabled"
         text = "Text encoder: disabled"
-
-        # Optional coverage lookup against the upstream AA provider via #3851's API.
-        coverage_pct: float | None = None
-        try:
-            coverage = await self.mass.streams.audio_analysis.get_coverage(AA_PROVIDER_DOMAIN)
-        except Exception:
-            coverage = None
-        if coverage is not None:
-            total = coverage.analyzed + coverage.pending
-            if total > 0:
-                coverage_pct = round(100.0 * coverage.analyzed / total, 1)
 
         # 18-dim line.
         index_size = len(self._search_index) if self._search_index is not None else 0
@@ -656,19 +637,13 @@ class SonicSimilarityPlugin(PluginProvider):
             f"{len(self._signature_cache):,} signatures cached",
             f"corpus stats {'ready' if self.corpus_means is not None else 'pending'}",
         ]
-        if coverage_pct is not None:
-            parts.append(f"{coverage_pct}% coverage")
         eighteen = "Traits engine: " + " · ".join(parts)
         if (err_18dim := self._last_rebuild_error.get("Traits")) is not None:
             eighteen += f" — last rebuild failed: {err_18dim}"
 
         # CLAP line (only meaningful when the index is built).
         if self._clap_index is not None:
-            clap_size = len(self._clap_index)
-            clap_parts = [f"{clap_size:,} embeddings indexed"]
-            if coverage_pct is not None:
-                clap_parts.append(f"{coverage_pct}% coverage")
-            clap = "Character engine: " + " · ".join(clap_parts)
+            clap = f"Character engine: {len(self._clap_index):,} embeddings indexed"
             if (err_clap := self._last_rebuild_error.get("Character")) is not None:
                 clap += f" — last rebuild failed: {err_clap}"
 
@@ -700,29 +675,47 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _count_analysis_rows(self) -> int:
         """Return the current count of sonic_analysis track rows in the database."""
-        return await self.mass.music.database.get_count_from_query(
-            f"SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} "
-            "WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
-            {"aa_provider_domain": AA_PROVIDER_DOMAIN, "media_type": MediaType.TRACK.value},
-        )
+        return await self.mass.streams.audio_analysis.get_audio_analysis_count(AA_PROVIDER_DOMAIN)
 
     async def _periodic_refresh(self) -> None:
-        """Scheduled-task handler: rebuild indexes when the analysis row count changed."""
+        """Scheduled-task handler: rebuild the indexes when rows changed or a build failed."""
+        if self._rebuild_lock.locked() or self._clap_rebuild_lock.locked():
+            self.logger.debug("Periodic refresh: a rebuild is already running; skipping")
+            return
         try:
             current = await self._count_analysis_rows()
         except Exception:
             self.logger.exception("Periodic refresh: row count query failed; skipping")
             return
-        if current == self._last_seen_row_count:
-            return
-        self.logger.info(
-            "Periodic refresh: analysis row count changed %d → %d, rebuilding indexes",
-            self._last_seen_row_count,
-            current,
-        )
-        await self._safe_rebuild("Traits", self._rebuild_search_index)
+        if current != self._last_seen_row_count:
+            self.logger.info(
+                "Periodic refresh: analysis row count changed %d → %d, rebuilding indexes",
+                self._last_seen_row_count,
+                current,
+            )
+            await self._rebuild_indexes()
+        elif self._last_rebuild_error:
+            self.logger.info(
+                "Periodic refresh: retrying the failed %s rebuild",
+                " and ".join(sorted(self._last_rebuild_error)),
+            )
+            await self._rebuild_indexes(failed_only=True)
+
+    async def _rebuild_indexes(self, *, failed_only: bool = False) -> None:
+        """
+        Rebuild the Traits index, then the Character index when enabled, one after the other.
+
+        :param failed_only: Rebuild only the indexes whose last rebuild failed.
+        """
+        rebuilds: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+            ("Traits", self._rebuild_search_index)
+        ]
         if self._clap_index is not None:
-            await self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
+            rebuilds.append(("Character", self._rebuild_clap_index_from_database))
+        for label, rebuild_fn in rebuilds:
+            if failed_only and label not in self._last_rebuild_error:
+                continue
+            await self._safe_rebuild(label, rebuild_fn)
 
     def _delete_all_index_files(self) -> None:
         """Best-effort removal of every versioned index file for the active domain."""
@@ -1199,6 +1192,8 @@ class SonicSimilarityPlugin(PluginProvider):
             "clap_index_enabled": self._clap_index is not None,
             "text_search_enabled": text_search_enabled,
             "text_encoder_loaded": self._text_encoder is not None,
+            "rebuild_in_progress": self._rebuild_lock.locked() or self._clap_rebuild_lock.locked(),
+            "last_rebuild_error": dict(self._last_rebuild_error),
         }
         if self._clap_index is not None:
             status["clap_index_size"] = len(self._clap_index)
@@ -1251,14 +1246,16 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _rebuild_search_index(self) -> None:
         """Rebuild the search index from all stored analysis rows."""
-        # Snapshot the count BEFORE the rebuild: SELECT is snapshot-isolated, so rows
-        # added mid-rebuild are missed — counting after would skip the next refresh.
-        try:
-            pre_count = await self._count_analysis_rows()
-        except Exception:
-            self.logger.debug("Pre-rebuild row count failed; counter unchanged", exc_info=True)
-            pre_count = None
+        # The lock is held from the count onwards, so the periodic refresh's lock guard
+        # sees the whole rebuild, count included.
         async with self._rebuild_lock:
+            # Snapshot the count BEFORE the rebuild: SELECT is snapshot-isolated, so rows
+            # added mid-rebuild are missed — counting after would skip the next refresh.
+            try:
+                pre_count = await self._count_analysis_rows()
+            except Exception:
+                self.logger.debug("Pre-rebuild row count failed; counter unchanged", exc_info=True)
+                pre_count = None
             await self._rebuild_search_index_locked()
         if pre_count is not None:
             self._last_seen_row_count = pre_count
@@ -1293,6 +1290,7 @@ class SonicSimilarityPlugin(PluginProvider):
             # value from loudness_analysis) plus smart_fades' bpm/key/mode; sonic wins
             # the shared loudness_integrated/loudness_range fields.
             priority=(AA_PROVIDER_DOMAIN, SMART_FADES_ANALYSIS_DOMAIN),
+            arrays=VECTOR_ARRAY_FIELDS,
         ):
             total_merged_rows += 1
             if len(sampled_for_diag) < 3:
@@ -1355,9 +1353,11 @@ class SonicSimilarityPlugin(PluginProvider):
             domain=AA_PROVIDER_DOMAIN, version=int(time.time() * 1000)
         )
 
-        def _build_save_and_view() -> Any:
+        def _build_save_and_view() -> Any | None:
             builder = self._make_empty_index()
             for label, features in row_entries:
+                if self.unloading:
+                    return None
                 normalized = normalize_features(features, new_corpus_means, new_corpus_stds)
                 builder.add(label, np.array(normalized, dtype=np.float32))
             save_index(builder, new_index_path)
@@ -1365,7 +1365,12 @@ class SonicSimilarityPlugin(PluginProvider):
             viewer.view(str(new_index_path))
             return viewer
 
-        new_viewer = await asyncio.to_thread(_build_save_and_view)
+        # Shielded so that cancelling the rebuild task leaves the thread's future awaitable
+        # for unload(), which waits for the build to stop before removing index files.
+        self._index_build = asyncio.ensure_future(asyncio.to_thread(_build_save_and_view))
+        new_viewer = await asyncio.shield(self._index_build)
+        if new_viewer is None:
+            return
 
         # Atomic swap: no `await` between these writes, so queries see fully old or
         # fully new state, never a half-rotated mix.
@@ -1625,13 +1630,10 @@ class SonicSimilarityPlugin(PluginProvider):
                 seen.add(key)
                 if self._clap_index.contains(row["provider"], row["item_id"]):
                     continue
-                try:
-                    raw = json.loads(row["analysis_data"])
-                except ValueError, TypeError:
+                analysis = _parse_row(row, arrays=("clap_embedding",))
+                if analysis is None:
                     continue
-                emb = _parse_clap_embedding(
-                    (raw.get("extra_data") or {}).get(EXTRA_DATA_CLAP_EMBEDDING)
-                )
+                emb = _parse_clap_embedding(analysis.clap_embedding)
                 if emb is None:
                     continue
                 try:

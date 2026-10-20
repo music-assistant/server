@@ -4,7 +4,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from aioaudiobookshelf.schema.author import AuthorExpanded as AbsAuthorExpanded
+from aioaudiobookshelf.schema.author import Author as AbsAuthor
 from aioaudiobookshelf.schema.author import AuthorMinified as AbsAuthorMinified
 from aioaudiobookshelf.schema.author import Narrator as AbsNarrator
 from aioaudiobookshelf.schema.library import (
@@ -39,7 +39,10 @@ from music_assistant_models.media_items import Playlist as MassPlaylist
 from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_utc_timestamp
+from music_assistant.helpers.podcast_parsers import get_publisher_number
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.providers.audiobookshelf.helpers import NarratorHelper
 
 if TYPE_CHECKING:
@@ -47,20 +50,19 @@ if TYPE_CHECKING:
     from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 
 
-def _build_cover_url(*, base_url: str, item_id: str, token: str, version: int | None = None) -> str:
+def _build_cover_url(*, base_url: str, item_id: str, version: int | None = None) -> str:
     """
     Build the cover url for an Audiobookshelf library item.
 
     :param base_url: Base url of the Audiobookshelf server.
     :param item_id: Id of the library item to fetch the cover for.
-    :param token: Access token for the Audiobookshelf api.
     :param version: Last-updated timestamp of the item.
     """
     # the cover endpoint is static and keeps its filename when artwork is
     # replaced in place, so append the last-updated timestamp to bust caches
-    cover_url = f"{base_url}/api/items/{item_id}/cover?token={token}"
+    cover_url = f"{base_url}/api/items/{item_id}/cover"
     if version is not None:
-        cover_url += f"&ts={version}"
+        cover_url += f"?ts={version}"
     return cover_url
 
 
@@ -69,13 +71,11 @@ def parse_playlist(
     abs_playlist: AbsPlaylistExpanded,
     instance_id: str,
     domain: str,
-    token: str,
-    base_url: str,
     owner: str,
     media_type: MediaType,
 ) -> MassPlaylist:
     """Translate AbsPlaylist to MassPlaylist."""
-    mass_playlist = MassPlaylist(
+    return MassPlaylist(
         item_id=abs_playlist.id_,
         provider=instance_id,
         name=abs_playlist.name,
@@ -89,20 +89,6 @@ def parse_playlist(
         is_editable=True,
         owner=owner,
     )
-    # cover
-    if abs_playlist.cover_path is not None:
-        cover_url = _build_cover_url(
-            base_url=base_url,
-            item_id=abs_playlist.id_,
-            token=token,
-            version=abs_playlist.last_update,
-        )
-        mass_playlist.metadata.images = UniqueList(
-            [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
-        )
-    else:
-        mass_playlist.metadata.images = UniqueList([])
-    return mass_playlist
 
 
 def parse_podcast(
@@ -112,7 +98,6 @@ def parse_podcast(
     | AbsLibraryItemPodcast,
     instance_id: str,
     domain: str,
-    token: str | None,
     base_url: str,
 ) -> MassPodcast:
     """Translate ABSPodcast to MassPodcast."""
@@ -134,11 +119,10 @@ def parse_podcast(
         },
     )
     mass_podcast.metadata.description = abs_podcast.media.metadata.description
-    if token is not None and abs_podcast.media.cover_path is not None:
+    if abs_podcast.media.cover_path is not None:
         image_url = _build_cover_url(
             base_url=base_url,
             item_id=abs_podcast.id_,
-            token=token,
             version=abs_podcast.updated_at,
         )
         mass_podcast.metadata.images = UniqueList(
@@ -153,11 +137,9 @@ def parse_podcast(
         if abs_podcast.media.metadata.language is not None
         else UniqueList([])
     )
-    mass_podcast.metadata.genres = (
-        set(abs_podcast.media.metadata.genres)
-        if abs_podcast.media.metadata.genres is not None
-        else set()
-    )
+    mass_podcast.metadata.genres = set(abs_podcast.media.metadata.genres or []) or {
+        DEFAULT_AUDIOBOOK_PODCAST_GENRE
+    }
 
     # podcast object has no published_at int, but an iso string
     if abs_podcast.media.metadata.release_date is not None:
@@ -182,7 +164,6 @@ def parse_podcast_episode(
     fallback_episode_cnt: int | None = None,
     instance_id: str,
     domain: str,
-    token: str | None,
     base_url: str,
     media_progress: AbsMediaProgress | None = None,
     cover_path: str | None = None,
@@ -199,11 +180,9 @@ def parse_podcast_episode(
     A PodcastEpisode has only limited information, and is currently only used
     within the recommendations.
     """
-    # ruff: noqa: PLR0913 (too many arguments)
     episode_id = f"{prov_podcast_id} {episode.id_}"
 
     if isinstance(episode, AbsPodcastEpisodeExpanded):
-        url = f"{base_url}{episode.audio_track.content_url}"
         duration = int(episode.duration)
         provider_mappings = {
             ProviderMapping(
@@ -213,7 +192,6 @@ def parse_podcast_episode(
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
                 ),
-                url=url,
             )
         }
     else:
@@ -243,6 +221,9 @@ def parse_podcast_episode(
         name=episode.title,
         duration=duration,
         position=position,
+        # abs keeps the feed's itunes:episode and itunes:season as strings
+        episode_number=get_publisher_number(try_parse_int(episode.episode, None)),
+        season=get_publisher_number(try_parse_int(episode.season, None)),
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,
@@ -257,11 +238,10 @@ def parse_podcast_episode(
         mass_episode.metadata.description = episode.description
 
     # cover image
-    if token is not None and cover_path:
+    if cover_path:
         url_cover = _build_cover_url(
             base_url=base_url,
             item_id=prov_podcast_id,
-            token=token,
             version=cover_version,
         )
         mass_episode.metadata.images = UniqueList(
@@ -290,7 +270,6 @@ def parse_audiobook(
     abs_audiobook: AbsLibraryItemExpandedBook,
     instance_id: str,
     domain: str,
-    token: str | None,
     base_url: str,
     audiobook_narrators: set[AbsNarrator] | set[NarratorHelper],
     media_progress: AbsMediaProgress | None = None,
@@ -301,7 +280,7 @@ def parse_audiobook(
     if title is None:
         title = "UNKNOWN TITLE"
     subtitle = abs_audiobook.media.metadata.subtitle
-    if subtitle is not None or subtitle:
+    if subtitle:
         title += f" | {subtitle}"
     mass_audiobook = MassAudiobook(
         item_id=abs_audiobook.id_,
@@ -354,11 +333,10 @@ def parse_audiobook(
     mass_audiobook.metadata.explicit = abs_audiobook.media.metadata.explicit
 
     # cover
-    if token is not None and abs_audiobook.media.cover_path is not None:
+    if abs_audiobook.media.cover_path is not None:
         cover_url = _build_cover_url(
             base_url=base_url,
             item_id=abs_audiobook.id_,
-            token=token,
             version=abs_audiobook.updated_at,
         )
         mass_audiobook.metadata.images = UniqueList(
@@ -374,7 +352,6 @@ def parse_audiobook(
                 abs_author=author,
                 instance_id=instance_id,
                 domain=domain,
-                token=token,
                 base_url=base_url,
             )
             for author in abs_audiobook.media.metadata.authors
@@ -411,10 +388,9 @@ def parse_audiobook(
 
 def parse_author(
     *,
-    abs_author: AbsAuthorExpanded | AbsAuthorMinified,
+    abs_author: AbsAuthor | AbsAuthorMinified,
     instance_id: str,
     domain: str,
-    token: str | None,
     base_url: str,
 ) -> MassArtist:
     """Translate AbsAuthor to MassArtist."""
@@ -431,17 +407,13 @@ def parse_author(
         artist_type=ArtistType.AUTHOR,
     )
     # cover
-    if (
-        isinstance(abs_author, AbsAuthorExpanded)
-        and abs_author.image_path is not None
-        and token is not None
-    ):
-        api_url = f"/api/authors/{abs_author.id_}/image?token={token}"
-        cover_url = f"{base_url}{api_url}"
+    # a plain Author, as get_author returns it, carries the image too
+    if isinstance(abs_author, AbsAuthor) and abs_author.image_path is not None:
+        cover_url = f"{base_url}/api/authors/{abs_author.id_}/image"
         mass_artist.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
         )
-    elif isinstance(abs_author, AbsAuthorExpanded) and abs_author.image_path is None:
+    elif isinstance(abs_author, AbsAuthor) and abs_author.image_path is None:
         mass_artist.metadata.images = UniqueList([])
 
     return mass_artist

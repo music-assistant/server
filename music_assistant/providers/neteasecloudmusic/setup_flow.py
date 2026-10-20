@@ -56,7 +56,7 @@ async def run_setup(session: SetupSession) -> None:
         or session.context.values.get(CONF_API_BASE_URL)
         or DEFAULT_API_BASE_URL
     )
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -89,7 +89,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _run_qr_login(session: SetupSession, client: NcmApiClient) -> tuple[str, str]:

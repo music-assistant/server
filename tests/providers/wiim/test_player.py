@@ -304,6 +304,18 @@ class TestActiveSourceMapping:
 
         assert player._attr_active_source == SOURCE_UNKNOWN
 
+    def test_aux_in_is_the_active_source(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A device playing from Aux In reports aux_in as its active source."""
+        mock_wiim_device.play_mode = "Aux In"
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_active_source == "aux_in"
+
 
 class TestSupportedFeatures:
     """Test that required features are declared."""
@@ -469,6 +481,17 @@ class TestSourceList:
         await player.setup()
         source_ids = [s.id for s in player._attr_source_list]
         assert "futuremode" not in source_ids
+
+    @pytest.mark.asyncio
+    async def test_setup_adds_aux_in(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """setup() should add Aux In when the device supports it."""
+        mock_wiim_device.supported_input_modes = ("Network", "Aux In")
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        await player.setup()
+        source_ids = [s.id for s in player._attr_source_list]
+        assert "aux_in" in source_ids
 
 
 class TestVolumeCommand:
@@ -870,5 +893,7 @@ class TestTopologyRefreshDebounce:
         mock_provider.mass.create_task.assert_called_once()
         kwargs = mock_provider.mass.create_task.call_args.kwargs
         assert kwargs["task_id"] == f"wiim_topology_{player.player_id}"
-        assert kwargs["force"] is True
         assert kwargs.get("abort_existing", False) is False
+        # the coroutine is built at the call site, so the forced read is already recorded
+        mock_provider.native_groups.refresh_leader.assert_called_once_with(player, force=True)
+        mock_provider.mass.create_task.call_args.args[0].close()

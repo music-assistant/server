@@ -3,11 +3,22 @@
 from enum import StrEnum
 
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
+from aiohttp import hdrs
 from aiohttp.client import ClientTimeout
 
 # AIOHTTP
 # we use twice the default values
 AIOHTTP_TIMEOUT = ClientTimeout(total=10 * 60, sock_connect=60)
+# a part may stream for hours, only a stalled server is an error
+PART_STREAM_TIMEOUT = ClientTimeout(total=None, sock_connect=60, sock_read=60)
+PART_STREAM_CHUNK_SIZE = 64 * 1024
+# what ffmpeg needs to read and seek in a proxied part
+PART_STREAM_HEADERS = (
+    hdrs.ACCEPT_RANGES,
+    hdrs.CONTENT_LENGTH,
+    hdrs.CONTENT_RANGE,
+    hdrs.CONTENT_TYPE,
+)
 
 # expire after 5 min of not using them
 STREAMDETAILS_EXPIRATION_S = 300
@@ -15,9 +26,9 @@ STREAMDETAILS_EXPIRATION_S = 300
 # CONFIG
 CONF_URL = "url"
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-CONF_OLD_TOKEN = "token"
-CONF_API_TOKEN = "api_token"  # with jwt api token (>= v2.26)
+CONF_PASSWORD = "password"  # noqa: S105 - config key
+CONF_OLD_TOKEN = "token"  # noqa: S105 - config key
+CONF_API_TOKEN = "api_token"  # with jwt api token (>= v2.26)  # noqa: S105 - config key
 CONF_VERIFY_SSL = "verify_ssl"
 # optionally hide podcasts with no episodes
 CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"
@@ -25,6 +36,9 @@ CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"
 # CACHE
 CACHE_CATEGORY_LIBRARIES = 0
 CACHE_KEY_LIBRARIES = "libraries"
+
+# abs emits user_updated on every progress patch, so let a burst settle first
+USER_UPDATED_DEBOUNCE_SECONDS = 5
 
 
 # BROWSE
@@ -48,7 +62,6 @@ class AbsBrowseItemsBookTranslationKey(StrEnum):
     AUTHORS = "authors"
     NARRATORS = "narrators"
     SERIES = "series_plural"
-    SERIES_ENTRY = "series_entry"
     COLLECTIONS = "collections"
     PLAYLISTS = "playlists"  # not abs specific
     AUDIOBOOKS = "audiobooks"  # not abs specific
@@ -67,7 +80,6 @@ ABS_BROWSE_ITEMS_BOOK_TO_PATH: dict[str, str] = {
     AbsBrowseItemsBookTranslationKey.AUTHORS: AbsBrowsePaths.AUTHORS,
     AbsBrowseItemsBookTranslationKey.NARRATORS: AbsBrowsePaths.NARRATORS,
     AbsBrowseItemsBookTranslationKey.SERIES: AbsBrowsePaths.SERIES,
-    AbsBrowseItemsBookTranslationKey.SERIES_ENTRY: AbsBrowsePaths.SERIES,
     AbsBrowseItemsBookTranslationKey.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS_LIBRARY: AbsBrowsePaths.AUDIOBOOKS,

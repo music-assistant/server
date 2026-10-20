@@ -69,7 +69,7 @@
     },
     "authenticate": {
       "title": "Connect your Spotify account",
-      "description": "A browser window will open so you can sign in to Spotify and authorize Music Assistant. Come back here once you're done."
+      "description": "The button below will open a browser window so you can sign in to Spotify and authorize Music Assistant. Come back here once you're done."
     },
     "developer": {
       "title": "Use your own Spotify developer key",
@@ -77,7 +77,7 @@
     },
     "authenticate_dev": {
       "title": "Authorize your Spotify app",
-      "description": "A browser window will open to authorize Music Assistant against your own Spotify app."
+      "description": "The button below will open a browser window to authorize Music Assistant against your own Spotify app."
     },
     "playback_auth": {
       "title": "Allow Music Assistant to play Spotify audio",
@@ -141,6 +141,7 @@
     }
   },
   "errors": {
+    "developer_account_mismatch": "The Client ID must be authorized with the same Spotify account you signed in with first. Sign in with that account when authorizing the Client ID, and try again.",
     "refresh_token_invalid": "Your Spotify session has expired or been revoked. Please re-authenticate to continue using Spotify.",
     "pairing_not_completed": "Music Assistant Pairing wasn't selected in the Spotify app in time. Try again, or use the web browser option if Music Assistant Pairing doesn't appear in your Spotify app.",
     "playback_code_invalid": "That address could not be used. Make sure you copied the complete address of the error page, and note that each attempt can only be used once — start over to get a new link.",

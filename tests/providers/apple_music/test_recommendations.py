@@ -220,3 +220,45 @@ async def test_resolve_station_id_unknown_returns_none(provider: AppleMusicProvi
 
     assert result is None
     api_get_data.assert_awaited_once()
+
+
+def _unnamed(station_id: str) -> dict[str, Any]:
+    """Build a station content object that comes without attributes."""
+    return {"type": "stations", "id": station_id}
+
+
+@pytest.mark.asyncio
+async def test_unnamed_stations_resolve_in_one_batch(provider: AppleMusicProvider) -> None:
+    """Stations without a name are looked up together, not one request each."""
+    payload = _recommendations_response(
+        {"Made for You": [_unnamed("ra.1"), _unnamed("ra.2"), _unnamed("ra.3")]}
+    )
+    batch = {
+        "data": [
+            {"type": "stations", "id": "ra.1", "attributes": {"name": "One"}},
+            {"type": "stations", "id": "ra.2", "attributes": {"name": "Two"}},
+            {"type": "stations", "id": "ra.3", "attributes": {"name": "Live", "isLive": True}},
+        ]
+    }
+    api_get_data = cast("AsyncMock", provider.api_client.get_data)
+    api_get_data.side_effect = [payload, batch]
+    folders = await provider.recommendation_manager.get_personal_recommendations()
+    # the live station is left out, as live stations in the payload are
+    assert [item.name for item in folders[0].items] == ["One", "Two"]
+    assert api_get_data.await_count == 2
+    assert api_get_data.await_args_list[1].args == ("catalog/None/stations",)
+    assert api_get_data.await_args_list[1].kwargs == {"ids": "ra.1,ra.2,ra.3"}
+
+
+@pytest.mark.asyncio
+async def test_unnamed_station_answered_under_other_id_resolves_on_its_own(
+    provider: AppleMusicProvider,
+) -> None:
+    """A station Apple answers for under another id keeps the id it was recommended under."""
+    payload = _recommendations_response({"Made for You": [_unnamed("ra.u-1")]})
+    batch = {"data": [{"type": "stations", "id": "ra.9", "attributes": {"name": "Mine"}}]}
+    single = {"data": [{"type": "stations", "id": "ra.9", "attributes": {"name": "Mine"}}]}
+    api_get_data = cast("AsyncMock", provider.api_client.get_data)
+    api_get_data.side_effect = [payload, batch, single]
+    folders = await provider.recommendation_manager.get_personal_recommendations()
+    assert [(item.item_id, item.name) for item in folders[0].items] == [("ra.u-1", "Mine")]

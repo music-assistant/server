@@ -6,9 +6,10 @@ import asyncio
 import datetime
 import hashlib
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from aiohttp import client_exceptions
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -26,8 +27,10 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -51,10 +54,18 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
     ThrottlerManager,
     parse_retry_after,
+    request_priority,
     throttle_with_retries,
 )
 from music_assistant.helpers.util import (
@@ -90,6 +101,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    ProviderFeature.ALBUM_BY_EXTERNAL_ID,
 }
 
 VARIOUS_ARTISTS_ID = "145383"
@@ -97,6 +110,8 @@ VARIOUS_ARTISTS_ID = "145383"
 PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v1"
 
 CONF_QUALITY = "quality"
+
+_LookupItemT = TypeVar("_LookupItemT", Track, Album)
 
 
 async def setup(
@@ -256,6 +271,42 @@ class QobuzProvider(MusicProvider):
             return await self._parse_track(track_obj)
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve a track by ISRC."""
+        if external_id_type != ExternalID.ISRC or not is_valid_isrc(external_id):
+            return None
+        isrc = normalize_external_id(ExternalID.ISRC, external_id)
+        return await self._get_item_by_external_id(
+            query=isrc,
+            canonical=isrc,
+            external_id_type=ExternalID.ISRC,
+            search_type="tracks",
+            result_key="tracks",
+            candidate_key="isrc",
+            fetch_item=self.get_track,
+        )
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve an album by barcode (UPC/EAN)."""
+        if external_id_type != ExternalID.BARCODE or not is_valid_barcode(external_id):
+            return None
+        barcode = normalize_external_id(ExternalID.BARCODE, external_id)
+        return await self._get_item_by_external_id(
+            query=barcode_to_upc(barcode),
+            canonical=barcode,
+            external_id_type=ExternalID.BARCODE,
+            search_type="albums",
+            result_key="albums",
+            candidate_key="upc",
+            fetch_item=self.get_album,
+        )
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -491,7 +542,6 @@ class QobuzProvider(MusicProvider):
         else:
             msg = f"Unsupported mime type for {item_id}"
             raise MediaNotFoundError(msg)
-        self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
             provider=self.instance_id,
@@ -508,6 +558,13 @@ class QobuzProvider(MusicProvider):
             allow_seek=True,
         )
 
+    async def on_stream_started(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """Handle callback when an item started streaming."""
+        await self._report_playback_started(streamdetails.data)
+
     async def on_streamed(
         self,
         streamdetails: StreamDetails,
@@ -517,13 +574,12 @@ class QobuzProvider(MusicProvider):
             msg = "User auth info not available"
             raise LoginFailed(msg)
         user_id = self._user_auth_info["user"]["id"]
-        async with self.throttler.bypass():
-            await self._get_data(
-                "track/reportStreamingEnd",
-                user_id=user_id,
-                track_id=str(streamdetails.item_id),
-                duration=try_parse_int(streamdetails.seconds_streamed),
-            )
+        await self._get_data(
+            "track/reportStreamingEnd",
+            user_id=user_id,
+            track_id=str(streamdetails.item_id),
+            duration=try_parse_int(streamdetails.seconds_streamed),
+        )
 
     async def _report_playback_started(self, streamdata: dict[str, Any]) -> None:
         """Report playback start to qobuz."""
@@ -552,7 +608,7 @@ class QobuzProvider(MusicProvider):
                 "format_id": format_id,
             }
         ]
-        async with self.throttler.bypass():
+        with request_priority(RequestPriority.LOW):
             await self._post_data("track/reportStreamingStart", data=events)
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
@@ -797,6 +853,55 @@ class QobuzProvider(MusicProvider):
             playlist.date_added = datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
         return playlist
 
+    async def _get_item_by_external_id(
+        self,
+        *,
+        query: str,
+        canonical: str,
+        external_id_type: ExternalID,
+        search_type: str,
+        result_key: str,
+        candidate_key: str,
+        fetch_item: Callable[[str], Awaitable[_LookupItemT]],
+    ) -> _LookupItemT | None:
+        """Retrieve a verified item from a Qobuz external-ID search."""
+        try:
+            search_result = await self._get_data(
+                "catalog/search", query=query, type=search_type, limit=25
+            )
+            if not search_result or not search_result.get(result_key):
+                return None
+            for candidate in search_result[result_key].get("items", []):
+                if not candidate or not candidate.get("id"):
+                    continue
+                candidate_external_id = candidate.get(candidate_key)
+                if (
+                    not candidate_external_id
+                    or normalize_external_id(external_id_type, candidate_external_id) != canonical
+                ):
+                    continue
+                try:
+                    item = await fetch_item(str(candidate["id"]))
+                except MediaNotFoundError:
+                    continue
+                item_external_ids = {
+                    normalize_external_id(external_id_type, value)
+                    for kind, value in item.external_ids
+                    if kind == external_id_type
+                }
+                if canonical in item_external_ids:
+                    return item
+        except (
+            RateLimited,
+            ResourceTemporarilyUnavailable,
+            RetriesExhausted,
+            client_exceptions.ClientError,
+            TimeoutError,
+            InvalidDataError,
+        ) as err:
+            raise ProviderUnavailableError("Qobuz is temporarily unavailable") from err
+        return None
+
     @lock
     async def _auth_token(self) -> str | None:
         """Login to qobuz and store the token."""
@@ -848,7 +953,7 @@ class QobuzProvider(MusicProvider):
 
     @throttle_with_retries
     async def _get_data(
-        self, endpoint: str, sign_request: bool = False, **kwargs: Any
+        self, /, endpoint: str, sign_request: bool = False, **kwargs: Any
     ) -> dict[str, Any] | None:
         """Get data from api."""
         self.logger.debug("Handling GET request to %s", endpoint)

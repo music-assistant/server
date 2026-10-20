@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import html
 import inspect
+import json
 import os
 import secrets
 import socket
@@ -20,6 +21,7 @@ from concurrent import futures
 from contextlib import aclosing
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
+from urllib.parse import urlparse
 
 import aiofiles
 from aiohttp import web
@@ -31,17 +33,22 @@ from music_assistant_models.config_entries import (
     ConfigActionResult,
     ConfigEntry,
     ConfigValueOption,
+    ConfigValueType,
 )
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
+    PlayerUnavailableError,
+    RateLimited,
     UserNotFoundError,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
+from yarl import URL
 
 from music_assistant.constants import (
+    APP_MA_HOST,
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
@@ -58,17 +65,19 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments
+from music_assistant.helpers.api import parse_arguments, redact_json_secrets
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
 )
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
     get_publish_ip_candidates,
+    is_public_url,
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -78,7 +87,7 @@ from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
     has_scope,
-    is_request_from_ingress,
+    is_request_from_ingress_proxy,
     resolve_command_impersonation,
     set_current_peer_address,
     set_current_token,
@@ -86,11 +95,15 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
+from .helpers.login_flow import AuthTransport, RedirectTarget
 from .remote_access import RemoteAccessManager
 from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
@@ -201,6 +214,8 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        # the first-time setup makes exactly one admin, however many attempts arrive at once
+        self._setup_lock = asyncio.Lock()
         # Preview tokens keyed on the token in the URL, value is
         # (provider instance id or domain, item id, monotonic expiry).
         self._preview_tokens: dict[str, tuple[str, str, float]] = {}
@@ -226,7 +241,7 @@ class WebserverController(CoreController):
 
     @property
     def external_url(self) -> str | None:
-        """Return the external URL for the webserver (if configured)."""
+        """Return the configured URL that reaches this server from the internet, if any."""
         config = getattr(self, "config", None)
         if config is None:
             return None
@@ -243,6 +258,37 @@ class WebserverController(CoreController):
         connect_ip = _get_internal_connect_ip(self.bind_ip, self.publish_ip)
         protocol = "https" if self._ssl_active else "http"
         return f"{protocol}://{format_ip_for_url(connect_ip)}:{self.publish_port}"
+
+    def get_auth_callback_base(
+        self,
+        transport: AuthTransport,
+        *,
+        redirect_target: RedirectTarget = "server",
+        return_url: str | None = None,
+        request_host: str | None = None,
+    ) -> str:
+        """
+        Return the URL (without the callback path) a redirect sign-in returns the browser to.
+
+        :param transport: How the client that starts the sign-in reaches the server.
+        :param redirect_target: Where the client asked the browser to return to; "app" is
+            only honoured over Remote Access.
+        :param return_url: The URL the client returns to after signing in, if any.
+        :param request_host: The host (and any port) the client used to reach the server.
+        """
+        if transport is AuthTransport.REMOTE and redirect_target == "app":
+            return APP_MA_HOST
+        external_url = self.external_url
+        if not external_url:
+            return self.base_url
+        if return_url and _url_origin(return_url) in (_url_origin(external_url), APP_MA_HOST):
+            return external_url
+        # A native app returns to its own URL scheme, so look at how its connection came in
+        if transport is AuthTransport.REMOTE or (
+            request_host and request_host.lower() == urlparse(external_url).netloc.lower()
+        ):
+            return external_url
+        return self.base_url
 
     @property
     def internal_sendspin_url(self) -> str:
@@ -298,7 +344,7 @@ class WebserverController(CoreController):
         routes: list[tuple[str, str, Callable[[web.Request], Awaitable[web.StreamResponse]]]] = []
         # frontend routes
         frontend_dir = locate_frontend()
-        for filename in next(os.walk(frontend_dir))[2]:
+        for filename in await asyncio.to_thread(_list_files, frontend_dir):
             if filename.endswith(".py"):
                 continue
             filepath = os.path.join(frontend_dir, filename)
@@ -345,7 +391,6 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/auth/login", self._handle_cors_preflight))
         routes.append(("POST", "/auth/logout", self._handle_auth_logout))
         routes.append(("GET", "/auth/me", self._handle_auth_me))
-        routes.append(("PATCH", "/auth/me", self._handle_auth_me_update))
         routes.append(("GET", "/auth/providers", self._handle_auth_providers))
         routes.append(("GET", "/auth/authorize", self._handle_auth_authorize))
         routes.append(("GET", "/auth/callback", self._handle_auth_callback))
@@ -433,6 +478,18 @@ class WebserverController(CoreController):
                 base_url,
             )
 
+        raw_external_url = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_EXTERNAL_URL
+        )
+        if not _is_valid_external_url(raw_external_url):
+            # config parsing already dropped the invalid stored value; clear the stored
+            # value too, so the setting reads back as empty and this warns only once
+            self.logger.warning(
+                "External URL %r in the webserver settings is not a public http(s) URL, "
+                "clearing it",
+                raw_external_url,
+            )
+            self.mass.config.set_raw_core_config_value(self.domain, CONF_EXTERNAL_URL, None)
         # Setup remote access after webserver is running
         await self.remote_access.setup()
         # signal fresh server info so a reload (e.g. changed bind/ssl config)
@@ -659,6 +716,7 @@ class WebserverController(CoreController):
                 required=False,
                 advanced=True,
                 requires_reload=False,
+                validate=_is_valid_external_url,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -763,11 +821,14 @@ class WebserverController(CoreController):
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
         cmd_data = await request.read()
-        self.logger.log(VERBOSE_LOG_LEVEL, "Received on JSONRPC API: %s", cmd_data)
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "Received on JSONRPC API: %s", redact_json_secrets(cmd_data)
+            )
         try:
             command_msg = CommandMessage.from_json(cmd_data)
         except ValueError:
-            error = f"Invalid JSON: {cmd_data.decode()}"
+            error = "Invalid JSON"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
         except MissingField as e:
@@ -791,12 +852,13 @@ class WebserverController(CoreController):
         # Check authentication if required
         if error_response := await self._authenticate_api_command(request, handler):
             return error_response
+        set_request_priority(RequestPriority.NORMAL)
 
         try:
             # handle the optional impersonation argument for impersonation-enabled commands
             if handler.allow_impersonation and command_msg.args:
                 if impersonation_user := await resolve_command_impersonation(
-                    self.mass, command_msg.args
+                    self.mass, command_msg.args, handler.required_scope
                 ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
@@ -815,6 +877,8 @@ class WebserverController(CoreController):
             return web.Response(status=403, text=str(e))
         except (InvalidDataError, UserNotFoundError) as e:
             return web.Response(status=400, text=str(e))
+        except PlayerUnavailableError as e:
+            return web.Response(status=404, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -943,7 +1007,7 @@ class WebserverController(CoreController):
 
     async def _handle_index(self, request: web.Request) -> web.StreamResponse:
         """Handle request for index page (Vue frontend)."""
-        is_ingress_request = is_request_from_ingress(request)
+        is_ingress_request = is_request_from_ingress_proxy(request)
 
         if (not self.auth.has_users or not self.mass.config.onboard_done) and is_ingress_request:
             # a non-admin user tries to access the index via HA ingress
@@ -960,8 +1024,11 @@ class WebserverController(CoreController):
             # frontend (which will take care of onboarding)
 
         if not self.auth.has_users and not is_ingress_request:
-            # non ingress request and no users yet, redirect to setup
-            return web.Response(status=302, headers={"Location": "setup"})
+            # non ingress request and no users yet, redirect to setup; the query
+            # travels along as sent, so a reload keeps a client's return_url and device_name
+            query = request.rel_url.raw_query_string
+            location = f"setup?{query}" if query else "setup"
+            return web.Response(status=302, headers={"Location": location})
 
         # Serve the Vue frontend index.html
         return await self._server.serve_static(self._index_path, request)
@@ -969,14 +1036,14 @@ class WebserverController(CoreController):
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page (external client OAuth callback scenario)."""
         if not self.auth.has_users:
-            # not yet onboarded (no first admin user exists), redirect to setup
-            return_url = request.query.get("return_url", "")
-            device_name = request.query.get("device_name", "")
-            setup_url = (
-                f"/setup?return_url={return_url}&device_name={device_name}"
-                if return_url
-                else "/setup"
-            )
+            # not yet onboarded (no first admin user exists), redirect to setup with the
+            # client's hand-back, re-encoded so a return url with a query of its own survives
+            hand_back = {
+                key: value
+                for key in ("return_url", "device_name")
+                if (value := request.query.get(key))
+            }
+            setup_url = str(URL("/setup").with_query(hand_back))
             return web.Response(status=302, headers={"Location": setup_url})
         # Serve login page for external clients
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
@@ -1002,7 +1069,21 @@ class WebserverController(CoreController):
             if not request.can_read_body:
                 return web.Response(status=400, text="Body required")
 
-            body = await request.json()
+            try:
+                body = await request.json()
+            except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+                body = None
+            # an undecodable or non-object body is a client error, not a server fault
+            if not isinstance(body, dict):
+                return web.Response(
+                    status=400,
+                    text="Invalid request body",
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "POST, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                    },
+                )
             provider_id = body.get("provider_id", "builtin")  # Default to built-in provider
             credentials = body.get("credentials", {})
             return_url = body.get("return_url")  # Optional return URL for redirect after login
@@ -1041,7 +1122,9 @@ class WebserverController(CoreController):
                 # unknown external URL, so checking is_valid alone would still leak the JWT.
                 # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
                 # the token immediately with no consent step, so "external" must be rejected.
-                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                _, category = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if category != "trusted":
                     return web.Response(status=400, text="Invalid return_url")
 
@@ -1090,6 +1173,9 @@ class WebserverController(CoreController):
             if token_row:
                 await self.auth.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
 
+                # Disconnect any WebSocket connections using this token
+                self.disconnect_websockets_for_token(token_row["token_id"])
+
         return web.json_response({"success": True})
 
     async def _handle_auth_me(self, request: web.Request) -> web.Response:
@@ -1099,41 +1185,6 @@ class WebserverController(CoreController):
             return web.Response(status=401, text="Not authenticated")
 
         return web.json_response(with_derived_provider_filter(self.mass, user).to_dict())
-
-    async def _handle_auth_me_update(self, request: web.Request) -> web.Response:
-        """Handle request to update current user's profile."""
-        user = await get_authenticated_user(request)
-        if not user:
-            return web.Response(status=401, text="Not authenticated")
-
-        try:
-            if not request.can_read_body:
-                return web.Response(status=400, text="Body required")
-
-            body = await request.json()
-            username = body.get("username")
-            display_name = body.get("display_name")
-            avatar_url = body.get("avatar_url")
-
-            # Update user
-            updated_user = await self.auth.update_user(
-                user,
-                username=username,
-                display_name=display_name,
-                avatar_url=avatar_url,
-            )
-
-            return web.json_response(
-                {
-                    "success": True,
-                    "user": with_derived_provider_filter(self.mass, updated_user).to_dict(),
-                }
-            )
-        except Exception:
-            self.logger.exception("Error updating user profile")
-            return web.json_response(
-                {"success": False, "error": "Failed to update profile"}, status=500
-            )
 
     async def _handle_auth_providers(self, request: web.Request) -> web.Response:
         """Handle request for available login providers."""
@@ -1159,17 +1210,21 @@ class WebserverController(CoreController):
 
             # Validate return_url if provided
             if return_url:
-                is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
+                is_valid, _ = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if not is_valid:
                     return web.Response(status=400, text="Invalid return_url")
 
-            auth_url = await self.auth.get_authorization_url(provider_id, return_url)
-            if not auth_url:
+            started = await self.auth.get_authorization_url(provider_id, return_url)
+            if not started:
                 return web.Response(
                     status=400, text="Provider does not support OAuth or is not configured"
                 )
 
-            return web.json_response({"authorization_url": auth_url})
+            return web.json_response({"authorization_url": started[0]})
+        except RateLimited:
+            return web.Response(status=429, text="Too many sign-ins are pending, try again later")
         except Exception:
             self.logger.exception("Error during OAuth authorization")
             return web.json_response({"error": "Authorization failed"}, status=500)
@@ -1184,10 +1239,7 @@ class WebserverController(CoreController):
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")
 
-            redirect_uri = f"{self.base_url}/auth/callback?provider_id={provider_id}"
-            auth_result = await self.auth.handle_oauth_callback(
-                provider_id, code, state, redirect_uri
-            )
+            auth_result = await self.auth.handle_oauth_callback(provider_id, code, state)
 
             if not auth_result.success or not auth_result.user:
                 # Return error page
@@ -1213,7 +1265,7 @@ class WebserverController(CoreController):
             # Validate redirect URL for security
             if auth_result.return_url:
                 is_valid, category = is_allowed_redirect_url(
-                    auth_result.return_url, request, self.base_url
+                    auth_result.return_url, request, self.base_url, self.external_url
                 )
                 if not is_valid:
                     self.logger.warning("Invalid return_url blocked: %s", auth_result.return_url)
@@ -1251,12 +1303,14 @@ class WebserverController(CoreController):
             """
             return web.Response(text=error_html, content_type="text/html", status=500)
 
-    async def _handle_setup_page(self, request: web.Request) -> web.Response:
-        """Handle request for first-time setup page."""
+    async def _handle_setup_page(self, request: web.Request) -> web.StreamResponse:
+        """Handle request for the first-time setup page (the frontend's account step)."""
         # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
-            _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+            _, category = is_allowed_redirect_url(
+                return_url, request, self.base_url, self.external_url
+            )
             if category != "trusted":
                 return web.Response(status=400, text="Invalid return_url")
 
@@ -1264,33 +1318,50 @@ class WebserverController(CoreController):
             # this should not happen, but guard anyways
             return await self._render_error_page("Setup has already been completed.")
 
-        setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
-        async with aiofiles.open(setup_html_path) as f:
-            html_content = await f.read()
-
-        return web.Response(text=html_content, content_type="text/html")
+        # the frontend recognizes the setup page by its path and opens the setup
+        # wizard on the account step, so serve the app itself here
+        return await self._server.serve_static(self._index_path, request)
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
         """Handle first-time setup request to create admin user (non-ingress only)."""
         if self.auth.has_users:
+            # a conflict tells the frontend the admin exists, so it offers the sign-in
+            # instead of another attempt
             return web.json_response(
-                {"success": False, "error": "Setup already completed"}, status=400
+                {"success": False, "error": "Setup already completed"}, status=409
             )
 
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
 
-        body = await request.json()
-        username = body.get("username", "").strip()
+        try:
+            body = await request.json()
+        except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+            body = None
+        # an undecodable or non-object body is a client error, not a server fault
+        if not isinstance(body, dict):
+            return web.Response(status=400, text="Invalid request body")
+        username = body.get("username", "")
         password = body.get("password", "")
+        display_name = body.get("display_name")
+        device_name = body.get("device_name")
+        if not (
+            isinstance(username, str)
+            and isinstance(password, str)
+            and (display_name is None or isinstance(display_name, str))
+            and (device_name is None or isinstance(device_name, str))
+        ):
+            return web.Response(status=400, text="Invalid request body")
+        username = username.strip()
+        display_name = (display_name or "").strip() or None
 
         # Validation
-        if not username or len(username) < 2:
+        if len(username) < 2:
             return web.json_response(
                 {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
-        if not password or len(password) < 8:
+        if len(password) < 8:
             return web.json_response(
                 {"success": False, "error": "Password must be at least 8 characters"}, status=400
             )
@@ -1309,15 +1380,17 @@ class WebserverController(CoreController):
                     status=500,
                 )
 
-            # Create admin user with password
-            user = await builtin_provider.create_user_with_password(
-                username, password, role=UserRole.ADMIN
+            user = await self._create_first_admin(
+                builtin_provider, username, password, display_name
             )
+            if user is None:
+                return web.json_response(
+                    {"success": False, "error": "Setup already completed"}, status=409
+                )
 
             # Create token for the new admin
-            device_name = body.get(
-                "device_name", f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
-            )
+            if not device_name:
+                device_name = f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
             token = await self.auth.create_token(user, device_name)
 
             self.logger.info("First admin user created: %s", username)
@@ -1332,7 +1405,9 @@ class WebserverController(CoreController):
             # Only forward the token to a trusted destination (no consent step here).
             return_url = body.get("return_url")
             if return_url and isinstance(return_url, str):
-                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                _, category = is_allowed_redirect_url(
+                    return_url, request, self.base_url, self.external_url
+                )
                 if category == "trusted":
                     response_data["redirect_to"] = build_code_redirect_url(
                         return_url, token, {"onboard": "true"}
@@ -1346,6 +1421,30 @@ class WebserverController(CoreController):
             self.logger.exception("Error during setup")
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
+            )
+
+    async def _create_first_admin(
+        self,
+        provider: BuiltinLoginProvider,
+        username: str,
+        password: str,
+        display_name: str | None,
+    ) -> User | None:
+        """
+        Create the first admin account, or return None when the server already has a user.
+
+        Attempts that arrive together are taken one at a time, so only one of them makes the admin.
+
+        :param provider: The builtin login provider that stores the password.
+        :param username: The username of the admin.
+        :param password: The password of the admin.
+        :param display_name: The display name of the admin, if any.
+        """
+        async with self._setup_lock:
+            if self.auth.has_users:
+                return None
+            return await provider.create_user_with_password(
+                username, password, role=UserRole.ADMIN, display_name=display_name
             )
 
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
@@ -1389,3 +1488,29 @@ def _serialize_script_value(value: str) -> str:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
+
+
+def _is_valid_external_url(value: ConfigValueType) -> bool:
+    """Return whether a configured external URL is empty or an http(s) URL on a public host."""
+    if not value:
+        return True
+    return isinstance(value, str) and is_public_url(value)
+
+
+def _url_origin(url: str) -> str:
+    """
+    Return the origin (scheme and host, including any port) of a URL.
+
+    :param url: The URL to get the origin of.
+    """
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def _list_files(directory: Path) -> list[str]:
+    """
+    Return the names of the files directly inside a directory.
+
+    :param directory: The directory to list.
+    """
+    return next(os.walk(directory))[2]

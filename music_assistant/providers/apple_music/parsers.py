@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
@@ -186,6 +186,14 @@ def parse_album(
         album.artists = album_artists
     if release_date := attributes.get("releaseDate"):
         album.year = int(release_date.split("-")[0])
+        # Apple sends the full date (YYYY-MM-DD) when it is known; for pre-added
+        # albums this is the expected release date in the future, so clients can
+        # surface upcoming releases instead of only the (misleading) year.
+        if len(release_date) == 10:
+            with suppress(ValueError):
+                album.metadata.release_date = datetime.strptime(release_date, "%Y-%m-%d").replace(
+                    tzinfo=UTC
+                )
     if genres := attributes.get("genreNames"):
         album.metadata.genres = set(genres)
     if image := parse_artwork_image(provider, MediaType.ALBUM, album_id, attributes):
@@ -210,7 +218,7 @@ def parse_album(
     inferred_type = infer_album_type(album.name, "")
     if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
         album.album_type = inferred_type
-    album.favorite = is_favourite or False
+    album.favorite = is_favourite
     return album
 
 
@@ -301,7 +309,7 @@ def parse_track(
     with suppress(TypeError, ValueError):
         if added := raw_attributes.get("dateAdded"):
             track.date_added = datetime.fromisoformat(added).replace(microsecond=0)
-    track.favorite = is_favourite or False
+    track.favorite = is_favourite
     return track
 
 
@@ -343,7 +351,7 @@ def parse_playlist(
         playlist.metadata.add_image(image)
     if description := attributes.get("description"):
         playlist.metadata.description = description.get("standard")
-    playlist.favorite = is_favourite or False
+    playlist.favorite = is_favourite
     return playlist
 
 

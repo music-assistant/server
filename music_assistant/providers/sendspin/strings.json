@@ -9,27 +9,33 @@
     },
     "preferred_sendspin_format": {
       "label": "Preferred audio format",
-      "description": "Select the audio format to use for playback on this player.",
+      "description": "Select the audio format to use for playback on this player. Automatic uses the player's preferred codec, at the rate set by \"Sample rate selection\".",
       "options": {
-        "automatic": "Automatic (let client decide)"
+        "automatic": "Automatic (player's preferred codec)"
       }
+    },
+    "flow_mode_sample_rate": {
+      "label": "Sample rate selection",
+      "description": "Select the sample rate of the audio sent to this player. By default, it follows the sample rate of the first track that is played. Only applies when the preferred audio format is set to automatic."
     },
     "allow_legacy_clients": {
       "label": "Allow legacy clients",
       "description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release."
     },
-    "min_pin_length": {
-      "label": "Minimum pairing code length",
-      "description": "Minimum number of digits for dynamic pairing codes."
-    },
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."
+    },
+    "security_status_held_unapproved": {
+      "label": "Another server is using this device, and Music Assistant has not paired it or allowed guest access yet."
     },
     "security_status_unencrypted": {
       "label": "This device is connected without encryption (legacy mode). Pairing is not available."
     },
     "security_status_paired": {
       "label": "This device is paired. The connection is encrypted and authenticated."
+    },
+    "security_status_pairing_lost": {
+      "label": "This device lost its pairing with Music Assistant and cannot play. Use Reconfigure to pair it again, or Unpair to remove the old pairing."
     },
     "security_status_guest": {
       "label": "This device is connected through guest access. The connection is encrypted but not verified, which the device allows on purpose."
@@ -56,24 +62,37 @@
       "label": "Saving the pairing data failed: {0}."
     },
     "pairing_method": {
-      "label": "Which pairing code does the device use?",
+      "label": "How do you want to pair this device?",
       "options": {
         "pin": "Pairing code",
         "dynamic_pin": "Dynamic pairing code",
-        "static_pin": "Static pairing code"
+        "static_pin": "Static pairing code",
+        "token": "Pairing token"
       },
       "option_descriptions": {
         "pin": "Enter the device's pairing code.",
         "dynamic_pin": "Enter the device's dynamically generated pairing code.",
-        "static_pin": "Enter the device's fixed pairing code."
+        "static_pin": "Enter the device's fixed pairing code.",
+        "token": "Paste the pairing token shown on the device or its leaflet. It starts with SP:."
       }
     },
     "pairing_pin": {
       "label": "Pairing code"
     },
+    "pairing_token": {
+      "label": "Pairing token"
+    },
     "unpair": {
       "label": "Unpair",
       "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
+    },
+    "source_input_enable": {
+      "label": "Turn on audio input",
+      "description": "Let this device send its audio (such as a line-in) to Music Assistant."
+    },
+    "source_input_disable": {
+      "label": "Turn off audio input",
+      "description": "Stop using this device's audio input."
     },
     "management_enter": {
       "label": "Manage device settings",
@@ -134,6 +153,15 @@
     "static_pin_location_operator": {
       "label": "Enter the code set on the device by its operator"
     },
+    "pairing_psk_location_device": {
+      "label": "Enter the token printed on the device"
+    },
+    "pairing_psk_location_leaflet": {
+      "label": "Enter the token from the leaflet supplied with the device"
+    },
+    "pairing_psk_location_operator": {
+      "label": "Enter the token set on the device by its operator"
+    },
     "dynamic_pin_channel_display": {
       "label": "Enter the code shown on the device's screen"
     },
@@ -163,10 +191,14 @@
       "label": "Connection",
       "options": {
         "unpaired": "Connect unpaired",
+        "unpaired_with_input": "Connect unpaired with audio input",
+        "unpaired_without_input": "Connect unpaired without audio input",
         "pair": "Pair device"
       },
       "option_descriptions": {
         "unpaired": "No pairing needed. Quick and easy, but less secure.",
+        "unpaired_with_input": "No pairing needed. Quick and easy, but less secure.",
+        "unpaired_without_input": "Playback only. The audio input can be turned on later in the device settings.",
         "pair": "Sets up a permanent, secure connection with this device."
       }
     },
@@ -199,14 +231,14 @@
     "enter_pin": {
       "title": "Enter the pairing code"
     },
+    "enter_token": {
+      "title": "Enter the pairing token",
+      "description": "Paste the device's pairing token to set up a secure connection."
+    },
     "confirming": {
       "title": "Finishing pairing",
       "description": "Completing the secure pairing with the device.",
       "progress_text": "Completing pairing with the device..."
-    },
-    "verify_pin": {
-      "title": "Verify device presence",
-      "description": "Enter the device's pairing code to confirm it is the physical device in front of you."
     },
     "abort": {
       "nothing_to_configure": "This player has nothing to pair. Bridge and web players, and devices connected without encryption, do not require pairing.",
@@ -215,8 +247,7 @@
       "pairing_error_concurrent": "Another pairing attempt is already in progress.",
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
-      "timed_out": "The device did not respond in time. Run the setup again to retry.",
-      "token_pairing_only": "This device cannot be paired from here. It only offers the pairing method servers use to enrol themselves, which has no code for you to enter."
+      "timed_out": "The device did not respond in time. Run the setup again to retry."
     },
     "approve_device_source": {
       "title": "How do you want to connect?",
@@ -233,7 +264,6 @@
     "pairing_error_timeout": "The pairing attempt timed out.",
     "pairing_error_concurrent": "Another pairing attempt is already in progress.",
     "pairing_error_pin_mismatch": "The pairing code did not match. Please try again.",
-    "pairing_error_pin_length": "The device rejected the pairing code length.",
     "pairing_error_cancelled": "Pairing was cancelled on the device.",
     "pairing_error_method_unsupported": "The device does not support this pairing method.",
     "pairing_error_aborted": "The device aborted the pairing attempt.",

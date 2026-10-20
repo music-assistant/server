@@ -11,6 +11,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
     AudioFormat,
+    AudioMetadata,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -1460,6 +1461,35 @@ def test_media_item_to_playlist_item_ties_are_broken_deterministically() -> None
     assert result.path == "alpha://track/a1"
 
 
+def test_media_item_to_playlist_item_keeps_the_album_image_of_a_track() -> None:
+    """A track's entry holds the image of its album first, as that is the image it shows."""
+    album_thumb = MediaItemImage(type=ImageType.THUMB, path="Album/folder.jpg", provider="fs_1")
+    track_thumb = MediaItemImage(type=ImageType.THUMB, path="Album/track.mp3", provider="fs_1")
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="Album/track.mp3", provider_domain="filesystem", provider_instance="fs_1"
+            )
+        },
+        album=ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id="2",
+            provider="library",
+            name="Album",
+            image=album_thumb,
+        ),
+        metadata=MediaItemMetadata(images=UniqueList([track_thumb, album_thumb])),
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    assert [image.path for image in result.images] == [album_thumb.path, track_thumb.path]
+
+
 def test_radio_entries_round_trip() -> None:
     """Test that radio entries survive generation and parsing unchanged."""
     items = [
@@ -1615,7 +1645,7 @@ def test_construct_keeps_the_provider_instance() -> None:
 
 
 # --------------------------------------------------------------------------- #
-#  PlaylistController.tracks() — provider-driven pagination                    #
+#  PlaylistController.iter_tracks() — provider-driven pagination               #
 # --------------------------------------------------------------------------- #
 
 
@@ -1628,14 +1658,14 @@ def _make_controller() -> PlaylistController:
 
 @pytest.mark.asyncio
 async def test_tracks_relays_all_provider_pages() -> None:
-    """tracks() relays every non-empty provider page until exhausted (provider decides size)."""
+    """iter_tracks() relays every non-empty provider page until exhausted (provider decides size)."""
     controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(20)]
     page1 = [MagicMock(spec=Track) for _ in range(15)]
     get_tracks = AsyncMock(side_effect=[page0, page1, []])
     cast("Any", controller)._get_provider_playlist_tracks = get_tracks
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     # No controller-side cap: a multi-page (e.g. dynamic) list is relayed in full.
     assert len(result) == 35
@@ -1644,16 +1674,52 @@ async def test_tracks_relays_all_provider_pages() -> None:
 
 @pytest.mark.asyncio
 async def test_tracks_stops_on_empty_page() -> None:
-    """tracks() stops fetching once the provider yields an empty page."""
+    """iter_tracks() stops fetching once the provider yields an empty page."""
     controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(7)]
     get_tracks = AsyncMock(side_effect=[page0, []])
     cast("Any", controller)._get_provider_playlist_tracks = get_tracks
 
-    result = [t async for t in controller.tracks("abc", "some_provider")]
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
 
     assert len(result) == 7
     assert get_tracks.await_count == 2
+
+
+def _playlist_track(item_id: str, audio_metadata: AudioMetadata | None = None) -> Track:
+    return Track(
+        item_id=item_id,
+        provider="some_provider",
+        name=item_id,
+        provider_mappings=set(),
+        audio_metadata=audio_metadata,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tracks_add_audio_metadata_per_page() -> None:
+    """Tracks without audio metadata get it from stored analysis, one lookup per page."""
+    controller = _make_controller()
+    from_provider = AudioMetadata(bpm=99.0)
+    page0 = [_playlist_track("a"), _playlist_track("b", from_provider)]
+    page1 = [
+        _playlist_track("c"),
+        Radio(item_id="r", provider="some_provider", name="r", provider_mappings=set()),
+    ]
+    cast("Any", controller)._get_provider_playlist_tracks = AsyncMock(
+        side_effect=[page0, page1, []]
+    )
+    lookup = AsyncMock(side_effect=[[AudioMetadata(bpm=120.0)], [None]])
+    cast("Any", controller.mass).streams.audio_analysis.get_tracks_audio_metadata = lookup
+
+    result = [t async for t in controller.iter_tracks("abc", "some_provider")]
+
+    assert [cast("Track", t).audio_metadata for t in result[:3]] == [
+        AudioMetadata(bpm=120.0),
+        from_provider,
+        None,
+    ]
+    assert [call.args[0] for call in lookup.await_args_list] == [[page0[0]], [page1[0]]]
 
 
 # --------------------------------------------------------------------------- #
@@ -1978,3 +2044,118 @@ async def test_fetch_playlist_reads_only_the_head_of_the_body() -> None:
     # the entry sits past the read limit, so nothing is left to parse
     with pytest.raises(InvalidDataError, match="Empty playlist"):
         await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+# --------------------------------------------------------------------------- #
+#  EXTIMG provider trust on import                                             #
+# --------------------------------------------------------------------------- #
+
+
+def _spotify_mass() -> MagicMock:
+    """Return a mass mock with one loaded Spotify instance."""
+    spotify = MagicMock(domain="spotify", instance_id="spotify_1")
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: {
+        "spotify": spotify,
+        "spotify_1": spotify,
+    }.get(ref)
+    return mass
+
+
+def _spotify_item(images: list[ImageInfo]) -> PlaylistItem:
+    """Return a playlist item mapped to the Spotify instance with the given images."""
+    return PlaylistItem(
+        path="spotify://track/abc123",
+        title="Song",
+        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
+        providers=[
+            ProviderMappingInfo(domain="spotify", item_id="abc123", instance_id="spotify_1")
+        ],
+        images=images,
+    )
+
+
+def test_construct_media_item_drops_local_image_paths_from_a_file() -> None:
+    """A local image path from a playlist file is never imported, whatever provider it names."""
+    item = _spotify_item([ImageInfo(type="thumb", path="/data/cover.jpg", provider="spotify_1")])
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert not result.metadata.images
+
+
+def test_construct_media_item_keeps_own_provider_and_builtin_remote_images() -> None:
+    """Images of the item's own provider (instance or domain) and builtin URLs are imported."""
+    item = _spotify_item(
+        [
+            ImageInfo(type="thumb", path="https://i.scdn.co/thumb.jpg", provider="spotify_1"),
+            ImageInfo(type="fanart", path="https://i.scdn.co/fanart.jpg", provider="spotify"),
+            ImageInfo(type="logo", path="https://example.com/logo.png", provider="builtin"),
+        ]
+    )
+
+    result = construct_media_item_from_playlist_item(item, _spotify_mass())
+
+    assert result is not None
+    assert result.metadata.images is not None
+    assert [(img.path, img.provider) for img in result.metadata.images] == [
+        ("https://i.scdn.co/thumb.jpg", "spotify_1"),
+        ("https://i.scdn.co/fanart.jpg", "spotify"),
+        ("https://example.com/logo.png", "builtin"),
+    ]
+
+
+@pytest.mark.parametrize("loaded", [True, False], ids=["loaded", "unloaded"])
+def test_construct_media_item_remote_image_of_another_provider(loaded: bool) -> None:
+    """A remote image of another provider is imported only when that provider is loaded."""
+    mass = _spotify_mass()
+    fanarttv = MagicMock(domain="fanarttv", instance_id="fanarttv") if loaded else None
+    spotify_lookup = mass.get_provider.side_effect
+    mass.get_provider.side_effect = lambda ref: (
+        fanarttv if ref == "fanarttv" else spotify_lookup(ref)
+    )
+    item = _spotify_item(
+        [ImageInfo(type="fanart", path="https://fanart.tv/x.jpg", provider="fanarttv")]
+    )
+
+    result = construct_media_item_from_playlist_item(item, mass)
+
+    assert result is not None
+    if loaded:
+        assert result.metadata.images is not None
+        assert [img.provider for img in result.metadata.images] == ["fanarttv"]
+    else:
+        assert not result.metadata.images
+
+
+def test_media_item_to_playlist_item_track_round_trip_preserves_own_image() -> None:
+    """A track's own image survives export, generate and re-parse."""
+    image = MediaItemImage(
+        type=ImageType.THUMB,
+        path="https://i.scdn.co/abc.jpg",
+        provider="spotify_1",
+        remotely_accessible=True,
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify_1",
+        name="Song",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(content_type=ContentType.OGG),
+            ),
+        },
+        metadata=MediaItemMetadata(images=UniqueList([image])),
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Mix", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], _spotify_mass())
+
+    assert reconstructed is not None
+    assert reconstructed.metadata.images == UniqueList([image])

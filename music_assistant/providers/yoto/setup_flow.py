@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
-import pkce
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
@@ -15,13 +14,14 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_params,
     hosted_bounce_redirect,
 )
+from music_assistant.helpers.pkce import generate_pkce_pair
 from music_assistant.models.setup_flow import SetupFlowError
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
 CONF_CLIENT_ID = "client_id"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 
 CONF_ENTRY_CLIENT_ID = ConfigEntry(
     key=CONF_CLIENT_ID,
@@ -32,7 +32,7 @@ CONF_ENTRY_CLIENT_ID = ConfigEntry(
 HELP_LINK_URL = "https://www.music-assistant.io/music-providers/yoto/"
 DEVELOPER_LOGIN_URL = "https://dashboard.yoto.dev/"
 AUTHORIZE_URL = "https://login.yotoplay.com/authorize"
-TOKEN_URL = "https://login.yotoplay.com/oauth/token"
+TOKEN_URL = "https://login.yotoplay.com/oauth/token"  # noqa: S105 - URL
 AUDIENCE = "https://api.yotoplay.com"
 
 
@@ -44,7 +44,7 @@ async def run_setup(session: SetupSession) -> None:
     """
     setup_data = dict(session.context.setup_data)
     client_id_default = str(setup_data.get(CONF_CLIENT_ID) or "")
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
 
     while True:
         submitted = await session.form(
@@ -71,7 +71,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _pkce_authenticate(session: SetupSession, client_id: str) -> str:
@@ -81,7 +81,7 @@ async def _pkce_authenticate(session: SetupSession, client_id: str) -> str:
     :param session: The setup session driving the flow.
     :param client_id: The Yoto developer client id.
     """
-    code_verifier, code_challenge = pkce.generate_pkce_pair()
+    code_verifier, code_challenge = generate_pkce_pair()
     redirect_uri, state = hosted_bounce_redirect(session.callback_url)
     params = {
         "response_type": "code",

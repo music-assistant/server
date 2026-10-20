@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Self
 from unittest.mock import AsyncMock, Mock, patch
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidToken, SetupFailedError
+from music_assistant_models.errors import InvalidToken, LoginFailed, SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.providers.listenbrainz_scrobble import (
@@ -326,13 +327,11 @@ async def test_a_successful_submission_marks_the_track_scrobbled() -> None:
         _FakeSession(post_error=aiohttp.ClientConnectionError()),
         # a request that stalls until the timeout fires: the case this fix exists for
         _FakeSession(post_error=TimeoutError()),
-        # a non-transient rejection (e.g. a revoked token)
-        _FakeSession(post_statuses=[401]),
     ],
-    ids=["connection-error", "timeout", "auth-error"],
+    ids=["connection-error", "timeout"],
 )
 async def test_a_failed_submission_is_swallowed(session: _FakeSession) -> None:
-    """A transport, timeout, or non-retryable error while scrobbling is swallowed, not raised."""
+    """A transport or timeout error while scrobbling is swallowed, not raised."""
     handler = _handler(session)
 
     await handler.on_media_item_played(_report())
@@ -389,3 +388,60 @@ async def test_the_hook_forwards_the_report_to_the_handler() -> None:
     await provider.on_media_item_played(report)
 
     provider._handler.on_media_item_played.assert_awaited_once_with(report)
+
+
+@pytest.mark.parametrize("report", [_report(), _playing_report()], ids=["scrobble", "now-playing"])
+async def test_a_rejected_token_stops_scrobbling_and_asks_for_reconfigure(
+    report: MediaItemPlaybackProgressReport, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A revoked token logs one warning, stops all submissions and unloads for reconfigure."""
+    session = _FakeSession(payload={"valid": True}, post_statuses=[401])
+    provider = _provider({CONF_USER_TOKEN: "token"}, http_session=session)
+    await provider.handle_async_init()
+    await provider.loaded_in_mass()
+
+    with patch.object(provider, "unload_with_error") as unload_with_error:
+        await provider.on_media_item_played(report)
+        await provider.on_media_item_played(report)
+
+    # the rejected submission is not retried and nothing is sent after it
+    assert session.post_calls == 1
+    assert provider._handler is None
+    unload_with_error.assert_called_once()
+    err = unload_with_error.call_args.args[0]
+    assert isinstance(err, LoginFailed)
+    assert err.translation_key == "token_invalid"
+    assert err.translation_owner == "provider.listenbrainz_scrobble"
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == [logging.WARNING]
+
+
+async def test_overlapping_rejected_reports_unload_only_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Reports racing on the same rejected token warn and unload exactly once."""
+    provider = _provider({CONF_USER_TOKEN: "token"})
+
+    # a barrier holds both reports inside the handler until each has captured it, so the
+    # identity guard's race — not the plain None check — is what stops the second unload
+    barrier = asyncio.Barrier(2)
+
+    class _GatedHandler:
+        async def on_media_item_played(self, _report: MediaItemPlaybackProgressReport) -> None:
+            await barrier.wait()
+            raise LoginFailed(
+                "ListenBrainz rejected the user token",
+                translation_key="token_invalid",
+                translation_owner="provider.listenbrainz_scrobble",
+            )
+
+    provider._handler = _GatedHandler()  # type: ignore[assignment]
+
+    with patch.object(provider, "unload_with_error") as unload_with_error:
+        await asyncio.gather(
+            provider.on_media_item_played(_report()),
+            provider.on_media_item_played(_report()),
+        )
+
+    assert provider._handler is None
+    unload_with_error.assert_called_once()
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == [logging.WARNING]

@@ -111,6 +111,7 @@ async def test_dynamic_radio_tracks_serve_the_live_fragment() -> None:
     provider = _provider()
     tracks = await provider.get_dynamic_radio_tracks(STATION_ID)
     assert [track.item_id for track in tracks] == ["TR:S0", "TR:S1", "TR:S2", "TR:S3"]
+    assert all(track.available for track in tracks)
 
 
 async def test_search_returns_stations_as_radio() -> None:
@@ -136,6 +137,16 @@ async def test_album_is_addressed_by_its_tracks_id() -> None:
     album = await provider.get_album("TR:S0")
     assert album.item_id == "TR:S0"
     assert album.name == "Some Album"
+
+
+async def test_album_tracks_hold_the_track_it_was_minted_from() -> None:
+    """An album page lists the one station track Pandora knows for it."""
+    provider = _provider()
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    tracks = await provider.get_album_tracks("TR:S0")
+    assert [(track.item_id, track.available) for track in tracks] == [("TR:S0", False)]
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_album_tracks("TR:unknown")
 
 
 async def test_album_is_gone_once_its_track_ages_out() -> None:

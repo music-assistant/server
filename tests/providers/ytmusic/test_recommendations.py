@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping, RecommendationFolder, UniqueList
+from music_assistant_models.media_items import Artist, ItemMapping, RecommendationFolder, UniqueList
 
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
 
@@ -193,3 +193,40 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
 
     assert isinstance(result, UniqueList)
     assert len(result) == 0
+
+
+async def test_get_recommendation_items_parses_recommended_artist(
+    provider: YoutubeMusicProvider,
+    fake_cache: _FakeCache,
+) -> None:
+    """Recommended artists with subscribers are parsed as Artist items, not Albums."""
+    home_data = [
+        {
+            "title": "Listen Again",
+            "contents": [
+                {
+                    "title": "Radiohead",
+                    "browseId": "UCchannel123",
+                    "subscribers": "10.1K",
+                    "thumbnails": [
+                        {
+                            "url": "https://yt3.googleusercontent.com/buncharandomstuff=w544-h544",
+                            "width": 544,
+                            "height": 544,
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    with patch(GET_HOME_PATH, new_callable=AsyncMock, return_value=home_data):
+        items = await provider.get_recommendation_items(f"{provider.instance_id}_Listen Again")
+    await fake_cache.flush()
+
+    assert len(items) == 1
+    artist = items[0]
+    assert isinstance(artist, Artist)
+    assert artist.media_type == MediaType.ARTIST
+    assert artist.item_id == "UCchannel123"
+    assert artist.name == "Radiohead"
+    assert artist.provider == provider.instance_id

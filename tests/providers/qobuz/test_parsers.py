@@ -2,11 +2,20 @@
 
 from copy import deepcopy
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
-from music_assistant_models.enums import AlbumType, ImageType
-from music_assistant_models.errors import LoginFailed
+from aiohttp import client_exceptions
+from music_assistant_models.enums import AlbumType, ExternalID, ImageType, ProviderFeature
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
@@ -516,3 +525,260 @@ class TestParsePlaylist:
 
         with pytest.raises(LoginFailed):
             mock_provider._parse_playlist(deepcopy(PLAYLIST_OBJ))
+
+
+class TestExternalIDLookup:
+    """Test external identifier lookup methods."""
+
+    async def test_track_by_isrc(self, mock_provider: QobuzProvider) -> None:
+        """A matching search result is hydrated into a full track."""
+        search = AsyncMock(
+            return_value={"tracks": {"items": [{"id": 345678, "isrc": "US-RC1-76-07839"}]}}
+        )
+        track = await mock_provider._parse_track(deepcopy(TRACK_OBJ))
+        mock_provider._get_data = search  # type: ignore[method-assign]
+        mock_provider.get_track = AsyncMock(return_value=track)  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_track_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, "us-rc1-76-07839", ExternalID.ISRC)
+
+        assert result is track
+        search.assert_awaited_once_with(
+            "catalog/search", query="USRC17607839", type="tracks", limit=25
+        )
+        mock_provider.get_track.assert_awaited_once_with("345678")
+
+    async def test_track_by_isrc_skips_stale_candidate(self, mock_provider: QobuzProvider) -> None:
+        """A disappeared candidate does not prevent a later match from succeeding."""
+        search = AsyncMock(
+            return_value={
+                "tracks": {
+                    "items": [
+                        {"id": 111111, "isrc": "USRC17607839"},
+                        {"id": 345678, "isrc": "USRC17607839"},
+                    ]
+                }
+            }
+        )
+        track = await mock_provider._parse_track(deepcopy(TRACK_OBJ))
+        mock_provider._get_data = search  # type: ignore[method-assign]
+        mock_provider.get_track = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[MediaNotFoundError("stale candidate"), track]
+        )
+
+        lookup: Any = QobuzProvider.get_track_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, "USRC17607839", ExternalID.ISRC)
+
+        assert result is track
+        mock_provider.get_track.assert_has_awaits([call("111111"), call("345678")])
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RateLimited("rate limited", backoff_time=1),
+            ResourceTemporarilyUnavailable("temporarily unavailable"),
+            RetriesExhausted("retries exhausted"),
+            client_exceptions.ClientError("connection failed"),
+            TimeoutError("request timed out"),
+            InvalidDataError("invalid response"),
+        ],
+        ids=lambda error: type(error).__name__,
+    )
+    async def test_track_by_isrc_maps_temporary_errors(
+        self, mock_provider: QobuzProvider, error: BaseException
+    ) -> None:
+        """Temporary Qobuz lookup failures are surfaced as provider unavailability."""
+        mock_provider._get_data = AsyncMock(side_effect=error)  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_track_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        with pytest.raises(ProviderUnavailableError) as exc_info:
+            await lookup(mock_provider, "USRC17607839", ExternalID.ISRC)
+
+        assert exc_info.value.__cause__ is error
+
+    async def test_track_by_isrc_rejects_wrong_search_match(
+        self, mock_provider: QobuzProvider
+    ) -> None:
+        """A search result with another ISRC is not accepted."""
+        search = AsyncMock(
+            return_value={"tracks": {"items": [{"id": 345678, "isrc": "GBUM71029604"}]}}
+        )
+        mock_provider._get_data = search  # type: ignore[method-assign]
+        mock_provider.get_track = AsyncMock()  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_track_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, "USRC17607839", ExternalID.ISRC)
+
+        assert result is None
+        mock_provider.get_track.assert_not_awaited()
+
+    async def test_track_by_isrc_rejects_wrong_hydrated_track(
+        self, mock_provider: QobuzProvider
+    ) -> None:
+        """A hydrated track with another ISRC is not accepted."""
+        search = AsyncMock(
+            return_value={"tracks": {"items": [{"id": 345678, "isrc": "USRC17607839"}]}}
+        )
+        wrong_track = await mock_provider._parse_track(
+            {**deepcopy(TRACK_OBJ), "isrc": "GBUM71029604"}
+        )
+        mock_provider._get_data = search  # type: ignore[method-assign]
+        mock_provider.get_track = AsyncMock(return_value=wrong_track)  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_track_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, "USRC17607839", ExternalID.ISRC)
+
+        assert result is None
+
+    async def test_album_by_barcode(self, mock_provider: QobuzProvider) -> None:
+        """A matching album search result is hydrated into a full album."""
+        barcode = "0886445085471"
+        search = AsyncMock(return_value={"albums": {"items": [{"id": 789012, "upc": barcode}]}})
+        album = await mock_provider._parse_album({**deepcopy(ALBUM_OBJ), "upc": barcode})
+        mock_provider._get_data = search  # type: ignore[method-assign]
+        mock_provider.get_album = AsyncMock(return_value=album)  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_album_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, "00-88644-50854-71", ExternalID.BARCODE)
+
+        assert result is album
+        search.assert_awaited_once_with(
+            "catalog/search", query="886445085471", type="albums", limit=25
+        )
+        mock_provider.get_album.assert_awaited_once_with("789012")
+
+    async def test_album_by_barcode_skips_stale_candidate(
+        self, mock_provider: QobuzProvider
+    ) -> None:
+        """A disappeared candidate does not prevent a later album match from succeeding."""
+        barcode = "0886445085471"
+        search = AsyncMock(
+            return_value={
+                "albums": {
+                    "items": [
+                        {"id": 111111, "upc": barcode},
+                        {"id": 789012, "upc": barcode},
+                    ]
+                }
+            }
+        )
+        album = await mock_provider._parse_album({**deepcopy(ALBUM_OBJ), "upc": barcode})
+        mock_provider._get_data = search  # type: ignore[method-assign]
+        mock_provider.get_album = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[MediaNotFoundError("stale candidate"), album]
+        )
+
+        lookup: Any = QobuzProvider.get_album_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, barcode, ExternalID.BARCODE)
+
+        assert result is album
+        mock_provider.get_album.assert_has_awaits([call("111111"), call("789012")])
+
+    async def test_album_by_barcode_rejects_wrong_search_match(
+        self, mock_provider: QobuzProvider
+    ) -> None:
+        """A search result with another barcode is not accepted."""
+        search = AsyncMock(
+            return_value={"albums": {"items": [{"id": 789012, "upc": "4006381333931"}]}}
+        )
+        mock_provider._get_data = search  # type: ignore[method-assign]
+        mock_provider.get_album = AsyncMock()  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_album_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, "0886445085471", ExternalID.BARCODE)
+
+        assert result is None
+        mock_provider.get_album.assert_not_awaited()
+
+    async def test_album_by_barcode_rejects_wrong_hydrated_album(
+        self, mock_provider: QobuzProvider
+    ) -> None:
+        """A hydrated album with another barcode is not accepted."""
+        barcode = "0886445085471"
+        search = AsyncMock(return_value={"albums": {"items": [{"id": 789012, "upc": barcode}]}})
+        wrong_album = await mock_provider._parse_album(
+            {**deepcopy(ALBUM_OBJ), "upc": "4006381333931"}
+        )
+        mock_provider._get_data = search  # type: ignore[method-assign]
+        mock_provider.get_album = AsyncMock(return_value=wrong_album)  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_album_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, barcode, ExternalID.BARCODE)
+
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RateLimited("rate limited", backoff_time=1),
+            ResourceTemporarilyUnavailable("temporarily unavailable"),
+            RetriesExhausted("retries exhausted"),
+            client_exceptions.ClientError("connection failed"),
+            TimeoutError("request timed out"),
+            InvalidDataError("invalid response"),
+        ],
+        ids=lambda error: type(error).__name__,
+    )
+    async def test_album_by_barcode_maps_temporary_errors(
+        self, mock_provider: QobuzProvider, error: BaseException
+    ) -> None:
+        """Temporary Qobuz album lookup failures are surfaced as provider unavailability."""
+        mock_provider._get_data = AsyncMock(side_effect=error)  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_album_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        with pytest.raises(ProviderUnavailableError) as exc_info:
+            await lookup(mock_provider, "0886445085471", ExternalID.BARCODE)
+
+        assert exc_info.value.__cause__ is error
+
+    @pytest.mark.parametrize(
+        ("external_id", "external_id_type"),
+        [
+            ("invalid-barcode", ExternalID.BARCODE),
+            ("USRC17607839", ExternalID.ISRC),
+        ],
+    )
+    async def test_album_by_external_id_rejects_invalid_or_unsupported_ids(
+        self,
+        mock_provider: QobuzProvider,
+        external_id: str,
+        external_id_type: ExternalID,
+    ) -> None:
+        """Invalid and unsupported identifiers do not call the Qobuz API."""
+        search = AsyncMock()
+        mock_provider._get_data = search  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_album_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, external_id, external_id_type)
+
+        assert result is None
+        search.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("external_id", "external_id_type"),
+        [
+            ("invalid-isrc", ExternalID.ISRC),
+            ("USRC17607839", ExternalID.BARCODE),
+        ],
+    )
+    async def test_track_by_external_id_rejects_invalid_or_unsupported_ids(
+        self,
+        mock_provider: QobuzProvider,
+        external_id: str,
+        external_id_type: ExternalID,
+    ) -> None:
+        """Invalid and unsupported identifiers do not call the Qobuz API."""
+        search = AsyncMock()
+        mock_provider._get_data = search  # type: ignore[method-assign]
+
+        lookup: Any = QobuzProvider.get_track_by_external_id.__wrapped__  # type: ignore[attr-defined]
+        result = await lookup(mock_provider, external_id, external_id_type)
+
+        assert result is None
+        search.assert_not_awaited()
+
+    def test_lookup_features_are_advertised(self) -> None:
+        """Qobuz advertises the implemented track and album identifier lookups."""
+        assert ProviderFeature.TRACK_BY_EXTERNAL_ID in SUPPORTED_FEATURES
+        assert ProviderFeature.ALBUM_BY_EXTERNAL_ID in SUPPORTED_FEATURES
+        assert ProviderFeature.ARTIST_BY_EXTERNAL_ID not in SUPPORTED_FEATURES

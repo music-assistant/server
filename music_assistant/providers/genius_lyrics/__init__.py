@@ -7,15 +7,19 @@ Used for retrieval of lyrics.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
+    from lyricsgenius.types import Song
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -23,8 +27,12 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 from lyricsgenius import Genius
+from requests.exceptions import RequestException
 
 from .helpers import clean_song_title, cleanup_lyrics
+
+# Genius credits collaborations as a single combined primary artist ("JAY-Z & Kanye West")
+GENIUS_ARTIST_SPLITTER = re.compile(r"\s*(?:&|,|\bfeat\.|\bft\.)\s*", re.IGNORECASE)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.TRACK_METADATA,
@@ -104,7 +112,7 @@ class GeniusProvider(MetadataProvider):
             self.logger.info(f"Searching lyrics for artist='{artist}' and title='{cleaned_title}'")
 
             # perform search
-            song = self._genius.search_song(cleaned_title, artist, get_full_info=False)
+            song = self._search_song(artist, cleaned_title)
 
             # second search needed?
             if not song and " - " in cleaned_title:
@@ -113,7 +121,7 @@ class GeniusProvider(MetadataProvider):
                 self.logger.info(f"Second attempt, aggressively cleaned title='{cleaned_title}'")
 
                 # perform search
-                song = self._genius.search_song(cleaned_title, artist, get_full_info=False)
+                song = self._search_song(artist, cleaned_title)
 
             if song:
                 # attempts to clean lyrics of erroneous text
@@ -121,4 +129,31 @@ class GeniusProvider(MetadataProvider):
 
             return None
 
-        return await asyncio.to_thread(_fetch_lyrics, artist, title)
+        try:
+            return await asyncio.to_thread(_fetch_lyrics, artist, title)
+        except RequestException as err:
+            raise ResourceTemporarilyUnavailable("Genius request failed") from err
+        except AssertionError as err:
+            # lyricsgenius raises AssertionError on any non-200 API response
+            if not str(err).startswith("Unexpected response status code"):
+                raise
+            raise ResourceTemporarilyUnavailable("Genius request failed") from err
+
+    def _search_song(self, artist: str, title: str) -> Song | None:
+        """Search Genius and return the hit only if its title and artist match the request."""
+        song = self._genius.search_song(title, artist, get_full_info=False)
+        if not song:
+            return None
+        # lyricsgenius falls back to the first search hit, which is often an unrelated song
+        title_match = compare_strings(clean_song_title(song.title), title)
+        hit_artists = [song.artist, *GENIUS_ARTIST_SPLITTER.split(song.artist)]
+        if title_match and any(compare_strings(name, artist) for name in hit_artists):
+            return song
+        self.logger.debug(
+            "Ignoring Genius hit '%s' by '%s' for '%s' by '%s'",
+            song.title,
+            song.artist,
+            title,
+            artist,
+        )
+        return None

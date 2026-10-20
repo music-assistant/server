@@ -35,15 +35,21 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
    token with Administration read access.
 3. If the version is not already published, run the full test workflow against
    `source_sha`.
-4. Build the wheel and source distribution, or recover the exact two verified assets
-   from a matching draft.
+4. Build the source distribution, then provision the app secrets and build the wheel,
+   or recover the exact two verified assets from a matching draft. `verify-app-secrets`
+   then requires the secrets bundle in the wheel and its absence from the source
+   distribution; a draft that fails this check needs its assets deleted to be rebuilt.
 5. Create an annotated exact tag with `github-actions[bot]`, then create or update only a
    draft whose version, tag, and target SHA match. Replace incomplete draft assets, then
    verify both asset names, sizes, upload state, and SHA-256 digests.
 6. Build and push only `ghcr.io/music-assistant/server:$VERSION`. The image index must
    contain `linux/amd64` and `linux/arm64`, identify `source_sha` and the wheel digest,
    and produce one captured OCI digest. An existing exact tag is verified and never
-   overwritten.
+   overwritten. When the source flags unsupported installations
+   (`music_assistant/helpers/build_info.py`), the `linux/amd64` image is then run without
+   starting the server, and `verify-build-info` requires that it reports the official
+   build of this version, `source_sha` and wheel digest; otherwise every install of the
+   release would show the unsupported installation warning.
 7. Revalidate the draft, recheck the immutable-release setting, and publish once.
 8. Require an immutable release, the tag at `source_sha`, matching release assets,
    successful release and asset attestations, and the same exact OCI digest.
@@ -74,6 +80,12 @@ Auto-release calculates the next version and invokes **Create Release** with its
 source SHA. **Create Release** can also be dispatched directly with an explicit version;
 for direct runs it resolves and freezes the current channel branch head itself unless you
 pass `source_sha` to recover an exact draft or published release source.
+
+Always dispatch **Auto Release** and **Create Release** from `dev`, also for stable and
+RC releases. The workflows check out their release tooling (version calculation, release
+notes, add-on updates) from the ref they run on, while the channel picks the branch that
+gets released. A run from `stable` would release stable with stable's copy of the tooling,
+which can lag behind dev, so both workflows fail early when started from any other ref.
 
 Do not create or publish a GitHub release manually. A draft created outside the workflow
 is accepted only when its exact tag name and target SHA match; conflicting tags,
@@ -122,8 +134,9 @@ branch recovery path.
 
 - **Before publication:** The matching draft remains mutable. Complete assets are
   downloaded and reused byte-for-byte; incomplete assets are replaced. If the exact
-  image already exists, its source, wheel digest, platforms, and OCI digest must match,
-  otherwise the rerun stops without overwriting it. Run-scoped build artifacts remain
+  image already exists, its source, wheel digest, platforms, OCI digest, and official
+  build info must match, otherwise the rerun stops without overwriting it, so a build info
+  failure needs its fix released under a new version. Run-scoped build artifacts remain
   available to GitHub's **Re-run failed jobs** path. A crash after exact tag creation but
   before draft creation can resume only when the annotated tag has the workflow's exact
   source marker and `github-actions[bot]` identity.

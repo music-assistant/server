@@ -19,7 +19,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
@@ -30,6 +30,7 @@ from music_assistant.controllers.player_queues.helpers import (
     handle_play_action,
     has_dynamic_source,
     is_dynamic_source,
+    is_finite_radio,
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -54,13 +55,14 @@ def _playlist(*, is_dynamic: bool, name: str = "PL") -> Playlist:
     )
 
 
-def _radio(*, is_dynamic: bool, name: str = "R") -> Radio:
+def _radio(*, is_dynamic: bool, is_endless: bool = True, name: str = "R") -> Radio:
     return Radio(
         item_id=name.lower(),
         provider="test",
         name=name,
         provider_mappings=_PROVIDER_MAPPINGS,
         is_dynamic=is_dynamic,
+        is_endless=is_endless,
     )
 
 
@@ -152,9 +154,39 @@ class TestIsDynamicSource:
         """A non-dynamic (live-stream) radio is not a dynamic source."""
         assert is_dynamic_source(_radio(is_dynamic=False)) is False
 
+    def test_finite_radio(self) -> None:
+        """A finite radio station (e.g. an AI Radio show) does not feed the pool."""
+        assert is_dynamic_source(_radio(is_dynamic=False, is_endless=False)) is False
+
+    def test_stream_radio(self) -> None:
+        """A live-stream radio does not feed the pool."""
+        assert is_dynamic_source(_radio(is_dynamic=False, is_endless=True)) is False
+
     def test_track(self) -> None:
         """A track is never a dynamic source."""
         assert is_dynamic_source(_track("Song")) is False
+
+
+class TestIsFiniteRadio:
+    """Tests for is_finite_radio."""
+
+    def test_finite_radio(self) -> None:
+        """A non-dynamic, non-endless station is a fixed tracklist."""
+        assert is_finite_radio(_radio(is_dynamic=False, is_endless=False)) is True
+
+    def test_stream_radio(self) -> None:
+        """A live stream never ends, so it is not finite."""
+        assert is_finite_radio(_radio(is_dynamic=False, is_endless=True)) is False
+
+    def test_dynamic_radio(self) -> None:
+        """A dynamic station (endless or finite) is fed on demand, not played as a tracklist."""
+        assert is_finite_radio(_radio(is_dynamic=True, is_endless=True)) is False
+        assert is_finite_radio(_radio(is_dynamic=True, is_endless=False)) is False
+
+    def test_non_radio(self) -> None:
+        """Only radio stations can be finite radios."""
+        assert is_finite_radio(_track("Song")) is False
+        assert is_finite_radio(_playlist(is_dynamic=False)) is False
 
 
 class TestFindDynamicSource:
@@ -238,7 +270,7 @@ class _FakePlayers:
     def __init__(self, player_ids: set[str]) -> None:
         self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
 
-    def get_player_lock(self, queue_id: str, purpose: object) -> _FakeLock:
+    def get_group_and_player_lock(self, queue_id: str, strict: bool = False) -> _FakeLock:
         return _FakeLock()
 
     def get_player(self, player_id: str) -> _FakePlayer | None:
@@ -478,6 +510,20 @@ class TestBuildQueueItem:
         assert isinstance(item.media_item, Radio)
         assert item.media_item.metadata.description
         assert item.media_item.metadata.images
+
+    def test_records_the_origin(self) -> None:
+        """The origin handed in is kept on the item and survives the persisted cache."""
+        origin = QueueItemOrigin(
+            container=ItemMapping(
+                media_type=MediaType.ALBUM, item_id="a1", provider="test", name="Album"
+            ),
+            provider_instance="test",
+            item_id="t1",
+        )
+        item = build_queue_item("q1", _heavy_track(), origin=origin)
+        assert item.origin == origin
+        assert QueueItem.from_cache(item.to_cache()).origin == origin
+        assert build_queue_item("q1", _heavy_track()).origin is None
 
     def test_cache_roundtrip_preserves_slim_shape(self) -> None:
         """A slim track queue item round-trips through the persisted cache unchanged."""

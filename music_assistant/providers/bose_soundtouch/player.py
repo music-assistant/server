@@ -31,9 +31,11 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     create_sample_rates_config_entry,
 )
+from music_assistant.helpers.upnp import AVTransport
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.bose_soundtouch.avt_helpers import avt_play, avt_set_url, avt_stop
 
+from .client import RECONNECT_DELAY, STRING_ENCODING
 from .client.schema.enums import Key, PlayStatus, SourceStatus
 from .client.schema.models import Info, NowPlaying, Zone, ZoneMember
 from .const import (
@@ -45,16 +47,14 @@ from .const import (
     ACTION_OVERWRITE_PRESET_6,
     CONF_APP_KEY,
     IDLE_POLL_INTERVAL,
-    NOTIFICATION_PORT,
     PLAYBACK_POLL_INTERVAL,
     PLAYER_ID_PREFIX,
     PRESET_IDS,
-    RECONNECT_DELAY,
     SOURCE_INVALID,
     SOURCE_STANDBY,
-    STRING_ENCODING,
-    WS_HEARTBEAT,
-    WS_SUBPROTOCOLS,
+    UPNP_CONTROL_ENDPOINT,
+    UPNP_PORT,
+    UPNP_USER_AGENT,
     PlayerOptionKeys,
 )
 from .helpers import extract_preset_id, source_id
@@ -84,7 +84,6 @@ class BoseSoundTouchPlayer(Player):
         self._app_key = str(app_key) if app_key else None
         self._update_lock = asyncio.Lock()
 
-        self._stop_event = asyncio.Event()
         self._listener_task: asyncio.Task[None] | None = None
 
         self._supported_player_options: set[PlayerOptionKeys] = set()
@@ -103,7 +102,7 @@ class BoseSoundTouchPlayer(Player):
         if not self._supported_player_options:
             self._supported_player_options.add(PlayerOptionKeys.NETWORK_NAME)
             bass_capability = await self._client.get_bass_capabilities()
-            if bass_capability.available is not None and bass_capability.available:
+            if bass_capability.available:
                 self._supported_player_options.add(PlayerOptionKeys.BASS)
         await self._refresh_options()
 
@@ -139,12 +138,12 @@ class BoseSoundTouchPlayer(Player):
             software_version=info.software_version,
         )
         self._attr_device_info.add_identifier(IdentifierType.UUID, info.device_id)
+        # DeviceInfo holds one value per identifier type, and the speaker reports one
+        # interface per entry: take the first, which is the one we are connected on
         if info.mac_addresses:
-            for mac_address in info.mac_addresses:
-                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, info.mac_addresses[0])
         if info.ip_addresses:
-            for ip_address in info.ip_addresses:
-                self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, info.ip_addresses[0])
 
     async def poll(self) -> None:
         """Poll the speaker as a safety net for missed websocket events."""
@@ -168,7 +167,6 @@ class BoseSoundTouchPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
-        self._stop_event.set()
         if self._listener_task:
             self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -219,9 +217,9 @@ class BoseSoundTouchPlayer(Player):
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             # clear any pending AVT state to avoid wedging on rapid play_media
             self.logger.debug("Starting to play %s.", media.title)
-            await avt_stop(self.mass.http_session, self)
-            await avt_set_url(self.mass.http_session, self, player_media=media)
-            await avt_play(self.mass.http_session, self)
+            await self.avt.stop()
+            await self.avt.set_url(media)
+            await self.avt.play()
             self._attr_poll_interval = PLAYBACK_POLL_INTERVAL
 
     async def stop(self) -> None:
@@ -282,12 +280,10 @@ class BoseSoundTouchPlayer(Player):
             members: list[ZoneMember] = []
             for player_id in player_ids:
                 player = self.mass.players.get_player(player_id)
-                if isinstance(player, BoseSoundTouchPlayer) and (
-                    ip_address := player._client.session_config.ip
-                ):
+                if isinstance(player, BoseSoundTouchPlayer) and (ip_address := player.ip_address):
                     members.append(ZoneMember(ip=ip_address, mac=player.device_id))
             return Zone(
-                leader=ZoneMember(ip=self._client.session_config.ip, mac=self._device_id),
+                leader=ZoneMember(ip=self.ip_address, mac=self._device_id),
                 members=members,
             )
 
@@ -318,6 +314,21 @@ class BoseSoundTouchPlayer(Player):
     def device_id(self) -> str:
         """Return the Bose SoundTouch device id of this player."""
         return self._device_id
+
+    @property
+    def ip_address(self) -> str:
+        """Return the address this speaker is currently reached on."""
+        return self._client.session_config.ip
+
+    @property
+    def avt(self) -> AVTransport:
+        """UPnP AVTransport of the speaker."""
+        return AVTransport(
+            client=self.mass.http_session,
+            ctrl_url=f"http://{format_ip_for_url(self.ip_address)}:{UPNP_PORT}/{UPNP_CONTROL_ENDPOINT}",
+            user_agent=UPNP_USER_AGENT,
+            encoding=STRING_ENCODING,
+        )
 
     def update_ip_address(self, ip_address: str) -> None:
         """Update the speaker's IP address after a (re)discovery."""
@@ -394,42 +405,31 @@ class BoseSoundTouchPlayer(Player):
     # --- Private helpers ---
 
     async def _listen(self) -> None:
-        """Connect to the speaker's notification websocket and handle push updates."""
-        while not self._stop_event.is_set():
-            uri = f"ws://{self._client.session_config.ip}:{NOTIFICATION_PORT}"
+        """Handle the push updates the speaker sends over its notification channel."""
+
+        def mark_available() -> None:
+            if not self._attr_available:
+                self._attr_available = True
+                self.update_state()
+
+        while True:
             try:
-                async with self.mass.http_session.ws_connect(
-                    uri, protocols=WS_SUBPROTOCOLS, heartbeat=WS_HEARTBEAT
-                ) as ws:
-                    self.logger.debug("Connected to SoundTouch websocket: %s", uri)
-                    if not self._attr_available:
-                        self._attr_available = True
-                        self.update_state()
-                    async for msg in ws:
-                        if self._stop_event.is_set():
-                            break
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            await self._handle_update_message(msg.data)
-                        elif msg.type == aiohttp.WSMsgType.BINARY:
-                            await self._handle_update_message(msg.data.decode(STRING_ENCODING))
-                        elif msg.type in (
-                            aiohttp.WSMsgType.ERROR,
-                            aiohttp.WSMsgType.CLOSE,
-                            aiohttp.WSMsgType.CLOSED,
-                        ):
-                            break
+                async with contextlib.aclosing(
+                    self._client.websocket_notification_loop(on_connect=mark_available)
+                ) as notifications:
+                    async for message in notifications:
+                        await self._handle_update_message(message)
             except asyncio.CancelledError:
                 raise
-            except (aiohttp.ClientError, OSError, TimeoutError, UnicodeDecodeError) as err:
-                self.logger.debug(
-                    "SoundTouch websocket error for %s: %s. Reconnecting in %ss",
+            except Exception:
+                # the client reconnects on its own, so only a failure of our own handling
+                # gets here - and nothing restarts this task if we let it end
+                self.logger.exception(
+                    "Failed to handle a SoundTouch notification for %s. Retrying in %ss",
                     self.name,
-                    err,
                     RECONNECT_DELAY,
                 )
-            if not self._stop_event.is_set():
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=RECONNECT_DELAY)
+                await asyncio.sleep(RECONNECT_DELAY)
 
     async def _handle_update_message(self, message: str) -> None:
         """Handle a single websocket notification message."""
@@ -510,7 +510,6 @@ class BoseSoundTouchPlayer(Player):
                 self._attr_options[index] = update_option
 
         for option in update_options:
-            # _updated_options: list[PlayerOption] = []
             match option:
                 case PlayerOptionKeys.NETWORK_NAME:
                     info = await self._client.get_info()
@@ -530,20 +529,24 @@ class BoseSoundTouchPlayer(Player):
                         if _option.key == PlayerOptionKeys.BASS:
                             old_option = _option
                             break
-                    if not old_option:
-                        bass_capability = await self._client.get_bass_capabilities()
-                        assert bass_capability.available is not None
-                        assert bass_capability.minimum is not None
-                        assert bass_capability.maximum is not None
-                        bass_min = bass_capability.minimum
-                        bass_max = bass_capability.maximum
-                    else:
-                        assert old_option.min_value is not None
-                        assert old_option.max_value is not None
+                    if (
+                        old_option
+                        and old_option.min_value is not None
+                        and old_option.max_value is not None
+                    ):
                         bass_min = int(old_option.min_value)
                         bass_max = int(old_option.max_value)
+                    else:
+                        bass_capability = await self._client.get_bass_capabilities()
+                        if bass_capability.minimum is None or bass_capability.maximum is None:
+                            self.logger.debug("Speaker %s reported no bass range", self.name)
+                            continue
+                        bass_min = bass_capability.minimum
+                        bass_max = bass_capability.maximum
                     bass = await self._client.get_bass()
-                    assert bass.actual_bass is not None
+                    if bass.actual_bass is None:
+                        self.logger.debug("Speaker %s reported no bass value", self.name)
+                        continue
                     _update_option_attr(
                         PlayerOption(
                             key=PlayerOptionKeys.BASS,
@@ -625,7 +628,12 @@ class BoseSoundTouchPlayer(Player):
             # Music Assistant is the active source; audio is rendered via the linked
             # protocol and Music Assistant owns the metadata, so don't override it here.
             self._attr_active_source = self.player_id
-        elif now_playing.content_item and now_playing.content_item.source:
+            # resuming a paused UPnP stream plays a few seconds and then stalls,
+            # so let Music Assistant stop and restart the stream at the position instead
+            self._attr_supported_features.discard(PlayerFeature.PAUSE)
+            return
+        self._attr_supported_features.add(PlayerFeature.PAUSE)
+        if now_playing.content_item and now_playing.content_item.source:
             # a native source (Bluetooth, AUX, Spotify, ...) is playing on the speaker
             if now_playing.content_item.source != SOURCE_INVALID:
                 # SOURCE_INVALID is some API flakiness

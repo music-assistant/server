@@ -10,8 +10,9 @@ This document provides an overview of the Music Assistant Streams Controller arc
 - [Core Components](#core-components)
 - [AudioBuffer](#audiobuffer)
 - [StreamsAudio](#streamsaudio)
+- [Stream Source Selection](#stream-source-selection)
 - [Streaming Pipeline](#streaming-pipeline)
-- [Analyze Callbacks](#analyze-callbacks)
+- [Audio Analysis](#audio-analysis)
 - [Smart Fades](#smart-fades)
 - [Audio Overlay](#audio-overlay)
 - [Stream Types](#stream-types)
@@ -27,7 +28,7 @@ The Streams Controller is a core controller that manages all audio streaming to 
 - Flow mode for continuous queue playback
 - Audio overlay: a looping sound effect (e.g. rain) mixed into queue playback
 - Announcement and plugin source streaming
-- Ahead-of-time audio analysis (loudness, beat detection) via buffer callbacks
+- Ahead-of-time audio analysis (loudness, smart fades) by analysis providers reading the buffer
 
 ## Network Architecture
 
@@ -36,6 +37,7 @@ The streams controller runs its own dedicated HTTP-only webserver on a separate 
 - **No SSL/TLS**: Many audio players (especially embedded devices) have limited resources and struggle with SSL handshakes. Since the stream server only runs on the internal network, encryption is unnecessary.
 - **No authentication**: Players need to access streams without credentials. Instead, stream URLs include a **session ID** that is validated on each request to prevent stale or invalid stream attempts.
 - **Separate port**: Keeps audio streaming isolated from the API, allowing independent scaling and configuration.
+- **Reachability probe**: `GET /info` answers with the server id and CORS headers (preflight included), so a browser on the local network can check that the published address leads to this server. The `streams/info` API command reports that address.
 
 ## Inbound Audio
 
@@ -57,13 +59,33 @@ controllers/streams/
   __init__.py          - Package init, exports StreamsController
   controller.py        - StreamsController: HTTP endpoints, public streaming API
   audio.py             - StreamsAudio: audio processing, stream acquisition, DSP/filters
+  audio_processing.py  - AudioProcessingManager: processing details (normalization, DSP, output quality) reported to clients
+  stream_sources.py    - Ranking of the copies of a media item (local file, streaming accounts) in the order they are tried
   audio_buffer.py      - AudioBuffer: in-memory PCM audio buffering with seek support
+  audio_analysis.py    - AudioAnalysisController: analysis storage (audio_analysis.db) and scheduling
+  audio_analysis_codec.py - Packed on-disk format of an analysis record (JSON header plus binary array payload)
+  audio_analysis_database.py - AudioAnalysisDatabaseMixin: connection, schema version and quarantine of audio_analysis.db
+  announcements.py     - AnnouncementRenderer: renders an announcement (chime + clip) once in memory for all its readers
+  live_announcements.py - LiveAnnouncementManager: inbound WebSocket for spoken audio, played as an announcement
   constants.py         - Shared constants (buffer sizes, config keys)
   ogg_handler.py       - Chained OGG stream stitching for radio
-  smart_fades/         - Smart crossfade detection and mixing
-    analyzer.py        - Beat analysis for smart fade detection
-    fades.py           - Fade curve generation
-    mixer.py           - Crossfade mixing logic
+  smart_fades/         - Smart crossfade planning and mixing
+    mixer.py           - SmartFadesMixer: loads both analysis rows, picks the fade, runs the mix
+    fades.py           - SmartCrossFade, StandardCrossFade and VoiceOverFade: the ffmpeg mix per mode
+    planner/           - Transition planner, pure over the stored analysis (no audio bytes)
+      planner.py       - SmartCrossFadePlanner: pipeline, rescue pass, fallbacks, per-transition log line
+      context.py       - TransitionContext: per-transition facts (anchors, tier, vocals, kicks, segue facts)
+      candidates.py    - Candidate generators and the CandidateFactory that times each spec
+      policies.py      - Policies that reject or penalize a candidate
+      selection.py     - CandidateSelector: scores every candidate and applies the style rules
+      assembly.py      - PlanAssembler (winner EQ), fallback crossfade and emergency handoff factories
+    renderer.py        - TransitionRenderer: turns a TransitionPlan into the filter chain and timing
+    filters.py         - FFmpeg filters (EQ, time stretch, high-pass sweep, echo out, crossfade)
+    models.py          - TransitionPlan, TransitionStyle, TransitionTier and the other data models
+    bands.py           - Bar-level band power and kick runs from the stored band envelopes
+    structure.py       - Mastered fade-out and coda detection
+    vocal.py           - Vocal activity windows and the vocal collision math
+    helpers.py         - Shared constants plus energy, beat grid and key helpers
 ```
 
 Supporting modules in `helpers/`:
@@ -84,7 +106,7 @@ Supporting modules in `helpers/`:
 
 ### Buffer Modes
 
-- **SEEKABLE** (tracks): Maintains a deque of 1-second PCM chunks with seek support. Old chunks are discarded when the buffer reaches max size
+- **SEEKABLE** (tracks): Maintains a deque of 1-second PCM chunks with seek support. Old chunks are discarded when the buffer reaches max size, keeping up to 60 seconds (a fifth of the window on the smallest setting) of played audio for skipping back
 - **ROLLING** (radio/non-seekable): Short FIFO buffer (~15 seconds) where the consumer pops chunks sequentially
 
 ### Key Methods
@@ -103,9 +125,15 @@ Supporting modules in `helpers/`:
 2. Buffer starts filling from get_media_stream() in background
 3. Analysis (loudness, smart fades) reads the same buffer in parallel, at lower priority
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
-5. 60s before the end of the source stream: prepare_next_audio_buffer() pre-fills next track
+5. prepare_next_audio_buffer() pre-fills the item after the streamed one: 60s before the end of
+   its stream, or for a realtime source once its audio has fully arrived
 6. _cleanup_stale_queue_buffers() clears old buffers to free memory
 ```
+
+A player that moves on to another track by itself, after a skip on the speaker or a track it gave up
+on, leaves the old track's buffer filling. On a provider with a stream limit that buffer holds the
+slot the new track needs, so the single-item route cancels it once the player asks for another track
+and no open request still streams the old one.
 
 ### Error Handling
 
@@ -121,18 +149,32 @@ Supporting modules in `helpers/`:
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
 - **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
-- **Crossfade management**: `crossfade_allowed`, `clear_crossfade_handover`
-- **Loudness analysis**: `attach_loudness_analyzer` (via buffer callbacks)
+- **Crossfade management**: `crossfade_allowed`, `fade_into_pending`, `clear_crossfade_handover`
 
 `AudioProcessingManager`, initialized as `self.audio_processing` on the
 StreamsController, combines queue processing and per-player output plans into complete
 `AudioProcessingChain` snapshots attached to `StreamDetails`.
 
+## Stream Source Selection
+
+A library track often has several copies: a local file, the same track on one or more streaming services, another account of the same service. `_get_stream_details` builds the candidates in `_get_streamdetail_candidates`: each available mapping is expanded to the instances that can serve it (the mapped instance, then the other accounts of the same streaming catalog) and narrowed to the music sources the playback user may use. `rank_stream_sources` (`stream_sources.py`, pure, no provider calls) then orders them, and `_request_streamdetails` tries them in that order:
+
+1. **The pin**: the copy the queue item's listing had for it (`QueueItem.origin`, see the player queues README) comes first, except in the `best_quality_per_track` mode. Audiobooks and podcast episodes keep their pin in every mode, so their progress stays on the account they were started from.
+2. **Local first**: in the `prefer_local` mode, a non-streaming source (files, Plex, Subsonic, ...) before a streaming service.
+3. **Own accounts**: the playback user's own music sources before shared ones.
+4. **Quality**: the quality tier (unknown, low and high bit rate lossy, lossless, hi-res), then the mapping's quality score, which carries a small bonus for local and in-library copies.
+5. **Mapped instance**: the instance a copy is mapped on before another account standing in for it.
+6. **Ids**: the instance id, then the item id, so equal copies are tried in the same order at every selection and across restarts.
+
+**Upgrade pass.** With `upgrade_below_quality` set, a first copy known to be below that tier gives way to every copy of a better tier: first the ones that reach the threshold, in the order above, then the others, the closer to the threshold the sooner. A copy of unknown format is not taken to be below the threshold, and its format is learned when it streams. It is the only setting that relaxes the pin, local first and the own-account preference; a source the playback user may not use never serves them. Audiobooks and podcast episodes are left out. When the first copy of a library track is still below the threshold after that pass, the other streaming services are searched for a match, at most once per queue item and within one `STREAM_SLOT_MATCH_TIMEOUT` for the whole search, and the candidates are ranked again. The search runs when an item's stream details are resolved, in practice the first time: for the item playback starts on that delays its start, for the items after it that is the next-track preparation, while the item before it plays. A reselection around a source at its stream limit does not search for a better copy. A match is stored as an unclaimed mapping, so a playback-time match never merges library items; a match of unknown quality is only stored, as it can not be judged against the threshold, and later plays learn its quality. A track no service has keeps the chosen copy, and a service without a match is not searched for that track again for a day (a `mass.cache` entry, which the stream-limit search honours as well).
+
+Every candidate carries a short reason ("pinned", "own account", "hi-res 96/24", "upgrade: lossless 44.1/16 over lossy 320 kbps", ...), logged at debug level as the stream source order. An album picks its one source at enqueue time with `select_container_source`, which ranks whole listings in a similar way (local first, own accounts, a listing with every track, then quality); see the player queues README.
+
 ## Streaming Pipeline
 
 ```
 Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
-    -> AudioBuffer (raw PCM storage, analyze callbacks run here)
+    -> AudioBuffer (raw PCM storage, analysis providers read it here)
     -> buffer.get_stream() -> Optional: FFmpeg (volume normalization, speed, fade-in)
     -> Optional: Smart Fades (crossfade mixing between tracks)
     -> FFmpeg (encode to output format with player-specific DSP)
@@ -144,30 +186,78 @@ Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
 1. **HTTP endpoints** (`serve_queue_item_stream`, `serve_queue_flow_stream`): Used by players that consume HTTP streams (Chromecast, DLNA, Sonos, etc.)
 2. **Direct PCM** (`get_stream`): Used by player providers that consume raw PCM directly (AirPlay, Sendspin, etc.)
 
-## Analyze Callbacks
+## Audio Analysis
 
-AudioBuffer supports registering chunk callbacks that receive raw PCM data as it flows into the buffer. This enables ahead-of-time analysis without re-streaming:
+When a buffer starts from the beginning of an item (not for audio sources or sound effects), `audio_buffer.py` hands it to `AudioAnalysisController.start_analysis()`. Every audio analysis provider can accept the session and reads the same retained PCM at low priority, so a track is analysed while it plays without a second fetch. Results are stored in `audio_analysis.db`.
 
 ### Loudness Measurement
-- Attached automatically when a new buffer is created (tracks and radio)
-- Feeds up to 2 minutes of PCM into an FFmpeg `ebur128` process
+- Produced by the `loudness_analysis` provider (`providers/loudness_analysis/`): FFmpeg `ebur128` over up to 10 minutes of PCM
 - Result stored for future volume normalization (avoids dynamic mode overhead)
 
-### Smart Fades Beat Analysis
-- Attached automatically for music tracks (MediaType.TRACK only, not podcasts/audiobooks)
-- Collects first 45 seconds (intro) and last 45 seconds (outro) of audio
-- Triggers librosa beat detection in a background thread
-- Results cached for crossfade timing decisions
-
-Both analyzers check for existing measurements before starting, avoiding redundant work.
+### Smart Fades Analysis
+- Produced by the `smart_fades` audio analysis provider (`providers/smart_fades/`), for music tracks only (`MediaType.TRACK`): live through `AudioAnalysisController.start_analysis()` while a track streams, and by the background scan for local files
+- Stores the whole track's beats, downbeats, BPM, meter, key, RMS energy, four band RMS envelopes (`band_rms_*`) and FireRed vocal activity in `audio_analysis.db`; the provider's README describes the models
+- The mixer reads both rows with `get_audio_analysis()` at `SMART_FADES_ANALYSIS_DOMAIN` priority
 
 ## Smart Fades
 
-The smart fades system provides intelligent crossfading between tracks:
+Smart fades mix the outgoing track's held-back tail (up to 45 seconds) with the incoming track's head in one ffmpeg process, in both flow mode (continuous stream) and per-item mode (gapless playback). `SmartFadesMixer.build()` picks the fade for each boundary from the crossfade mode:
 
-- **Smart Crossfade**: Analyzes audio beats to detect natural fade points
-- **Standard Crossfade**: Fixed-duration overlap crossfade with silence stripping
-- Operates in both flow mode (continuous stream) and per-item mode (gapless playback)
+- `SMART_CROSSFADE`: `SmartCrossFade` plans the transition with `SmartCrossFadePlanner` and renders it with `TransitionRenderer`
+- `STANDARD_CROSSFADE`: `StandardCrossFade`, a fixed-length overlap after stripping trailing silence
+- `VOICE_OVER`: `VoiceOverFade`, a declared transition that plays as declared and is never planned
+
+An item that declares a tail overlap (`StreamDetails.tail_overlap`) plays it as `VOICE_OVER` into the item it was planned against, whatever the queue's crossfade setting: on the flow stream, and per item on a player that plays gapless, where the incoming item's request takes the smart fade stream to pick the mix up. A direct PCM stream of a single item never mixes its boundary. A plugin about to queue such items asks for the queue's boundaries to be mixed with `set_boundary_mix_required`; at each play start the controller then puts only a player whose selected output protocol cannot play gapless in flow mode.
+
+A smart crossfade falls back to the standard crossfade when a track has no analysis row with BPM and beats, when the planner raises `SmartFadeNotApplicable` (the held-back tail falls silent within its first 8 seconds, or no candidate fits), or when the build fails.
+
+### Planner Pipeline
+
+The planner reads only the two `AudioAnalysisData` rows and the length of the held-back tail, never audio. `SmartCrossFadePlanner.plan()` runs:
+
+1. `build_transition_context()` computes the frozen `TransitionContext`: the outgoing anchor (energy mix-out point, folded with the kick die-out and snapped to a downbeat) and audible end, the tier and what made it a quick fade, vocal masks, kick runs, mastered fade and coda zones, and the segue facts. A quiet but audible outro is anchored at its audible end and planned like any other tail.
+2. The generators in `default_generators()` emit `CandidateSpec`s: bar ladders at several outgoing anchors and incoming entries, segue overlaps, filter outs and echo outs.
+3. `CandidateFactory.build()` times each spec into a `Candidate`, a `TransitionPlan` (anchor, overlap, entry trim, tempo ramp) plus `PlanMetrics` (audible trim, vocal collision, kick clash), or drops it as infeasible.
+4. `CandidateSelector` scores every candidate against every policy in `default_policies()` and picks the lowest total penalty among the survivors, under the style rules below. Every policy runs on every candidate, so the VERBOSE scoreboard is complete.
+5. `PlanAssembler.finalize()` adds the EQ handover to the winner only.
+
+`SmartCrossFade.build()` then hands the plan to `TransitionRenderer` for the filter chain and `CrossfadeTimingInfo`.
+
+When every candidate is rejected, or no blend or cut survives, a rescue pass tries late-anchored rungs, a segue (also for a beatmatchable pair) and, for a pair that can't be beatmatched, the dressed styles. Without a winner there, `FallbackCrossfadeFactory` ships a plain 8 second equal-power fade, or `EmergencyHandoffFactory` a 0.4 to 1 second click-free handoff when the fallback's vocal collision exceeds twice the candidate limits.
+
+### Transition Styles
+
+The plan's `TransitionStyle` says how it is timed and rendered. `TransitionContext.preferred_style` is `BLEND` for a beatmatchable tier and `SEGUE` for every other pair, and `OverlapPreferencePolicy` penalizes the other styles.
+
+- `BLEND`: the beatmatched blend, on tier `FULL_BLEND` or `TEMPO_BLEND`. A pair is beatmatchable with the same meter, a BPM gap of at most 8 % and at least 8 regular downbeats before the anchor; `FULL_BLEND` also needs compatible keys, RMS data and 4/4. 8 bars, 16 on a full blend between two near-instrumental decks, with a bass, mid and high EQ handover. The outgoing track ramps its tempo (rubberband, at most 8 %) in the 10 seconds before the overlap; `_drop_unneeded_stretch()` ships the blend unstretched when a deck has no kick in the overlap. A segue never replaces a surviving blend.
+- `SEGUE`: an unsynced overlap where the outgoing track has gone quiet. The quiet tail runs from the last bar-smoothed point at or above -8 dB of the track's sustained level to the audible end, the quiet head from the incoming start to its first rise to that level. The overlap is their sum, capped at 15 seconds and the room, and shrinks in steps down to the cut's length (at least 2 seconds) for the clash checks to choose from; quiet material shorter than that gives no segue. Within the quiet material a side that is already quiet plays as recorded (`nofade`) and a loud side fades equal-power; a longer overlap fades both sides. A segue that fades both sides keeps the EQ handover. A segue replaces a cut only when it lasts at least as long.
+- `FILTER_OUT`: 4 or 2 outgoing bars (2 across meters) under a high-pass that sweeps from 20 to 600 Hz along with the volume fade, so the outgoing kick drops out. It suits a pair in the same meter up to a 20 % BPM gap.
+- `ECHO_OUT`: the outgoing dry signal stops on a downbeat, the beat before it repeats as four decaying taps at the outgoing tempo, and the incoming track starts at full level on its first downbeat. The mix runs through a -0.5 dB limiter. It suits a BPM gap above 20 % or a pair across meters.
+- `CUT`: an unsynced volume fade without EQ: 4 bars up to a 12 % BPM gap, 2 bars up to 20 %, 1 bar beyond, at most 2 bars across meters.
+
+A dressed style (`FILTER_OUT`, `ECHO_OUT`) replaces a winning cut whose kicks overlap for more than one beat, and wins on its own only in the rescue pass. The style that suits the gap (`TransitionContext.dressed_style`) wins when one survives, the other is the fallback.
+
+### Clash Checks
+
+Both checks only count what plays on both decks at once, so a voice or a kick on one side is never a clash.
+
+- Vocals (`VocalCollisionPolicy`): rejects 2 seconds or more of overlapping vocals, or 0.35 seconds or more weighted by the fade's simultaneous gain (`4p(1-p)`), and penalizes less. It abstains when both decks read as singing throughout (`vocal_collision_reliable`), and such a pair gets no segue.
+- Drums (`RhythmClashPolicy`): a bar carries a kick when its stored low band (20 to 120 Hz) reaches half the track's reference. It judges segues and dressed styles only, rejecting more than 2 bars of overlapping kicks, weighted the same way, and penalizing less. A blend beatmatches its kicks, and a clashing cut gives way to a dressed style at selection.
+
+Within its steps, the clash checks decide how long a segue runs. A segue may also run up to 15 seconds over loud material when neither deck sings near the boundary (vocal data required on both) and at least one of them has almost no kick there (`_beatless_long_qualifies()`).
+
+### Logging and Replay
+
+With the streams setting `smart_fades_log_level` at DEBUG, the planner logs one `planned transition:` line per boundary: style, tier, quick fade trigger (meter, tempo or beat grid), strategy, winning generator, bars, overlap, BPM gap, whether a blend stretches, and a reason for a segue (quiet tail and head, curves, which deck sings and kicks) or a dressed style (the kick clash of the cut it replaced). VERBOSE adds the context line and the full per-candidate scoreboard.
+
+`scripts/smart_fades_replay.py` plans random track pairs from copies of a server's `audio_analysis.db` and `library.db` without playing anything, and writes `pairs.csv` and `summary.txt` (tiers, styles, overlap lengths, quick fade triggers, vocal and drum overlap, music style). To measure a planner change, run it on both sides with the same databases, seed and `--buffer`; `--code` loads `music_assistant` from another checkout. It reads analysis data and library metadata only, never audio.
+
+```
+python -m scripts.smart_fades_replay \
+    --analysis-db ~/.musicassistant/audio_analysis.db \
+    --library-db ~/.musicassistant/library.db \
+    --n 3000 --seed 20261010 --buffer 45 --out /tmp/replay
+```
 
 ## Audio Overlay
 
@@ -194,7 +284,7 @@ audio stream:
 |------|-------------|-------------|
 | Queue tracks | Yes (SEEKABLE) | Regular track playback with full buffering |
 | Radio streams | Yes (ROLLING) | Short rolling buffer, non-seekable |
-| Announcements | Yes (SEEKABLE) | Short one-off audio (TTS), rendered once and shared by all consumers |
+| Announcements | No (own in-memory render) | Short one-off audio (TTS), rendered once and shared by all consumers |
 | Plugin sources | No | Real-time audio (microphone, aux), streamed directly |
 
 ## Configuration
@@ -207,3 +297,5 @@ Key configuration entries (in streams controller config):
 | `volume_normalization_radio` | String | `fallback_dynamic` | Normalization mode for radio |
 | `volume_normalization_tracks` | String | `fallback_dynamic` | Normalization mode for tracks |
 | `allow_crossfade_same_album` | Boolean | `false` | Whether to crossfade consecutive album tracks |
+| `stream_source_mode` | String | `best_quality` | Which copy plays when a track has several: `best_quality`, `prefer_local` or `best_quality_per_track` |
+| `upgrade_below_quality` | String | `off` | A chosen copy below this quality (`lossy_high`, `lossless`, `hires`) gives way to a better one |

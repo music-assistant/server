@@ -8,6 +8,7 @@ import pytest
 from zeroconf import ServiceStateChange
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.sonos.player import SonosPlayer
 from music_assistant.providers.sonos.provider import SonosPlayerProvider
 
 PLAYER_ID = "sonos_player"
@@ -169,3 +170,20 @@ async def test_unload_sweeps_every_discovered_player(timer_mass: MusicAssistant)
 
     assert timer_mass._tracked_timers == {}
     assert provider._pending_setup_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawn_announcement_is_handed_to_the_player() -> None:
+    """Test a removed Sonos announcement lets the player decide whether it went to sleep."""
+    provider, mass = _make_provider()
+    player = MagicMock(spec=SonosPlayer)
+    goodbye = object()
+    player.on_mdns_goodbye = MagicMock(return_value=goodbye)
+    mass.players.get_player.return_value = player
+
+    await provider.on_mdns_service_state_change(
+        "RINCON_C438750D189C01400@Move 2._sonos._tcp.local.", ServiceStateChange.Removed, None
+    )
+
+    mass.players.get_player.assert_called_once_with("RINCON_C438750D189C01400")
+    mass.create_task.assert_called_once_with(goodbye)

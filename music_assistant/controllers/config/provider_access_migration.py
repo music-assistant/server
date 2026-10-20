@@ -20,15 +20,15 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing, ProviderType
 
 from music_assistant.constants import (
     CONF_PROVIDER_ACCESS_MIGRATED,
     CONF_PROVIDERS,
-    HOMEASSISTANT_SYSTEM_USER,
 )
+from music_assistant.controllers.config.filesystem_consolidation import REMOVED_PROVIDER_DOMAINS
 from music_assistant.helpers.json import json_loads
 
 if TYPE_CHECKING:
@@ -50,7 +50,8 @@ class _StoredUser:
 
     # the music sources the user is restricted to, an empty set meaning unrestricted
     sources: set[str]
-    # a guest and the Home Assistant system user may use a source but never own one
+    # a role without config.providers.own (a guest, the Home Assistant system account) may
+    # use a source but never own one
     can_own: bool
 
 
@@ -111,7 +112,10 @@ def _access_for_source(
     """
     if raw_conf.get("type") != ProviderType.MUSIC or raw_conf.get("access") is not None:
         return None
-    if mass.get_provider_manifest(raw_conf["domain"]).builtin:
+    domain = raw_conf["domain"]
+    # an SMB or NFS source becomes a Local files source, on this start or a later one, so it
+    # gets the record of one although its provider is gone
+    if domain not in REMOVED_PROVIDER_DOMAINS and mass.get_provider_manifest(domain).builtin:
         # the builtin provider serves the entire household and carries no access record
         return None
     listed_by = [user_id for user_id, user in users.items() if instance_id in user.sources]
@@ -148,7 +152,13 @@ async def _stored_users(mass: MusicAssistant) -> dict[str, _StoredUser]:
 
 def _can_own_a_source(row: Mapping[str, Any]) -> bool:
     """Return whether a music source may be given to the user of the given row."""
-    return bool(row["role"] != UserRole.GUEST and row["username"] != HOMEASSISTANT_SYSTEM_USER)
+    # imported here to keep the auth stack out of this module's import chain
+    from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+        has_scope,
+    )
+
+    user = User(user_id=str(row["user_id"]), username=row["username"], role=row["role"])
+    return has_scope(user, Scope.CONFIG_PROVIDERS_OWN)
 
 
 def _normalized_filter(row: Mapping[str, Any], known_sources: set[str]) -> set[str]:

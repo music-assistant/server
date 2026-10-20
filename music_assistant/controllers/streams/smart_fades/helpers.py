@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant.helpers.camelot import camelot_code
+
 if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
@@ -18,6 +20,10 @@ MIN_EFFECTIVE_FADE_BUFFER = 8.0
 # Fraction of sustained (median-active) energy below which the outro no longer
 # carries the groove; the crossfade should end at or before this point.
 MIX_OUT_ENERGY_FRACTION = 0.70
+
+# Fraction of sustained energy (-8 dB) below which a tail or a head counts as
+# quiet: a segue overlaps only material below it
+SEGUE_ENERGY_FRACTION = 10 ** (-8 / 20)
 
 
 def detect_effective_audio_end(
@@ -280,15 +286,7 @@ def detect_mix_out_point(
     if floor <= 0.0:
         return buffer_duration
     bin_duration = track_duration / len(rms_energy)
-    bins_per_bar = max(1, round((beats_per_bar * 60.0 / bpm) / bin_duration))
-    # a median (not mean) over the bar: isolated quiet bins don't move the anchor,
-    # but a real silence cliff stays exactly where it is instead of smearing early
-    if bins_per_bar > 1:
-        padded = np.pad(rms_energy, bins_per_bar // 2, mode="edge")
-        windows = np.lib.stride_tricks.sliding_window_view(padded, bins_per_bar)
-        smoothed = np.median(windows, axis=1)[: len(rms_energy)]
-    else:
-        smoothed = rms_energy
+    smoothed = _bar_smoothed(rms_energy, bin_duration, bpm, beats_per_bar)
     start_bin = max(0, int((track_duration - buffer_duration) / bin_duration))
     tail = smoothed[start_bin:]
     above = np.nonzero(tail >= floor)[0]
@@ -299,6 +297,48 @@ def detect_mix_out_point(
         - max(0.0, track_duration - buffer_duration),
         buffer_duration,
     )
+
+
+def detect_rise_point(
+    rms_energy: npt.NDArray[np.float32] | list[float] | None,
+    track_duration: float | None,
+    bpm: float,
+    fraction: float,
+    beats_per_bar: int = 4,
+    window: float = SMART_CROSSFADE_DURATION,
+) -> float:
+    """
+    Return the media time where the head's energy first reaches the floor.
+
+    The floor is ``fraction`` of the track's sustained energy; the curve is
+    smoothed over ~1 bar, as in ``detect_mix_out_point``. Returns ``0.0`` when
+    the track is loud from its start or no usable data exists, and the window
+    end when the head stays below the floor throughout.
+
+    :param rms_energy: Peak-normalized RMS energy bins spanning the full track.
+    :param track_duration: Full track duration in seconds.
+    :param bpm: Track tempo, used for the one-bar smoothing window.
+    :param fraction: Energy floor as a fraction of the sustained level.
+    :param beats_per_bar: Track meter, used for the one-bar smoothing window.
+    :param window: Seconds of the head to search.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    if rms_energy is None or not track_duration:
+        return 0.0
+    rms_energy = np.asarray(rms_energy, dtype=np.float32)
+    if len(rms_energy) < 2 or not np.any(np.isfinite(rms_energy)):
+        return 0.0
+    floor = fraction * sustained_energy_floor(rms_energy)
+    if floor <= 0.0:
+        return 0.0
+    bin_duration = track_duration / len(rms_energy)
+    head = _bar_smoothed(rms_energy, bin_duration, bpm, beats_per_bar)
+    head = head[: max(1, int(window / bin_duration))]
+    above = np.nonzero(head >= floor)[0]
+    if len(above) == 0:
+        return min(window, track_duration)
+    return float(above[0] * bin_duration)
 
 
 def detect_groove_entry(
@@ -378,8 +418,8 @@ def camelot_affinity(
     same mode (energy boost), 0.45 one step with a mode switch, 0.1 for a clash.
     Returns None when either key is unknown so callers pick their own neutral.
     """
-    a = _camelot_code(key_a, mode_a)
-    b = _camelot_code(key_b, mode_b)
+    a = camelot_code(key_a, mode_a)
+    b = camelot_code(key_b, mode_b)
     if a is None or b is None:
         return None
     num_a, major_a = a
@@ -415,8 +455,8 @@ def keys_compatible(
     :param key_b: Pitch class of the second track's key.
     :param mode_b: "major" or "minor".
     """
-    a = _camelot_code(key_a, mode_a)
-    b = _camelot_code(key_b, mode_b)
+    a = camelot_code(key_a, mode_a)
+    b = camelot_code(key_b, mode_b)
     if a is None or b is None:
         return False
     num_a, major_a = a
@@ -426,43 +466,18 @@ def keys_compatible(
     return num_a == num_b
 
 
-_FLAT_TO_SHARP = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
-# Camelot wheel numbers; relative major/minor share a number (Am=8A, C=8B)
-_CAMELOT_MAJOR = {
-    "C": 8,
-    "G": 9,
-    "D": 10,
-    "A": 11,
-    "E": 12,
-    "B": 1,
-    "F#": 2,
-    "C#": 3,
-    "G#": 4,
-    "D#": 5,
-    "A#": 6,
-    "F": 7,
-}
-_CAMELOT_MINOR = {
-    "A": 8,
-    "E": 9,
-    "B": 10,
-    "F#": 11,
-    "C#": 12,
-    "G#": 1,
-    "D#": 2,
-    "A#": 3,
-    "F": 4,
-    "C": 5,
-    "G": 6,
-    "D": 7,
-}
+def _bar_smoothed(
+    rms_energy: npt.NDArray[np.float32], bin_duration: float, bpm: float, beats_per_bar: int
+) -> npt.NDArray[np.float32]:
+    """Return the RMS energy curve smoothed over ~1 bar."""
+    import numpy as np  # noqa: PLC0415
 
-
-def _camelot_code(key: str | None, mode: str | None) -> tuple[int, bool] | None:
-    """Return (wheel number, is_major) or None for unknown input."""
-    if not key or mode not in ("major", "minor"):
-        return None
-    key = _FLAT_TO_SHARP.get(key, key)
-    table = _CAMELOT_MAJOR if mode == "major" else _CAMELOT_MINOR
-    num = table.get(key)
-    return (num, mode == "major") if num else None
+    bins_per_bar = max(1, round((beats_per_bar * 60.0 / bpm) / bin_duration))
+    if bins_per_bar == 1:
+        return rms_energy
+    # a median (not mean) over the bar: isolated quiet bins don't move the anchor,
+    # but a real silence cliff stays exactly where it is instead of smearing early
+    padded = np.pad(rms_energy, bins_per_bar // 2, mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, bins_per_bar)
+    smoothed: npt.NDArray[np.float32] = np.median(windows, axis=1)[: len(rms_energy)]
+    return smoothed
