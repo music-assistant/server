@@ -8,7 +8,7 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.webserver.helpers import auth_middleware
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 
 # Statistics cache TTL: 5 minutes
 STATISTICS_CACHE_TTL = 300
@@ -36,7 +36,7 @@ def cache_statistics(
 
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
-            user = auth_middleware.get_current_user()
+            user = get_current_user()
             user_id = user.user_id if user else "anonymous"
             generation = self._statistics_user_cache_generations.get(user_id)
             if generation is None:

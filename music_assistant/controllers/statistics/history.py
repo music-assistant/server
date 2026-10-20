@@ -18,7 +18,7 @@ from music_assistant.controllers.statistics.base import (
     _StatisticsBase,
 )
 from music_assistant.controllers.statistics.cache import cache_statistics
-from music_assistant.controllers.webserver.helpers import auth_middleware
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import json_loads
 
@@ -45,7 +45,7 @@ class HistoryMixin(_StatisticsBase):
         :param played_after_timestamp: Optional timestamp to filter items played after.
         :param offset: Number of matching items to skip.
         """
-        user = auth_middleware.get_current_user()
+        user = get_current_user()
         if not user:
             return []
         user_id = user.user_id
@@ -96,42 +96,3 @@ class HistoryMixin(_StatisticsBase):
         ]
         await self._set_library_item_availability(result)
         return result
-
-    @cache_statistics()
-    @api_command("statistics/played_item_ids", required_scope=Scope.LIBRARY_READ)
-    async def get_played_item_ids(
-        self,
-        media_type: MediaType,
-        since_timestamp: float,
-    ) -> set[tuple[str, str]]:
-        """
-        Get set of (provider, item_id) tuples played since timestamp.
-
-        Used for temporal filters in smart playlists and recommendations.
-
-        :param media_type: The media type to filter by.
-        :param since_timestamp: Unix timestamp to filter items played after.
-        """
-        user = auth_middleware.get_current_user()
-        if not user:
-            return set()
-        user_id = user.user_id
-
-        query = f"""
-            SELECT DISTINCT provider, item_id
-            FROM {DB_TABLE_PLAY_HISTORY}
-            WHERE userid = :user_id
-                AND media_type = :media_type
-                AND timestamp >= :since_timestamp
-        """
-
-        params = {
-            "user_id": user_id,
-            "media_type": media_type.value,
-            "since_timestamp": since_timestamp,
-        }
-
-        played_item_ids: set[tuple[str, str]] = set()
-        async for row in self.mass.music.database.iter_rows_from_query(query, params):
-            played_item_ids.add((row["provider"], row["item_id"]))
-        return played_item_ids

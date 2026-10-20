@@ -27,10 +27,11 @@ from music_assistant.controllers.statistics.base import (
 from music_assistant.controllers.statistics.cache import cache_statistics
 from music_assistant.controllers.statistics.queries import (
     PROVIDER_MAPPING_JOIN,
+    TRACK_ALBUMS_CTE,
     TRACK_ARTISTS_CTE,
     TRACK_HISTORY_CTE,
 )
-from music_assistant.controllers.webserver.helpers import auth_middleware
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import json_loads
 
@@ -50,21 +51,17 @@ class RankingsMixin(_StatisticsBase):
         """
         Get most played items in a time period.
 
-        Returns list of TopItemResult with 'item' (ItemMapping) and 'play_count' (int).
-        Supports ALL MediaTypes: Track, Album, Artist, Radio, Audiobook, Genre, Podcast, etc.
-
         :param media_type: The type of media to get top items for.
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param limit: Maximum number of items to return (default 50).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
-        user = auth_middleware.get_current_user()
+        user = get_current_user()
         user_id = user.user_id if user else None
 
         if not user_id:
             return []
         limit = validate_statistics_limit(limit)
-
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
 
         if media_type == MediaType.ARTIST:
@@ -81,8 +78,24 @@ class RankingsMixin(_StatisticsBase):
                 GROUP BY item_id, provider
                 ORDER BY play_count DESC, provider, item_id
             """
+            params = {"user_id": user_id, "cutoff_timestamp": cutoff_timestamp}
+        elif media_type == MediaType.ALBUM:
+            query = f"""
+                WITH {TRACK_HISTORY_CTE}, {TRACK_ALBUMS_CTE}
+                SELECT
+                    CAST(item_id AS TEXT) AS item_id,
+                    'library' AS provider,
+                    '{MediaType.ALBUM.value}' AS media_type,
+                    MAX(name) AS name,
+                    MAX(image) AS image,
+                    COUNT(*) AS play_count
+                FROM track_albums
+                GROUP BY item_id
+                ORDER BY play_count DESC, item_id
+            """
             params = {
                 "user_id": user_id,
+                "media_type": MediaType.TRACK.value,
                 "cutoff_timestamp": cutoff_timestamp,
             }
         else:
@@ -121,9 +134,9 @@ class RankingsMixin(_StatisticsBase):
                     item_id,
                     provider,
                     media_type,
-                    MAX(name) as name,
-                    MAX(image) as image,
-                    COUNT(*) as play_count
+                    MAX(name) AS name,
+                    MAX(image) AS image,
+                    COUNT(*) AS play_count
                 FROM normalized_history
                 GROUP BY item_id, provider, media_type
                 ORDER BY play_count DESC, provider, item_id
@@ -135,15 +148,10 @@ class RankingsMixin(_StatisticsBase):
             }
 
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
-
         available_providers = ("library", *get_global_cache_value("available_providers", []))
-
         result: list[TopItemResult] = []
-
         for row in rows:
             provider = row["provider"]
-
-            # Parse image from DB and convert to MediaItemImage object
             image = None
             if row["image"]:
                 image_dict = json_loads(row["image"])
@@ -158,13 +166,7 @@ class RankingsMixin(_StatisticsBase):
                 image=image,
                 available=provider in available_providers,
             )
-
-            result.append(
-                TopItemResult(
-                    item=item_mapping,
-                    play_count=row["play_count"],
-                )
-            )
+            result.append(TopItemResult(item=item_mapping, play_count=row["play_count"]))
 
         await self._set_library_item_availability([entry.item for entry in result])
         return result
@@ -186,7 +188,7 @@ class RankingsMixin(_StatisticsBase):
         :param limit: Maximum number of genres to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
-        user = auth_middleware.get_current_user()
+        user = get_current_user()
         if not user:
             return []
 
@@ -214,81 +216,6 @@ class RankingsMixin(_StatisticsBase):
         return [DistributionItem(name=row["name"], value=row["play_count"]) for row in rows]
 
     @cache_statistics()
-    @api_command("statistics/artist_distribution", required_scope=Scope.LIBRARY_READ)
-    async def get_artist_distribution(
-        self,
-        period: str = "week",
-        limit: int = 10,
-        timezone: str = "UTC",
-    ) -> list[TopItemResult]:
-        """
-        Get artist distribution based on track plays (play counts by artist).
-
-        :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
-        :param limit: Maximum number of artists to return (default 10).
-        :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
-        """
-        user = auth_middleware.get_current_user()
-        user_id = user.user_id if user else None
-
-        if not user_id:
-            return []
-        limit = validate_statistics_limit(limit)
-
-        cutoff_timestamp = self._get_period_cutoff(period, timezone)
-
-        query = f"""
-            WITH {TRACK_ARTISTS_CTE}
-            SELECT
-                track_artists.item_id,
-                track_artists.provider,
-                MAX(track_artists.name) as name,
-                MAX(track_artists.image) as image,
-                COUNT(*) as play_count
-            FROM track_artists
-            GROUP BY track_artists.item_id, track_artists.provider
-            ORDER BY play_count DESC, track_artists.provider, track_artists.item_id
-        """
-
-        params = {
-            "user_id": user_id,
-            "cutoff_timestamp": cutoff_timestamp,
-        }
-
-        rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
-
-        available_providers = ("library", *get_global_cache_value("available_providers", []))
-
-        result: list[TopItemResult] = []
-
-        for row in rows:
-            provider = row["provider"]
-            image = None
-            if row["image"]:
-                image_dict = json_loads(row["image"])
-                if image_dict:
-                    image = MediaItemImage.from_dict(image_dict)
-
-            item_mapping = ItemMapping(
-                item_id=row["item_id"],
-                provider=provider,
-                media_type=MediaType.ARTIST,
-                name=row["name"],
-                image=image,
-                available=provider in available_providers,
-            )
-
-            result.append(
-                TopItemResult(
-                    item=item_mapping,
-                    play_count=row["play_count"],
-                )
-            )
-
-        await self._set_library_item_availability([entry.item for entry in result])
-        return result
-
-    @cache_statistics()
     @api_command("statistics/decade_distribution", required_scope=Scope.LIBRARY_READ)
     async def get_decade_distribution(
         self,
@@ -306,7 +233,7 @@ class RankingsMixin(_StatisticsBase):
         :param limit: Maximum number of decades to return.
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
-        user = auth_middleware.get_current_user()
+        user = get_current_user()
         user_id = user.user_id if user else None
 
         if not user_id:
@@ -356,19 +283,26 @@ class RankingsMixin(_StatisticsBase):
         media_type: MediaType,
     ) -> int:
         """
-        Get play count for an item, using completed track credits for artists.
+        Get play count for an item, using track plays for albums and credits for artists.
 
         :param item_id: The item ID to get play count for.
         :param provider: The provider ID.
         :param media_type: The media type.
         """
-        user = auth_middleware.get_current_user()
+        user = get_current_user()
         user_id = user.user_id if user else None
 
         if not user_id:
             return 0
 
-        if media_type == MediaType.ARTIST:
+        if media_type == MediaType.ALBUM:
+            history_cte = f"""
+                {TRACK_HISTORY_CTE}, {TRACK_ALBUMS_CTE}, normalized_history AS (
+                    SELECT CAST(item_id AS TEXT) AS item_id, 'library' AS provider
+                    FROM track_albums
+                )
+            """
+        elif media_type == MediaType.ARTIST:
             history_cte = f"""
                 {TRACK_ARTISTS_CTE}, normalized_history AS (
                     SELECT item_id, provider FROM track_artists
@@ -415,7 +349,7 @@ class RankingsMixin(_StatisticsBase):
                     ON {
             PROVIDER_MAPPING_JOIN.format(
                 mapping="provider_mappings",
-                media_type=":media_type",
+                media_type=":requested_media_type",
                 item_id=":item_id",
                 provider=":provider",
             )
@@ -430,7 +364,10 @@ class RankingsMixin(_StatisticsBase):
             "user_id": user_id,
             "item_id": item_id,
             "provider": provider,
-            "media_type": media_type.value,
+            "requested_media_type": media_type.value,
+            "media_type": (
+                MediaType.TRACK.value if media_type == MediaType.ALBUM else media_type.value
+            ),
             "cutoff_timestamp": 0,
         }
 

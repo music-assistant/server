@@ -30,7 +30,7 @@ from music_assistant.controllers.statistics.queries import (
     TRACK_ARTISTS_CTE,
     TRACK_HISTORY_CTE,
 )
-from music_assistant.controllers.webserver.helpers import auth_middleware
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import get_timezone
 
@@ -53,7 +53,7 @@ class TimeSeriesMixin(_StatisticsBase):
         :param granularity: Time bucket size - 'hour', 'day', 'week', 'month'.
         :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
         """
-        user = auth_middleware.get_current_user()
+        user = get_current_user()
         user_id = user.user_id if user else None
 
         if not user_id:
@@ -131,7 +131,7 @@ class TimeSeriesMixin(_StatisticsBase):
         :param period: Time period - 'today', 'week', 'month', 'year', 'all_time'.
         :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
         """
-        user = auth_middleware.get_current_user()
+        user = get_current_user()
         user_id = user.user_id if user else None
 
         if not user_id:
@@ -196,7 +196,7 @@ class TimeSeriesMixin(_StatisticsBase):
         :param limit: Maximum number of items to return (default 10).
         :param timezone: IANA timezone for calendar boundaries; defaults to UTC.
         """
-        user = auth_middleware.get_current_user()
+        user = get_current_user()
         user_id = user.user_id if user else None
 
         if not user_id:

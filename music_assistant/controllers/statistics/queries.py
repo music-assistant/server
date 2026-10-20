@@ -2,7 +2,12 @@
 
 from music_assistant_models.enums import MediaType
 
-from music_assistant.constants import DB_TABLE_PLAY_HISTORY, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_PLAY_HISTORY,
+    DB_TABLE_PROVIDER_MAPPINGS,
+)
 
 PLAY_HISTORY_EVENT_TYPES = (
     MediaType.TRACK.value,
@@ -62,6 +67,20 @@ TRACK_HISTORY_CTE = f"""
             AND play_history.media_type = :media_type
             AND play_history.provider = 'library'
             AND play_history.timestamp >= :cutoff_timestamp
+    )
+"""
+TRACK_ALBUMS_CTE = f"""
+    track_albums AS (
+        SELECT DISTINCT
+            history_tracks.play_id,
+            albums.item_id,
+            albums.name,
+            json_extract(albums.metadata, '$.images[0]') AS image
+        FROM history_tracks
+        INNER JOIN {DB_TABLE_ALBUM_TRACKS} AS album_tracks
+            ON album_tracks.track_id = history_tracks.track_id
+        INNER JOIN {DB_TABLE_ALBUMS} AS albums
+            ON albums.item_id = album_tracks.album_id
     )
 """
 # Selecting an artist is not a listening event; artist statistics come from the

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -36,11 +38,21 @@ from music_assistant.controllers.music.media.base import (
     SUPPRESS_MEDIA_ITEM_UPDATES,
     MediaControllerBase,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.mass import MusicAssistant
 
 # the user whose like a merge has to carry over to the surviving item
 MERGE_USER = "merge-user"
+
+
+@contextmanager
+def _as_user(user: User) -> Iterator[None]:
+    set_current_user(user)
+    try:
+        yield
+    finally:
+        set_current_user(None)
 
 
 @pytest.fixture(name="mass")
@@ -384,10 +396,7 @@ async def test_track_merge_preserves_album_and_artist_relations(mass: MusicAssis
             },
         )
     original_history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
-    with patch(
-        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
-        return_value=User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER),
-    ):
+    with _as_user(User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER)):
         before = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
         await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
         after = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
@@ -628,10 +637,7 @@ async def test_artist_merge_preserves_history_credit_references(mass: MusicAssis
             },
         )
     original_history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
-    with patch(
-        "music_assistant.controllers.webserver.helpers.auth_middleware.get_current_user",
-        return_value=User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER),
-    ):
+    with _as_user(User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER)):
         before = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")
         await mass.music.artists.merge_library_items(target.item_id, source.item_id)
         after = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")
