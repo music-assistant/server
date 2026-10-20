@@ -85,9 +85,7 @@ _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
 _JOIN_PROMOTE_TOLERANCE_US = 50_000
 # Abort join catchup if promotion hasn't completed within this.
 _JOIN_PROMOTION_TIMEOUT_S = 15.0
-# How far the flow timeline anchor must move before it counts as a rebase rather than
-# ordinary commit-to-commit jitter. The playback session reports a move this size to the
-# player, and the player re-publishes its beat schedule on one.
+# Anchor movement that counts as a timeline rebase rather than commit jitter.
 ANCHOR_REBASE_SIGNIFICANT_US = 500_000
 # Retain committed history this far behind real-time for late-join backfill.
 # This pre-history also warms up ffmpeg's internal filter buffers so the DSP
@@ -876,53 +874,32 @@ class SendspinPlaybackSession:
                     duration_us=pending.duration_us,
                     pcm=pending.pcm,
                 )
+                # aiosendspin moves the schedule forward when the producer falls behind,
+                # so the anchor follows every commit instead of only the first.
+                anchor_us = int(commit_start_us) - self._produced_audio_us
                 async with self._state_lock:
-                    # Recomputed on every commit, not just the first: commit_start_us is
-                    # always post-rebase, so subtracting the audio produced before this
-                    # chunk absorbs any forward shift aiosendspin applied after a stall.
                     previous_anchor_us = self._timeline_start_us
-                    self._timeline_start_us = int(commit_start_us) - self._produced_audio_us
-                    # Signed: the whole render timeline moved by this much, which is the
-                    # exact correction an already-published beat schedule needs.
-                    anchor_delta_us = (
-                        self._timeline_start_us - previous_anchor_us
-                        if previous_anchor_us is not None
-                        else 0
-                    )
+                    self._timeline_start_us = anchor_us
                     self._history.append(committed_history_chunk)
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
-                anchor_rebased = abs(anchor_delta_us) >= ANCHOR_REBASE_SIGNIFICANT_US
-                if self._timeline_start_us is not None:
-                    elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
-                    # A rebase steps the reported position by (buffer_depth + chunk -
-                    # min_send_ahead), independent of how long the stall lasted: forward
-                    # as a deep buffer drains, backward when it was shallow and the
-                    # device's send-ahead floor (min buffer or required lead, plus its
-                    # static delay) is the larger term. A forward step of a second or
-                    # more opens the periodic gate below on its own, but a backward one
-                    # closes it for the size of the step plus a second, so the rebasing
-                    # commit has to publish or the correction sits unreported for that
-                    # long. Steps smaller than POSITION_JUMP_THRESHOLD are absorbed as
-                    # ordinary drift by the player model and stay absorbed: the anchor
-                    # set here is still what the next recalculation extrapolates from.
-                    if (
-                        anchor_rebased
-                        or last_elapsed_update_s is None
-                        or elapsed_real_s - last_elapsed_update_s >= 1.0
-                    ):
-                        last_elapsed_update_s = elapsed_real_s
-                        self.player._attr_elapsed_time = elapsed_real_s
-                        self.player._attr_elapsed_time_last_updated = time.time()
-                        self.player.update_state()
+                anchor_rebased = (
+                    previous_anchor_us is not None
+                    and abs(anchor_us - previous_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
+                )
+                elapsed_real_s = max(0.0, (commit_now_us - anchor_us) / 1_000_000)
+                # A rebase can step the position backward, which would keep the gate shut.
+                if (
+                    anchor_rebased
+                    or last_elapsed_update_s is None
+                    or elapsed_real_s - last_elapsed_update_s >= 1.0
+                ):
+                    last_elapsed_update_s = elapsed_real_s
+                    self.player._attr_elapsed_time = elapsed_real_s
+                    self.player._attr_elapsed_time_last_updated = time.time()
+                    self.player.update_state()
                 if anchor_rebased:
-                    # Beat schedules are published as absolute timestamps derived from the
-                    # anchor, so a rebased anchor leaves them pointing at the pre-stall
-                    # timeline until something re-publishes them. Ordinary elapsed-time
-                    # updates do not, they are not a media identity change. The delta goes
-                    # with it so the player can shift an existing schedule by exactly the
-                    # amount the timeline moved, without consulting reported progress.
-                    self.player.on_flow_timeline_rebased(anchor_delta_us)
+                    self.player.on_flow_timeline_rebased()
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
@@ -1513,12 +1490,7 @@ class SendspinPlaybackSession:
 
     def _prune_history_locked(self, now_monotonic_us: int) -> None:
         """Drop old history chunks that are fully in the past."""
-        # A chunk's start_time_us is its render time on the push stream's own clock, the
-        # same clock now_monotonic_us comes from, so what is leaving the speakers right
-        # now is simply now_monotonic_us. Deriving it from the timeline anchor instead
-        # would tie the cutoff to the commit tail, which sits up to
-        # _PRODUCER_BUFFER_LIMIT_US ahead of the speakers, and would discard the
-        # committed-but-unplayed audio a late joiner backfills from.
+        # History start times are on the push stream clock, so this is what plays now.
         cutoff_us = now_monotonic_us - _HISTORY_KEEP_PAST_US
         while self._history and (
             self._history[0].start_time_us + self._history[0].duration_us <= cutoff_us
