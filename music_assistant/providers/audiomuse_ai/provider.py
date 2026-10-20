@@ -17,6 +17,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant_models.errors import (
+    MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
     SetupFailedError,
@@ -25,6 +26,7 @@ from music_assistant_models.media_items import RecommendationFolder, SearchResul
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.audiomuse_ai.client import AudioMuseClient, AudioMuseError
 from music_assistant.providers.audiomuse_ai.constants import (
@@ -218,7 +220,9 @@ class AudioMuseAiPlugin(PluginProvider):
         """
         if item_id != "inspired_by_recently_played":
             return UniqueList()
-        folder = await self._get_inspired_recommendations()
+        # recently played is personal, so the cached row is keyed on the user asking
+        user = get_current_user()
+        folder = await self._get_inspired_recommendations(user.user_id if user else None)
         if folder is None:
             return UniqueList()
         return folder.items
@@ -278,7 +282,7 @@ class AudioMuseAiPlugin(PluginProvider):
 
         async def _fetch(item_id: str) -> None:
             async with semaphore:
-                with suppress(MusicAssistantError):
+                with suppress(MediaNotFoundError):
                     resolved[item_id] = await self.mass.music.tracks.get(
                         item_id, self._media_provider, allow_update_metadata=False
                     )
@@ -287,19 +291,22 @@ class AudioMuseAiPlugin(PluginProvider):
         return [resolved[i] for i in item_ids if i in resolved]
 
     @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
-    async def _get_inspired_recommendations(self) -> RecommendationFolder | None:
-        """Build the 'Inspired by recently played' folder with its items, or None when empty."""
+    async def _get_inspired_recommendations(
+        self, user_id: str | None
+    ) -> RecommendationFolder | None:
+        """
+        Build the 'Inspired by recently played' folder with its items, or None when empty.
+
+        :param user_id: Only shapes the cache key: the query reads the calling user's own
+            recently played tracks.
+        """
         if self._client is None or not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return None
-        try:
-            recent = await self.mass.music.recently_played(
-                limit=RECOMMEND_SEED_COUNT,
-                media_types=[MediaType.TRACK],
-                fully_played_only=False,
-            )
-        except Exception as err:
-            self.logger.debug("recently_played failed: %s", err)
-            return None
+        recent = await self.mass.music.recently_played(
+            limit=RECOMMEND_SEED_COUNT,
+            media_types=[MediaType.TRACK],
+            fully_played_only=False,
+        )
         if not recent:
             return None
 

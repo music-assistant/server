@@ -5,12 +5,13 @@ from __future__ import annotations
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
+from music_assistant.providers.audiomuse_ai import provider as provider_module
 from music_assistant.providers.audiomuse_ai.client import AudioMuseError
 from music_assistant.providers.audiomuse_ai.constants import (
     CONF_ENABLE_DISCOVER_ROW,
@@ -159,6 +160,15 @@ class TestGetSimilarTracks:
         with pytest.raises(ProviderUnavailableError):
             await prov.get_similar_tracks(cast("Any", seed), limit=10)
 
+    async def test_media_server_down_raises(self) -> None:
+        """A media server failure during resolving propagates instead of truncating the result."""
+        prov = _provider()
+        prov._client = _mock_client(similar_tracks=AsyncMock(return_value=[{"item_id": "ms-a"}]))
+        cast("Any", prov.mass).music.tracks.get.side_effect = ProviderUnavailableError("down")
+        seed = _track("1", mapped_id="ms-seed")
+        with pytest.raises(ProviderUnavailableError):
+            await prov.get_similar_tracks(cast("Any", seed), limit=10)
+
     async def test_not_loaded_returns_empty(self) -> None:
         """Before handle_async_init the client is None -> []."""
         prov = _provider()
@@ -254,6 +264,20 @@ class TestRecommendations:
             recent=[SimpleNamespace(item_id="recent", provider="library")],
         )
         assert await prov.get_recommendation_items(ROW_ID) == []
+
+    async def test_row_is_built_per_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each calling user reaches the cached builder with their own id."""
+        prov = _provider(config_values={CONF_ENABLE_DISCOVER_ROW: True})
+        builder = AsyncMock(return_value=None)
+        cast("Any", prov)._get_inspired_recommendations = builder
+        for user_id in ("user-a", "user-b"):
+            monkeypatch.setattr(
+                provider_module,
+                "get_current_user",
+                lambda uid=user_id: SimpleNamespace(user_id=uid),
+            )
+            await prov.get_recommendation_items(ROW_ID)
+        assert builder.await_args_list == [call("user-a"), call("user-b")]
 
 
 class TestHandleSimilarCommand:
