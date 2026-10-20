@@ -7,9 +7,10 @@ library item, the item's first provider mapping must not decide whose progress i
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, ProviderType
 from music_assistant_models.media_items import Artist, AudioFormat, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
@@ -118,3 +119,39 @@ async def test_mark_unplayed_uses_the_reporting_instance_user(mass: MusicAssista
 
     await mass.music.mark_item_unplayed(track, provider_instance_id=INSTANCE_A)
     assert await _playlog_row(mass, track, user_a.user_id) is None
+
+
+class _Account:
+    """Loaded music source keeping the resume positions of its own account."""
+
+    type = ProviderType.MUSIC
+    domain = "audiobookshelf"
+    available = True
+
+    def __init__(self, instance_id: str) -> None:
+        self.instance_id = instance_id
+        self.positions: dict[str, int] = {}
+
+    async def on_played(self, prov_item_id: str, position: int, **kwargs: Any) -> None:
+        self.positions[prov_item_id] = position
+
+
+async def test_reporting_instance_sync_stays_on_its_account(mass: MusicAssistant) -> None:
+    """A sync of one account never changes the progress of another account."""
+    _, _, track = await _setup(mass, "syncer")
+    accounts = [_Account(INSTANCE_A), _Account(INSTANCE_B)]
+    for account in accounts:
+        mass._providers[account.instance_id] = account  # type: ignore[assignment]
+
+    await mass.music.mark_item_played(
+        track,
+        fully_played=False,
+        seconds_played=120,
+        user_initiated=False,
+        provider_instance_id=INSTANCE_B,
+    )
+    await mass.music.mark_item_unplayed(track, provider_instance_id=INSTANCE_B)
+    # let the background play reports run
+    await asyncio.sleep(0)
+
+    assert [account.positions for account in accounts] == [{}, {}]
