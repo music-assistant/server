@@ -239,9 +239,15 @@ async def test_similar_tracks_of_a_plugin_leave_out_hidden_sources(mass: MusicAs
         for source in ("open_1", "hidden_1")
     }
     plugin = SimpleNamespace(name="plugin")
+    # a track on both sources stays, as one source it sits on is visible
+    both = create_track("hidden_1", "t3", name="Both")
+    both.provider_mappings.add(
+        ProviderMapping(item_id="t3", provider_domain="open", provider_instance="open_1")
+    )
     similar = [
         create_track("open_1", "t1", name="Open"),
         create_track("hidden_1", "t2", name="Hidden"),
+        both,
     ]
     fetch = AsyncMock(return_value=(similar, None))
     with (
@@ -267,7 +273,11 @@ async def test_similar_tracks_of_a_plugin_leave_out_hidden_sources(mass: MusicAs
     ):
         # the owner of the hidden source sees both and fills the listing all users share
         mock_get_user.return_value = User(user_id="user-b", username="user-b", role=UserRole.USER)
-        assert _names(await mass.music.tracks.similar_tracks("ref", "open_1")) == ["Open", "Hidden"]
+        assert _names(await mass.music.tracks.similar_tracks("ref", "open_1")) == [
+            "Open",
+            "Hidden",
+            "Both",
+        ]
         mock_get_user.return_value = User(user_id="user-a", username="user-a", role=UserRole.USER)
-        assert _names(await mass.music.tracks.similar_tracks("ref", "open_1")) == ["Open"]
+        assert _names(await mass.music.tracks.similar_tracks("ref", "open_1")) == ["Open", "Both"]
     fetch.assert_awaited_once()
