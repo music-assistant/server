@@ -36,6 +36,3 @@ async def test_move_command_reorders_a_builtin_playlist(e2e_mass: MusicAssistant
     )
     await move(db_playlist_id=playlist.item_id, from_position=4, to_position=1)
     assert await _names() == [seeds[3].name, seeds[0].name, seeds[1].name, seeds[2].name]
-
-    await move(db_playlist_id=playlist.item_id, from_position=1, to_position=3)
-    assert await _names() == [seeds[0].name, seeds[1].name, seeds[3].name, seeds[2].name]

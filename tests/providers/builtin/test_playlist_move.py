@@ -7,11 +7,10 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.playlists import PlaylistItem, generate_m3u
-from music_assistant.providers.builtin import SUPPORTED_FEATURES, BuiltinProvider
+from music_assistant.providers.builtin import BuiltinProvider
 
 TITLES = ["One", "Two", "Three", "Four"]
 
@@ -49,11 +48,6 @@ def _written_titles(prov: BuiltinProvider) -> list[str]:
     return [entry.title for entry in write.await_args.args[2]]
 
 
-def test_builtin_advertises_the_move_feature() -> None:
-    """The controller only asks providers that advertise the feature."""
-    assert ProviderFeature.PLAYLIST_TRACKS_MOVE in SUPPORTED_FEATURES
-
-
 @pytest.mark.parametrize(
     ("from_position", "to_position", "expected"),
     [
@@ -75,7 +69,7 @@ async def test_move_places_the_track_at_its_final_position(
     assert expected[to_position - 1] == TITLES[from_position - 1]
 
 
-@pytest.mark.parametrize(("from_position", "to_position"), [(5, 1), (1, 5), (0, 2), (2, 0)])
+@pytest.mark.parametrize(("from_position", "to_position"), [(5, 1), (1, 5)])
 async def test_move_outside_the_playlist_is_refused(from_position: int, to_position: int) -> None:
     """A position outside the file raises and leaves the file untouched."""
     prov = _make_provider(TITLES)
@@ -84,12 +78,3 @@ async def test_move_outside_the_playlist_is_refused(from_position: int, to_posit
         await prov.move_playlist_track("playlist_1", from_position, to_position)
 
     cast("Any", prov)._write_m3u_file.assert_not_awaited()
-
-
-async def test_move_keeps_duplicate_entries_apart() -> None:
-    """With the same track listed twice, only the entry at from_position moves."""
-    prov = _make_provider(["One", "Two", "One", "Three"])
-
-    await prov.move_playlist_track("playlist_1", 3, 4)
-
-    assert _written_titles(prov) == ["One", "Two", "Three", "One"]

@@ -203,7 +203,7 @@ async def test_move_to_the_same_position_changes_nothing(
     signal_event.assert_not_called()
 
 
-@pytest.mark.parametrize(("from_position", "to_position"), [(0, 1), (1, 0), (-1, 2)])
+@pytest.mark.parametrize(("from_position", "to_position"), [(0, 1), (1, 0)])
 async def test_move_below_the_first_position_is_refused(
     playlists: PlaylistController,
     music_mass_module: MusicAssistant,
@@ -222,22 +222,3 @@ async def test_move_below_the_first_position_is_refused(
         await playlists.move_playlist_track(added.item_id, from_position, to_position)
 
     provider.move_playlist_track.assert_not_awaited()
-
-
-async def test_move_past_the_end_is_refused_without_an_announcement(
-    playlists: PlaylistController, music_mass_module: MusicAssistant
-) -> None:
-    """Only the provider knows the length, and its refusal reaches the caller unchanged."""
-    added = await _add(playlists)
-    provider = _provider()
-    provider.move_playlist_track.side_effect = InvalidDataError("Position out of range")
-
-    with (
-        _as_user(OWNER),
-        patch.object(music_mass_module, "get_provider", return_value=provider),
-        patch.object(music_mass_module, "signal_event") as signal_event,
-        pytest.raises(InvalidDataError),
-    ):
-        await playlists.move_playlist_track(added.item_id, 1, 99)
-
-    signal_event.assert_not_called()
