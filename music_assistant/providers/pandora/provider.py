@@ -527,13 +527,14 @@ class PandoraProvider(MusicProvider):
                     await self.close()
                     raise ProviderUnavailableError("Pandora server error")
                 if response.status >= 400:
-                    await self.close()
                     # a clear must tell a thumb removed outside Music Assistant from a delete
-                    # that failed, and only the body says which
+                    # that failed, and only the body says which; it is read before close(),
+                    # which ends the session the body arrives on when a SOCKS proxy is used
                     try:
                         body = await response.json()
                     except aiohttp.ContentTypeError, json.JSONDecodeError:
                         body = None
+                    await self.close()
                     error = body.get("errorString") if isinstance(body, dict) else None
                     if error == FEEDBACK_NOT_FOUND_ERROR:
                         raise MediaNotFoundError(

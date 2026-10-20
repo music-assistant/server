@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, cast
 from unittest.mock import Mock
 
+import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -24,7 +25,7 @@ from music_assistant.providers.pandora.constants import (
 from music_assistant.providers.pandora.provider import PandoraProvider
 
 from .test_provider import STATION_ID, _provider, _tracks
-from .test_throttle import _CountingThrottler, _real_provider, _Response
+from .test_throttle import _CountingThrottler, _real_provider, _Response, _Session
 
 
 class _FakeCache:
@@ -538,3 +539,40 @@ async def test_removing_the_provider_drops_its_kept_feedback(is_removed: bool) -
     await provider.unload(is_removed=is_removed)
     assert (_kept(provider, "TR:S1") is None) is is_removed
     assert _cache(provider).data[other] == ["another instance"]
+
+
+class _ProxySession(_Session):
+    """A SOCKS proxy session: the provider closes it on an error answer, ending its bodies."""
+
+    closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _ProxyResponse(_Response):
+    """A response whose body can no longer be read once its session is closed."""
+
+    def __init__(self, session: _ProxySession, status: int, payload: dict[str, Any]) -> None:
+        super().__init__(status, payload)
+        self._session = session
+
+    async def json(self) -> dict[str, Any]:
+        if self._session.closed:
+            raise aiohttp.ClientConnectionError("Connection closed")
+        return await super().json()
+
+
+async def test_a_missing_feedback_id_is_recognised_behind_a_socks_proxy() -> None:
+    """The 400 body is read before the proxy session is closed, so the id is still forgotten."""
+    provider = _real_provider([], _CountingThrottler())
+    session = _ProxySession([])
+    payload = {"message": "Could not find feedback", "errorString": FEEDBACK_NOT_FOUND_ERROR}
+    session._responses.append(_ProxyResponse(session, 400, payload))
+    provider.http_session = session  # type: ignore[assignment]
+    provider._socks_proxy = True
+    with pytest.raises(MediaNotFoundError):
+        await provider._api_request(
+            "POST", DELETE_FEEDBACK_ENDPOINT, data={"feedbackId": "1", "isPositive": True}
+        )
+    assert session.closed
