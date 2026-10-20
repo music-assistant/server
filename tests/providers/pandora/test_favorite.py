@@ -6,7 +6,6 @@ import asyncio
 from typing import Any, cast
 from unittest.mock import Mock
 
-import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -542,7 +541,7 @@ async def test_removing_the_provider_drops_its_kept_feedback(is_removed: bool) -
 
 
 class _ProxySession(_Session):
-    """A SOCKS proxy session: the provider closes it on an error answer, ending its bodies."""
+    """A SOCKS proxy session, which the provider owns; once closed it is never reopened."""
 
     closed = False
 
@@ -550,31 +549,59 @@ class _ProxySession(_Session):
         self.closed = True
 
 
-class _ProxyResponse(_Response):
-    """A response whose body can no longer be read once its session is closed."""
-
-    def __init__(self, session: _ProxySession, status: int, payload: dict[str, Any]) -> None:
-        super().__init__(status, payload)
-        self._session = session
-
-    async def json(self) -> dict[str, Any]:
-        if self._session.closed:
-            raise aiohttp.ClientConnectionError("Connection closed")
-        return await super().json()
-
-
-async def test_a_missing_feedback_id_is_recognised_behind_a_socks_proxy() -> None:
-    """The 400 body is read before the proxy session is closed, so the id is still forgotten."""
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [
+        (_Response(400, {"errorString": FEEDBACK_NOT_FOUND_ERROR}), MediaNotFoundError),
+        (_Response(400, {"errorString": "OTHER"}), InvalidDataError),
+        (_Response(404, {}), MediaNotFoundError),
+        (_Response(500, {}), ProviderUnavailableError),
+    ],
+)
+async def test_a_rejected_request_leaves_the_socks_proxy_session_open(
+    failure: _Response, error: type[Exception]
+) -> None:
+    """A request Pandora rejects behind a SOCKS proxy keeps the session, so the next one works."""
     provider = _real_provider([], _CountingThrottler())
-    session = _ProxySession([])
-    payload = {"message": "Could not find feedback", "errorString": FEEDBACK_NOT_FOUND_ERROR}
-    session._responses.append(_ProxyResponse(session, 400, payload))
+    session = _ProxySession([failure, _Response(200, {"ok": True})])
     provider.http_session = session  # type: ignore[assignment]
     provider._socks_proxy = True
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(error):
         await provider._api_request(
             "POST", DELETE_FEEDBACK_ENDPOINT, data={"feedbackId": "1", "isPositive": True}
         )
+    assert not session.closed
+    assert await provider._api_request("POST", DELETE_FEEDBACK_ENDPOINT, data={}) == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [
+        (_Response(404, {}), MediaNotFoundError),
+        (_Response(400, {"errorString": "OTHER"}), InvalidDataError),
+    ],
+)
+async def test_a_rejected_fragment_fetch_leaves_the_socks_proxy_session_open(
+    failure: _Response, error: type[Exception]
+) -> None:
+    """A station fetch Pandora rejects behind a SOCKS proxy keeps the session for the next one."""
+    provider = _real_provider([], _CountingThrottler())
+    session = _ProxySession([failure, _Response(200, {"ok": True})])
+    provider.http_session = session  # type: ignore[assignment]
+    provider._socks_proxy = True
+    with pytest.raises(error):
+        await provider._fetch_fragment(provider._get_or_create_session(STATION_ID))
+    assert not session.closed
+    assert await provider._api_request("POST", DELETE_FEEDBACK_ENDPOINT, data={}) == {"ok": True}
+
+
+async def test_unloading_closes_the_socks_proxy_session() -> None:
+    """The provider's own proxy session is closed when the provider unloads."""
+    provider = _real_provider([], _CountingThrottler())
+    session = _ProxySession([])
+    provider.http_session = session  # type: ignore[assignment]
+    provider._socks_proxy = True
+    await provider.unload()
     assert session.closed
 
 

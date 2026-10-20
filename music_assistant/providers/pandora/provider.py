@@ -492,10 +492,8 @@ class PandoraProvider(MusicProvider):
                             data,
                             exhausted_retry_reasons=exhausted_retry_reasons | {RETRY_REASON_AUTH},
                         )
-                    await self.close()
                     raise LoginFailed("Pandora authentication failed after retry")
                 if response.status == 404:
-                    await self.close()
                     raise MediaNotFoundError("Resource not found")
                 if response.status == 429:
                     # Another device may already be streaming on this account.
@@ -524,17 +522,14 @@ class PandoraProvider(MusicProvider):
                     # This is some other, not concurrent streaming error kind of 429
                     raise ProviderUnavailableError(f"Pandora rate-limited (HTTP 429): {error_body}")
                 if response.status >= 500:
-                    await self.close()
                     raise ProviderUnavailableError("Pandora server error")
                 if response.status >= 400:
                     # a clear must tell a thumb removed outside Music Assistant from a delete
-                    # that failed, and only the body says which; it is read before close(),
-                    # which ends the session the body arrives on when a SOCKS proxy is used
+                    # that failed, and only the body says which
                     try:
                         body = await response.json()
                     except aiohttp.ContentTypeError, json.JSONDecodeError:
                         body = None
-                    await self.close()
                     error = body.get("errorString") if isinstance(body, dict) else None
                     if error == FEEDBACK_NOT_FOUND_ERROR:
                         raise MediaNotFoundError(
@@ -576,9 +571,6 @@ class PandoraProvider(MusicProvider):
                 if is_station_start
                 else frozenset({RETRY_REASON_STREAM_VIOLATION}),
             )
-        except MediaNotFoundError:
-            await self.close()
-            raise
         except StreamViolationError:
             self.logger.warning(
                 "Pandora stream is already active on another device. "
@@ -588,7 +580,6 @@ class PandoraProvider(MusicProvider):
             raise
         except InvalidDataError as err:
             self.logger.error("Invalid fragment data for station %s: %s", session.station_id, err)
-            await self.close()
             raise
         tracks = [
             track
