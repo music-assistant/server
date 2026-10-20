@@ -8,6 +8,8 @@ PLAYLIST_FRAGMENT_ENDPOINT = f"{API_BASE}/playlist/getFragment"
 PLAYBACK_RESUMED_ENDPOINT = f"{API_BASE}/station/playbackResumed"
 ADD_FEEDBACK_ENDPOINT = f"{API_BASE}/station/addFeedback"
 DELETE_FEEDBACK_ENDPOINT = f"{API_BASE}/station/deleteFeedback"
+# errorString of the HTTP 400 deleteFeedback answers for an id Pandora no longer holds
+FEEDBACK_NOT_FOUND_ERROR = "FEEDBACK_DOES_NOT_EXIST"
 
 # Request rate per provider instance. Pandora publishes no limit for its web API; four per
 # second lets the longest recovery go out without waiting: a request answered 401, the CSRF

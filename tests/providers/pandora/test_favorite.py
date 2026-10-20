@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
+    MediaNotFoundError,
     ProviderUnavailableError,
 )
 
@@ -18,10 +19,12 @@ from music_assistant.providers.pandora.constants import (
     ADD_FEEDBACK_ENDPOINT,
     CACHE_CATEGORY_FEEDBACK,
     DELETE_FEEDBACK_ENDPOINT,
+    FEEDBACK_NOT_FOUND_ERROR,
 )
 from music_assistant.providers.pandora.provider import PandoraProvider
 
 from .test_provider import STATION_ID, _provider, _tracks
+from .test_throttle import _CountingThrottler, _real_provider, _Response
 
 
 class _FakeCache:
@@ -225,11 +228,13 @@ def _clearing_provider(
     tracks: list[dict[str, Any]] | None = None,
     *later: list[dict[str, Any]],
     fail_deletes: int = 0,
+    gone: frozenset[str] = frozenset(),
 ) -> tuple[PandoraProvider, list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Build a `_feedback_provider` that also records every deleteFeedback body.
 
     :param fail_deletes: How many deletes fail, from the first, before they succeed.
+    :param gone: Feedback ids Pandora no longer holds, as after a removal in the Pandora app.
     """
     provider, sent = _feedback_provider(tracks, *later)
     deleted: list[dict[str, Any]] = []
@@ -240,6 +245,8 @@ def _clearing_provider(
         method: str, url: str, data: dict[str, Any] | None = None, **kw: Any
     ) -> dict[str, Any]:
         if url == DELETE_FEEDBACK_ENDPOINT:
+            if (data or {}).get("feedbackId") in gone:
+                raise MediaNotFoundError("Pandora feedback not found")
             if failures[0]:
                 failures[0] -= 1
                 raise ProviderUnavailableError("Pandora server error")
@@ -431,3 +438,75 @@ async def test_overlapping_thumbs_on_two_stations_are_both_kept() -> None:
     await asyncio.gather(on_a, on_b)
     kept = _kept(provider, "TR:S0")
     assert sorted(entry["stationId"] for entry in kept) == ["a", "b"]
+
+
+async def _rate_on_both_stations(provider: PandoraProvider) -> None:
+    """Play TR:S0 on station a and like it, then the same on station b (fb-1, then fb-2)."""
+    for station in ("station-a", "station-b"):
+        await provider.get_dynamic_radio_tracks(station)
+        await provider.get_stream_details("TR:S0", MediaType.TRACK)
+        await provider.set_favorite("TR:S0", MediaType.TRACK, True)
+
+
+async def test_a_thumb_removed_on_pandora_is_forgotten() -> None:
+    """
+    A thumb removed in the Pandora app since is forgotten, so the clear does not fail.
+
+    Kept for a retry, it would fail every later clear and the rating could never be cleared.
+    """
+    provider, _sent, deleted = _clearing_provider(gone=frozenset({"fb-1"}))
+    await provider.get_dynamic_radio_tracks(STATION_ID)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, True)
+    await provider.set_favorite("TR:S1", MediaType.TRACK, None)
+    assert deleted == []
+    assert _kept(provider, "TR:S1") is None
+
+
+async def test_a_thumb_removed_on_pandora_does_not_block_the_other_stations() -> None:
+    """With one station's thumb gone from Pandora, the other station's thumb is still deleted."""
+    provider, _sent, deleted = _clearing_provider(
+        _station_tracks("a"), _station_tracks("b"), gone=frozenset({"fb-1"})
+    )
+    await _rate_on_both_stations(provider)
+    await provider.set_favorite("TR:S0", MediaType.TRACK, None)
+    assert [body["feedbackId"] for body in deleted] == ["fb-2"]
+    assert _kept(provider, "TR:S0") is None
+
+
+async def test_a_failed_delete_on_one_station_still_deletes_the_other() -> None:
+    """One delete failing still deletes the rest, and keeps only the failed one for a retry."""
+    provider, _sent, deleted = _clearing_provider(
+        _station_tracks("a"), _station_tracks("b"), fail_deletes=1
+    )
+    await _rate_on_both_stations(provider)
+    with pytest.raises(ProviderUnavailableError):
+        await provider.set_favorite("TR:S0", MediaType.TRACK, None)
+    assert [body["feedbackId"] for body in deleted] == ["fb-2"]
+    assert _kept(provider, "TR:S0") == [
+        {"feedbackId": "fb-1", "stationId": "a", "isPositive": True}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (
+            {
+                "message": "Could not find feedback for id 1",
+                "errorCode": 0,
+                "errorString": FEEDBACK_NOT_FOUND_ERROR,
+            },
+            MediaNotFoundError,
+        ),
+        ({"message": "Bad request", "errorCode": 0, "errorString": "OTHER"}, InvalidDataError),
+    ],
+)
+async def test_feedback_pandora_no_longer_holds_is_reported_as_not_found(
+    payload: dict[str, Any], error: type[Exception]
+) -> None:
+    """Pandora's HTTP 400 for a missing feedback id becomes not found; other 400s stay invalid."""
+    provider = _real_provider([_Response(400, payload)], _CountingThrottler())
+    with pytest.raises(error):
+        await provider._api_request(
+            "POST", DELETE_FEEDBACK_ENDPOINT, data={"feedbackId": "1", "isPositive": True}
+        )

@@ -63,6 +63,7 @@ from .constants import (
     CONF_TAKEOVER_ACTION,
     DELETE_FEEDBACK_ENDPOINT,
     FEEDBACK_CACHE_EXPIRATION,
+    FEEDBACK_NOT_FOUND_ERROR,
     LOGIN_ENDPOINT,
     PLAYBACK_RESUMED_ENDPOINT,
     PLAYLIST_FRAGMENT_ENDPOINT,
@@ -519,6 +520,17 @@ class PandoraProvider(MusicProvider):
                     raise ProviderUnavailableError("Pandora server error")
                 if response.status >= 400:
                     await self.close()
+                    # a clear must tell a thumb removed outside Music Assistant from a delete
+                    # that failed, and only the body says which
+                    try:
+                        body = await response.json()
+                    except aiohttp.ContentTypeError, json.JSONDecodeError:
+                        body = None
+                    error = body.get("errorString") if isinstance(body, dict) else None
+                    if error == FEEDBACK_NOT_FOUND_ERROR:
+                        raise MediaNotFoundError(
+                            f"Pandora feedback not found: {body.get('message')}"
+                        )
                     raise InvalidDataError(f"Pandora API error: HTTP {response.status}")
 
                 result: dict[str, Any] = await response.json()
@@ -686,19 +698,33 @@ class PandoraProvider(MusicProvider):
                 prov_track_id,
             )
             return
-        while kept:
-            entry = kept[0]
+        # every entry is tried, so one that fails does not leave the others on Pandora
+        remaining: list[dict[str, Any]] = []
+        failure: Exception | None = None
+        for entry in kept:
             try:
+                # Pandora deletes by id whatever isPositive says, so a thumb flipped in the
+                # Pandora app since is deleted too
                 await self._api_request(
                     "POST",
                     DELETE_FEEDBACK_ENDPOINT,
                     data={"feedbackId": entry["feedbackId"], "isPositive": entry["isPositive"]},
                 )
-            except Exception:
-                # keep what is still on Pandora, so another clear can retry it
-                await self._set_kept_feedback(prov_track_id, kept)
-                raise
-            kept.pop(0)
+            except MediaNotFoundError:
+                # removed outside Music Assistant (in the Pandora app, or with its station), so
+                # nothing is left to delete; keeping it would fail every clear from now on
+                self.logger.debug(
+                    "Pandora no longer has feedback %s on track %s",
+                    entry["feedbackId"],
+                    prov_track_id,
+                )
+            except Exception as err:
+                # keep what may still be on Pandora, so another clear can retry it
+                remaining.append(entry)
+                failure = failure or err
+        if failure is not None:
+            await self._set_kept_feedback(prov_track_id, remaining)
+            raise failure
         await self.mass.cache.delete(
             prov_track_id, category=CACHE_CATEGORY_FEEDBACK, provider=self.instance_id
         )
