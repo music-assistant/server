@@ -362,3 +362,35 @@ class TestHandleSimilarCommand:
         result = await prov._handle_similar("seed")
         assert result["analyzed"] is False
         assert "server exploded" in result["reason"]
+
+
+class TestPlexIdTranslation:
+    """Plex item ids carry a key prefix that AudioMuse-AI's bare rating keys lack."""
+
+    async def test_similar_tracks_round_trip(self) -> None:
+        """The seed is sent as a bare rating key and neighbours resolve to prefixed MA ids."""
+        neighbour = _track("n", mapped_id="/library/metadata/43")
+        prov = _provider(library={"/library/metadata/43": neighbour})
+        cast("Any", prov.mass).config.get_raw_provider_config_value.return_value = "plex"
+        client = _mock_client(
+            similar_tracks=AsyncMock(return_value=[{"item_id": "42"}, {"item_id": "43"}])
+        )
+        prov._client = client
+        seed = _track("1", mapped_id="/library/metadata/42")
+
+        result = await prov.get_similar_tracks(cast("Any", seed), limit=10)
+        assert result == [neighbour]
+        client.similar_tracks.assert_awaited_once_with("42", 10)
+
+    async def test_handle_similar_translates_ids(self) -> None:
+        """The API command takes and returns MA ids, excluding the seed."""
+        prov = _provider()
+        cast("Any", prov.mass).config.get_raw_provider_config_value.return_value = "plex"
+        client = _mock_client(
+            similar_tracks=AsyncMock(return_value=[{"item_id": "42"}, {"item_id": "43"}])
+        )
+        prov._client = client
+
+        result = await prov._handle_similar("/library/metadata/42", limit=5)
+        client.similar_tracks.assert_awaited_once_with("42", 5)
+        assert [item["item_id"] for item in result["items"]] == ["/library/metadata/43"]
