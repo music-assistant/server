@@ -285,7 +285,7 @@ class AudioMuseAiPlugin(PluginProvider):
             async with semaphore:
                 with suppress(MediaNotFoundError):
                     resolved[item_id] = await self.mass.music.tracks.get(
-                        item_id, self._media_provider, allow_update_metadata=False
+                        item_id, self._media_provider, allow_update_metadata=False, recursive=False
                     )
 
         await asyncio.gather(*(_fetch(i) for i in wanted.difference(resolved)))
@@ -317,7 +317,7 @@ class AudioMuseAiPlugin(PluginProvider):
         for mapping in recent:
             try:
                 track = await self.mass.music.tracks.get(
-                    mapping.item_id, mapping.provider, allow_update_metadata=False
+                    mapping.item_id, mapping.provider, allow_update_metadata=False, recursive=False
                 )
             except MusicAssistantError:
                 continue
