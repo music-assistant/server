@@ -1932,12 +1932,14 @@ class TracksController(MediaControllerBase[Track]):
         )
         provider_responded = False
         unanswered = False
+        hidden_sources = self._hidden_sources()
 
         # Try preferred providers first, then fall back to others
         for prov_mapping in sorted_mappings:
             prov = self.mass.music.get_visible_provider(prov_mapping.provider_instance)
             if prov is None:
-                unanswered = True
+                # a source the user may not use is no gap in their listing, a down one is
+                unanswered = unanswered or prov_mapping.provider_instance not in hidden_sources
                 continue
             if (
                 not isinstance(prov, MusicProvider)
