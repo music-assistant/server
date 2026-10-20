@@ -22,6 +22,7 @@ from music_assistant_models.errors import (
     ActionUnavailable,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -942,6 +943,44 @@ async def test_blocked_work_does_not_wake_the_worker(provider: PlaylistMetadataP
 
     assert not provider._ai._wakeup.is_set()
     assert set(provider._ai._pending) == {"2", "3"}
+
+
+async def test_a_rate_limit_pauses_as_long_as_the_service_asks(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A Retry-After longer than the default pause is honoured."""
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RateLimited("slow down", backoff_time=3600)
+    )
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
+
+    await _metadata(provider, _smart_playlist())
+
+    assert provider._ai._paused_until["cover"] - time.time() > 3500
+
+
+async def test_the_newest_generation_times_are_stored_last(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """Stores of the generation times can not finish out of order."""
+    cache = _mass(provider).cache
+    store = cache.set
+
+    async def slow_set(key: str, data: Any, **kwargs: Any) -> None:
+        # the first store is the slowest, so without the lock it would finish last
+        await asyncio.sleep(0.05 if len(data) == 1 else 0)
+        await store(key, data, **kwargs)
+
+    cache.set = slow_set
+    ai = provider._ai
+
+    await asyncio.gather(
+        ai._record(ai._generated_at, "generated_at"),
+        ai._record(ai._generated_at, "generated_at"),
+    )
+
+    stored = await cache.get("generated_at", provider=INSTANCE_ID)
+    assert len(stored) == 2
 
 
 async def test_new_work_wakes_a_waiting_worker(provider: PlaylistMetadataProvider) -> None:

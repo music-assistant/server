@@ -292,6 +292,10 @@ async def _download(mass: MusicAssistant, base_url: str, url: str, timeout: int)
     async with _image_session(mass, trusted) as session:
         for _ in range(MAX_IMAGE_REDIRECTS + 1):
             proxy = _proxy_for(proxies, url)
+            if _origin(url) in trusted[1 if endpoint else 0 :]:
+                # the proxy is trusted to connect through, never as a place to download from
+                msg = "the reply carried an image link to the proxy"
+                raise InvalidDataError(msg)
             await _check_image_link(endpoint, url, proxied=proxy is not None)
             try:
                 async with session.get(

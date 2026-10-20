@@ -194,6 +194,8 @@ class AIArtwork:
 
     # one preview at a time, so repeated presses do not stack up paid generations
     _preview_lock: asyncio.Lock
+    # stores the generation times one at a time, so an older list can not overwrite a newer one
+    _store_lock: asyncio.Lock
     # one refresh pass at a time; a regenerate during one has it run again right after
     _refresh_lock: asyncio.Lock
     _refresh_again: bool
@@ -225,6 +227,7 @@ class AIArtwork:
         self.mass = provider.mass
         self.logger = provider.logger
         self._preview_lock = asyncio.Lock()
+        self._store_lock = asyncio.Lock()
         self._refresh_lock = asyncio.Lock()
         self._refresh_again = False
         self._generated_at = deque()
@@ -920,7 +923,9 @@ class AIArtwork:
         """
         transient = isinstance(err, TRANSIENT_ERRORS)
         if transient:
-            self._paused_until[kind] = time.time() + ENGINE_RETRY_SECONDS
+            # as long as the service asked for, when it said how long
+            pause = max(ENGINE_RETRY_SECONDS, getattr(err, "backoff_time", 0) or 0)
+            self._paused_until[kind] = time.time() + pause
         await self._record_failure(kind, playlist, key, transient=transient)
 
     def _blocked_for(self, kind: str) -> int | None:
@@ -1306,13 +1311,15 @@ class AIArtwork:
         """
         now = time.time()
         timestamps.extend([now] * count)
-        await self.mass.cache.set(
-            key,
-            list(timestamps),
-            expiration=THROTTLE_WINDOW_SECONDS,
-            provider=self.provider.instance_id,
-            persistent=True,
-        )
+        # one store at a time, each of the list as it is then, so the newest is stored last
+        async with self._store_lock:
+            await self.mass.cache.set(
+                key,
+                list(timestamps),
+                expiration=THROTTLE_WINDOW_SECONDS,
+                provider=self.provider.instance_id,
+                persistent=True,
+            )
 
     def _throttle_delay(self, timestamps: deque[float]) -> int | None:
         """

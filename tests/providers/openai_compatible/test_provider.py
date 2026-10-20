@@ -908,6 +908,21 @@ async def test_links_that_go_direct_are_checked_as_they_connect(
     host_addresses.assert_not_awaited()
 
 
+async def test_an_image_link_to_the_proxy_itself_is_refused(mass: AsyncMock) -> None:
+    """The proxy is trusted to connect through, not as a place to download from."""
+    mass.http_session.get = MagicMock()
+    with (
+        patch(
+            "music_assistant.providers.openai_compatible.helpers.getproxies",
+            return_value={"https": "http://proxy.lan:3128"},
+        ),
+        pytest.raises(InvalidDataError, match="to the proxy"),
+    ):
+        await _generate_by_url(mass, "http://proxy.lan:3128/admin")
+
+    mass.http_session.get.assert_not_called()
+
+
 async def test_the_session_trusts_the_endpoint_and_the_proxies(mass: AsyncMock) -> None:
     """The proxy is often on the local network, so the session's resolver lets it through."""
     mass.http_session.get = MagicMock(
