@@ -1,8 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="512" height="512" fill="none" stroke="#000000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Lucide orbit mark from BookOrbit pwa-icon-source.svg -->
-  <path d="M20.341 6.484A10 10 0 0 1 10.266 21.85"/>
-  <path d="M3.659 17.516A10 10 0 0 1 13.74 2.152"/>
-  <circle cx="12" cy="12" r="3"/>
-  <circle cx="19" cy="5" r="2"/>
-  <circle cx="5" cy="19" r="2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Monochrome of icon.svg: rounded tile + orbit mark -->
+  <rect width="512" height="512" rx="96" fill="#000000"/>
+  <g
+    transform="translate(88 88) scale(14)"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="1.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M20.341 6.484A10 10 0 0 1 10.266 21.85"/>
+    <path d="M3.659 17.516A10 10 0 0 1 13.74 2.152"/>
+    <circle cx="12" cy="12" r="3"/>
+    <circle cx="19" cy="5" r="2"/>
+    <circle cx="5" cy="19" r="2"/>
+  </g>
 </svg>
