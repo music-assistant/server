@@ -31,6 +31,8 @@ AUTH_SCOPE = "r_usr w_usr w_sub"
 PLAYLISTS = "playlists"
 PAGES_MIX = "pages/mix"
 
+DOMAIN = "tidal"
+
 # Config keys
 CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
