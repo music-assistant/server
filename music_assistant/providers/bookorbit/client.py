@@ -353,26 +353,37 @@ class BookOrbitClient:
             self._capture_refresh_cookie(resp)
 
     async def _refresh(self) -> bool:
-        """Attempt token refresh; return whether a new access token was stored."""
+        """
+        Attempt token refresh; return whether a new access token was stored.
+
+        Rejected refresh credentials (401/403) return False so callers can fall
+        back to password login. Temporary upstream failures (429/5xx and other
+        non-auth HTTP errors) raise ``ClientResponseError`` instead of triggering
+        a login.
+        """
         if not self.refresh_token:
             return False
-        try:
-            async with self.session.post(
-                self._url(f"{API_PREFIX}/auth/refresh"),
-                headers={"Cookie": f"{REFRESH_COOKIE}={self.refresh_token}"},
-                ssl=self.verify_ssl,
-            ) as resp:
-                if resp.status >= 400:
-                    return False
-                data = await resp.json()
-                token = data.get("accessToken") if isinstance(data, dict) else None
-                if not token:
-                    return False
-                self.access_token = token
-                self._capture_refresh_cookie(resp)  # cookie may be rotated
-                return True
-        except ClientResponseError:
-            return False
+        async with self.session.post(
+            self._url(f"{API_PREFIX}/auth/refresh"),
+            headers={"Cookie": f"{REFRESH_COOKIE}={self.refresh_token}"},
+            ssl=self.verify_ssl,
+        ) as resp:
+            if resp.status in {401, 403}:
+                return False
+            if resp.status >= 400:
+                raise ClientResponseError(
+                    resp.request_info,
+                    resp.history,
+                    status=resp.status,
+                    message=f"BookOrbit token refresh failed: HTTP {resp.status}",
+                )
+            data = await resp.json()
+            token = data.get("accessToken") if isinstance(data, dict) else None
+            if not token:
+                return False
+            self.access_token = token
+            self._capture_refresh_cookie(resp)  # cookie may be rotated
+            return True
 
     async def _search(self, endpoint: str, query: str) -> list[dict[str, Any]]:
         """Run a GET search endpoint and return item dicts."""

@@ -116,8 +116,8 @@ async def test_request_refreshes_on_401_then_retries(aiohttp_client: Any) -> Non
 
 
 @pytest.mark.asyncio
-async def test_request_falls_back_to_login_when_refresh_fails(aiohttp_client: Any) -> None:
-    """Request falls back to login when refresh fails."""
+async def test_request_falls_back_to_login_when_refresh_rejected(aiohttp_client: Any) -> None:
+    """Request falls back to login when refresh credentials are rejected (401)."""
 
     async def libraries(request: web.Request) -> web.Response:
         if request.headers.get("Authorization") != "Bearer access-3":
@@ -145,6 +145,41 @@ async def test_request_falls_back_to_login_when_refresh_fails(aiohttp_client: An
     assert result == [{"id": 1, "name": "Audiobooks"}]
     assert bo.access_token == "access-3"
     assert bo.refresh_token == "refresh-3"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 503])
+async def test_request_does_not_login_when_refresh_temporarily_fails(
+    aiohttp_client: Any, status: int
+) -> None:
+    """HTTP 429/5xx on refresh must surface; password login must not run."""
+    logins = 0
+
+    async def libraries(_: web.Request) -> web.Response:
+        return web.Response(status=401)
+
+    async def refresh(_: web.Request) -> web.Response:
+        return web.Response(status=status)
+
+    async def login(_: web.Request) -> web.Response:
+        nonlocal logins
+        logins += 1
+        return web.json_response({"accessToken": "should-not-run"})
+
+    app = web.Application()
+    app.router.add_get("/api/v1/libraries", libraries)
+    app.router.add_post("/api/v1/auth/refresh", refresh)
+    app.router.add_post("/api/v1/auth/login", login)
+    client = await aiohttp_client(app)
+
+    bo = _make(client)
+    bo.access_token = "stale"
+    bo.refresh_token = "stale-refresh"
+    with pytest.raises(ClientResponseError) as err:
+        await bo.list_libraries()
+    assert err.value.status == status
+    assert logins == 0
+    assert bo.access_token == "stale"
 
 
 @pytest.mark.asyncio

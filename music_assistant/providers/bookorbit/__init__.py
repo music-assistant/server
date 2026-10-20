@@ -181,6 +181,9 @@ class BookOrbitProvider(MusicProvider):
         self._catalog_refreshed_at: float = 0.0
         self._catalog_lock = asyncio.Lock()
         self._force_catalog_refresh = False
+        # Book ids whose detail fetch failed on the last catalog refresh. Artist sync
+        # must treat its listing as incomplete while this is non-empty (TTL reuse).
+        self._catalog_detail_failed_ids: set[str] = set()
         # session_id -> grant; active playback sessions are not TTL-pruned.
         self._stream_sessions: dict[str, _StreamGrant] = {}
         self._active_stream_sessions: set[str] = set()
@@ -307,6 +310,17 @@ class BookOrbitProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Yield authors and narrators from the current catalog."""
         await self._refresh_catalog(force=self._force_catalog_refresh)
+        # Authors/narrators are derived only from books that loaded. A partial catalog
+        # (including one reused within the TTL) must not drive artist deletions.
+        if self._catalog_detail_failed_ids and SYNC_RUN_STATE.get() is not None:
+            self.report_skipped_sync_item(
+                MediaType.ARTIST,
+                None,
+                ValueError(
+                    "BookOrbit catalog incomplete after "
+                    f"{len(self._catalog_detail_failed_ids)} book detail failure(s)"
+                ),
+            )
         for artist in self._catalog_artists().values():
             yield artist
 
@@ -873,7 +887,7 @@ class BookOrbitProvider(MusicProvider):
                 if members:
                     library_names[library["id"]] = str(library.get("name") or library["id"])
                     library_books[library["id"]] = members
-            catalog = await self._load_catalog_books(cards_by_id)
+            catalog, failed_ids = await self._load_catalog_books(cards_by_id)
             # Drop library memberships that failed detail fetch or have no audio.
             library_books = {
                 library_id: [book_id for book_id in members if book_id in catalog]
@@ -900,6 +914,7 @@ class BookOrbitProvider(MusicProvider):
         except ClientError as err:
             raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
         self._catalog = catalog
+        self._catalog_detail_failed_ids = failed_ids
         self._library_names = library_names
         self._library_books = library_books
         self._author_meta = author_meta
@@ -907,8 +922,8 @@ class BookOrbitProvider(MusicProvider):
 
     async def _load_catalog_books(
         self, cards_by_id: dict[str, dict[str, Any]]
-    ) -> dict[str, dict[str, Any]]:
-        """Fetch book details concurrently; skip failures and keep successful books."""
+    ) -> tuple[dict[str, dict[str, Any]], set[str]]:
+        """Fetch book details concurrently; return successes and failed book ids."""
         semaphore = asyncio.Semaphore(CATALOG_DETAIL_CONCURRENCY)
 
         async def _load_book(
@@ -954,14 +969,15 @@ class BookOrbitProvider(MusicProvider):
             raise
         finally:
             self._catalog_detail_tasks.difference_update(detail_tasks)
-        skipped = sum(1 for _, book, _ in results if book is None)
-        if skipped:
+        failed_ids = {book_id for book_id, book, _ in results if book is None}
+        if failed_ids:
             self.logger.warning(
                 "BookOrbit catalog refresh skipped %d book(s); continuing with %d",
-                skipped,
-                len(results) - skipped,
+                len(failed_ids),
+                len(results) - len(failed_ids),
             )
-        return {book_id: book for book_id, book, _ in results if book is not None}
+        catalog = {book_id: book for book_id, book, _ in results if book is not None}
+        return catalog, failed_ids
 
     async def _get_book_detail(
         self,

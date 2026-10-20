@@ -193,6 +193,49 @@ async def test_refresh_catalog_skips_detail_fetch_error(
     await provider._refresh_catalog(force=True)
     assert str(book_audiobook["id"]) in provider._catalog
     assert str(book_multifile["id"]) not in provider._catalog
+    assert str(book_multifile["id"]) in provider._catalog_detail_failed_ids
+
+
+@pytest.mark.asyncio
+async def test_get_library_artists_marks_incomplete_when_catalog_detail_failed(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """
+    A reused partial catalog must mark artist sync incomplete.
+
+    Authors/narrators come only from loaded books; without this, sync deletions can
+    remove an author that still exists on a book whose detail fetch failed.
+    """
+
+    async def _get_book(book_id: int) -> dict[str, Any]:
+        if book_id == book_multifile["id"]:
+            raise ClientResponseError(
+                request_info=Mock(real_url=URL("http://bo/x")),
+                history=(),
+                status=500,
+                message="boom",
+            )
+        if book_id == book_audiobook["id"]:
+            return book_audiobook
+        raise KeyError(book_id)
+
+    cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
+    await provider._refresh_catalog(force=True)
+    assert str(book_multifile["id"]) in provider._catalog_detail_failed_ids
+
+    # Artist sync reuses the catalog within the TTL (force_catalog_refresh is False).
+    provider._force_catalog_refresh = False
+    token = SYNC_RUN_STATE.set(SyncRunState())
+    try:
+        artists = [artist async for artist in provider.get_library_artists()]
+        state = SYNC_RUN_STATE.get()
+        assert state is not None
+        assert MediaType.ARTIST in state.incomplete_media_types
+    finally:
+        SYNC_RUN_STATE.reset(token)
+
+    author_id = f"{AUTHOR_PREFIX}{book_audiobook['authors'][0]['id']}"
+    assert author_id in {artist.item_id for artist in artists}
 
 
 @pytest.mark.asyncio
