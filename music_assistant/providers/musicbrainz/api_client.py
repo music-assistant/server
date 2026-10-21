@@ -45,18 +45,27 @@ class MusicBrainzAPIClient:
         """
         return await self._request(endpoint, **kwargs)
 
-    @use_cache(86400)  # an unknown URL is asked again after a day
+    @use_cache(86400)  # a URL not linked to exactly one entity is asked again after a day
     async def get_url_data(self, /, resource: str, inc: str) -> Any:
         """
         Fetch what MusicBrainz links to a URL.
 
-        A known URL is cached for 30 days, an unknown one for a day, so a link a user adds on
-        MusicBrainz is picked up the next day.
+        A URL linked to exactly one entity is cached for 30 days; an unknown URL, or one linked
+        to several entities, only for a day, so a link a user adds or removes on MusicBrainz
+        is picked up the next day.
 
         :param resource: The URL to look up, e.g. ``https://www.deezer.com/artist/805``.
         :param inc: The relations to include, e.g. ``artist-rels``.
         """
-        return await self._get_known_url_data(resource=resource, inc=inc)
+        settled_key = f"settled_url_data.{inc}.{resource}"
+        if (data := await self.mass.cache.get(settled_key, provider=self.domain)) is not None:
+            return data
+        data = await self._get_url_data(resource=resource, inc=inc)
+        if len(url_relation_ids(data, inc.removesuffix("-rels"))) == 1:
+            await self.mass.cache.set(
+                key=settled_key, data=data, expiration=86400 * 30, provider=self.domain
+            )
+        return data
 
     @use_cache(86400 * 7)  # Cache for 7 days
     @throttle_with_retries
@@ -71,10 +80,9 @@ class MusicBrainzAPIClient:
         """
         return await self._request(endpoint, **kwargs)
 
-    @use_cache(86400 * 30, cache_none=False)
     @throttle_with_retries
-    async def _get_known_url_data(self, /, resource: str, inc: str) -> Any:
-        """Fetch what MusicBrainz links to a URL, caching only a URL it knows."""
+    async def _get_url_data(self, /, resource: str, inc: str) -> Any:
+        """Fetch what MusicBrainz links to a URL, without caching."""
         return await self._request("url", resource=resource, inc=inc)
 
     async def _request(self, endpoint: str, **params: str) -> Any:
@@ -97,3 +105,19 @@ class MusicBrainzAPIClient:
                 return None
             response.raise_for_status()
             return await response.json(loads=json_loads)
+
+
+def url_relation_ids(url_data: Any, entity: str) -> set[str]:
+    """
+    Return the ids of the entities of one kind a MusicBrainz URL lookup links the URL to.
+
+    :param url_data: The answer of a URL lookup, None for a URL MusicBrainz does not know.
+    :param entity: The kind of entity, e.g. ``artist``, ``release`` or ``recording``.
+    """
+    if not url_data:
+        return set()
+    return {
+        target["id"]
+        for relation in url_data.get("relations", [])
+        if not relation.get("ended") and (target := relation.get(entity)) and target.get("id")
+    }

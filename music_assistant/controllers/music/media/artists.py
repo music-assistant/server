@@ -2058,13 +2058,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         if musicbrainz.rate_limited:
             return None
         try:
-            mbid = await musicbrainz.get_mbid_by_url(url, MediaType.ARTIST)
+            mbids = await musicbrainz.get_mbids_by_url(url, MediaType.ARTIST)
         except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
             self.logger.debug("Error looking up %s on MusicBrainz: %s", url, err)
             return None
+        # a URL linked to several artists identifies none of them
+        mbid = mbids[0] if len(mbids) == 1 else None
         lookups.mbids[url] = mbid
-        if mbid is None:
+        if not mbids:
             self._log_missing_musicbrainz_link(mapping, url, name, other_mbid)
+        elif len(mbids) > 1:
+            self._log_ambiguous_musicbrainz_link(mapping, url, name, mbids)
         return mbid
 
     def _lookups_of(self, item: Artist | ItemMapping) -> _ArtistLookups:
@@ -2079,10 +2083,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self, mapping: ProviderMapping, url: str, name: str, other_mbid: str | None
     ) -> None:
         """Log, once per run, how to add a streaming artist link MusicBrainz is missing."""
-        try:
-            provider_name = self.mass.get_provider_manifest(mapping.provider_domain).name
-        except KeyError:
-            provider_name = mapping.provider_domain
+        provider_name = self._provider_display_name(mapping.provider_domain)
         search_url = f"{MUSICBRAINZ_WEB_URL}/search?{urlencode({'type': 'artist', 'query': name})}"
         msg = (
             'Artist "%s" is not on MusicBrainz through %s, so it cannot be told apart from the '
@@ -2100,6 +2101,31 @@ class ArtistsController(MediaControllerBase[Artist]):
             msg,
             *args,
         )
+
+    def _log_ambiguous_musicbrainz_link(
+        self, mapping: ProviderMapping, url: str, name: str, mbids: Sequence[str]
+    ) -> None:
+        """Log, once per run, how to fix a streaming artist link MusicBrainz has on several artists."""
+        log_once(
+            self.logger,
+            self._logged_hints,
+            ("artist-url", mapping.provider_domain, mapping.item_id),
+            logging.INFO,
+            'Artist "%s" cannot be told apart from the other "%s" on %s, because %s is linked to '
+            "more than one MusicBrainz artist; remove it from the one it does not belong to: %s",
+            name,
+            name,
+            self._provider_display_name(mapping.provider_domain),
+            url,
+            ", ".join(f"{MUSICBRAINZ_WEB_URL}/artist/{mbid}" for mbid in mbids),
+        )
+
+    def _provider_display_name(self, domain: str) -> str:
+        """Return the name of a provider as shown to users."""
+        try:
+            return self.mass.get_provider_manifest(domain).name
+        except KeyError:
+            return domain
 
     async def _remove_music_artist_from_library(self, db_id: int, recursive: bool) -> None:
         # recursively also remove artist albums

@@ -14,7 +14,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Artist, ItemMapping, ProviderMapping
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
     import pytest
 
@@ -57,7 +57,7 @@ def _artist(
 class _Harness:
     mass: MusicAssistant
     musicbrainz: Mock
-    get_mbid_by_url: AsyncMock
+    get_mbids_by_url: AsyncMock
 
     async def match(self, item: Artist | ItemMapping) -> int | None:
         """Return the library id the item matches, if any."""
@@ -65,24 +65,31 @@ class _Harness:
 
     def looked_up(self) -> list[str]:
         """Return the URLs looked up on MusicBrainz, in order."""
-        return [call.args[0] for call in self.get_mbid_by_url.await_args_list]
+        return [call.args[0] for call in self.get_mbids_by_url.await_args_list]
+
+
+def _linked(mbids: str | list[str] | None) -> list[str]:
+    """Return the MusicBrainz artist ids a URL is linked to, from one id, several or none."""
+    if mbids is None:
+        return []
+    return [mbids] if isinstance(mbids, str) else mbids
 
 
 @contextmanager
 def _harness(
     mass: MusicAssistant,
-    mbids: dict[str, str] | None = None,
+    mbids: Mapping[str, str | list[str]] | None = None,
     musicbrainz_loaded: bool = True,
 ) -> Iterator[_Harness]:
     """
     Make deezer_1 a streaming provider, filesystem_1 a local one and answer URL lookups.
 
-    :param mbids: MusicBrainz artist id per looked-up URL; other URLs are unknown.
+    :param mbids: MusicBrainz artist id, or ids, per looked-up URL; other URLs are unknown.
     :param musicbrainz_loaded: Whether the MusicBrainz provider is available.
     """
     known = mbids or {}
-    get_mbid_by_url = AsyncMock(side_effect=lambda url, _media_type: known.get(url))
-    musicbrainz = Mock(rate_limited=False, get_mbid_by_url=get_mbid_by_url)
+    get_mbids_by_url = AsyncMock(side_effect=lambda url, _media_type: _linked(known.get(url)))
+    musicbrainz = Mock(rate_limited=False, get_mbids_by_url=get_mbids_by_url)
     providers = {
         "deezer_1": Mock(domain="deezer", is_streaming_provider=True),
         "filesystem_1": Mock(domain="filesystem_local", is_streaming_provider=False),
@@ -98,7 +105,7 @@ def _harness(
         ),
         patch.object(mass, "get_provider_manifest", return_value=deezer_manifest),
     ):
-        yield _Harness(mass, musicbrainz, get_mbid_by_url)
+        yield _Harness(mass, musicbrainz, get_mbids_by_url)
 
 
 async def _add_composer(mass: MusicAssistant, mbid: str | None = None) -> int:
@@ -306,7 +313,7 @@ async def test_lookup_errors_merge_as_before(music_mass: MusicAssistant) -> None
     """A MusicBrainz failure never breaks matching."""
     composer_id = await _add_composer(music_mass)
     with _harness(music_mass) as harness:
-        harness.get_mbid_by_url.side_effect = aiohttp.ClientError("mirror down")
+        harness.get_mbids_by_url.side_effect = aiohttp.ClientError("mirror down")
         assert await harness.match(_artist(GUITARIST_ID)) == composer_id
 
 
@@ -413,6 +420,33 @@ async def test_no_hint_when_the_lookup_fails(
     await _add_composer(music_mass)
     caplog.set_level(logging.INFO, logger=music_mass.music.artists.logger.name)
     with _harness(music_mass) as harness:
-        harness.get_mbid_by_url.side_effect = TimeoutError
+        harness.get_mbids_by_url.side_effect = TimeoutError
         await harness.match(_artist(GUITARIST_ID))
     assert _hints(caplog) == []
+
+
+async def test_ambiguous_link_is_hinted_as_ambiguous(
+    music_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A URL linked to several MusicBrainz artists merges on name, as an unknown one does.
+
+    Its hint asks for the link to be removed from the wrong artist, not for one to be added.
+    """
+    composer_id = await _add_composer(music_mass)
+    caplog.set_level(logging.INFO, logger=music_mass.music.artists.logger.name)
+    mbids = {_url(GUITARIST_ID): [COMPOSER_MBID, GUITARIST_MBID]}
+    with _harness(music_mass, mbids) as harness:
+        assert await harness.match(_artist(GUITARIST_ID)) == composer_id
+    assert harness.looked_up() == [_url(GUITARIST_ID)]
+    assert _hints(caplog) == []
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if "is linked to more than one MusicBrainz artist" in record.getMessage()
+    ] == [
+        f'Artist "{NAME}" cannot be told apart from the other "{NAME}" on Deezer, because '
+        f"{_url(GUITARIST_ID)} is linked to more than one MusicBrainz artist; remove it from "
+        f"the one it does not belong to: https://musicbrainz.org/artist/{COMPOSER_MBID}, "
+        f"https://musicbrainz.org/artist/{GUITARIST_MBID}"
+    ]

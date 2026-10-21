@@ -1358,6 +1358,21 @@ async def test_mbid_by_url_is_none_for_an_unknown_or_ambiguous_url() -> None:
     assert await provider.get_mbid_by_url(SPOTIFY_ALBUM_URL, MediaType.ALBUM) == "rel-1"
 
 
+async def test_mbids_by_url_lists_every_linked_entity() -> None:
+    """All the entities a URL is linked to are listed, so an ambiguous link can be named."""
+    provider, _ = _routed_provider(
+        {SPOTIFY_ARTIST_URL: _url_lookup("artist", "artist-other", RADIOHEAD_MBID, RADIOHEAD_MBID)}
+    )
+
+    assert await provider.get_mbids_by_url(SPOTIFY_ARTIST_URL, MediaType.ARTIST) == sorted(
+        ["artist-other", RADIOHEAD_MBID]
+    )
+    assert (
+        await provider.get_mbids_by_url("https://open.spotify.com/artist/unknown", MediaType.ARTIST)
+        == []
+    )
+
+
 async def test_browse_releases_by_release_group_lists_every_edition() -> None:
     """Browse a release group's releases with their media and links in one request."""
     listing = {
@@ -2551,23 +2566,48 @@ async def test_api_client_caches_a_browse_for_a_week_and_a_lookup_for_a_month() 
     }
 
 
-async def test_api_client_caches_a_known_url_for_a_month_and_an_unknown_one_for_a_day() -> None:
-    """A URL MusicBrainz does not know yet is asked again the next day, so a new link is found."""
-    known = _url_lookup("artist", RADIOHEAD_MBID)
-    client, mass = _api_client(known)
-    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == known
-    await asyncio.sleep(0)
-    assert {
+def _url_cache_stores(mass: MagicMock) -> dict[str, int]:
+    """Return the expiration of each cache entry a URL lookup stored, by key."""
+    return {
         store.kwargs["key"]: store.kwargs["expiration"] for store in mass.cache.set.await_args_list
-    } == {
+    }
+
+
+async def test_api_client_caches_a_url_linked_to_one_entity_for_a_month() -> None:
+    """A settled link is kept for 30 days and served from that cache after the day is up."""
+    linked = _url_lookup("artist", RADIOHEAD_MBID)
+    client, mass = _api_client(linked)
+    mass.cache.get = AsyncMock(return_value=None)
+
+    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == linked
+    await asyncio.sleep(0)
+
+    assert _url_cache_stores(mass) == {
         f"get_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400,
-        f"_get_known_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400 * 30,
+        f"settled_url_data.artist-rels.{SPOTIFY_ARTIST_URL}": 86400 * 30,
     }
 
     client, mass = _api_client(None)
-    mass.http_session.get.return_value._response.status = 404
-    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") is None
+    mass.cache.get = AsyncMock(return_value=linked)
+    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == linked
+    mass.http_session.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [None, _url_lookup("artist", RADIOHEAD_MBID, "artist-other")],
+    ids=["unknown", "ambiguous"],
+)
+async def test_api_client_caches_an_unsettled_url_for_a_day(answer: dict[str, Any] | None) -> None:
+    """A URL linked to no entity or to several is asked again the next day, once it is fixed."""
+    client, mass = _api_client(answer)
+    mass.cache.get = AsyncMock(return_value=None)
+    if answer is None:
+        mass.http_session.get.return_value._response.status = 404
+
+    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == answer
     await asyncio.sleep(0)
-    assert {
-        store.kwargs["key"]: store.kwargs["expiration"] for store in mass.cache.set.await_args_list
-    } == {f"get_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400}
+
+    assert _url_cache_stores(mass) == {
+        f"get_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400
+    }
