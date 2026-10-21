@@ -472,6 +472,10 @@ class AirPlayProvider(PlayerProvider):
         else:
             return  # should not happen, but guard just in case
         manufacturer, model = get_model_info(model_discovery_info)
+        # shairport-sync's nqptp on this host holds the PTP ports MA's own PTP engine needs
+        is_local_shairport = model == "ShairportSync" and await self._is_advertised_by_this_host(
+            model_discovery_info
+        )
 
         prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
         address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
@@ -560,6 +564,7 @@ class AirPlayProvider(PlayerProvider):
                 manufacturer=manufacturer,
                 model=model,
                 initial_volume=volume,
+                is_local_shairport=is_local_shairport,
             )
         await self.mass.players.register(player)
 
@@ -631,23 +636,8 @@ class AirPlayProvider(PlayerProvider):
         if not receiver_names and not receiver_ports:
             return False
 
-        # The advertisement must originate from this host. shairport-sync's embedded
-        # mDNS responder announces address records for every host interface and which
-        # one resolves (first) is undefined, so match the full advertised address set
-        # against all of this host's addresses instead of a single picked address.
-        advertised_ips: set[IPv4Address | IPv6Address] = set()
-        for value in discovery_info.parsed_addresses():
-            with suppress(ValueError):
-                advertised_ips.add(ip_address(value))
-        if not advertised_ips:
+        if not await self._is_advertised_by_this_host(discovery_info):
             return False
-        if not any(advertised_ip.is_loopback for advertised_ip in advertised_ips):
-            host_ips: set[IPv4Address | IPv6Address] = set()
-            for value in await get_ip_addresses(include_ipv6=True):
-                with suppress(ValueError):
-                    host_ips.add(ip_address(value))
-            if advertised_ips.isdisjoint(host_ips):
-                return False
 
         # Match by advertised name (robust even when the TXT record did not resolve).
         if display_name in receiver_names:
@@ -657,6 +647,26 @@ class AirPlayProvider(PlayerProvider):
         # listens on port 7000) remain usable as players when their name differs.
         _, model = get_model_info(discovery_info)
         return model == "ShairportSync" and discovery_info.port in receiver_ports
+
+    async def _is_advertised_by_this_host(self, discovery_info: AsyncServiceInfo) -> bool:
+        """Return whether an mdns advertisement originates from this host."""
+        # shairport-sync's embedded mDNS responder announces address records for
+        # every host interface and which one resolves (first) is undefined, so match
+        # the full advertised address set against all of this host's addresses
+        # instead of a single picked address.
+        advertised_ips: set[IPv4Address | IPv6Address] = set()
+        for value in discovery_info.parsed_addresses():
+            with suppress(ValueError):
+                advertised_ips.add(ip_address(value))
+        if not advertised_ips:
+            return False
+        if any(advertised_ip.is_loopback for advertised_ip in advertised_ips):
+            return True
+        host_ips: set[IPv4Address | IPv6Address] = set()
+        for value in await get_ip_addresses(include_ipv6=True):
+            with suppress(ValueError):
+                host_ips.add(ip_address(value))
+        return not advertised_ips.isdisjoint(host_ips)
 
     async def _handle_companion_service_state_change(
         self,
