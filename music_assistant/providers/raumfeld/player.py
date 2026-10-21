@@ -13,11 +13,16 @@ from async_upnp_client.exceptions import UpnpActionError, UpnpError
 from hassfeld import upnp as hassfeld_upnp
 from hassfeld import webservice as hassfeld_ws
 from hassfeld.constants import SERVICE_AV_TRANSPORT
+from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
-from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, EXTERNAL_PAUSE_IDLE_TIMEOUT
+from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    CONF_SAMPLE_RATES,
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
+)
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
@@ -162,6 +167,18 @@ def _near_track_end(pos: dict[str, str]) -> bool:
     duration = parse_duration(pos.get("TrackDuration"))
     # an unknown duration cannot rule the end out, so it must not block the advance
     return not duration or elapsed >= duration - NEAR_END_WINDOW
+
+
+def _playing_sample_rate(source_rate: int, rates: list[tuple[int, int]]) -> int:
+    """
+    Return the sample rate a source plays at on a player offering the given rates.
+
+    :param source_rate: The sample rate of the source.
+    :param rates: The (sample_rate, bit_depth) pairs the player offers.
+    """
+    # the highest rate not above the source's, as MA picks it; failing that the lowest
+    fitting = [rate for rate, _ in rates if rate <= source_rate]
+    return max(fitting) if fitting else min(rate for rate, _ in rates)
 
 
 class RaumfeldPlayer(Player):
@@ -377,6 +394,20 @@ class RaumfeldPlayer(Player):
             self._attr_active_source == self.player_id
             and self._attr_playback_state == PlaybackState.PLAYING
         )
+
+    @property
+    def supported_sample_rates(self) -> list[tuple[int, int]] | None:
+        """Return the rates a group this room leads plays, or ``None`` for its own setting."""
+        if not self.leads_group:
+            return None
+        # The host relays the leader's stream to every room of the zone as it is, without
+        # converting it for a room that cannot play it (measured), so a group plays only
+        # the rates each of its rooms plays.
+        rates = set(self._configured_sample_rates())
+        for pid in self._attr_group_members[1:]:
+            if isinstance(member := self.mass.players.get_player(pid), RaumfeldPlayer):
+                rates &= set(member._configured_sample_rates())
+        return sorted(rates) or [(44100, 16)]
 
     async def power(self, powered: bool) -> None:
         """Send POWER command: wake the room, or switch it off (manual standby)."""
@@ -616,6 +647,7 @@ class RaumfeldPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS: translate MA group changes into Raumfeld zone changes."""
         host = self.raumfeld.host
+        rates_before = self.get_supported_sample_rates()
         with self.raumfeld.changing_group():
             # this player is the group leader and owns the zone: add/drop each member's room
             try:
@@ -654,6 +686,8 @@ class RaumfeldPlayer(Player):
         for pid in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
             if (member := self.mass.players.get_player(pid)) is not None:
                 member.update_state()
+        if player_ids_to_add and self.plays_own_queue:
+            await self._restart_for_group_rates(rates_before)
 
     async def leave_group_if_dropped(self) -> bool | None:
         """
@@ -1207,6 +1241,41 @@ class RaumfeldPlayer(Player):
             remaining = [pid for pid in leader.group_members if pid != self.player_id]
             leader.set_group_members(remaining if len(remaining) > 1 else [])
         return False
+
+    def _configured_sample_rates(self) -> list[tuple[int, int]]:
+        """Return the (sample_rate, bit_depth) pairs this room's own setting allows."""
+        rates: list[tuple[int, int]] = []
+        for value in cast("list[str]", self.config.get_value(CONF_SAMPLE_RATES) or []):
+            sample_rate, _, bit_depth = value.partition(MULTI_VALUE_SPLITTER)
+            if sample_rate.isdigit() and bit_depth.isdigit():
+                rates.append((int(sample_rate), int(bit_depth)))
+        return rates or [(44100, 16)]
+
+    async def _restart_for_group_rates(self, rates_before: list[tuple[int, int]]) -> None:
+        """
+        Restart this room's queue where it is, if a room that joined cannot play its rate.
+
+        :param rates_before: The rates the group offered before the rooms joined.
+        """
+        # the host pulls a joining room into the running stream as it is; a room that
+        # cannot play its rate drops out after a moment (measured), so the stream starts
+        # again at a rate every room plays
+        queue = self.mass.player_queues.get(self.player_id)
+        if queue is None or queue.current_item is None or queue.current_item.streamdetails is None:
+            return
+        source_rate = queue.current_item.streamdetails.audio_format.sample_rate
+        playing_rate = _playing_sample_rate(source_rate, rates_before)
+        if playing_rate in {rate for rate, _ in self.get_supported_sample_rates()}:
+            return
+        self.logger.debug(
+            "%s plays at %s Hz, which a room that joined cannot play; restarting",
+            self.room,
+            playing_rate,
+        )
+        try:
+            await self.mass.player_queues.seek(self.player_id, int(queue.corrected_elapsed_time))
+        except MusicAssistantError as err:
+            self.logger.debug("Failed to restart %s at a rate its group plays: %r", self.room, err)
 
     def _zones_without_leader(self) -> list[list[str]]:
         """Return the zones this leading room's members are in, other than its own."""

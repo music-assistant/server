@@ -9,6 +9,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.raumfeld.constants import GROUP_SETTLE_TIME
@@ -844,3 +845,71 @@ async def test_a_room_whose_buttons_cannot_be_read_offers_none() -> None:
         AsyncMock(side_effect=TimeoutError),
     ):
         assert await provider._read_station_buttons("Bar") == []
+
+
+def _allow(player: RaumfeldPlayer, max_rate: int) -> None:
+    """Give a room a sample rate setting with every rate up to max_rate, at 16 and 24 bit."""
+    values = [
+        f"{rate}{MULTI_VALUE_SPLITTER}{depth}"
+        for rate in (44100, 48000, 88200, 96000, 176400, 192000)
+        if rate <= max_rate
+        for depth in (16, 24)
+    ]
+    player._config = MagicMock(get_value=MagicMock(return_value=values))
+
+
+def test_a_group_plays_the_rates_every_room_plays() -> None:
+    """The host relays the leader's stream unchanged, so the group's rates are the common ones."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    _playing_group(provider, players, ["Bar", "Sofa"], [["Bar", "Sofa"]])
+    bar, sofa = players["Bar"], players["Sofa"]
+    _allow(bar, 192000)
+    _allow(sofa, 96000)
+    rates = bar.supported_sample_rates
+    assert rates is not None
+    assert max(rate for rate, _ in rates) == 96000
+    assert (96000, 24) in rates
+    # a room on its own plays what its own setting allows
+    assert sofa.supported_sample_rates is None
+
+
+@pytest.mark.parametrize(("source_rate", "restarts"), [(192000, True), (44100, False)])
+async def test_a_room_joining_restarts_a_stream_it_cannot_play(
+    source_rate: int, restarts: bool
+) -> None:
+    """A stream at a rate a joining room cannot play starts again where it was."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    mass = _playing_group(provider, players, ["Bar", "Sofa"], [["Bar", "Sofa"]])
+    bar, sofa = players["Bar"], players["Sofa"]
+    _allow(bar, 192000)
+    _allow(sofa, 96000)
+    queue = MagicMock(corrected_elapsed_time=63.4)
+    queue.current_item.streamdetails.audio_format.sample_rate = source_rate
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.seek = AsyncMock()
+    rates_before = bar._configured_sample_rates()
+    await bar._restart_for_group_rates(rates_before)
+    if restarts:
+        mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+    else:
+        mass.player_queues.seek.assert_not_awaited()
+
+
+async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
+    """A join while the leader plays its queue checks the rate against the rates from before."""
+    provider, players = _zone_provider([["Bar"], ["Sofa"]])
+    _playing_group(provider, players, ["Bar"], [["Bar"]])
+    bar, sofa = players["Bar"], players["Sofa"]
+    bar._attr_group_members = []
+    _allow(bar, 192000)
+    _allow(sofa, 96000)
+    with (
+        patch.object(bar, "_add_rooms_to_zone", AsyncMock()),
+        patch.object(bar, "_wake_rooms", AsyncMock()),
+        patch.object(bar, "_restart_for_group_rates", AsyncMock()) as restart,
+    ):
+        await bar.set_members([sofa.player_id])
+    restart.assert_awaited_once()
+    assert restart.await_args is not None
+    assert max(rate for rate, _ in restart.await_args.args[0]) == 192000
+    assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
