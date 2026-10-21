@@ -1599,3 +1599,72 @@ async def test_the_poll_recognises_an_album_button_by_what_the_zone_loaded() -> 
         await player._update_zone_source(position, ["Bar"], player._playback_generation)
     call.assert_awaited_once_with(_ZONE, "GetMediaInfo")
     assert player._attr_active_source == "station_button_3"
+
+
+async def _stop_a_playing_album_button(player: RaumfeldPlayer) -> AsyncMock:
+    """Stop an album button for an announcement, let the announcement take the zone."""
+    album_uri = "dlna-playcontainer://server?cid=0%2FMy%20Music%2FAlbums%2F42&fii=0"
+    meta = {**_RADIO_META, "item_id": "0/My Music/Albums/42/7", "section": None}
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(
+            meta, "Stop", 240, via_room=False, loaded_container="0/My Music/Albums/42"
+        )
+    assert player._attr_active_source == "station_button_3"
+    action = _zone_transport(
+        {"CurrentURI": album_uri, "CurrentURIMetaData": ""},
+        {"Track": "3", "RelTime": "0:00:48", "TrackDuration": "0:04:00"},
+    )
+    player._extra_data = {"announcement_in_progress": True}
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_transport_action", action),
+    ):
+        await player.stop()
+    player._clear_external()
+    action.reset_mock()
+    return action
+
+
+async def test_an_album_button_goes_on_where_it_was_after_an_announcement() -> None:
+    """MA selects the button again after an announcement: it resumes, not restarts."""
+    player, host = _button_player()
+    host.async_zone_stop = AsyncMock()
+    host.async_browse_media_server = AsyncMock(return_value="<DIDL-Lite/>")
+    action = await _stop_a_playing_album_button(player)
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
+        patch.object(player, "_wake_rooms", AsyncMock()),
+        patch.object(player, "_transport_action", action),
+        patch.object(player, "_zone_command", AsyncMock()) as command,
+    ):
+        # the controller's resume after the announcement, flag still set
+        await player.select_source("station_button_3")
+    command.assert_not_awaited()
+    assert [c.args[1] for c in action.await_args_list] == ["SetAVTransportURI", "Play", "Seek"]
+    assert action.await_args_list[0].kwargs["CurrentURI"].endswith("fii=2")
+    assert action.await_args_list[2].kwargs == {"Unit": "ABS_TIME", "Target": "0:00:48"}
+
+
+async def test_an_album_button_chosen_by_the_user_starts_afresh() -> None:
+    """Outside an announcement, choosing the button starts its album from the beginning."""
+    player, host = _button_player()
+    host.async_zone_stop = AsyncMock()
+    host.media_server_udn = "uuid:media-server"
+    host.async_browse_media_server = AsyncMock(return_value="<DIDL-Lite/>")
+    action = await _stop_a_playing_album_button(player)
+    player._extra_data = {}
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
+        patch.object(player, "_wake_rooms", AsyncMock()),
+        patch.object(player, "_stop_before_switching", AsyncMock()),
+        patch.object(player, "_transport_action", action),
+        patch.object(player, "_zone_command", AsyncMock()) as command,
+    ):
+        await player.select_source("station_button_3")
+    action.assert_not_awaited()
+    assert command.await_args_list[0].kwargs["CurrentURI"] == library_uri(
+        "uuid:media-server", "0/My Music/Albums/42", container=True
+    )

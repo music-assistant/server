@@ -179,6 +179,8 @@ class RaumfeldPlayer(Player):
     # what a zone source was playing when it was stopped, to start it again later:
     # (current media uri, transport uri, its metadata, track number, position)
     _resume_context: tuple[str, str, str, int, str | None] | None = None
+    # the source that was active when the resume context was read
+    _resume_source: str | None = None
 
     def __init__(
         self,
@@ -413,6 +415,7 @@ class RaumfeldPlayer(Player):
                 # MA may replay this source later (after an announcement, say), when the
                 # zone has something else loaded
                 self._resume_context = await self._read_resume_context(zone)
+                self._resume_source = self._attr_active_source
             try:
                 await self._zone_command(zone, "Stop")
                 if hard_stop:
@@ -524,6 +527,11 @@ class RaumfeldPlayer(Player):
     async def select_source(self, source: str) -> None:
         """Handle SELECT_SOURCE: play the Line-In or one of the station buttons."""
         if (library_item := self._library_sources.get(source)) is not None:
+            context = self._resume_context
+            if context is not None and self._resume_source == source and self._announcing():
+                # MA selects the button again after an announcement: go on where it was
+                await self._restore_zone_source(context)
+                return
             await self._play_library_item(source, *library_item)
             return
         if source != SOURCE_LINE_IN or self._line_in is None:
