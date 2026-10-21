@@ -8,7 +8,7 @@ import re
 import time
 from typing import TYPE_CHECKING, cast
 
-from async_upnp_client.exceptions import UpnpError
+from async_upnp_client.exceptions import UpnpActionError, UpnpError
 from hassfeld import upnp as hassfeld_upnp
 from hassfeld.constants import SERVICE_AV_TRANSPORT
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
@@ -100,6 +100,10 @@ EXTERNAL_URI_SCHEME = "raumfeld://"
 # stop that arrives in that time is MA ending the queue here, not a request to stop the
 # Spotify Connect session that took the room.
 QUEUE_HANDOVER_TIMEOUT = 30.0
+
+# The AVTransport error for a transition the transport cannot make from its current state,
+# which is what a Stop on a zone that already stopped answers.
+TRANSITION_NOT_AVAILABLE = 701
 
 EXTERNAL_SOURCE_FEATURES = {
     PlayerFeature.PAUSE,
@@ -340,7 +344,7 @@ class RaumfeldPlayer(Player):
         try:
             zone = await self._ensure_playable_zone()
             await self._wake_rooms(zone)
-            await self.raumfeld.host.async_zone_play(zone)
+            await self._zone_command(zone, "Play", Speed="1")
         except HOST_ERRORS as err:
             raise PlayerCommandFailed(f"Failed to resume {self.room}: {err!r}") from err
 
@@ -372,7 +376,7 @@ class RaumfeldPlayer(Player):
                 # zone has something else loaded
                 self._resume_context = await self._read_resume_context(zone)
             try:
-                await self.raumfeld.host.async_zone_stop(zone)
+                await self._zone_command(zone, "Stop")
                 if hard_stop:
                     for room in zone:
                         await self.raumfeld.host.async_enter_manual_standby(room)
@@ -465,9 +469,11 @@ class RaumfeldPlayer(Player):
             # MA restarting the flow) needs a clean stop first; a stopped zone takes the new
             # stream directly.
             if self._attr_playback_state == PlaybackState.PLAYING:
-                await self.raumfeld.host.async_zone_stop(zone)
-            await self.raumfeld.host.async_set_av_transport_uri(zone, url, didl_metadata)
-            await self.raumfeld.host.async_zone_play(zone)
+                await self._stop_before_switching(zone)
+            await self._zone_command(
+                zone, "SetAVTransportURI", CurrentURI=url, CurrentURIMetaData=didl_metadata
+            )
+            await self._zone_command(zone, "Play", Speed="1")
         except HOST_ERRORS as err:
             raise PlayerCommandFailed(f"Failed to start playback on {self.room}: {err!r}") from err
         # optimistic state update; poll() will reconcile with the device
@@ -488,9 +494,11 @@ class RaumfeldPlayer(Player):
         try:
             zone = await self._ensure_playable_zone()
             await self._wake_rooms(zone)
-            await self.raumfeld.host.async_zone_stop(zone)
-            await self.raumfeld.host.async_set_av_transport_uri(zone, url, didl_metadata)
-            await self.raumfeld.host.async_zone_play(zone)
+            await self._stop_before_switching(zone)
+            await self._zone_command(
+                zone, "SetAVTransportURI", CurrentURI=url, CurrentURIMetaData=didl_metadata
+            )
+            await self._zone_command(zone, "Play", Speed="1")
         except HOST_ERRORS as err:
             raise PlayerCommandFailed(f"Failed to select Line-In on {self.room}: {err!r}") from err
         self._attr_active_source = SOURCE_LINE_IN
@@ -1010,6 +1018,42 @@ class RaumfeldPlayer(Player):
         self._external_via_room = False
         self._attr_source_list = list(self._static_sources)
         self._attr_supported_features -= EXTERNAL_SOURCE_FEATURES
+
+    async def _zone_command(self, zone: list[str], action_name: str, **arguments: str) -> None:
+        """
+        Send a transport command to the zone's renderer, raising when it is not carried out.
+
+        :param zone: The rooms of the zone.
+        :param action_name: The AVTransport action to call.
+        :param arguments: The action's arguments, besides the instance id.
+        """
+        # not through hassfeld's zone calls: those swallow every error, so a command the
+        # host rejected left the player reporting playback that never started
+        if (location := self.raumfeld.zone_location(zone)) is None:
+            raise PlayerCommandFailed(
+                f"{action_name} failed on {self.room}: the host has not published its zone"
+            )
+        try:
+            await self._transport_action(location, action_name, **arguments)
+        except UpnpActionError as err:
+            if action_name == "Stop" and err.error_code == TRANSITION_NOT_AVAILABLE:
+                return  # already stopped
+            raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
+        except (*HOST_ERRORS, UpnpError) as err:
+            raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
+
+    async def _stop_before_switching(self, zone: list[str]) -> None:
+        """
+        Stop the zone before it is pointed at another stream, if that works.
+
+        :param zone: The rooms of the zone.
+        """
+        # only for a clean switch: the new stream is set and started either way, and that
+        # is what reports a failure
+        try:
+            await self._zone_command(zone, "Stop")
+        except PlayerCommandFailed as err:
+            self.logger.debug("Could not stop %s before switching streams: %s", self.room, err)
 
     async def _read_resume_context(
         self, zone: list[str]

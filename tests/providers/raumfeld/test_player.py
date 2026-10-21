@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from async_upnp_client.exceptions import UpnpActionError
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_FLOW_MODE, CONF_SAMPLE_RATES
 from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
@@ -25,7 +27,6 @@ from tests.common import MockProvider
 
 if TYPE_CHECKING:
     import hassfeld
-    from music_assistant_models.player import PlayerMedia
 
 BASE_URL = "http://mass.local:8097"
 
@@ -141,7 +142,7 @@ def test_near_track_end() -> None:
 
 
 def _media() -> PlayerMedia:
-    return cast("PlayerMedia", MagicMock())
+    return PlayerMedia(uri="http://mass.local:8097/single/item.flac", title="Track")
 
 
 def _advancing_player() -> tuple[RaumfeldPlayer, MagicMock]:
@@ -851,7 +852,7 @@ async def test_an_external_source_music_assistant_gave_up_on_is_dropped() -> Non
     ):
         await player.stop()
     # a plain stop of the zone, not a pause of the expired source
-    action.assert_not_awaited()
+    action.assert_awaited_once_with(_ZONE, "Stop")
     assert player._external_source is None
     assert player._attr_playback_state == PlaybackState.IDLE
 
@@ -1010,6 +1011,85 @@ async def test_a_play_command_during_the_source_read_drops_the_whole_reading() -
     ):
         await player._poll_zone(MagicMock(), ["Bar"])
     apply_position.assert_not_called()
+
+
+def _flow_mode_on() -> Any:
+    """Patch the flow mode setting on, as play_media reads it from the player config."""
+    return patch.object(RaumfeldPlayer, "flow_mode", new_callable=PropertyMock, return_value=True)
+
+
+def _zone_player() -> tuple[RaumfeldPlayer, AsyncMock]:
+    """Build a player whose zone is addressable, with its transport actions mocked."""
+    player, _ = _external_player()
+    player._player_id = "raumfeld_bar"
+    player._attr_playback_state = PlaybackState.IDLE
+    mass = MagicMock()
+    mass.streams.base_url = BASE_URL
+    mass.streams.resolve_stream_url = AsyncMock(return_value=f"{BASE_URL}/flow/x.flac")
+    player.mass = mass
+    action = AsyncMock()
+    player._transport_action = action  # type: ignore[method-assign]
+    player._ensure_playable_zone = AsyncMock(return_value=["Bar"])  # type: ignore[method-assign]
+    player._wake_rooms = AsyncMock()  # type: ignore[method-assign]
+    return player, action
+
+
+async def test_play_media_points_the_zone_at_the_stream() -> None:
+    """The stream is set on the zone and started there."""
+    player, action = _zone_player()
+    with patch.object(player, "update_state"), _flow_mode_on():
+        await player.play_media(_media())
+    assert [c.args for c in action.await_args_list] == [
+        (_ZONE, "SetAVTransportURI"),
+        (_ZONE, "Play"),
+    ]
+    assert action.await_args_list[0].kwargs["CurrentURI"] == f"{BASE_URL}/flow/x.flac"
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+async def test_a_rejected_play_is_reported_instead_of_shown_as_playing() -> None:
+    """A stream the host refuses fails the command and the player does not read as playing."""
+    player, action = _zone_player()
+    action.side_effect = [None, UpnpActionError(error_code=501, error_desc="Action Failed")]
+    with _flow_mode_on(), pytest.raises(PlayerCommandFailed, match="Play failed on Bar"):
+        await player.play_media(_media())
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_a_stop_before_switching_streams_may_fail() -> None:
+    """Re-pointing a playing zone goes on when its stop is refused."""
+    player, action = _zone_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    action.side_effect = [UpnpActionError(error_code=501), None, None]
+    with patch.object(player, "update_state"), _flow_mode_on():
+        await player.play_media(_media())
+    assert [c.args[1] for c in action.await_args_list] == ["Stop", "SetAVTransportURI", "Play"]
+
+
+async def test_stopping_a_zone_that_already_stopped_is_fine() -> None:
+    """A stop the zone answers with 'transition not available' is not an error."""
+    player, action = _zone_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    action.side_effect = UpnpActionError(error_code=701, error_desc="Transition not available")
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+    ):
+        await player.stop()
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_a_failed_stop_is_reported() -> None:
+    """A stop the zone refuses otherwise fails, rather than reporting the room as idle."""
+    player, action = _zone_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    action.side_effect = UpnpActionError(error_code=501, error_desc="Action Failed")
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        pytest.raises(PlayerCommandFailed, match="Stop failed on Bar"),
+    ):
+        await player.stop()
+    assert player._attr_playback_state == PlaybackState.PLAYING
 
 
 def test_a_room_in_a_zone_does_not_play_spotify_connect() -> None:
