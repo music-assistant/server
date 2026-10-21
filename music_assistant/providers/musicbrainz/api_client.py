@@ -65,6 +65,8 @@ class MusicBrainzAPIClient:
             await self.mass.cache.set(
                 key=settled_key, data=data, expiration=86400 * 30, provider=self.domain
             )
+        else:
+            await self.mass.cache.delete(settled_key, provider=self.domain)
         return data
 
     @use_cache(86400 * 7)  # Cache for 7 days
