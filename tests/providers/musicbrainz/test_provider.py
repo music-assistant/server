@@ -22,6 +22,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
+from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.providers.musicbrainz.api_client import MusicBrainzAPIClient
 from music_assistant.providers.musicbrainz.constants import (
     RELEASE_BROWSE_MAX_PAGES,
@@ -2530,6 +2531,7 @@ def _api_client(payload: Any) -> tuple[MusicBrainzAPIClient, MagicMock]:
     mass.version = "test"
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
+    mass.cache.delete = AsyncMock()
     response = MagicMock()
     response.status = 200
     response.json = AsyncMock(return_value=payload)
@@ -2587,6 +2589,8 @@ async def test_api_client_caches_a_url_linked_to_one_entity_for_a_month() -> Non
         f"settled_url_data.artist-rels.{SPOTIFY_ARTIST_URL}": 86400 * 30,
     }
 
+    mass.cache.delete.assert_not_awaited()
+
     client, mass = _api_client(None)
     mass.cache.get = AsyncMock(return_value=linked)
     assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == linked
@@ -2611,3 +2615,39 @@ async def test_api_client_caches_an_unsettled_url_for_a_day(answer: dict[str, An
     assert _url_cache_stores(mass) == {
         f"get_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400
     }
+    # an earlier settled answer for the URL no longer holds, so it is not served once the day is up
+    mass.cache.delete.assert_awaited_once_with(
+        f"settled_url_data.artist-rels.{SPOTIFY_ARTIST_URL}", provider="musicbrainz"
+    )
+
+
+async def test_api_client_drops_a_settled_url_a_refresh_finds_ambiguous() -> None:
+    """A URL once linked to one entity and refreshed as ambiguous no longer settles on it."""
+    client, mass = _api_client(_url_lookup("artist", RADIOHEAD_MBID))
+    settled: dict[str, Any] = {}
+
+    async def _set(key: str, data: Any, **_kwargs: Any) -> None:
+        settled[key] = data
+
+    async def _delete(key: str, **_kwargs: Any) -> None:
+        settled.pop(key, None)
+
+    mass.cache.set = AsyncMock(side_effect=_set)
+    mass.cache.delete = AsyncMock(side_effect=_delete)
+    # the settled entry is only ever skipped by a refresh that bypasses the cache
+    mass.cache.get = AsyncMock(return_value=None)
+    settled_key = f"settled_url_data.artist-rels.{SPOTIFY_ARTIST_URL}"
+
+    await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels")
+    assert settled_key in settled
+
+    ambiguous = _url_lookup("artist", RADIOHEAD_MBID, "artist-other")
+    mass.http_session.get.return_value._response.json = AsyncMock(return_value=ambiguous)
+    token = BYPASS_CACHE.set(True)
+    try:
+        assert (
+            await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == ambiguous
+        )
+    finally:
+        BYPASS_CACHE.reset(token)
+    assert settled_key not in settled
