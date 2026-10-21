@@ -777,6 +777,29 @@ async def test_play_history_supports_stable_offset_pagination(mass: MusicAssista
     assert [result.item_id for result in results] == ["track-2", "track-1"]
 
 
+async def test_play_history_default_includes_podcast_episodes(mass: MusicAssistant) -> None:
+    """The default history filter includes playable podcast episodes."""
+    user = await mass.webserver.auth.create_user("statistics-podcast-history")
+    await mass.music.database.insert(
+        DB_TABLE_PLAY_HISTORY,
+        {
+            "item_id": "episode-1",
+            "provider": "podcast-provider",
+            "media_type": MediaType.PODCAST_EPISODE.value,
+            "userid": user.user_id,
+            "name": "Podcast episode",
+            "timestamp": 1_000,
+        },
+    )
+
+    with _as_user(user):
+        results = await mass.statistics.get_play_history()
+
+    assert [(item.item_id, item.media_type) for item in results] == [
+        ("episode-1", MediaType.PODCAST_EPISODE)
+    ]
+
+
 async def test_play_history_validates_and_caps_pagination(mass: MusicAssistant) -> None:
     """Reject invalid pagination and cap the requested page size."""
     user = await mass.webserver.auth.create_user("statistics-page-limits")

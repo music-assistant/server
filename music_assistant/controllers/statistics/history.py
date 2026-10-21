@@ -55,7 +55,7 @@ class HistoryMixin(_StatisticsBase):
         limit = min(limit, MAX_STATISTICS_RESULT_LIMIT)
 
         if media_types is None:
-            media_types = MediaType.ALL
+            media_types = [*MediaType.ALL, MediaType.PODCAST_EPISODE]
         media_types_str = "(" + ",".join(f'"{x.value}"' for x in media_types) + ")"
 
         query = f"""
