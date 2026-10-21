@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 import re
-import socket
-from ipaddress import IPv4Address, IPv6Address, IPv6Network, ip_address
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urljoin
-from urllib.request import getproxies, proxy_bypass
 
 import aiohttp
-from aiohttp import ClientTimeout, ThreadedResolver
-from aiohttp.abc import AbstractResolver, ResolveResult
-from aiohttp.hdrs import USER_AGENT
+from aiohttp import ClientTimeout
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -24,12 +17,9 @@ from music_assistant_models.errors import (
 )
 from yarl import URL
 
-from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from music_assistant.mass import MusicAssistant
 
 # a reasoning model may narrate its thinking inline ahead of the answer, while the
@@ -48,14 +38,6 @@ IMAGE_READ_CHUNK_SIZE = 64 * 1024
 # a reply can carry an inline image as base64, so its cap leaves room for one of the size above
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
-# redirects of an image link are followed one by one, so every hop can be checked
-MAX_IMAGE_REDIRECTS = 3
-REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
-# the scheme, host and port a URL connects to
-type Origin = tuple[str, str, int]
-
-# the well-known NAT64 prefix, whose addresses translate to the IPv4 address they end in
-NAT64_NETWORK = IPv6Network("64:ff9b::/96")
 
 # an upstream failure message is echoed into the raised error, so keep it bounded
 MAX_ERROR_DETAIL_CHARS = 200
@@ -138,6 +120,7 @@ async def image_generation(
     timeout: int,
     *,
     use_images_endpoint: bool = False,
+    no_format_models: set[str] | None = None,
 ) -> tuple[bytes, bool]:
     """
     Return a generated image, along with whether the images endpoint produced it.
@@ -155,6 +138,9 @@ async def image_generation(
     :param timeout: Maximum request duration in seconds.
     :param use_images_endpoint: Go straight to the images endpoint, for a model that is
         already known to need it.
+    :param no_format_models: The models known to refuse asking the images endpoint for an
+        inline image. A model that turns out to refuse it is added, so it is asked plainly
+        from then on.
     """
     if not use_images_endpoint:
         try:
@@ -164,7 +150,7 @@ async def image_generation(
         except InvalidDataError as chat_err:
             try:
                 return await _images_endpoint_image(
-                    mass, base_url, api_key, model, prompt, timeout
+                    mass, base_url, api_key, model, prompt, timeout, no_format_models
                 ), True
             except InvalidDataError as images_err:
                 msg = (
@@ -172,46 +158,9 @@ async def image_generation(
                     f"chat completion: {chat_err}; images endpoint: {images_err}"
                 )
                 raise InvalidDataError(msg) from images_err
-    return await _images_endpoint_image(mass, base_url, api_key, model, prompt, timeout), True
-
-
-class LocalNetworkHostError(OSError):
-    """A host of an image link resolved to an address on a local network."""
-
-
-class PublicHostResolver(AbstractResolver):
-    """Resolve host names to public addresses only, apart from the configured endpoint."""
-
-    def __init__(self, trusted: Iterable[Origin]) -> None:
-        """
-        Initialize the resolver.
-
-        :param trusted: The configured endpoint and proxies, which may be local.
-        """
-        self._resolver = ThreadedResolver()
-        self._trusted = {(host, port) for _scheme, host, port in trusted}
-
-    async def resolve(
-        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
-    ) -> list[ResolveResult]:
-        """
-        Return the addresses of a host, refusing one with any address on a local network.
-
-        :param host: The host name to resolve.
-        :param port: The port to connect to.
-        :param family: The address family to resolve for.
-        """
-        results = await self._resolver.resolve(host, port, family)
-        # only the endpoint and proxies themselves, not another service on the same host
-        if (host.lower(), port) in self._trusted:
-            return results
-        if not results or not all(_is_public(str(result["host"])) for result in results):
-            raise LocalNetworkHostError(host)
-        return results
-
-    async def close(self) -> None:
-        """Close the underlying resolver."""
-        await self._resolver.close()
+    return await _images_endpoint_image(
+        mass, base_url, api_key, model, prompt, timeout, no_format_models
+    ), True
 
 
 async def _chat_completion_image(
@@ -247,17 +196,38 @@ async def _chat_completion_image(
 
 
 async def _images_endpoint_image(
-    mass: MusicAssistant, base_url: str, api_key: str, model: str, prompt: str, timeout: int
+    mass: MusicAssistant,
+    base_url: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    timeout: int,
+    no_format_models: set[str] | None = None,
 ) -> bytes:
     """Return the first image of an OpenAI style image generation request."""
-    payload = await _request(
-        mass,
-        "post",
-        f"{base_url}/images/generations",
-        api_key,
-        timeout=timeout,
-        json={"model": model, "prompt": prompt, "n": 1, "size": IMAGE_SIZE},
-    )
+    request = {"model": model, "prompt": prompt, "n": 1, "size": IMAGE_SIZE}
+    endpoint_url = f"{base_url}/images/generations"
+    payload: dict[str, Any] | None = None
+    if no_format_models is None or model not in no_format_models:
+        try:
+            # asked for inline, so the image comes in the reply rather than as a link to fetch
+            payload = await _request(
+                mass,
+                "post",
+                endpoint_url,
+                api_key,
+                timeout=timeout,
+                json={**request, "response_format": "b64_json"},
+            )
+        except InvalidDataError as err:
+            if "response_format" not in str(err):
+                raise
+            # a model that does not take the format (some are always inline) is remembered,
+            # so later requests ask it plainly straight away
+            if no_format_models is not None:
+                no_format_models.add(model)
+    if payload is None:
+        payload = await _request(mass, "post", endpoint_url, api_key, timeout=timeout, json=request)
     data = payload.get("data")
     image = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
     if isinstance(b64_json := image.get("b64_json"), str) and b64_json:
@@ -270,154 +240,45 @@ async def _images_endpoint_image(
 
 async def _download(mass: MusicAssistant, base_url: str, url: str, timeout: int) -> bytes:
     """
-    Download an image the service handed out by URL.
+    Download an image the endpoint handed out as a link to itself.
 
-    The service picks the link, so it must not make Music Assistant request internal
-    addresses: every host, also of a redirect, has to be public. The configured endpoint
-    itself is the exception, as a local service (such as LocalAI) links to itself. A proxy
-    configured like for the shared session is used, link by link.
+    Only a link to the configured endpoint itself (the same scheme, host and port) is
+    followed, as a self-hosted server links to itself: the service picks the link, so a link
+    anywhere else could make Music Assistant request any address on the network.
 
-    :param mass: The Music Assistant instance.
+    :param mass: The Music Assistant instance, for its shared HTTP session.
     :param base_url: The base URL of the configured endpoint.
     :param url: The image link from the service's reply.
-    :param timeout: The timeout of each request, in seconds.
+    :param timeout: The timeout of the request, in seconds.
     """
-    endpoint = _origin(base_url)
-    proxies = {
-        scheme: proxy
-        for scheme, proxy in getproxies().items()
-        if scheme in ("http", "https") and _origin(proxy) is not None
-    }
-    trusted = [origin for origin in (endpoint, *map(_origin, proxies.values())) if origin]
-    async with _image_session(mass, trusted) as session:
-        for _ in range(MAX_IMAGE_REDIRECTS + 1):
-            proxy = _proxy_for(proxies, url)
-            if _origin(url) in trusted[1 if endpoint else 0 :]:
-                # the proxy is trusted to connect through, never as a place to download from
-                msg = "the reply carried an image link to the proxy"
-                raise InvalidDataError(msg)
-            await _check_image_link(endpoint, url, proxied=proxy is not None)
-            try:
-                async with session.get(
-                    url, timeout=ClientTimeout(total=timeout), allow_redirects=False, proxy=proxy
-                ) as response:
-                    status = response.status
-                    location = response.headers.get("Location", "")
-                    body = (
-                        b""
-                        if status in REDIRECT_STATUSES
-                        else await _read_limited(response, MAX_IMAGE_BYTES)
-                    )
-            except (TimeoutError, aiohttp.ClientError) as err:
-                if isinstance(err, aiohttp.ClientConnectorError) and isinstance(
-                    err.os_error, LocalNetworkHostError
-                ):
-                    msg = f"the reply carried an image link on a local network: {err.os_error}"
-                    raise InvalidDataError(msg) from None
-                msg = f"Could not download the generated image: {err}"
-                raise ProviderUnavailableError(msg) from err
-            if status in REDIRECT_STATUSES and location:
-                url = urljoin(url, location)
-                continue
-            if status >= 400 or not body:
-                msg = f"Could not download the generated image ({status})"
-                raise InvalidDataError(msg)
-            return body
-    msg = "The generated image link redirects too often"
-    raise InvalidDataError(msg)
-
-
-def _image_session(mass: MusicAssistant, trusted: Iterable[Origin]) -> aiohttp.ClientSession:
-    """
-    Return a session for downloading generated images, which only connects to public hosts.
-
-    The addresses are checked as the connection is made, so a host can not pass the check
-    with a public address and then be connected to on a local one.
-
-    :param mass: The Music Assistant instance, for the user agent of its shared session.
-    :param trusted: The configured endpoint and proxies, which may be local.
-    """
-    connector = aiohttp.TCPConnector(
-        resolver=PublicHostResolver(trusted),
-        use_dns_cache=False,
-        ssl=ssl_util.client_context(),
-    )
-    return aiohttp.ClientSession(
-        connector=connector,
-        headers={USER_AGENT: mass.http_session.headers.get(USER_AGENT, "")},
-    )
-
-
-def _proxy_for(proxies: dict[str, str], url: str) -> str | None:
-    """
-    Return the proxy to download a link through, None to connect to it directly.
-
-    :param proxies: The configured proxy per scheme, as the environment sets them.
-    :param url: The link to download.
-    """
-    host = _host(url)
-    if not host or (proxy := proxies.get(URL(url).scheme)) is None:
-        return None
-    return None if proxy_bypass(host) else proxy
-
-
-async def _check_image_link(endpoint: Origin | None, url: str, *, proxied: bool) -> None:
-    """
-    Refuse an image link that is not http(s), or that reaches a local network.
-
-    An address is checked here, as it is connected to without being resolved. A host name is
-    checked as it is resolved (see PublicHostResolver) or, for a download through a proxy
-    that resolves it, here when it resolves here too.
-
-    :param endpoint: The scheme, host and port of the configured endpoint, which may be local.
-    :param url: The image link to check.
-    :param proxied: Whether the link is downloaded through a proxy.
-    """
-    if (origin := _origin(url)) is None or origin[0] not in ("http", "https"):
-        msg = "the reply carried an invalid image link"
+    if (origin := _origin(url)) is None or origin != _origin(base_url):
+        msg = "the reply carried an image link outside the configured endpoint"
         raise InvalidDataError(msg)
-    if origin == endpoint:
-        return
-    host = origin[1]
     try:
-        ip_address(host)
-    except ValueError:
-        # a proxied name that does not resolve here (as in networks that only reach out
-        # through the proxy) is left to the proxy
-        addresses = await _host_addresses(host) if proxied else []
-    else:
-        addresses = [host]
-    if addresses and not all(map(_is_public, addresses)):
-        msg = f"the reply carried an image link on a local network: {host}"
+        async with mass.http_session.get(
+            url, timeout=ClientTimeout(total=timeout), allow_redirects=False
+        ) as response:
+            status = response.status
+            body = await _read_limited(response, MAX_IMAGE_BYTES)
+    except (TimeoutError, aiohttp.ClientError) as err:
+        msg = f"Could not download the generated image: {err}"
+        raise ProviderUnavailableError(msg) from err
+    # a redirect could lead anywhere, so it is not followed
+    if status >= 300 or not body:
+        msg = f"Could not download the generated image ({status})"
         raise InvalidDataError(msg)
+    return body
 
 
-def _origin(url: str) -> Origin | None:
+def _origin(url: str) -> tuple[str, str, int] | None:
     """Return the scheme, host and port a URL connects to, None for one it does not name."""
     try:
         parsed = URL(url)
     except ValueError:
         return None
-    if not (host := _host(url)) or parsed.port is None:
+    if parsed.scheme not in ("http", "https") or not parsed.raw_host or parsed.port is None:
         return None
-    return (parsed.scheme.lower(), host, parsed.port)
-
-
-def _host(url: str) -> str:
-    """Return the host of a URL as it is connected to (IDNA encoded), empty for none."""
-    try:
-        return (URL(url).raw_host or "").lower()
-    except ValueError:
-        return ""
-
-
-async def _host_addresses(host: str) -> list[str]:
-    """Return the IP addresses a host name resolves to, none when it does not resolve."""
-    try:
-        infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except OSError:
-        return []
-    return [str(info[4][0]) for info in infos]
+    return (parsed.scheme.lower(), parsed.raw_host.lower(), parsed.port)
 
 
 async def _read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
@@ -437,26 +298,6 @@ async def _read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
         if len(body) > limit:
             raise InvalidDataError(too_large)
     return bytes(body)
-
-
-def _is_public(address: str) -> bool:
-    """
-    Return whether an IP address is reachable from the internet, not on a local network.
-
-    An IPv6 address that carries an IPv4 one (mapped, 6to4, NAT64 or IPv4-compatible) also
-    needs that IPv4 address to be public, as it can be routed to it.
-
-    :param address: The IP address, an IPv6 one possibly with its interface after a "%".
-    """
-    ip = ip_address(address.split("%", 1)[0])
-    if not ip.is_global:
-        return False
-    if isinstance(ip, IPv6Address):
-        embedded = [ip.ipv4_mapped, ip.sixtofour]
-        if ip in NAT64_NETWORK or int(ip) >> 32 == 0:
-            embedded.append(IPv4Address(int(ip) & 0xFFFFFFFF))
-        return all(v4 is None or v4.is_global for v4 in embedded)
-    return True
 
 
 def _decode_base64(data: str) -> bytes:

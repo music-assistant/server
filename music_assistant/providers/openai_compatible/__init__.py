@@ -49,6 +49,9 @@ class OpenAICompatibleProvider(PluginProvider):
     # image models that turned out to need the images endpoint, so later requests skip
     # the chat completion attempt
     _images_endpoint_models: set[str]
+    # image models that turned out to refuse being asked for an inline image, so later
+    # requests ask them plainly
+    _no_format_models: set[str]
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -56,6 +59,7 @@ class OpenAICompatibleProvider(PluginProvider):
             msg = "No API base URL is configured"
             raise SetupFailedError(msg)
         self._images_endpoint_models = set()
+        self._no_format_models = set()
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the (options) config entries to configure this provider instance."""
@@ -130,6 +134,7 @@ class OpenAICompatibleProvider(PluginProvider):
             prompt=prompt,
             timeout=IMAGE_REQUEST_TIMEOUT,
             use_images_endpoint=model in self._images_endpoint_models,
+            no_format_models=self._no_format_models,
         )
         if used_images_endpoint:
             self._images_endpoint_models.add(model)
