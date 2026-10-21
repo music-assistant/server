@@ -80,13 +80,14 @@ def _harness(
     :param mbids: MusicBrainz artist id per looked-up URL; other URLs are unknown.
     :param musicbrainz_loaded: Whether the MusicBrainz provider is available.
     """
-    providers = {
-        "deezer_1": Mock(domain="deezer", is_streaming_provider=True),
-        "filesystem_1": Mock(domain="filesystem_local", is_streaming_provider=False),
-    }
     known = mbids or {}
     get_mbid_by_url = AsyncMock(side_effect=lambda url, _media_type: known.get(url))
     musicbrainz = Mock(rate_limited=False, get_mbid_by_url=get_mbid_by_url)
+    providers = {
+        "deezer_1": Mock(domain="deezer", is_streaming_provider=True),
+        "filesystem_1": Mock(domain="filesystem_local", is_streaming_provider=False),
+        "musicbrainz": musicbrainz if musicbrainz_loaded else None,
+    }
     deezer_manifest = Mock()
     deezer_manifest.name = "Deezer"
     with (
@@ -96,11 +97,6 @@ def _harness(
             side_effect=lambda instance_id, **_kwargs: providers.get(instance_id),
         ),
         patch.object(mass, "get_provider_manifest", return_value=deezer_manifest),
-        patch.object(
-            mass.music.artists,
-            "_musicbrainz_link_provider",
-            return_value=musicbrainz if musicbrainz_loaded else None,
-        ),
     ):
         yield _Harness(mass, musicbrainz, get_mbid_by_url)
 
@@ -188,6 +184,45 @@ async def test_lookups_are_dropped_with_the_artist(music_mass: MusicAssistant) -
         del guitarist
         gc.collect()
     assert not music_mass.music.artists._match_lookups
+
+
+async def test_found_id_rejects_a_later_candidate_with_another_id(
+    music_mass: MusicAssistant,
+) -> None:
+    """
+    An id found while rejecting one candidate also rejects a later one known as another artist.
+
+    The second John Williams has no Deezer id, but its MusicBrainz id says it is the composer.
+    """
+    composer_id = await _add_composer(music_mass)
+    other_id = await music_mass.music.artists._add_library_item(
+        _artist("john-williams", "spotify_1", "spotify", COMPOSER_MBID)
+    )
+    mbids = {_url(COMPOSER_ID): COMPOSER_MBID, _url(GUITARIST_ID): GUITARIST_MBID}
+    with _harness(music_mass, mbids) as harness:
+        guitarist = _artist(GUITARIST_ID)
+        library_item = await music_mass.music.artists.add_item_to_library(guitarist)
+    assert int(library_item.item_id) not in (composer_id, other_id)
+    assert library_item.mbid == GUITARIST_MBID
+    # the match repeated under the add lock reuses the id found the first time
+    assert harness.looked_up() == [_url(GUITARIST_ID), _url(COMPOSER_ID)]
+
+
+async def test_artists_are_kept_apart_without_linking_through_musicbrainz(
+    music_mass: MusicAssistant,
+) -> None:
+    """Telling artists apart does not depend on linking providers through MusicBrainz."""
+    composer_id = await _add_composer(music_mass)
+    mbids = {_url(COMPOSER_ID): COMPOSER_MBID, _url(GUITARIST_ID): GUITARIST_MBID}
+    with (
+        _harness(music_mass, mbids) as harness,
+        patch.object(music_mass.metadata, "link_providers_via_musicbrainz", False),
+    ):
+        assert music_mass.music.artists._musicbrainz_link_provider() is None
+        assert await harness.match(_artist(GUITARIST_ID)) is None
+    assert harness.looked_up() == [_url(GUITARIST_ID), _url(COMPOSER_ID)]
+    composer = await music_mass.music.artists.get_library_item(composer_id)
+    assert composer.mbid is None
 
 
 async def test_only_the_library_id_known_merges_without_looking_it_up(
