@@ -354,6 +354,26 @@ async def test_artwork_that_can_not_be_shown_is_not_kept(
     assert images[1] == broken_cover
 
 
+async def test_the_cover_is_returned_in_front_of_the_other_images(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A refresh returns the cover, and merging what it returns keeps the cover first."""
+    _mass(provider).get_provider("builtin").resolve_image = AsyncMock(
+        side_effect=FileNotFoundError("Invalid image reference")
+    )
+    broken_cover = _image("/data/playlist_art/234_1791525935.jpg", provider="builtin")
+    playlist = _smart_playlist(images=[broken_cover])
+    await _metadata(provider, playlist)
+    cover = playlist.image
+
+    metadata = await provider.get_playlist_metadata(playlist)
+
+    assert metadata is not None
+    assert list(metadata.images or [])[:2] == [cover, broken_cover]
+    playlist.metadata.update(metadata)
+    assert list(playlist.metadata.images or []) == [cover, broken_cover]
+
+
 async def test_service_artwork_is_kept(provider: PlaylistMetadataProvider) -> None:
     """A provider playlist with a cover of its own keeps it, also with all playlists in scope."""
     _set_config(provider, **{CONF_PLAYLISTS: PLAYLISTS_ALL})
@@ -1964,10 +1984,12 @@ async def _metadata(
     """
     Refresh the playlist's metadata, and let the worker finish what that queued.
 
-    The worker applies what it made with another metadata refresh, as Music Assistant does.
+    The returned metadata is merged into the playlist, and the worker applies what it made
+    with another metadata refresh, as Music Assistant does.
     """
     _register(provider, playlist)
-    metadata = await provider.get_playlist_metadata(playlist)
+    if metadata := await provider.get_playlist_metadata(playlist):
+        playlist.metadata.update(metadata)
     await _settle(provider)
     return metadata
 

@@ -226,6 +226,7 @@ class PlaylistMetadataProvider(MetadataProvider):
 
         generated_images: list[MediaItemImage] = []
         detected_genres: set[str] | None = None
+        ai_cover: MediaItemImage | None = None
 
         template = self._collage_template()
         if ImageType.THUMB not in service_image_types:
@@ -233,9 +234,6 @@ class PlaylistMetadataProvider(MetadataProvider):
                 await self._cleanup_old_playlist_images(
                     playlist, {ImageType.THUMB}, keep_file=ai_cover.path
                 )
-                # set directly, as a returned image would be merged in behind the playlist's
-                # own (unservable) images, while the first one is the one shown
-                playlist.metadata.images = UniqueList([ai_cover, *(playlist.metadata.images or [])])
             else:
                 self._ai.remove_own_images(playlist)
                 if thumb_image := await self._generate_and_write(
@@ -252,14 +250,21 @@ class PlaylistMetadataProvider(MetadataProvider):
         if self.config.get_value(CONF_ENABLE_GENRE_DETECTION):
             detected_genres = await self._analyze_playlist_genres(playlist)
 
-        if generated_images or detected_genres:
+        if ai_cover or generated_images or detected_genres:
             # Only clean up old images when we have new ones to replace them
             if generated_images:
                 await self._cleanup_old_playlist_images(
                     playlist, {img.type for img in generated_images}
                 )
             metadata = MediaItemMetadata()
-            if generated_images:
+            if ai_cover:
+                # returned along with the playlist's other images, as an image returned alone
+                # is merged in behind the playlist's own (unservable) images, while the first
+                # one is the one shown
+                metadata.images = UniqueList(
+                    [ai_cover, *(playlist.metadata.images or []), *generated_images]
+                )
+            elif generated_images:
                 metadata.images = UniqueList(generated_images)
             if detected_genres:
                 metadata.genres = detected_genres
