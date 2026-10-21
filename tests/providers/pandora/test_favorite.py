@@ -502,6 +502,44 @@ async def test_a_failed_delete_on_one_station_still_deletes_the_other() -> None:
     ]
 
 
+async def test_a_timed_out_delete_is_kept_for_a_retry() -> None:
+    """A delete that times out is kept like any other failed one, and the rest still go."""
+    provider, _sent, deleted = _clearing_provider(_station_tracks("a"), _station_tracks("b"))
+    await _rate_on_both_stations(provider)
+    inner = provider._api_request
+    timeouts = [1]
+
+    async def _api(
+        method: str, url: str, data: dict[str, Any] | None = None, **kw: Any
+    ) -> dict[str, Any]:
+        if url == DELETE_FEEDBACK_ENDPOINT and timeouts[0]:
+            timeouts[0] -= 1
+            raise TimeoutError
+        return await inner(method, url, data, **kw)
+
+    provider._api_request = _api  # type: ignore[method-assign, assignment]
+    with pytest.raises(TimeoutError):
+        await provider.set_favorite("TR:S0", MediaType.TRACK, None)
+    assert [body["feedbackId"] for body in deleted] == ["fb-2"]
+    assert _kept(provider, "TR:S0") == [
+        {"feedbackId": "fb-1", "stationId": "a", "isPositive": True}
+    ]
+
+
+async def test_a_malformed_kept_entry_stops_the_clear() -> None:
+    """An error that is not a failed request is not retried later: it stops the clear at once."""
+    provider, _sent, deleted = _clearing_provider()
+    kept = [
+        {"stationId": "a", "isPositive": True},
+        {"feedbackId": "fb-2", "stationId": "b", "isPositive": True},
+    ]
+    await provider._set_kept_feedback("TR:S1", kept)
+    with pytest.raises(KeyError):
+        await provider._clear_feedback("TR:S1")
+    assert deleted == []
+    assert _kept(provider, "TR:S1") == kept
+
+
 @pytest.mark.parametrize(
     ("payload", "error"),
     [
@@ -561,6 +599,16 @@ class _DroppedResponse(_Response):
 
     async def __aenter__(self) -> Self:
         raise aiohttp.ClientConnectionError("Connection dropped")
+
+
+class _TimedOutResponse(_Response):
+    """A request that runs past its timeout before Pandora answers."""
+
+    def __init__(self) -> None:
+        super().__init__(0, {})
+
+    async def __aenter__(self) -> Self:
+        raise TimeoutError
 
 
 class _GarbledResponse(_Response):
@@ -662,6 +710,7 @@ async def test_a_failed_login_leaves_the_socks_proxy_session_open(
     [
         (_Response(403, {}), LoginFailed),
         (_DroppedResponse(), ProviderUnavailableError),
+        (_TimedOutResponse(), TimeoutError),
     ],
 )
 async def test_a_failed_first_login_closes_the_socks_proxy_session(
@@ -678,6 +727,22 @@ async def test_a_failed_first_login_closes_the_socks_proxy_session(
     with pytest.raises(error):
         await provider.handle_async_init()
     assert session.closed
+
+
+async def test_a_bug_during_the_first_login_is_not_caught(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An error that is not a failed login reaches the loader untouched, without the cleanup."""
+    provider = _real_provider([], _CountingThrottler())
+    session = _ProxySession([])
+    provider.mass = Mock()
+    monkeypatch.setattr(provider, "get_setup_value", Mock(return_value="credential"))
+    monkeypatch.setattr(provider_module, "get_socks5_url", Mock(return_value="socks5://proxy"))
+    monkeypatch.setattr(provider_module, "create_clientsession", Mock(return_value=session))
+    monkeypatch.setattr(provider_module, "get_csrf_token", AsyncMock(side_effect=RuntimeError))
+    with pytest.raises(RuntimeError):
+        await provider.handle_async_init()
+    assert not session.closed
 
 
 async def test_unloading_closes_the_socks_proxy_session() -> None:

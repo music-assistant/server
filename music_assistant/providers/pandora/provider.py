@@ -24,6 +24,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
@@ -173,7 +174,7 @@ class PandoraProvider(MusicProvider):
             self.http_session = self.mass.http_session
         try:
             await self._authenticate(username, password)
-        except Exception:
+        except MusicAssistantError, TimeoutError:
             # a provider that fails to initialize is never registered, so unload() will not
             # run to close the proxy session created above
             await self.close()
@@ -727,7 +728,7 @@ class PandoraProvider(MusicProvider):
                     entry["feedbackId"],
                     prov_track_id,
                 )
-            except Exception as err:
+            except (MusicAssistantError, TimeoutError) as err:
                 # keep what may still be on Pandora, so another clear can retry it
                 remaining.append(entry)
                 failure = failure or err
