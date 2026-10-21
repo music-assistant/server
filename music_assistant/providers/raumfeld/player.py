@@ -1107,16 +1107,16 @@ class RaumfeldPlayer(Player):
         return False
 
     def _zones_without_leader(self) -> list[list[str]]:
-        """Return the zones this leading room's members are in, when none of them has it."""
+        """Return the zones this leading room's members are in, other than its own."""
         if not self.leads_group:
             return []
         own_zone = self.raumfeld.get_zone_for_room(self.room) or [self.room]
         zones: list[list[str]] = []
         for pid in self._attr_group_members[1:]:
-            if (room := self._player_id_to_room(pid)) is None:
+            # a member still in this room's zone does not tell where the queue plays on: a
+            # group can split with some members staying, and the others playing on
+            if (room := self._player_id_to_room(pid)) is None or room in own_zone:
                 continue
-            if room in own_zone:
-                return []
             if (zone := self.raumfeld.get_zone_for_room(room)) is not None and zone not in zones:
                 zones.append(zone)
         return zones

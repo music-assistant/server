@@ -329,6 +329,20 @@ async def test_a_leader_taken_out_of_its_playing_group_hands_its_queue_over() ->
     assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
 
 
+async def test_a_partial_split_hands_the_queue_to_the_part_that_plays_on() -> None:
+    """A member staying with the leader does not hide the part that plays its queue on."""
+    provider, players = _zone_provider([["Bar", "Kitchen", "Office", "Sofa"]])
+    mass = _playing_group(
+        provider, players, ["Bar", "Sofa", "Kitchen", "Office"], [["Kitchen", "Office"]]
+    )
+    provider.host.get_zones.return_value = [["Bar", "Sofa"], ["Kitchen", "Office"]]
+    with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
+        await _follow(provider, players)
+        await _follow(provider, players)
+    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+    assert _groups(players) == {"Bar": ["Bar", "Kitchen", "Office"]}
+
+
 async def test_rooms_taken_out_of_a_playing_group_are_mirrored() -> None:
     """A leader that plays on keeps its queue; only the group is mirrored from the zones."""
     provider, players = _zone_provider([["Bar", "Sofa"]])
