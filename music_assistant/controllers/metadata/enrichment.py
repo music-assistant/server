@@ -124,7 +124,8 @@ class MetadataEnrichmentMixin:
         # The bio is re-derived from the providers on every refresh. Each provider's
         # description is collected as a (language, text) candidate and excluded from the
         # field merge; _select_description picks the winner below. Candidates are appended
-        # in priority order: music providers first, then metadata providers (TADB, Wikipedia).
+        # in priority order: local metadata providers first, then music providers, then the
+        # other metadata providers (TADB, Wikipedia).
         prev_description = artist.metadata.description
         prev_description_language = artist.metadata.description_language
         description_candidates: list[tuple[str | None, str]] = []
@@ -180,51 +181,62 @@ class MetadataEnrichmentMixin:
             )
         )
 
-        # collect metadata from all (online)[metadata] providers
+        # collect metadata from all [metadata] providers, the online ones only when enabled
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid:
-            for provider in self.providers:
-                if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
-                    continue
-                try:
-                    metadata = await provider.get_artist_metadata(artist)
-                except _TEMPORARY_ERRORS as err:
-                    retry_soon = True
-                    self.logger.debug(
-                        "Metadata for Artist %s is not available from provider %s right now: %s",
-                        artist.name,
-                        provider.name,
-                        err,
-                    )
-                    continue
-                except Exception as err:
-                    self.logger.warning(
-                        "Error fetching metadata for Artist %s from provider %s: %s",
-                        artist.name,
-                        provider.name,
-                        err,
-                        exc_info=err if self.logger.isEnabledFor(10) else None,
-                    )
-                    continue
-                if metadata:
-                    if prefer_local_genres:
-                        metadata = replace(metadata, genres=None)
-                    if metadata.description:
-                        description_candidates.append(
-                            (metadata.description_language, metadata.description)
-                        )
-                        metadata = replace(metadata, description=None, description_language=None)
-                    merge_metadata(artist.metadata, metadata)
-                    self.logger.debug(
-                        "Fetched metadata for Artist %s on provider %s",
-                        artist.name,
-                        provider.name,
-                    )
-        artist.metadata.description, artist.metadata.description_language = (
-            self._select_description(
-                description_candidates, prev_description, prev_description_language
-            )
+        online_enabled = bool(self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid)
+        local_candidates: list[tuple[str | None, str]] = []
+        for provider in self.providers:
+            if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
+                continue
+            if not (online_enabled or provider.is_local):
+                continue
+            try:
+                metadata = await provider.get_artist_metadata(artist)
+            except _TEMPORARY_ERRORS as err:
+                retry_soon = True
+                self.logger.debug(
+                    "Metadata for Artist %s is not available from provider %s right now: %s",
+                    artist.name,
+                    provider.name,
+                    err,
+                )
+                continue
+            except Exception as err:
+                self.logger.warning(
+                    "Error fetching metadata for Artist %s from provider %s: %s",
+                    artist.name,
+                    provider.name,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+                continue
+            if metadata:
+                if prefer_local_genres and not provider.is_local:
+                    metadata = replace(metadata, genres=None)
+                if metadata.description:
+                    candidates = local_candidates if provider.is_local else description_candidates
+                    candidates.append((metadata.description_language, metadata.description))
+                    metadata = replace(metadata, description=None, description_language=None)
+                merge_metadata(artist.metadata, metadata)
+                self.logger.debug(
+                    "Fetched metadata for Artist %s on provider %s",
+                    artist.name,
+                    provider.name,
+                )
+        description, description_language = self._select_description(
+            [*local_candidates, *description_candidates],
+            prev_description,
+            prev_description_language,
         )
+        artist.metadata.description = description
+        artist.metadata.description_language = description_language
+        for provider in self.providers:
+            await provider.save_artist_metadata(artist)
+        # the library keeps a stored bio in the same language, so a local bio is written over it
+        if description and (description_language, description) in local_candidates:
+            await self.mass.music.artists.update_description(
+                artist.item_id, description, description_language
+            )
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
