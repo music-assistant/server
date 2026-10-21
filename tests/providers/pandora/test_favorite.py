@@ -657,6 +657,29 @@ async def test_a_failed_login_leaves_the_socks_proxy_session_open(
     assert provider._auth_token == "token"
 
 
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [
+        (_Response(403, {}), LoginFailed),
+        (_DroppedResponse(), ProviderUnavailableError),
+    ],
+)
+async def test_a_failed_first_login_closes_the_socks_proxy_session(
+    monkeypatch: pytest.MonkeyPatch, failure: _Response, error: type[Exception]
+) -> None:
+    """A provider whose first login fails is never registered, so it closes its own session."""
+    provider = _real_provider([], _CountingThrottler())
+    session = _ProxySession([failure])
+    provider.mass = Mock()
+    monkeypatch.setattr(provider, "get_setup_value", Mock(return_value="credential"))
+    monkeypatch.setattr(provider_module, "get_socks5_url", Mock(return_value="socks5://proxy"))
+    monkeypatch.setattr(provider_module, "create_clientsession", Mock(return_value=session))
+    monkeypatch.setattr(provider_module, "get_csrf_token", AsyncMock(return_value="csrf"))
+    with pytest.raises(error):
+        await provider.handle_async_init()
+    assert session.closed
+
+
 async def test_unloading_closes_the_socks_proxy_session() -> None:
     """The provider's own proxy session is closed when the provider unloads."""
     provider = _real_provider([], _CountingThrottler())

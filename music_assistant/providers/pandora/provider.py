@@ -171,7 +171,13 @@ class PandoraProvider(MusicProvider):
             self._socks_proxy = True
         else:
             self.http_session = self.mass.http_session
-        await self._authenticate(username, password)
+        try:
+            await self._authenticate(username, password)
+        except Exception:
+            # a provider that fails to initialize is never registered, so unload() will not
+            # run to close the proxy session created above
+            await self.close()
+            raise
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
