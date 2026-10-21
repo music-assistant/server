@@ -1038,10 +1038,12 @@ def _json_response(status: int, payload: dict[str, Any], *, retry_after: str = "
     sent = False
 
     async def read(_size: int = -1) -> bytes:
-        # the body, then the end of it, every time the response is read
+        # the body once, then the end of it from then on, as an exhausted stream does
         nonlocal sent
-        sent = not sent
-        return body if sent else b""
+        if sent:
+            return b""
+        sent = True
+        return body
 
     response.content.read = read
     return response
