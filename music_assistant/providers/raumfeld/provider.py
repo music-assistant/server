@@ -19,11 +19,15 @@ so hassfeld's long-polling can't flood the log while the host is offline.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
 import hassfeld
+from async_upnp_client.exceptions import UpnpError
+from hassfeld import upnp as hassfeld_upnp
+from hassfeld.constants import SERVICE_CONTENT_DIRECTORY
 
 from music_assistant.constants import (
     CONF_ENABLE_ICY_METADATA,
@@ -37,11 +41,14 @@ from .constants import (
     DEVICE_INFO_TIMEOUT,
     HOST_ERRORS,
     INITIAL_UPDATE_TIMEOUT,
+    LIBRARY_REFRESH_INTERVAL,
     LINE_IN_OBJECT_ID,
     RECONNECT_INTERVAL,
+    STATION_BUTTONS,
 )
 from .helpers import (
     parse_control_url,
+    parse_library_items,
     parse_line_in,
     parse_model_name,
     parse_serial_number,
@@ -65,6 +72,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _connected: bool = False
     # renderer UUID -> (Line-In stream url, title) for rooms that expose an analog input
     _line_in: dict[str, tuple[str, str]]
+    # when the station buttons were last read
+    _library_read_at: float = 0.0
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
@@ -247,6 +256,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return
         # load Line-In inputs before registering players so each room can expose its own
         await self._load_line_in()
+        self._library_read_at = 0.0
         await self._resync()
         # restore any existing Raumfeld zones into MA's group state ONCE on connect (e.g. a
         # group that survived a restart). We deliberately do NOT re-mirror zones on the
@@ -272,6 +282,71 @@ class RaumfeldPlayerProvider(PlayerProvider):
     async def _resync(self) -> None:
         """Periodic re-sync: register rooms that (re)appeared and mark vanished ones gone."""
         await self._sync_rooms()
+        if time.time() - self._library_read_at >= LIBRARY_REFRESH_INTERVAL:
+            self._library_read_at = time.time()
+            await self._load_library_sources()
+
+    async def _load_library_sources(self) -> None:
+        """Read each room's station buttons, and offer them as sources."""
+        for player in self.players:
+            if isinstance(player, RaumfeldPlayer):
+                player.set_station_buttons(await self._read_station_buttons(player.room))
+
+    async def _read_station_buttons(self, room: str) -> list[tuple[int, str, str, bool]]:
+        """
+        Return the station buttons of a room's speaker: ``(button, object id, title, container)``.
+
+        :param room: The Raumfeld room name.
+        """
+        renderer_uuid, _ = self.resolve_room_renderer(room)
+        if renderer_uuid is None:
+            return []
+        try:
+            location = self.host.resolve["udn_to_devloc"][self.host.media_server_udn]
+            action = await hassfeld_upnp.get_dlna_action(
+                location,
+                SERVICE_CONTENT_DIRECTORY,
+                "GetStationButtonAssignment",
+                session=self.mass.http_session,
+            )
+            assigned = [
+                (button, response.get("ObjectID") or "")
+                for button in STATION_BUTTONS
+                if (
+                    response := await action.async_call(
+                        Renderer=f"uuid:{renderer_uuid}", Button=button
+                    )
+                )
+            ]
+        except (*HOST_ERRORS, UpnpError) as err:
+            self.logger.debug("Failed to read the station buttons of %s: %r", room, err)
+            return []
+        buttons = []
+        for button, object_id in assigned:
+            if not object_id:
+                continue
+            items = parse_library_items(await self._browse(object_id, children=False))
+            if not items:
+                # whether it is an album or a single item decides how it plays, so a button
+                # whose item could not be read waits for a later read
+                continue
+            buttons.append((button, object_id, items[0][1], items[0][2]))
+        return buttons
+
+    async def _browse(self, object_id: str, children: bool) -> str | None:
+        """
+        Browse the host's media server, returning its DIDL-Lite, or ``None``.
+
+        :param object_id: The library object to browse.
+        :param children: Whether to list its children rather than describe it.
+        """
+        flag = "BrowseDirectChildren" if children else "BrowseMetadata"
+        try:
+            didl: str | None = await self.host.async_browse_media_server(object_id, flag)
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to browse %s on the Raumfeld host: %r", object_id, err)
+            return None
+        return didl
 
     async def _load_line_in(self) -> None:
         """Fetch the host's Line-In inputs, keyed by renderer UUID."""
