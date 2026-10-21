@@ -755,6 +755,81 @@ async def test_statistics_preserve_unavailable_library_history(
     assert batch_lookup.await_count == len(responses)
 
 
+@pytest.mark.parametrize(
+    ("history_provider", "expected_available"),
+    [("test-provider", False), ("test", True)],
+)
+async def test_provider_history_respects_mapping_availability(
+    mass: MusicAssistant, history_provider: str, expected_available: bool
+) -> None:
+    """History uses exact-instance and available domain mappings without changing its key."""
+    user = await mass.webserver.auth.create_user("statistics-provider-history-availability")
+    track_id = await mass.music.database.insert(
+        DB_TABLE_TRACKS,
+        {
+            "name": "Unavailable provider track",
+            "sort_name": "unavailable provider track",
+            "duration": 180,
+            "metadata": "{}",
+            "search_name": "unavailable provider track",
+            "search_sort_name": "unavailable provider track",
+        },
+    )
+    await mass.music.database.insert(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": track_id,
+            "provider_domain": "test",
+            "provider_instance": "test-provider",
+            "provider_item_id": "provider-track",
+            "available": False,
+            "audio_format": serialize_to_json(AudioFormat().to_dict()),
+        },
+    )
+    await mass.music.database.insert(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": track_id,
+            "provider_domain": "test",
+            "provider_instance": "test-second-provider",
+            "provider_item_id": "provider-track",
+            "available": True,
+            "audio_format": serialize_to_json(AudioFormat().to_dict()),
+        },
+    )
+    await mass.music.database.insert(
+        DB_TABLE_PLAY_HISTORY,
+        {
+            "item_id": "provider-track",
+            "provider": history_provider,
+            "media_type": MediaType.TRACK.value,
+            "userid": user.user_id,
+            "name": "Unavailable provider track",
+            "timestamp": 1_000,
+        },
+    )
+
+    with (
+        _as_user(user),
+        patch(
+            "music_assistant.controllers.statistics.history.get_global_cache_value",
+            return_value={"test", "test-provider", "test-second-provider"},
+        ),
+        patch(
+            "music_assistant.controllers.statistics.base.get_global_cache_value",
+            return_value={"test", "test-provider", "test-second-provider"},
+        ),
+    ):
+        results = await mass.statistics.get_play_history(media_types=[MediaType.TRACK])
+
+    assert len(results) == 1
+    assert results[0].provider == history_provider
+    assert results[0].item_id == "provider-track"
+    assert results[0].available is expected_available
+
+
 async def test_play_history_supports_stable_offset_pagination(mass: MusicAssistant) -> None:
     """Equal timestamps use the history row ID as a deterministic pagination tie-breaker."""
     user = await mass.webserver.auth.create_user("statistics-pagination")

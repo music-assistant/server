@@ -255,6 +255,18 @@ def test_parse_nfo_root_returns_the_named_root_element() -> None:
     assert root["title"] == "My Album"
 
 
+def test_parse_nfo_root_matches_tag_names_case_insensitively() -> None:
+    """Tag names are lowercased, so Kodi's camelCase tags match the lowercase lookups."""
+    data = (
+        b"<artist><name>Name</name><musicBrainzArtistID>abc</musicBrainzArtistID>"
+        b'<thumb Aspect="thumb">x</thumb></artist>'
+    )
+    root = helpers.parse_nfo_root(data, "artist")
+    assert root is not None
+    assert root["musicbrainzartistid"] == "abc"
+    assert root["thumb"] == {"@aspect": "thumb", "#text": "x"}
+
+
 @pytest.mark.parametrize(
     ("data", "root_tag"),
     [

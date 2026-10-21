@@ -8,5 +8,5 @@
   "credits": ["AirPlr"],
   "documentation": "https://www.music-assistant.io/plugins/ariacast-receiver/",
   "multi_instance": false,
-  "requirements": ["aiohttp==3.14.3"]
+  "requirements": ["aiohttp==3.14.4"]
 }

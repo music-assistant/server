@@ -761,6 +761,50 @@ class MusicbrainzProvider(MetadataProvider):
             return first_release_year
         return searched_year
 
+    async def get_artist_by_track_titles(
+        self, artist_name: str, track_titles: Sequence[str]
+    ) -> MusicBrainzArtist | None:
+        """
+        Identify an artist on MusicBrainz by the titles of tracks it is credited on.
+
+        The titles are searched in the given order until a recording with that title credits
+        the artist. A title recorded by several artists of that name identifies none of them.
+        Costs one MusicBrainz request per title searched.
+
+        MusicBrainzArtist object that is returned does not contain the optional data.
+
+        :param artist_name: Name of the artist.
+        :param track_titles: Titles of the artist's tracks, the most telling first.
+        :return: The credited artist, or None if no title identifies it.
+        """
+        search_artist = re.sub(LUCENE_SPECIAL, r"\\\1", artist_name)
+        for title in track_titles:
+            search_title = re.sub(LUCENE_SPECIAL, r"\\\1", title)
+            # a wide page so a namesake credited further down is still seen by the guard below
+            result = await self._api_client.get_data(
+                "recording", query=f'"{search_title}" AND artist:"{search_artist}"', limit="100"
+            )
+            hits = (result or {}).get("recordings", [])
+            # an exact title anywhere in the results beats a near one higher up
+            for strict in (True, False):
+                credited: dict[str, MusicBrainzArtist] = {}
+                for hit in hits:
+                    if not compare_strings(hit.get("title") or "", title, strict):
+                        continue
+                    recording: MusicBrainzRecording | None = None
+                    with suppress(MissingField, InvalidFieldValue):
+                        recording = MusicBrainzRecording.from_raw(hit)
+                    if recording and (
+                        mb_artist := _matching_artist_credit(recording.artist_credit, artist_name)
+                    ):
+                        credited.setdefault(mb_artist.id, mb_artist)
+                if len(credited) == 1:
+                    return next(iter(credited.values()))
+                if credited:
+                    # namesakes who both recorded the title, so the next title has to decide
+                    break
+        return None
+
     @staticmethod
     def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
         if link_type := URL_RELATION_TYPE_MAPPING.get(relation.type):

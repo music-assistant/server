@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.helpers import get_global_cache_value
 
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.helpers.datetime import get_timezone
 from music_assistant.models.core_controller import CoreController
 
@@ -33,10 +36,13 @@ class _StatisticsBase(CoreController):
     async def _set_library_item_availability(self, items: list[ItemMapping]) -> None:
         """Apply current library availability to historical item references."""
         library_items: dict[MediaType, list[ItemMapping]] = {}
+        provider_items: dict[MediaType, list[ItemMapping]] = {}
         for item in items:
             if item.provider == "library":
                 item.available = False
                 library_items.setdefault(item.media_type, []).append(item)
+            else:
+                provider_items.setdefault(item.media_type, []).append(item)
 
         # History outlives library records; resolve each media type in one batch rather
         # than dropping deleted items or doing one lookup per historical play.
@@ -65,6 +71,50 @@ class _StatisticsBase(CoreController):
             available_ids = {item.item_id for item in current_items if item.available}
             for item in references:
                 item.available = item.item_id in available_ids
+
+        for media_type, references in provider_items.items():
+            available_providers = get_global_cache_value("available_providers") or set()
+            provider_item_ids = sorted({item.item_id for item in references})
+            provider_params: dict[str, str] = {"media_type": media_type.value}
+            provider_placeholders: list[str] = []
+            for index, item_id in enumerate(provider_item_ids):
+                key = f"provider_item_id_{index}"
+                provider_params[key] = item_id
+                provider_placeholders.append(f":{key}")
+            mappings = await self.mass.music.database.get_rows_from_query(
+                f"SELECT provider_item_id, provider_instance, provider_domain, available "
+                f"FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                f"WHERE media_type = :media_type "
+                f"AND provider_item_id IN ({', '.join(provider_placeholders)}) "
+                "ORDER BY provider_item_id, item_id, provider_instance",
+                provider_params,
+                limit=0,
+            )
+            mappings_by_item: dict[str, list[Mapping[str, Any]]] = {}
+            for mapping in mappings:
+                mappings_by_item.setdefault(mapping["provider_item_id"], []).append(mapping)
+            for item in references:
+                item_mappings = mappings_by_item.get(item.item_id, [])
+                instance_mapping = next(
+                    (
+                        entry
+                        for entry in item_mappings
+                        if entry["provider_instance"] == item.provider
+                    ),
+                    None,
+                )
+                if instance_mapping is not None:
+                    item.available = item.available and bool(instance_mapping["available"])
+                    continue
+                domain_mappings = [
+                    entry for entry in item_mappings if entry["provider_domain"] == item.provider
+                ]
+                if domain_mappings:
+                    item.available = item.available and any(
+                        bool(mapping["available"])
+                        and mapping["provider_instance"] in available_providers
+                        for mapping in domain_mappings
+                    )
 
     def _get_period_cutoff(self, period: str, timezone: str = "UTC") -> float:
         """

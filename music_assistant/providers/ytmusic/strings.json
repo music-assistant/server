@@ -10,6 +10,10 @@
     "po_token_server_url": {
       "label": "PO Token Server URL",
       "description": "The URL to the PO Token server. Can be left as default for most people. \n\n**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**"
+    },
+    "include_videos_in_search": {
+      "label": "Include videos in search results",
+      "description": "Search YouTube Music videos as well as songs, including covers, remixes and live performances. This does not change radio or library imports."
     }
   },
   "errors": {

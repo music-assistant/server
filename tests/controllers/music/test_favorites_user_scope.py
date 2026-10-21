@@ -68,6 +68,7 @@ def _controller(
     """
     controller = MusicController.__new__(MusicController)
     controller.mass = Mock()
+    controller.genres = AsyncMock()
     set_music_source_access(controller.mass, dict(sources))
     unavailable = unavailable or set()
     served_by = served_by or {}

@@ -199,35 +199,6 @@ class LastFMRecommendationsProvider(MetadataProvider):
                 return folder.items
         return UniqueList()
 
-    # a background job, also when it runs from the startup timer or a config action: the
-    # music provider searches it fans out must leave headroom for user actions and playback
-    @with_request_priority(RequestPriority.LOW)
-    async def _refresh_recommendations(self) -> None:
-        """Rebuild recommendation folders."""
-        # Build into a local list and swap it in atomically at the end, so a slow,
-        # rate-limited rebuild keeps serving the previous generation's rows instead of
-        # returning empty for folders that haven't been rebuilt yet.
-        new_folders: list[RecommendationFolder] = []
-
-        try:
-            self.logger.info("Building Last.fm recommendations")
-            async for folder in self.recommendations_manager.build_recommendation_folders():
-                new_folders.append(folder)
-            self._recommendation_folders = new_folders
-            self.logger.info(
-                "Last.fm recommendations built (%d folders)",
-                len(self._recommendation_folders),
-            )
-        except (AuthenticationFailed, InvalidToken) as err:
-            self.logger.error(
-                "Last.fm authentication failed — check your API key in the provider settings: %s",
-                err,
-            )
-        except ResourceTemporarilyUnavailable as err:
-            self.logger.warning("Last.fm rate-limited the refresh, will retry later: %s", err)
-        except MusicAssistantError as err:
-            self.logger.warning("Failed to build recommendations: %s", err)
-
     async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
         """
         Retrieve similar artists from Last.fm.
@@ -273,6 +244,45 @@ class LastFMRecommendationsProvider(MetadataProvider):
         artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
         return await self._get_artist_toptracks(artist.name, artist_mbid, limit)
 
+    async def get_artist_toptrack_titles(self, artist: Artist, limit: int = 25) -> list[str]:
+        """
+        Retrieve the titles of an artist's top tracks from Last.fm, most popular first.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of titles to return.
+        """
+        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
+        return await self._get_artist_toptrack_titles(artist.name, artist_mbid, limit)
+
+    # a background job, also when it runs from the startup timer or a config action: the
+    # music provider searches it fans out must leave headroom for user actions and playback
+    @with_request_priority(RequestPriority.LOW)
+    async def _refresh_recommendations(self) -> None:
+        """Rebuild recommendation folders."""
+        # Build into a local list and swap it in atomically at the end, so a slow,
+        # rate-limited rebuild keeps serving the previous generation's rows instead of
+        # returning empty for folders that haven't been rebuilt yet.
+        new_folders: list[RecommendationFolder] = []
+
+        try:
+            self.logger.info("Building Last.fm recommendations")
+            async for folder in self.recommendations_manager.build_recommendation_folders():
+                new_folders.append(folder)
+            self._recommendation_folders = new_folders
+            self.logger.info(
+                "Last.fm recommendations built (%d folders)",
+                len(self._recommendation_folders),
+            )
+        except (AuthenticationFailed, InvalidToken) as err:
+            self.logger.error(
+                "Last.fm authentication failed — check your API key in the provider settings: %s",
+                err,
+            )
+        except ResourceTemporarilyUnavailable as err:
+            self.logger.warning("Last.fm rate-limited the refresh, will retry later: %s", err)
+        except MusicAssistantError as err:
+            self.logger.warning("Failed to build recommendations: %s", err)
+
     @use_cache(
         CACHE_EXPIRATION_SECONDS,
         category=CACHE_CATEGORY_RESOLVED_ITEMS,
@@ -300,3 +310,14 @@ class LastFMRecommendationsProvider(MetadataProvider):
             artist_name,
         )
         return tracks
+
+    @use_cache(CACHE_EXPIRATION_SECONDS, allow_expired_cache=True)
+    async def _get_artist_toptrack_titles(
+        self, artist_name: str, artist_mbid: str | None, limit: int
+    ) -> list[str]:
+        """Fetch the titles of an artist's top tracks, keyed by name/mbid for caching."""
+        return [
+            raw["name"]
+            for raw in await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
+            if raw.get("name")
+        ]

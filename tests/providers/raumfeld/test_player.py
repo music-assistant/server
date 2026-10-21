@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import CONF_FLOW_MODE
+from music_assistant.constants import CONF_FLOW_MODE, CONF_SAMPLE_RATES
 from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
 from music_assistant.providers.raumfeld.player import (
     ADVANCE_WATCH_ATTEMPTS,
@@ -35,6 +36,7 @@ def _flow_player() -> RaumfeldPlayer:
     player._attr_elapsed_time = None
     player._attr_elapsed_time_last_updated = None
     player._external_source = None
+    player._attr_supported_features = set()
     player._extra_data = {}
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
@@ -104,6 +106,23 @@ def test_transport_state_mapping() -> None:
     assert _map_transport_state("PAUSED_PLAYBACK") == PlaybackState.PAUSED
     assert _map_transport_state("STOPPED") == PlaybackState.IDLE
     assert _map_transport_state(None) == PlaybackState.IDLE
+
+
+def test_sample_rates_are_chosen_per_room() -> None:
+    """Up to 24-bit/192kHz can be chosen per room; up to 24-bit/96kHz is on by default."""
+    entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_SAMPLE_RATES)
+    assert not entry.hidden
+    options = {cast("str", option.value) for option in entry.options}
+    default = set(cast("list[str]", entry.default_value))
+    assert f"192000{MULTI_VALUE_SPLITTER}24" in options
+    assert f"96000{MULTI_VALUE_SPLITTER}24" in default
+    assert f"176400{MULTI_VALUE_SPLITTER}24" not in default
+    assert f"192000{MULTI_VALUE_SPLITTER}24" not in default
+
+
+def test_a_room_plays_the_rates_chosen_for_it() -> None:
+    """The player declares no rates of its own, so the room's sample rate setting applies."""
+    assert _host_room_player().supported_sample_rates is None
 
 
 def test_flow_mode_is_on_by_default() -> None:
@@ -226,6 +245,7 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player.room = "Bank"
     player._player_id = "raumfeld_follower"
+    player._attr_supported_features = set()
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_poll_interval = PLAYING_POLL_INTERVAL
     provider = MagicMock()
@@ -299,8 +319,8 @@ async def test_unload_cancels_its_timers() -> None:
     assert player._next_media is None
 
 
-def test_room_on_the_host_gets_its_ip_identifier() -> None:
-    """The room whose renderer runs on the host gets its IP, so its other outputs link to it."""
+def _host_room_player() -> RaumfeldPlayer:
+    """Build a real RaumfeldPlayer for the room whose renderer runs on the host."""
     provider = MockProvider("raumfeld")
     provider.resolve_room_renderer = MagicMock(  # type: ignore[attr-defined]
         return_value=("5065835a-d69f-4a1b-8c2d-5065835ad69f", "192.168.1.41")
@@ -312,11 +332,16 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
     host = MagicMock()
     host.get_room_power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
-    player = RaumfeldPlayer(
+    return RaumfeldPlayer(
         provider,  # type: ignore[arg-type]
         "raumfeld_5065835ad69f",
         "TV",
     )
+
+
+def test_room_on_the_host_gets_its_ip_identifier() -> None:
+    """The room whose renderer runs on the host gets its IP, so its other outputs link to it."""
+    player = _host_room_player()
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
     assert player.device_info.model == "Raumfeld Soundbar"
     assert player.powered is False
@@ -411,6 +436,17 @@ def test_unknown_power_state_keeps_the_last_value() -> None:
     host.get_room_power_state.side_effect = KeyError("Bar")
     player._update_power()
     assert player._attr_powered is True
+
+
+def test_power_control_only_for_a_room_with_a_power_state() -> None:
+    """A room the host reports no power state for gets no power control, so MA never wakes it."""
+    player, host = _powered_player(None)
+    player._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.POWER}
+    player._update_power()
+    assert PlayerFeature.POWER not in player._attr_supported_features
+    host.get_room_power_state.return_value = "ACTIVE"
+    player._update_power()
+    assert PlayerFeature.POWER in player._attr_supported_features
 
 
 async def test_power_off_puts_the_room_in_manual_standby() -> None:

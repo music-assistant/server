@@ -63,6 +63,7 @@ from music_assistant.controllers.player_queues.helpers import (
     has_dynamic_source,
     is_dynamic_source,
     is_finite_radio,
+    played_from_album,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -430,9 +431,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # a track repeating on its own is its own playback, whatever seeded the queue around it
         if queue_data.queue.repeat_mode == RepeatMode.ONE:
             return False
-        origin = queue_item.origin
-        # played from an album, or from the folder that holds one
-        return bool(origin and origin.container and origin.container.media_type == MediaType.ALBUM)
+        return played_from_album(queue_item) is not None
 
     def _reset_enqueued_media_items(self, queue_data: PlayerQueueData) -> None:
         """
@@ -441,9 +440,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         :param queue_data: The queue whose enqueued items are no longer what it plays.
         """
         queue_data.enqueued_media_items.clear()
-        # the credits only mark which of those enqueued albums were already counted, so they
-        # are meaningless once the items they refer to are gone
-        queue_data.credited_albums.clear()
 
     def _apply_probed_duration(self, queue_item: QueueItem) -> None:
         """
@@ -891,16 +887,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 ):
                     queue_data.enqueued_media_items.append(media_item)
                     if len(queue_data.enqueued_media_items) > 10:
-                        evicted = queue_data.enqueued_media_items.pop(0)
-                        # an album that dropped off the list can no longer be matched, so its
-                        # credit is dead weight unless another entry still stands for it
-                        if isinstance(evicted, Album) and evicted not in (
-                            queue_data.enqueued_media_items
-                        ):
-                            queue_data.credited_albums.discard(evicted)
-                    # enqueueing an album again is a new play of it, so let it be credited again
-                    if isinstance(media_item, Album):
-                        queue_data.credited_albums.discard(media_item)
+                        queue_data.enqueued_media_items.pop(0)
                     if is_dynamic_source(media_item):
                         # a dynamic playlist/station is always a self-managing dynamic source
                         source_items.append(media_item)
@@ -1066,6 +1053,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_items:
             raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
 
+        # playing an album again is a new play of it, so it is credited again; read before the
+        # enqueue, which appends the queue's remaining items to this list
+        queue_data.credited_albums.difference_update(
+            album.uri for item in queue_items if (album := played_from_album(item))
+        )
         await self._enqueue_with_option(
             queue_id, queue_items, option, pin_first=start_item is not None
         )

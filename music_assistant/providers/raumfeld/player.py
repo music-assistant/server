@@ -23,7 +23,6 @@ from .constants import (
     HOST_ERRORS,
     PLAYER_CONFIG_ENTRIES,
     SOURCE_LINE_IN,
-    SUPPORTED_SAMPLE_RATES,
 )
 from .helpers import external_source, parse_didl_metadata, parse_duration, query_last_change
 
@@ -205,9 +204,6 @@ class RaumfeldPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
         )
-        # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
-        # source at its native quality (up to 24-bit/192kHz) without manual configuration
-        self._attr_supported_sample_rates = SUPPORTED_SAMPLE_RATES
         # Expose the room's media-renderer UUID (and IP) so Music Assistant links this
         # native player to the same renderer's DLNA/Chromecast/Sendspin representation
         # instead of showing them as duplicate players.
@@ -225,7 +221,6 @@ class RaumfeldPlayer(Player):
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, renderer_ip)
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
-            PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.SET_MEMBERS,
@@ -239,7 +234,7 @@ class RaumfeldPlayer(Player):
             # Without PAUSE, MA treats pause as stop and, on resume, re-streams the track
             # from the stored position (resume_pos) - which resumes where the user paused.
         }
-        self._attr_powered = self._read_powered()
+        self._update_power()
         # Raumfeld rooms can be (sync-)grouped with any other room of this provider.
         self._attr_can_group_with = {provider.instance_id}
         # expose the room's analog input as a selectable source when it has one
@@ -718,17 +713,18 @@ class RaumfeldPlayer(Player):
         """Follow the power state the host reports, once a power command has settled."""
         if time.time() - self._power_changed_at < POWER_SETTLE_TIME:
             return
-        if (powered := self._read_powered()) is not None:
-            self._attr_powered = powered
-
-    def _read_powered(self) -> bool | None:
-        """Return whether the room is switched on, or ``None`` if the host does not say."""
         try:
             state = self.raumfeld.host.get_room_power_state(self.room)
         except HOST_ERRORS as err:
             self.logger.debug("Failed to read power state for %s: %r", self.room, err)
-            return None
-        return state != POWER_STATE_OFF if state else None
+            return
+        # a room without a power state (Gen 1 speakers with only a physical switch) cannot
+        # be switched on or off remotely, so it gets no power control
+        if not state:
+            self._attr_supported_features.discard(PlayerFeature.POWER)
+            return
+        self._attr_supported_features.add(PlayerFeature.POWER)
+        self._attr_powered = state != POWER_STATE_OFF
 
     async def _update_volume(self, host: hassfeld.RaumfeldHost) -> None:
         """Read this room's volume and mute state, keeping the last value of one not read."""
