@@ -53,7 +53,10 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
+from music_assistant.controllers.music.constants import (
+    MAX_LOOKED_UP_ARTIST_URLS,
+    SIMILAR_ITEMS_LIMIT,
+)
 from music_assistant.controllers.music.helpers import (
     metadata_for_update,
     provider_mappings_for_update,
@@ -106,6 +109,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         super().__init__(mass)
         self._db_add_lock = asyncio.Lock()
         self._logged_hints: set[Hashable] = set()
+        # MusicBrainz artist ids looked up by streaming URL while matching, kept apart from the
+        # item until it is inserted, so a candidate accepted later in the scan never gets one
+        self._url_mbids: dict[str, str | None] = {}
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
@@ -1857,6 +1863,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             item.mbid = VARIOUS_ARTISTS_MBID
         if item.mbid == VARIOUS_ARTISTS_MBID:
             item.name = VARIOUS_ARTISTS_NAME
+        if not item.mbid and (mbid := self._looked_up_mbid(item)):
+            item.mbid = mbid
         # no existing item matched: insert item
         db_id = await self.mass.music.database.insert(
             self.db_table,
@@ -1959,19 +1967,14 @@ class ArtistsController(MediaControllerBase[Artist]):
                     musicbrainz, library_mapping, db_item.name, item_mbid
                 ):
                     library_mbids.add(mbid)
-        if (
+        return (
             compare_external_ids(
                 {(ExternalID.MB_ARTIST, mbid) for mbid in library_mbids},
                 {(ExternalID.MB_ARTIST, item_mbid)},
                 ExternalID.MB_ARTIST,
             )
             is not False
-        ):
-            return True
-        # only a rejected artist keeps the id: it becomes its own library artist with it, and
-        # the match repeated under the add lock needs no second lookup for it
-        item.mbid = item_mbid
-        return False
+        )
 
     async def _validate_library_item_merge(self, target: Artist, source: Artist) -> None:
         """Validate that two artists have the same role."""
@@ -2042,22 +2045,30 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param other_mbid: The MusicBrainz id of the same-name artist it must be told apart
             from, if known.
         """
-        storefront = None
-        if mapping.provider_domain == "apple_music" and mapping.url:
-            storefront = apple_storefront_from_url(mapping.url)
-        url = canonical_provider_url(
-            mapping.provider_domain, MediaType.ARTIST, mapping.item_id, storefront
-        )
-        if url is None or musicbrainz.rate_limited:
+        if (url := _artist_url(mapping)) is None:
+            return None
+        if url in self._url_mbids:
+            return self._url_mbids[url]
+        if musicbrainz.rate_limited:
             return None
         try:
             mbid = await musicbrainz.get_mbid_by_url(url, MediaType.ARTIST)
         except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
             self.logger.debug("Error looking up %s on MusicBrainz: %s", url, err)
             return None
+        if len(self._url_mbids) >= MAX_LOOKED_UP_ARTIST_URLS:
+            self._url_mbids.clear()
+        self._url_mbids[url] = mbid
         if mbid is None:
             self._log_missing_musicbrainz_link(mapping, url, name, other_mbid)
         return mbid
+
+    def _looked_up_mbid(self, item: Artist) -> str | None:
+        """Return the MusicBrainz artist id matching found for one of the artist's URLs."""
+        for mapping in item.provider_mappings:
+            if (url := _artist_url(mapping)) and (mbid := self._url_mbids.get(url)):
+                return mbid
+        return None
 
     def _log_missing_musicbrainz_link(
         self, mapping: ProviderMapping, url: str, name: str, other_mbid: str | None
@@ -2327,3 +2338,13 @@ def _album_from_release_group(
             )
         )
     return album
+
+
+def _artist_url(mapping: ProviderMapping) -> str | None:
+    """Return the streaming artist URL of a provider mapping, in the form MusicBrainz links it."""
+    storefront = None
+    if mapping.provider_domain == "apple_music" and mapping.url:
+        storefront = apple_storefront_from_url(mapping.url)
+    return canonical_provider_url(
+        mapping.provider_domain, MediaType.ARTIST, mapping.item_id, storefront
+    )

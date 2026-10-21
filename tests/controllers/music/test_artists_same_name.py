@@ -111,12 +111,16 @@ async def _add_composer(mass: MusicAssistant, mbid: str | None = None) -> int:
 
 
 async def test_artists_musicbrainz_tells_apart_are_kept_apart(music_mass: MusicAssistant) -> None:
-    """The guitarist becomes a library artist of its own, carrying the id MusicBrainz gave."""
+    """
+    The guitarist becomes a library artist of its own, carrying the id MusicBrainz gave.
+
+    The match repeated under the add lock reuses the lookups instead of asking again.
+    """
     composer_id = await _add_composer(music_mass)
     mbids = {_url(COMPOSER_ID): COMPOSER_MBID, _url(GUITARIST_ID): GUITARIST_MBID}
     with _harness(music_mass, mbids) as harness:
-        guitarist = _artist(GUITARIST_ID)
-        assert await harness.match(guitarist) is None
+        guitarist = await music_mass.music.artists.add_item_to_library(_artist(GUITARIST_ID))
+    assert int(guitarist.item_id) != composer_id
     assert guitarist.mbid == GUITARIST_MBID
     assert harness.looked_up() == [_url(GUITARIST_ID), _url(COMPOSER_ID)]
     composer = await music_mass.music.artists.get_library_item(composer_id)
@@ -134,7 +138,30 @@ async def test_track_credit_musicbrainz_tells_apart_is_kept_apart(
             media_type=MediaType.ARTIST, item_id=GUITARIST_ID, provider="deezer_1", name=NAME
         )
         assert await harness.match(credit) is None
-    assert credit.mbid == GUITARIST_MBID
+    assert credit.mbid is None
+
+
+async def test_rejected_candidate_gives_no_id_to_a_later_candidate(
+    music_mass: MusicAssistant,
+) -> None:
+    """
+    An id found while rejecting one candidate never lands on a candidate accepted after it.
+
+    The second John Williams has no Deezer id, so it still matches on name as before.
+    """
+    await _add_composer(music_mass)
+    other_id = await music_mass.music.artists._add_library_item(
+        _artist("john-williams", "spotify_1", "spotify")
+    )
+    mbids = {_url(COMPOSER_ID): COMPOSER_MBID, _url(GUITARIST_ID): GUITARIST_MBID}
+    with _harness(music_mass, mbids) as harness:
+        guitarist = _artist(GUITARIST_ID)
+        library_item = await music_mass.music.artists.add_item_to_library(guitarist)
+    # the composer was rejected through MusicBrainz before the other one was accepted
+    assert harness.looked_up() == [_url(GUITARIST_ID), _url(COMPOSER_ID)]
+    assert int(library_item.item_id) == other_id
+    assert library_item.mbid is None
+    assert guitarist.mbid is None
 
 
 async def test_only_the_library_id_known_merges_without_looking_it_up(
