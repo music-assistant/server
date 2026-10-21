@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import re
 import time
@@ -343,6 +344,8 @@ class RaumfeldPlayer(Player):
         elif any(s.id == external.id for s in sources):
             self._attr_source_list = [external if s.id == external.id else s for s in sources]
         else:
+            # its button is gone, so it can no longer be selected
+            external = self._external_source = dataclasses.replace(external, passive=True)
             self._attr_source_list = [*sources, external]
         self.update_state()
 
@@ -974,12 +977,18 @@ class RaumfeldPlayer(Player):
         passive = True
         # a station button, pressed here or on the speaker, plays its own library item:
         # report that button rather than the service behind it
-        for library_id, (object_id, container) in self._library_sources.items():
-            if object_id == (loaded_container if container else meta["item_id"]):
-                source_id = library_id
-                name = next(s.name for s in self._static_sources if s.id == library_id)
-                passive = False
-                break
+        buttons = [
+            library_id
+            for library_id, (object_id, container) in self._library_sources.items()
+            if object_id == (loaded_container if container else meta["item_id"])
+        ]
+        if buttons:
+            # buttons can share an item; the one chosen last stays the one shown
+            source_id = (
+                self._attr_active_source if self._attr_active_source in buttons else buttons[0]
+            )
+            name = next(s.name for s in self._static_sources if s.id == source_id)
+            passive = False
         source = PlayerSource(
             id=source_id,
             name=name,

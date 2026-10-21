@@ -1561,6 +1561,32 @@ def test_a_playing_button_stays_listed_once_when_the_buttons_are_read_again() ->
     assert [s.name for s in player._static_sources] == ["Button 1: NPO 2", "Button 3: Shine On"]
 
 
+def test_a_playing_button_that_was_removed_is_no_longer_offered() -> None:
+    """A button taken off in the Raumfeld app stays listed while it plays, not selectable."""
+    player, _ = _button_player()
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(_RADIO_META, "Stop,Pause,Play", None, via_room=False)
+        player.set_station_buttons([_BUTTONS[1]])
+    assert [(s.id, s.passive) for s in player._attr_source_list] == [
+        ("station_button_3", False),
+        ("station_button_1", True),
+    ]
+
+
+def test_a_chosen_button_stays_shown_when_another_button_has_the_same_station() -> None:
+    """Two buttons with one station: the poll keeps the one that was chosen."""
+    player, _ = _external_player()
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player.set_station_buttons([_BUTTONS[0], (2, *_BUTTONS[0][1:])])
+        player._attr_active_source = "station_button_2"
+        player._set_external(_RADIO_META, "Stop", None, via_room=False)
+        assert player._attr_active_source == "station_button_2"
+        # with nothing chosen, the first button with the station is shown
+        player._attr_active_source = None
+        player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    assert player._attr_active_source == "station_button_1"
+
+
 def test_an_album_button_pressed_on_the_speaker_shows_as_that_button() -> None:
     """An album button is recognised by the album the zone loaded, not the playing track."""
     player, _ = _button_player()
