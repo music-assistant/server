@@ -15,7 +15,7 @@ import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, RepeatMode
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import OutputProtocol, PlayerSource
+from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
@@ -2081,6 +2081,29 @@ class TestPowerlessLifecycle:
         mass.players._handle_cmd_stop.assert_any_await("leader")
         # session stays intact
         assert sgp.sync_leader == leader
+
+
+@pytest.mark.parametrize("active_protocol", [None, "native", "sendspin_bridge", "missing"])
+def test_group_media_uses_active_session(active_protocol: str | None) -> None:
+    """Group queue identity follows the stream's raw media, not the device's native input."""
+    mass = _make_mock_mass()
+    group = _make_sync_group(mass)
+    leader = _make_mock_player(
+        "leader", active_output_protocol=active_protocol, playback_state=PlaybackState.PLAYING
+    )
+    leader.current_media = PlayerMedia(uri="wiimu_airplay", source_id="airplay")
+    bridge = _make_mock_player("sendspin_bridge", provider_domain="sendspin")
+    bridge.current_media = PlayerMedia(
+        uri="library://radio/1", source_id=group.player_id, queue_item_id="radio_item"
+    )
+    mass.players.get_player = _player_lookup({"leader": leader, "sendspin_bridge": bridge})
+    group.sync_leader = leader
+
+    group._update_attributes()
+
+    expected = bridge if active_protocol == "sendspin_bridge" else leader
+    assert group.current_media is expected.current_media
+    assert group.current_media is not expected.state.current_media
 
 
 class TestIdleGraceTimer:
