@@ -567,6 +567,36 @@ class TestIdentifiersMatch:
 
         assert controller._identifiers_match(player_a, player_b) is False
 
+    def test_airplay_id_mismatch_blocks_ip_fallback(self, mock_mass: MagicMock) -> None:
+        """Test that AirPlay receivers sharing one IP with LA MACs don't match."""
+        controller = PlayerController(mock_mass)
+
+        provider = MockProvider("airplay")
+        player_a = MockPlayer(
+            provider,
+            "ap02a82cf96025",
+            "Receiver A",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "02:A8:2C:F9:60:25",
+                IdentifierType.IP_ADDRESS: "192.168.1.117",
+                IdentifierType.AIRPLAY_ID: "ap02a82cf96025",
+            },
+        )
+        player_b = MockPlayer(
+            provider,
+            "ap5ab35862ec6c",
+            "Receiver B",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "5A:B3:58:62:EC:6C",
+                IdentifierType.IP_ADDRESS: "192.168.1.117",
+                IdentifierType.AIRPLAY_ID: "ap5ab35862ec6c",
+            },
+        )
+
+        assert controller._identifiers_match(player_a, player_b) is False
+
     def test_ip_fallback_with_la_mac(self, mock_mass: MagicMock) -> None:
         """Test IP fallback matching when one player has a locally-administered MAC."""
         controller = PlayerController(mock_mass)
@@ -5022,6 +5052,70 @@ class TestProtocolToUniversalIdentifierFallback:
 
         # Should NOT be linked to the wrong universal player
         assert sendspin_player.protocol_parent_id != "up_aabbccddeeff"
+
+    @pytest.mark.parametrize(
+        ("mac_1", "mac_2"),
+        [
+            ("02:A8:2C:F9:60:25", "5A:B3:58:62:EC:6C"),
+            # ARP resolved both receivers to the shared host MAC
+            ("B8:27:EB:12:34:56", "B8:27:EB:12:34:56"),
+        ],
+    )
+    def test_airplay_receivers_on_shared_ip_keep_own_universal(
+        self, mock_mass: MagicMock, mac_1: str, mac_2: str
+    ) -> None:
+        """Test that a re-registered AirPlay receiver doesn't take a sibling receiver's parent."""
+        controller = PlayerController(mock_mass)
+
+        def mock_config_get(_key: str, default: str | None = None) -> str | None:
+            return default
+
+        mock_mass.config.get.side_effect = mock_config_get
+
+        def receiver_ids(airplay_id: str, mac: str) -> dict[IdentifierType, str]:
+            return {
+                IdentifierType.MAC_ADDRESS: mac,
+                IdentifierType.IP_ADDRESS: "192.168.1.117",
+                IdentifierType.AIRPLAY_ID: airplay_id,
+            }
+
+        # Receiver 1 is currently unregistered, so its universal player has a free AirPlay slot
+        universal_1 = _create_universal_player(
+            mock_mass,
+            "up_receiver1",
+            "Receiver 1",
+            protocol_player_ids=["ap02a82cf96025"],
+            identifiers=receiver_ids("ap02a82cf96025", mac_1),
+        )
+        universal_2 = _create_universal_player(
+            mock_mass,
+            "up_receiver2",
+            "Receiver 2",
+            protocol_player_ids=["ap5ab35862ec6c"],
+            identifiers=receiver_ids("ap5ab35862ec6c", mac_2),
+        )
+
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        receiver_2 = MockPlayer(
+            airplay_provider,
+            "ap5ab35862ec6c",
+            "Receiver 2",
+            player_type=PlayerType.PROTOCOL,
+            identifiers=receiver_ids("ap5ab35862ec6c", mac_2),
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "up_receiver1": universal_1,
+            "up_receiver2": universal_2,
+            "ap5ab35862ec6c": receiver_2,
+        }
+        receiver_2.set_initialized()
+
+        controller._try_link_protocol_to_native(receiver_2)
+
+        assert receiver_2.protocol_parent_id == "up_receiver2"
+        assert "ap5ab35862ec6c" not in universal_1._protocol_player_ids
 
     def test_known_protocol_id_still_works(self, mock_mass: MagicMock) -> None:
         """Test that the existing path (player_id in _protocol_player_ids) still works."""
