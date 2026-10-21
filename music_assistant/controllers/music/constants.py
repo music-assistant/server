@@ -12,7 +12,7 @@ CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
 
-DB_SCHEMA_VERSION: Final[int] = 69
+DB_SCHEMA_VERSION: Final[int] = 70
 
 # tracks longer that this will not be included in radio mode
 RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60

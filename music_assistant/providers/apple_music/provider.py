@@ -16,6 +16,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     Playlist,
+    Radio,
     RecommendationFolder,
     SearchResults,
     Track,
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
 class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of an Apple Music MusicProvider."""
 
+    recommendation_payload_version = "1"  # stations are radios
     _music_user_token: str | None = None
     _music_app_token: str | None = None
     _storefront: str | None = None
@@ -192,8 +194,23 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get full playlist details by id."""
         _require_apple_id(prov_playlist_id)
         if prov_playlist_id.startswith("ra."):
-            return await self.recommendation_manager.get_station_playlist(prov_playlist_id)
+            raise MediaNotFoundError(f"{prov_playlist_id} is a station, not a playlist")
         return await self.media_manager.get_playlist(prov_playlist_id, is_favourite)
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Get full station details by id."""
+        _require_apple_id(prov_radio_id)
+        return await self.recommendation_manager.get_station(prov_radio_id)
+
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+        """
+        Get the next batch of tracks for the given station.
+
+        :param prov_radio_id: The Apple Music station id.
+        """
+        if not is_apple_id(prov_radio_id):
+            return []
+        return await self.media_manager.get_station_tracks(prov_radio_id)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
@@ -204,13 +221,16 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve an artwork token to a freshly signed artwork URL."""
         media_type, _, item_id = path.partition("/")
-        if not is_apple_id(item_id):
+        # a station token from before stations were radios cannot resolve as a playlist
+        if not is_apple_id(item_id) or (
+            media_type == MediaType.PLAYLIST.value and item_id.startswith("ra.")
+        ):
             return ""
         return await self.media_manager.get_artwork_url(media_type, item_id) or ""
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
-        if not is_apple_id(prov_playlist_id):
+        if not is_apple_id(prov_playlist_id) or prov_playlist_id.startswith("ra."):
             return []
         return await self.media_manager.get_playlist_tracks(prov_playlist_id, page)
 

@@ -44,6 +44,7 @@ MC_DEVICE_UPNP_ENDPOINT = "MediaRenderer/desc.xml"
 # if this is not a constant, we'll have to do some xml parsing
 MC_DEVICE_UPNP_CTRL_ENDPOINT = "AVTransport/ctrl"
 MC_DEVICE_UPNP_PORT = 49154
+MC_DEVICE_UPNP_USER_AGENT = "MusicCast/6.00 (Android)"
 MC_NULL_GROUP = "00000000000000000000000000000000"
 MC_DEFAULT_ZONE = "main"
 

@@ -107,6 +107,11 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         """Return True: Tidal's catalog carries a hi-res flag but no sample rate."""
         return True
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Tidal accounts allow a single active playback stream."""
+        return 1
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
         Return the configuration (options) entries for the Tidal provider.

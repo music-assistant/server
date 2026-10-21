@@ -1847,3 +1847,22 @@ async def test_other_config_change_reloads_provider(changed_keys: set[str]) -> N
 
         mass.call_later.assert_called_once()
         assert mass.call_later.call_args[0][1] is mass.load_provider_config
+
+
+async def test_init_cancelled_during_connect_unregisters_search_command() -> None:
+    """Test a setup timeout while connecting releases the search command for the next init."""
+    hass = _HomeAssistantClient([])
+    hass.connect = AsyncMock(side_effect=asyncio.Event().wait)  # type: ignore[method-assign]
+    mass = _mass()
+    unregister = MagicMock()
+    mass.register_api_command = MagicMock(return_value=unregister)
+    manifest = MagicMock()
+    manifest.domain = "hass"
+    manifest.name = "Home Assistant"
+    with patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass):
+        provider = await setup(mass, manifest, _config())
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.1):
+                await provider.handle_async_init()
+
+    unregister.assert_called_once()

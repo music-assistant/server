@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import NoneType
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
@@ -1263,14 +1263,17 @@ class MediaResolver:
                 # checked after resolving, as an ItemMapping child only reveals it once resolved.
                 if isinstance(entry.item, Radio) and entry.item.is_dynamic:
                     continue
-                # a subfolder or a playlist in the folder already recorded itself as the
-                # container of its own entries; the folder's direct entries are played from the
-                # folder
-                items.append(
-                    entry
-                    if entry.origin is not None and entry.origin.container is not None
-                    else ResolvedItem(entry.item, self._folder_origin(folder, container, item))
-                )
+                origin = entry.origin
+                if origin is None or origin.container is None:
+                    # the folder's direct entries are played from the folder
+                    origin = self._folder_origin(folder, container, item)
+                elif origin.container.media_type == MediaType.ALBUM:
+                    # an album in the folder plays as part of the folder rather than as an
+                    # album of its own, so its tracks keep their pins under the folder
+                    origin = replace(origin, container=container)
+                # any other container in the folder, such as a plain subfolder or a playlist,
+                # stays the origin of its entries
+                items.append(ResolvedItem(entry.item, origin))
         return items
 
     async def _resolve_album(

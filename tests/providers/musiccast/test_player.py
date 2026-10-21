@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import ClientError
 
-from music_assistant.providers.musiccast import player as player_module
+from music_assistant.helpers.upnp import AVTransport
 from music_assistant.providers.musiccast.player import MusicCastPlayer, UpnpUpdateHelper
 
 from .conftest import MusicCastNetwork
@@ -30,7 +30,7 @@ async def test_update_without_upnp_media_info(
 ) -> None:
     """A failing UPnP media info request still publishes the volume from the device data."""
     monkeypatch.setattr(
-        player_module, "avt_get_media_info", AsyncMock(side_effect=ClientError("timeout"))
+        AVTransport, "get_media_info", AsyncMock(side_effect=ClientError("timeout"))
     )
     player = network.player("A___main")
     zone_data = player.zone_device.zone_data
