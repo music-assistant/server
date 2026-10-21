@@ -94,7 +94,7 @@ def _button_provider() -> tuple[RaumfeldPlayerProvider, MagicMock]:
 
 
 async def test_station_buttons_are_read_with_their_titles() -> None:
-    """Assigned buttons are listed with their item and title; empty ones are left out."""
+    """Assigned buttons are listed with their item and title; empty or unread ones are not."""
     provider, action = _button_provider()
     assigned = {1: "0/RadioTime/Search/s-s25777", 2: "", 3: "0/My Music/Albums/42", 4: ""}
     action.async_call = AsyncMock(
@@ -114,10 +114,8 @@ async def test_station_buttons_are_read_with_their_titles() -> None:
         AsyncMock(return_value=action),
     ):
         buttons = await provider._read_station_buttons("Bar")
-    assert buttons == [
-        (1, "0/RadioTime/Search/s-s25777", "NPO Radio 2", False),
-        (3, "0/My Music/Albums/42", "Button 3", False),
-    ]
+    # button 3's item could not be read, so whether it plays an album is unknown: left out
+    assert buttons == [(1, "0/RadioTime/Search/s-s25777", "NPO Radio 2", False)]
     assert action.async_call.await_args_list[0].kwargs == {
         "Renderer": "uuid:renderer-uuid",
         "Button": 1,

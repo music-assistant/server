@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import aiohttp
 import defusedxml.ElementTree as DefusedET
@@ -324,3 +324,15 @@ def library_uri(media_server_udn: str, object_id: str, container: bool) -> str:
     if container:
         return f"dlna-playcontainer://{server}?sid={service}&cid={quote(object_id, safe='')}&md=0"
     return f"dlna-playsingle://{server}?sid={service}&iid={quote(object_id, safe='')}"
+
+
+def container_object_id(uri: str | None) -> str | None:
+    """
+    Return the library album or playlist a ``dlna-playcontainer://`` URI plays, or ``None``.
+
+    :param uri: The transport URI the zone has loaded.
+    """
+    if not uri or not uri.startswith("dlna-playcontainer://"):
+        return None
+    container_ids = parse_qs(urlsplit(uri).query).get("cid")
+    return container_ids[0] if container_ids else None

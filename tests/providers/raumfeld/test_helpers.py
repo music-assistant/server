@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant.providers.raumfeld.constants import RENDERER_QUERY_TIMEOUT
 from music_assistant.providers.raumfeld.helpers import (
+    container_object_id,
     external_source,
     library_uri,
     parse_control_url,
@@ -252,3 +253,12 @@ def test_library_uri() -> None:
     container = library_uri("uuid:media-server", "0/My Music/Albums/42", container=True)
     assert container.startswith("dlna-playcontainer://uuid%3Amedia-server?")
     assert container.endswith("&cid=0%2FMy%20Music%2FAlbums%2F42&md=0")
+
+
+def test_container_object_id() -> None:
+    """The album or playlist a container URI plays; anything else plays none."""
+    uri = library_uri("uuid:media-server", "0/My Music/Albums/42", container=True)
+    assert container_object_id(uri) == "0/My Music/Albums/42"
+    single = library_uri("uuid:media-server", "0/RadioTime/Search/s-s25777", container=False)
+    assert container_object_id(single) is None
+    assert container_object_id(None) is None

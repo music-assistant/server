@@ -25,6 +25,7 @@ from .constants import (
     SOURCE_LINE_IN,
 )
 from .helpers import (
+    container_object_id,
     external_source,
     library_uri,
     parse_didl_metadata,
@@ -326,14 +327,21 @@ class RaumfeldPlayer(Player):
             source_id = f"station_button_{button}"
             library[source_id] = (object_id, container)
             sources.append(PlayerSource(id=source_id, name=f"Button {button}: {title}"))
-        if library == self._library_sources and len(sources) == len(self._static_sources):
+        if library == self._library_sources and [(s.id, s.name) for s in sources] == [
+            (s.id, s.name) for s in self._static_sources
+        ]:
             return
         self._library_sources = library
         self._static_sources = sources
         if sources:
             self._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
-        external = [self._external_source] if self._external_source is not None else []
-        self._attr_source_list = [*sources, *external]
+        # a button that is playing stays listed once, with the controls it plays with
+        if (external := self._external_source) is None:
+            self._attr_source_list = sources
+        elif any(s.id == external.id for s in sources):
+            self._attr_source_list = [external if s.id == external.id else s for s in sources]
+        else:
+            self._attr_source_list = [*sources, external]
         self.update_state()
 
     def set_group_members(self, member_ids: list[str]) -> None:
@@ -860,6 +868,13 @@ class RaumfeldPlayer(Player):
             return
         # also while stopped: the zone keeps the item loaded and can start it again
         actions = await self._read_zone_actions(zone)
+        # the track metadata names the playing track, not the album or playlist a button
+        # started, so those are recognised by what the zone has loaded
+        loaded_container = (
+            await self._read_loaded_container(zone)
+            if any(container for _, container in self._library_sources.values())
+            else None
+        )
         if not self._reading_is_current(generation):
             # a play or stop command ran while reading, which this reading predates
             return
@@ -868,6 +883,7 @@ class RaumfeldPlayer(Player):
             actions,
             parse_duration(pos.get("TrackDuration")),
             via_room=False,
+            loaded_container=loaded_container,
         )
         source = self._external_source
         if (
@@ -878,6 +894,13 @@ class RaumfeldPlayer(Player):
         ):
             # MA only offers to resume a source that is paused
             self._attr_playback_state = PlaybackState.PAUSED
+
+    async def _read_loaded_container(self, zone: list[str]) -> str | None:
+        """Return the library container the zone has loaded, or ``None``."""
+        if (location := self.raumfeld.zone_location(zone)) is None:
+            return None
+        response = await self._call_transport(location, "GetMediaInfo")
+        return container_object_id((response or {}).get("CurrentURI"))
 
     async def _read_zone_actions(self, zone: list[str]) -> str | None:
         """Read the transport actions the zone allows right now, or ``None``."""
@@ -924,6 +947,7 @@ class RaumfeldPlayer(Player):
         actions: str | None,
         duration: int | None,
         via_room: bool,
+        loaded_container: str | None = None,
     ) -> None:
         """
         Report an external source as active, with the controls the host allows for it.
@@ -932,6 +956,7 @@ class RaumfeldPlayer(Player):
         :param actions: The comma separated transport actions the host allows, if known.
         :param duration: The duration of the playing item in seconds, if it has one.
         :param via_room: Whether the room's own renderer plays it rather than its zone.
+        :param loaded_container: The library album or playlist the zone has loaded, if any.
         """
         if self._advance_armed or self._next_media is not None:
             # a queue item MA handed over must not start when this source's track ends
@@ -941,8 +966,8 @@ class RaumfeldPlayer(Player):
         passive = True
         # a station button, pressed here or on the speaker, plays its own library item:
         # report that button rather than the service behind it
-        for library_id, (object_id, _container) in self._library_sources.items():
-            if object_id == meta["item_id"]:
+        for library_id, (object_id, container) in self._library_sources.items():
+            if object_id == (loaded_container if container else meta["item_id"]):
                 source_id = library_id
                 name = next(s.name for s in self._static_sources if s.id == library_id)
                 passive = False

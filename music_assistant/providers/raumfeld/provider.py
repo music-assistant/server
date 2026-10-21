@@ -326,8 +326,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
             if not object_id:
                 continue
             items = parse_library_items(await self._browse(object_id, children=False))
-            title = items[0][1] if items else f"Button {button}"
-            buttons.append((button, object_id, title, bool(items and items[0][2])))
+            if not items:
+                # whether it is an album or a single item decides how it plays, so a button
+                # whose item could not be read waits for a later read
+                continue
+            buttons.append((button, object_id, items[0][1], items[0][2]))
         return buttons
 
     async def _browse(self, object_id: str, children: bool) -> str | None:

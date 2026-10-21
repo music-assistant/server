@@ -15,6 +15,7 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_FLOW_MODE, CONF_SAMPLE_RATES
 from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
+from music_assistant.providers.raumfeld.helpers import library_uri
 from music_assistant.providers.raumfeld.player import (
     ADVANCE_WATCH_ATTEMPTS,
     IDLE_POLL_INTERVAL,
@@ -1545,3 +1546,56 @@ def test_a_station_button_pressed_on_the_speaker_shows_as_that_button() -> None:
     assert player._attr_active_source == "station_button_1"
     assert [s.id for s in player._attr_source_list] == ["station_button_1", "station_button_3"]
     assert not player._attr_source_list[0].passive
+
+
+def test_a_playing_button_stays_listed_once_when_the_buttons_are_read_again() -> None:
+    """A refresh keeps the playing button's live source, with its controls, in its place."""
+    player, _ = _button_player()
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(_RADIO_META, "Stop,Pause,Play", None, via_room=False)
+        # renamed in the Raumfeld app meanwhile
+        renamed = [(1, "0/RadioTime/Search/s-s25777", "NPO 2", False), _BUTTONS[1]]
+        player.set_station_buttons(renamed)
+    assert [s.id for s in player._attr_source_list] == ["station_button_1", "station_button_3"]
+    assert player._attr_source_list[0].can_play_pause
+    assert [s.name for s in player._static_sources] == ["Button 1: NPO 2", "Button 3: Shine On"]
+
+
+def test_an_album_button_pressed_on_the_speaker_shows_as_that_button() -> None:
+    """An album button is recognised by the album the zone loaded, not the playing track."""
+    player, _ = _button_player()
+    track = {**_RADIO_META, "section": "My Music", "item_id": "0/My Music/Albums/42/7"}
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(
+            track, "Stop", 240, via_room=False, loaded_container="0/My Music/Albums/42"
+        )
+    assert player._attr_active_source == "station_button_3"
+
+
+async def test_the_poll_recognises_an_album_button_by_what_the_zone_loaded() -> None:
+    """Polling a zone that plays an album button's album reports that button."""
+    player, host = _button_player()
+    host.media_server_udn = "uuid:media-server"
+    album_uri = library_uri("uuid:media-server", "0/My Music/Albums/42", container=True)
+    track_meta = (
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/"'
+        ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+        '<item id="0/My Music/Albums/42/7"><dc:title>Shine On Pt. 1</dc:title>'
+        "<upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>"
+    )
+    position = {
+        "TrackURI": "http://192.168.1.41:47366/track7.flac",
+        "TrackMetaData": track_meta,
+        "TrackDuration": "0:04:00",
+    }
+    with (
+        patch.object(player, "_read_zone_actions", AsyncMock(return_value="Stop,Pause")),
+        patch.object(
+            player, "_call_transport", AsyncMock(return_value={"CurrentURI": album_uri})
+        ) as call,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        await player._update_zone_source(position, ["Bar"], player._playback_generation)
+    call.assert_awaited_once_with(_ZONE, "GetMediaInfo")
+    assert player._attr_active_source == "station_button_3"
