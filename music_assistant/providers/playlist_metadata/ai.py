@@ -227,7 +227,7 @@ class AIArtwork:
         self.logger = provider.logger
         self._preview_lock = asyncio.Lock()
         self._store_lock = asyncio.Lock()
-        self._preview_renders: list[asyncio.Future[bytes]] = []
+        self._preview_tasks: list[asyncio.Future[Any]] = []
         self._refresh_lock = asyncio.Lock()
         self._refresh_again = False
         self._generated_at = deque()
@@ -289,8 +289,8 @@ class AIArtwork:
         self.mass.cancel_timer(self._task_id("catch_up"))
         for name in ("catch_up", "regenerate", "worker"):
             self.mass.cancel_task(self._task_id(name))
-        for render in self._preview_renders:
-            render.cancel()
+        for task in self._preview_tasks:
+            task.cancel()
         self._stopped = True
         self.mass.tasks.unregister_scheduled_task(
             self._task_id("refresh"), clear_persisted_state=is_removed
@@ -472,6 +472,8 @@ class AIArtwork:
             self.logger.info("Generating %d preview cover(s) for '%s'", len(looks), playlist.name)
             # what the playlist is about is the same for every style, so it is worked out once
             context = await self._playlist_context(playlist)
+            if self._stopped:
+                raise ActionUnavailable("The provider is unloading")
             concept = await self._concept(playlist, context)
             slots = asyncio.Semaphore(PREVIEW_CONCURRENCY)
 
@@ -481,15 +483,24 @@ class AIArtwork:
                         raise ActionUnavailable("The provider is unloading")
                     return await self._render(playlist, image_engine, look, context, concept)
 
-            # kept, so unloading cancels the renders that are still running or waiting
-            self._preview_renders = [asyncio.ensure_future(render(look)) for look in looks]
+            describe = asyncio.ensure_future(
+                self._preview_description(playlist, text_engine, context)
+            )
+            renders = [asyncio.ensure_future(render(look)) for look in looks]
+            # kept, so unloading cancels the description and the renders that are still
+            # running or waiting
+            self._preview_tasks = [describe, *renders]
             try:
-                description, results = await asyncio.gather(
-                    self._preview_description(playlist, text_engine, context),
-                    asyncio.gather(*self._preview_renders, return_exceptions=True),
-                )
+                await asyncio.wait(self._preview_tasks)
             finally:
-                self._preview_renders = []
+                # also stops them when the preview itself is cancelled
+                for task in self._preview_tasks:
+                    task.cancel()
+                self._preview_tasks = []
+        if self._stopped:
+            raise ActionUnavailable("The provider is unloading")
+        description = describe.result()
+        results = [render.exception() or render.result() for render in renders]
         entries: list[ConfigEntry] = []
         for look, result in zip(looks, results, strict=True):
             if isinstance(result, BaseException):
@@ -1088,6 +1099,8 @@ class AIArtwork:
         if engine is None or self._throttle_delay(self._described_at) is not None:
             return ""
         await self._record(self._described_at, CACHE_KEY_DESCRIBED_AT)
+        if self._stopped:
+            return ""
         try:
             return await self._write_description(playlist, engine, context)
         except Exception as err:

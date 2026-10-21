@@ -1618,6 +1618,49 @@ async def test_unloading_stops_a_running_preview(provider: PlaylistMetadataProvi
     assert _engine_calls(provider) == 2
 
 
+@pytest.mark.parametrize(
+    ("held_key", "use_prompt_engine"),
+    [("described_at", False), ("generated_at", True)],
+    ids=["description", "concept"],
+)
+async def test_unloading_stops_a_preview_before_the_text_engine(
+    provider: PlaylistMetadataProvider, held_key: str, use_prompt_engine: bool
+) -> None:
+    """A preview that is storing its reservation when the provider unloads asks no text."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{
+            CONF_PREVIEW_PLAYLIST: "234",
+            CONF_PREVIEW_STYLE: ["bold"],
+            CONF_USE_PROMPT_ENGINE: use_prompt_engine,
+        },
+    )
+    cache = _mass(provider).cache
+    store = cache.set
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held_set(key: str, *args: Any, **kwargs: Any) -> None:
+        if key == held_key:
+            held.set()
+            await release.wait()
+        await store(key, *args, **kwargs)
+
+    cache.set = held_set
+
+    with _no_engine_pickers():
+        preview = asyncio.create_task(provider.handle_config_action(CONF_ACTION_PREVIEW))
+        async with asyncio.timeout(1):
+            await held.wait()
+        await provider.unload()
+        release.set()
+        with pytest.raises(ActionUnavailable, match="unloading"):
+            await preview
+
+    assert _text_calls(provider) == 0
+
+
 async def test_the_newest_generation_counter_is_stored_last(
     provider: PlaylistMetadataProvider,
 ) -> None:
