@@ -54,6 +54,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
     compare_artists,
@@ -68,6 +69,7 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
+from music_assistant.helpers.provider_access import visible_items
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import (
@@ -306,6 +308,7 @@ class TracksController(MediaControllerBase[Track]):
         sort_direction: SortDirection | None = None,
         summary: bool = True,
         reachable_via: list[str] | None = None,
+        random_seed: int | None = None,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -315,6 +318,7 @@ class TracksController(MediaControllerBase[Track]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
@@ -394,6 +398,7 @@ class TracksController(MediaControllerBase[Track]):
             in_library_only=True,
             summary=summary,
             reachable_via=reachable_via,
+            random_seed=random_seed,
         )
         if search and len(result) < 25 and not offset:
             # append artist items to result
@@ -432,6 +437,7 @@ class TracksController(MediaControllerBase[Track]):
                 in_library_only=True,
                 summary=summary,
                 reachable_via=reachable_via,
+                random_seed=random_seed,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if _track.uri not in existing_uris:
@@ -447,6 +453,7 @@ class TracksController(MediaControllerBase[Track]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Track]:
         """
         Return the versions of a track on all providers, searched, sorted and paged.
@@ -460,6 +467,7 @@ class TracksController(MediaControllerBase[Track]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of versions to return; 0 returns them all.
         :param offset: Number of versions to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for versions.
         """
         return await self._versions_listing(
@@ -471,6 +479,7 @@ class TracksController(MediaControllerBase[Track]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def albums(
@@ -483,6 +492,7 @@ class TracksController(MediaControllerBase[Track]):
         sort_direction: SortDirection | None = None,
         limit: int | None = 500,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Album]:
         """
         Return the albums a track appears on, searched, sorted and paged.
@@ -499,6 +509,7 @@ class TracksController(MediaControllerBase[Track]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param limit: Maximum number of albums to return; 0 returns them all.
         :param offset: Number of albums to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises InvalidDataError: When the sort field is not offered for track albums.
         """
         sort_field, sort_direction = resolve_listing_sort(
@@ -550,6 +561,7 @@ class TracksController(MediaControllerBase[Track]):
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def similar_tracks(
@@ -563,6 +575,7 @@ class TracksController(MediaControllerBase[Track]):
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
         offset: int = 0,
+        random_seed: int | None = None,
     ) -> list[Track]:
         """
         Return the tracks similar to a track, searched, sorted and paged.
@@ -576,12 +589,13 @@ class TracksController(MediaControllerBase[Track]):
         :param limit: Maximum number of similar tracks to return; 0 returns them all.
         :param allow_lookup: Allow lookup on other providers if not found.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
-            When provided, these providers will be tried first before falling back to others.
+            When provided, these are tried first among the track's own music providers.
         :param search: Only list the tracks whose name, album name or artist name contains
             this text.
         :param sort_field: Sort field, the provider's ranking (ORIGINAL) when omitted.
         :param sort_direction: Sort direction, the field's default when omitted.
         :param offset: Number of similar tracks to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
         :raises MusicAssistantError: When no provider can complete the request.
         :raises InvalidDataError: When the sort field is not offered for similar tracks.
         """
@@ -605,14 +619,16 @@ class TracksController(MediaControllerBase[Track]):
                 lambda instance_id: self._assemble_similar_tracks(item_id, instance_id),
                 item_type=Track,
             )
+        # the cached listing is shared by all users, so it is narrowed on every read
         return apply_listing(
-            tracks,
+            visible_items(self.mass, tracks, get_current_user()),
             ListingType.SIMILAR_TRACKS,
             search=search,
             sort_field=sort_field,
             sort_direction=sort_direction,
             limit=limit,
             offset=offset,
+            random_seed=random_seed,
         )
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
@@ -1650,6 +1666,22 @@ class TracksController(MediaControllerBase[Track]):
         """Merge track model state without replacing existing album relations."""
         await self._update_library_item(item_id, update, set_album=False)
 
+    async def _update_library_item_from_provider(self, item_id: int, update: Track) -> None:
+        """Replace the track's data with the given provider track, keeping its album relations."""
+        await self._update_library_item(item_id, update, overwrite=True, set_album=False)
+
+    async def _after_provider_mapping_removed(self, db_id: int, provider_instance_id: str) -> None:
+        """Drop album mappings to the same provider that went away along with the track's."""
+        album_rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE track_id = :track_id",
+            {"track_id": db_id},
+            limit=0,
+        )
+        for row in album_rows:
+            await self.mass.music.albums.remove_missing_provider_mappings(
+                row["album_id"], provider_instance_id
+            )
+
     async def _verify_musicbrainz_mapping(self, db_item: Track, mapping: ProviderMapping) -> bool:
         """Return True if a linked track may be added, checked while remasters are kept apart."""
         if not get_keep_remasters_apart():
@@ -1867,6 +1899,11 @@ class TracksController(MediaControllerBase[Track]):
         """
         Return the similar tracks of the first provider that has any for the given track.
 
+        Plugin providers are asked first, then the track's own music providers, then metadata
+        providers and, when allowed, a lookup match on another music provider. A similarity
+        plugin is installed to improve on what the streaming service returns, while metadata
+        providers stay a fallback.
+
         A provider that failed before the answer, or a mapped source that is not loaded,
         might have answered first, which leaves the listing incomplete.
 
@@ -1874,7 +1911,7 @@ class TracksController(MediaControllerBase[Track]):
         :param provider_instance_id_or_domain: The provider instance ID or domain.
         :param allow_lookup: Allow lookup on other providers if not found.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
-            When provided, these providers will be tried first before falling back to others.
+            When provided, these are tried first among the track's own music providers.
         :raises MusicAssistantError: When no provider can complete the request.
         """
         ref_item = await self.get(item_id, provider_instance_id_or_domain)
@@ -1899,37 +1936,33 @@ class TracksController(MediaControllerBase[Track]):
         provider_responded = False
         unanswered = False
 
-        # Try preferred providers first, then fall back to others
+        def cross_type_candidates(
+            prov_type: ProviderType,
+        ) -> list[tuple[MusicProvider | MusicDiscoveryMixin | None, str | None]]:
+            return [
+                (cast("MusicDiscoveryMixin", prov), None)
+                for prov in self.mass.get_providers_supporting_feature(
+                    ProviderFeature.SIMILAR_TRACKS, priority=(prov_type,)
+                )
+            ]
+
+        candidates = cross_type_candidates(ProviderType.PLUGIN)
         for prov_mapping in sorted_mappings:
             prov = self.mass.get_provider(prov_mapping.provider_instance)
-            if prov is None:
+            # an unloaded source keeps its place, as it leaves any later answer incomplete
+            if prov is None or (
+                isinstance(prov, MusicProvider)
+                and ProviderFeature.SIMILAR_TRACKS in prov.supported_features
+            ):
+                candidates.append((prov, prov_mapping.item_id))
+        candidates += cross_type_candidates(ProviderType.METADATA)
+
+        for candidate, provider_track_id in candidates:
+            if candidate is None:
                 unanswered = True
                 continue
-            if (
-                not isinstance(prov, MusicProvider)
-                or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features
-            ):
-                continue
             result, error = await self._get_similar_tracks_from_provider(
-                prov, ref_item, SIMILAR_ITEMS_LIMIT, provider_track_id=prov_mapping.item_id
-            )
-            if error is not None:
-                last_provider_error = error
-                continue
-            if result is None:
-                continue
-            provider_responded = True
-            if result:
-                return Listing(result, complete=last_provider_error is None and not unanswered)
-
-        # Fallback: consult metadata/plugin providers that claim SIMILAR_TRACKS
-        for prov in self.mass.get_providers_supporting_feature(
-            ProviderFeature.SIMILAR_TRACKS,
-            priority=(ProviderType.METADATA, ProviderType.PLUGIN),
-        ):
-            cross_prov = cast("MusicDiscoveryMixin", prov)
-            result, error = await self._get_similar_tracks_from_provider(
-                cross_prov, ref_item, SIMILAR_ITEMS_LIMIT
+                candidate, ref_item, SIMILAR_ITEMS_LIMIT, provider_track_id=provider_track_id
             )
             if error is not None:
                 last_provider_error = error

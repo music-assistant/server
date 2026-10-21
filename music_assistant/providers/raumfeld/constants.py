@@ -9,6 +9,7 @@ from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
+    create_sample_rates_config_entry,
 )
 
 # Errors expected when the host is (temporarily) unreachable or a zone/room cannot be
@@ -27,6 +28,10 @@ INITIAL_UPDATE_TIMEOUT = 30
 # room to get the hardware serial the player_id is derived from.
 DEVICE_INFO_TIMEOUT = 10
 
+# How long (seconds) to wait for a renderer to answer a state query. Polls run one after the
+# other for all players, so a renderer that stops answering must not hold them up for long.
+RENDERER_QUERY_TIMEOUT = 5
+
 # How often (seconds) the connection supervisor retries a connect while the host is
 # unreachable, and health-checks the host while connected.
 RECONNECT_INTERVAL = 30
@@ -38,15 +43,6 @@ PLAYER_ID_PREFIX = "raumfeld"
 # source id used to expose a room's Line-In via PlayerFeature.SELECT_SOURCE.
 LINE_IN_OBJECT_ID = "0/Line In"
 SOURCE_LINE_IN = "line_in"
-
-# Raumfeld renderers are hi-res capable up to 24-bit/192kHz. Declaring the supported
-# (sample_rate, bit_depth) pairs lets MA output each source at its native rate (so 24-bit
-# lossless passes through) without the user having to enable rates by hand.
-SUPPORTED_SAMPLE_RATES = [
-    (sample_rate, bit_depth)
-    for sample_rate in (44100, 48000, 88200, 96000, 176400, 192000)
-    for bit_depth in (16, 24)
-]
 
 # Per-player config entries (MA adds the flow sample-rate entry itself).
 PLAYER_CONFIG_ENTRIES = [
@@ -66,4 +62,14 @@ PLAYER_CONFIG_ENTRIES = [
     # the Raumfeld app can follow the queue. It carries the title only: the app's clock and
     # duration do not follow along.
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
+    # Sample rates, a choice per room. Up to 24-bit/96kHz plays on every model seen so far;
+    # 176.4 and 192 kHz play on some (the One S) and drop out on others (a 1st generation
+    # One M, and a Connector and Stereo Cubes in one setup). No renderer tells which
+    # (GetProtocolInfo lists no rates), so the higher rates are there to switch on per room.
+    create_sample_rates_config_entry(
+        max_sample_rate=192000,
+        max_bit_depth=24,
+        safe_max_sample_rate=96000,
+        safe_max_bit_depth=24,
+    ),
 ]

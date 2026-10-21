@@ -17,6 +17,7 @@ from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     CONF_AUTHOR_NARRATOR_REPARSE_DONE,
     CONF_CHAPTER_FOLDER_REPARSE_DONE,
+    CONF_STALE_REFS_PRUNE_DONE,
 )
 
 INSTANCE_ID = "filesystem_local--audiobooks"
@@ -311,3 +312,18 @@ async def test_a_forced_reparse_reads_every_book_again(
     _, added = await _sync(provider)
 
     assert added == ["Author/Book/part1.mp3", "Author/Single.m4b"]
+
+
+async def test_the_stale_refs_prune_runs_once(mass: MusicAssistant, tmp_path: Path) -> None:
+    """The prune of dead album and artist links runs after the first complete sync only."""
+    _write_files(tmp_path / "Author", "Single.m4b")
+    provider = await _load_provider(mass, tmp_path)
+
+    with patch.object(
+        provider, "_prune_all_missing_local_refs", new=AsyncMock(return_value=True)
+    ) as prune:
+        await _sync(provider)
+        await _sync(provider)
+
+    prune.assert_awaited_once()
+    assert mass.config.get_raw_provider_config_value(INSTANCE_ID, CONF_STALE_REFS_PRUNE_DONE)

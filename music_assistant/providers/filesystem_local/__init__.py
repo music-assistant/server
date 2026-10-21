@@ -12,7 +12,7 @@ import posixpath
 import secrets
 import stat
 import urllib.parse
-from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Iterator, Sequence
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -38,6 +38,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     SetupFailedError,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -136,6 +137,7 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
+    CONF_STALE_REFS_PRUNE_DONE,
     CUE_EXTENSIONS,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
@@ -181,6 +183,8 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.controllers.music.media.albums import AlbumsController
+    from music_assistant.controllers.music.media.artists import ArtistsController
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -213,10 +217,24 @@ _ALBUM_NFO_FIELDS = (
     "musicbrainzreleasegroupid",
     "musicbrainzalbumartistid",
 )
-_ARTIST_NFO_FIELDS = ("title", "name", "sortname", "biography", "genre", "musicbrainzartistid")
+_ARTIST_NFO_FIELDS = (
+    "title",
+    "name",
+    "sortname",
+    "biography",
+    "genre",
+    "style",
+    "mood",
+    "type",
+    "born",
+    "formed",
+    "died",
+    "disbanded",
+    "musicbrainzartistid",
+)
 # fields whose consumer (split_items) explicitly also accepts a list/tuple of scalars, since
 # xmltodict yields a list for a repeated element (e.g. multiple <genre> tags)
-_LIST_ALLOWED_NFO_FIELDS = ("genre",)
+_LIST_ALLOWED_NFO_FIELDS = ("genre", "style", "mood")
 # the MusicBrainz id fields among the above: if present at all, must also be a valid UUID
 _ALBUM_MBID_FIELDS = ("musicbrainzalbumid", "musicbrainzreleasegroupid", "musicbrainzalbumartistid")
 _ARTIST_MBID_FIELDS = ("musicbrainzartistid",)
@@ -778,6 +796,13 @@ class LocalFileSystemProvider(MusicProvider):
             deleted_files = await self._without_unreachable_files(prev_filenames - cur_filenames)
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
+            if (
+                not self.mass.config.get_raw_provider_config_value(
+                    self.instance_id, CONF_STALE_REFS_PRUNE_DONE, False
+                )
+                and await self._prune_all_missing_local_refs()
+            ):
+                self._update_config_value(CONF_STALE_REFS_PRUNE_DONE, True, immediate=True)
 
         # disable a full rescan after promoting authors/ narrators to artists once the scan completed without errors
         if self._force_full_reparse and not scan_errors.incomplete:
@@ -880,7 +905,11 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
+        if not await self._album_folder_exists(prov_album_id):
+            msg = f"Album folder does not exist: {prov_album_id}"
+            raise MediaNotFoundError(msg)
         parsed_cue_paths: set[str] = set()
+        missing_file_error: FileNotFoundError | None = None
         # early returns below stop iterating this generator before it's exhausted; without an
         # explicit aclose() that leaves its _ondemand_listing_scope() cleanup (a ContextVar
         # reset) to whenever the event loop's async-generator finalizer happens to run, instead
@@ -905,11 +934,18 @@ class LocalFileSystemProvider(MusicProvider):
                             if isinstance(cue_track.album, Album):
                                 return cue_track.album
                         continue
-                    file_item = await self.resolve(prov_mapping.item_id)
+                    try:
+                        file_item = await self.resolve(prov_mapping.item_id)
+                    except FileNotFoundError as err:
+                        # a file moved away that the deletion pass has not unlinked yet
+                        missing_file_error = err
+                        continue
                     tags = await self._parse_tags(file_item)
                     full_track = await self._parse_track(file_item, tags)
                     assert isinstance(full_track.album, Album)
                     return full_track.album
+        if missing_file_error:
+            raise missing_file_error
         msg = f"Album not found: {prov_album_id}"
         raise MediaNotFoundError(msg)
 
@@ -2232,6 +2268,25 @@ class LocalFileSystemProvider(MusicProvider):
         # "Artist 1" vs "Artist 2"), only an (almost) exact one after normalization
         return bool(nfo_name) and compare_strings(str(nfo_name), name)
 
+    async def _album_folder_exists(self, prov_album_id: str) -> bool:
+        """Return False when a library album's own folder is gone, raise when it can't be told."""
+        db_album = await self.mass.music.albums.get_library_item_by_prov_id(
+            prov_album_id, self.instance_id
+        )
+        # an album not in the library is looked up on disk anyway, and one built from tags
+        # alone has no folder of its own
+        if db_album is None or not any(
+            x.provider_instance == self.instance_id and x.item_id == prov_album_id and x.url
+            for x in db_album.provider_mappings
+        ):
+            return True
+        if await self.exists(prov_album_id):
+            return True
+        if not await self._is_reachable():
+            msg = f"Storage of {self.base_path} is not available"
+            raise ProviderUnavailableError(msg)
+        return False
+
     async def _iter_album_tracks(self, prov_album_id: str) -> AsyncGenerator[Track]:
         """
         Yield an album's tracks, lazily, so a caller needing only the first can stop early.
@@ -2407,6 +2462,14 @@ class LocalFileSystemProvider(MusicProvider):
     async def _is_reachable(self) -> bool:
         """Return whether the storage backing this provider can be read."""
         return await self.mass.storage.is_available(self.base_path)
+
+    async def _storage_reachable(self) -> bool:
+        """Return whether the root of this source and every location mounted below it can be read."""
+        try:
+            return await self._is_reachable() and not await self._unreachable_folders()
+        except MusicAssistantError:
+            # a cloud drive raises on an outage, and the mount table may be unavailable
+            return False
 
     async def _unreachable_folders(self) -> list[str]:
         """Return the folders below the root, relative to it, whose storage can not be read."""
@@ -2626,6 +2689,37 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             await self.mass.music.artists.remove_item_from_library(db_row["item_id"])
 
+    async def _prune_all_missing_local_refs(self) -> bool:
+        """Drop the links and images of this source's albums and artists to missing files, once."""
+        # run only once per source: every link and image costs a stat on possibly remote storage,
+        # and the core drops the links of a renamed folder when its files are removed
+        assert self.mass.music.database
+        query = (
+            f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{self.instance_id}' AND media_type = "
+        )
+        album_ids = [
+            db_row["item_id"]
+            for db_row in await self.mass.music.database.get_rows_from_query(
+                f"{query}'album'", limit=0
+            )
+        ]
+        artist_ids = [
+            db_row["item_id"]
+            for db_row in await self.mass.music.database.get_rows_from_query(
+                f"{query}'artist'", limit=0
+            )
+        ]
+        self.logger.info(
+            "Checking %d albums and %d artists of %s for missing files",
+            len(album_ids),
+            len(artist_ids),
+            self.name,
+        )
+        return await self._prune_missing_local_refs(
+            self.mass.music.albums, album_ids
+        ) and await self._prune_missing_local_refs(self.mass.music.artists, artist_ids)
+
     async def _without_unreachable_files(self, deleted_files: set[str]) -> set[str]:
         """
         Return the ids/paths to delete, leaving out those in a folder whose storage is gone.
@@ -2729,6 +2823,67 @@ class LocalFileSystemProvider(MusicProvider):
             artist_tracks = await self.mass.music.artists.tracks(artist_id, "library", limit=1)
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
+
+    async def _prune_missing_local_refs(
+        self, controller: AlbumsController | ArtistsController, item_ids: Iterable[str | int]
+    ) -> bool:
+        """
+        Drop the links of library items to folders of this source that no longer exist.
+
+        Also drops the item's images of this source whose files are gone. An item keeps its last
+        link. The core rebuilds an item that is left with a single link.
+
+        :param controller: The controller of the items.
+        :param item_ids: The library ids of the items to check.
+        :return: False when nothing was dropped because the storage can not be read right now.
+        """
+        refs: tuple[list[tuple[str | int, str]], dict[str | int, set[str]]] | None
+        try:
+            refs = await self._missing_local_refs(controller, item_ids)
+        except ProviderUnavailableError:
+            # a remote storage that times out while being probed
+            refs = None
+        # storage that dropped during the checks reads as missing files, they are still there
+        if refs is None or (any(refs) and not await self._storage_reachable()):
+            self.logger.warning(
+                "Keeping the references of %s to files that can not be read right now", self.name
+            )
+            return False
+        stale_links, stale_images = refs
+        for item_id, prov_item_id in stale_links:
+            await controller.remove_provider_mapping(item_id, self.instance_id, prov_item_id)
+        for item_id, paths in stale_images.items():
+            await controller.remove_provider_images(item_id, self.instance_id, paths)
+        return True
+
+    async def _missing_local_refs(
+        self, controller: AlbumsController | ArtistsController, item_ids: Iterable[str | int]
+    ) -> tuple[list[tuple[str | int, str]], dict[str | int, set[str]]]:
+        """Return the (item, mapping) pairs to missing folders and per item the missing images."""
+        stale: list[tuple[str | int, str]] = []
+        stale_images: dict[str | int, set[str]] = {}
+        for item_id in item_ids:
+            library_item = await controller.get_library_item(item_id)
+            missing = [
+                mapping.item_id
+                for mapping in library_item.provider_mappings
+                if mapping.provider_instance == self.instance_id
+                and mapping.url
+                and not await self._has_path(mapping.url)
+            ]
+            # the item still has library tracks, so never drop its last link
+            stale.extend(
+                (item_id, prov_item_id)
+                for prov_item_id in missing[: len(library_item.provider_mappings) - 1]
+            )
+            if missing_images := {
+                image.path
+                for image in library_item.metadata.images or []
+                if image.provider == self.instance_id
+                and not await self._has_path(image.path.split("?cs=", 1)[0])
+            }:
+                stale_images[item_id] = missing_images
+        return stale, stale_images
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""
@@ -3705,8 +3860,11 @@ class LocalFileSystemProvider(MusicProvider):
                         )
                     ]
                 )
-            elif fallback_action == "folder_name" and album_dir:
-                possible_artist_folder = os.path.dirname(album_dir)
+            elif (
+                fallback_action == "folder_name"
+                and album_dir
+                and (possible_artist_folder := os.path.dirname(album_dir))
+            ):
                 log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
                     track_path,
@@ -3722,8 +3880,10 @@ class LocalFileSystemProvider(MusicProvider):
                         )
                     ]
                 )
-            # fallback to track artists (if defined by user)
-            elif fallback_action == "track_artist":
+            # fallback to track artists (if defined by user, or for an album folder at share root)
+            elif fallback_action == "track_artist" or (
+                fallback_action == "folder_name" and album_dir
+            ):
                 log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using track artist(s) as fallback",
                     track_path,

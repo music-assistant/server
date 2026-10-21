@@ -1393,6 +1393,15 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         # audiobookshelf image urls carried its api token, which must not reach clients
         await _drop_audiobookshelf_image_tokens(database)
 
+    if prev_version <= 68:
+        # more classical genre aliases that are not classical music move to the genre they
+        # belong to, and the words for classical and chamber music in other languages join
+        await _move_more_classical_genre_aliases(database, logger)
+
+    if prev_version <= 69:
+        # apple music radio stations are dynamic radios instead of dynamic playlists
+        await _move_apple_music_stations_to_radios(database)
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active
@@ -1477,6 +1486,80 @@ async def _move_classical_genre_aliases(
         "K-Pop",
         "Soundtracks and Musicals",
     )
+    await _change_classical_genre_aliases(database, logger, moved_aliases, dropped_aliases)
+
+
+async def _move_more_classical_genre_aliases(
+    database: DatabaseConnection, logger: logging.Logger
+) -> None:
+    """
+    Move more misplaced aliases out of the default music classical genre.
+
+    Also adds the words for classical and chamber music in other languages.
+
+    :param database: The library database connection.
+    :param logger: The logger to report progress on.
+    """
+    # frozen copy of the genre_mapping.json change: target translation_key -> moved aliases
+    moved_aliases: dict[str, tuple[str, ...]] = {
+        "soundtrack": ("Cinematic Classical",),
+        "new_age": ("Post-Classical", "Solo Piano"),
+    }
+    # not classical music, or already owned by another default genre
+    dropped_aliases = (
+        "Duets",
+        "March",
+        "Modern Classical",
+        "Quartets",
+        "Quintets",
+        "Secular Vocal Music",
+        "Third Stream",
+        "Trios",
+        "Vocal Music",
+        "Vocal Music (Secular and Sacred)",
+    )
+    added_aliases = (
+        "Kamermuziek",
+        "Kammermusik",
+        "Kammermusikk",
+        "Klassiek",
+        "Klassik",
+        "Klassisk",
+        "Klassisk Musik",
+        "Klassische Musik",
+        "Musica Classica",
+        "Musica da Camera",
+        "Musique Classique",
+        "Musique de Chambre",  # codespell:ignore chambre
+        "Muzyka Kameralna",
+        "Muzyka Klasyczna",
+        "Música Clásica",
+        "Música de Cámara",
+    )
+    await _change_classical_genre_aliases(
+        database, logger, moved_aliases, dropped_aliases, added_aliases
+    )
+
+
+async def _change_classical_genre_aliases(
+    database: DatabaseConnection,
+    logger: logging.Logger,
+    moved_aliases: dict[str, tuple[str, ...]],
+    dropped_aliases: tuple[str, ...],
+    added_aliases: tuple[str, ...] = (),
+) -> None:
+    """
+    Change the aliases of the default music classical genre.
+
+    Mappings created through a removed alias are dropped, so the next genre scan maps
+    those items again.
+
+    :param database: The library database connection.
+    :param logger: The logger to report progress on.
+    :param moved_aliases: Aliases to move to another default genre, by its translation_key.
+    :param dropped_aliases: Aliases to remove from the classical genre only.
+    :param added_aliases: Aliases to add to the classical genre.
+    """
     removed_norms = {
         create_safe_string(alias, True, True)
         for alias in (*dropped_aliases, *(a for x in moved_aliases.values() for a in x))
@@ -1517,13 +1600,23 @@ async def _move_classical_genre_aliases(
             removed = [
                 x for x in aliases or [] if create_safe_string(x, True, True) in removed_norms
             ]
-            if aliases and removed:
+            kept = [x for x in aliases or [] if x not in removed]
+            kept_norms = {create_safe_string(x, True, True) for x in kept}
+            added = [
+                x for x in added_aliases if create_safe_string(x, True, True) not in kept_norms
+            ]
+            if aliases is not None and (removed or added):
                 await database.update(
                     DB_TABLE_GENRES,
                     {"item_id": row["item_id"]},
-                    {"genre_aliases": serialize_to_json([x for x in aliases if x not in removed])},
+                    {"genre_aliases": serialize_to_json([*kept, *added])},
                 )
-                logger.info("Removed %d misplaced alias(es) from the classical genre", len(removed))
+                if removed:
+                    logger.info(
+                        "Removed %d misplaced alias(es) from the classical genre", len(removed)
+                    )
+                if added:
+                    logger.info("Added %d alias(es) to the classical genre", len(added))
             # mappings are cleaned up even when the alias list was already clean, as an
             # earlier alias edit can have left them behind
             if has_mapping_table:
@@ -1866,3 +1959,114 @@ async def _drop_audiobookshelf_image_tokens(database: DatabaseConnection) -> Non
                 await database.update(
                     table, {id_column: db_row[id_column]}, {column: serialize_to_json(value)}
                 )
+
+
+async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> None:
+    """Move the library playlists and plays of Apple Music radio stations to radios."""
+    copied_columns = (
+        "name",
+        "sort_name",
+        "metadata",
+        "play_count",
+        "last_played",
+        "timestamp_added",
+        "timestamp_modified",
+        "search_name",
+        "search_sort_name",
+    )
+    if (
+        {"media_type", "item_id", "provider_domain", "provider_item_id"}
+        <= await _table_columns(database, DB_TABLE_PROVIDER_MAPPINGS)
+        and set(copied_columns) <= await _table_columns(database, DB_TABLE_PLAYLISTS)
+        and {*copied_columns, "is_dynamic", "is_endless"}
+        <= await _table_columns(database, DB_TABLE_RADIOS)
+    ):
+        # (table, id column, scope) of every row that refers to a library item by its id
+        references = [
+            (table, id_column, scope)
+            for table, id_column, scope in (
+                (DB_TABLE_PROVIDER_MAPPINGS, "item_id", ""),
+                (DB_TABLE_FAVORITES, "item_id", ""),
+                (DB_TABLE_EXTERNAL_ID_LOOKUP, "item_id", ""),
+                (DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, "media_id", ""),
+                (DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, "media_id", ""),
+                (DB_TABLE_MEDIA_PROGRESS, "item_id", " AND provider = 'library'"),
+                (DB_TABLE_PLAY_HISTORY, "item_id", " AND provider = 'library'"),
+            )
+            if {"media_type", id_column, *(("provider",) if scope else ())}
+            <= await _table_columns(database, table)
+        ]
+        for row in await database.get_rows_from_query(
+            f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "WHERE media_type = 'playlist' AND provider_domain = 'apple_music' "
+            "AND provider_item_id GLOB 'ra.*'",
+            limit=0,
+        ):
+            playlist = await database.get_row(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
+            if playlist is None:
+                continue
+            values = {column: playlist[column] for column in copied_columns}
+            values["metadata"] = _station_radio_metadata(values["metadata"])
+            radio_id = await database.insert(
+                DB_TABLE_RADIOS,
+                {
+                    **{key: value for key, value in values.items() if value is not None},
+                    "is_dynamic": True,
+                    "is_endless": True,
+                },
+            )
+            for table, id_column, scope in references:
+                where = f"media_type = 'playlist' AND {id_column} = :old_id{scope}"
+                params = {"old_id": row["item_id"], "new_id": radio_id}
+                await database.execute(
+                    f"UPDATE OR IGNORE {table} SET media_type = 'radio', {id_column} = :new_id "
+                    f"WHERE {where}",
+                    params,
+                )
+                await database.execute(f"DELETE FROM {table} WHERE {where}", params)
+            await database.delete(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
+    # plays of a station outside the library are keyed by the station id
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        columns = await _table_columns(database, table)
+        if not {"media_type", "item_id", "provider"} <= columns:
+            continue
+        where = (
+            "media_type = 'playlist' AND item_id GLOB 'ra.*' "
+            "AND (provider = 'apple_music' OR provider GLOB 'apple_music--*')"
+        )
+        await database.execute(f"UPDATE OR IGNORE {table} SET media_type = 'radio' WHERE {where}")
+        await database.execute(f"DELETE FROM {table} WHERE {where}")
+        if "image" in columns:
+            await database.execute(
+                f"UPDATE {table} SET image = REPLACE(image, "
+                '\'"path":"playlist/ra.\', \'"path":"radio/ra.\') '
+                "WHERE media_type = 'radio' AND image GLOB '*\"path\":\"playlist/ra.*'"
+            )
+
+
+def _station_radio_metadata(metadata: Any) -> Any:
+    """Return station playlist metadata with its artwork tokens turned into radio tokens."""
+    try:
+        value = json_loads(metadata)
+    except ValueError:
+        return metadata
+    images = value.get("images") if isinstance(value, dict) else None
+    changed = False
+    for image in images if isinstance(images, list) else []:
+        if (
+            isinstance(image, dict)
+            and not image.get("remotely_accessible")
+            and isinstance(path := image.get("path"), str)
+            and path.startswith("playlist/ra.")
+        ):
+            image["path"] = f"radio/{path.removeprefix('playlist/')}"
+            changed = True
+    return serialize_to_json(value) if changed else metadata
+
+
+async def _table_columns(database: DatabaseConnection, table: str) -> set[str]:
+    """Return the column names of a table, empty when the table does not exist."""
+    return {
+        x["name"]
+        for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+    }
