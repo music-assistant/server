@@ -217,10 +217,24 @@ _ALBUM_NFO_FIELDS = (
     "musicbrainzreleasegroupid",
     "musicbrainzalbumartistid",
 )
-_ARTIST_NFO_FIELDS = ("title", "name", "sortname", "biography", "genre", "musicbrainzartistid")
+_ARTIST_NFO_FIELDS = (
+    "title",
+    "name",
+    "sortname",
+    "biography",
+    "genre",
+    "style",
+    "mood",
+    "type",
+    "born",
+    "formed",
+    "died",
+    "disbanded",
+    "musicbrainzartistid",
+)
 # fields whose consumer (split_items) explicitly also accepts a list/tuple of scalars, since
 # xmltodict yields a list for a repeated element (e.g. multiple <genre> tags)
-_LIST_ALLOWED_NFO_FIELDS = ("genre",)
+_LIST_ALLOWED_NFO_FIELDS = ("genre", "style", "mood")
 # the MusicBrainz id fields among the above: if present at all, must also be a valid UUID
 _ALBUM_MBID_FIELDS = ("musicbrainzalbumid", "musicbrainzreleasegroupid", "musicbrainzalbumartistid")
 _ARTIST_MBID_FIELDS = ("musicbrainzartistid",)

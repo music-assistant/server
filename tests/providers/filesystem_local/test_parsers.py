@@ -2,8 +2,9 @@
 
 import uuid
 
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ArtistEntityType, ExternalID
 from music_assistant_models.media_items import Album, Artist
+from music_assistant_models.media_items.metadata import LifeSpan
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.filesystem_local.parsers import (
@@ -82,6 +83,10 @@ def test_parse_artist_nfo() -> None:
         assert res.mbid == mb_artist
         assert res.metadata.description == "Test Biography"
         assert res.metadata.genres == {"Test Genre"}
+        assert res.metadata.style == "Rock; Pop"
+        assert res.metadata.mood == "Energetic"
+        assert res.metadata.artist_entity_type == ArtistEntityType.GROUP
+        assert res.metadata.life_span == LifeSpan(begin="1960", end="1970-04-10", ended=True)
 
     parse_artist_nfo(
         artist,
@@ -91,6 +96,11 @@ def test_parse_artist_nfo() -> None:
             "musicbrainzartistid": mb_artist,
             "biography": "Test Biography",
             "genre": "Test Genre",
+            "style": ["Rock", "Pop"],
+            "mood": "Energetic",
+            "type": "Group",
+            "formed": "1960",
+            "disbanded": "1970-04-10",
         },
     )
     _asserts(artist)
@@ -106,6 +116,22 @@ def test_parse_artist_nfo() -> None:
         },
     )
     _asserts(artist)
+
+
+def test_parse_artist_nfo_life_span() -> None:
+    """Born/died take part in the life span; dates that are not ISO are ignored."""
+    artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
+    parse_artist_nfo(artist, {"born": "1958-08-29"})
+    assert artist.metadata.life_span == LifeSpan(begin="1958-08-29", end=None, ended=False)
+
+    artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
+    parse_artist_nfo(artist, {"born": "August 29, 1958", "died": "2009-06"})
+    assert artist.metadata.life_span == LifeSpan(begin=None, end="2009-06", ended=True)
+
+    artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
+    parse_artist_nfo(artist, {"born": "unknown", "type": "not-a-type"})
+    assert artist.metadata.life_span is None
+    assert artist.metadata.artist_entity_type is None
 
 
 def test_nfo_album_artist() -> None:
