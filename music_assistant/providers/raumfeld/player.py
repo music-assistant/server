@@ -1102,15 +1102,9 @@ class RaumfeldPlayer(Player):
         self.update_state()
 
     async def _zone_command(self, zone: list[str], action_name: str, **arguments: str) -> None:
-        """
-        Send a transport command to the zone's renderer, raising when it is not carried out.
-
-        :param zone: The rooms of the zone.
-        :param action_name: The AVTransport action to call.
-        :param arguments: The action's arguments, besides the instance id.
-        """
-        # not through hassfeld's zone calls: those swallow every error, so a command the
-        # host rejected left the player reporting playback that never started
+        """Send a transport command to the zone's renderer, raising when it is not carried out."""
+        # straight to the renderer rather than through hassfeld's zone calls, which swallow
+        # every error, so a command the host rejects fails here instead of passing silently
         if (location := self.raumfeld.zone_location(zone)) is None:
             raise PlayerCommandFailed(
                 f"{action_name} failed on {self.room}: the host has not published its zone"
@@ -1125,11 +1119,7 @@ class RaumfeldPlayer(Player):
             raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
 
     async def _stop_before_switching(self, zone: list[str]) -> None:
-        """
-        Stop the zone before it is pointed at another stream, if that works.
-
-        :param zone: The rooms of the zone.
-        """
+        """Stop the zone before it is pointed at another stream, if that works."""
         # only for a clean switch: the new stream is set and started either way, and that
         # is what reports a failure
         try:
