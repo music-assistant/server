@@ -27,7 +27,7 @@ awesomeversion>=24.6.0
 bandcamp-async-api==0.2.2
 beat-this==1.1.0
 bidict==0.23.1
-certifi==2025.11.12
+certifi==2026.10.19
 chardet==7.6.0
 colorlog==6.12.0
 cryptography==50.0.0
