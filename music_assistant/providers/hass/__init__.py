@@ -267,6 +267,9 @@ class HomeAssistantProvider(PluginProvider):
         )
         try:
             await self.hass.connect()
+        except asyncio.CancelledError:
+            await self._cleanup_failed_init()
+            raise
         except BaseHassClientError as err:
             await self._cleanup_failed_init()
             err_msg = str(err) or err.__class__.__name__
