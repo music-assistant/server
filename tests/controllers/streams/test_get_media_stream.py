@@ -18,6 +18,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.constants import HLS_RADIO_INPUT_BURST, RADIO_BUFFER_SIZE
 from music_assistant.helpers.audio import HTTP_HEADERS
 from music_assistant.helpers.mp3 import NO_SEEK_HINTS, Mp3SeekHints
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
@@ -1200,3 +1201,34 @@ async def test_get_media_stream_leaves_other_streams_alone(
     assert "-skip_initial_bytes" not in args
     assert "-fflags" not in args
     assert args[: len(input_args)] == input_args
+
+
+@pytest.mark.asyncio
+async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HLS radio is read at playback pace with a head start that rides out a segment reload."""
+    audio = _make_audio_controller()
+
+    async def _get_hls_substream(_url: str) -> SimpleNamespace:
+        return SimpleNamespace(path="http://test.invalid/media.m3u8")
+
+    monkeypatch.setattr(audio, "get_hls_substream", _get_hls_substream)
+    streamdetails = StreamDetails(
+        provider="test_provider",
+        item_id="station-1",
+        audio_format=AudioFormat(content_type=ContentType.AAC),
+        media_type=MediaType.RADIO,
+        stream_type=StreamType.HLS,
+        path="http://test.invalid/master.m3u8",
+    )
+
+    _, _, extra_input_args = await audio._resolve_media_stream_source(streamdetails, 0, [])
+
+    assert extra_input_args == [
+        "-stream_loop",
+        "-1",
+        "-readrate",
+        "1",
+        "-readrate_initial_burst",
+        str(HLS_RADIO_INPUT_BURST),
+    ]
+    assert HLS_RADIO_INPUT_BURST < RADIO_BUFFER_SIZE
