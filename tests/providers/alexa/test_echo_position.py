@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import aiohttp
 import pytest
@@ -202,3 +202,79 @@ async def test_playback_state_failures_return_none(session: MagicMock) -> None:
     _, provider = _player()
     provider.mass.http_session = session
     assert await get_playback_state(provider, "Echo") is None
+
+
+@pytest.mark.parametrize("command", ["stop", "new stream"])
+async def test_report_fetched_before_a_playback_command_is_discarded(command: str) -> None:
+    """A stop or new stream while the request is out makes its report stale."""
+    player, _ = _player()
+
+    async def slow_lookup(*_args: Any) -> dict[str, Any]:
+        player._playback_generation += 1  # what stop()/play_media() do first
+        if command == "stop":
+            player._attr_playback_state = PlaybackState.IDLE
+        return _report()
+
+    with (
+        patch.object(alexa, "get_playback_state", AsyncMock(side_effect=slow_lookup)),
+        patch.object(player, "update_state") as update_state,
+    ):
+        await player._correct_position()
+    update_state.assert_not_called()
+    assert player._attr_elapsed_time == 0
+    expected = PlaybackState.IDLE if command == "stop" else PlaybackState.PLAYING
+    assert player.playback_state == expected
+
+
+@pytest.mark.parametrize("method", ["stop", "play", "pause", "play_media"])
+async def test_playback_commands_invalidate_reports_in_flight(method: str) -> None:
+    """Every playback command bumps the generation that in-flight reports are checked against."""
+    player, provider = _player()
+    provider.get_intent_utterance = AsyncMock(return_value="ask music assistant to stop")
+    provider.mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma/flow/x.mp3")
+    provider.config = MagicMock()
+    provider.config.get_value.return_value = "en-US"
+    api = MagicMock(run_custom=AsyncMock())
+    with (
+        patch.object(AlexaPlayer, "api", new_callable=PropertyMock, return_value=api),
+        patch.object(player, "_send_to_open_screen", AsyncMock(return_value=False)),
+        patch.object(alexa, "api_request", AsyncMock(return_value="{}")),
+        patch.object(player, "update_state"),
+    ):
+        before = player._playback_generation
+        if method == "play_media":
+            await player.play_media(MagicMock(title="Song", image_url=None))
+        else:
+            await getattr(player, method)()
+    assert player._playback_generation == before + 1
+
+
+async def test_pause_moves_the_queue_to_the_reported_offset_first() -> None:
+    """MA's real update path re-bases the queue while the player still counts as playing."""
+    player, provider = _player()
+    # Let the player's own position count: no audio-source session or other player to mirror.
+    provider.mass.players.get_audio_source_session.return_value = None
+    provider.mass.players.get_player.return_value = None
+    jumps: list[tuple[PlaybackState, float | None]] = []
+    provider.mass.players.on_player_position_jumped.side_effect = lambda p: jumps.append(
+        (p.state.playback_state, p.state.corrected_elapsed_time)
+    )
+    with patch("music_assistant.models.player.time.time", return_value=NOW):
+        player.update_state()  # settle the initial state (clock estimate at 600 s)
+    jumps.clear()
+    with (
+        patch.object(
+            alexa,
+            "get_playback_state",
+            AsyncMock(return_value=_report(activity="STOPPED", offsetMs=90_500)),
+        ),
+        patch("music_assistant.providers.alexa.time.time", return_value=NOW),
+        patch("music_assistant.models.player.time.time", return_value=NOW),
+    ):
+        await player._correct_position()
+    assert jumps
+    state, elapsed = jumps[0]
+    assert state == PlaybackState.PLAYING
+    assert elapsed == pytest.approx(90.5)
+    assert player.playback_state == PlaybackState.PAUSED
+    assert player.state.corrected_elapsed_time == pytest.approx(90.5)
