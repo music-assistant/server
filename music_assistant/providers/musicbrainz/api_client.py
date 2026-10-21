@@ -45,6 +45,19 @@ class MusicBrainzAPIClient:
         """
         return await self._request(endpoint, **kwargs)
 
+    @use_cache(86400)  # an unknown URL is asked again after a day
+    async def get_url_data(self, /, resource: str, inc: str) -> Any:
+        """
+        Fetch what MusicBrainz links to a URL.
+
+        A known URL is cached for 30 days, an unknown one for a day, so a link a user adds on
+        MusicBrainz is picked up the next day.
+
+        :param resource: The URL to look up, e.g. ``https://www.deezer.com/artist/805``.
+        :param inc: The relations to include, e.g. ``artist-rels``.
+        """
+        return await self._get_known_url_data(resource=resource, inc=inc)
+
     @use_cache(86400 * 7)  # Cache for 7 days
     @throttle_with_retries
     async def get_browse_data(self, /, endpoint: str, **kwargs: str) -> Any:
@@ -57,6 +70,12 @@ class MusicBrainzAPIClient:
         :param kwargs: Additional query parameters forwarded as URL params.
         """
         return await self._request(endpoint, **kwargs)
+
+    @use_cache(86400 * 30, cache_none=False)
+    @throttle_with_retries
+    async def _get_known_url_data(self, /, resource: str, inc: str) -> Any:
+        """Fetch what MusicBrainz links to a URL, caching only a URL it knows."""
+        return await self._request("url", resource=resource, inc=inc)
 
     async def _request(self, endpoint: str, **params: str) -> Any:
         """Perform one request against the MusicBrainz API and return its JSON body."""

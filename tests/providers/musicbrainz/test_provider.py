@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,6 +47,11 @@ from tests.common import use_real_create_task
 # ---------------------------------------------------------------------------
 
 
+async def _url_lookup_via(get_data: AsyncMock, **kwargs: Any) -> Any:
+    """Answer a url lookup through the faked get_data, so it is recorded with the others."""
+    return await get_data("url", **kwargs)
+
+
 def _provider(
     response: Any, release_group_response: Any = None
 ) -> tuple[MusicbrainzProvider, AsyncMock]:
@@ -64,6 +70,7 @@ def _provider(
     get_data = AsyncMock(side_effect=_answer)
     api_client = MagicMock()
     api_client.get_data = get_data
+    api_client.get_url_data = AsyncMock(side_effect=partial(_url_lookup_via, get_data))
     provider._api_client = api_client
     return provider, get_data
 
@@ -954,6 +961,7 @@ def _routed_provider(routes: dict[str, Any]) -> tuple[MusicbrainzProvider, Async
     get_data = AsyncMock(side_effect=_answer)
     api_client = MagicMock()
     api_client.get_data = get_data
+    api_client.get_url_data = AsyncMock(side_effect=partial(_url_lookup_via, get_data))
     provider._api_client = api_client
     return provider, get_data
 
@@ -2381,6 +2389,7 @@ def _browsing_provider(pages: dict[str, Any]) -> tuple[MusicbrainzProvider, Magi
 
     api_client = MagicMock()
     api_client.get_data = AsyncMock(return_value=None)
+    api_client.get_url_data = AsyncMock(return_value=None)
     api_client.get_browse_data = AsyncMock(side_effect=_answer)
     provider._api_client = api_client
     return provider, api_client
@@ -2540,3 +2549,25 @@ async def test_api_client_caches_a_browse_for_a_week_and_a_lookup_for_a_month() 
         f"get_browse_data.release-group.artist{RADIOHEAD_MBID}.offset0": 86400 * 7,
         f"get_data.artist/{RADIOHEAD_MBID}": 86400 * 30,
     }
+
+
+async def test_api_client_caches_a_known_url_for_a_month_and_an_unknown_one_for_a_day() -> None:
+    """A URL MusicBrainz does not know yet is asked again the next day, so a new link is found."""
+    known = _url_lookup("artist", RADIOHEAD_MBID)
+    client, mass = _api_client(known)
+    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == known
+    await asyncio.sleep(0)
+    assert {
+        store.kwargs["key"]: store.kwargs["expiration"] for store in mass.cache.set.await_args_list
+    } == {
+        f"get_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400,
+        f"_get_known_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400 * 30,
+    }
+
+    client, mass = _api_client(None)
+    mass.http_session.get.return_value._response.status = 404
+    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") is None
+    await asyncio.sleep(0)
+    assert {
+        store.kwargs["key"]: store.kwargs["expiration"] for store in mass.cache.set.await_args_list
+    } == {f"get_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400}

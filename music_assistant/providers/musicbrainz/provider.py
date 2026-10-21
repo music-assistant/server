@@ -698,7 +698,7 @@ class MusicbrainzProvider(MetadataProvider):
             entities of that kind.
         """
         entity = URL_RELATION_ENTITY[media_type]
-        result = await self._api_client.get_data("url", resource=resource_url, inc=f"{entity}-rels")
+        result = await self._api_client.get_url_data(resource=resource_url, inc=f"{entity}-rels")
         if not result:
             return None
         ids = {
