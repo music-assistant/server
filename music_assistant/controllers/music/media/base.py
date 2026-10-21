@@ -1729,6 +1729,34 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             item = await self.get_library_item(db_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
 
+    async def update_description(
+        self, item_id: str | int, description: str, description_language: str | None
+    ) -> None:
+        """
+        Replace the description stored for a library item.
+
+        :param item_id: The library item ID.
+        :param description: The new description.
+        :param description_language: The language of the new description.
+        """
+        db_id = int(item_id)  # ensure integer
+        metadata = await self._get_stored_metadata(db_id)
+        if (metadata.description, metadata.description_language) == (
+            description,
+            description_language,
+        ):
+            return
+        metadata.description = description
+        metadata.description_language = description_language
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {"metadata": serialize_to_json(metadata)},
+        )
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            item = await self.get_library_item(db_id)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
+
     @final
     async def set_provider_mappings(
         self,

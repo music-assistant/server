@@ -12,10 +12,8 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-from xml.parsers.expat import ExpatError
+from typing import TYPE_CHECKING
 
-import xmltodict
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.compare import compare_strings
@@ -279,22 +277,6 @@ def is_image_file(item: FileSystemItem) -> bool:
 
 # folder names that denote a disc/volume subfolder underneath an album folder; its own NFO is
 # never trusted as the album's identity, only the parent's is
-def parse_nfo_root(data: bytes, root_tag: str) -> dict[str, Any] | None:
-    """
-    Parse an NFO file's bytes and return its expected root element, or None when malformed.
-
-    :param data: The raw NFO file content.
-    :param root_tag: The expected root element name (``album`` or ``artist``).
-    """
-    try:
-        text = data.decode("utf-8")
-        parsed = xmltodict.parse(text)
-    except UnicodeDecodeError, ExpatError, ValueError:
-        return None
-    root = parsed.get(root_tag)
-    return root if isinstance(root, dict) else None
-
-
 def get_folder_signature(items: list[FileSystemItem]) -> str:
     """
     Return an order-independent digest of the given files' paths, mtimes and sizes.

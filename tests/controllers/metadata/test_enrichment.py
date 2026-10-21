@@ -58,6 +58,8 @@ def _metadata_provider(name: str, feature: ProviderFeature) -> MagicMock:
     provider.name = name
     provider.priority = 0
     provider.supported_features = {feature}
+    provider.is_local = False
+    provider.save_artist_metadata = AsyncMock()
     return provider
 
 
@@ -84,6 +86,7 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
     music = enrichment.mass.music
     for controller in (music.artists, music.albums, music.tracks):
         controller.update_item_in_library = AsyncMock()
+        controller.update_description = AsyncMock()
         controller.link_musicbrainz_mappings = AsyncMock(return_value=[])
     music.albums.get_library_album_tracks = AsyncMock(return_value=[])
     music.albums.link_album_tracks = AsyncMock()
@@ -219,6 +222,147 @@ async def test_artist_enrichment_survives_provider_error() -> None:
     _logger(enrichment).warning.assert_called_once()
     _mass(enrichment).music.artists.update_item_in_library.assert_awaited_once()
     assert artist.metadata.last_refresh == NOW
+
+
+@pytest.mark.asyncio
+async def test_local_artist_provider_runs_without_online_metadata_or_mbid() -> None:
+    """A local provider is asked about an artist without mbid while online metadata is off."""
+    enrichment = _enrichment()
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(return_value=None)
+    local = _metadata_provider("local", ProviderFeature.ARTIST_METADATA)
+    local.is_local = True
+    local.get_artist_metadata = AsyncMock(return_value=None)
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = Artist(item_id="1", provider="library", name="Test Artist", provider_mappings=set())
+
+    with (
+        patch.object(enrichment.config, "get_value", return_value=False),
+        patch.object(enrichment, "_get_artist_mbid", AsyncMock(return_value=None)),
+    ):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    local.get_artist_metadata.assert_awaited_once_with(artist)
+    online.get_artist_metadata.assert_not_awaited()
+
+
+def _bio_provider(name: str, description: str, language: str, is_local: bool) -> MagicMock:
+    """Return an artist metadata provider supplying a bio."""
+    provider = _metadata_provider(name, ProviderFeature.ARTIST_METADATA)
+    provider.is_local = is_local
+    provider.get_artist_metadata = AsyncMock(
+        return_value=MediaItemMetadata(description=description, description_language=language)
+    )
+    return provider
+
+
+def _artist_with_bio(description: str, language: str) -> Artist:
+    """Return a library artist with an mbid and a stored bio."""
+    return Artist(
+        item_id="1",
+        provider="library",
+        name="Test Artist",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")},
+        metadata=MediaItemMetadata(description=description, description_language=language),
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_artist_bio_is_picked_first_and_replaces_the_stored_bio() -> None:
+    """A local bio comes first and is written over a stored bio in the same language."""
+    enrichment = _enrichment()
+    online = _bio_provider("online", "Online bio", "en", is_local=False)
+    local = _bio_provider("local", "Own bio", "en", is_local=True)
+    enrichment.providers = [online, local]  # type: ignore[misc]
+    artist = _artist_with_bio("Stored bio", "en")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert (artist.metadata.description, artist.metadata.description_language) == ("Own bio", "en")
+    _mass(enrichment).music.artists.update_description.assert_awaited_once_with(
+        "1", "Own bio", "en"
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_artist_bio_follows_the_language_rules() -> None:
+    """A local bio outside the preferred language loses to one in it and is not written."""
+    enrichment = _enrichment()
+    online = _bio_provider("online", "Online bio", "en", is_local=False)
+    local = _bio_provider("local", "Eigen bio", "nl", is_local=True)
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = _artist_with_bio("Stored bio", "de")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.description == "Online bio"
+    _mass(enrichment).music.artists.update_description.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_online_artist_bio_never_replaces_a_stored_bio() -> None:
+    """With only online bios the stored bio is left to the regular library update."""
+    enrichment = _enrichment()
+    enrichment.providers = [  # type: ignore[misc]
+        _bio_provider("online", "New Wikipedia bio", "en", is_local=False)
+    ]
+    artist = _artist_with_bio("Wikipedia bio", "en")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    _mass(enrichment).music.artists.update_description.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_local_artist_genres_are_kept_when_local_genres_are_preferred() -> None:
+    """Preferring local genres drops online genres but keeps those of a local provider."""
+    enrichment = _enrichment()
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(return_value=MediaItemMetadata(genres={"Pop"}))
+    local = _metadata_provider("local", ProviderFeature.ARTIST_METADATA)
+    local.is_local = True
+    local.get_artist_metadata = AsyncMock(return_value=MediaItemMetadata(genres={"Rock"}))
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Test Artist",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")},
+        metadata=MediaItemMetadata(genres={"Jazz"}),
+    )
+
+    with patch.object(enrichment.config, "get_value", return_value=True):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.genres == {"Jazz", "Rock"}
+
+
+@pytest.mark.asyncio
+async def test_artist_metadata_is_offered_for_saving_before_it_is_stored() -> None:
+    """Every metadata provider gets the merged artist before the library is updated."""
+    enrichment = _enrichment()
+    provider = _metadata_provider("local", ProviderFeature.ARTIST_METADATA)
+    provider.get_artist_metadata = AsyncMock(return_value=MediaItemMetadata(genres={"Rock"}))
+    update_item = _mass(enrichment).music.artists.update_item_in_library
+    provider.save_artist_metadata = AsyncMock(
+        side_effect=lambda _artist: update_item.assert_not_awaited()
+    )
+    enrichment.providers = [provider]  # type: ignore[misc]
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Test Artist",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")},
+    )
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    provider.save_artist_metadata.assert_awaited_once_with(artist)
+    assert artist.metadata.genres == {"Rock"}
+    update_item.assert_awaited_once()
 
 
 async def _refresh(
