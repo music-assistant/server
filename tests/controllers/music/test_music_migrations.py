@@ -1378,3 +1378,146 @@ async def test_migration_drops_the_token_from_audiobookshelf_image_urls(
     for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
         played = await database.get_rows_from_query(f"SELECT image FROM {table}")
         assert json.loads(played[0]["image"]) == clean_cover
+
+
+async def _create_station_tables(database: DatabaseConnection) -> None:
+    """Create the tables a pre-70 Apple Music station playlist lives in, real-shaped."""
+    item_columns = (
+        "[item_id] INTEGER PRIMARY KEY AUTOINCREMENT, [name] TEXT NOT NULL, "
+        "[sort_name] TEXT NOT NULL, [metadata] json NOT NULL, [play_count] INTEGER DEFAULT 0, "
+        "[last_played] INTEGER DEFAULT 0, [timestamp_added] INTEGER, "
+        "[timestamp_modified] INTEGER NOT NULL DEFAULT 0, [search_name] TEXT NOT NULL, "
+        "[search_sort_name] TEXT NOT NULL"
+    )
+    playlog_columns = (
+        "[id] INTEGER PRIMARY KEY AUTOINCREMENT, [item_id] TEXT NOT NULL, "
+        "[provider] TEXT NOT NULL, [media_type] TEXT NOT NULL, [userid] TEXT NOT NULL, "
+        "[name] TEXT NOT NULL, [image] json"
+    )
+    for table in ("playlists", "radios"):
+        await database.execute(f"DROP TABLE {table}")
+    await database.execute(
+        f"CREATE TABLE playlists({item_columns}, [owner] TEXT NOT NULL, "
+        "[is_editable] BOOLEAN NOT NULL, [is_dynamic] BOOLEAN NOT NULL DEFAULT 0)"
+    )
+    await database.execute(
+        f"CREATE TABLE radios({item_columns}, [is_dynamic] BOOLEAN NOT NULL DEFAULT 0, "
+        "[is_endless] BOOLEAN DEFAULT 1 NOT NULL)"
+    )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_PROVIDER_MAPPINGS}([media_type] TEXT NOT NULL, "
+        "[item_id] INTEGER NOT NULL, [provider_domain] TEXT NOT NULL, "
+        "[provider_instance] TEXT NOT NULL, [provider_item_id] TEXT NOT NULL, "
+        "UNIQUE(media_type, provider_instance, provider_item_id))"
+    )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_FAVORITES}([user_id] TEXT NOT NULL, [media_type] TEXT NOT NULL, "
+        "[item_id] INTEGER NOT NULL, UNIQUE(user_id, media_type, item_id))"
+    )
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_MEDIA_PROGRESS}({playlog_columns}, "
+        "UNIQUE(item_id, provider, media_type, userid))"
+    )
+    await database.execute(f"CREATE TABLE {DB_TABLE_PLAY_HISTORY}({playlog_columns})")
+
+
+async def _station_snapshot(database: DatabaseConnection) -> dict[str, Any]:
+    """Return the rows the station migration touches, comparable across runs."""
+    queries = {
+        "playlists": "SELECT item_id, name FROM playlists",
+        "radios": "SELECT * FROM radios",
+        "mappings": f"SELECT media_type, item_id, provider_item_id FROM {DB_TABLE_PROVIDER_MAPPINGS}",
+        "favorites": f"SELECT media_type, item_id FROM {DB_TABLE_FAVORITES}",
+        "progress": f"SELECT media_type, item_id, provider, image FROM {DB_TABLE_MEDIA_PROGRESS}",
+        "history": f"SELECT media_type, item_id, provider, image FROM {DB_TABLE_PLAY_HISTORY}",
+    }
+    return {
+        name: sorted(tuple(row) for row in await database.get_rows_from_query(query, limit=0))
+        for name, query in queries.items()
+    }
+
+
+async def test_migration_moves_apple_music_station_playlists_to_radios(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-70 library playlist of an Apple Music station becomes a dynamic radio.
+
+    Its mapping, favorite and plays follow it, plays of the station outside the library turn
+    into radio plays, a regular Apple Music playlist stays and a second run changes nothing.
+    """
+    await _create_station_tables(database)
+    token = _image("thumb", "playlist/ra.111", "apple_music--abc")
+    remote = {
+        **_image("thumb", "https://is1-ssl.mzstatic.com/a.jpg", "apple_music--abc"),
+        "remotely_accessible": True,
+    }
+    playlists = {
+        5: ("Chill Station", serialize_to_json({"images": [token, remote]})),
+        2: ("My Mix", serialize_to_json({"images": []})),
+    }
+    for item_id, (name, metadata) in playlists.items():
+        await database.execute(
+            "INSERT INTO playlists (item_id, name, sort_name, metadata, play_count, last_played, "
+            "timestamp_added, timestamp_modified, search_name, search_sort_name, owner, "
+            "is_editable, is_dynamic) VALUES (:item_id, :name, :name, :metadata, 3, 50, 10, 20, "
+            ":name, :name, 'Apple Music', 0, :is_dynamic)",
+            {"item_id": item_id, "name": name, "metadata": metadata, "is_dynamic": item_id == 5},
+        )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PROVIDER_MAPPINGS} "
+        "(media_type, item_id, provider_domain, provider_instance, provider_item_id) VALUES "
+        "('playlist', 5, 'apple_music', 'apple_music--abc', 'ra.111'), "
+        "('playlist', 2, 'apple_music', 'apple_music--abc', 'pl.222')"
+    )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_FAVORITES} (user_id, media_type, item_id) VALUES "
+        "('u1', 'playlist', 5), ('u1', 'playlist', 2)"
+    )
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        await database.execute(
+            f"INSERT INTO {table} (item_id, provider, media_type, userid, name, image) VALUES "
+            "('5', 'library', 'playlist', 'u1', 'Chill Station', :image), "
+            "('ra.111', 'apple_music--abc', 'playlist', 'u1', 'Chill Station', :image), "
+            "('2', 'library', 'playlist', 'u1', 'My Mix', NULL)",
+            {"image": serialize_to_json(token)},
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(mass, database, MagicMock(), prev_version=69, create_tables=AsyncMock())
+    migrated = await _station_snapshot(database)
+    await migrate_database(mass, database, MagicMock(), prev_version=69, create_tables=AsyncMock())
+
+    assert await _station_snapshot(database) == migrated
+    radios = await database.get_rows_from_query("SELECT * FROM radios", limit=0)
+    assert len(radios) == 1
+    radio = dict(radios[0])
+    radio_id = radio.pop("item_id")
+    assert radio_id != 5
+    assert json.loads(radio.pop("metadata")) == {
+        "images": [{**token, "path": "radio/ra.111"}, remote]
+    }
+    assert radio == {
+        "name": "Chill Station",
+        "sort_name": "Chill Station",
+        "play_count": 3,
+        "last_played": 50,
+        "timestamp_added": 10,
+        "timestamp_modified": 20,
+        "search_name": "Chill Station",
+        "search_sort_name": "Chill Station",
+        "is_dynamic": 1,
+        "is_endless": 1,
+    }
+    assert migrated["playlists"] == [(2, "My Mix")]
+    assert migrated["mappings"] == [("playlist", 2, "pl.222"), ("radio", radio_id, "ra.111")]
+    assert migrated["favorites"] == [("playlist", 2), ("radio", radio_id)]
+    for played in (migrated["progress"], migrated["history"]):
+        radio_image = serialize_to_json({**token, "path": "radio/ra.111"})
+        assert played == [
+            ("playlist", "2", "library", None),
+            ("radio", str(radio_id), "library", radio_image),
+            ("radio", "ra.111", "apple_music--abc", radio_image),
+        ]

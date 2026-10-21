@@ -35,6 +35,7 @@ def _flow_player() -> RaumfeldPlayer:
     player._attr_elapsed_time = None
     player._attr_elapsed_time_last_updated = None
     player._external_source = None
+    player._attr_supported_features = set()
     player._extra_data = {}
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
@@ -226,6 +227,7 @@ def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player.room = "Bank"
     player._player_id = "raumfeld_follower"
+    player._attr_supported_features = set()
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_poll_interval = PLAYING_POLL_INTERVAL
     provider = MagicMock()
@@ -411,6 +413,17 @@ def test_unknown_power_state_keeps_the_last_value() -> None:
     host.get_room_power_state.side_effect = KeyError("Bar")
     player._update_power()
     assert player._attr_powered is True
+
+
+def test_power_control_only_for_a_room_with_a_power_state() -> None:
+    """A room the host reports no power state for gets no power control, so MA never wakes it."""
+    player, host = _powered_player(None)
+    player._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.POWER}
+    player._update_power()
+    assert PlayerFeature.POWER not in player._attr_supported_features
+    host.get_room_power_state.return_value = "ACTIVE"
+    player._update_power()
+    assert PlayerFeature.POWER in player._attr_supported_features
 
 
 async def test_power_off_puts_the_room_in_manual_standby() -> None:
