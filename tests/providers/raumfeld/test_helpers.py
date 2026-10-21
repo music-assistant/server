@@ -6,12 +6,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant.providers.raumfeld.constants import RENDERER_QUERY_TIMEOUT
 from music_assistant.providers.raumfeld.helpers import (
+    container_object_id,
     external_source,
+    library_uri,
     parse_control_url,
     parse_didl_metadata,
     parse_duration,
     parse_last_change,
     parse_last_change_response,
+    parse_library_items,
     parse_line_in,
     parse_model_name,
     parse_serial_number,
@@ -217,3 +220,45 @@ async def test_last_change_query_has_a_short_timeout() -> None:
     session.post.return_value = request
     assert await query_last_change(session, "http://192.168.1.42:54730/AVTransport/ctrl") == {}
     assert session.post.call_args.kwargs["timeout"].total == RENDERER_QUERY_TIMEOUT
+
+
+_LIBRARY_DIDL = (
+    '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"'
+    ' xmlns:dc="http://purl.org/dc/elements/1.1/">'
+    '<item id="0/RadioTime/Search/s-s25777"><dc:title>NPO Radio 2</dc:title></item>'
+    '<container id="0/My Music/Albums/42"><dc:title>Shine On</dc:title></container>'
+    '<item id="0/Untitled"></item>'
+    "</DIDL-Lite>"
+)
+
+
+def test_parse_library_items() -> None:
+    """Items and containers of a library listing, titled by their id when they have none."""
+    assert parse_library_items(_LIBRARY_DIDL) == [
+        ("0/RadioTime/Search/s-s25777", "NPO Radio 2", False),
+        ("0/My Music/Albums/42", "Shine On", True),
+        ("0/Untitled", "0/Untitled", False),
+    ]
+    assert parse_library_items("") == []
+    assert parse_library_items("<not xml") == []
+
+
+def test_library_uri() -> None:
+    """An item plays as a single, a container as a playlist from its start."""
+    single = library_uri("uuid:media-server", "0/RadioTime/Search/s-s25777", container=False)
+    assert single == (
+        "dlna-playsingle://uuid%3Amedia-server?sid=urn%3Aupnp-org%3AserviceId%3A"
+        "ContentDirectory&iid=0%2FRadioTime%2FSearch%2Fs-s25777"
+    )
+    container = library_uri("uuid:media-server", "0/My Music/Albums/42", container=True)
+    assert container.startswith("dlna-playcontainer://uuid%3Amedia-server?")
+    assert container.endswith("&cid=0%2FMy%20Music%2FAlbums%2F42&md=0")
+
+
+def test_container_object_id() -> None:
+    """The album or playlist a container URI plays; anything else plays none."""
+    uri = library_uri("uuid:media-server", "0/My Music/Albums/42", container=True)
+    assert container_object_id(uri) == "0/My Music/Albums/42"
+    single = library_uri("uuid:media-server", "0/RadioTime/Search/s-s25777", container=False)
+    assert container_object_id(single) is None
+    assert container_object_id(None) is None

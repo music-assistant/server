@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from async_upnp_client.exceptions import UpnpActionError
+from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_FLOW_MODE
+from music_assistant.constants import CONF_FLOW_MODE, CONF_SAMPLE_RATES
 from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
+from music_assistant.providers.raumfeld.helpers import library_uri
 from music_assistant.providers.raumfeld.player import (
     ADVANCE_WATCH_ATTEMPTS,
     IDLE_POLL_INTERVAL,
@@ -25,7 +29,6 @@ from tests.common import MockProvider
 
 if TYPE_CHECKING:
     import hassfeld
-    from music_assistant_models.player import PlayerMedia
 
 BASE_URL = "http://mass.local:8097"
 
@@ -39,6 +42,7 @@ def _flow_player() -> RaumfeldPlayer:
     player._advance_task_id = "raumfeld_advance_test"
     player._external_source = None
     player._attr_supported_features = set()
+    player._library_sources = {}
     player._extra_data = {}
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
@@ -110,6 +114,23 @@ def test_transport_state_mapping() -> None:
     assert _map_transport_state(None) == PlaybackState.IDLE
 
 
+def test_sample_rates_are_chosen_per_room() -> None:
+    """Up to 24-bit/192kHz can be chosen per room; up to 24-bit/96kHz is on by default."""
+    entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_SAMPLE_RATES)
+    assert not entry.hidden
+    options = {cast("str", option.value) for option in entry.options}
+    default = set(cast("list[str]", entry.default_value))
+    assert f"192000{MULTI_VALUE_SPLITTER}24" in options
+    assert f"96000{MULTI_VALUE_SPLITTER}24" in default
+    assert f"176400{MULTI_VALUE_SPLITTER}24" not in default
+    assert f"192000{MULTI_VALUE_SPLITTER}24" not in default
+
+
+def test_a_room_plays_the_rates_chosen_for_it() -> None:
+    """The player declares no rates of its own, so the room's sample rate setting applies."""
+    assert _host_room_player().supported_sample_rates is None
+
+
 def test_flow_mode_is_on_by_default() -> None:
     """Flow mode is a setting now, and it defaults to on."""
     entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_FLOW_MODE)
@@ -126,7 +147,7 @@ def test_near_track_end() -> None:
 
 
 def _media() -> PlayerMedia:
-    return cast("PlayerMedia", MagicMock())
+    return PlayerMedia(uri="http://mass.local:8097/single/item.flac", title="Track")
 
 
 def _advancing_player() -> tuple[RaumfeldPlayer, MagicMock]:
@@ -303,8 +324,8 @@ async def test_unload_cancels_its_timers() -> None:
     assert player._next_media is None
 
 
-def test_room_on_the_host_gets_its_ip_identifier() -> None:
-    """The room whose renderer runs on the host gets its IP, so its other outputs link to it."""
+def _host_room_player() -> RaumfeldPlayer:
+    """Build a real RaumfeldPlayer for the room whose renderer runs on the host."""
     provider = MockProvider("raumfeld")
     provider.resolve_room_renderer = MagicMock(  # type: ignore[attr-defined]
         return_value=("5065835a-d69f-4a1b-8c2d-5065835ad69f", "192.168.1.41")
@@ -316,11 +337,16 @@ def test_room_on_the_host_gets_its_ip_identifier() -> None:
     host = MagicMock()
     host.get_room_power_state.return_value = "MANUAL_STANDBY"
     provider.host = host  # type: ignore[attr-defined]
-    player = RaumfeldPlayer(
+    return RaumfeldPlayer(
         provider,  # type: ignore[arg-type]
         "raumfeld_5065835ad69f",
         "TV",
     )
+
+
+def test_room_on_the_host_gets_its_ip_identifier() -> None:
+    """The room whose renderer runs on the host gets its IP, so its other outputs link to it."""
+    player = _host_room_player()
     assert player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "192.168.1.41"
     assert player.device_info.model == "Raumfeld Soundbar"
     assert player.powered is False
@@ -879,7 +905,7 @@ async def test_an_external_source_music_assistant_gave_up_on_is_dropped() -> Non
     ):
         await player.stop()
     # a plain stop of the zone, not a pause of the expired source
-    action.assert_not_awaited()
+    action.assert_awaited_once_with(_ZONE, "Stop")
     assert player._external_source is None
     assert player._attr_playback_state == PlaybackState.IDLE
 
@@ -1038,6 +1064,85 @@ async def test_a_play_command_during_the_source_read_drops_the_whole_reading() -
     ):
         await player._poll_zone(MagicMock(), ["Bar"])
     apply_position.assert_not_called()
+
+
+def _flow_mode_on() -> Any:
+    """Patch the flow mode setting on, as play_media reads it from the player config."""
+    return patch.object(RaumfeldPlayer, "flow_mode", new_callable=PropertyMock, return_value=True)
+
+
+def _zone_player() -> tuple[RaumfeldPlayer, AsyncMock]:
+    """Build a player whose zone is addressable, with its transport actions mocked."""
+    player, _ = _external_player()
+    player._player_id = "raumfeld_bar"
+    player._attr_playback_state = PlaybackState.IDLE
+    mass = MagicMock()
+    mass.streams.base_url = BASE_URL
+    mass.streams.resolve_stream_url = AsyncMock(return_value=f"{BASE_URL}/flow/x.flac")
+    player.mass = mass
+    action = AsyncMock()
+    player._transport_action = action  # type: ignore[method-assign]
+    player._ensure_playable_zone = AsyncMock(return_value=["Bar"])  # type: ignore[method-assign]
+    player._wake_rooms = AsyncMock()  # type: ignore[method-assign]
+    return player, action
+
+
+async def test_play_media_points_the_zone_at_the_stream() -> None:
+    """The stream is set on the zone and started there."""
+    player, action = _zone_player()
+    with patch.object(player, "update_state"), _flow_mode_on():
+        await player.play_media(_media())
+    assert [c.args for c in action.await_args_list] == [
+        (_ZONE, "SetAVTransportURI"),
+        (_ZONE, "Play"),
+    ]
+    assert action.await_args_list[0].kwargs["CurrentURI"] == f"{BASE_URL}/flow/x.flac"
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
+async def test_a_rejected_play_is_reported_instead_of_shown_as_playing() -> None:
+    """A stream the host refuses fails the command and the player does not read as playing."""
+    player, action = _zone_player()
+    action.side_effect = [None, UpnpActionError(error_code=501, error_desc="Action Failed")]
+    with _flow_mode_on(), pytest.raises(PlayerCommandFailed, match="Play failed on Bar"):
+        await player.play_media(_media())
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_a_stop_before_switching_streams_may_fail() -> None:
+    """Re-pointing a playing zone goes on when its stop is refused."""
+    player, action = _zone_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    action.side_effect = [UpnpActionError(error_code=501), None, None]
+    with patch.object(player, "update_state"), _flow_mode_on():
+        await player.play_media(_media())
+    assert [c.args[1] for c in action.await_args_list] == ["Stop", "SetAVTransportURI", "Play"]
+
+
+async def test_stopping_a_zone_that_already_stopped_is_fine() -> None:
+    """A stop the zone answers with 'transition not available' is not an error."""
+    player, action = _zone_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    action.side_effect = UpnpActionError(error_code=701, error_desc="Transition not available")
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+    ):
+        await player.stop()
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+async def test_a_failed_stop_is_reported() -> None:
+    """A stop the zone refuses otherwise fails, rather than reporting the room as idle."""
+    player, action = _zone_player()
+    player._attr_playback_state = PlaybackState.PLAYING
+    action.side_effect = UpnpActionError(error_code=501, error_desc="Action Failed")
+    with (
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        pytest.raises(PlayerCommandFailed, match="Stop failed on Bar"),
+    ):
+        await player.stop()
+    assert player._attr_playback_state == PlaybackState.PLAYING
 
 
 def test_a_room_in_a_zone_does_not_play_spotify_connect() -> None:
@@ -1430,3 +1535,216 @@ async def test_spotify_connect_ended_by_an_announcement_is_not_replayed() -> Non
     action.assert_not_awaited()
     mass.streams.resolve_stream_url.assert_not_awaited()
     assert player._attr_playback_state == PlaybackState.IDLE
+
+
+_BUTTONS = [
+    (1, "0/RadioTime/Search/s-s25777", "NPO Radio 2", False),
+    (3, "0/My Music/Albums/42", "Shine On", True),
+]
+
+
+def _button_player() -> tuple[RaumfeldPlayer, MagicMock]:
+    """Build a RaumfeldPlayer with two station buttons offered as sources."""
+    player, host = _external_player()
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player.set_station_buttons(_BUTTONS)
+    return player, host
+
+
+def test_station_buttons_are_offered_as_sources() -> None:
+    """Each assigned button is a source of its own, named after its number and title."""
+    player, _ = _button_player()
+    assert [(s.id, s.name) for s in player._attr_source_list] == [
+        ("station_button_1", "Button 1: NPO Radio 2"),
+        ("station_button_3", "Button 3: Shine On"),
+    ]
+    assert PlayerFeature.SELECT_SOURCE in player._attr_supported_features
+    assert player._library_sources["station_button_3"] == ("0/My Music/Albums/42", True)
+
+
+async def test_a_station_button_is_played_through_its_library_item() -> None:
+    """Choosing a button has the zone play the button's item, shown as that button."""
+    player, host = _button_player()
+    host.media_server_udn = "uuid:media-server"
+    host.async_browse_media_server = AsyncMock(return_value="<DIDL-Lite/>")
+    with (
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
+        patch.object(player, "_wake_rooms", AsyncMock()),
+        patch.object(player, "_stop_before_switching", AsyncMock()),
+        patch.object(player, "_zone_command", AsyncMock()) as command,
+        patch.object(player, "update_state"),
+    ):
+        await player.select_source("station_button_3")
+    set_uri, play = command.await_args_list
+    assert set_uri.args[1] == "SetAVTransportURI"
+    assert set_uri.kwargs["CurrentURI"].startswith("dlna-playcontainer://")
+    assert set_uri.kwargs["CurrentURIMetaData"] == "<DIDL-Lite/>"
+    assert play.args[1] == "Play"
+    assert player._attr_active_source == "station_button_3"
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "Shine On"
+
+
+async def test_an_unknown_source_is_refused() -> None:
+    """A source that is neither the Line-In nor a station button raises."""
+    player, _ = _button_player()
+    with pytest.raises(PlayerCommandFailed, match="Unknown source"):
+        await player.select_source("station_button_2")
+
+
+def test_a_station_button_pressed_on_the_speaker_shows_as_that_button() -> None:
+    """The host playing a button's item reports that button, not the service behind it."""
+    player, _ = _button_player()
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    assert player._attr_active_source == "station_button_1"
+    assert [s.id for s in player._attr_source_list] == ["station_button_1", "station_button_3"]
+    assert not player._attr_source_list[0].passive
+
+
+def test_a_playing_button_stays_listed_once_when_the_buttons_are_read_again() -> None:
+    """A refresh keeps the playing button's live source, with its controls, in its place."""
+    player, _ = _button_player()
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(_RADIO_META, "Stop,Pause,Play", None, via_room=False)
+        # renamed in the Raumfeld app meanwhile
+        renamed = [(1, "0/RadioTime/Search/s-s25777", "NPO 2", False), _BUTTONS[1]]
+        player.set_station_buttons(renamed)
+    assert [s.id for s in player._attr_source_list] == ["station_button_1", "station_button_3"]
+    assert player._attr_source_list[0].can_play_pause
+    assert [s.name for s in player._static_sources] == ["Button 1: NPO 2", "Button 3: Shine On"]
+
+
+def test_a_playing_button_that_was_removed_is_no_longer_offered() -> None:
+    """A button taken off in the Raumfeld app stays listed while it plays, not selectable."""
+    player, _ = _button_player()
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(_RADIO_META, "Stop,Pause,Play", None, via_room=False)
+        player.set_station_buttons([_BUTTONS[1]])
+    assert [(s.id, s.passive) for s in player._attr_source_list] == [
+        ("station_button_3", False),
+        ("station_button_1", True),
+    ]
+
+
+def test_a_chosen_button_stays_shown_when_another_button_has_the_same_station() -> None:
+    """Two buttons with one station: the poll keeps the one that was chosen."""
+    player, _ = _external_player()
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player.set_station_buttons([_BUTTONS[0], (2, *_BUTTONS[0][1:])])
+        player._attr_active_source = "station_button_2"
+        player._set_external(_RADIO_META, "Stop", None, via_room=False)
+        assert player._attr_active_source == "station_button_2"
+        # with nothing chosen, the first button with the station is shown
+        player._attr_active_source = None
+        player._set_external(_RADIO_META, "Stop", None, via_room=False)
+    assert player._attr_active_source == "station_button_1"
+
+
+def test_an_album_button_pressed_on_the_speaker_shows_as_that_button() -> None:
+    """An album button is recognised by the album the zone loaded, not the playing track."""
+    player, _ = _button_player()
+    track = {**_RADIO_META, "section": "My Music", "item_id": "0/My Music/Albums/42/7"}
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(
+            track, "Stop", 240, via_room=False, loaded_container="0/My Music/Albums/42"
+        )
+    assert player._attr_active_source == "station_button_3"
+
+
+async def test_the_poll_recognises_an_album_button_by_what_the_zone_loaded() -> None:
+    """Polling a zone that plays an album button's album reports that button."""
+    player, host = _button_player()
+    host.media_server_udn = "uuid:media-server"
+    album_uri = library_uri("uuid:media-server", "0/My Music/Albums/42", container=True)
+    track_meta = (
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/"'
+        ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+        '<item id="0/My Music/Albums/42/7"><dc:title>Shine On Pt. 1</dc:title>'
+        "<upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>"
+    )
+    position = {
+        "TrackURI": "http://192.168.1.41:47366/track7.flac",
+        "TrackMetaData": track_meta,
+        "TrackDuration": "0:04:00",
+    }
+    with (
+        patch.object(player, "_read_zone_actions", AsyncMock(return_value="Stop,Pause")),
+        patch.object(
+            player, "_call_transport", AsyncMock(return_value={"CurrentURI": album_uri})
+        ) as call,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        await player._update_zone_source(position, ["Bar"], player._playback_generation)
+    call.assert_awaited_once_with(_ZONE, "GetMediaInfo")
+    assert player._attr_active_source == "station_button_3"
+
+
+async def _stop_a_playing_album_button(player: RaumfeldPlayer) -> AsyncMock:
+    """Stop an album button for an announcement, let the announcement take the zone."""
+    album_uri = "dlna-playcontainer://server?cid=0%2FMy%20Music%2FAlbums%2F42&fii=0"
+    meta = {**_RADIO_META, "item_id": "0/My Music/Albums/42/7", "section": None}
+    with patch.object(RaumfeldPlayer, "update_state"):
+        player._set_external(
+            meta, "Stop", 240, via_room=False, loaded_container="0/My Music/Albums/42"
+        )
+    assert player._attr_active_source == "station_button_3"
+    action = _zone_transport(
+        {"CurrentURI": album_uri, "CurrentURIMetaData": ""},
+        {"Track": "3", "RelTime": "0:00:48", "TrackDuration": "0:04:00"},
+    )
+    player._extra_data = {"announcement_in_progress": True}
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_active_zone", return_value=["Bar"]),
+        patch.object(player, "_transport_action", action),
+    ):
+        await player.stop()
+    player._clear_external()
+    action.reset_mock()
+    return action
+
+
+async def test_an_album_button_goes_on_where_it_was_after_an_announcement() -> None:
+    """MA selects the button again after an announcement: it resumes, not restarts."""
+    player, host = _button_player()
+    host.async_zone_stop = AsyncMock()
+    host.async_browse_media_server = AsyncMock(return_value="<DIDL-Lite/>")
+    action = await _stop_a_playing_album_button(player)
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
+        patch.object(player, "_wake_rooms", AsyncMock()),
+        patch.object(player, "_transport_action", action),
+        patch.object(player, "_zone_command", AsyncMock()) as command,
+    ):
+        # the controller's resume after the announcement, flag still set
+        await player.select_source("station_button_3")
+    command.assert_not_awaited()
+    assert [c.args[1] for c in action.await_args_list] == ["SetAVTransportURI", "Play", "Seek"]
+    assert action.await_args_list[0].kwargs["CurrentURI"].endswith("fii=2")
+    assert action.await_args_list[2].kwargs == {"Unit": "ABS_TIME", "Target": "0:00:48"}
+
+
+async def test_an_album_button_chosen_by_the_user_starts_afresh() -> None:
+    """Outside an announcement, choosing the button starts its album from the beginning."""
+    player, host = _button_player()
+    host.async_zone_stop = AsyncMock()
+    host.media_server_udn = "uuid:media-server"
+    host.async_browse_media_server = AsyncMock(return_value="<DIDL-Lite/>")
+    action = await _stop_a_playing_album_button(player)
+    player._extra_data = {}
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
+        patch.object(player, "_wake_rooms", AsyncMock()),
+        patch.object(player, "_stop_before_switching", AsyncMock()),
+        patch.object(player, "_transport_action", action),
+        patch.object(player, "_zone_command", AsyncMock()) as command,
+    ):
+        await player.select_source("station_button_3")
+    action.assert_not_awaited()
+    assert command.await_args_list[0].kwargs["CurrentURI"] == library_uri(
+        "uuid:media-server", "0/My Music/Albums/42", container=True
+    )
