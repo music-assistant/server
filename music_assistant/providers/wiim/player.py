@@ -591,8 +591,13 @@ class WiimPlayer(Player):
             self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
             return
         media = self.device.current_media
-        device_uri = media.uri if media else None
-        if device_uri and device_uri == self._ma_stream_uri:
+        # Right after taking our stream the device briefly reports it as being at its end.
+        if (
+            media is not None
+            and media.uri
+            and media.uri == self._ma_stream_uri
+            and media.position != media.duration
+        ):
             self._ma_stream_uri = None
         # The device reports its previous content's position until it loads our stream URI.
         if self._ma_stream_uri is None and media is not None and media.position is not None:
