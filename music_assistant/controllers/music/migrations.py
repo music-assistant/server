@@ -1398,6 +1398,28 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         # belong to, and the words for classical and chamber music in other languages join
         await _move_more_classical_genre_aliases(database, logger)
 
+    if prev_version <= 69:
+        if await database.get_row(
+            "sqlite_master", {"type": "table", "name": DB_TABLE_PLAY_HISTORY}
+        ):
+            columns = {
+                row["name"]
+                for row in await database.get_rows_from_query(
+                    f"PRAGMA table_info({DB_TABLE_PLAY_HISTORY})", limit=0
+                )
+            }
+            required_columns = {"userid", "timestamp", "media_type", "provider", "item_id"}
+            if required_columns <= columns:
+                for index_name in (
+                    f"{DB_TABLE_PLAY_HISTORY}_user_timestamp_idx",
+                    f"{DB_TABLE_PLAY_HISTORY}_user_media_timestamp_idx",
+                ):
+                    await database.execute(f"DROP INDEX IF EXISTS {index_name}")
+                await database.execute(
+                    f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx "
+                    f"ON {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id)"
+                )
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active

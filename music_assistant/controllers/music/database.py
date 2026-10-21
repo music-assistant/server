@@ -726,12 +726,8 @@ class MusicDatabaseSetupMixin:
             f"on {DB_TABLE_MEDIA_PROGRESS}(provider,media_type,userid,timestamp);"
         )
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_idx "
-            f"on {DB_TABLE_PLAY_HISTORY}(userid,timestamp);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_media_timestamp_idx "
-            f"on {DB_TABLE_PLAY_HISTORY}(userid,media_type,timestamp);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx "
+            f"on {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id);"
         )
         await self.database.commit()
 

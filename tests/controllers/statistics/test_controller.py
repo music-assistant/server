@@ -1,6 +1,5 @@
 """Tests for statistics backed by completed play history."""
 
-import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -16,7 +15,6 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
-    DB_TABLE_CACHE,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_MEDIA_PROGRESS,
@@ -25,7 +23,6 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
 )
 from music_assistant.controllers.statistics.base import MAX_STATISTICS_RESULT_LIMIT
-from music_assistant.controllers.statistics.cache import cache_statistics
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.mass import MusicAssistant
@@ -928,6 +925,58 @@ async def test_weekly_plays_use_monday_dates_across_year_boundaries(
     ]
 
 
+async def test_monthly_plays_sum_daily_buckets(mass: MusicAssistant) -> None:
+    """Monthly SQL buckets sum all daily play groups within each month."""
+    user = await mass.webserver.auth.create_user("statistics-month-buckets")
+    for index, date in enumerate(("2026-08-01", "2026-08-20", "2026-09-01")):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": f"track-{index}",
+                "provider": "test-provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": f"Track {index}",
+                "timestamp": datetime.fromisoformat(date).replace(tzinfo=UTC).timestamp(),
+            },
+        )
+
+    with _as_user(user):
+        results = await mass.statistics.get_plays_over_time(period="all_time", granularity="month")
+
+    assert [(point.timestamp, point.value) for point in results] == [
+        ("2026-08", 2),
+        ("2026-09", 1),
+    ]
+
+
+async def test_utc_activity_sums_hourly_buckets(mass: MusicAssistant) -> None:
+    """UTC activity aggregates daily play groups into weekday/hour totals."""
+    user = await mass.webserver.auth.create_user("statistics-activity-buckets")
+    for index, timestamp in enumerate(
+        ("2026-08-03T01:05:00", "2026-08-03T01:55:00", "2026-08-03T02:05:00")
+    ):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": f"track-{index}",
+                "provider": "test-provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": user.user_id,
+                "name": f"Track {index}",
+                "timestamp": datetime.fromisoformat(timestamp).replace(tzinfo=UTC).timestamp(),
+            },
+        )
+
+    with _as_user(user):
+        results = await mass.statistics.get_listening_activity(period="all_time")
+
+    assert [(point.weekday, point.hour, point.value) for point in results] == [
+        (0, 1, 2),
+        (0, 2, 1),
+    ]
+
+
 @pytest.mark.parametrize(
     ("timezone", "granularity", "timestamps", "expected"),
     [
@@ -1012,9 +1061,9 @@ async def test_today_cutoff_uses_local_midnight(
     assert cutoff == datetime.fromisoformat(expected).replace(tzinfo=UTC).timestamp()
 
 
-async def test_statistics_cache_and_heatmap_are_timezone_scoped(mass: MusicAssistant) -> None:
-    """UTC and local requests cannot share cached calendar buckets or heatmap coordinates."""
-    user = await mass.webserver.auth.create_user("statistics-zone-cache")
+async def test_statistics_and_heatmap_are_timezone_scoped(mass: MusicAssistant) -> None:
+    """UTC and local requests use their own calendar buckets and heatmap coordinates."""
+    user = await mass.webserver.auth.create_user("statistics-zones")
     await mass.music.database.insert(
         DB_TABLE_PLAY_HISTORY,
         {
@@ -1036,15 +1085,11 @@ async def test_statistics_cache_and_heatmap_are_timezone_scoped(mass: MusicAssis
         local_activity = await mass.statistics.get_listening_activity(
             period="all_time", timezone="Europe/Berlin"
         )
-        cached_series = await mass.statistics.get_plays_over_time(
-            period="all_time", timezone="Europe/Berlin"
-        )
 
     assert [(point.timestamp, point.value) for point in utc_series] == [("2027-01-03", 1)]
     assert [(point.timestamp, point.value) for point in local_series] == [("2027-01-04", 1)]
     assert [(point.weekday, point.hour, point.value) for point in utc_activity] == [(6, 23, 1)]
     assert [(point.weekday, point.hour, point.value) for point in local_activity] == [(0, 0, 1)]
-    assert cached_series == local_series
 
 
 @pytest.mark.parametrize("timezone", ["Not/AZone", "", "/etc/localtime"])
@@ -1156,145 +1201,6 @@ async def test_decade_distribution_resolves_provider_ids_and_deduplicates_albums
         results = await mass.statistics.get_decade_distribution(period="all_time")
 
     assert [(result.name, result.value) for result in results] == expected
-
-
-async def _wait_for_statistics_cache_entry(
-    mass: MusicAssistant,
-    user_id: str,
-    method_name: str = "cached_value",
-) -> list[dict[str, object]]:
-    assert mass.cache.database is not None
-    key_prefix = f"{method_name}.{user_id}."
-    for _ in range(100):
-        rows = await mass.cache.database.get_rows_from_query(
-            f"SELECT key FROM {DB_TABLE_CACHE} WHERE provider = :provider AND key LIKE :key_prefix",
-            {"provider": "statistics", "key_prefix": f"{key_prefix}%"},
-            limit=0,
-        )
-        if rows:
-            return [dict(row) for row in rows]
-        await asyncio.sleep(0.01)
-    pytest.fail(f"statistics cache entry for {user_id} was not stored")
-
-
-async def test_statistics_cache_uses_core_cache_and_scopes_by_user(
-    mass: MusicAssistant,
-) -> None:
-    """Statistics results use the shared cache with separate keys per current user."""
-    first_user = await mass.webserver.auth.create_user("statistics-cache-first")
-    second_user = await mass.webserver.auth.create_user("statistics-cache-second")
-    calls = 0
-
-    @cache_statistics()
-    async def cached_value(_self: object, _value: str) -> int:
-        nonlocal calls
-        calls += 1
-        return calls
-
-    with _as_user(first_user):
-        assert await cached_value(mass.statistics, "shared-args") == 1
-    await _wait_for_statistics_cache_entry(mass, first_user.user_id)
-
-    with _as_user(first_user):
-        assert await cached_value(mass.statistics, "shared-args") == 1
-
-    with _as_user(second_user):
-        assert await cached_value(mass.statistics, "shared-args") == 2
-
-    assert calls == 2
-
-
-async def test_statistics_cache_invalidates_only_affected_users(mass: MusicAssistant) -> None:
-    """A user's completed play leaves another user's cached statistics intact."""
-    first_user = await mass.webserver.auth.create_user("statistics-cache-write-first")
-    second_user = await mass.webserver.auth.create_user("statistics-cache-write-second")
-    calls = 0
-
-    @cache_statistics()
-    async def cached_value(_self: object) -> int:
-        nonlocal calls
-        calls += 1
-        return calls
-
-    with _as_user(first_user):
-        assert await cached_value(mass.statistics) == 1
-    await _wait_for_statistics_cache_entry(mass, first_user.user_id)
-    with _as_user(second_user):
-        assert await cached_value(mass.statistics) == 2
-    await _wait_for_statistics_cache_entry(mass, second_user.user_id)
-
-    mass.statistics.invalidate_statistics_cache(
-        play_history_written=True, user_ids=[first_user.user_id]
-    )
-
-    with _as_user(second_user):
-        assert await cached_value(mass.statistics) == 2
-    with _as_user(first_user):
-        assert await cached_value(mass.statistics) == 3
-
-
-async def test_statistics_cache_global_invalidation_rotates_all_user_keys(
-    mass: MusicAssistant,
-) -> None:
-    """Clearing the user map never reuses cache keys from an earlier generation."""
-    users = [
-        await mass.webserver.auth.create_user("statistics-global-first"),
-        await mass.webserver.auth.create_user("statistics-global-second"),
-    ]
-    calls = 0
-
-    @cache_statistics()
-    async def cached_value(_self: object) -> int:
-        nonlocal calls
-        calls += 1
-        return calls
-
-    for index, user in enumerate(users, start=1):
-        with _as_user(user):
-            assert await cached_value(mass.statistics) == index
-        await _wait_for_statistics_cache_entry(mass, user.user_id)
-
-    generations = dict(mass.statistics._statistics_user_cache_generations)
-    mass.statistics.invalidate_statistics_cache(play_history_written=False)
-    assert mass.statistics._statistics_user_cache_generations == generations
-    mass.statistics.invalidate_statistics_cache(play_history_written=True)
-    assert mass.statistics._statistics_user_cache_generations == {}
-
-    for index, user in enumerate(users, start=3):
-        with _as_user(user):
-            assert await cached_value(mass.statistics) == index
-        assert (
-            mass.statistics._statistics_user_cache_generations[user.user_id]
-            != generations[user.user_id]
-        )
-
-
-async def test_statistics_cache_does_not_store_inflight_result_after_invalidation(
-    mass: MusicAssistant,
-) -> None:
-    """A cache miss that overlaps a history write cannot restore stale data."""
-    user = await mass.webserver.auth.create_user("statistics-cache-race")
-    query_started = asyncio.Event()
-    finish_query = asyncio.Event()
-    calls = 0
-
-    @cache_statistics()
-    async def query(_self: object) -> int:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            query_started.set()
-            await finish_query.wait()
-        return calls
-
-    with _as_user(user):
-        in_flight_query: asyncio.Future[int] = asyncio.ensure_future(query(mass.statistics))
-        await query_started.wait()
-        mass.statistics.invalidate_statistics_cache(play_history_written=True)
-        finish_query.set()
-
-        assert await in_flight_query == 1
-        assert await query(mass.statistics) == 2
 
 
 async def test_plays_over_time_does_not_inherit_default_query_limit(

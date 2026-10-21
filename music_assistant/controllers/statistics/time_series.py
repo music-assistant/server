@@ -24,7 +24,6 @@ from music_assistant.controllers.statistics.base import (
     _StatisticsBase,
     validate_statistics_limit,
 )
-from music_assistant.controllers.statistics.cache import cache_statistics
 from music_assistant.controllers.statistics.queries import (
     PLAY_HISTORY_EVENT_TYPE_SQL,
     TRACK_ARTISTS_CTE,
@@ -38,7 +37,6 @@ from music_assistant.helpers.datetime import get_timezone
 class TimeSeriesMixin(_StatisticsBase):
     """Calendar buckets, listening activity and listening-time statistics."""
 
-    @cache_statistics()
     @api_command("statistics/plays_over_time", required_scope=Scope.LIBRARY_READ)
     async def get_plays_over_time(
         self,
@@ -87,22 +85,24 @@ class TimeSeriesMixin(_StatisticsBase):
                 TimeSeriesPoint(timestamp=bucket, value=count)
                 for bucket, count in sorted(buckets.items())
             ]
-        bucket_expression = f"strftime('{date_format}', datetime(timestamp, 'unixepoch'))"
+        bucket_seconds = 3600 if granularity == "hour" else 86400
+        bucket_expression = f"strftime('{date_format}', bucket * {bucket_seconds}, 'unixepoch')"
         if granularity == "week":
-            bucket_expression = (
-                "date(timestamp, 'unixepoch', "
-                "'-' || ((CAST(strftime('%w', timestamp, 'unixepoch') AS INTEGER) + 6) % 7)"
-                " || ' days')"
-            )
+            bucket_expression = "date(((bucket + 3) / 7 * 7 - 3) * 86400, 'unixepoch')"
 
         query = f"""
             SELECT
-                {bucket_expression} as time_bucket,
-                COUNT(*) as play_count
-            FROM {DB_TABLE_PLAY_HISTORY}
-            WHERE userid = :user_id
-                AND timestamp >= :cutoff_timestamp
-                AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
+                {bucket_expression} AS time_bucket,
+                SUM(play_count) AS play_count
+            FROM (
+                SELECT CAST(timestamp AS INTEGER) / {bucket_seconds} AS bucket,
+                    COUNT(*) AS play_count
+                FROM {DB_TABLE_PLAY_HISTORY}
+                WHERE userid = :user_id
+                    AND timestamp >= :cutoff_timestamp
+                    AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
+                GROUP BY bucket
+            )
             GROUP BY time_bucket
             ORDER BY time_bucket ASC
         """
@@ -118,7 +118,6 @@ class TimeSeriesMixin(_StatisticsBase):
             TimeSeriesPoint(timestamp=row["time_bucket"], value=row["play_count"]) for row in rows
         ]
 
-    @cache_statistics()
     @api_command("statistics/listening_activity", required_scope=Scope.LIBRARY_READ)
     async def get_listening_activity(
         self,
@@ -153,13 +152,18 @@ class TimeSeriesMixin(_StatisticsBase):
 
         query = f"""
             SELECT
-                CAST(strftime('%H', datetime(timestamp, 'unixepoch')) AS INTEGER) as hour,
-                CAST((CAST(strftime('%w', datetime(timestamp, 'unixepoch')) AS INTEGER) + 6) % 7 AS INTEGER) as weekday,
-                COUNT(*) as play_count
-            FROM {DB_TABLE_PLAY_HISTORY}
-            WHERE userid = :user_id
-                AND timestamp >= :cutoff_timestamp
+                bucket % 24 AS hour,
+                (bucket / 24 + 3) % 7 AS weekday,
+                SUM(play_count) AS play_count
+            FROM (
+                SELECT CAST(timestamp AS INTEGER) / 3600 AS bucket,
+                    COUNT(*) AS play_count
+                FROM {DB_TABLE_PLAY_HISTORY}
+                WHERE userid = :user_id
+                    AND timestamp >= :cutoff_timestamp
                     AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
+                GROUP BY bucket
+            )
             GROUP BY hour, weekday
             ORDER BY weekday, hour
         """
@@ -176,7 +180,6 @@ class TimeSeriesMixin(_StatisticsBase):
             for row in rows
         ]
 
-    @cache_statistics()
     @api_command("statistics/listening_time", required_scope=Scope.LIBRARY_READ)
     async def get_listening_time(
         self,
@@ -211,7 +214,7 @@ class TimeSeriesMixin(_StatisticsBase):
             query = f"""
                 WITH {TRACK_ARTISTS_CTE}, artist_plays AS (
                     SELECT
-                        track_artists.play_id,
+                        track_artists.play_count,
                         track_artists.item_id AS artist_item_id,
                         track_artists.provider AS artist_provider,
                         track_artists.name AS name,
@@ -225,7 +228,7 @@ class TimeSeriesMixin(_StatisticsBase):
                     artist_item_id,
                     artist_provider,
                     MAX(name) as name,
-                    SUM(duration) as total_seconds
+                    SUM(duration * play_count) as total_seconds
                 FROM artist_plays
                 GROUP BY artist_item_id, artist_provider
                 ORDER BY total_seconds DESC, artist_provider, artist_item_id
@@ -233,8 +236,8 @@ class TimeSeriesMixin(_StatisticsBase):
         else:
             query = f"""
                 WITH {TRACK_HISTORY_CTE}, genre_plays AS (
-                    SELECT DISTINCT
-                        history_tracks.play_id,
+                    SELECT
+                        history_tracks.play_count,
                         genres.item_id AS genre_id,
                         genres.name AS name,
                         tracks.duration AS duration
@@ -248,7 +251,7 @@ class TimeSeriesMixin(_StatisticsBase):
                         ON genres.item_id = genre_mappings.genre_id
                     WHERE tracks.duration > 0
                 )
-                SELECT name, SUM(duration) as total_seconds
+                SELECT name, SUM(duration * play_count) as total_seconds
                 FROM genre_plays
                 GROUP BY genre_id
                 ORDER BY total_seconds DESC, name
@@ -272,16 +275,21 @@ class TimeSeriesMixin(_StatisticsBase):
         self, user_id: str, cutoff_timestamp: float, timezone: str
     ) -> AsyncGenerator[tuple[datetime, int]]:
         """Yield completed play counts with their local event time."""
+        # Recorded-history zone offsets align to 15-minute UTC buckets; grouping first keeps
+        # the per-play conversion out of Python and preserves local hour/day boundaries.
         query = f"""
-            SELECT timestamp, COUNT(*) AS play_count
+            SELECT CAST(timestamp AS INTEGER) / 900 AS bucket, COUNT(*) AS play_count
             FROM {DB_TABLE_PLAY_HISTORY}
             WHERE userid = :user_id
                 AND timestamp >= :cutoff_timestamp
                 AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
-            GROUP BY timestamp
+            GROUP BY bucket
         """
         zone = get_timezone(timezone)
         async for row in self.mass.music.database.iter_rows_from_query(
             query, {"user_id": user_id, "cutoff_timestamp": cutoff_timestamp}
         ):
-            yield datetime.fromtimestamp(row["timestamp"], UTC).astimezone(zone), row["play_count"]
+            yield (
+                datetime.fromtimestamp(row["bucket"] * 900, UTC).astimezone(zone),
+                row["play_count"],
+            )

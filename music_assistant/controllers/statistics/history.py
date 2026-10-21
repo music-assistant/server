@@ -17,7 +17,6 @@ from music_assistant.controllers.statistics.base import (
     MAX_STATISTICS_RESULT_LIMIT,
     _StatisticsBase,
 )
-from music_assistant.controllers.statistics.cache import cache_statistics
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import json_loads
@@ -26,7 +25,6 @@ from music_assistant.helpers.json import json_loads
 class HistoryMixin(_StatisticsBase):
     """Completed-play history and recency membership queries."""
 
-    @cache_statistics()
     @api_command("statistics/play_history", required_scope=Scope.LIBRARY_READ)
     async def get_play_history(
         self,

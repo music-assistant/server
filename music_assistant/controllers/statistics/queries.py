@@ -45,34 +45,38 @@ PROVIDER_MAPPING_JOIN = f"""
     )
 """
 TRACK_HISTORY_CTE = f"""
-    history_tracks AS (
-        SELECT play_history.id AS play_id, provider_mappings.item_id AS track_id
-        FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+    played_pairs AS (
+        SELECT provider, item_id, media_type, COUNT(*) AS play_count
+        FROM {DB_TABLE_PLAY_HISTORY}
+        WHERE userid = :user_id
+            AND media_type = :media_type
+            AND timestamp >= :cutoff_timestamp
+        GROUP BY provider, item_id, media_type
+    ), history_tracks AS (
+        SELECT provider_mappings.item_id AS track_id,
+            SUM(played_pairs.play_count) AS play_count
+        FROM played_pairs
         INNER JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
             ON {
     PROVIDER_MAPPING_JOIN.format(
         mapping="provider_mappings",
-        media_type="play_history.media_type",
-        item_id="play_history.item_id",
-        provider="play_history.provider",
+        media_type="played_pairs.media_type",
+        item_id="played_pairs.item_id",
+        provider="played_pairs.provider",
     )
 }
-        WHERE play_history.userid = :user_id
-            AND play_history.media_type = :media_type
-            AND play_history.timestamp >= :cutoff_timestamp
-        UNION
-        SELECT play_history.id AS play_id, CAST(play_history.item_id AS INTEGER) AS track_id
-        FROM {DB_TABLE_PLAY_HISTORY} AS play_history
-        WHERE play_history.userid = :user_id
-            AND play_history.media_type = :media_type
-            AND play_history.provider = 'library'
-            AND play_history.timestamp >= :cutoff_timestamp
+        WHERE played_pairs.provider != 'library'
+        GROUP BY provider_mappings.item_id
+        UNION ALL
+        SELECT CAST(item_id AS INTEGER) AS track_id, play_count
+        FROM played_pairs
+        WHERE provider = 'library'
     )
 """
 TRACK_ALBUMS_CTE = f"""
     track_albums AS (
-        SELECT DISTINCT
-            history_tracks.play_id,
+        SELECT
+            history_tracks.play_count,
             albums.item_id,
             albums.name,
             json_extract(albums.metadata, '$.images[0]') AS image
@@ -87,12 +91,23 @@ TRACK_ALBUMS_CTE = f"""
 # credits stored on completed track plays, not from artist/container history rows.
 # Aliases with different display metadata still represent one artist credit per play.
 TRACK_ARTISTS_CTE = f"""
-    normalized_artist_credits AS (
+    played_groups AS (
+        SELECT provider, item_id, media_type, artists, COUNT(*) AS play_count
+        FROM {DB_TABLE_PLAY_HISTORY}
+        WHERE artists IS NOT NULL
+            AND media_type = '{MediaType.TRACK.value}'
+            AND userid = :user_id
+            AND timestamp >= :cutoff_timestamp
+        GROUP BY provider, item_id, media_type, artists
+    ), normalized_artist_credits AS (
         SELECT
-            play_history.id AS play_id,
+            played_groups.provider AS played_provider,
+            played_groups.item_id AS played_item_id,
+            played_groups.artists AS played_artists,
+            played_groups.play_count,
             CASE
-                WHEN play_history.provider = 'library'
-                    THEN CAST(play_history.item_id AS INTEGER)
+                WHEN played_groups.provider = 'library'
+                    THEN CAST(played_groups.item_id AS INTEGER)
                 ELSE track_mappings.item_id
             END AS track_id,
             CASE
@@ -109,15 +124,15 @@ TRACK_ARTISTS_CTE = f"""
             END AS provider,
             json_extract(artist_data.value, '$.name') AS name,
             json_extract(artist_data.value, '$.image') AS image
-        FROM {DB_TABLE_PLAY_HISTORY} AS play_history
-        CROSS JOIN json_each(play_history.artists) AS artist_data
+        FROM played_groups
+        CROSS JOIN json_each(played_groups.artists) AS artist_data
         LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS track_mappings
             ON {
     PROVIDER_MAPPING_JOIN.format(
         mapping="track_mappings",
-        media_type="play_history.media_type",
-        item_id="play_history.item_id",
-        provider="play_history.provider",
+        media_type="played_groups.media_type",
+        item_id="played_groups.item_id",
+        provider="played_groups.provider",
     )
 }
         LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS artist_mappings
@@ -129,13 +144,15 @@ TRACK_ARTISTS_CTE = f"""
         provider="json_extract(artist_data.value, '$.provider')",
     )
 }
-        WHERE play_history.artists IS NOT NULL
-            AND play_history.media_type = '{MediaType.TRACK.value}'
-            AND play_history.userid = :user_id
-            AND play_history.timestamp >= :cutoff_timestamp
     ), track_artists AS (
-        SELECT play_id, track_id, item_id, provider, MAX(name) AS name, MAX(image) AS image
+        SELECT
+            track_id,
+            item_id,
+            provider,
+            MAX(play_count) AS play_count,
+            MAX(name) AS name,
+            MAX(image) AS image
         FROM normalized_artist_credits
-        GROUP BY play_id, track_id, item_id, provider
+        GROUP BY played_provider, played_item_id, played_artists, track_id, item_id, provider
     )
 """

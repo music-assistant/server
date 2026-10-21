@@ -22,24 +22,11 @@ class StatisticsController(RankingsMixin, HistoryMixin, TimeSeriesMixin):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
         super().__init__(mass)
-        self._statistics_user_cache_generations: dict[str, str] = {}
         self.manifest.name = "Statistics controller"
         self.manifest.description = (
             "Music Assistant's core controller for playlog statistics and listening analytics."
         )
         self.manifest.icon = "poll"
-
-    def invalidate_statistics_cache(
-        self, *, play_history_written: bool, user_ids: list[str] | None = None
-    ) -> None:
-        """Invalidate statistics for affected users, or all users when IDs are omitted."""
-        if not play_history_written:
-            return
-        if user_ids is None:
-            self._statistics_user_cache_generations.clear()
-            return
-        for user_id in user_ids:
-            self._statistics_user_cache_generations.pop(user_id, None)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of statistics module."""

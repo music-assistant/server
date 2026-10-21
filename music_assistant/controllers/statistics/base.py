@@ -29,7 +29,6 @@ class _StatisticsBase(CoreController):
     """Shared state and helpers for statistics logic mixins."""
 
     domain: str = "statistics"
-    _statistics_user_cache_generations: dict[str, str]
 
     async def _set_library_item_availability(self, items: list[ItemMapping]) -> None:
         """Apply current library availability to historical item references."""

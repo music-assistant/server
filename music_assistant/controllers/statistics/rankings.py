@@ -24,7 +24,6 @@ from music_assistant.controllers.statistics.base import (
     _StatisticsBase,
     validate_statistics_limit,
 )
-from music_assistant.controllers.statistics.cache import cache_statistics
 from music_assistant.controllers.statistics.queries import (
     PROVIDER_MAPPING_JOIN,
     TRACK_ALBUMS_CTE,
@@ -39,7 +38,6 @@ from music_assistant.helpers.json import json_loads
 class RankingsMixin(_StatisticsBase):
     """Rankings and distributions derived from completed plays."""
 
-    @cache_statistics()
     @api_command("statistics/top_items", required_scope=Scope.LIBRARY_READ)
     async def get_top_items(
         self,
@@ -73,7 +71,7 @@ class RankingsMixin(_StatisticsBase):
                     '{MediaType.ARTIST.value}' AS media_type,
                     MAX(name) AS name,
                     MAX(image) AS image,
-                    COUNT(*) AS play_count
+                    SUM(play_count) AS play_count
                 FROM track_artists
                 GROUP BY item_id, provider
                 ORDER BY play_count DESC, provider, item_id
@@ -88,7 +86,7 @@ class RankingsMixin(_StatisticsBase):
                     '{MediaType.ALBUM.value}' AS media_type,
                     MAX(name) AS name,
                     MAX(image) AS image,
-                    COUNT(*) AS play_count
+                    SUM(play_count) AS play_count
                 FROM track_albums
                 GROUP BY item_id
                 ORDER BY play_count DESC, item_id
@@ -100,35 +98,46 @@ class RankingsMixin(_StatisticsBase):
             }
         else:
             query = f"""
-                WITH normalized_history AS (
+                WITH played_pairs AS (
+                    SELECT
+                        provider,
+                        item_id,
+                        media_type,
+                        COUNT(*) AS play_count,
+                        MAX(name) AS name,
+                        MAX(image) AS image
+                    FROM {DB_TABLE_PLAY_HISTORY}
+                    WHERE userid = :user_id
+                        AND media_type = :media_type
+                        AND timestamp >= :cutoff_timestamp
+                    GROUP BY provider, item_id, media_type
+                ), normalized_history AS (
                     SELECT
                         CASE
-                            WHEN play_history.provider = 'library' THEN play_history.item_id
+                            WHEN played_pairs.provider = 'library' THEN played_pairs.item_id
                             WHEN provider_mappings.item_id IS NOT NULL
                                 THEN CAST(provider_mappings.item_id AS TEXT)
-                            ELSE play_history.item_id
+                            ELSE played_pairs.item_id
                         END AS item_id,
                         CASE
-                            WHEN play_history.provider = 'library'
+                            WHEN played_pairs.provider = 'library'
                                 OR provider_mappings.item_id IS NOT NULL THEN 'library'
-                            ELSE play_history.provider
+                            ELSE played_pairs.provider
                         END AS provider,
-                        play_history.media_type,
-                        play_history.name,
-                        play_history.image
-                    FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+                        played_pairs.media_type,
+                        played_pairs.play_count,
+                        played_pairs.name,
+                        played_pairs.image
+                    FROM played_pairs
                     LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
                         ON {
                 PROVIDER_MAPPING_JOIN.format(
                     mapping="provider_mappings",
-                    media_type="play_history.media_type",
-                    item_id="play_history.item_id",
-                    provider="play_history.provider",
+                    media_type="played_pairs.media_type",
+                    item_id="played_pairs.item_id",
+                    provider="played_pairs.provider",
                 )
             }
-                    WHERE play_history.userid = :user_id
-                        AND play_history.media_type = :media_type
-                        AND play_history.timestamp >= :cutoff_timestamp
                 )
                 SELECT
                     item_id,
@@ -136,7 +145,7 @@ class RankingsMixin(_StatisticsBase):
                     media_type,
                     MAX(name) AS name,
                     MAX(image) AS image,
-                    COUNT(*) AS play_count
+                    SUM(play_count) AS play_count
                 FROM normalized_history
                 GROUP BY item_id, provider, media_type
                 ORDER BY play_count DESC, provider, item_id
@@ -171,7 +180,6 @@ class RankingsMixin(_StatisticsBase):
         await self._set_library_item_availability([entry.item for entry in result])
         return result
 
-    @cache_statistics()
     @api_command("statistics/genre_distribution", required_scope=Scope.LIBRARY_READ)
     async def get_genre_distribution(
         self,
@@ -195,7 +203,7 @@ class RankingsMixin(_StatisticsBase):
         limit = validate_statistics_limit(limit)
         query = f"""
             WITH {TRACK_HISTORY_CTE}
-            SELECT genres.name, COUNT(*) as play_count
+            SELECT genres.name, SUM(history_tracks.play_count) as play_count
             FROM history_tracks
             INNER JOIN {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} as genre_mappings
                 ON genre_mappings.media_id = history_tracks.track_id
@@ -215,7 +223,6 @@ class RankingsMixin(_StatisticsBase):
 
         return [DistributionItem(name=row["name"], value=row["play_count"]) for row in rows]
 
-    @cache_statistics()
     @api_command("statistics/decade_distribution", required_scope=Scope.LIBRARY_READ)
     async def get_decade_distribution(
         self,
@@ -251,12 +258,12 @@ class RankingsMixin(_StatisticsBase):
                 WHERE albums.year > 0
                 GROUP BY album_tracks.track_id
             ), history_decades AS (
-                SELECT history_tracks.play_id, (track_decades.year / 10) * 10 AS decade
+                SELECT history_tracks.play_count, (track_decades.year / 10) * 10 AS decade
                 FROM history_tracks
                 INNER JOIN track_decades
                     ON history_tracks.track_id = track_decades.track_id
             )
-            SELECT decade, COUNT(*) as play_count
+            SELECT decade, SUM(play_count) as play_count
             FROM history_decades
             GROUP BY decade
             ORDER BY decade DESC
@@ -274,7 +281,6 @@ class RankingsMixin(_StatisticsBase):
             DistributionItem(name=f"{int(row['decade'])}s", value=row["play_count"]) for row in rows
         ]
 
-    @cache_statistics()
     @api_command("statistics/play_count", required_scope=Scope.LIBRARY_READ)
     async def get_play_count(
         self,
@@ -298,39 +304,81 @@ class RankingsMixin(_StatisticsBase):
         if media_type == MediaType.ALBUM:
             history_cte = f"""
                 {TRACK_HISTORY_CTE}, {TRACK_ALBUMS_CTE}, normalized_history AS (
-                    SELECT CAST(item_id AS TEXT) AS item_id, 'library' AS provider
+                    SELECT
+                        CAST(item_id AS TEXT) AS item_id,
+                        'library' AS provider,
+                        SUM(play_count) AS play_count
                     FROM track_albums
+                    GROUP BY item_id
                 )
             """
         elif media_type == MediaType.ARTIST:
             history_cte = f"""
                 {TRACK_ARTISTS_CTE}, normalized_history AS (
-                    SELECT item_id, provider FROM track_artists
+                    SELECT item_id, provider, SUM(play_count) AS play_count
+                    FROM track_artists
+                    GROUP BY item_id, provider
                 )
             """
         else:
             history_cte = f"""
-                normalized_history AS (
+                candidate_keys AS (
+                    SELECT item_id, provider FROM requested_item
+                    UNION
+                    SELECT mappings.provider_item_id, mappings.provider_instance
+                    FROM requested_item
+                    INNER JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS mappings
+                        ON mappings.media_type = :media_type
+                        AND mappings.item_id = requested_item.item_id
+                    WHERE requested_item.provider = 'library'
+                    UNION
+                    SELECT mappings.provider_item_id, mappings.provider_domain
+                    FROM requested_item
+                    INNER JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS mappings
+                        ON mappings.media_type = :media_type
+                        AND mappings.item_id = requested_item.item_id
+                    WHERE requested_item.provider = 'library'
+                ), played_pairs AS (
+                    SELECT
+                        play_history.provider,
+                        play_history.item_id,
+                        play_history.media_type,
+                        COUNT(*) AS play_count
+                    FROM candidate_keys
+                    INNER JOIN {DB_TABLE_PLAY_HISTORY} AS play_history
+                        ON play_history.provider = candidate_keys.provider
+                        AND play_history.item_id = candidate_keys.item_id
+                    WHERE play_history.userid = :user_id
+                        AND play_history.media_type = :media_type
+                    GROUP BY play_history.provider, play_history.item_id, play_history.media_type
+                ), normalized_history AS (
                     SELECT
                         COALESCE(
-                            CAST(provider_mappings.item_id AS TEXT), play_history.item_id
+                            CAST(provider_mappings.item_id AS TEXT), played_pairs.item_id
                         ) AS item_id,
                         CASE
                             WHEN provider_mappings.item_id IS NOT NULL THEN 'library'
-                            ELSE play_history.provider
-                        END AS provider
-                    FROM {DB_TABLE_PLAY_HISTORY} AS play_history
+                            ELSE played_pairs.provider
+                        END AS provider,
+                        SUM(played_pairs.play_count) AS play_count
+                    FROM played_pairs
                     LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} AS provider_mappings
                         ON {
                 PROVIDER_MAPPING_JOIN.format(
                     mapping="provider_mappings",
-                    media_type="play_history.media_type",
-                    item_id="play_history.item_id",
-                    provider="play_history.provider",
+                    media_type="played_pairs.media_type",
+                    item_id="played_pairs.item_id",
+                    provider="played_pairs.provider",
                 )
             }
-                    WHERE play_history.userid = :user_id
-                        AND play_history.media_type = :media_type
+                                GROUP BY
+                                    COALESCE(
+                                        CAST(provider_mappings.item_id AS TEXT), played_pairs.item_id
+                                    ),
+                                    CASE
+                                        WHEN provider_mappings.item_id IS NOT NULL THEN 'library'
+                                        ELSE played_pairs.provider
+                                    END
                 )
             """
 
@@ -355,7 +403,7 @@ class RankingsMixin(_StatisticsBase):
             )
         }
             ), {history_cte}
-            SELECT COUNT(*) AS count
+            SELECT COALESCE(SUM(play_count), 0) AS count
             FROM normalized_history
             INNER JOIN requested_item USING (item_id, provider)
         """

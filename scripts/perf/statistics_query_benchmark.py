@@ -1,4 +1,4 @@
-"""Compare cached and cache-bypassed statistics on synthetic play history."""
+"""Measure statistics query latency on synthetic completed play history."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ except ImportError:
 
 
 def _fingerprint(value: Any) -> str:
-    """Serialize model results deterministically for cached/uncached comparisons."""
+    """Serialize model results deterministically for repeatability checks."""
     if isinstance(value, list):
         value = [item.to_dict() if hasattr(item, "to_dict") else item for item in value]
     return json.dumps(value, sort_keys=True, default=str)
@@ -134,7 +134,7 @@ async def _benchmark_user_cases(
     tracks: list[Any],
     iterations: int,
 ) -> dict[str, Any]:
-    """Compare cache miss, warm hits and cache bypass for each statistics command."""
+    """Measure first-call and steady-state latency for each statistics command."""
     from music_assistant_models.enums import MediaType  # noqa: PLC0415
 
     from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
@@ -167,53 +167,28 @@ async def _benchmark_user_cases(
         }
         results: dict[str, Any] = {}
         for name, call in cases.items():
-            async with mass.cache.handle_refresh(True):
-                _, uncached_reference = await _measure(call)
+            first_request_ms, reference = await _measure(call)
+            expected = _fingerprint(reference)
+            samples: list[float] = []
+            for _ in range(iterations):
+                elapsed_ms, result = await _measure(call)
+                samples.append(elapsed_ms)
+                if _fingerprint(result) != expected:
+                    raise web.HTTPInternalServerError(
+                        text=f"repeated query result mismatch for {name}"
+                    )
 
-            mass.statistics.invalidate_statistics_cache(
-                play_history_written=True, user_ids=[user.user_id]
-            )
-            cache_miss_ms, cached_result = await _measure(call)
-            expected = _fingerprint(uncached_reference)
-            if _fingerprint(cached_result) != expected:
-                raise web.HTTPInternalServerError(text=f"cached result mismatch for {name}")
-
-            warm_samples: list[float] = []
-            bypass_samples: list[float] = []
-            for iteration in range(iterations):
-                modes = ("warm", "bypass") if iteration % 2 == 0 else ("bypass", "warm")
-                for mode in modes:
-                    if mode == "warm":
-                        elapsed_ms, result = await _measure(call)
-                        warm_samples.append(elapsed_ms)
-                    else:
-                        async with mass.cache.handle_refresh(True):
-                            elapsed_ms, result = await _measure(call)
-                        bypass_samples.append(elapsed_ms)
-                    if _fingerprint(result) != expected:
-                        raise web.HTTPInternalServerError(
-                            text=f"{mode}-cache result mismatch for {name}"
-                        )
-
-            warm_summary = _summarize(warm_samples)
-            bypass_summary = _summarize(bypass_samples)
             results[name] = {
-                "result_count": len(uncached_reference)
-                if isinstance(uncached_reference, list)
-                else int(uncached_reference),
-                "cache_miss_ms": round(cache_miss_ms, 3),
-                "warm_cache": warm_summary,
-                "bypass_cache": bypass_summary,
-                "bypass_over_warm_ratio": round(
-                    bypass_summary["median_ms"] / max(warm_summary["median_ms"], 0.001), 2
-                ),
+                "result_count": len(reference) if isinstance(reference, list) else int(reference),
+                "first_request_ms": round(first_request_ms, 3),
+                "steady_state": _summarize(samples),
             }
         return results
     finally:
         set_current_user(None)
 
 
-async def benchmark_cache_modes(mass: Any, body: dict[str, Any]) -> dict[str, Any]:
+async def benchmark_statistics_queries(mass: Any, body: dict[str, Any]) -> dict[str, Any]:
     """Seed isolated synthetic history and measure each statistics command."""
     from music_assistant_models.auth import UserRole  # noqa: PLC0415
 
@@ -276,7 +251,7 @@ async def benchmark_cache_modes(mass: Any, body: dict[str, Any]) -> dict[str, An
                 "play_history_rows": play_count,
                 "library_tracks": len(tracks),
                 "seed_seconds": round(seed_seconds, 3),
-                "iterations_per_mode": iterations,
+                "iterations": iterations,
                 "cases": await _benchmark_user_cases(mass, user, tracks, iterations),
             }
         )
@@ -291,7 +266,7 @@ async def run_benchmark(
     """Run the in-process benchmark endpoint and return its measurements."""
     assert control._session is not None
     async with control._session.post(
-        f"{control._base_url}/statistics/cache_benchmark",
+        f"{control._base_url}/statistics/query_benchmark",
         json={"play_counts": play_counts, "iterations": iterations},
     ) as response:
         if response.status >= 400:
@@ -342,7 +317,7 @@ def _parse_args() -> argparse.Namespace:
         "--iterations",
         type=int,
         default=20,
-        help="warm-cache and bypass-cache samples per statistics command (3-100)",
+        help="repeated query samples per statistics command (3-100)",
     )
     parser.add_argument(
         "--full-library",
@@ -368,8 +343,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                     report = await run_benchmark(control, args.play_counts, args.iterations)
                     return {
                         "methodology": {
-                            "cache_enabled": "shared SQLite cache, cold miss then warm hits",
-                            "cache_bypassed": "same method under CacheController.handle_refresh(True)",
+                            "statistics_result_cache": "disabled",
+                            "database_cache": "normal SQLite page cache",
+                            "timings": "first request plus repeated steady-state calls",
                             "history": "synthetic completed library track plays in isolated temp data",
                             "library_tracks": params.total_tracks,
                         },
