@@ -892,6 +892,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider="library",
                 provider_mappings=set(),
                 items=items,
+                **self._parse_collection_statistics(db_rows[0]),
             ),
         )
 
@@ -1999,6 +2000,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if collapse_collections:
             if search:
                 query_params["search"] = f"%{search}%"
+            # the statistics of a collection ignore the filters that only narrow the view
+            scope_query = None
+            if favorite is not None or played_only or genre_ids:
+                scope_parts = list(extra_query_parts) if extra_query_parts else []
+                self._apply_filters(
+                    query_parts=scope_parts,
+                    query_params=query_params,
+                    favorite=None,
+                    search=None,
+                    genre_ids=None,
+                    provider_filter=provider_filter,
+                    in_library_only=in_library_only,
+                    reachable_via=reachable_via,
+                )
+                scope_query, _ = self._build_final_query(scope_parts, join_parts, summary=summary)
             sql_query = await self._adapt_query_for_collections(
                 sql_query,
                 query_params,
@@ -2007,6 +2023,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 sort_direction=sort_direction,
                 search=search,
                 random_seed=random_seed,
+                scope_query=scope_query,
             )
 
         db_rows = await self.mass.music.database.get_rows_from_query(
@@ -2039,6 +2056,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             items=UniqueList(
                                 [_parse_method(x) for x in json_loads(db_row["media_data"])]
                             ),
+                            **self._parse_collection_statistics(db_row),
                         )
                     )
             return items
@@ -3214,6 +3232,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for raw_mapping in json_loads(db_row["artists"])
         )
 
+    @staticmethod
+    def _parse_collection_statistics(db_row: Mapping[str, Any]) -> dict[str, Any]:
+        """Return the MediaCollection fields computed over all items of a collection row."""
+        statistics = json_loads(db_row["statistics"]) if db_row["statistics"] else {}
+        return {
+            "total_items": statistics.get("total_items"),
+            "duration": statistics.get("duration"),
+            "fully_played": parse_optional_bool(statistics.get("fully_played")),
+            "in_progress": parse_optional_bool(statistics.get("in_progress")),
+        }
+
     async def _adapt_query_for_collections(
         self,
         sql_query: str,
@@ -3224,26 +3253,46 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         collection_name: str | None = None,
         search: str | None = None,
         random_seed: int | None = None,
+        scope_query: str | None = None,
     ) -> str:
-        cache_key_json_object = f"collection_{self.api_base}"
-        json_object = await self.mass.cache.get(key=cache_key_json_object, category=int(summary))
-        if json_object is None:
+        """
+        Wrap a listing query so the items of a collection come back as one collection row.
+
+        :param scope_query: The query of all items in scope, which the statistics of a
+            collection are computed over. None when sql_query applies no view filters
+            (favorite, genre, played).
+        """
+        cache_key_columns = f"collection_columns_{self.api_base}"
+        columns: list[str] | None = await self.mass.cache.get(
+            key=cache_key_columns, category=int(summary)
+        )
+        if columns is None:
             # get column names of base query
             db_rows = await self.mass.music.database.get_rows_from_query(
                 sql_query, query_params, limit=1, offset=0
             )
-            # create a sql json_object which queries all these columns
-            if db_rows:
-                json_object = (
-                    "json_object(" + ",".join([f"'{x}',{x}" for x in db_rows[0].keys()]) + ")"  # noqa: SIM118
-                )
+            columns = list(db_rows[0].keys()) if db_rows else []
+            if columns:
                 await self.mass.cache.set(
-                    key=cache_key_json_object, category=int(summary), data=json_object
+                    key=cache_key_columns, category=int(summary), data=columns
                 )
-            else:
-                json_object = "json_object()"
+        # a sql json_object which queries all these columns
+        json_object = "json_object(" + ",".join([f"'{x}',{x}" for x in columns]) + ")"
 
         collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
+
+        # statistics over all items of a collection, from the columns this media type has
+        duration_stat = "SUM(duration)" if "duration" in columns else "NULL"
+        fully_played_stat = (
+            "MIN(COALESCE(fully_played, 0))" if "fully_played" in columns else "NULL"
+        )
+        in_progress_stat = (
+            "MAX(COALESCE(fully_played, 0) = 0 AND COALESCE(resume_position_ms, 0) > 0)"
+            if {"fully_played", "resume_position_ms"}.issubset(columns)
+            else "NULL"
+        )
+        scope_table = f"scope_table as ({scope_query})," if scope_query else ""
+        stats_source = "scope_table" if scope_query else "joined_table"
 
         # the sort fields a collapsed listing offers: those aggregated per collection below
         supported_sort_fields = {
@@ -3263,7 +3312,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         collection_extra_order_keys = ""
         if self.media_type == MediaType.AUDIOBOOK:
             single_extra_order_keys = "duration,"
-            collection_extra_order_keys = "SUM(duration) as duration,"
+            collection_extra_order_keys = (
+                "(SELECT duration FROM collection_stats WHERE stats_title = collection_title)"
+                " as duration,"
+            )
             supported_sort_fields.add(SortField.DURATION)
         elif self.media_type == MediaType.ALBUM:
             single_extra_order_keys = "year,"
@@ -3275,6 +3327,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
             WITH
                 joined_table as ({sql_query}),
+                {scope_table}
+                collection_stats as (
+                    SELECT
+                        json_extract(iter_coll.value, '$.title') as stats_title,
+                        COUNT(*) as total_items,
+                        {duration_stat} as duration,
+                        {fully_played_stat} as fully_played,
+                        {in_progress_stat} as in_progress
+                    FROM {stats_source}, json_each({collections_column}) as iter_coll
+                    GROUP BY stats_title
+                ),
                 collection_extract as (
                     SELECT
                         item_id,
@@ -3317,6 +3380,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 MAX(last_played) as last_played,
                 SUM(play_count) as play_count,
                 {collection_extra_order_keys}
+                (
+                    SELECT json_object(
+                        'total_items', total_items,
+                        'duration', duration,
+                        'fully_played', fully_played,
+                        'in_progress', in_progress
+                    )
+                    FROM collection_stats WHERE stats_title = collection_title
+                ) as statistics,
                 json_group_array(media_data) as media_data
             FROM (
                 SELECT * FROM collection_extract
@@ -3349,6 +3421,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             SELECT 'single', item_id as random_item_id, name, search_name, search_sort_name,
                 timestamp_added, timestamp_modified, last_played, play_count,
                 {single_extra_order_keys}
+                NULL as statistics,
                 {json_object} FROM joined_table
                 WHERE {collections_column} IS NULL
                     OR {collections_column} = '[]'

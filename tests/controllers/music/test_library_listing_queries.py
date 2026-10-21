@@ -833,6 +833,84 @@ async def test_artist_audiobooks_collapse_collections(
     assert standalone.name == "Standalone"
 
 
+async def test_audiobook_collection_statistics_ignore_view_filters(
+    mass: MusicAssistant,
+) -> None:
+    """A favorites-only listing narrows a collection's items, but not its statistics."""
+    controller = mass.music.audiobooks
+    # name, collection, duration, fully played, seconds played
+    books = (
+        ("Alpha 1", "Alpha Series", 100, True, 100),
+        ("Alpha 2", "Alpha Series", 200, False, 50),
+        ("Alpha 3", "Alpha Series", 300, None, None),
+        ("Beta 1", "Beta Series", 400, True, 400),
+    )
+    db_books = {}
+    for name, collection_name, duration, fully_played, seconds_played in books:
+        db_book = await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                duration=duration,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList([MediaItemCollection(title=collection_name, sequence=1)])
+                ),
+            )
+        )
+        db_books[name] = db_book
+        if fully_played is None:
+            continue
+        await mass.music.database.insert(
+            DB_TABLE_MEDIA_PROGRESS,
+            {
+                "item_id": db_book.item_id,
+                "provider": "library",
+                "media_type": MediaType.AUDIOBOOK.value,
+                "name": name,
+                "timestamp": 100,
+                "fully_played": fully_played,
+                "seconds_played": seconds_played,
+                "userid": LISTING_USER.user_id,
+                "user_initiated": True,
+            },
+        )
+    await mass.music.database.commit()
+    await _like(mass, MediaType.AUDIOBOOK, str(db_books["Alpha 3"].item_id), True)
+
+    with patch(GET_CURRENT_USER, return_value=LISTING_USER):
+        everything = await controller.library_items(collapse_collections=True)
+        favorites = await controller.library_items(favorite=True, collapse_collections=True)
+    collections = {item.name: item for item in everything if isinstance(item, MediaCollection)}
+    alpha, beta = collections["Alpha Series"], collections["Beta Series"]
+    assert (alpha.total_items, alpha.duration, alpha.fully_played, alpha.in_progress) == (
+        3,
+        600,
+        False,
+        True,
+    )
+    assert (beta.total_items, beta.duration, beta.fully_played, beta.in_progress) == (
+        1,
+        400,
+        True,
+        False,
+    )
+
+    # the collection without a favorite is left out, the other keeps its statistics
+    assert [item.name for item in favorites] == ["Alpha Series"]
+    favorite_alpha = favorites[0]
+    assert isinstance(favorite_alpha, MediaCollection)
+    assert [item.name for item in favorite_alpha.items] == ["Alpha 3"]
+    assert favorite_alpha.total_items == alpha.total_items
+    assert favorite_alpha.duration == alpha.duration
+    assert favorite_alpha.fully_played == alpha.fully_played
+    assert favorite_alpha.in_progress == alpha.in_progress
+
+    collection = await controller.get_collection(alpha.item_id)
+    assert (collection.total_items, collection.duration) == (3, 600)
+
+
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:
     """Default library listings stream from the sort index without a temp b-tree."""
     database = seeded_mass.music.database
