@@ -45,6 +45,8 @@ from music_assistant.providers.spotify.provider import SpotifyProvider
 from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_ADDR_FILE,
     WS_PORT_FILE,
+    SoloistEvent,
+    SoloistPlaybackState,
 )
 
 TRACK_A = "spotify:track:aaa"
@@ -678,6 +680,53 @@ def test_losing_the_device_after_the_item_is_over_is_not_a_takeover(tmp_path: Pa
     run._item_over = True
     run._observe_device_active(active=False)
     assert run._error is None
+
+
+def _playback_event(status: str) -> SoloistEvent:
+    """Return a playback_changed event carrying only the given status."""
+    return SoloistEvent(type="playback_changed", data=SoloistPlaybackState(status=status), raw={})
+
+
+def _live_run(tmp_path: Path) -> _SingleTrackRun:
+    """Return a run whose item is playing and whose audio is flowing."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._started.set()
+    run._reader = MagicMock()
+    return run
+
+
+async def test_a_pause_from_spotify_mid_item_stops_the_queue(tmp_path: Path) -> None:
+    """A pause from the Spotify app is not a broken track: the queue stops once."""
+    run = _live_run(tmp_path)
+    mass = cast("MagicMock", run.mass)
+    await run._handle_event(_playback_event("playing"))
+    mass.player_queues.stop.assert_not_called()
+    await run._handle_event(_playback_event("paused"))
+    # the engine repeats the pause in its next snapshot
+    await run._handle_event(_playback_event("paused"))
+    mass.player_queues.stop.assert_called_once_with("player1")
+    mass.create_task.assert_called_once()
+    assert run._error is None
+
+
+@pytest.mark.parametrize("attr", ["_stopped", "_item_over", "_engine_exited", "_delivery_done"])
+async def test_a_pause_as_the_run_ends_does_not_stop_the_queue(tmp_path: Path, attr: str) -> None:
+    """The engine settling as its item ends or the run is torn down is no listener's pause."""
+    run = _live_run(tmp_path)
+    await run._handle_event(_playback_event("playing"))
+    setattr(run, attr, True)
+    await run._handle_event(_playback_event("paused"))
+    cast("MagicMock", run.mass).player_queues.stop.assert_not_called()
+
+
+async def test_a_pause_before_audio_flows_does_not_stop_the_queue(tmp_path: Path) -> None:
+    """A run still starting up (or seeking) has released no audio to pause."""
+    run = _live_run(tmp_path)
+    run._reader = None
+    await run._handle_event(_playback_event("playing"))
+    await run._handle_event(_playback_event("paused"))
+    cast("MagicMock", run.mass).player_queues.stop.assert_not_called()
 
 
 def test_the_engine_starting_on_the_wrong_item_fails_the_run(tmp_path: Path) -> None:
