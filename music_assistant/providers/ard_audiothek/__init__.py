@@ -109,28 +109,16 @@ async def _login(session: ClientSession, email: str, password: str) -> tuple[str
     )
     data = await response.json()
     if "error" in data:
-        if data["error"]["message"] == "EMAIL_NOT_FOUND":
+        message = data["error"].get("message", "")
+        if message == "EMAIL_NOT_FOUND":
             raise LoginFailed("Email address is not registered")
-        if data["error"]["message"] == "INVALID_PASSWORD":
+        if message == "INVALID_PASSWORD":
             raise LoginFailed("Password is wrong")
-    token = data["idToken"]
-    uid = data["localId"]
+        if message == "INVALID_LOGIN_CREDENTIALS":
+            raise LoginFailed("Email address or password is wrong")
+        raise LoginFailed(f"Login failed: {message}")
 
-    response = await session.post(
-        f"{IDENTITY_TOOLKIT_BASE_URL}:lookup?key={IDENTITY_TOOLKIT_TOKEN}",
-        headers={"User-Agent": "Music Assistant", "Origin": ARD_ACCOUNTS_URL},
-        json={
-            "idToken": token,
-        },
-    )
-    data = await response.json()
-    if "error" in data:
-        if data["error"]["message"] == "EMAIL_NOT_FOUND":
-            raise LoginFailed("Email address is not registered")
-        if data["error"]["message"] == "INVALID_PASSWORD":
-            raise LoginFailed("Password is wrong")
-
-    return token, uid, data["users"][0]["displayName"]
+    return data["idToken"], data["localId"], data.get("displayName", "")
 
 
 def _create_aiohttptransport(headers: dict[str, str] | None = None) -> AIOHTTPTransport:
