@@ -341,6 +341,43 @@ def _playing_transfer(
     return fake, item
 
 
+async def test_transfer_queue_resumes_a_replacement_for_a_missing_item_from_the_start() -> None:
+    """
+    An item the queue moved on to, as the source's own was gone, does not inherit its position.
+
+    The source's current item was deleted while it was paused; the target still has a buffered
+    index from what it played before, so loading the items moves it onto the item at that index.
+    """
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    for name in ("load", "update_items", "_resync_position", "index_by_id", "get_item"):
+        method = getattr(PlayerQueuesController, name)
+        setattr(fake, name, method.__get__(fake))
+    fake.play_index = AsyncMock()
+    deleted = QueueItem.from_media_item(
+        "src", Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    )
+    remaining = QueueItem.from_media_item(
+        "src", Track(item_id="t2", provider="library", name="T2", provider_mappings=set())
+    )
+    source_queue = fake.get("src")
+    source_queue.state = PlaybackState.PAUSED
+    source_queue.resume_pos = 150
+    source_queue.current_index = 0
+    source_queue.current_item = deleted
+    fake._queue_data["src"].items = [remaining]
+    target_queue = fake.get("tgt")
+    target_queue.index_in_buffer = 0
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=True
+    )
+
+    assert target_queue.current_item is remaining
+    assert target_queue.resume_pos == 0
+    fake.play_index.assert_not_awaited()
+    fake.resume.assert_awaited_once_with("tgt")
+
+
 @pytest.mark.parametrize(
     ("target_state", "target_ended"),
     [

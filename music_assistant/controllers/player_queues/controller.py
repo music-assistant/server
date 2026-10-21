@@ -1341,7 +1341,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (
             auto_play
             and not target_queue.ended
-            and (current_item := target_queue.current_item)
+            and (current_item := source_current_item)
             and self.index_by_id(target_queue_id, current_item.queue_item_id) is not None
         ):
             # the target's player can still report the media it played before, which resume()
