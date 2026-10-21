@@ -221,3 +221,14 @@ async def test_tries_the_next_artist_when_one_fails_to_load() -> None:
     await _fill(loader)
 
     assert loader.load.await_args.args[1] == [("Night Fever", "Bee Gees")]
+
+
+async def test_adds_a_similar_artist_to_a_queue_started_from_a_genre() -> None:
+    """A queue started from a genre, which leaves no enqueued items, gets a similar artist."""
+    bee_gees = _artist("Bee Gees")
+    loader = _loader([bee_gees], {"Bee Gees": [_track("Night Fever", bee_gees)]})
+    loader._queue_data["q1"].enqueued_media_items = []
+
+    await _fill(loader)
+
+    assert loader.load.await_args.args[1] == [("Night Fever", "Bee Gees")]

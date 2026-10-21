@@ -683,16 +683,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if queue is None:
             return
         queue_data = self._queue_data[queue_id]
-        if not queue_data.enqueued_media_items:
-            # the music refill needs what the user enqueued as its seed
-            return
         mode = self._autoplay.resolve_mode(queue_id)
-        self.logger.debug(
-            "Filling autoplay tracks (mode: %s) for queue %s", mode.value, queue.display_name
-        )
         if mode == AutoplayMode.SIMILAR_ARTISTS:
             await self._fill_autoplay_similar_artist(queue_id)
             return
+        if not queue_data.enqueued_media_items:
+            # the music refill needs what the user enqueued as its seed
+            return
+        self.logger.debug(
+            "Filling autoplay tracks (mode: %s) for queue %s", mode.value, queue.display_name
+        )
         existing_tracks = {
             item.media_item
             for item in self._queue_data[queue_id].items
