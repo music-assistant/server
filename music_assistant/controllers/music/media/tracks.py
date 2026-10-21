@@ -54,6 +54,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
     compare_artists,
@@ -68,6 +69,7 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
+from music_assistant.helpers.provider_access import visible_items
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import (
@@ -617,8 +619,9 @@ class TracksController(MediaControllerBase[Track]):
                 lambda instance_id: self._assemble_similar_tracks(item_id, instance_id),
                 item_type=Track,
             )
+        # the cached listing is shared by all users, so it is narrowed on every read
         return apply_listing(
-            tracks,
+            visible_items(self.mass, tracks, get_current_user()),
             ListingType.SIMILAR_TRACKS,
             search=search,
             sort_field=sort_field,
