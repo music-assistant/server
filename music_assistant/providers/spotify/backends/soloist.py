@@ -1215,7 +1215,10 @@ class _SingleTrackRun:
             if data.position is not None:
                 self._observe_position(data.position.position_ms)
             playing = data.status == "playing"
-            self._engine_playing = playing
+            was_playing, self._engine_playing = self._engine_playing, playing
+            # the engine repeats a pause across events: act on the transition only
+            if was_playing and data.status == "paused":
+                self._observe_external_pause()
             if self._started.is_set() and self._reader is not None:
                 # pause silence stays out of the delivered PCM; the cushion gate
                 # takes priority over resuming
@@ -1260,6 +1263,24 @@ class _SingleTrackRun:
             "Spotify is already streaming somewhere else - an account "
             "can only play in one place at a time"
         )
+
+    def _observe_external_pause(self) -> None:
+        """Stop the queue when Spotify paused this run's item from outside Music Assistant."""
+        if (
+            self.queue_id is None
+            # still starting up (or seeking): no audio has been released yet
+            or self._reader is None
+            or self._stopped
+            or self._item_over
+            or self._engine_exited
+            or self._delivery_done
+            or self._error is not None
+        ):
+            return
+        # only the Spotify app or Web API pauses the engine, and a paused engine stalls
+        # the stream; a stop keeps the resume position, so play restarts at it
+        self.logger.info("Spotify paused %s, stopping queue %s", self.spotify_uri, self.queue_id)
+        self.mass.create_task(self.mass.player_queues.stop(self.queue_id))
 
     def _observe_position(self, position_ms: int) -> None:
         """Confirm an armed seek once the engine reports at (or past) its target."""
