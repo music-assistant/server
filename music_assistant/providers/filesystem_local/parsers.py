@@ -1,6 +1,7 @@
 """Parsers for the local filesystem provider."""
 
 import re
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ArtistEntityType, ExternalID
@@ -94,6 +95,11 @@ def parse_artist_nfo(artist: Artist, nfo_artist: dict[Any, Any], source: str | N
 
 def _iso_partial_date(value: str | None) -> str | None:
     """Return the value when it is an ISO (partial) date, otherwise None."""
-    if value and _ISO_PARTIAL_DATE.match(value := value.strip()):
-        return value
-    return None
+    if not value or not _ISO_PARTIAL_DATE.match(value := value.strip()):
+        return None
+    year, month, day = (*map(int, value.split("-")), 1, 1)[:3]
+    try:
+        date(year, month, day)
+    except ValueError:
+        return None
+    return value

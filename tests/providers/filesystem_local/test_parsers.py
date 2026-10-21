@@ -2,6 +2,7 @@
 
 import uuid
 
+import pytest
 from music_assistant_models.enums import ArtistEntityType, ExternalID
 from music_assistant_models.media_items import Album, Artist
 from music_assistant_models.media_items.metadata import LifeSpan
@@ -132,6 +133,22 @@ def test_parse_artist_nfo_life_span() -> None:
     parse_artist_nfo(artist, {"born": "unknown", "type": "not-a-type"})
     assert artist.metadata.life_span is None
     assert artist.metadata.artist_entity_type is None
+
+
+@pytest.mark.parametrize("value", ["0000-00-00", "1958-13", "1958-00", "2023-02-29", "1958-04-31"])
+def test_parse_artist_nfo_ignores_impossible_dates(value: str) -> None:
+    """Dates that match the ISO shape but do not exist on the calendar are ignored."""
+    artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
+    parse_artist_nfo(artist, {"born": value, "died": value})
+    assert artist.metadata.life_span is None
+
+
+@pytest.mark.parametrize("value", ["2024-02-29", "2000-02-29", "1958-12", "1958"])
+def test_parse_artist_nfo_keeps_valid_dates_with_their_precision(value: str) -> None:
+    """Valid (partial) dates, leap days included, are kept exactly as written."""
+    artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
+    parse_artist_nfo(artist, {"died": value})
+    assert artist.metadata.life_span == LifeSpan(begin=None, end=value, ended=True)
 
 
 def test_nfo_album_artist() -> None:
