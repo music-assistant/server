@@ -30,7 +30,7 @@ dependencies = [
   "music-assistant-frontend @ https://github.com/music-assistant/frontend/releases/download/2.17.297.post4/music_assistant_frontend-2.17.297.post4-py3-none-any.whl#sha256=45dba1ebadea0d0c360c51f57fe518b9ea33194368431b35f63439399ea08c0e",
   "mutagen==1.48.1",
   "orjson==3.11.6",
-  "pillow==12.3.0",
+  "pillow==13.0.0",
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
