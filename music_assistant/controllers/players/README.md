@@ -175,7 +175,7 @@ Protocol players are matched to the same physical device using identifiers in or
 1. **MAC_ADDRESS** - Most reliable, unique to the network interface
 2. **SERIAL_NUMBER** - Unique device serial number
 3. **UUID** - Universally unique identifier
-4. **CAST_UUID / AIRPLAY_ID** - Protocol-specific stable identifiers
+4. **CAST_UUID / AIRPLAY_ID** - Protocol-specific stable identifiers (a differing AIRPLAY_ID rules out a match, as several AirPlay receivers can share one host, IP and MAC)
 5. **IP_ADDRESS** - Last resort only when strong identifiers are unavailable or unreliable
 6. **player_id** - Fallback device key for players without usable identifiers (e.g., Sendspin)
 

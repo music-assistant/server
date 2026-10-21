@@ -1849,6 +1849,12 @@ class ProtocolLinkingMixin:
         identifiers_a = player_a.device_info.identifiers
         identifiers_b = player_b.device_info.identifiers
 
+        # Receivers on one host share its IP and ARP MAC, so a differing AirPlay id rules out a match
+        airplay_id_a = identifiers_a.get(IdentifierType.AIRPLAY_ID)
+        airplay_id_b = identifiers_b.get(IdentifierType.AIRPLAY_ID)
+        if airplay_id_a and airplay_id_b and airplay_id_a.lower() != airplay_id_b.lower():
+            return False
+
         # Check identifiers in order of reliability
         # MAC_ADDRESS > SERIAL_NUMBER > UUID > CAST_UUID > AIRPLAY_ID
         for conn_type in (
