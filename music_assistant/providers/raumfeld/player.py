@@ -24,7 +24,13 @@ from .constants import (
     PLAYER_CONFIG_ENTRIES,
     SOURCE_LINE_IN,
 )
-from .helpers import external_source, parse_didl_metadata, parse_duration, query_last_change
+from .helpers import (
+    external_source,
+    library_uri,
+    parse_didl_metadata,
+    parse_duration,
+    query_last_change,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -200,6 +206,8 @@ class RaumfeldPlayer(Player):
         # Spotify Connect in single-room mode takes the room out of every zone.
         self._external_source: PlayerSource | None = None
         self._static_sources: list[PlayerSource] = []
+        # source id -> (object id, container) of the station buttons offered as sources
+        self._library_sources: dict[str, tuple[str, bool]] = {}
         self._external_via_room = False
         # timestamp of the last power command, see POWER_SETTLE_TIME
         self._power_changed_at = 0.0
@@ -304,6 +312,28 @@ class RaumfeldPlayer(Player):
             return
         self.room = room
         self._attr_name = room
+        self.update_state()
+
+    def set_station_buttons(self, buttons: list[tuple[int, str, str, bool]]) -> None:
+        """
+        Offer this speaker's station buttons as sources.
+
+        :param buttons: The station buttons: ``(button, object id, title, container)``.
+        """
+        library: dict[str, tuple[str, bool]] = {}
+        sources = [source for source in self._static_sources if source.id == SOURCE_LINE_IN]
+        for button, object_id, title, container in buttons:
+            source_id = f"station_button_{button}"
+            library[source_id] = (object_id, container)
+            sources.append(PlayerSource(id=source_id, name=f"Button {button}: {title}"))
+        if library == self._library_sources and len(sources) == len(self._static_sources):
+            return
+        self._library_sources = library
+        self._static_sources = sources
+        if sources:
+            self._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
+        external = [self._external_source] if self._external_source is not None else []
+        self._attr_source_list = [*sources, *external]
         self.update_state()
 
     def set_group_members(self, member_ids: list[str]) -> None:
@@ -484,7 +514,10 @@ class RaumfeldPlayer(Player):
 
     @_changes_playback
     async def select_source(self, source: str) -> None:
-        """Handle SELECT_SOURCE: play the room's analog Line-In input."""
+        """Handle SELECT_SOURCE: play the Line-In or one of the station buttons."""
+        if (library_item := self._library_sources.get(source)) is not None:
+            await self._play_library_item(source, *library_item)
+            return
         if source != SOURCE_LINE_IN or self._line_in is None:
             raise PlayerCommandFailed(f"Unknown source '{source}' for {self.room}")
         url, _title = self._line_in
@@ -905,10 +938,19 @@ class RaumfeldPlayer(Player):
             self._clear_next()
         allowed = {action.strip() for action in (actions or "").split(",")}
         source_id, name = external_source(meta["section"])
+        passive = True
+        # a station button, pressed here or on the speaker, plays its own library item:
+        # report that button rather than the service behind it
+        for library_id, (object_id, _container) in self._library_sources.items():
+            if object_id == meta["item_id"]:
+                source_id = library_id
+                name = next(s.name for s in self._static_sources if s.id == library_id)
+                passive = False
+                break
         source = PlayerSource(
             id=source_id,
             name=name,
-            passive=True,
+            passive=passive,
             can_play_pause=bool(allowed & {"Pause", "Play"}),
             # one capability covers both commands, so the host has to allow both
             can_next_previous={"Next", "Previous"} <= allowed,
@@ -917,7 +959,12 @@ class RaumfeldPlayer(Player):
         self._external_source = source
         self._external_via_room = via_room
         self._attr_active_source = source.id
-        self._attr_source_list = [*self._static_sources, source]
+        others = [s for s in self._static_sources if s.id != source.id]
+        self._attr_source_list = (
+            [*others, source]
+            if passive
+            else [source if s.id == source.id else s for s in self._static_sources]
+        )
         self._attr_supported_features -= EXTERNAL_SOURCE_FEATURES
         if source.can_play_pause:
             self._attr_supported_features.add(PlayerFeature.PAUSE)
@@ -1018,6 +1065,41 @@ class RaumfeldPlayer(Player):
         self._external_via_room = False
         self._attr_source_list = list(self._static_sources)
         self._attr_supported_features -= EXTERNAL_SOURCE_FEATURES
+
+    async def _play_library_item(self, source_id: str, object_id: str, container: bool) -> None:
+        """
+        Have the room's zone play an item of the host's own library.
+
+        :param source_id: The source the item is offered as.
+        :param object_id: The library object (a station button's item).
+        :param container: Whether the object is a container (an album, a playlist).
+        """
+        self._mark_play_started()
+        self._clear_next()
+        host = self.raumfeld.host
+        uri = library_uri(host.media_server_udn, object_id, container)
+        try:
+            # the host wants the item's own description along with the reference
+            metadata = await host.async_browse_media_server(object_id, "BrowseMetadata") or ""
+            zone = await self._ensure_playable_zone()
+            await self._wake_rooms(zone)
+            await self._stop_before_switching(zone)
+            await self._zone_command(
+                zone, "SetAVTransportURI", CurrentURI=uri, CurrentURIMetaData=metadata
+            )
+            await self._zone_command(zone, "Play", Speed="1")
+        except HOST_ERRORS as err:
+            raise PlayerCommandFailed(
+                f"Failed to start {object_id} on {self.room}: {err!r}"
+            ) from err
+        # show the chosen button right away; the next polls report it with what it plays
+        name = next((x.name for x in self._static_sources if x.id == source_id), source_id)
+        self._attr_active_source = source_id
+        self.set_current_media(
+            uri=f"{EXTERNAL_URI_SCHEME}{object_id}", clear_all=True, title=name.partition(": ")[2]
+        )
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
 
     async def _zone_command(self, zone: list[str], action_name: str, **arguments: str) -> None:
         """

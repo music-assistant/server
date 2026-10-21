@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import aiohttp
 import defusedxml.ElementTree as DefusedET
@@ -284,3 +284,43 @@ def _parse_description_field(description_xml: str | None, field: str) -> str | N
         if element.tag.rsplit("}", 1)[-1] == field:
             return (element.text or "").strip() or None
     return None
+
+
+def parse_library_items(didl_xml: str | None) -> list[tuple[str, str, bool]]:
+    """
+    Parse a DIDL-Lite listing of the host's library into ``(object id, title, container)``.
+
+    Malformed or empty XML yields an empty list (never raises).
+
+    :param didl_xml: The DIDL-Lite XML returned by browsing the host's media server.
+    """
+    if not didl_xml or not didl_xml.strip():
+        return []
+    try:
+        root = DefusedET.fromstring(didl_xml)
+    except DefusedET.ParseError, ValueError:
+        return []
+    result: list[tuple[str, str, bool]] = []
+    for element in root:
+        kind = element.tag.rsplit("}", 1)[-1]
+        if kind not in ("item", "container") or not (object_id := element.get("id")):
+            continue
+        title = element.find(f"{_DC}title")
+        name = title.text if title is not None and title.text else object_id
+        result.append((object_id, name, kind == "container"))
+    return result
+
+
+def library_uri(media_server_udn: str, object_id: str, container: bool) -> str:
+    """
+    Return the transport URI that has the host play an item of its own library.
+
+    :param media_server_udn: The UDN of the host's media server.
+    :param object_id: The library object to play.
+    :param container: Whether the object is a container (an album, a playlist).
+    """
+    server = quote(media_server_udn, safe="")
+    service = quote("urn:upnp-org:serviceId:ContentDirectory", safe="")
+    if container:
+        return f"dlna-playcontainer://{server}?sid={service}&cid={quote(object_id, safe='')}&md=0"
+    return f"dlna-playsingle://{server}?sid={service}&iid={quote(object_id, safe='')}"
