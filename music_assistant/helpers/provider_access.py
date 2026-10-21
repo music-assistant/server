@@ -11,12 +11,14 @@ account only.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing, ProviderType
+from music_assistant_models.media_items import MediaItem
 
 from music_assistant.constants import CONF_PROVIDERS, MASS_LOGGER_NAME
 
@@ -195,6 +197,35 @@ def visible_provider(
     if provider.instance_id in hidden_music_sources(mass, user):
         return None
     return provider
+
+
+def visible_items[T](mass: MusicAssistant, items: Iterable[T], user: User | None) -> list[T]:
+    """
+    Return the items, leaving out the media items no source the user may see can serve.
+
+    A media item is kept when at least one of its provider mappings resolves through
+    `visible_provider`; other items, such as folders, are always kept.
+
+    :param mass: The MusicAssistant instance.
+    :param items: The items to narrow.
+    :param user: The user to narrow the items for, None for no narrowing at all.
+    """
+    if user is None or not hidden_music_sources(mass, user):
+        return list(items)
+    # resolved once per provider instance, as a listing maps onto only a handful of them
+    visible: dict[str, bool] = {}
+
+    def _is_visible(instance_id: str) -> bool:
+        if (known := visible.get(instance_id)) is None:
+            known = visible[instance_id] = visible_provider(mass, instance_id, user) is not None
+        return known
+
+    return [
+        item
+        for item in items
+        if not isinstance(item, MediaItem)
+        or any(_is_visible(mapping.provider_instance) for mapping in item.provider_mappings)
+    ]
 
 
 def exact_provider(mass: MusicAssistant, instance_id: str) -> ProviderInstanceType | None:
