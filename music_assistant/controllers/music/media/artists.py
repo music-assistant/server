@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import weakref
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 from urllib.parse import urlencode
@@ -53,10 +54,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.controllers.music.constants import (
-    MAX_LOOKED_UP_ARTIST_URLS,
-    SIMILAR_ITEMS_LIMIT,
-)
+from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.helpers import (
     metadata_for_update,
     provider_mappings_for_update,
@@ -109,9 +107,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         super().__init__(mass)
         self._db_add_lock = asyncio.Lock()
         self._logged_hints: set[Hashable] = set()
-        # MusicBrainz artist ids looked up by streaming URL while matching, kept apart from the
-        # item until it is inserted, so a candidate accepted later in the scan never gets one
-        self._url_mbids: dict[str, str | None] = {}
+        # MusicBrainz artist ids looked up by streaming URL while matching an artist being added,
+        # per artist object: kept off the item until it is inserted, so a candidate accepted
+        # later in the scan never gets one, and dropped with the object, so the next add asks
+        # again (through the MusicBrainz cache)
+        self._match_lookups: dict[int, dict[str, str | None]] = {}
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
@@ -1855,6 +1855,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self, item: Artist | ItemMapping, overwrite_existing: bool = False
     ) -> int:
         """Add a new item record to the database."""
+        lookups = self._match_lookups.get(id(item), {})
         # If item is an ItemMapping, convert it
         if isinstance(item, ItemMapping):
             item = self.artist_from_item_mapping(item)
@@ -1863,8 +1864,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             item.mbid = VARIOUS_ARTISTS_MBID
         if item.mbid == VARIOUS_ARTISTS_MBID:
             item.name = VARIOUS_ARTISTS_NAME
-        if not item.mbid and (mbid := self._looked_up_mbid(item)):
-            item.mbid = mbid
+        if not item.mbid:
+            for mapping in item.provider_mappings:
+                if (url := _artist_url(mapping)) and (mbid := lookups.get(url)):
+                    item.mbid = mbid
+                    break
         # no existing item matched: insert item
         db_id = await self.mass.music.database.insert(
             self.db_table,
@@ -1955,16 +1959,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         if (musicbrainz := self._musicbrainz_link_provider()) is None:
             return True
         mapping, library_mappings = conflict
+        lookups = self._lookups_of(item)
         if not (
             item_mbid := item.mbid
-            or await self._mbid_by_mapping(musicbrainz, mapping, item.name, db_item.mbid)
+            or await self._mbid_by_mapping(musicbrainz, lookups, mapping, item.name, db_item.mbid)
         ):
             return True
         library_mbids = {db_item.mbid} if db_item.mbid else set()
         if not library_mbids:
             for library_mapping in library_mappings:
                 if mbid := await self._mbid_by_mapping(
-                    musicbrainz, library_mapping, db_item.name, item_mbid
+                    musicbrainz, lookups, library_mapping, db_item.name, item_mbid
                 ):
                     library_mbids.add(mbid)
         return (
@@ -2032,6 +2037,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def _mbid_by_mapping(
         self,
         musicbrainz: MusicbrainzProvider,
+        lookups: dict[str, str | None],
         mapping: ProviderMapping,
         name: str,
         other_mbid: str | None,
@@ -2040,6 +2046,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         Return the MusicBrainz artist id linked to a streaming provider artist, if known.
 
         :param musicbrainz: The MusicBrainz provider to look the artist up with.
+        :param lookups: The lookups made so far while adding the same artist, by URL.
         :param mapping: The streaming provider mapping of the artist.
         :param name: The artist's name, for the hint logged when MusicBrainz lacks the link.
         :param other_mbid: The MusicBrainz id of the same-name artist it must be told apart
@@ -2047,8 +2054,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         if (url := _artist_url(mapping)) is None:
             return None
-        if url in self._url_mbids:
-            return self._url_mbids[url]
+        if url in lookups:
+            return lookups[url]
         if musicbrainz.rate_limited:
             return None
         try:
@@ -2056,19 +2063,18 @@ class ArtistsController(MediaControllerBase[Artist]):
         except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
             self.logger.debug("Error looking up %s on MusicBrainz: %s", url, err)
             return None
-        if len(self._url_mbids) >= MAX_LOOKED_UP_ARTIST_URLS:
-            self._url_mbids.clear()
-        self._url_mbids[url] = mbid
+        lookups[url] = mbid
         if mbid is None:
             self._log_missing_musicbrainz_link(mapping, url, name, other_mbid)
         return mbid
 
-    def _looked_up_mbid(self, item: Artist) -> str | None:
-        """Return the MusicBrainz artist id matching found for one of the artist's URLs."""
-        for mapping in item.provider_mappings:
-            if (url := _artist_url(mapping)) and (mbid := self._url_mbids.get(url)):
-                return mbid
-        return None
+    def _lookups_of(self, item: Artist | ItemMapping) -> dict[str, str | None]:
+        """Return the MusicBrainz lookups made while adding this artist object, by URL."""
+        key = id(item)
+        if (lookups := self._match_lookups.get(key)) is None:
+            lookups = self._match_lookups[key] = {}
+            weakref.finalize(item, self._match_lookups.pop, key, None)
+        return lookups
 
     def _log_missing_musicbrainz_link(
         self, mapping: ProviderMapping, url: str, name: str, other_mbid: str | None

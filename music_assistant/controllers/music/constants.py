@@ -148,7 +148,3 @@ AUDIO_ANALYSIS_MOVE_BATCH_SIZE: Final[int] = 5000
 # twice (decoded and packed) while it converts. Progress is logged once per this many rows.
 AUDIO_ANALYSIS_PACK_BATCH_SIZE: Final[int] = 100
 AUDIO_ANALYSIS_PACK_PROGRESS_ROWS: Final[int] = 2000
-
-# streaming artist URLs whose MusicBrainz id the artist matching keeps in memory; matching
-# only looks one up for a same-name artist clash on one provider, so this is rarely reached
-MAX_LOOKED_UP_ARTIST_URLS: Final[int] = 1000

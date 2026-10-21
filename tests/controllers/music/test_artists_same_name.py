@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -162,6 +163,31 @@ async def test_rejected_candidate_gives_no_id_to_a_later_candidate(
     assert int(library_item.item_id) == other_id
     assert library_item.mbid is None
     assert guitarist.mbid is None
+
+
+async def test_link_added_on_musicbrainz_is_used_by_the_next_add(
+    music_mass: MusicAssistant,
+) -> None:
+    """A URL MusicBrainz did not know during one add is asked again for the next one."""
+    composer_id = await _add_composer(music_mass)
+    mbids = {_url(COMPOSER_ID): COMPOSER_MBID}
+    with _harness(music_mass, mbids) as harness:
+        assert await harness.match(_artist(GUITARIST_ID)) == composer_id
+        # the user follows the hint and links the guitarist's Deezer page on MusicBrainz
+        mbids[_url(GUITARIST_ID)] = GUITARIST_MBID
+        assert await harness.match(_artist(GUITARIST_ID)) is None
+
+
+async def test_lookups_are_dropped_with_the_artist(music_mass: MusicAssistant) -> None:
+    """The lookups made for an artist being added do not outlive that artist object."""
+    await _add_composer(music_mass)
+    with _harness(music_mass) as harness:
+        guitarist = _artist(GUITARIST_ID)
+        await harness.match(guitarist)
+        assert music_mass.music.artists._match_lookups
+        del guitarist
+        gc.collect()
+    assert not music_mass.music.artists._match_lookups
 
 
 async def test_only_the_library_id_known_merges_without_looking_it_up(
