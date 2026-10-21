@@ -659,6 +659,11 @@ class RaumfeldPlayer(Player):
         """
         return self._reading_is_current(generation)
 
+    def drop_next_item(self) -> None:
+        """Drop this room's queued next item and its end watch, as a room joining a group."""
+        if self._advance_armed or self._next_media is not None:
+            self._clear_next()
+
     async def plays_queue_in(self, zone: list[str]) -> bool | None:
         """
         Return whether a zone plays this room's queue, or ``None`` while that cannot be told.
@@ -744,6 +749,10 @@ class RaumfeldPlayer(Player):
         if self._follows_or_held():
             # the room joined another room's group during the reads, or its group's zone
             # split: the readings are not this room's queue's to act on
+            self.update_state()
+            return
+        if self._active_zone() != zone:
+            # the room is in another zone by now, so the readings describe one it left
             self.update_state()
             return
 

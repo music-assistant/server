@@ -104,6 +104,8 @@ def _player(room: str) -> RaumfeldPlayer:
     player._player_id = f"raumfeld_{room.lower()}"
     player._attr_group_members = []
     player._advance_task_id = f"raumfeld_advance_{room.lower()}"
+    player._advance_armed = False
+    player._next_media = None
     player._attr_active_source = None
     player._attr_playback_state = PlaybackState.IDLE
     return player
@@ -726,3 +728,41 @@ def test_a_follower_still_naming_its_own_queue_does_not_take_the_lead() -> None:
         player._attr_playback_state = PlaybackState.PLAYING
     _sync(provider, players)
     assert _groups(players) == {"Sofa": ["Sofa", "Bar", "Kitchen"]}
+
+
+def test_a_room_that_follows_after_a_merge_drops_its_own_next_item() -> None:
+    """With flow mode off, a merge drops a new follower's next item, before any split."""
+    provider, players = _zone_provider([["Bar"], ["Sofa"]])
+    _playing_group(provider, players, ["Bar"], [])
+    sofa = players["Sofa"]
+    sofa._advance_armed = True
+    sofa._next_media = MagicMock()
+    provider.host.get_zones.return_value = [["Bar", "Sofa"]]
+    _sync(provider, players)
+    assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
+    assert _next_cleared(sofa)
+    # split again: on its own, the room has nothing left for an end watch to start
+    provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+    _sync(provider, players)
+    assert _next_cleared(sofa)
+
+
+async def test_a_reading_of_a_zone_the_room_left_is_dropped() -> None:
+    """A zone change finishing during the poll's reads leaves the old zone's reading unused."""
+    provider, players = _zone_provider([["Bar", "Sofa"]])
+    _playing_group(provider, players, ["Bar", "Sofa"], [])
+    bar = players["Bar"]
+
+    async def regrouped_while_read(_zone: list[str]) -> dict[str, str]:
+        # the watcher mirrored the split during the read: Bar leads nothing any more
+        provider.host.get_zones.return_value = [["Bar"], ["Sofa"]]
+        bar._attr_group_members = []
+        return {"CurrentTransportState": "STOPPED"}
+
+    provider.host.async_get_transport_info = AsyncMock(side_effect=regrouped_while_read)
+    with (
+        patch.object(bar, "_update_volume", AsyncMock()),
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+    ):
+        await bar._poll_zone(provider.host, ["Bar", "Sofa"])
+    assert bar._attr_playback_state == PlaybackState.PLAYING

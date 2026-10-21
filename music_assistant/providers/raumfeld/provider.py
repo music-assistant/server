@@ -496,10 +496,14 @@ class RaumfeldPlayerProvider(PlayerProvider):
             groups[leader_id] = [leader_id, *(pid for pid in member_ids if pid != leader_id)]
         # Every player gets its list in one pass, leaders and all others (emptied) alike: a
         # former leader that became a follower must not keep a stale list, or it would form
-        # a circular group with the new leader.
+        # a circular group with the new leader. A follower plays its leader's queue, so the
+        # next item of its own queue goes, before an end watch could start it later on.
+        followers = {member_id for members in groups.values() for member_id in members[1:]}
         for player in self.players:
             if isinstance(player, RaumfeldPlayer):
                 player.set_group_members(groups.get(player.player_id, []))
+                if player.player_id in followers:
+                    player.drop_next_item()
 
     def _pick_leader(self, member_ids: list[str]) -> str:
         """
