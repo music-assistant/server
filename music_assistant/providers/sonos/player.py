@@ -1369,6 +1369,13 @@ class SonosPlayer(Player):
         ):
             # this player was given something (else) to play in the meantime
             return
+        if not self._leads_moved_group(new_coordinator):
+            # it gave the role up again before this hand-over got to run
+            self.logger.debug(
+                "%s no longer leads the moved group, leaving it alone",
+                new_coordinator.display_name,
+            )
+            return
         group = new_coordinator.group_controller
         if (
             new_coordinator.cloud_queue_item_generation != new_coordinator_generation
@@ -1433,15 +1440,7 @@ class SonosPlayer(Player):
         ready = asyncio.Event()
 
         def _check(_event: object = None) -> None:
-            # its own connection reports the role, and then reads what the group plays, a
-            # moment after this player hears of the move
-            player = new_coordinator.client.player
-            if (
-                player is None
-                or not player.is_coordinator
-                or player.group is None
-                or not player.group.is_subscribed
-            ):
+            if not self._leads_moved_group(new_coordinator):
                 return
             # a hand-over stops a queue that still plays here, and with it whatever took
             # this player over (an Arc switched to TV): the queue follows the speaker's
@@ -1475,6 +1474,24 @@ class SonosPlayer(Player):
             unsubscribe_speaker()
             unsubscribe_queue()
         return True
+
+    @staticmethod
+    def _leads_moved_group(new_coordinator: SonosPlayer) -> bool:
+        """
+        Return whether a player leads the group the speakers moved to it.
+
+        :param new_coordinator: The player the speakers made the group's coordinator.
+        """
+        # its own connection reports the role, and then reads what the group plays, a
+        # moment after the former coordinator hears of the move
+        player = new_coordinator.client.player
+        return (
+            new_coordinator.connected
+            and player is not None
+            and player.is_coordinator
+            and player.group is not None
+            and player.group.is_subscribed
+        )
 
     @staticmethod
     def _active_service(group: SonosGroup) -> MusicService | str | None:

@@ -312,6 +312,31 @@ async def test_nothing_is_handed_over_when_the_new_coordinator_never_takes_the_r
     assert home.office.cloud_queue_id == OFFICE
 
 
+@pytest.mark.parametrize("lost", ["role", "status", "connection"])
+@pytest.mark.asyncio
+async def test_a_role_given_up_again_before_the_hand_over_runs_is_left_alone(lost: str) -> None:
+    """The role can be lost again between the report that ends the wait and the hand-over."""
+    home = _Household()
+    home.report_coordinator(False)
+
+    home.office._on_group_coordinator_changed(_moved())
+    hand_over = await home.run_hand_over()
+    home.report_coordinator(True)
+    home.deliver()
+    # before the hand-over resumes: the speaker metadata still shows our queue
+    if lost == "role":
+        home.report_coordinator(False)
+    elif lost == "status":
+        cast("MagicMock", home.bathroom.client).player.group.is_subscribed = False
+    else:
+        home.bathroom.connected = False
+    await hand_over
+
+    home.transfer.assert_not_awaited()
+    cast("AsyncMock", home.bathroom.stop).assert_not_awaited()
+    assert home.office.cloud_queue_id == OFFICE
+
+
 @pytest.mark.asyncio
 async def test_a_new_play_in_the_meantime_is_left_alone() -> None:
     """A queue loaded on this player while waiting is not what moved."""
