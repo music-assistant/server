@@ -341,6 +341,8 @@ class AlexaPlayer(Player):
         utter = await provider.get_intent_utterance("AMAZON.StopIntent", "stop")
         await self.api.run_custom(utter)
 
+        # Reports requested while the command was out describe the state before it.
+        self._playback_generation += 1
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
@@ -354,6 +356,8 @@ class AlexaPlayer(Player):
             utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
             await self.api.run_custom(utter)
 
+        # Reports requested while the command was out describe the state before it.
+        self._playback_generation += 1
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
@@ -366,6 +370,8 @@ class AlexaPlayer(Player):
             utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
             await self.api.run_custom(utter)
 
+        # Reports requested while the command was out describe the state before it.
+        self._playback_generation += 1
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
@@ -451,6 +457,8 @@ class AlexaPlayer(Player):
 
         if not screen_handled:
             await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
+        # Reports requested while the command was out describe the state before it.
+        self._playback_generation += 1
         self._position_observed_at = None
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
