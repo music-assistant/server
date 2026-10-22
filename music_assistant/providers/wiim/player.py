@@ -709,7 +709,7 @@ class WiimPlayer(Player):
         )
 
     async def _resume_after_join_restart(self) -> None:
-        """Seek the queue back to the pre-join position if the firmware restarted the stream."""
+        """Resume the queue at the pre-join position if the firmware restarted the stream."""
         if not (watch := self._join_restart_watch):
             return
         try:
@@ -726,10 +726,14 @@ class WiimPlayer(Player):
             self._attr_name,
             position,
         )
-        # seek republishes the target position before rebuilding the stream, and a stream
-        # started while grouped is never restarted by the firmware again
+        # the seek takes the group's lock before the player's, while the join may run under
+        # the player's lock alone, so it waits for the join to return to keep that order
+        self.mass.create_task(self._seek_after_join_restart(watch.queue_id, position))
+
+    async def _seek_after_join_restart(self, queue_id: str, position: int) -> None:
+        """Seek the queue, which rebuilds the stream at a position the firmware keeps."""
         try:
-            await self.mass.player_queues.seek(watch.queue_id, position)
+            await self.mass.player_queues.seek(queue_id, position)
         except MusicAssistantError as err:
             self.logger.warning(
                 "Failed to resume %s after the stream restart: %s", self._attr_name, err
