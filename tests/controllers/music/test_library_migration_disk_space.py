@@ -1,4 +1,4 @@
-"""Tests that a library migration on a (nearly) full disk never resets the library."""
+"""Tests that a library migration on a (nearly) full disk keeps the library."""
 
 from __future__ import annotations
 
@@ -6,20 +6,18 @@ import logging
 import os
 import sqlite3
 from contextlib import closing
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
-import pytest
-from music_assistant_models.errors import MusicAssistantError
-
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_SETTINGS
-from music_assistant.controllers.music import MusicController, database, migrations
+from music_assistant.controllers.music import MusicController, migrations
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
-from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
 
 from .helpers import create_track
+
+if TYPE_CHECKING:
+    import pytest
 
 PREV_VERSION = DB_SCHEMA_VERSION - 1
 LEGACY_ANALYSIS_DDL = (
@@ -62,32 +60,6 @@ def _library_state(mass: MusicAssistant) -> tuple[str, int]:
     return version, tracks
 
 
-@pytest.mark.parametrize("wrapped", [False, True])
-async def test_disk_full_migration_restores_backup_instead_of_resetting(
-    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch, wrapped: bool
-) -> None:
-    """A migration that runs out of disk space restores the backup and refuses to start."""
-    music = await _library_at_previous_version(mass_minimal)
-
-    async def _migrate_until_disk_full(
-        _mass: MusicAssistant, db: DatabaseConnection, *_: Any
-    ) -> None:
-        await db.execute("DELETE FROM tracks")
-        await db.commit()
-        await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        if wrapped:
-            raise MusicAssistantError("Could not create tables") from _disk_full_error()
-        raise _disk_full_error()
-
-    monkeypatch.setattr(database, "migrate_database", _migrate_until_disk_full)
-    mass_minimal.cache.clear = AsyncMock()  # type: ignore[method-assign]
-
-    with pytest.raises(MusicAssistantError, match="disk space"):
-        await music._setup_database()
-
-    assert _library_state(mass_minimal) == (str(PREV_VERSION), 1)
-
-
 async def test_cache_clear_failure_after_migration_keeps_library(
     mass_minimal: MusicAssistant,
 ) -> None:
@@ -99,22 +71,6 @@ async def test_cache_clear_failure_after_migration_keeps_library(
     await music.database.close()
 
     assert _library_state(mass_minimal) == (str(DB_SCHEMA_VERSION), 1)
-
-
-async def test_backup_preflight_refuses_migration_without_space(
-    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Without room for the backup copy, nothing is copied or migrated."""
-    music = await _library_at_previous_version(mass_minimal)
-    monkeypatch.setattr(database, "get_free_space", AsyncMock(return_value=0.0))
-    mass_minimal.cache.clear = AsyncMock()  # type: ignore[method-assign]
-
-    with pytest.raises(MusicAssistantError, match="disk space"):
-        await music._setup_database()
-    await music.close()
-
-    assert _library_state(mass_minimal) == (str(PREV_VERSION), 1)
-    assert not (Path(mass_minimal.storage_path) / "library.db.backup").exists()
 
 
 async def test_analysis_move_waits_for_space_and_retries_on_next_start(

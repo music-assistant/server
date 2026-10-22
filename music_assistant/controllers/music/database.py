@@ -16,8 +16,6 @@ import asyncio
 import os
 import shutil
 import sqlite3
-from contextlib import suppress
-from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.errors import MusicAssistantError
@@ -47,15 +45,14 @@ from music_assistant.constants import (
     MEDIA_ITEM_DB_TABLES,
     VACUUM_MIN_RECLAIM_RATIO,
 )
-from music_assistant.controllers.music.constants import DB_FREE_SPACE_MARGIN, DB_SCHEMA_VERSION
+from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.controllers.music.migrations import (
     migrate_database,
     move_legacy_audio_analysis,
 )
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.database import DatabaseConnection, is_disk_full_error
-from music_assistant.helpers.util import get_free_space
+from music_assistant.helpers.database import DatabaseConnection
 
 if TYPE_CHECKING:
     import logging
@@ -205,9 +202,39 @@ class MusicDatabaseSetupMixin:
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
             # db version mismatch - we need to do a migration
-            prev_version = await self.__migrate_database(db_path, prev_version)
+            # make a backup of db file
+            db_path_backup = db_path + ".backup"
+            await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
+
+            # handle db migration from previous schema(s) to this one
+            try:
+                await migrate_database(
+                    self.mass,
+                    self.database,
+                    self.logger,
+                    prev_version,
+                    self.__create_database_tables,
+                )
+            except Exception as err:
+                # if the migration fails completely we reset the db
+                # so the user at least can have a working situation back
+                # a backup file is made with the previous version
+                self.logger.error(
+                    "Database migration failed - starting with a fresh library database, "
+                    "a full rescan will be performed, this can take a while!",
+                )
+                if not isinstance(err, MusicAssistantError):
+                    self.logger.exception("Unexpected error during database migration")
+
+                await self._database.close()
+                await asyncio.to_thread(os.remove, db_path)
+                self._database = DatabaseConnection(db_path)
+                await self._database.setup()
+                await self.mass.cache.clear()
+                await self.__create_database_tables()
+                prev_version = 0
         elif prev_version == DB_SCHEMA_VERSION:
-            # the migration attempts this itself, so only a start without one retries it here
+            # retry an audio analysis move that an earlier start skipped for lack of disk space
             await move_legacy_audio_analysis(self.mass, self.database, self.logger)
 
         # store current schema version
@@ -246,69 +273,6 @@ class MusicDatabaseSetupMixin:
         await self._setup_database()
         # initiate full sync
         await self.start_sync()
-
-    async def __migrate_database(self, db_path: str, prev_version: int) -> int:
-        """Migrate the library database, returning the schema version to continue from."""
-        # make a backup of db file
-        db_path_backup = db_path + ".backup"
-        await self.__backup_database(db_path, db_path_backup)
-
-        # handle db migration from previous schema(s) to this one
-        try:
-            await migrate_database(
-                self.mass,
-                self.database,
-                self.logger,
-                prev_version,
-                self.__create_database_tables,
-            )
-        except Exception as err:
-            if is_disk_full_error(err):
-                with suppress(sqlite3.Error):
-                    await self.database.close()
-                self._database = None
-                await asyncio.to_thread(_restore_backup, db_path, db_path_backup)
-                raise MusicAssistantError(
-                    "Library database migration failed: not enough disk space or a "
-                    "storage error. The library was restored from its backup, "
-                    "free up space and restart."
-                ) from err
-            # if the migration fails completely we reset the db
-            # so the user at least can have a working situation back
-            # a backup file is made with the previous version
-            self.logger.error(
-                "Database migration failed - starting with a fresh library database, "
-                "a full rescan will be performed, this can take a while!",
-            )
-            if not isinstance(err, MusicAssistantError):
-                self.logger.exception("Unexpected error during database migration")
-
-            await self.database.close()
-            await asyncio.to_thread(os.remove, db_path)
-            self._database = DatabaseConnection(db_path)
-            await self._database.setup()
-            await self.mass.cache.clear()
-            await self.__create_database_tables()
-            return 0
-        try:
-            await self.mass.cache.clear()
-        except Exception as err:
-            self.logger.warning("Could not clear the cache after migrating: %s", err)
-        return prev_version
-
-    async def __backup_database(self, db_path: str, backup_path: str) -> None:
-        """Copy the library database to its backup, refusing without room for it."""
-        # committed rows still in the WAL would otherwise be missing from the copy
-        await self.database.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        needed_gb = (Path(db_path).stat().st_size + DB_FREE_SPACE_MARGIN) / (1 << 30)
-        free_gb = await get_free_space(self.mass.storage_path)
-        if free_gb < needed_gb:
-            raise MusicAssistantError(
-                "Not enough disk space to back up the library database before migrating "
-                f"it ({needed_gb:.1f} GB needed, {free_gb:.1f} GB free). "
-                "Free up space and restart."
-            )
-        await asyncio.to_thread(shutil.copyfile, db_path, backup_path)
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
@@ -822,10 +786,3 @@ class MusicDatabaseSetupMixin:
                 """
             )
         await self.database.commit()
-
-
-def _restore_backup(db_path: str, backup_path: str) -> None:
-    """Replace a closed database with its backup, dropping the WAL files of the replaced one."""
-    for suffix in ("-wal", "-shm"):
-        Path(db_path + suffix).unlink(missing_ok=True)
-    Path(backup_path).replace(db_path)

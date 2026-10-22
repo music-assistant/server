@@ -1450,6 +1450,12 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
     # save changes
     await database.commit()
 
+    # always clear the cache after a db migration; a failure here must not reset the library
+    try:
+        await mass.cache.clear()
+    except Exception as err:
+        logger.warning("Could not clear the cache after the migration: %s", err)
+
 
 async def move_legacy_audio_analysis(
     mass: MusicAssistant, database: DatabaseConnection, logger: logging.Logger

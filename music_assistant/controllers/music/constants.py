@@ -13,7 +13,7 @@ CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
 
 DB_SCHEMA_VERSION: Final[int] = 71
-# headroom kept free on top of what copying the library or moving its analysis rows writes
+# headroom kept free on top of what moving the audio analysis out of library.db writes
 DB_FREE_SPACE_MARGIN: Final[int] = 100 * 1024 * 1024
 
 # tracks longer that this will not be included in radio mode
