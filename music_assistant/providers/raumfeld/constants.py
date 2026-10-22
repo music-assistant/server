@@ -36,6 +36,15 @@ RENDERER_QUERY_TIMEOUT = 5
 # unreachable, and health-checks the host while connected.
 RECONNECT_INTERVAL = 30
 
+# How often (seconds) the zones the host reports are compared with the groups Music Assistant
+# shows. The comparison reads hassfeld's in-memory model, so it costs no request.
+ZONE_WATCH_INTERVAL = 2
+
+# How long (seconds) after Music Assistant changed a group itself the host's zones are left
+# alone. A group change takes the host several steps (a room leaves one zone, joins the
+# next, a leader hands over), and mirroring one of the states in between would undo it.
+GROUP_SETTLE_TIME = 10
+
 # Player id prefix so ids are namespaced and stable-ish per room.
 PLAYER_ID_PREFIX = "raumfeld"
 
