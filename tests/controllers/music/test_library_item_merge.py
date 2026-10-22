@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import AlbumType, ArtistType, ExternalID, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
@@ -12,6 +15,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     Genre,
+    ItemMapping,
     ProviderMapping,
     Track,
     UniqueList,
@@ -25,6 +29,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
@@ -33,10 +38,21 @@ from music_assistant.controllers.music.media.base import (
     SUPPRESS_MEDIA_ITEM_UPDATES,
     MediaControllerBase,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.mass import MusicAssistant
 
 # the user whose like a merge has to carry over to the surviving item
 MERGE_USER = "merge-user"
+
+
+@contextmanager
+def _as_user(user: User) -> Iterator[None]:
+    set_current_user(user)
+    try:
+        yield
+    finally:
+        set_current_user(None)
 
 
 @pytest.fixture(name="mass")
@@ -362,7 +378,38 @@ async def test_track_merge_preserves_album_and_artist_relations(mass: MusicAssis
         },
     )
 
-    await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+    await mass.cache._setup_database()
+    for item_id, provider in (
+        (source.item_id, "library"),
+        (target.item_id, "library"),
+        ("source-track", "source_instance"),
+    ):
+        await mass.music.database.insert(
+            DB_TABLE_PLAY_HISTORY,
+            {
+                "item_id": item_id,
+                "provider": provider,
+                "media_type": MediaType.TRACK.value,
+                "userid": MERGE_USER,
+                "name": "Original play snapshot",
+                "timestamp": 1_000,
+            },
+        )
+    original_history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
+    with _as_user(User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER)):
+        before = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
+        await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+        after = await mass.statistics.get_top_items(MediaType.TRACK, period="all_time")
+
+    assert len(before) == 2
+    assert [(entry.item.item_id, entry.play_count) for entry in after] == [(target.item_id, 3)]
+    history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
+    assert len(history) == len(original_history) == 3
+    for original, current in zip(original_history, history, strict=True):
+        assert dict(current) == {
+            **original,
+            "item_id": target.item_id if original["provider"] == "library" else original["item_id"],
+        }
 
     with pytest.raises(MediaNotFoundError):
         await mass.music.tracks.get_library_item(source.item_id)
@@ -565,6 +612,123 @@ async def test_genre_merge_rejects_different_taxonomies(mass: MusicAssistant) ->
 
     assert await mass.music.genres.get_library_item(target.item_id)
     assert await mass.music.genres.get_library_item(source.item_id)
+
+
+async def test_artist_merge_preserves_history_credit_references(mass: MusicAssistant) -> None:
+    """Artist merges transfer embedded library credits without rewriting play snapshots."""
+    target = await _add_artist(mass, "Target Artist", "target_instance", "target-artist")
+    source = await _add_artist(mass, "Source Artist", "source_instance", "source-artist")
+    await mass.cache._setup_database()
+    source_credit = ItemMapping.from_item(source).to_dict()
+    source_credit["name"] = "Original source snapshot"
+    provider_credit = {**source_credit, "provider": "other_provider", "uri": "provider-snapshot"}
+    artist_credits = [source_credit, ItemMapping.from_item(target).to_dict(), provider_credit]
+    for table in (DB_TABLE_PLAY_HISTORY, DB_TABLE_MEDIA_PROGRESS):
+        await mass.music.database.insert(
+            table,
+            {
+                "item_id": "credited-track",
+                "provider": "track_provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": MERGE_USER,
+                "name": "Original track snapshot",
+                "timestamp": 1_000,
+                "artists": serialize_to_json(artist_credits),
+            },
+        )
+    original_history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
+    with _as_user(User(user_id=MERGE_USER, username=MERGE_USER, role=UserRole.USER)):
+        before = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")
+        await mass.music.artists.merge_library_items(target.item_id, source.item_id)
+        after = await mass.statistics.get_top_items(MediaType.ARTIST, period="all_time")
+
+    assert {entry.item.item_id for entry in before if entry.item.provider == "library"} == {
+        source.item_id,
+        target.item_id,
+    }
+    assert [
+        (entry.item.item_id, entry.play_count)
+        for entry in after
+        if entry.item.provider == "library"
+    ] == [(target.item_id, 1)]
+    expected_credits = [
+        {**source_credit, "item_id": target.item_id, "uri": target.uri},
+        artist_credits[1],
+        provider_credit,
+    ]
+    for table in (DB_TABLE_PLAY_HISTORY, DB_TABLE_MEDIA_PROGRESS):
+        rows = await mass.music.database.get_rows(table, {"media_type": MediaType.TRACK.value})
+        assert len(rows) == 1
+        assert json_loads(rows[0]["artists"]) == expected_credits
+    history = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
+    assert dict(history[0]) == {
+        **original_history[0],
+        "artists": serialize_to_json(expected_credits),
+    }
+    await mass.music.artists._merge_library_playlog(int(target.item_id), int(source.item_id))
+    assert [dict(row) for row in await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)] == [
+        dict(history[0])
+    ]
+
+
+@pytest.mark.parametrize("raw_artists", [None, "{", "null", "{}", '[null, "legacy", 7, true]'])
+async def test_artist_merge_keeps_unusable_history_snapshots(
+    mass: MusicAssistant, raw_artists: str | None
+) -> None:
+    """Malformed or legacy snapshots cannot abort a merge or be rewritten speculatively."""
+    target = await _add_artist(mass, "Target Artist", "target_instance", "target-artist")
+    source = await _add_artist(mass, "Source Artist", "source_instance", "source-artist")
+    for table in (DB_TABLE_PLAY_HISTORY, DB_TABLE_MEDIA_PROGRESS):
+        await mass.music.database.insert(
+            table,
+            {
+                "item_id": "track",
+                "provider": "provider",
+                "media_type": MediaType.TRACK.value,
+                "userid": MERGE_USER,
+                "name": "Historical snapshot",
+                "timestamp": 1_000,
+                "artists": raw_artists,
+            },
+        )
+
+    await mass.music.artists.merge_library_items(target.item_id, source.item_id)
+
+    for table in (DB_TABLE_PLAY_HISTORY, DB_TABLE_MEDIA_PROGRESS):
+        rows = await mass.music.database.get_rows(table)
+        assert len(rows) == 1
+        assert rows[0]["artists"] == raw_artists
+
+
+async def test_artist_merge_preserves_legacy_entries_alongside_matching_credit(
+    mass: MusicAssistant,
+) -> None:
+    """A matching credit can be redirected without corrupting other JSON array values."""
+    target = await _add_artist(mass, "Target Artist", "target_instance", "target-artist")
+    source = await _add_artist(mass, "Source Artist", "source_instance", "source-artist")
+    credit = ItemMapping.from_item(source).to_dict()
+    artists = [None, "legacy", 7, True, credit]
+    await mass.music.database.insert(
+        DB_TABLE_PLAY_HISTORY,
+        {
+            "item_id": "track",
+            "provider": "provider",
+            "media_type": MediaType.TRACK.value,
+            "userid": MERGE_USER,
+            "name": "Historical snapshot",
+            "timestamp": 1_000,
+            "artists": serialize_to_json(artists),
+        },
+    )
+
+    await mass.music.artists.merge_library_items(target.item_id, source.item_id)
+
+    rows = await mass.music.database.get_rows(DB_TABLE_PLAY_HISTORY)
+    assert len(rows) == 1
+    assert json_loads(rows[0]["artists"]) == [
+        *artists[:-1],
+        {**credit, "item_id": target.item_id, "uri": target.uri},
+    ]
 
 
 async def test_artist_merge_rejects_different_roles(mass: MusicAssistant) -> None:

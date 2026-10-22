@@ -894,6 +894,8 @@
   "core.players.config_entries.volume_step.label": "Volume step size",
   "core.players.manifest.description": "Configuration of the core player management module",
   "core.players.manifest.name": "Players",
+  "core.statistics.manifest.description": "View listening statistics and analytics",
+  "core.statistics.manifest.name": "Statistics",
   "core.storage.errors.export_path_invalid": "Enter the full path of the export, starting with a /.",
   "core.storage.errors.folder_already_location": "This folder already is a storage location.",
   "core.storage.errors.folder_is_root": "The root folder of the server can not be added.",

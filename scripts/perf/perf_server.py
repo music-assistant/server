@@ -24,6 +24,7 @@ Exposes a loopback control channel (aiohttp, --control-port) used by run_benchma
   POST /lag/reset           -> reset the event-loop lag window
   GET  /lag                 -> max event-loop lag (ms) since last reset
   POST /resolve_stream_url  -> resolve the stream URL for a player's current media
+    POST /statistics/query_benchmark -> seed synthetic history and measure query latency
   POST /gc                  -> run a full garbage collection (for stable RSS checkpoints)
 
 Set PERF_YAPPI_BOOT=1 to start yappi before the music_assistant import, so the first
@@ -134,6 +135,7 @@ class ControlApi:
         app.router.add_post("/lag/reset", self._handle_lag_reset)
         app.router.add_get("/lag", self._handle_lag)
         app.router.add_post("/resolve_stream_url", self._handle_resolve_stream_url)
+        app.router.add_post("/statistics/query_benchmark", self._handle_statistics_query_benchmark)
         app.router.add_post("/gc", self._handle_gc)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -180,6 +182,16 @@ class ControlApi:
             return web.json_response({"error": "player not found or no current media"}, status=404)
         url = await self.mass.streams.resolve_stream_url(player.player_id, player.current_media)
         return web.json_response({"url": url})
+
+    async def _handle_statistics_query_benchmark(self, request: web.Request) -> web.Response:
+        from statistics_query_benchmark import benchmark_statistics_queries  # noqa: PLC0415
+
+        try:
+            result = await benchmark_statistics_queries(self.mass, await request.json())
+        except Exception as err:
+            LOGGER.exception("Statistics query benchmark failed")
+            raise web.HTTPInternalServerError(text=f"{type(err).__name__}: {err}") from err
+        return web.json_response(result)
 
 
 def _yappi_top_rows(limit: int = YAPPI_TOP_LIMIT) -> list[dict[str, Any]]:

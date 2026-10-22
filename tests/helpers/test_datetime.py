@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from music_assistant.helpers.datetime import host_timezone_name
+import pytest
+from music_assistant_models.errors import InvalidDataError
 
-if TYPE_CHECKING:
-    import pytest
+from music_assistant.helpers.datetime import get_timezone, host_timezone_name
 
 
 def test_tz_env_var_wins(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,3 +50,17 @@ def test_falls_back_to_utc_when_localtime_target_is_not_a_known_zone(
     monkeypatch.delenv("TZ", raising=False)
     monkeypatch.setattr(Path, "readlink", lambda _self: Path("/some/other/path"))
     assert host_timezone_name() == "UTC"
+
+
+def test_get_timezone_resolves_an_iana_timezone() -> None:
+    """Resolve an explicit IANA zone rather than the host's local offset."""
+    timezone = get_timezone("America/Havana")
+
+    assert timezone.key == "America/Havana"
+
+
+@pytest.mark.parametrize("timezone", ["Not/AZone", "", "/etc/localtime"])
+def test_get_timezone_rejects_invalid_names(timezone: str) -> None:
+    """Invalid IANA names retain the API-facing validation error."""
+    with pytest.raises(InvalidDataError, match="Invalid timezone"):
+        get_timezone(timezone)
