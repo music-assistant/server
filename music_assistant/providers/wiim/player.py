@@ -58,7 +58,6 @@ class _JoinRestartWatch:
 
     uri: str
     queue_id: str
-    session_id: str
     anchor: float
     anchor_at: float
     speed: float
@@ -121,6 +120,7 @@ class WiimPlayer(Player):
         self._last_logged_sdk_status: PlayingStatus | None = None
         self._ma_stream_uri: str | None = None
         self._join_restart_watch: _JoinRestartWatch | None = None
+        self._pending_join_resume: _JoinRestartWatch | None = None
         self._native_groups: NativeGroupCoordinator = provider.native_groups
         # a copy of the low-level client's detected capabilities, reused to pre-seed each
         # fresh command client so topology reads do not re-probe the device
@@ -247,6 +247,8 @@ class WiimPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
+        # a newer command owns playback, so a resume still pending after a join is dropped
+        self._pending_join_resume = None
         stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url=stream_url)
         self.set_current_media(
@@ -302,6 +304,7 @@ class WiimPlayer(Player):
 
     async def pause(self) -> None:
         """Pause command."""
+        self._pending_join_resume = None
         try:
             await self.device.async_pause()
         except WiimException as err:
@@ -311,6 +314,7 @@ class WiimPlayer(Player):
 
     async def stop(self) -> None:
         """Stop command."""
+        self._pending_join_resume = None
         self._attr_active_source = None
         self._attr_current_media = None
         self._ma_stream_uri = None
@@ -694,9 +698,6 @@ class WiimPlayer(Player):
             return None
         if not queue.active or not queue.current_item:
             return None
-        queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
-        if not queue_data or not queue_data.session_id:
-            return None
         # live streams have no duration and cannot be seeked, the restart is harmless there
         if not queue.current_item.duration:
             return None
@@ -706,7 +707,6 @@ class WiimPlayer(Player):
         return _JoinRestartWatch(
             uri=media.uri,
             queue_id=queue.queue_id,
-            session_id=queue_data.session_id,
             anchor=queue.elapsed_time,
             anchor_at=queue.elapsed_time_last_updated,
             speed=queue.playback_speed,
@@ -733,19 +733,18 @@ class WiimPlayer(Player):
         )
         # the seek takes the group's lock before the player's, while the join may run under
         # the player's lock alone, so it waits for the join to return to keep that order
-        self.mass.create_task(
-            self._seek_after_join_restart(watch.queue_id, watch.session_id, position)
-        )
+        self._pending_join_resume = watch
+        self.mass.create_task(self._seek_after_join_restart(watch, position))
 
-    async def _seek_after_join_restart(self, queue_id: str, session_id: str, position: int) -> None:
+    async def _seek_after_join_restart(self, watch: _JoinRestartWatch, position: int) -> None:
         """Seek the queue, which rebuilds the stream at a position the firmware keeps."""
         try:
-            async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
-                queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
-                # a command that waited behind the join and changed playback owns the queue now
-                if not queue_data or queue_data.session_id != session_id:
+            async with self.mass.players.get_group_and_player_lock(watch.queue_id, strict=True):
+                # a command that waited behind the join ran first and dropped the resume
+                if self._pending_join_resume is not watch:
                     return
-                await self.mass.player_queues.seek(queue_id, position)
+                self._pending_join_resume = None
+                await self.mass.player_queues.seek(watch.queue_id, position)
         except MusicAssistantError as err:
             self.logger.warning(
                 "Failed to resume %s after the stream restart: %s", self._attr_name, err

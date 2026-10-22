@@ -926,7 +926,6 @@ class TestFirstFollowerJoinRestart:
         queue.queue_id = player.player_id
         player._state.active_source = player.player_id
         provider.mass.players.get_active_queue.return_value = queue
-        provider.mass.player_queues.queue_data_or_none.return_value = MagicMock(session_id="s1")
 
         def _schedule(coro: Any, **_kwargs: Any) -> Any:
             # only the resume seek runs for real, the position sync needs a live device
@@ -1060,15 +1059,16 @@ class TestFirstFollowerJoinRestart:
 
         mock_provider.mass.player_queues.seek.assert_not_awaited()
 
-    async def test_stop_queued_behind_the_join_is_not_undone(
-        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    @pytest.mark.parametrize("command", ["pause", "stop"])
+    async def test_command_queued_behind_the_join_is_not_undone(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock, command: str
     ) -> None:
-        """A stop that took the lock before the deferred seek ended the stream session."""
+        """A pause or stop that took the lock before the deferred seek keeps playback."""
         player = self._make_playing_leader(mock_provider, mock_wiim_device)
         self._restart_on_join(player, mock_wiim_device)
 
         await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
-        mock_provider.mass.player_queues.queue_data_or_none.return_value.session_id = None
+        await getattr(player, command)()
         await asyncio.sleep(0)
 
         mock_provider.mass.player_queues.seek.assert_not_awaited()
