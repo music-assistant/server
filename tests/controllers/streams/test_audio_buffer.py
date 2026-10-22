@@ -1521,6 +1521,33 @@ async def test_clear_fires_cancel_callbacks() -> None:
     assert len(buf._cancel_callbacks) == 0
 
 
+async def test_clear_passes_on_a_cancellation_aimed_at_its_caller() -> None:
+    """A caller cancelled while clear() joins the producer must still see its cancellation."""
+
+    async def _producer() -> None:
+        try:
+            await asyncio.sleep(10)
+        finally:
+            # a slow teardown, so the caller's cancel lands while the join waits on it
+            await asyncio.sleep(0.05)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    await buf._put(ONE_SECOND_CHUNK)
+    producer = asyncio.create_task(_producer())
+    buf._attach_producer_task(producer)
+
+    clearing = asyncio.create_task(buf.clear())
+    await asyncio.sleep(0.01)
+    clearing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await clearing
+
+    # the join completed and the buffer was reset before the cancellation came out
+    assert producer.done()
+    assert len(buf._chunks) == 0
+    assert buf._cancelled is True
+
+
 # -- Inactivity monitor --
 
 

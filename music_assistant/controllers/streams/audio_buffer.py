@@ -412,15 +412,12 @@ class AudioBuffer:
             chunk_count,
             self._producer_task is not None,
         )
+        caller_cancelled = False
         if self._producer_task and not self._producer_task.done():
-            self._producer_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._producer_task
+            caller_cancelled = await self._cancel_and_join(self._producer_task)
 
         if cancel_inactivity_task and self._inactivity_task and not self._inactivity_task.done():
-            self._inactivity_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._inactivity_task
+            caller_cancelled |= await self._cancel_and_join(self._inactivity_task)
 
         # signal cancel callbacks only if the stream did not complete normally
         if not self._eof_received:
@@ -441,6 +438,9 @@ class AudioBuffer:
             self._cancel_callbacks.clear()
             self._data_available.notify_all()
             self._space_available.notify_all()
+        if caller_cancelled:
+            # the caller's own cancellation, held back until the buffer was reset
+            raise asyncio.CancelledError
 
     @staticmethod
     async def get_buffer(
@@ -776,6 +776,22 @@ class AudioBuffer:
         # the second term keeps room ahead of the reader however far it runs ahead of
         # playback, so a reader waiting on the producer is never deadlocked
         return max(keep_from - self._retain_seconds, read - self.max_size_seconds + min_ahead)
+
+    @staticmethod
+    async def _cancel_and_join(task: asyncio.Task[Any]) -> bool:
+        """Cancel the task and wait for it; return whether the caller was cancelled meanwhile."""
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        # the join raises the task's own cancellation too, so only the caller's cancel
+        # counter tells a cancellation aimed at the caller apart
+        current = asyncio.current_task()
+        if current is None or not current.cancelling():
+            return False
+        # that cancellation interrupted the join, which still has to complete
+        with suppress(asyncio.CancelledError):
+            await task
+        return True
 
     def _attach_producer_task(self, task: asyncio.Task[Any]) -> None:
         """Attach a background task that fills the buffer."""
