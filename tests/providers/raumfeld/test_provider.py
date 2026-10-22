@@ -1248,3 +1248,18 @@ async def test_unload_waits_for_its_tasks_to_end() -> None:
     await provider.unload()
     assert sorted(ended) == ["supervisor", "update", "zones"]
     assert provider._supervisor_task is None
+
+
+async def test_a_next_item_waiting_for_the_lock_gives_way_to_a_newer_play() -> None:
+    """A play that replaced the ending track while the advance waited is not undone."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    lock = _held_playback_lock(mass)
+    await lock.acquire()
+    with patch.object(bar, "play_media", AsyncMock()) as play:
+        start = asyncio.create_task(bar._play_next(PlayerMedia(uri="library://track/2")))
+        await asyncio.sleep(0)
+        # a seek or a track the user picked runs under the lock meanwhile
+        bar._playback_generation += 2
+        lock.release()
+        await start
+    play.assert_not_awaited()

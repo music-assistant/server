@@ -1625,7 +1625,11 @@ class RaumfeldPlayer(Player):
         :param media: The next queue item.
         """
         # a group rate check waits for this play to finish, so it sees the stream it started
+        generation = self._playback_generation
         async with self.mass.players.get_group_and_player_lock(self.player_id):
+            if generation != self._playback_generation:
+                # a play, seek or restart ran while this waited and replaced what ends here
+                return
             await self.play_media(media)
 
     def _schedule_end_watch(self, pos: dict[str, str] | None) -> None:
