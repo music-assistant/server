@@ -1961,6 +1961,25 @@ async def test_flow_is_always_paced_close_to_playback(
     assert seen["extra_input_args"] == output_pacing_args(PacingProfile.NEAR_REALTIME)
 
 
+async def test_flow_passes_on_encoded_audio_without_waiting_for_a_full_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flow without ICY framing reads whatever the encoder produced (support#6831)."""
+    controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+    seen: dict[str, Any] = {}
+
+    def _capture_chunk_size(**kwargs: Any) -> None:
+        seen["chunk_size"] = kwargs.get("chunk_size")
+        raise _FfmpegArgsCaptured
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _capture_chunk_size)
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_flow_stream(request)
+
+    assert seen["chunk_size"] is None
+
+
 async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:
     """The flow producer sees its player as gone once the connection closed, without a write."""
     controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
