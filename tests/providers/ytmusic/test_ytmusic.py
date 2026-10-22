@@ -279,20 +279,24 @@ def test_parse_owned_playlist_is_editable_without_privacy(
     assert playlist.is_editable is True
 
 
-@pytest.mark.parametrize("playlist_id", [None, "", "OLAK5uy_test"])
+@pytest.mark.parametrize(
+    ("album_data", "expected_url"),
+    [
+        ({}, "https://music.youtube.com/browse/MPREb_test"),
+        ({"audioPlaylistId": None}, "https://music.youtube.com/browse/MPREb_test"),
+        ({"audioPlaylistId": ""}, "https://music.youtube.com/browse/MPREb_test"),
+        (
+            {"audioPlaylistId": "OLAK5uy_test"},
+            "https://music.youtube.com/playlist?list=OLAK5uy_test",
+        ),
+    ],
+)
 def test_album_public_link_without_playlist_id(
-    provider: YoutubeMusicProvider, playlist_id: str | None
+    provider: YoutubeMusicProvider, album_data: dict[str, Any], expected_url: str
 ) -> None:
     """An album from a search or library listing still has a usable public link."""
-    album = provider._parse_album(
-        {"title": "Test album", "audioPlaylistId": playlist_id}, "MPREb_test"
-    )
-    expected = (
-        f"https://music.youtube.com/playlist?list={playlist_id}"
-        if playlist_id
-        else "https://music.youtube.com/browse/MPREb_test"
-    )
-    assert next(iter(album.provider_mappings)).url == expected
+    album = provider._parse_album({"title": "Test album", **album_data}, "MPREb_test")
+    assert next(iter(album.provider_mappings)).url == expected_url
 
 
 async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
