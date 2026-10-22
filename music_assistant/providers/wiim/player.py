@@ -58,6 +58,7 @@ class _JoinRestartWatch:
 
     uri: str
     queue_id: str
+    session_id: str
     anchor: float
     anchor_at: float
     speed: float
@@ -693,6 +694,9 @@ class WiimPlayer(Player):
             return None
         if not queue.active or not queue.current_item:
             return None
+        queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
+        if not queue_data or not queue_data.session_id:
+            return None
         # live streams have no duration and cannot be seeked, the restart is harmless there
         if not queue.current_item.duration:
             return None
@@ -702,6 +706,7 @@ class WiimPlayer(Player):
         return _JoinRestartWatch(
             uri=media.uri,
             queue_id=queue.queue_id,
+            session_id=queue_data.session_id,
             anchor=queue.elapsed_time,
             anchor_at=queue.elapsed_time_last_updated,
             speed=queue.playback_speed,
@@ -728,12 +733,19 @@ class WiimPlayer(Player):
         )
         # the seek takes the group's lock before the player's, while the join may run under
         # the player's lock alone, so it waits for the join to return to keep that order
-        self.mass.create_task(self._seek_after_join_restart(watch.queue_id, position))
+        self.mass.create_task(
+            self._seek_after_join_restart(watch.queue_id, watch.session_id, position)
+        )
 
-    async def _seek_after_join_restart(self, queue_id: str, position: int) -> None:
+    async def _seek_after_join_restart(self, queue_id: str, session_id: str, position: int) -> None:
         """Seek the queue, which rebuilds the stream at a position the firmware keeps."""
         try:
-            await self.mass.player_queues.seek(queue_id, position)
+            async with self.mass.players.get_group_and_player_lock(queue_id, strict=True):
+                queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+                # a command that waited behind the join and changed playback owns the queue now
+                if not queue_data or queue_data.session_id != session_id:
+                    return
+                await self.mass.player_queues.seek(queue_id, position)
         except MusicAssistantError as err:
             self.logger.warning(
                 "Failed to resume %s after the stream restart: %s", self._attr_name, err
