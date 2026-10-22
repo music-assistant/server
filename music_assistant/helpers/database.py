@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+import sqlite3
 import time
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -200,6 +201,20 @@ def get_sqlite_memory_settings() -> tuple[int, int]:
         return 32000, gib
     # memory-constrained device: keep each connection's footprint small
     return 16000, 256 * 1024 * 1024
+
+
+def is_disk_full_error(err: BaseException) -> bool:
+    """
+    Return whether a database error was caused by a full disk or failing storage.
+
+    :param err: The exception raised by a database operation.
+    """
+    if not isinstance(err, sqlite3.Error):
+        return False
+    # only errors raised by sqlite itself carry a code; extended codes keep the primary one
+    # in their low byte
+    code: int = getattr(err, "sqlite_errorcode", 0)
+    return code & 0xFF in (sqlite3.SQLITE_FULL, sqlite3.SQLITE_IOERR)
 
 
 class DatabaseConnection:
