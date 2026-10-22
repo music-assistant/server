@@ -14,7 +14,7 @@ from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.providers.raumfeld.constants import GROUP_SETTLE_TIME
+from music_assistant.providers.raumfeld.constants import GROUP_SETTLE_TIME, JOIN_SETTLE_TIME
 from music_assistant.providers.raumfeld.player import RaumfeldPlayer
 from music_assistant.providers.raumfeld.provider import RaumfeldPlayerProvider
 
@@ -1104,6 +1104,61 @@ async def test_a_sync_group_that_plays_through_the_room_is_restarted() -> None:
     mass.player_queues.resume.assert_not_awaited()
 
 
+@pytest.mark.parametrize(("stream_started_in_group", "restarts"), [(False, True), (True, False)])
+async def test_a_restart_for_the_rate_waits_for_the_rooms_to_play(
+    stream_started_in_group: bool, restarts: bool
+) -> None:
+    """The stream restarts for a joined room once that room plays, and only if it has to."""
+    bar, _, _ = _joined_group(
+        lambda sofa: _allow(sofa, 96000), stream_started_in_group=stream_started_in_group
+    )
+    with (
+        patch.object(bar, "_wait_for_rooms_playing", AsyncMock()) as wait,
+        patch.object(bar, "_restart_for_group_rates", AsyncMock()) as restart,
+    ):
+        await bar._check_join(["raumfeld_sofa"])
+    if restarts:
+        wait.assert_awaited_once_with(["raumfeld_sofa"])
+        restart.assert_awaited_once_with()
+    else:
+        wait.assert_not_awaited()
+        restart.assert_not_awaited()
+
+
+async def test_the_wait_ends_once_the_joined_room_plays() -> None:
+    """The wait ends as soon as the joined room's own renderer reports playing."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    sofa_id = bar._attr_group_members[1]
+    states = iter(["NO_MEDIA_PRESENT", "STOPPED", "PLAYING"])
+    reads = AsyncMock(side_effect=lambda _url: {"TransportState": next(states)})
+    with (
+        patch.object(bar.raumfeld, "room_transport_url", return_value="http://sofa/ctrl"),
+        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()) as sleep,
+        patch.object(bar, "_read_room_state", reads),
+    ):
+        await bar._wait_for_rooms_playing([sofa_id])
+    assert reads.await_count == 3
+    assert sleep.await_count == 3
+
+
+async def test_the_wait_for_a_joined_room_gives_up_in_time() -> None:
+    """A room that never reports playing holds the restart up for JOIN_SETTLE_TIME at most."""
+    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    sofa_id = bar._attr_group_members[1]
+    clock = iter(range(100))
+    stopped = AsyncMock(return_value={"TransportState": "STOPPED"})
+    with (
+        patch.object(bar.raumfeld, "room_transport_url", return_value="http://sofa/ctrl"),
+        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
+        patch(
+            "music_assistant.providers.raumfeld.player.time.time", side_effect=lambda: next(clock)
+        ),
+        patch.object(bar, "_read_room_state", stopped),
+    ):
+        await bar._wait_for_rooms_playing([sofa_id])
+    assert 0 < stopped.await_count <= JOIN_SETTLE_TIME
+
+
 async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
     """A join made in Music Assistant while the leader plays its queue checks the rate."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
@@ -1112,13 +1167,17 @@ async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
     bar._attr_group_members = []
     _allow(bar, 192000)
     _allow(sofa, 96000)
+    started: list[Coroutine[Any, Any, None]] = []
+    cast("MagicMock", bar.mass).create_task.side_effect = started.append
     with (
         patch.object(bar, "_add_rooms_to_zone", AsyncMock()),
         patch.object(bar, "_wake_rooms", AsyncMock()),
-        patch.object(bar, "_restart_for_group_rates", AsyncMock()) as restart,
+        patch.object(bar, "_check_join", AsyncMock()) as check,
     ):
         await bar.set_members([sofa.player_id])
-    restart.assert_awaited_once_with()
+        for coro in started:
+            await coro
+    check.assert_awaited_once_with([sofa.player_id])
     assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
 
 
@@ -1133,13 +1192,14 @@ async def test_a_join_seen_while_playback_starts_is_checked_once_it_plays() -> N
     await lock.acquire()
     started: list[asyncio.Task[None]] = []
     mass.create_task.side_effect = lambda coro: started.append(asyncio.create_task(coro))
-    bar.set_group_members([bar.player_id, sofa_id])
-    assert len(started) == 1
-    await asyncio.sleep(0)
-    # the play finishes and reports playing
-    bar._attr_playback_state = PlaybackState.PLAYING
-    lock.release()
-    await started[0]
+    with patch.object(bar, "_wait_for_rooms_playing", AsyncMock()):
+        bar.set_group_members([bar.player_id, sofa_id])
+        assert len(started) == 1
+        await asyncio.sleep(0)
+        # the play finishes and reports playing
+        bar._attr_playback_state = PlaybackState.PLAYING
+        lock.release()
+        await started[0]
     mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
 
 
@@ -1220,12 +1280,12 @@ async def test_a_room_grouped_in_the_raumfeld_app_has_the_rate_checked(
     bar._attr_group_members = [bar.player_id, sofa.player_id] if not joins else []
     started: list[Coroutine[Any, Any, None]] = []
     mass.create_task.side_effect = started.append
-    with patch.object(bar, "_restart_for_group_rates", AsyncMock()) as restart:
+    with patch.object(bar, "_check_join", AsyncMock()) as check:
         # what following the zones does once the host shows Sofa in Bar's zone
         bar.set_group_members([bar.player_id, sofa.player_id])
         for coro in started:
             await coro
-    assert restart.await_count == (1 if checked else 0)
+    assert check.await_count == (1 if checked else 0)
 
 
 async def test_unload_waits_for_its_tasks_to_end() -> None:

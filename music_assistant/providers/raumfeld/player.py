@@ -35,6 +35,8 @@ from music_assistant.models.player import Player
 
 from .constants import (
     HOST_ERRORS,
+    JOIN_SETTLE_INTERVAL,
+    JOIN_SETTLE_TIME,
     PLAYER_CONFIG_ENTRIES,
     SOURCE_LINE_IN,
 )
@@ -390,7 +392,7 @@ class RaumfeldPlayer(Player):
         if added and self.leads_group:
             # rooms grouped in the Raumfeld app join the running stream just the same; the
             # check looks at playback once a play in progress has finished
-            self.mass.create_task(self._restart_for_group_rates())
+            self.mass.create_task(self._check_join(sorted(added)))
 
     @property
     def leads_group(self) -> bool:
@@ -741,7 +743,8 @@ class RaumfeldPlayer(Player):
             if (member := self.mass.players.get_player(pid)) is not None:
                 member.update_state()
         if player_ids_to_add and self.plays_own_queue:
-            await self._restart_for_group_rates()
+            # on its own, so waiting for the host to hook the rooms in holds up nothing
+            self.mass.create_task(self._check_join(list(player_ids_to_add)))
 
     async def leave_group_if_dropped(self) -> bool | None:
         """
@@ -1321,6 +1324,42 @@ class RaumfeldPlayer(Player):
             if sample_rate.isdigit() and bit_depth.isdigit():
                 rates.append((int(sample_rate), int(bit_depth)))
         return rates or [(44100, 16)]
+
+    async def _check_join(self, joined: list[str]) -> None:
+        """
+        Restart the stream for rooms that joined, once they play, if they may not play it.
+
+        :param joined: The player ids of the rooms that joined.
+        """
+        if self._stream_rates is None or set(self._stream_rates) <= set(
+            self.get_supported_sample_rates()
+        ):
+            return
+        # a restart while the host still hooks the rooms in drops them for a while
+        await self._wait_for_rooms_playing(joined)
+        await self._restart_for_group_rates()
+
+    async def _wait_for_rooms_playing(self, player_ids: list[str]) -> None:
+        """
+        Wait until the given rooms' own renderers play, for at most JOIN_SETTLE_TIME.
+
+        :param player_ids: The player ids of the rooms to wait for.
+        """
+        waiting = {
+            url
+            for pid in player_ids
+            if isinstance(room := self.mass.players.get_player(pid), RaumfeldPlayer)
+            and (url := self.raumfeld.room_transport_url(room.room)) is not None
+        }
+        deadline = time.time() + JOIN_SETTLE_TIME
+        while waiting and time.time() < deadline:
+            await asyncio.sleep(JOIN_SETTLE_INTERVAL)
+            for url in list(waiting):
+                state = await self._read_room_state(url) or {}
+                if _map_transport_state(state.get("TransportState")) == PlaybackState.PLAYING:
+                    waiting.discard(url)
+        if waiting:
+            self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
 
     async def _restart_for_group_rates(self) -> None:
         """Restart this room's queue where it is, if a room that joined cannot play its stream."""
