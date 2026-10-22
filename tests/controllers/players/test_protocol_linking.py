@@ -8787,6 +8787,81 @@ class TestUniversalPlayerReplacement:
         assert slimproto.protocol_parent_id == "native_b"
         assert len([t for t in scheduled_tasks if "unregister" in repr(t)]) == 2
 
+    async def test_protocol_claimed_by_another_native_stays_on_the_wrapper(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A config-only claimer leaves outputs another native claims on the shared wrapper."""
+        controller, config_store, scheduled_tasks = self._setup_config_claim_scenario(
+            mock_mass,
+            {
+                "up_shared": {
+                    "enabled": True,
+                    "provider": "universal_player",
+                    "values": {
+                        "linked_protocol_ids": ["airplay_1", "slimproto_1"],
+                        "hide_in_ui": True,
+                    },
+                },
+                "native_a": {
+                    "enabled": True,
+                    "provider": "dlna",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["airplay_1"]},
+                },
+                "native_b": {
+                    "enabled": True,
+                    "provider": "squeezelite",
+                    "player_type": "player",
+                    "values": {"linked_protocol_ids": ["slimproto_1"]},
+                },
+                "airplay_1": {
+                    "enabled": True,
+                    "provider": "airplay--test",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "up_shared"},
+                },
+                "slimproto_1": {
+                    "enabled": True,
+                    "provider": "slimproto--test",
+                    "player_type": "protocol",
+                    "values": {CONF_PROTOCOL_PARENT_ID: "up_shared"},
+                },
+            },
+        )
+        universal = _create_universal_player(
+            mock_mass, "up_shared", "Shared Device", ["airplay_1", "slimproto_1"]
+        )
+        airplay = self._protocol_player(mock_mass, "airplay", "airplay_1")
+        slimproto = self._protocol_player(mock_mass, "slimproto", "slimproto_1")
+        native_a = MockPlayer(MockProvider("dlna", mass=mock_mass), "native_a", "Native A")
+        native_a.set_initialized()
+        native_b = MockPlayer(MockProvider("squeezelite", mass=mock_mass), "native_b", "Native B")
+        native_b.set_initialized()
+        controller._players = {
+            "up_shared": universal,
+            "airplay_1": airplay,
+            "slimproto_1": slimproto,
+            "native_a": native_a,
+        }
+        controller._add_protocol_link(universal, airplay, "airplay")
+        controller._add_protocol_link(universal, slimproto, "slimproto")
+        scheduled_tasks.clear()
+
+        controller._check_replace_universal_player(native_a)
+
+        assert airplay.protocol_parent_id == "native_a"
+        assert slimproto.protocol_parent_id == "up_shared"
+        assert "hide_in_ui" not in config_store[CONF_PLAYERS]["native_a"]["values"]
+        assert "up_shared" in config_store[CONF_PLAYERS]
+        assert not any("unregister" in repr(t) for t in scheduled_tasks)
+
+        controller._players["native_b"] = native_b
+        controller._check_replace_universal_player(native_b)
+
+        assert slimproto.protocol_parent_id == "native_b"
+        assert config_store[CONF_PLAYERS]["native_b"]["values"]["hide_in_ui"] is True
+        assert any("unregister" in repr(t) for t in scheduled_tasks)
+
 
 class TestEndToEndDuplicateProtocol:
     """
