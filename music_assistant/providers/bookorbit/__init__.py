@@ -195,6 +195,9 @@ class BookOrbitProvider(MusicProvider):
         self._catalog_detail_tasks: set[asyncio.Task[Any]] = set()
         # book id -> last ProviderMapping.details applied to the MA library (updatedAt)
         self._applied_mapping_details: dict[str, str] = {}
+        # Fingerprints from the catalog snapshot used by the active audiobook sync listing.
+        # Commit must not read live `_catalog` (browse/search may replace it mid-sync).
+        self._sync_catalog_fingerprints: dict[str, str] | None = None
         # Audiobook provider ids that failed during the active sync_library run.
         self._failed_audiobook_ids: set[str] = set()
 
@@ -277,6 +280,7 @@ class BookOrbitProvider(MusicProvider):
         self._force_catalog_refresh = media_type == MediaType.AUDIOBOOK
         self._failed_audiobook_ids = set()
         if media_type == MediaType.AUDIOBOOK:
+            self._sync_catalog_fingerprints = None
             await self._load_applied_mapping_details()
         try:
             await super().sync_library(media_type)
@@ -285,6 +289,7 @@ class BookOrbitProvider(MusicProvider):
         if media_type == MediaType.AUDIOBOOK:
             self._commit_applied_mapping_details(self._failed_audiobook_ids)
             await self._save_applied_mapping_details()
+            self._sync_catalog_fingerprints = None
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Yield audiobooks from the current catalog."""
@@ -298,7 +303,13 @@ class BookOrbitProvider(MusicProvider):
                     book_id,
                     ValueError(f"BookOrbit book detail {book_id} failed on last catalog refresh"),
                 )
-        for book in list(self._catalog.values()):
+        # Snapshot before yielding: `_catalog` can change while the parent sync awaits writes.
+        books = list(self._catalog.items())
+        if SYNC_RUN_STATE.get() is not None:
+            self._sync_catalog_fingerprints = {
+                book_id: str(book.get("updatedAt") or "") for book_id, book in books
+            }
+        for _book_id, book in books:
             yield parse_audiobook(
                 book, provider_instance_id=self.instance_id, base_url=self.base_url
             )
@@ -328,12 +339,10 @@ class BookOrbitProvider(MusicProvider):
         """
         if not prov_artist_id.startswith((AUTHOR_PREFIX, NARRATOR_PREFIX)):
             raise MediaNotFoundError(f"Invalid BookOrbit artist id {prov_artist_id}")
+        # Explicit lookups (incl. music/refresh_item) must not return TTL-stale catalog data.
+        await self._refresh_catalog(force=True)
         if artist := self._catalog_artists().get(prov_artist_id):
             return artist
-        if not self._catalog:  # not synced yet
-            await self._refresh_catalog(force=True)
-            if artist := self._catalog_artists().get(prov_artist_id):
-                return artist
         raise MediaNotFoundError(f"BookOrbit artist {prov_artist_id} not found")
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
@@ -375,7 +384,14 @@ class BookOrbitProvider(MusicProvider):
         except ClientResponseError as err:
             if err.status == 404:
                 raise MediaNotFoundError(f"BookOrbit audiobook {item_id} not found") from err
-            raise
+            # Non-404 HTTP errors must be MA errors so core can try another mapping.
+            raise ProviderUnavailableError(
+                f"BookOrbit manifest for {item_id} failed: HTTP {err.status}"
+            ) from err
+        except BookOrbitAuthError as err:
+            raise LoginFailed(f"Login to BookOrbit at {self.base_url} failed.") from err
+        except (ClientError, TimeoutError) as err:
+            raise ProviderUnavailableError(f"BookOrbit at {self.base_url} is unreachable.") from err
         assets = sorted(
             (a for a in (manifest.get("assets") or []) if a.get("assetId")),
             key=lambda asset: int(asset.get("sequence") or 0),
@@ -456,7 +472,15 @@ class BookOrbitProvider(MusicProvider):
             # Keep conversion inside this block: ValueError must become NotImplementedError
             # so MusicController can use its saved position.
             return parse_resume_position(_audio_files(book), progress)
-        except (ClientError, TimeoutError, MediaNotFoundError, TypeError, ValueError) as err:
+        except (
+            BookOrbitAuthError,
+            ClientError,
+            TimeoutError,
+            MediaNotFoundError,
+            TypeError,
+            ValueError,
+        ) as err:
+            # Auth failures must not abort playback prep; core only suppresses NotImplementedError.
             raise NotImplementedError from err
 
     async def on_played(
@@ -585,14 +609,22 @@ class BookOrbitProvider(MusicProvider):
         Core catches per-item library-write errors, so a finished sync does not mean
         every catalog book was applied. Skipped ids keep their previous fingerprint
         (or stay absent) so the next sync retries them.
+
+        Prefer the snapshot captured in ``get_library_audiobooks`` for this sync so a
+        concurrent browse/search catalog refresh cannot mark newer versions applied.
         """
+        source = self._sync_catalog_fingerprints
+        if source is None:
+            source = {
+                book_id: str(book.get("updatedAt") or "") for book_id, book in self._catalog.items()
+            }
         next_details: dict[str, str] = {}
-        for book_id, book in self._catalog.items():
+        for book_id, fingerprint in source.items():
             if book_id in skipped_ids:
                 if book_id in self._applied_mapping_details:
                     next_details[book_id] = self._applied_mapping_details[book_id]
                 continue
-            next_details[book_id] = str(book.get("updatedAt") or "")
+            next_details[book_id] = fingerprint
         self._applied_mapping_details = next_details
 
     async def _save_applied_mapping_details(self) -> None:

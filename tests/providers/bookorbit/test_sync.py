@@ -542,6 +542,42 @@ async def test_get_audiobook_and_artist(
 
 
 @pytest.mark.asyncio
+async def test_get_artist_refreshes_edited_author_from_populated_catalog(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """refresh_item / get_artist must not return TTL-stale author metadata from `_catalog`."""
+    author_numeric_id = int(book_audiobook["authors"][0]["id"])
+    author_id = f"{AUTHOR_PREFIX}{author_numeric_id}"
+    await provider._refresh_catalog(force=True)
+    assert author_id in provider._catalog_artists()
+
+    # Stale in-memory catalog/author meta after an edit on the server.
+    for book in provider._catalog.values():
+        for author in book.get("authors") or []:
+            if author.get("id") == author_numeric_id:
+                author["name"] = "Old Name"
+                author["description"] = "Old bio"
+    provider._author_meta[author_numeric_id] = {
+        "id": author_numeric_id,
+        "name": "Old Name",
+        "description": "Old bio",
+    }
+    cast("Any", provider._client).list_authors = AsyncMock(
+        return_value=[
+            {
+                "id": author_numeric_id,
+                "name": "New Name",
+                "description": "New bio",
+                "imageUrl": f"/api/v1/authors/{author_numeric_id}/thumbnail?t=2",
+            }
+        ]
+    )
+
+    artist = await provider.get_artist(author_id)
+    assert artist.name == "New Name"
+
+
+@pytest.mark.asyncio
 async def test_sync_library_reuses_catalog_within_ttl(provider: BookOrbitProvider) -> None:
     """Forced audiobook listing then artist listing does not refresh twice within TTL."""
     get_book = cast("Mock", provider._client.get_book)
@@ -675,6 +711,33 @@ async def test_sync_library_persists_applied_mapping_details(
     assert set_kwargs["category"] == CACHE_CATEGORY_LIBRARY_FINGERPRINTS
     assert set_kwargs["data"] == {book_id: updated_at}
     assert set_kwargs["persistent"] is True
+
+
+@pytest.mark.asyncio
+async def test_commit_fingerprints_uses_listing_snapshot_not_live_catalog(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """A catalog refresh between listing and commit must not mark newer versions applied."""
+    book_id = str(book_audiobook["id"])
+    listed_fp = "2026-01-01T00:00:00.000Z"
+    newer_fp = "2026-12-01T00:00:00.000Z"
+    provider._catalog = {book_id: {**book_audiobook, "updatedAt": listed_fp}}
+    provider._catalog_refreshed_at = time.monotonic()
+    provider._force_catalog_refresh = False
+
+    token = SYNC_RUN_STATE.set(SyncRunState())
+    try:
+        with patch.object(provider, "_refresh_catalog", new_callable=AsyncMock):
+            books = [book async for book in provider.get_library_audiobooks()]
+        assert str(book_audiobook["id"]) in {book.item_id for book in books}
+        assert provider._sync_catalog_fingerprints == {book_id: listed_fp}
+        # Browse/search replaces the live catalog while the parent sync awaits writes.
+        provider._catalog = {book_id: {**book_audiobook, "updatedAt": newer_fp}}
+        provider._commit_applied_mapping_details(set())
+    finally:
+        SYNC_RUN_STATE.reset(token)
+
+    assert provider._applied_mapping_details == {book_id: listed_fp}
 
 
 @pytest.mark.asyncio

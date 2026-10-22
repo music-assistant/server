@@ -10,10 +10,11 @@ import pytest
 from aiohttp import ClientError, ClientResponseError, web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
 from yarl import URL
 
 from music_assistant.providers.bookorbit import SUPPORTED_FEATURES, BookOrbitProvider
+from music_assistant.providers.bookorbit.client import BookOrbitAuthError
 from music_assistant.providers.bookorbit.parsers import _audio_files
 from music_assistant.providers.bookorbit.progress import (
     build_playback_state_update,
@@ -277,6 +278,41 @@ async def test_stream_details_rejects_other_media(provider: BookOrbitProvider) -
         await provider.get_stream_details("1", MediaType.TRACK)
 
 
+@pytest.mark.asyncio
+async def test_stream_details_http_error_is_provider_unavailable(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Non-404 manifest HTTP errors must be MA errors so core can try another mapping."""
+    _client(provider).get_audiobook_manifest.side_effect = ClientResponseError(
+        request_info=Mock(real_url=URL("http://bo/x")),
+        history=(),
+        status=503,
+        message="unavailable",
+    )
+    with pytest.raises(ProviderUnavailableError):
+        await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
+async def test_stream_details_auth_error_is_login_failed(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Manifest auth failures must surface as LoginFailed for multi-mapping fallback."""
+    _client(provider).get_audiobook_manifest.side_effect = BookOrbitAuthError("login rejected")
+    with pytest.raises(LoginFailed):
+        await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
+async def test_stream_details_connection_error_is_provider_unavailable(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any]
+) -> None:
+    """Transport failures must surface as ProviderUnavailableError."""
+    _client(provider).get_audiobook_manifest.side_effect = ClientError("connection reset")
+    with pytest.raises(ProviderUnavailableError):
+        await provider.get_stream_details(str(book_audiobook["id"]), MediaType.AUDIOBOOK)
+
+
 def test_playback_state_update_maps_absolute_position(book_multifile: dict[str, Any]) -> None:
     """Absolute seconds become assetId + in-asset positionMs."""
     manifest = manifest_from_book(book_multifile)
@@ -372,6 +408,16 @@ async def test_get_resume_position_client_error_falls_back(
 ) -> None:
     """Progress fetch errors defer to MA's own position."""
     _client(provider).get_audiobook_manifest.side_effect = ClientError("connection reset")
+    with pytest.raises(NotImplementedError):
+        await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
+
+
+@pytest.mark.asyncio
+async def test_get_resume_position_auth_error_falls_back(
+    provider: BookOrbitProvider, book_multifile: dict[str, Any]
+) -> None:
+    """Auth failures during resume must defer to MA, not abort playback prep."""
+    _client(provider).get_audiobook_manifest.side_effect = BookOrbitAuthError("login rejected")
     with pytest.raises(NotImplementedError):
         await provider.get_resume_position(str(book_multifile["id"]), MediaType.AUDIOBOOK)
 
