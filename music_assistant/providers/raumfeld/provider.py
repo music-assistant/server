@@ -38,6 +38,8 @@ from music_assistant.constants import (
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    BUTTON_ITEM_CACHE_TTL,
+    CACHE_CATEGORY_BUTTON_ITEMS,
     DEFAULT_PORT,
     DEVICE_INFO_TIMEOUT,
     GROUP_SETTLE_TIME,
@@ -229,6 +231,17 @@ class RaumfeldPlayerProvider(PlayerProvider):
         ip_address = urlparse(devloc).hostname if devloc else None
         return uuid, ip_address
 
+    async def refresh_station_buttons(self, player: RaumfeldPlayer) -> None:
+        """
+        Read a room's station buttons again, as they can be reassigned at any time.
+
+        A room whose buttons cannot be read keeps the ones it has.
+
+        :param player: The player of the room.
+        """
+        if (buttons := await self._read_station_buttons(player.room)) is not None:
+            player.set_station_buttons(buttons)
+
     async def _supervise(self) -> None:
         """Supervise the host connection: connect when reachable, pause when it drops."""
         while True:
@@ -287,6 +300,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # load Line-In inputs before registering players so each room can expose its own
         await self._load_line_in()
         self._library_read_at = 0.0
+        await self.mass.cache.delete(
+            None, category=CACHE_CATEGORY_BUTTON_ITEMS, provider=self.instance_id
+        )
         await self._resync()
         # restore the existing Raumfeld zones into MA's group state (e.g. a group that
         # survived a restart), then keep following changes made outside Music Assistant
@@ -321,17 +337,19 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Read each room's station buttons, and offer them as sources."""
         for player in self.players:
             if isinstance(player, RaumfeldPlayer):
-                player.set_station_buttons(await self._read_station_buttons(player.room))
+                await self.refresh_station_buttons(player)
 
-    async def _read_station_buttons(self, room: str) -> list[tuple[int, str, str, bool]]:
+    async def _read_station_buttons(self, room: str) -> list[tuple[int, str, str, bool]] | None:
         """
         Return the station buttons of a room's speaker: ``(button, object id, title, container)``.
+
+        Return ``None`` when the buttons could not be read.
 
         :param room: The Raumfeld room name.
         """
         renderer_uuid, _ = self.resolve_room_renderer(room)
         if renderer_uuid is None:
-            return []
+            return None
         try:
             location = self.host.resolve["udn_to_devloc"][self.host.media_server_udn]
             action = await hassfeld_upnp.get_dlna_action(
@@ -351,18 +369,42 @@ class RaumfeldPlayerProvider(PlayerProvider):
             ]
         except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to read the station buttons of %s: %r", room, err)
-            return []
+            return None
         buttons = []
         for button, object_id in assigned:
             if not object_id:
                 continue
-            items = parse_library_items(await self._browse(object_id, children=False))
-            if not items:
+            if (item := await self._describe_button_item(object_id)) is None:
                 # whether it is an album or a single item decides how it plays, so a button
                 # whose item could not be read waits for a later read
                 continue
-            buttons.append((button, object_id, items[0][1], items[0][2]))
+            buttons.append((button, object_id, *item))
         return buttons
+
+    async def _describe_button_item(self, object_id: str) -> tuple[str, bool] | None:
+        """
+        Return the title of a button's item and whether it is a container, or ``None``.
+
+        :param object_id: The library object assigned to the button.
+        """
+        # a reassigned button gets a new object id, so a cached id needs no new read
+        cached = await self.mass.cache.get(
+            object_id, provider=self.instance_id, category=CACHE_CATEGORY_BUTTON_ITEMS
+        )
+        if cached is not None:
+            title, container = cached
+            return str(title), bool(container)
+        items = parse_library_items(await self._browse(object_id, children=False))
+        if not items:
+            return None
+        await self.mass.cache.set(
+            object_id,
+            [items[0][1], items[0][2]],
+            expiration=BUTTON_ITEM_CACHE_TTL,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_BUTTON_ITEMS,
+        )
+        return items[0][1], items[0][2]
 
     async def _browse(self, object_id: str, children: bool) -> str | None:
         """

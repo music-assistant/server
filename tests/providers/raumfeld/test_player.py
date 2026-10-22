@@ -1548,6 +1548,8 @@ def _button_player() -> tuple[RaumfeldPlayer, MagicMock]:
     player, host = _external_player()
     with patch.object(RaumfeldPlayer, "update_state"):
         player.set_station_buttons(_BUTTONS)
+    # a read just before playing finds the buttons unchanged
+    cast("MagicMock", player._provider).refresh_station_buttons = AsyncMock()
     return player, host
 
 
@@ -1583,6 +1585,63 @@ async def test_a_station_button_is_played_through_its_library_item() -> None:
     assert player._attr_active_source == "station_button_3"
     assert player._attr_current_media is not None
     assert player._attr_current_media.title == "Shine On"
+
+
+async def test_a_button_given_another_item_plays_the_new_one() -> None:
+    """The buttons are read again before playing, so a reassigned button plays its new item."""
+    player, host = _button_player()
+    host.media_server_udn = "uuid:media-server"
+    host.async_browse_media_server = AsyncMock(return_value="<DIDL-Lite/>")
+
+    async def reassigned(target: RaumfeldPlayer) -> None:
+        target.set_station_buttons([_BUTTONS[0], (3, "0/StationButtons/432", "WYWH 50", True)])
+
+    cast("MagicMock", player._provider).refresh_station_buttons = AsyncMock(side_effect=reassigned)
+    with (
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
+        patch.object(player, "_wake_rooms", AsyncMock()),
+        patch.object(player, "_stop_before_switching", AsyncMock()),
+        patch.object(player, "_zone_command", AsyncMock()) as command,
+        patch.object(player, "update_state"),
+    ):
+        await player.select_source("station_button_3")
+    assert command.await_args_list[0].kwargs["CurrentURI"] == library_uri(
+        "uuid:media-server", "0/StationButtons/432", container=True
+    )
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "WYWH 50"
+
+
+async def test_a_button_emptied_meanwhile_is_refused() -> None:
+    """A button that lost its item since the last read plays nothing and says so."""
+    player, _ = _button_player()
+
+    async def emptied(target: RaumfeldPlayer) -> None:
+        target.set_station_buttons([_BUTTONS[0]])
+
+    cast("MagicMock", player._provider).refresh_station_buttons = AsyncMock(side_effect=emptied)
+    with (
+        patch.object(player, "_zone_command", AsyncMock()) as command,
+        patch.object(player, "update_state"),
+        pytest.raises(PlayerCommandFailed, match="nothing assigned"),
+    ):
+        await player.select_source("station_button_3")
+    command.assert_not_awaited()
+
+
+async def test_a_button_whose_item_is_gone_is_not_sent_to_the_zone() -> None:
+    """An item the host cannot describe any more raises instead of loading nothing."""
+    player, host = _button_player()
+    host.media_server_udn = "uuid:media-server"
+    host.async_browse_media_server = AsyncMock(return_value=None)
+    with (
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=["Bar"])),
+        patch.object(player, "_zone_command", AsyncMock()) as command,
+        patch.object(player, "update_state"),
+        pytest.raises(PlayerCommandFailed, match="not available"),
+    ):
+        await player.select_source("station_button_3")
+    command.assert_not_awaited()
 
 
 async def test_an_unknown_source_is_refused() -> None:
