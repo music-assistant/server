@@ -13,7 +13,9 @@ from music_assistant.constants import (
 )
 
 # Errors expected when the host is (temporarily) unreachable or a zone/room cannot be
-# resolved by hassfeld; used to narrow the try/except around host communication.
+# resolved by hassfeld; used to narrow the try/except around host communication. KeyError is
+# one of them: hassfeld looks rooms and zones up in its model of the host, which raises it
+# for a room or zone the host just dropped (a regrouping, a speaker going to deep standby).
 HOST_ERRORS = (aiohttp.ClientError, OSError, TimeoutError, KeyError)
 
 # Default port of the Raumfeld host webservice (the device running the "RaumfeldHost"
@@ -23,6 +25,9 @@ DEFAULT_PORT = 47365
 # How long (seconds) to wait for hassfeld to complete its initial discovery
 # of rooms/zones before giving up on a single connection attempt.
 INITIAL_UPDATE_TIMEOUT = 30
+
+# How long (seconds) unload waits for its cancelled tasks to finish.
+UNLOAD_TIMEOUT = 5
 
 # How long (seconds) to wait for a renderer's device description, which is read once per
 # room to get the hardware serial the player_id is derived from.
