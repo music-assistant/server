@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo
 from pywiim import WiiMClient
 from wiim import PlayingStatus, WiimDevice
@@ -60,6 +60,7 @@ class _JoinRestartWatch:
     anchor: float
     anchor_at: float
     speed: float
+    duration: int
     restarted: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -701,6 +702,7 @@ class WiimPlayer(Player):
             anchor=queue.elapsed_time,
             anchor_at=queue.elapsed_time_last_updated,
             speed=queue.playback_speed,
+            duration=queue.current_item.duration,
         )
 
     async def _resume_after_join_restart(self) -> None:
@@ -721,8 +723,11 @@ class WiimPlayer(Player):
         # seek republishes the target position before rebuilding the stream, and a stream
         # started while grouped is never restarted by the firmware again
         try:
-            await self.mass.player_queues.seek(self.player_id, position)
-        except Exception as err:
+            if position >= watch.duration:
+                await self.mass.player_queues.next(self.player_id)
+            else:
+                await self.mass.player_queues.seek(self.player_id, position)
+        except MusicAssistantError as err:
             self.logger.warning(
                 "Failed to resume %s after the stream restart: %s", self._attr_name, err
             )

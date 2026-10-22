@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.errors import InvalidCommand
 from wiim import PlayingStatus
 from wiim.exceptions import (
     WiimDeviceException,
@@ -979,6 +980,22 @@ class TestFirstFollowerJoinRestart:
 
         mock_provider.mass.player_queues.seek.assert_not_awaited()
 
+    async def test_restart_past_the_track_end_advances_to_the_next_item(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A position beyond the duration cannot be seeked, so the queue moves on instead."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+        queue = mock_provider.mass.player_queues.get.return_value
+        queue.elapsed_time = 239.0
+        queue.elapsed_time_last_updated = time.time() - 3
+        mock_provider.mass.player_queues.next = AsyncMock()
+        self._restart_on_join(player, mock_wiim_device)
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        mock_provider.mass.player_queues.seek.assert_not_awaited()
+        mock_provider.mass.player_queues.next.assert_awaited_once_with(player.player_id)
+
     async def test_join_on_item_without_duration_is_not_watched(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
@@ -1007,7 +1024,7 @@ class TestFirstFollowerJoinRestart:
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
         """A seek error after the restart is logged, the join itself still succeeds."""
-        seek = AsyncMock(side_effect=RuntimeError("boom"))
+        seek = AsyncMock(side_effect=InvalidCommand("boom"))
         player = self._make_playing_leader(mock_provider, mock_wiim_device, seek=seek)
         self._restart_on_join(player, mock_wiim_device)
 
