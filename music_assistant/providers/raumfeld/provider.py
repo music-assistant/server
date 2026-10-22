@@ -38,6 +38,8 @@ from music_assistant.constants import (
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    BUTTON_ITEM_CACHE_TTL,
+    CACHE_CATEGORY_BUTTON_ITEMS,
     DEFAULT_PORT,
     DEVICE_INFO_TIMEOUT,
     GROUP_SETTLE_TIME,
@@ -87,8 +89,6 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _line_in: dict[str, tuple[str, str]]
     # when the station buttons were last read
     _library_read_at: float = 0.0
-    # library object id -> (title, container) of the items assigned to station buttons
-    _button_items: dict[str, tuple[str, bool]]
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
@@ -169,7 +169,6 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
         self._line_in = {}
         self._room_serials = {}
-        self._button_items = {}
         self._room_models = {}
         self._room_transport_paths = {}
         self._room_ids = {}
@@ -301,7 +300,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # load Line-In inputs before registering players so each room can expose its own
         await self._load_line_in()
         self._library_read_at = 0.0
-        self._button_items = {}
+        await self.mass.cache.delete(
+            None, category=CACHE_CATEGORY_BUTTON_ITEMS, provider=self.instance_id
+        )
         await self._resync()
         # restore the existing Raumfeld zones into MA's group state (e.g. a group that
         # survived a restart), then keep following changes made outside Music Assistant
@@ -373,16 +374,37 @@ class RaumfeldPlayerProvider(PlayerProvider):
         for button, object_id in assigned:
             if not object_id:
                 continue
-            if (item := self._button_items.get(object_id)) is None:
-                # a reassigned button gets a new object id, so a known id needs no new read
-                items = parse_library_items(await self._browse(object_id, children=False))
-                if not items:
-                    # whether it is an album or a single item decides how it plays, so a
-                    # button whose item could not be read waits for a later read
-                    continue
-                item = self._button_items[object_id] = (items[0][1], items[0][2])
+            if (item := await self._describe_button_item(object_id)) is None:
+                # whether it is an album or a single item decides how it plays, so a button
+                # whose item could not be read waits for a later read
+                continue
             buttons.append((button, object_id, *item))
         return buttons
+
+    async def _describe_button_item(self, object_id: str) -> tuple[str, bool] | None:
+        """
+        Return the title of a button's item and whether it is a container, or ``None``.
+
+        :param object_id: The library object assigned to the button.
+        """
+        # a reassigned button gets a new object id, so a cached id needs no new read
+        cached = await self.mass.cache.get(
+            object_id, provider=self.instance_id, category=CACHE_CATEGORY_BUTTON_ITEMS
+        )
+        if cached is not None:
+            title, container = cached
+            return str(title), bool(container)
+        items = parse_library_items(await self._browse(object_id, children=False))
+        if not items:
+            return None
+        await self.mass.cache.set(
+            object_id,
+            [items[0][1], items[0][2]],
+            expiration=BUTTON_ITEM_CACHE_TTL,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_BUTTON_ITEMS,
+        )
+        return items[0][1], items[0][2]
 
     async def _browse(self, object_id: str, children: bool) -> str | None:
         """

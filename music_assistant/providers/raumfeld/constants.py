@@ -58,6 +58,10 @@ STATION_BUTTONS = (1, 2, 3, 4)
 # Raumfeld app at any time. A read asks each button for its item; only an item not seen
 # before is described, so a read that finds nothing changed costs one call per button.
 LIBRARY_REFRESH_INTERVAL = 60
+# How long (seconds) the title and kind of a button's item are kept in the cache. A reassigned
+# button gets a new object id, so this only bounds how long a renamed item keeps its old title.
+BUTTON_ITEM_CACHE_TTL = 300
+CACHE_CATEGORY_BUTTON_ITEMS = 1
 SOURCE_LINE_IN = "line_in"
 
 # Per-player config entries (MA adds the flow sample-rate entry itself).
