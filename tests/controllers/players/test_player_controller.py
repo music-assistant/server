@@ -6837,5 +6837,25 @@ class TestConfigChangeRestartsPlayback:
         mock_mass.call_later.assert_not_called()
 
 
+def test_state_update_during_registration_is_not_published(mock_mass: MagicMock) -> None:
+    """A state update before register() finishes emits no player events."""
+    controller = PlayerController(mock_mass)
+    provider = MockProvider("test", instance_id="test", mass=mock_mass)
+    player = MockPlayer(provider, "p1", "Player")
+    controller._players = {"p1": player}
+    mock_mass.players = controller
+    changed = {"volume_level": (10, 20), "supported_features": (set(), {PlayerFeature.VOLUME_SET})}
+    published = {EventType.PLAYER_UPDATED, EventType.PLAYER_CONFIG_UPDATED}
+
+    controller.signal_player_state_update(player, changed)
+
+    assert not [c for c in mock_mass.signal_event.call_args_list if c.args[0] in published]
+
+    player.set_initialized()
+    controller.signal_player_state_update(player, changed)
+
+    assert {c.args[0] for c in mock_mass.signal_event.call_args_list} >= published
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
