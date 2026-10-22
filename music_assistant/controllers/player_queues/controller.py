@@ -854,6 +854,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to handle the command.
         """
         self._check_player_permission(queue_id)
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            raise InvalidCommand(f"Queue {queue_id} is not active")
+        # past the end of the queue there is nothing to start, so a start still running for
+        # the last item must stay
+        idx = queue.current_index
+        if idx is None or self._get_next_index(queue_id, idx, True) is None:
+            return
         self._cancel_skip_start(queue_id)
         await self._next(queue_id)
 

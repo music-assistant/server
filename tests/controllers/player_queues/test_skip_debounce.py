@@ -60,7 +60,9 @@ def _controller(*, real_scheduling: bool = False) -> tuple[PlayerQueuesControlle
     ctrl._check_player_permission = Mock()  # type: ignore[method-assign]
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.get_item = Mock(side_effect=lambda _queue_id, index: items[index])  # type: ignore[method-assign]
-    ctrl._get_next_index = Mock(side_effect=lambda _queue_id, index, _is_skip: index + 1)  # type: ignore[method-assign]
+    ctrl._get_next_index = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _queue_id, index, _is_skip: index + 1 if index < 3 else None
+    )
     return ctrl, queue
 
 
@@ -163,3 +165,32 @@ async def test_a_cancelled_start_leaves_the_queue_on_the_pressed_item() -> None:
         await start
 
     assert queue_data.transitioning is True
+
+
+async def test_a_press_past_the_end_leaves_the_running_start_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing left to skip to, a press must not cancel the start of the last item."""
+    monkeypatch.setattr(controller_module, "SKIP_DEBOUNCE_DELAY", 0.05)
+    ctrl, queue = _controller(real_scheduling=True)
+    ctrl.mass.loop = asyncio.get_running_loop()
+    queue.current_index = 2
+    started: list[int] = []
+
+    async def _play_index(_self: PlayerQueuesController, _queue_id: str, index: int) -> None:
+        started.append(index)
+        await asyncio.sleep(10)
+
+    ctrl.play_index = MethodType(handle_play_action(_play_index), ctrl)  # type: ignore[method-assign]
+
+    await ctrl.next(QUEUE_ID)
+    await asyncio.sleep(0.01)
+    assert started == [3]
+    await asyncio.wait_for(ctrl.next(QUEUE_ID), 1)
+    await asyncio.sleep(0.1)
+
+    assert queue.current_index == 3
+    assert started == [3]
+    start = ctrl.mass._tracked_tasks[f"queue_play_index_{QUEUE_ID}"]
+    assert not start.done()
+    start.cancel()
