@@ -1199,6 +1199,7 @@ async def test_the_next_item_starts_under_the_playback_lock() -> None:
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     lock = _held_playback_lock(mass)
     await lock.acquire()
+    bar._advance_armed = True
     with patch.object(bar, "play_media", AsyncMock()) as play:
         start = asyncio.create_task(bar._play_next(PlayerMedia(uri="library://track/2")))
         await asyncio.sleep(0)
@@ -1255,11 +1256,28 @@ async def test_a_next_item_waiting_for_the_lock_gives_way_to_a_newer_play() -> N
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     lock = _held_playback_lock(mass)
     await lock.acquire()
+    bar._advance_armed = True
     with patch.object(bar, "play_media", AsyncMock()) as play:
         start = asyncio.create_task(bar._play_next(PlayerMedia(uri="library://track/2")))
         await asyncio.sleep(0)
         # a seek or a track the user picked runs under the lock meanwhile
         bar._playback_generation += 2
+        lock.release()
+        await start
+    play.assert_not_awaited()
+
+
+async def test_a_next_item_waiting_for_the_lock_is_dropped_when_the_room_follows() -> None:
+    """A room that became a follower while its advance waited does not start the item."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    bar._advance_armed = True
+    lock = _held_playback_lock(mass)
+    await lock.acquire()
+    with patch.object(bar, "play_media", AsyncMock()) as play:
+        start = asyncio.create_task(bar._play_next(PlayerMedia(uri="library://track/2")))
+        await asyncio.sleep(0)
+        # following the zones makes the room another one's follower meanwhile
+        bar.drop_next_item()
         lock.release()
         await start
     play.assert_not_awaited()

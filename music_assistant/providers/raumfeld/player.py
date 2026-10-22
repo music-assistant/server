@@ -1627,8 +1627,9 @@ class RaumfeldPlayer(Player):
         # a group rate check waits for this play to finish, so it sees the stream it started
         generation = self._playback_generation
         async with self.mass.players.get_group_and_player_lock(self.player_id):
-            if generation != self._playback_generation:
-                # a play, seek or restart ran while this waited and replaced what ends here
+            if generation != self._playback_generation or not self._advance_armed:
+                # a play, seek or restart ran while this waited and replaced what ends here,
+                # or the room became a follower and its next item was dropped
                 return
             await self.play_media(media)
 
