@@ -23,6 +23,7 @@ from music_assistant.constants import (
     CONF_SAMPLE_RATES,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
 )
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
@@ -1252,28 +1253,34 @@ class RaumfeldPlayer(Player):
         # cannot play its format drops out after a moment (measured). The stream can be at
         # any format the group offered when it started, so a group that no longer offers
         # one of those starts it again, at a format every room plays.
-        if self._stream_rates is None or set(self._stream_rates) <= set(
-            self.get_supported_sample_rates()
-        ):
-            return
-        queue = self.mass.player_queues.get(self.player_id)
-        if queue is None or queue.current_item is None:
-            return
-        self.logger.debug(
-            "A room that joined %s may not play the format of its stream; restarting", self.room
-        )
-        try:
-            if queue.current_item.duration:
-                await self.mass.player_queues.seek(
-                    self.player_id, int(queue.corrected_elapsed_time)
-                )
-            else:
-                # a live stream (radio) has no position to seek to, so it starts again live
-                await self.mass.player_queues.resume(self.player_id, fade_in=False)
-        except MusicAssistantError as err:
+        # A check started by a join in the Raumfeld app runs on its own, so it waits for a
+        # play, seek or stop in progress and looks at the playback that leaves.
+        async with self.mass.players.get_player_lock(self.player_id, PlayerLockPurpose.PLAYBACK):
+            if not (self.leads_group and self.plays_own_queue):
+                return
+            if self._stream_rates is None or set(self._stream_rates) <= set(
+                self.get_supported_sample_rates()
+            ):
+                return
+            queue = self.mass.player_queues.get(self.player_id)
+            if queue is None or queue.current_item is None:
+                return
             self.logger.debug(
-                "Failed to restart %s at a format its group plays: %r", self.room, err
+                "A room that joined %s may not play the format of its stream; restarting",
+                self.room,
             )
+            try:
+                if queue.current_item.duration:
+                    await self.mass.player_queues.seek(
+                        self.player_id, int(queue.corrected_elapsed_time)
+                    )
+                else:
+                    # a live stream (radio) has no position to seek to, so it starts again live
+                    await self.mass.player_queues.resume(self.player_id, fade_in=False)
+            except MusicAssistantError as err:
+                self.logger.debug(
+                    "Failed to restart %s at a format its group plays: %r", self.room, err
+                )
 
     def _zones_without_leader(self) -> list[list[str]]:
         """Return the zones this leading room's members are in, other than its own."""

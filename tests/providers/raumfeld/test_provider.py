@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -942,6 +943,42 @@ async def test_radio_is_restarted_live_for_a_room_that_joined() -> None:
     await bar._restart_for_group_rates()
     mass.player_queues.seek.assert_not_awaited()
     mass.player_queues.resume.assert_awaited_once_with(bar.player_id, fade_in=False)
+
+
+def _held_playback_lock(mass: MagicMock) -> asyncio.Lock:
+    """Give the players controller a real playback lock, and return it."""
+    lock = asyncio.Lock()
+
+    @contextlib.asynccontextmanager
+    async def player_lock(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
+        async with lock:
+            yield
+
+    mass.players.get_player_lock = player_lock
+    return lock
+
+
+@pytest.mark.parametrize("meanwhile", ["stop", "seek"])
+async def test_a_check_waits_for_playback_in_progress_and_looks_again(meanwhile: str) -> None:
+    """A stop or a restart already in progress settles the check it held up."""
+    bar, mass, queue = _joined_group(
+        lambda sofa: _allow(sofa, 96000), stream_started_in_group=False
+    )
+    queue.current_item.duration = 0
+    lock = _held_playback_lock(mass)
+    await lock.acquire()
+    check = asyncio.create_task(bar._restart_for_group_rates())
+    await asyncio.sleep(0)
+    assert not check.done()
+    if meanwhile == "stop":
+        bar._attr_playback_state = PlaybackState.IDLE
+    else:
+        # the stream that play started is at a format the whole group plays
+        bar._stream_rates = bar.get_supported_sample_rates()
+    lock.release()
+    await check
+    mass.player_queues.seek.assert_not_awaited()
+    mass.player_queues.resume.assert_not_awaited()
 
 
 async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
