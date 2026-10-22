@@ -162,7 +162,7 @@ def _advancing_player() -> tuple[RaumfeldPlayer, MagicMock]:
     player._advance_task_id = "raumfeld_advance_test"
     mass = MagicMock()
     player.mass = mass
-    player.play_media = MagicMock()  # type: ignore[method-assign]
+    player._play_next = MagicMock()  # type: ignore[method-assign]
     return player, mass
 
 
@@ -171,7 +171,7 @@ def test_advances_when_the_track_ends() -> None:
     player, mass = _advancing_player()
     queued = player._next_media
     player._maybe_advance(playing=False, ended=True)
-    player.play_media.assert_called_once_with(queued)  # type: ignore[attr-defined]
+    player._play_next.assert_called_once_with(queued)  # type: ignore[attr-defined]
     mass.create_task.assert_called_once()
     assert player._next_media is None
 

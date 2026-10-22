@@ -1166,6 +1166,48 @@ async def test_audio_another_player_encoded_is_not_restarted_for_its_rate(
     mass.player_queues.resume.assert_not_awaited()
 
 
+async def test_a_room_leaving_while_the_stream_starts_widens_the_saved_rates() -> None:
+    """A room leaving before the renderer fetched the stream: its rates count too."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    sofa_id = bar._attr_group_members[1]
+    media = PlayerMedia(uri="library://track/1", media_type=MediaType.TRACK)
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://mass.local:8097/flow.flac")
+
+    async def sofa_leaves_meanwhile(_zone: list[str], action: str, **_kwargs: str) -> None:
+        if action == "Play":
+            bar._attr_group_members = [bar.player_id]
+
+    with (
+        patch.object(bar, "_ensure_playable_zone", AsyncMock(return_value=["Bar", "Sofa"])),
+        patch.object(bar, "_wake_rooms", AsyncMock()),
+        patch.object(bar, "_stop_before_switching", AsyncMock()),
+        patch.object(bar, "_zone_command", AsyncMock(side_effect=sofa_leaves_meanwhile)),
+        patch.object(bar, "set_current_media"),
+        patch.object(RaumfeldPlayer, "flow_mode", new_callable=PropertyMock, return_value=True),
+    ):
+        await bar.play_media(media)
+    assert bar._stream_rates is not None
+    assert max(rate for rate, _ in bar._stream_rates) == 192000
+    # so the room rejoining has the stream restarted, whichever rates it was encoded at
+    bar._attr_group_members = [bar.player_id, sofa_id]
+    await bar._restart_for_group_rates()
+    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+
+
+async def test_the_next_item_starts_under_the_playback_lock() -> None:
+    """With flow mode off, the next item's play waits for a group rate check in progress."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    lock = _held_playback_lock(mass)
+    await lock.acquire()
+    with patch.object(bar, "play_media", AsyncMock()) as play:
+        start = asyncio.create_task(bar._play_next(PlayerMedia(uri="library://track/2")))
+        await asyncio.sleep(0)
+        play.assert_not_awaited()
+        lock.release()
+        await start
+    play.assert_awaited_once()
+
+
 @pytest.mark.parametrize(("joins", "checked"), [(True, True), (False, False)])
 async def test_a_room_grouped_in_the_raumfeld_app_has_the_rate_checked(
     joins: bool, checked: bool

@@ -581,6 +581,12 @@ class RaumfeldPlayer(Player):
             await self._zone_command(zone, "Play", Speed="1")
         except HOST_ERRORS as err:
             raise PlayerCommandFailed(f"Failed to start playback on {self.room}: {err!r}") from err
+        if self._stream_rates is not None:
+            # the renderer fetched the stream while this ran, and MA picked its format from
+            # the rates offered at that moment; a group change meanwhile can have widened them
+            self._stream_rates = sorted(
+                set(self._stream_rates) | set(self.get_supported_sample_rates())
+            )
         # optimistic state update; poll() will reconcile with the device
         self.set_current_media(uri=url, clear_all=True)
         self._attr_active_source = self.player_id
@@ -1610,7 +1616,17 @@ class RaumfeldPlayer(Player):
         # reach this, and a poll landing in between would otherwise see a finished track
         # with nothing queued and disarm the advance the new track still needs.
         self._prev_playing = False
-        self.mass.create_task(self.play_media(next_media))
+        self.mass.create_task(self._play_next(next_media))
+
+    async def _play_next(self, media: PlayerMedia) -> None:
+        """
+        Start the queued next item under the playback lock, as Music Assistant's commands do.
+
+        :param media: The next queue item.
+        """
+        # a group rate check waits for this play to finish, so it sees the stream it started
+        async with self.mass.players.get_group_and_player_lock(self.player_id):
+            await self.play_media(media)
 
     def _schedule_end_watch(self, pos: dict[str, str] | None) -> None:
         """Arrange to look for the end of the current track at the moment it is due."""
