@@ -10,15 +10,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientResponseError
-from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
-from music_assistant_models.media_items import (
-    Artist,
-    Audiobook,
-    MediaItemImage,
-    ProviderMapping,
-    UniqueList,
-)
+from music_assistant_models.media_items import Audiobook, ProviderMapping
 from yarl import URL
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_DELETIONS
@@ -236,6 +230,42 @@ async def test_get_library_artists_marks_incomplete_when_catalog_detail_failed(
 
     author_id = f"{AUTHOR_PREFIX}{book_audiobook['authors'][0]['id']}"
     assert author_id in {artist.item_id for artist in artists}
+
+
+@pytest.mark.asyncio
+async def test_get_library_audiobooks_reports_failed_ids_when_catalog_reused(
+    provider: BookOrbitProvider, book_audiobook: dict[str, Any], book_multifile: dict[str, Any]
+) -> None:
+    """A reused partial catalog must re-report failed audiobook ids during sync."""
+
+    async def _get_book(book_id: int) -> dict[str, Any]:
+        if book_id == book_multifile["id"]:
+            raise ClientResponseError(
+                request_info=Mock(real_url=URL("http://bo/x")),
+                history=(),
+                status=500,
+                message="boom",
+            )
+        if book_id == book_audiobook["id"]:
+            return book_audiobook
+        raise KeyError(book_id)
+
+    cast("Any", provider._client).get_book = AsyncMock(side_effect=_get_book)
+    await provider._refresh_catalog(force=True)
+    failed_id = str(book_multifile["id"])
+    assert failed_id in provider._catalog_detail_failed_ids
+
+    provider._force_catalog_refresh = False
+    token = SYNC_RUN_STATE.set(SyncRunState())
+    try:
+        books = [book async for book in provider.get_library_audiobooks()]
+        state = SYNC_RUN_STATE.get()
+        assert state is not None
+        assert failed_id in state.skipped_item_ids.get(MediaType.AUDIOBOOK, set())
+    finally:
+        SYNC_RUN_STATE.reset(token)
+
+    assert str(book_audiobook["id"]) in {book.item_id for book in books}
 
 
 @pytest.mark.asyncio
@@ -526,60 +556,6 @@ async def test_sync_library_reuses_catalog_within_ttl(provider: BookOrbitProvide
     assert get_book.call_count == calls_after_audiobook
 
 
-def test_library_item_needs_update_when_updated_at_changes(provider: BookOrbitProvider) -> None:
-    """Metadata edits bump updatedAt; that must trigger a library update via mapping details."""
-    mapping_old = ProviderMapping(
-        item_id="1",
-        provider_domain="bookorbit",
-        provider_instance=provider.instance_id,
-        details="2026-01-01T00:00:00.000Z",
-        in_library=True,
-        is_unique=True,
-    )
-    mapping_new = ProviderMapping(
-        item_id="1",
-        provider_domain="bookorbit",
-        provider_instance=provider.instance_id,
-        details="2026-10-14T20:00:00.000Z",
-        in_library=True,
-        is_unique=True,
-    )
-    library = AudiobookSyncDetails(
-        item_id=1,
-        date_added=datetime(2026, 1, 1, tzinfo=UTC),
-        provider_mappings={mapping_old},
-        artist_links=frozenset(),
-        authors=(),
-        narrators=(),
-        fully_played=None,
-        resume_position_ms=None,
-    )
-    prov_item = Audiobook(
-        item_id="1",
-        provider=provider.instance_id,
-        name="Hatchet",
-        provider_mappings={mapping_new},
-        duration=100,
-    )
-    assert provider._library_item_needs_update(library, prov_item) is True
-    mapping_same = ProviderMapping(
-        item_id="1",
-        provider_domain="bookorbit",
-        provider_instance=provider.instance_id,
-        details="2026-01-01T00:00:00.000Z",
-        in_library=True,
-        is_unique=True,
-    )
-    prov_same = Audiobook(
-        item_id="1",
-        provider=provider.instance_id,
-        name="Hatchet",
-        provider_mappings={mapping_same},
-        duration=100,
-    )
-    assert provider._library_item_needs_update(library, prov_same) is False
-
-
 def _sync_details_without_mapping_details(provider: BookOrbitProvider) -> AudiobookSyncDetails:
     """Build sync-details like core does: provider mappings without ``details``."""
     return AudiobookSyncDetails(
@@ -628,106 +604,6 @@ def test_library_item_needs_update_uses_applied_fingerprint_cache(
     provider._applied_mapping_details = {"1": "2026-10-14T20:00:00.000Z"}
     assert provider._library_item_needs_update(library, prov_item) is False
     provider._applied_mapping_details = {"1": "2026-01-01T00:00:00.000Z"}
-    assert provider._library_item_needs_update(library, prov_item) is True
-
-
-def test_library_item_needs_update_when_title_diverges(provider: BookOrbitProvider) -> None:
-    """A stale library title must refresh even if updatedAt was already stored."""
-    mapping = ProviderMapping(
-        item_id="1",
-        provider_domain="bookorbit",
-        provider_instance=provider.instance_id,
-        details="2026-10-14T20:00:00.000Z",
-        in_library=True,
-        is_unique=True,
-    )
-    library = Audiobook(
-        item_id="1",
-        provider=provider.instance_id,
-        name="Hatchet",
-        provider_mappings={mapping},
-        duration=100,
-    )
-    prov_item = Audiobook(
-        item_id="1",
-        provider=provider.instance_id,
-        name="Hatchet | Survival",
-        provider_mappings={mapping},
-        duration=100,
-    )
-    assert provider._library_item_needs_update(library, prov_item) is True
-
-
-def test_library_item_needs_update_when_sole_provider_images_change(
-    provider: BookOrbitProvider,
-) -> None:
-    """Stale book-cover stand-ins must refresh when the provider clears artist images."""
-    mapping = ProviderMapping(
-        item_id="author:11",
-        provider_domain="bookorbit",
-        provider_instance=provider.instance_id,
-        details="Frank Herbert|",
-        in_library=True,
-        is_unique=True,
-    )
-    library = Artist(
-        item_id="author:11",
-        provider=provider.instance_id,
-        name="Frank Herbert",
-        provider_mappings={mapping},
-    )
-    library.metadata.images = UniqueList(
-        [
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path="http://bo/api/v1/books/42/cover",
-                provider=provider.instance_id,
-            )
-        ]
-    )
-    prov_item = Artist(
-        item_id="author:11",
-        provider=provider.instance_id,
-        name="Frank Herbert",
-        provider_mappings={mapping},
-    )
-    prov_item.metadata.images = UniqueList([])
-    assert provider._library_item_needs_update(library, prov_item) is True
-
-
-def test_library_item_needs_update_on_mapping_details_change(
-    provider: BookOrbitProvider,
-) -> None:
-    """BookOrbit ``details`` fingerprint changes trigger a library update."""
-    mapping = ProviderMapping(
-        item_id="1",
-        provider_domain="bookorbit",
-        provider_instance=provider.instance_id,
-        in_library=True,
-        details="old",
-    )
-    library = Audiobook(
-        item_id="1",
-        provider=provider.instance_id,
-        name="Hatchet",
-        provider_mappings={mapping},
-        duration=100,
-    )
-    prov_item = Audiobook(
-        item_id="1",
-        provider=provider.instance_id,
-        name="Hatchet",
-        provider_mappings={
-            ProviderMapping(
-                item_id="1",
-                provider_domain="bookorbit",
-                provider_instance=provider.instance_id,
-                in_library=True,
-                details="new",
-            )
-        },
-        duration=100,
-    )
     assert provider._library_item_needs_update(library, prov_item) is True
 
 

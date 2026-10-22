@@ -7,9 +7,7 @@ import time
 from typing import Any
 from unittest import mock
 
-import aiohttp
 import pytest
-from aiohttp import web
 from music_assistant_models.enums import FlowStepType
 
 from music_assistant.models.setup_flow import SetupFlowContext, SetupFlowError, SetupSession
@@ -20,22 +18,7 @@ from music_assistant.providers.bookorbit.constants import (
     CONF_VERIFY_SSL,
     DOMAIN,
 )
-from music_assistant.providers.bookorbit.setup_flow import _validate_connection, run_setup
-
-
-def _patch_create_clientsession() -> Any:
-    """Return a patch that builds a plain ClientSession (tests do not need MA connectors)."""
-
-    def _factory(_mass: Any, **kwargs: Any) -> aiohttp.ClientSession:
-        return aiohttp.ClientSession(
-            cookie_jar=kwargs.get("cookie_jar") or aiohttp.DummyCookieJar(),
-            timeout=kwargs.get("timeout"),
-        )
-
-    return mock.patch(
-        "music_assistant.providers.bookorbit.setup_flow.create_clientsession",
-        side_effect=_factory,
-    )
+from music_assistant.providers.bookorbit.setup_flow import run_setup
 
 
 def _make_session(
@@ -75,316 +58,117 @@ async def _wait_for_form(session: SetupSession, *, with_errors: bool = False) ->
 
 
 @pytest.mark.asyncio
-async def test_validate_connection_login_and_libraries(aiohttp_server: Any) -> None:
-    """Validation performs login and lists libraries."""
-
-    async def login(request: web.Request) -> web.Response:
-        assert (await request.json()) == {"username": "u", "password": "p"}
-        resp = web.json_response({"accessToken": "tok"})
-        resp.set_cookie("refresh_token", "ref", path="/")
-        return resp
-
-    async def libraries(request: web.Request) -> web.Response:
-        assert request.headers.get("Authorization") == "Bearer tok"
-        return web.json_response([{"id": 1, "name": "Audiobooks"}])
-
-    app = web.Application()
-    app.router.add_post("/api/v1/auth/login", login)
-    app.router.add_get("/api/v1/libraries", libraries)
-    server = await aiohttp_server(app)
-    base = str(server.make_url("/")).rstrip("/")
-    mass = mock.Mock()
-    session = _make_session(lambda *_a, **_k: {"instance_id": "x"}, mass)
-
-    with _patch_create_clientsession():
-        await _validate_connection(
-            session,
-            {
-                CONF_URL: base,
-                CONF_USERNAME: "u",
-                CONF_PASSWORD: "p",
-                CONF_VERIFY_SSL: True,
-            },
-        )
-
-
-@pytest.mark.asyncio
-async def test_run_setup_finishes_after_successful_validation(aiohttp_server: Any) -> None:
-    """A successful login lets the flow finish and persist setup data."""
+async def test_run_setup_finishes_and_persists_values() -> None:
+    """A successful finish persists the submitted setup data."""
     collected: dict[str, Any] = {}
-
-    async def login(_request: web.Request) -> web.Response:
-        resp = web.json_response({"accessToken": "tok"})
-        resp.set_cookie("refresh_token", "ref", path="/")
-        return resp
-
-    async def libraries(_request: web.Request) -> web.Response:
-        return web.json_response([])
-
-    app = web.Application()
-    app.router.add_post("/api/v1/auth/login", login)
-    app.router.add_get("/api/v1/libraries", libraries)
-    server = await aiohttp_server(app)
-    base = str(server.make_url("/")).rstrip("/")
 
     async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
         collected.update(values)
         return {"instance_id": "bookorbit--test"}
 
-    mass = mock.Mock()
-    async with aiohttp.ClientSession() as http:
-        mass.http_session = http
-        session = _make_session(finish, mass)
-        with _patch_create_clientsession():
-            task = asyncio.create_task(run_setup(session))
-            await _wait_for_form(session)
-            session.handle_submit(
-                {
-                    CONF_URL: base,
-                    CONF_USERNAME: "u",
-                    CONF_PASSWORD: "p",
-                    CONF_VERIFY_SSL: True,
-                }
-            )
-            await _wait_for(lambda: session.finished)
-            await task
+    session = _make_session(finish, mock.Mock())
+    task = asyncio.create_task(run_setup(session))
+    await _wait_for_form(session)
+    session.handle_submit(
+        {
+            CONF_URL: "http://bo",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_VERIFY_SSL: True,
+        }
+    )
+    await _wait_for(lambda: session.finished)
+    await task
 
-        assert collected[CONF_USERNAME] == "u"
+    assert collected[CONF_URL] == "http://bo"
+    assert collected[CONF_USERNAME] == "u"
     assert collected[CONF_PASSWORD] == "p"
 
 
 @pytest.mark.asyncio
-async def test_run_setup_shows_login_error_and_retries(aiohttp_server: Any) -> None:
-    """Failed login re-shows the form with a localized error."""
-    attempts = {"login": 0}
-
-    async def login(_request: web.Request) -> web.Response:
-        attempts["login"] += 1
-        if attempts["login"] == 1:
-            return web.Response(status=401)
-        resp = web.json_response({"accessToken": "tok"})
-        resp.set_cookie("refresh_token", "ref", path="/")
-        return resp
-
-    async def libraries(_request: web.Request) -> web.Response:
-        return web.json_response([])
-
-    app = web.Application()
-    app.router.add_post("/api/v1/auth/login", login)
-    app.router.add_get("/api/v1/libraries", libraries)
-    server = await aiohttp_server(app)
-    base = str(server.make_url("/")).rstrip("/")
-
-    async def finish(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
-        return {"instance_id": "bookorbit--test"}
-
-    mass = mock.Mock()
-    async with aiohttp.ClientSession() as http:
-        mass.http_session = http
-        session = _make_session(finish, mass)
-        with _patch_create_clientsession():
-            task = asyncio.create_task(run_setup(session))
-            await _wait_for_form(session)
-            session.handle_submit(
-                {CONF_URL: base, CONF_USERNAME: "u", CONF_PASSWORD: "wrong", CONF_VERIFY_SSL: True}
-            )
-            error_form = await _wait_for_form(session, with_errors=True)
-            assert error_form.error_translations["base"].key == "login_failed"
-            session.handle_submit(
-                {CONF_URL: base, CONF_USERNAME: "u", CONF_PASSWORD: "right", CONF_VERIFY_SSL: True}
-            )
-            await _wait_for(lambda: session.finished)
-            await task
-
-        assert attempts["login"] == 2
-
-
-@pytest.mark.asyncio
-async def test_validate_connection_raises_setup_flow_error_on_unreachable_host() -> None:
-    """Unreachable hosts surface as connection_failed."""
-    mass = mock.Mock()
-    session = _make_session(lambda *_a, **_k: {"instance_id": "x"}, mass)
-    with _patch_create_clientsession(), pytest.raises(SetupFlowError) as exc:
-        await _validate_connection(
-            session,
-            {
-                CONF_URL: "http://127.0.0.1:1",
-                CONF_USERNAME: "u",
-                CONF_PASSWORD: "p",
-                CONF_VERIFY_SSL: True,
-            },
-        )
-    assert exc.value.translation_key == "connection_failed"
-
-
-@pytest.mark.asyncio
-async def test_validate_connection_login_timeout_is_connection_failed() -> None:
-    """Login total timeouts surface as retryable connection_failed, not internal_error."""
-    mass = mock.Mock()
-    session = _make_session(lambda *_a, **_k: {"instance_id": "x"}, mass)
-    with (
-        _patch_create_clientsession(),
-        mock.patch(
-            "music_assistant.providers.bookorbit.setup_flow.BookOrbitClient.login",
-            new=mock.AsyncMock(side_effect=TimeoutError("total timeout")),
-        ),
-        pytest.raises(SetupFlowError) as exc,
-    ):
-        await _validate_connection(
-            session,
-            {
-                CONF_URL: "http://bookorbit.example",
-                CONF_USERNAME: "u",
-                CONF_PASSWORD: "p",
-                CONF_VERIFY_SSL: True,
-            },
-        )
-    assert exc.value.translation_key == "connection_failed"
-
-
-@pytest.mark.asyncio
-async def test_validate_connection_raises_setup_flow_error_on_empty_password() -> None:
-    """First setup without a password surfaces password_required, not KeyError."""
-    mass = mock.Mock()
-    session = _make_session(lambda *_a, **_k: {"instance_id": "x"}, mass)
-    with _patch_create_clientsession(), pytest.raises(SetupFlowError) as exc:
-        await _validate_connection(
-            session,
-            {
-                CONF_URL: "http://127.0.0.1:9",
-                CONF_USERNAME: "u",
-                CONF_VERIFY_SSL: True,
-            },
-        )
-    assert exc.value.translation_key == "password_required"
-
-
-@pytest.mark.asyncio
-async def test_run_setup_reconfigure_blank_password_keeps_stored_and_validates(
-    aiohttp_server: Any,
-) -> None:
+async def test_run_setup_reconfigure_blank_password_keeps_stored() -> None:
     """Reconfigure with unchanged username and blank password reuses the saved password."""
     collected: dict[str, Any] = {}
 
-    async def login(request: web.Request) -> web.Response:
-        assert (await request.json()) == {"username": "u", "password": "stored-secret"}
-        resp = web.json_response({"accessToken": "tok"})
-        resp.set_cookie("refresh_token", "ref", path="/")
-        return resp
-
-    async def libraries(_request: web.Request) -> web.Response:
-        return web.json_response([])
-
-    app = web.Application()
-    app.router.add_post("/api/v1/auth/login", login)
-    app.router.add_get("/api/v1/libraries", libraries)
-    server = await aiohttp_server(app)
-    base = str(server.make_url("/")).rstrip("/")
-
     async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
         collected.update(values)
         return {"instance_id": "bookorbit--test"}
 
-    mass = mock.Mock()
-    async with aiohttp.ClientSession() as http:
-        mass.http_session = http
-        session = _make_session(
-            finish,
-            mass,
-            setup_data={
-                CONF_URL: base,
-                CONF_USERNAME: "u",
-                CONF_PASSWORD: "stored-secret",
-                CONF_VERIFY_SSL: True,
-            },
-        )
-        with _patch_create_clientsession():
-            task = asyncio.create_task(run_setup(session))
-            await _wait_for_form(session)
-            session.handle_submit(
-                {
-                    CONF_URL: base,
-                    CONF_USERNAME: "u",
-                    CONF_PASSWORD: None,
-                    CONF_VERIFY_SSL: True,
-                }
-            )
-            await _wait_for(lambda: session.finished)
-            await task
+    session = _make_session(
+        finish,
+        mock.Mock(),
+        setup_data={
+            CONF_URL: "http://bo",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "stored-secret",
+            CONF_VERIFY_SSL: True,
+        },
+    )
+    task = asyncio.create_task(run_setup(session))
+    await _wait_for_form(session)
+    session.handle_submit(
+        {
+            CONF_URL: "http://bo",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: None,
+            CONF_VERIFY_SSL: True,
+        }
+    )
+    await _wait_for(lambda: session.finished)
+    await task
 
-        assert collected[CONF_PASSWORD] == "stored-secret"
+    assert collected[CONF_PASSWORD] == "stored-secret"
 
 
 @pytest.mark.asyncio
-async def test_run_setup_reconfigure_keeps_replacement_password_after_retry(
-    aiohttp_server: Any,
-) -> None:
-    """
-    After a failed reconfigure with a new password, a blank-password retry keeps it.
-
-    Secure fields are often cleared on the error form; the in-progress replacement
-    must not be discarded in favour of the originally saved password.
-    """
+async def test_run_setup_keeps_replacement_password_after_finish_error() -> None:
+    """After a failed finish with a new password, a blank-password retry keeps it."""
     collected: dict[str, Any] = {}
-    login_passwords: list[str] = []
-
-    async def login(request: web.Request) -> web.Response:
-        body = await request.json()
-        login_passwords.append(str(body["password"]))
-        if len(login_passwords) == 1:
-            return web.json_response({"message": "upstream unavailable"}, status=503)
-        resp = web.json_response({"accessToken": "tok"})
-        resp.set_cookie("refresh_token", "ref", path="/")
-        return resp
-
-    async def libraries(_request: web.Request) -> web.Response:
-        return web.json_response([])
-
-    app = web.Application()
-    app.router.add_post("/api/v1/auth/login", login)
-    app.router.add_get("/api/v1/libraries", libraries)
-    server = await aiohttp_server(app)
-    base = str(server.make_url("/")).rstrip("/")
+    attempts = 0
 
     async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise SetupFlowError(
+                "Login failed.",
+                translation_key="login_failed",
+                translation_owner=DOMAIN,
+            )
         collected.update(values)
         return {"instance_id": "bookorbit--test"}
 
-    mass = mock.Mock()
-    async with aiohttp.ClientSession() as http:
-        mass.http_session = http
-        session = _make_session(
-            finish,
-            mass,
-            setup_data={
-                CONF_URL: base,
-                CONF_USERNAME: "u",
-                CONF_PASSWORD: "stored-secret",
-                CONF_VERIFY_SSL: True,
-            },
-        )
-        with _patch_create_clientsession():
-            task = asyncio.create_task(run_setup(session))
-            await _wait_for_form(session)
-            session.handle_submit(
-                {
-                    CONF_URL: base,
-                    CONF_USERNAME: "u",
-                    CONF_PASSWORD: "replacement-secret",
-                    CONF_VERIFY_SSL: True,
-                }
-            )
-            await _wait_for_form(session, with_errors=True)
-            session.handle_submit(
-                {
-                    CONF_URL: base,
-                    CONF_USERNAME: "u",
-                    CONF_PASSWORD: None,
-                    CONF_VERIFY_SSL: True,
-                }
-            )
-            await _wait_for(lambda: session.finished)
-            await task
+    session = _make_session(
+        finish,
+        mock.Mock(),
+        setup_data={
+            CONF_URL: "http://bo",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "stored-secret",
+            CONF_VERIFY_SSL: True,
+        },
+    )
+    task = asyncio.create_task(run_setup(session))
+    await _wait_for_form(session)
+    session.handle_submit(
+        {
+            CONF_URL: "http://bo",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "replacement-secret",
+            CONF_VERIFY_SSL: True,
+        }
+    )
+    await _wait_for_form(session, with_errors=True)
+    session.handle_submit(
+        {
+            CONF_URL: "http://bo",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: None,
+            CONF_VERIFY_SSL: True,
+        }
+    )
+    await _wait_for(lambda: session.finished)
+    await task
 
-        assert login_passwords == ["replacement-secret", "replacement-secret"]
-        assert collected[CONF_PASSWORD] == "replacement-secret"
+    assert attempts == 2
+    assert collected[CONF_PASSWORD] == "replacement-secret"

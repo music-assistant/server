@@ -6,7 +6,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientResponseError, DummyCookieJar, web
 from music_assistant_models.enums import (
@@ -195,6 +195,8 @@ class BookOrbitProvider(MusicProvider):
         self._catalog_detail_tasks: set[asyncio.Task[Any]] = set()
         # book id -> last ProviderMapping.details applied to the MA library (updatedAt)
         self._applied_mapping_details: dict[str, str] = {}
+        # Audiobook provider ids that failed during the active sync_library run.
+        self._failed_audiobook_ids: set[str] = set()
 
     async def handle_async_init(self) -> None:
         """Create the BookOrbit client from config, log in, and register the stream proxy."""
@@ -273,35 +275,29 @@ class BookOrbitProvider(MusicProvider):
         """Sync library items, refreshing the catalog under the active sync state."""
         # Refresh inside get_library_* so skipped-item protection lands in SyncRunState.
         self._force_catalog_refresh = media_type == MediaType.AUDIOBOOK
+        self._failed_audiobook_ids = set()
         if media_type == MediaType.AUDIOBOOK:
             await self._load_applied_mapping_details()
-        # Core protects failed items with a known library id via cur_db_ids only, so
-        # SyncRunState.skipped_item_ids is empty for those write failures. Capture
-        # audiobook failures here so fingerprints stay unset for retries.
-        failed_audiobook_ids: set[str] = set()
-        original_handle = self._handle_sync_item_failure
-
-        def _capture_audiobook_failure(
-            failure_media_type: MediaType, item_ref: str | None, err: Exception
-        ) -> None:
-            if failure_media_type == MediaType.AUDIOBOOK and item_ref:
-                # item_ref is a provider id or a full MA uri (.../audiobook/<id>).
-                failed_audiobook_ids.add(item_ref.rsplit("/", 1)[-1])
-            original_handle(failure_media_type, item_ref, err)
-
-        cast("Any", self)._handle_sync_item_failure = _capture_audiobook_failure
         try:
             await super().sync_library(media_type)
         finally:
-            cast("Any", self)._handle_sync_item_failure = original_handle
             self._force_catalog_refresh = False
         if media_type == MediaType.AUDIOBOOK:
-            self._commit_applied_mapping_details(failed_audiobook_ids)
+            self._commit_applied_mapping_details(self._failed_audiobook_ids)
             await self._save_applied_mapping_details()
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Yield audiobooks from the current catalog."""
         await self._refresh_catalog(force=self._force_catalog_refresh)
+        # Browse/search may refresh the catalog with no sync running. Re-report those
+        # failures when a later sync reuses the catalog so deletions do not remove them.
+        if self._catalog_detail_failed_ids and SYNC_RUN_STATE.get() is not None:
+            for book_id in self._catalog_detail_failed_ids:
+                self.report_skipped_sync_item(
+                    MediaType.AUDIOBOOK,
+                    book_id,
+                    ValueError(f"BookOrbit book detail {book_id} failed on last catalog refresh"),
+                )
         for book in list(self._catalog.values()):
             yield parse_audiobook(
                 book, provider_instance_id=self.instance_id, base_url=self.base_url
@@ -556,31 +552,15 @@ class BookOrbitProvider(MusicProvider):
         """Return whether a library item should be refreshed from the provider item."""
         if super()._library_item_needs_update(library_item, prov_item):
             return True
-        # Compare BookOrbit mapping fingerprints (updatedAt / image path) here rather
-        # than in core `_check_provider_mappings`, which must stay provider-agnostic.
+        # Core audiobook/artist sync passes LibraryItemSyncDetails without mapping.details.
+        # Fall back to last-applied fingerprints from mass.cache (missing key => refresh).
         lib_details = self._provider_mapping_details(library_item)
         prov_details = self._provider_mapping_details(prov_item)
-        if lib_details is not None and prov_details is not None and lib_details != prov_details:
-            return True
-        # Sync-details omit mapping.details. Fall back to last-applied fingerprints
-        # loaded from mass.cache for this sync (missing key => force refresh once).
-        if (
+        return bool(
             lib_details is None
             and isinstance(prov_item, Audiobook)
             and prov_details is not None
             and self._applied_mapping_details.get(prov_item.item_id) != prov_details
-        ):
-            return True
-        if not self._is_sole_library_provider(library_item):
-            return False
-        # Full library items only (sync-details omit name/metadata). Defensive catch-up
-        # when mapping fingerprints already match but local metadata diverged.
-        lib_name = getattr(library_item, "name", None)
-        if lib_name is not None and lib_name != prov_item.name:
-            return True
-        return bool(
-            hasattr(library_item, "metadata")
-            and self._provider_image_paths(library_item) != self._provider_image_paths(prov_item)
         )
 
     async def _load_applied_mapping_details(self) -> None:
@@ -626,27 +606,21 @@ class BookOrbitProvider(MusicProvider):
             persistent=True,
         )
 
+    def _handle_sync_item_failure(
+        self, media_type: MediaType, item_ref: str | None, err: Exception
+    ) -> None:
+        """Track failed audiobook ids so fingerprints are not marked applied."""
+        if media_type == MediaType.AUDIOBOOK and item_ref:
+            # item_ref is a provider id or a full MA uri (.../audiobook/<id>).
+            self._failed_audiobook_ids.add(item_ref.rsplit("/", 1)[-1])
+        super()._handle_sync_item_failure(media_type, item_ref, err)
+
     def _provider_mapping_details(self, item: MediaItemType | LibraryItemSyncDetails) -> str | None:
         """Return this instance's provider-mapping ``details`` fingerprint, if any."""
         for mapping in item.provider_mappings:
             if mapping.provider_instance == self.instance_id:
                 return mapping.details
         return None
-
-    def _provider_image_paths(self, item: MediaItemType | LibraryItemSyncDetails) -> list[str]:
-        """Return sorted image paths owned by this provider instance."""
-        metadata = getattr(item, "metadata", None)
-        if metadata is None or not metadata.images:
-            return []
-        return sorted(
-            img.path for img in metadata.images if img.provider in (self.instance_id, self.domain)
-        )
-
-    def _is_sole_library_provider(
-        self, library_item: MediaItemType | LibraryItemSyncDetails
-    ) -> bool:
-        """Return whether this instance is the only provider mapped on the item."""
-        return {x.provider_instance for x in library_item.provider_mappings} == {self.instance_id}
 
     async def _sync_playback_state(
         self, book_id: int, *, position: int, fully_played: bool
