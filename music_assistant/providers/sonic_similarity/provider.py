@@ -41,6 +41,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     SMART_FADES_ANALYSIS_DOMAIN,
     _parse_row,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
@@ -463,13 +464,17 @@ class SonicSimilarityPlugin(PluginProvider):
         """
         if item_id != "inspired_by_recently_played":
             return UniqueList()
-        folder = await self._get_inspired_recommendations()
+        # recently played is personal, so the cached row is keyed on the user asking
+        user = get_current_user()
+        folder = await self._get_inspired_recommendations(user.user_id if user else None)
         if folder is None:
             return UniqueList()
         return folder.items
 
     @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
-    async def _get_inspired_recommendations(self) -> RecommendationFolder | None:
+    async def _get_inspired_recommendations(
+        self, user_id: str | None
+    ) -> RecommendationFolder | None:
         """
         Build the 'Inspired by recently played' folder with its items.
 

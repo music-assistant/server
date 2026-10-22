@@ -36,6 +36,7 @@ from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.helpers import (
     discogs_external_id,
     fill_track_from_recording,
+    merge_metadata,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import compare_strings
@@ -157,8 +158,9 @@ class MetadataEnrichmentMixin:
                     description_candidates.append(
                         (prov_item.metadata.description_language, prov_item.metadata.description)
                     )
-                artist.metadata.update(
-                    replace(prov_item.metadata, description=None, description_language=None)
+                merge_metadata(
+                    artist.metadata,
+                    replace(prov_item.metadata, description=None, description_language=None),
                 )
 
         # The musicbrainz ID is mandatory for all metadata lookups
@@ -212,7 +214,7 @@ class MetadataEnrichmentMixin:
                             (metadata.description_language, metadata.description)
                         )
                         metadata = replace(metadata, description=None, description_language=None)
-                    artist.metadata.update(metadata)
+                    merge_metadata(artist.metadata, metadata)
                     self.logger.debug(
                         "Fetched metadata for Artist %s on provider %s",
                         artist.name,

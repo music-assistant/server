@@ -999,6 +999,10 @@ class SyncGroupPlayer(Player):
         self.sync_leader = None
         self._update_attributes()
         self.update_state()
+        # members derive active_group from our session; when the dissolve leaves our own
+        # state unchanged (idle grace after the queue ended) no event would refresh them
+        for member_id in self._attr_group_members:
+            self.mass.players.trigger_player_update(member_id)
 
     def _select_sync_leader(
         self,
@@ -1234,11 +1238,11 @@ class SyncGroupPlayer(Player):
         self._attr_playback_state = new_state
         self._attr_elapsed_time = sync_leader.state.elapsed_time
         self._attr_elapsed_time_last_updated = sync_leader.state.elapsed_time_last_updated
-        # don't use 'state' for current_media here since that points back to this group
-        # player when we're active_group, we need the 'raw' value from the sync leader
-        # itself to avoid circular dependency and ensure it reflects the actual media
-        # on the leader rather than the group.
-        self._attr_current_media = sync_leader.current_media
+        # Don't use state.current_media here: active_group routes it back to this group.
+        # Read raw media from the active session instead; the native leader may only
+        # report its input (e.g. AirPlay), without the queue identity needed for updates.
+        session_player = self._active_session_player() or sync_leader
+        self._attr_current_media = session_player.current_media
         self._attr_active_source = sync_leader.active_source
         self._attr_poll_interval = 1 if new_state == PlaybackState.PLAYING else 30
         # idle grace handling: schedule a debounced dissolve when the leader

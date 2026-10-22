@@ -109,10 +109,12 @@ class AirPlayPlayer(Player):
         manufacturer: str,
         model: str,
         initial_volume: int = FALLBACK_VOLUME,
+        is_local_shairport: bool = False,
     ) -> None:
         """Initialize AirPlayPlayer."""
         self.raop_discovery_info = raop_discovery_info
         self.airplay_discovery_info = airplay_discovery_info
+        self._is_local_shairport = is_local_shairport
         # Audio formats the receiver advertises, learned from its /info response;
         # zero until that lands (or when the device publishes no format tables).
         self.advertised_audio_formats = 0
@@ -165,11 +167,21 @@ class AirPlayPlayer(Player):
 
         Automatic unless the (advanced) streaming-mode setting pins a lane the
         device actually offers; a stored value the device no longer advertises
-        falls back to Automatic rather than forcing an impossible route.
+        falls back to Automatic rather than forcing an impossible route. On
+        Automatic, an AirPlay 2 shairport-sync receiver on this host uses
+        compatibility mode, as it cannot share the PTP ports with this server.
         """
         value = str(self.config.get_value(CONF_STREAMING_MODE, STREAMING_MODE_AUTO))
         offered = {option.value for option in self.streaming_mode_options}
-        return value if value in offered else STREAMING_MODE_AUTO
+        if value not in offered:
+            value = STREAMING_MODE_AUTO
+        if (
+            value == STREAMING_MODE_AUTO
+            and self._is_local_shairport
+            and STREAMING_MODE_AP2_COMPAT in offered
+        ):
+            return STREAMING_MODE_AP2_COMPAT
+        return value
 
     @property
     def streaming_mode_options(self) -> list[ConfigValueOption]:

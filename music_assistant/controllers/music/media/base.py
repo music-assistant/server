@@ -62,6 +62,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     MASS_LOGGER_NAME,
@@ -1712,6 +1713,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 )
 
     @final
+    async def remove_provider_images(
+        self, item_id: str | int, provider_instance_id: str, paths: Iterable[str]
+    ) -> None:
+        """
+        Remove the given images of a provider from a library item.
+
+        :param item_id: The library item ID to remove images from.
+        :param provider_instance_id: The provider instance the images belong to.
+        :param paths: The image paths to remove.
+        """
+        db_id = int(item_id)  # ensure integer
+        if not await self._remove_provider_images(db_id, provider_instance_id, set(paths)):
+            return
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            item = await self.get_library_item(db_id)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, item.uri, item)
+
+    @final
     async def set_provider_mappings(
         self,
         item_id: str | int,
@@ -3043,22 +3062,27 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return MediaItemMetadata()
         return MediaItemMetadata.from_dict(json_loads(raw_metadata))
 
-    async def _remove_provider_images(self, db_id: int, provider_instance_id: str) -> bool:
+    async def _remove_provider_images(
+        self, db_id: int, provider_instance_id: str, paths: set[str] | None = None
+    ) -> bool:
         """
         Remove images belonging to a provider from a library item's stored metadata.
 
         :param db_id: The library (database) id of the item.
         :param provider_instance_id: The provider instance whose images should be removed.
+        :param paths: Only remove the provider's images with these paths (all when None).
         :return: True if any images were removed and the db record was updated.
         """
         metadata = await self._get_stored_metadata(db_id)
         if not metadata.images:
             return False
         remaining = UniqueList(
-            img for img in metadata.images if img.provider != provider_instance_id
+            img
+            for img in metadata.images
+            if img.provider != provider_instance_id or (paths is not None and img.path not in paths)
         )
         if len(remaining) == len(metadata.images):
-            # nothing belonged to this provider
+            # nothing to remove
             return False
         metadata.images = remaining or None
         await self.mass.music.database.update(
@@ -3701,7 +3725,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
 
     async def _merge_library_playlog(self, target_id: int, source_id: int) -> None:
-        """Transfer library-keyed playlog rows using the normal latest-entry semantics."""
+        """Transfer playback references while preserving individual completed plays."""
         values = {
             "target_id": target_id,
             "source_id": source_id,
@@ -3749,3 +3773,51 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "media_type": self.media_type.value,
             },
         )
+        await self.mass.music.database.execute_write(
+            f"UPDATE {DB_TABLE_PLAY_HISTORY} SET item_id = :target_id "
+            "WHERE item_id = :source_id AND provider = 'library' AND media_type = :media_type",
+            values,
+        )
+        if self.media_type != MediaType.ARTIST:
+            return
+
+        matching_credit = """
+            CASE WHEN credit.type = 'object' THEN
+                json_extract(credit.value, '$.provider') = 'library'
+                AND CAST(json_extract(credit.value, '$.item_id') AS TEXT) = :source_id
+            ELSE 0 END
+        """
+        # These are playback snapshots, not live artist records: only redirect their
+        # identity, keeping the historical names, artwork and separate play events.
+        for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+            await self.mass.music.database.execute_write(
+                f"""
+                UPDATE {table}
+                SET artists = (
+                    SELECT json_group_array(json(
+                        CASE WHEN {matching_credit}
+                            THEN json_set(
+                                credit.value,
+                                '$.item_id', :target_id,
+                                '$.uri', :target_uri
+                            )
+                            ELSE {table}.artists -> credit.key
+                        END
+                    ))
+                    FROM json_each({table}.artists) AS credit
+                )
+                WHERE CASE WHEN json_valid(artists) THEN json_type(artists) END = 'array'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM json_each(
+                            CASE WHEN json_valid(artists) THEN artists ELSE '[]' END
+                        ) AS credit
+                        WHERE {matching_credit}
+                    )
+                """,
+                {
+                    "source_id": str(source_id),
+                    "target_id": str(target_id),
+                    "target_uri": create_uri(MediaType.ARTIST, "library", str(target_id)),
+                },
+            )

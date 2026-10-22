@@ -17,6 +17,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     Track,
 )
+from music_assistant_models.media_items.metadata import LifeSpan
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.helpers.external_ids import is_valid_isrc
@@ -148,7 +149,28 @@ def metadata_for_update(
     """
     if overwrite and any(getattr(update, field.name) for field in fields(update)):
         return update
-    return stored.update(update)
+    return merge_metadata(stored, update)
+
+
+def merge_metadata(stored: MediaItemMetadata, update: MediaItemMetadata) -> MediaItemMetadata:
+    """
+    Merge new metadata into the stored metadata (in-place), only filling in what is missing.
+
+    Unlike ``MediaItemMetadata.update`` alone, a partially known life span (e.g. only a birth
+    date from a local NFO file) is completed with the missing dates from the new values.
+
+    :param stored: Metadata to update in-place.
+    :param update: New metadata values.
+    """
+    cur_span, new_span = stored.life_span, update.life_span
+    stored.update(update)
+    if cur_span and new_span:
+        stored.life_span = LifeSpan(
+            begin=cur_span.begin or new_span.begin,
+            end=cur_span.end or new_span.end,
+            ended=cur_span.ended or new_span.ended,
+        )
+    return stored
 
 
 def provider_mappings_for_update(

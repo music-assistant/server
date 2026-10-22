@@ -145,6 +145,59 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     assert call_kwargs.get("limit") == SIMILAR_ITEMS_LIMIT
 
 
+def _cross_type_similar_tracks_controller(music_prov: Mock, cross_prov: Mock) -> TracksController:
+    """Return a controller for a track mapped onto music_prov, with cross_prov registered."""
+    mass = _mass_with_empty_cache()
+    mass.get_provider.side_effect = lambda instance_id, **_: {"m_a": music_prov}.get(instance_id)
+    mass.get_providers_supporting_feature.side_effect = lambda _feature, priority: [
+        prov for prov in (cross_prov,) if prov.type in priority
+    ]
+    ref_item = Mock()
+    ref_item.provider_mappings = [
+        ProviderMapping(item_id="abc", provider_domain="m_a", provider_instance="m_a")
+    ]
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    return controller
+
+
+def _similar_tracks_music_prov() -> Mock:
+    """Return a music provider that answers with similar track m1."""
+    music_prov = Mock(spec=MusicProvider)
+    music_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    music_prov.get_similar_tracks = AsyncMock(return_value=[_similar_track("m1")])
+    return music_prov
+
+
+async def test_similar_tracks_prefers_plugin_over_music_provider() -> None:
+    """A similarity plugin answers before the track's own music provider."""
+    music_prov = _similar_tracks_music_prov()
+    plugin_prov = Mock(spec=PluginProvider)
+    plugin_prov.type = ProviderType.PLUGIN
+    plugin_prov.get_similar_tracks = AsyncMock(return_value=[_similar_track("p1")])
+    controller = _cross_type_similar_tracks_controller(music_prov, plugin_prov)
+
+    result = await controller.similar_tracks("abc", "m_a")
+
+    assert [track.item_id for track in result] == ["p1"]
+    music_prov.get_similar_tracks.assert_not_awaited()
+
+
+async def test_similar_tracks_prefers_music_provider_over_metadata_provider() -> None:
+    """The track's own music provider answers before a metadata provider."""
+    music_prov = _similar_tracks_music_prov()
+    metadata_prov = Mock(spec=MetadataProvider)
+    metadata_prov.type = ProviderType.METADATA
+    metadata_prov.get_similar_tracks = AsyncMock(return_value=[_similar_track("x1")])
+    controller = _cross_type_similar_tracks_controller(music_prov, metadata_prov)
+
+    result = await controller.similar_tracks("abc", "m_a")
+
+    assert [track.item_id for track in result] == ["m1"]
+    metadata_prov.get_similar_tracks.assert_not_awaited()
+
+
 async def test_similar_tracks_skips_failed_provider_mapping() -> None:
     """A transport failure from one mapping does not prevent trying the next provider."""
     mass = _mass_with_empty_cache()

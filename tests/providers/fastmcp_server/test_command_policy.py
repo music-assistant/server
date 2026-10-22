@@ -110,6 +110,20 @@ def test_current_ma_read_commands_have_explicit_capabilities(
     }
 
 
+def test_statistics_commands_are_read_only_library_queries() -> None:
+    """Statistics endpoints expose only the caller's read-only library data."""
+    decision = resolve_command_policy("statistics/top_items", "library.read", profile=None)
+
+    assert decision.hard_denied is False
+    assert decision.required_capabilities == frozenset({str(Capability.QUERY_LIBRARY)})
+    assert decision.annotations == {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
+
+
 def test_track_preview_is_hard_denied() -> None:
     """Provider preview URLs must not leave Music Assistant through MCP."""
     decision = resolve_command_policy("music/tracks/preview", "library.read", None)

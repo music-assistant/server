@@ -600,6 +600,36 @@ def test_ntp_mode_ignored_on_apple_airplay2() -> None:
 
 
 @pytest.mark.parametrize(
+    ("stored_mode", "is_local_shairport", "expected"),
+    [
+        # nqptp on this host holds the PTP ports, so Automatic takes the compat lane
+        (STREAMING_MODE_AUTO, True, STREAMING_MODE_AP2_COMPAT),
+        # an explicit pin still wins
+        (STREAMING_MODE_AP2_NTP, True, STREAMING_MODE_AP2_NTP),
+        (STREAMING_MODE_AUTO, False, STREAMING_MODE_AUTO),
+    ],
+)
+def test_local_shairport_defaults_to_compat_mode(
+    stored_mode: str, is_local_shairport: bool, expected: str
+) -> None:
+    """Automatic resolves to compatibility mode for an AirPlay 2 shairport-sync on this host."""
+    player = AirPlayPlayer(
+        provider=MagicMock(),
+        player_id="test_player",
+        display_name="Shairport",
+        address="192.168.1.10",
+        manufacturer="Unknown",
+        model="ShairportSync",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+        is_local_shairport=is_local_shairport,
+    )
+    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    _configure_player(player, {CONF_STREAMING_MODE: stored_mode})
+    assert player.streaming_mode == expected
+
+
+@pytest.mark.parametrize(
     ("stored_config", "expected"),
     [
         # no credentials at all: pairing is required before the player is usable
