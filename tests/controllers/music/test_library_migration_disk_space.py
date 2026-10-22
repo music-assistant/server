@@ -7,6 +7,7 @@ import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,6 +16,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_SETTINGS
 from music_assistant.controllers.music import MusicController, database, migrations
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
+from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
 
 from .helpers import create_track
@@ -60,12 +62,24 @@ def _library_state(mass: MusicAssistant) -> tuple[str, int]:
     return version, tracks
 
 
+@pytest.mark.parametrize("wrapped", [False, True])
 async def test_disk_full_migration_restores_backup_instead_of_resetting(
-    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch, wrapped: bool
 ) -> None:
     """A migration that runs out of disk space restores the backup and refuses to start."""
     music = await _library_at_previous_version(mass_minimal)
-    monkeypatch.setattr(database, "migrate_database", AsyncMock(side_effect=_disk_full_error()))
+
+    async def _migrate_until_disk_full(
+        _mass: MusicAssistant, db: DatabaseConnection, *_: Any
+    ) -> None:
+        await db.execute("DELETE FROM tracks")
+        await db.commit()
+        await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        if wrapped:
+            raise MusicAssistantError("Could not create tables") from _disk_full_error()
+        raise _disk_full_error()
+
+    monkeypatch.setattr(database, "migrate_database", _migrate_until_disk_full)
     mass_minimal.cache.clear = AsyncMock()  # type: ignore[method-assign]
 
     with pytest.raises(MusicAssistantError, match="disk space"):

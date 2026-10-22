@@ -298,6 +298,8 @@ class MusicDatabaseSetupMixin:
 
     async def __backup_database(self, db_path: str, backup_path: str) -> None:
         """Copy the library database to its backup, refusing without room for it."""
+        # committed rows still in the WAL would otherwise be missing from the copy
+        await self.database.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         needed_gb = (Path(db_path).stat().st_size + DB_FREE_SPACE_MARGIN) / (1 << 30)
         free_gb = await get_free_space(self.mass.storage_path)
         if free_gb < needed_gb:
@@ -306,8 +308,6 @@ class MusicDatabaseSetupMixin:
                 f"it ({needed_gb:.1f} GB needed, {free_gb:.1f} GB free). "
                 "Free up space and restart."
             )
-        # committed rows still in the WAL would otherwise be missing from the copy
-        await self.database.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         await asyncio.to_thread(shutil.copyfile, db_path, backup_path)
 
     async def __create_database_tables(self) -> None:

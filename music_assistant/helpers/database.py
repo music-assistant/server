@@ -207,14 +207,21 @@ def is_disk_full_error(err: BaseException) -> bool:
     """
     Return whether a database error was caused by a full disk or failing storage.
 
-    :param err: The exception raised by a database operation.
+    :param err: The exception raised by a database operation, also when it wraps the
+        database error.
     """
-    if not isinstance(err, sqlite3.Error):
-        return False
-    # only errors raised by sqlite itself carry a code; extended codes keep the primary one
-    # in their low byte
-    code: int = getattr(err, "sqlite_errorcode", 0)
-    return code & 0xFF in (sqlite3.SQLITE_FULL, sqlite3.SQLITE_IOERR)
+    cause: BaseException | None = err
+    while cause is not None:
+        # only errors raised by sqlite itself carry a code; extended codes keep the primary
+        # one in their low byte
+        code: int = getattr(cause, "sqlite_errorcode", 0)
+        if isinstance(cause, sqlite3.Error) and code & 0xFF in (
+            sqlite3.SQLITE_FULL,
+            sqlite3.SQLITE_IOERR,
+        ):
+            return True
+        cause = cause.__cause__
+    return False
 
 
 class DatabaseConnection:
