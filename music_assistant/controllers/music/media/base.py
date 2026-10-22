@@ -108,6 +108,7 @@ from music_assistant.helpers.provider_access import (
     hidden_music_sources,
     visible_music_sources,
 )
+from music_assistant.helpers.uri import provider_mapping_url
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
@@ -2706,8 +2707,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return order
 
     @final
-    @staticmethod
-    def _parse_db_row(db_row: Mapping[str, Any], hidden_sources: set[str]) -> dict[str, Any]:
+    def _parse_db_row(self, db_row: Mapping[str, Any], hidden_sources: set[str]) -> dict[str, Any]:
         """
         Parse raw db Mapping into a dict.
 
@@ -2728,6 +2728,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if not (raw_value := db_row_dict[key]):
                 continue
             db_row_dict[key] = json_loads(raw_value)
+
+        for mapping in db_row_dict.get("provider_mappings") or []:
+            mapping["url"] = provider_mapping_url(
+                mapping["provider_domain"], self.media_type, mapping["item_id"], mapping.get("url")
+            )
 
         # parse "fully_played" as bool if present in the row
         if "fully_played" in db_row_dict:
@@ -3149,12 +3154,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
 
     @final
-    @staticmethod
-    def _parse_summary_provider_mappings(db_row: Mapping[str, Any]) -> set[ProviderMapping]:
+    def _parse_summary_provider_mappings(self, db_row: Mapping[str, Any]) -> set[ProviderMapping]:
         """Hydrate the provider mappings of a summary row into ProviderMapping objects."""
         if not (raw_mappings := db_row["provider_mappings"]):
             return set()
-        return {ProviderMapping.from_dict(x) for x in json_loads(raw_mappings)}
+        mappings = {ProviderMapping.from_dict(x) for x in json_loads(raw_mappings)}
+        for mapping in mappings:
+            mapping.url = provider_mapping_url(
+                mapping.provider_domain, self.media_type, mapping.item_id, mapping.url
+            )
+        return mappings
 
     @final
     @staticmethod

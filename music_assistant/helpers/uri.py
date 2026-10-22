@@ -4,7 +4,7 @@ import asyncio
 import os
 import re
 from typing import Final
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
@@ -156,6 +156,17 @@ def canonical_provider_url(
     :param storefront: Apple Music storefront (country code) the URL is scoped to.
     :return: The URL, or None when the provider has no canonical URL for this kind of item.
     """
+    if provider_domain == "ytmusic":
+        if media_type == MediaType.ALBUM and item_id.startswith("MPREb_"):
+            return f"https://music.youtube.com/browse/{quote(item_id, safe='')}"
+        if media_type in (MediaType.TRACK, MediaType.PODCAST_EPISODE):
+            video_id = (
+                item_id.rsplit("|", 1)[-1] if media_type == MediaType.PODCAST_EPISODE else item_id
+            )
+            return f"https://music.youtube.com/watch?v={quote(video_id, safe='')}"
+        if media_type in (MediaType.PLAYLIST, MediaType.PODCAST):
+            playlist_id = item_id.split("🎵", 1)[0]
+            return f"https://music.youtube.com/playlist?list={quote(playlist_id, safe='')}"
     if media_type not in _CANONICAL_URL_TYPES:
         return None
     kind = media_type.value
@@ -174,6 +185,17 @@ def canonical_provider_url(
     if provider_domain == "qobuz" and media_type == MediaType.ARTIST and item_id.isdigit():
         return f"https://open.qobuz.com/artist/{item_id}"
     return None
+
+
+def provider_mapping_url(
+    provider_domain: str, media_type: MediaType, item_id: str, url: str | None
+) -> str | None:
+    """Return a mapping's public URL, deriving missing YouTube Music links from its ID."""
+    if provider_domain != "ytmusic":
+        return url
+    if url and url != "https://music.youtube.com/playlist?list=None":
+        return url
+    return canonical_provider_url(provider_domain, media_type, item_id)
 
 
 def apple_storefront_from_url(url: str) -> str | None:

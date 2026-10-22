@@ -11,10 +11,45 @@ from music_assistant.helpers.uri import (
     canonical_provider_url,
     discogs_id_from_url,
     parse_uri,
+    provider_mapping_url,
     share_url_provider,
 )
 
 SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
+
+
+@pytest.mark.parametrize(
+    ("media_type", "item_id", "expected"),
+    [
+        (MediaType.ALBUM, "MPREb_test", "https://music.youtube.com/browse/MPREb_test"),
+        (MediaType.ARTIST, "UCtest", "https://music.youtube.com/channel/UCtest"),
+        (MediaType.TRACK, "meuR1l4j-xs", "https://music.youtube.com/watch?v=meuR1l4j-xs"),
+        (
+            MediaType.PODCAST_EPISODE,
+            "PLpodcast|meuR1l4j-xs",
+            "https://music.youtube.com/watch?v=meuR1l4j-xs",
+        ),
+        (MediaType.PODCAST_EPISODE, "meuR1l4j-xs", "https://music.youtube.com/watch?v=meuR1l4j-xs"),
+        (MediaType.PLAYLIST, "PLtest", "https://music.youtube.com/playlist?list=PLtest"),
+        (MediaType.PLAYLIST, "LM🎵ytmusic--account", "https://music.youtube.com/playlist?list=LM"),
+        (MediaType.ALBUM, "FEmusic_library_privately_owned_release_test", None),
+    ],
+)
+@pytest.mark.parametrize("stored_url", [None, "", "https://music.youtube.com/playlist?list=None"])
+def test_missing_ytmusic_mapping_urls_are_derived(
+    media_type: MediaType, item_id: str, expected: str | None, stored_url: str | None
+) -> None:
+    """Existing mappings need no stored URL or database migration to expose a public link."""
+    assert provider_mapping_url("ytmusic", media_type, item_id, stored_url) == expected
+
+
+def test_mapping_url_preserves_existing_provider_links() -> None:
+    """A valid album playlist URL and other providers' links remain authoritative."""
+    url = "https://music.youtube.com/playlist?list=OLAK5uy_test"
+    assert provider_mapping_url("ytmusic", MediaType.ALBUM, "MPREb_test", url) == url
+    assert (
+        provider_mapping_url("filesystem_local", MediaType.TRACK, "/music/test.flac", None) is None
+    )
 
 
 @pytest.mark.parametrize(
