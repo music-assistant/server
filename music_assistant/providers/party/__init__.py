@@ -913,15 +913,19 @@ class PartyPlugin(PluginProvider):
 
         return section_end
 
-    async def skip_current(self) -> dict[str, Any]:
+    async def skip_current(self, queue_item_id: str | None = None) -> dict[str, Any]:
         """
         Vote to skip the currently playing track.
 
         The track is skipped once the configured number of distinct guests voted for it.
-        A guest voting twice on the same track is not counted again.
+        A guest voting twice on the same track is not counted again. A vote for a track
+        that is no longer playing is not counted.
 
+        :param queue_item_id: The queue item the guest voted on, as shown to the guest.
+            When left out, the vote is for the track playing when the vote arrives.
         :returns: Result dict with success status, whether the track was skipped,
-            whether this vote was counted and the current vote tally.
+            whether this vote was counted, whether the track changed before the vote
+            was counted and the current vote tally.
         """
         # Check if guest access and skip are enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
@@ -942,9 +946,9 @@ class PartyPlugin(PluginProvider):
             msg = f"{current_user.username} does not have access to player {queue_id}"
             raise InsufficientPermissions(msg)
 
-        # The vote is for the track playing right now, even if playback moves on
-        # while the vote is being processed
-        target_item_id = self._get_playing_item(queue_id).queue_item_id
+        # The vote is for the track the guest saw, or else the one playing right now,
+        # even if playback moves on while the vote is being processed
+        target_item_id = queue_item_id or self._get_playing_item(queue_id).queue_item_id
         votes_required = cast("int", self.config.get_value(CONF_PARTY_SKIP_VOTES_REQUIRED))
         voter_id = await self._get_voter_id()
 
@@ -956,7 +960,19 @@ class PartyPlugin(PluginProvider):
         ):
             current_item = self._get_playing_item(queue_id)
             if current_item.queue_item_id != target_item_id:
-                raise InvalidDataError("The song changed before the vote was counted")
+                # e.g. a vote that arrives after earlier votes already skipped the track
+                self.logger.info(
+                    "Guest vote to skip not counted, the track changed on queue %s", queue_id
+                )
+                return {
+                    "success": True,
+                    "queue_id": queue_id,
+                    "skipped": False,
+                    "vote_counted": False,
+                    "song_changed": True,
+                    "votes": 0,
+                    "votes_required": votes_required,
+                }
 
             if (
                 self._skip_vote_queue_id != queue_id
@@ -994,6 +1010,7 @@ class PartyPlugin(PluginProvider):
             "queue_id": queue_id,
             "skipped": skipped,
             "vote_counted": vote_counted,
+            "song_changed": False,
             "votes": votes,
             "votes_required": votes_required,
         }
