@@ -76,6 +76,9 @@ VOLUME_STEP_TIMEOUT = 10
 # falls behind a clock started at play_media. While paused, poll this often too, so the
 # position from the skill API (and the resume) shows up within seconds.
 POSITION_POLL_INTERVAL = 5
+# MA polls its players one after another, so an unreachable skill API is left alone for
+# a while rather than holding up every poll round with a timeout per Echo.
+PLAYBACK_STATE_RETRY_DELAY = 60
 
 # AudioPlayer activity reported by the Echo. IDLE and FINISHED are left to MA's own
 # stop and end-of-stream handling.
@@ -231,13 +234,15 @@ def _api_target(provider: PlayerProvider, endpoint: str) -> tuple[str, BasicAuth
     return f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}", auth
 
 
-async def get_playback_state(provider: PlayerProvider, player_id: str) -> dict[str, Any] | None:
+async def get_playback_state(provider: AlexaProvider, player_id: str) -> dict[str, Any] | None:
     """
     Return what the Echo last reported to the skill API for this player.
 
     Returns None when the API cannot be reached or lacks the endpoint (older skill
     versions); unlike api_request this is quiet, as it runs on every poll.
     """
+    if provider.mass.loop.time() < provider._playback_state_retry_at:
+        return None
     url, auth = _api_target(provider, "/alexa/playback-state")
     try:
         async with provider.mass.http_session.get(
@@ -249,7 +254,10 @@ async def get_playback_state(provider: PlayerProvider, player_id: str) -> dict[s
             if resp.status != 200:
                 return None
             data = await resp.json(content_type=None)
-    except aiohttp.ClientError, TimeoutError, ValueError:
+    except aiohttp.ClientError, TimeoutError:
+        provider._playback_state_retry_at = provider.mass.loop.time() + PLAYBACK_STATE_RETRY_DELAY
+        return None
+    except ValueError:
         return None
     return data if isinstance(data, dict) else None
 
@@ -590,7 +598,7 @@ class AlexaPlayer(Player):
             # Stopped by MA; the Echo has nothing newer to say about this queue.
             return
         generation = self._playback_generation
-        report = await get_playback_state(self.provider, self.player_id)
+        report = await get_playback_state(cast("AlexaProvider", self.provider), self.player_id)
         if generation != self._playback_generation:
             # A playback command ran while the report was on its way; it describes the past.
             return
@@ -689,6 +697,7 @@ class AlexaProvider(PlayerProvider):
         self._volumes: dict[str, int] | None = None
         self._volumes_read_at = -math.inf
         self._volumes_lock = asyncio.Lock()
+        self._playback_state_retry_at = -math.inf
         self._intents: list[dict[str, Any]] | None = None
         self._invocation_name: str | None = None
 

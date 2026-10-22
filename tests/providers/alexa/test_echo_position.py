@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -33,6 +34,7 @@ def _player(state: PlaybackState = PlaybackState.PLAYING) -> tuple[AlexaPlayer, 
     provider.get_setup_value = MagicMock(side_effect=_setup_value)
     provider.get_volumes = AsyncMock(return_value={"SERIAL": 20})
     provider._volumes_lock = asyncio.Lock()
+    provider._playback_state_retry_at = -math.inf
     player = AlexaPlayer(provider, "Echo", MagicMock(device_serial_number="SERIAL"))
     player._attr_playback_state = state
     player._attr_elapsed_time = 0
@@ -202,6 +204,29 @@ async def test_playback_state_failures_return_none(session: MagicMock) -> None:
     _, provider = _player()
     provider.mass.http_session = session
     assert await get_playback_state(provider, "Echo") is None
+
+
+@pytest.mark.parametrize(
+    ("session", "backs_off"),
+    [
+        (_session(error=aiohttp.ClientConnectionError("down")), True),
+        (_session(error=TimeoutError()), True),
+        (_session(status=404), False),
+    ],
+)
+async def test_unreachable_skill_api_is_left_alone_for_a_while(
+    session: MagicMock, backs_off: bool
+) -> None:
+    """MA polls players in turn, so a down API must not cost a timeout per Echo each round."""
+    _, provider = _player()
+    provider.mass.http_session = session
+    await get_playback_state(provider, "Echo")
+    provider.mass.loop.time.return_value = 100.0 + alexa.PLAYBACK_STATE_RETRY_DELAY - 1
+    await get_playback_state(provider, "Other Echo")
+    assert session.get.call_count == (1 if backs_off else 2)
+    provider.mass.loop.time.return_value = 100.0 + alexa.PLAYBACK_STATE_RETRY_DELAY
+    await get_playback_state(provider, "Echo")
+    assert session.get.call_count == (2 if backs_off else 3)
 
 
 @pytest.mark.parametrize("command", ["stop", "new stream"])
