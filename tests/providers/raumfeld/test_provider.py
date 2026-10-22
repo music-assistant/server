@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Iterator
 from typing import cast
@@ -201,6 +202,29 @@ async def _follow(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldP
         RaumfeldPlayerProvider, "players", new_callable=lambda: property(lambda _: players.values())
     ):
         await provider._follow_zones()
+
+
+async def test_the_zone_watcher_keeps_running_after_an_unexpected_error() -> None:
+    """One look that fails unexpectedly is logged, and the next look runs as usual."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider.logger = MagicMock()
+    looks = 0
+
+    async def follow() -> None:
+        nonlocal looks
+        looks += 1
+        if looks == 1:
+            raise RuntimeError("boom")
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(provider, "_follow_zones", side_effect=follow),
+        patch("music_assistant.providers.raumfeld.provider.asyncio.sleep", AsyncMock()),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await provider._watch_zones()
+    assert looks == 2
+    provider.logger.exception.assert_called_once()
 
 
 async def test_a_changed_zone_layout_is_followed_once_it_held() -> None:

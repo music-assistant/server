@@ -432,8 +432,14 @@ class RaumfeldPlayerProvider(PlayerProvider):
             await asyncio.sleep(ZONE_WATCH_INTERVAL)
             try:
                 await self._follow_zones()
+            except asyncio.CancelledError:
+                raise
             except HOST_ERRORS as err:
                 self.logger.debug("Failed to compare Raumfeld zones: %r", err)
+            except Exception:
+                # one bad look must not end the watcher, or zone changes made in the
+                # Raumfeld app would no longer be followed until the host reconnects
+                self.logger.exception("Unexpected error while following the Raumfeld zones")
 
     async def _follow_zones(self) -> None:
         """Mirror the host's zones once they differ from MA's groups and have settled."""
