@@ -164,3 +164,7 @@ PROBED_DURATION_MEDIA_TYPES = (
 # A forward skip never lands closer than this to the end of the item. The item then finishes on
 # its own and the queue advances normally.
 SKIP_END_MARGIN = 1
+
+# A next/previous press starts playback right away unless it follows another press within this
+# window; then it waits the window out, so a burst of presses ends in one start for the last item.
+SKIP_DEBOUNCE_DELAY = 1

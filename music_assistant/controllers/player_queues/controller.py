@@ -74,6 +74,7 @@ from music_assistant.controllers.player_queues.constants import (
     DEFAULT_CROSSFADE_ENABLED,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
+    SKIP_DEBOUNCE_DELAY,
     SKIP_END_MARGIN,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -794,7 +795,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
-        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        self._cancel_skip_start(queue_id)
         self._set_transitioning(queue_id, False)
         if not (queue := self.get(queue_id)):
             return
@@ -846,7 +847,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         await self.play(queue_id)
 
     @api_command("player_queues/next", required_scope=Scope.QUEUES_CONTROL)
-    @handle_play_action
     async def next(self, queue_id: str) -> None:
         """
         Handle NEXT TRACK command for given queue.
@@ -854,39 +854,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to handle the command.
         """
         self._check_player_permission(queue_id)
-        if (queue := self.get(queue_id)) is None or not queue.active:
-            raise InvalidCommand(f"Queue {queue_id} is not active")
-        self._set_transitioning(queue_id, True)
-        idx = self._queue_data[queue_id].queue.current_index
-        if idx is None:
-            self.logger.warning("Queue %s has no current index", queue.display_name)
-            self._set_transitioning(queue_id, False)
-            return
-        next_index = self._get_next_index(queue_id, idx, True)
-        if next_index is None:
-            self._set_transitioning(queue_id, False)
-            return
-
-        # immediately update current item so UI shows the new track right away
-        queue.current_index = next_index
-        queue.current_item = self.get_item(queue_id, next_index)
-        queue.elapsed_time = 0
-        queue.elapsed_time_last_updated = time.time()
-        self.signal_update(queue_id)
-        if queue_player := self.mass.players.get_player(queue_id, True):
-            queue_player.update_state()
-
-        # debounce rapid next button presses using call_later
-        self.mass.call_later(
-            1,
-            self.play_index,
-            queue_id,
-            next_index,
-            task_id=f"queue_play_index_{queue_id}",
-        )
+        self._cancel_skip_start(queue_id)
+        await self._next(queue_id)
 
     @api_command("player_queues/previous", required_scope=Scope.QUEUES_CONTROL)
-    @handle_play_action
     async def previous(self, queue_id: str) -> None:
         """
         Handle PREVIOUS TRACK command for given queue.
@@ -894,35 +865,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to handle the command.
         """
         self._check_player_permission(queue_id)
-        if (queue := self.get(queue_id)) is None or not queue.active:
-            raise InvalidCommand(f"Queue {queue_id} is not active")
-        self._set_transitioning(queue_id, True)
-        current_index = self._queue_data[queue_id].queue.current_index
-        if current_index is None:
-            self._set_transitioning(queue_id, False)
-            return
-        prev_index = int(current_index)
-        # restart current track if elapsed > 5s, otherwise go to previous
-        if queue.corrected_elapsed_time < 5:
-            prev_index = max(current_index - 1, 0)
-
-        # immediately update current item so UI shows the new track right away
-        queue.current_index = prev_index
-        queue.current_item = self.get_item(queue_id, prev_index)
-        queue.elapsed_time = 0
-        queue.elapsed_time_last_updated = time.time()
-        self.signal_update(queue_id)
-        if queue_player := self.mass.players.get_player(queue_id, True):
-            queue_player.update_state()
-
-        # debounce rapid previous button presses using call_later
-        self.mass.call_later(
-            1,
-            self.play_index,
-            queue_id,
-            prev_index,
-            task_id=f"queue_play_index_{queue_id}",
-        )
+        self._cancel_skip_start(queue_id)
+        await self._previous(queue_id)
 
     @api_command("player_queues/skip", required_scope=Scope.QUEUES_CONTROL)
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
@@ -1224,7 +1168,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue.current_item = queue_item
                 self.signal_update(queue_id)
         finally:
-            self._set_transitioning(queue_id, False)
+            # a start cancelled by a newer press stays transitioning, or the player's state
+            # (still on the old item) would pull the queue back before that press reads it
+            if (task := asyncio.current_task()) is None or not task.cancelling():
+                self._set_transitioning(queue_id, False)
 
     @api_command("player_queues/transfer", required_scope=Scope.QUEUES_CONTROL)
     async def transfer_queue(  # noqa: PLR0915
@@ -1458,7 +1405,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Call when a player is removed from the registry."""
         self.mass.streams.audio_processing.clear(player_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
-        self.mass.cancel_timer(f"queue_play_index_{player_id}")
+        self._cancel_skip_start(player_id)
         # cancel a pending debounced cache write AND an already-started one, so neither can
         # recreate a deleted entry after the player is gone (the timer becomes a task once it fires)
         self.mass.cancel_timer(f"save_queue_cache_{player_id}")
@@ -2120,6 +2067,81 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         # player is not paused, perform resume instead
         await self.resume(queue_id)
+
+    def _cancel_skip_start(self, queue_id: str) -> None:
+        """Drop the pending or running playback start of an earlier next/previous press."""
+        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        # a running start holds the playback lock until the player reports playing, so it is
+        # cancelled here, outside the lock, rather than waited out
+        self.mass.cancel_task(f"queue_play_index_{queue_id}")
+
+    @handle_play_action
+    async def _next(self, queue_id: str) -> None:
+        """Advance the queue to the next item and schedule its start."""
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            raise InvalidCommand(f"Queue {queue_id} is not active")
+        self._set_transitioning(queue_id, True)
+        idx = self._queue_data[queue_id].queue.current_index
+        if idx is None:
+            self.logger.warning("Queue %s has no current index", queue.display_name)
+            self._set_transitioning(queue_id, False)
+            return
+        next_index = self._get_next_index(queue_id, idx, True)
+        if next_index is None:
+            self._set_transitioning(queue_id, False)
+            return
+
+        # immediately update current item so UI shows the new track right away
+        queue.current_index = next_index
+        queue.current_item = self.get_item(queue_id, next_index)
+        queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
+        self.signal_update(queue_id)
+        if queue_player := self.mass.players.get_player(queue_id, True):
+            queue_player.update_state()
+
+        self._schedule_play_index(queue_id, next_index)
+
+    @handle_play_action
+    async def _previous(self, queue_id: str) -> None:
+        """Step the queue back (or restart the item) and schedule its start."""
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            raise InvalidCommand(f"Queue {queue_id} is not active")
+        self._set_transitioning(queue_id, True)
+        current_index = self._queue_data[queue_id].queue.current_index
+        if current_index is None:
+            self._set_transitioning(queue_id, False)
+            return
+        prev_index = int(current_index)
+        # restart current track if elapsed > 5s, otherwise go to previous
+        if queue.corrected_elapsed_time < 5:
+            prev_index = max(current_index - 1, 0)
+
+        # immediately update current item so UI shows the new track right away
+        queue.current_index = prev_index
+        queue.current_item = self.get_item(queue_id, prev_index)
+        queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
+        self.signal_update(queue_id)
+        if queue_player := self.mass.players.get_player(queue_id, True):
+            queue_player.update_state()
+
+        self._schedule_play_index(queue_id, prev_index)
+
+    def _schedule_play_index(self, queue_id: str, index: int) -> None:
+        """Start playback of the pressed item now, or debounce it when presses come rapidly."""
+        queue_data = self._queue_data[queue_id]
+        now = time.monotonic()
+        rapid = now - queue_data.last_skip_press < SKIP_DEBOUNCE_DELAY
+        queue_data.last_skip_press = now
+        # the shared task id replaces a start still pending from an earlier press
+        self.mass.call_later(
+            SKIP_DEBOUNCE_DELAY if rapid else 0,
+            self.play_index,
+            queue_id,
+            index,
+            task_id=f"queue_play_index_{queue_id}",
+        )
 
     def _set_transitioning(self, queue_id: str, value: bool) -> None:
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""

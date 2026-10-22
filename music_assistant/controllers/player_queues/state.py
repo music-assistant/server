@@ -70,6 +70,8 @@ class PlayerQueueData:
     # is merged into one seek
     pending_skip_seconds: int = 0
     pending_skip_item_id: str | None = None
+    # monotonic time of the last next/previous press, drives the skip debounce
+    last_skip_press: float = 0.0
     last_counted_play: str | None = None
     # session_id whose flow stream was fully generated
     flow_buffer_completed: str | None = None
