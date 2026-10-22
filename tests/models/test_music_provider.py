@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
@@ -135,3 +135,20 @@ async def test_cancelled_stream_slot_wait_does_not_consume_capacity() -> None:
         assert not provider.has_available_stream_slot
 
     assert provider.has_available_stream_slot
+
+
+async def test_move_playlist_tracks_replays_single_moves() -> None:
+    """Without an override, a block move becomes single moves over the counted playlist."""
+    provider = _make_provider(_StreamingProvider)
+    pages = {0: [MagicMock()] * 3, 1: [MagicMock()] * 2}
+    provider.get_playlist_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _id, page=0: pages.get(page, [])
+    )
+    provider.move_playlist_track = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.move_playlist_tracks("playlist_1", [4, 5], 1)
+
+    assert [call.args for call in provider.move_playlist_track.await_args_list] == [
+        ("playlist_1", 4, 1),
+        ("playlist_1", 5, 2),
+    ]

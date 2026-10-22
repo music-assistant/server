@@ -54,6 +54,7 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
 )
+from music_assistant.helpers.playlists import playlist_block_move_steps
 
 from .media_capabilities import AudioStreamMixin, MediaCatalogMixin, RecommendationsMixin
 from .provider import Provider
@@ -678,6 +679,32 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         :raises InvalidDataError: A position is outside the playlist.
         """
         raise NotImplementedError
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int
+    ) -> None:
+        """
+        Move tracks of a playlist as one block to another position.
+
+        Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_MOVE. The moved tracks
+        keep their order. Override it when the provider can move several tracks in one call.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param positions: The current positions of the tracks, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based.
+        :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+        """
+        # replay the block as single moves, which every provider with the feature implements;
+        # the length comes from the same (possibly cached) listing the positions were read from
+        length = 0
+        page = 0
+        while page_items := await self.get_playlist_tracks(prov_playlist_id, page=page):
+            length += len(page_items)
+            page += 1
+        for from_position, step_to_position in playlist_block_move_steps(
+            length, positions, to_position
+        ):
+            await self.move_playlist_track(prov_playlist_id, from_position, step_to_position)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """
