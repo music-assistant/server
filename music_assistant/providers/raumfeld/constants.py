@@ -55,8 +55,9 @@ LINE_IN_OBJECT_ID = "0/Line In"
 # The station buttons on a speaker, offered as sources; Raumfeld devices have four.
 STATION_BUTTONS = (1, 2, 3, 4)
 # How often (seconds) the station buttons are read again, as they can be reassigned in the
-# Raumfeld app at any time.
-LIBRARY_REFRESH_INTERVAL = 300
+# Raumfeld app at any time. A read asks each button for its item; only an item not seen
+# before is described, so a read that finds nothing changed costs one call per button.
+LIBRARY_REFRESH_INTERVAL = 60
 SOURCE_LINE_IN = "line_in"
 
 # Per-player config entries (MA adds the flow sample-rate entry itself).

@@ -87,6 +87,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _line_in: dict[str, tuple[str, str]]
     # when the station buttons were last read
     _library_read_at: float = 0.0
+    # library object id -> (title, container) of the items assigned to station buttons
+    _button_items: dict[str, tuple[str, bool]]
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
@@ -167,6 +169,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
         self._line_in = {}
         self._room_serials = {}
+        self._button_items = {}
         self._room_models = {}
         self._room_transport_paths = {}
         self._room_ids = {}
@@ -298,6 +301,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # load Line-In inputs before registering players so each room can expose its own
         await self._load_line_in()
         self._library_read_at = 0.0
+        self._button_items = {}
         await self._resync()
         # restore the existing Raumfeld zones into MA's group state (e.g. a group that
         # survived a restart), then keep following changes made outside Music Assistant
@@ -369,12 +373,15 @@ class RaumfeldPlayerProvider(PlayerProvider):
         for button, object_id in assigned:
             if not object_id:
                 continue
-            items = parse_library_items(await self._browse(object_id, children=False))
-            if not items:
-                # whether it is an album or a single item decides how it plays, so a button
-                # whose item could not be read waits for a later read
-                continue
-            buttons.append((button, object_id, items[0][1], items[0][2]))
+            if (item := self._button_items.get(object_id)) is None:
+                # a reassigned button gets a new object id, so a known id needs no new read
+                items = parse_library_items(await self._browse(object_id, children=False))
+                if not items:
+                    # whether it is an album or a single item decides how it plays, so a
+                    # button whose item could not be read waits for a later read
+                    continue
+                item = self._button_items[object_id] = (items[0][1], items[0][2])
+            buttons.append((button, object_id, *item))
         return buttons
 
     async def _browse(self, object_id: str, children: bool) -> str | None:

@@ -798,6 +798,7 @@ def _button_provider() -> tuple[RaumfeldPlayerProvider, MagicMock]:
     provider.host = MagicMock()
     provider.host.media_server_udn = "uuid:media-server"
     provider.host.resolve = {"udn_to_devloc": {"uuid:media-server": "http://host/ms.xml"}}
+    provider._button_items = {}
     provider.mass = MagicMock()
     provider.logger = MagicMock()
     provider.resolve_room_renderer = MagicMock(  # type: ignore[method-assign]
@@ -834,6 +835,38 @@ async def test_station_buttons_are_read_with_their_titles() -> None:
         "Renderer": "uuid:renderer-uuid",
         "Button": 1,
     }
+
+
+async def test_a_button_item_is_only_described_when_it_is_new() -> None:
+    """Reading the buttons again describes a reassigned button's item, not the known ones."""
+    provider, action = _button_provider()
+    assigned = {1: "0/RadioTime/Search/s-s25777", 2: "", 3: "", 4: ""}
+    action.async_call = AsyncMock(
+        side_effect=lambda **kwargs: {"ObjectID": assigned[kwargs["Button"]]}
+    )
+    listing = (
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/"><item id="{0}">'
+        "<dc:title>{1}</dc:title></item></DIDL-Lite>"
+    )
+    titles = {"0/RadioTime/Search/s-s25777": "NPO Radio 2", "0/StationButtons/432": "WYWH 50"}
+    provider.host.async_browse_media_server = AsyncMock(
+        side_effect=lambda object_id, _flag: listing.format(object_id, titles[object_id])
+    )
+    with patch(
+        "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
+        AsyncMock(return_value=action),
+    ):
+        await provider._read_station_buttons("Bar")
+        await provider._read_station_buttons("Bar")
+        assert provider.host.async_browse_media_server.await_count == 1
+        assigned[4] = "0/StationButtons/432"
+        buttons = await provider._read_station_buttons("Bar")
+    assert provider.host.async_browse_media_server.await_count == 2
+    assert buttons == [
+        (1, "0/RadioTime/Search/s-s25777", "NPO Radio 2", False),
+        (4, "0/StationButtons/432", "WYWH 50", False),
+    ]
 
 
 async def test_buttons_that_cannot_be_read_are_reported_as_unknown() -> None:
