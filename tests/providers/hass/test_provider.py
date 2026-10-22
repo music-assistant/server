@@ -820,6 +820,35 @@ async def test_ai_generate_image_keeps_the_signature_out_of_errors() -> None:
     assert "403" in str(forbidden.value)
     assert "secret" not in str(forbidden.value)
     assert forbidden.value.__cause__ is None
+    assert not isinstance(forbidden.value, ProviderUnavailableError)
+
+
+@pytest.mark.parametrize("status", [408, 500, 503])
+async def test_ai_generate_image_reports_a_failing_image_download_as_unavailable(
+    status: int,
+) -> None:
+    """Home Assistant failing to hand out the image is an outage, without the signature."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=secret"}}
+        )
+        failed = ClientResponseError(
+            MagicMock(real_url="http://ha/ai_task/image/x.png?authSig=secret"),
+            (),
+            status=status,
+            message="Unavailable",
+        )
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock(side_effect=failed)),
+            pytest.raises(ProviderUnavailableError) as unavailable,
+        ):
+            await provider.ai_generate_image("A sunset")
+
+    assert str(status) in str(unavailable.value)
+    assert "secret" not in str(unavailable.value)
+    assert unavailable.value.__cause__ is None
 
 
 async def test_ai_generate_image_refuses_a_link_outside_the_ai_task_images() -> None:

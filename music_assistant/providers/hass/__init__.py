@@ -726,6 +726,9 @@ class HomeAssistantProvider(PluginProvider):
         except ClientResponseError as err:
             # its message names the full (signed) URL
             msg = f"Home Assistant answered the image request with {err.status}"
+            if err.status == 408 or err.status >= 500:
+                # Home Assistant is down or overloaded, rather than refusing this image
+                raise ProviderUnavailableError(msg) from None
             raise MusicAssistantError(msg) from None
 
     async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
