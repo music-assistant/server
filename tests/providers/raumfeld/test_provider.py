@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.errors import ResourceBusyError
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.raumfeld.constants import GROUP_SETTLE_TIME
@@ -1345,4 +1346,35 @@ async def test_a_next_item_waiting_for_the_lock_is_dropped_when_the_room_follows
         bar.drop_next_item()
         lock.release()
         await start
+    play.assert_not_awaited()
+
+
+async def test_the_next_item_takes_the_lock_strictly() -> None:
+    """The next item never starts without the lock, as the queue's own play actions do."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    bar._advance_armed = True
+    taken: list[dict[str, Any]] = []
+
+    @contextlib.asynccontextmanager
+    async def player_lock(*_args: Any, **kwargs: Any) -> AsyncIterator[None]:
+        taken.append(kwargs)
+        yield
+
+    mass.players.get_group_and_player_lock = player_lock
+    with patch.object(bar, "play_media", AsyncMock()) as play:
+        await bar._play_next(PlayerMedia(uri="library://track/2"))
+    assert taken == [{"strict": True}]
+    play.assert_awaited_once()
+
+
+async def test_a_next_item_that_never_gets_the_lock_is_not_started() -> None:
+    """A player kept busy past the strict timeout leaves the next item to that action."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    bar._advance_armed = True
+
+    busy = MagicMock()
+    busy.return_value.__aenter__ = AsyncMock(side_effect=ResourceBusyError("busy"))
+    mass.players.get_group_and_player_lock = busy
+    with patch.object(bar, "play_media", AsyncMock()) as play:
+        await bar._play_next(PlayerMedia(uri="library://track/2"))
     play.assert_not_awaited()

@@ -22,7 +22,11 @@ from music_assistant_models.enums import (
     PlayerType,
     RepeatMode,
 )
-from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    PlayerCommandFailed,
+    ResourceBusyError,
+)
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
@@ -1753,12 +1757,19 @@ class RaumfeldPlayer(Player):
         """
         # a group rate check waits for this play to finish, so it sees the stream it started
         generation = self._playback_generation
-        async with self.mass.players.get_group_and_player_lock(self.player_id):
-            if generation != self._playback_generation or not self._advance_armed:
-                # a play, seek or restart ran while this waited and replaced what ends here,
-                # or the room became a follower and its next item was dropped
-                return
-            await self.play_media(media)
+        # strict, like the queue's own play actions: never start the item without the lock
+        try:
+            async with self.mass.players.get_group_and_player_lock(self.player_id, strict=True):
+                if generation != self._playback_generation or not self._advance_armed:
+                    # a play, seek or restart ran while this waited and replaced what ends
+                    # here, or the room became a follower and its next item was dropped
+                    return
+                await self.play_media(media)
+        except ResourceBusyError:
+            # another playback action held the player all that time; it decides what plays
+            self.logger.debug(
+                "Gave up starting the next item on %s: the player stays busy", self.room
+            )
 
     def _schedule_end_watch(self, pos: dict[str, str] | None) -> None:
         """Arrange to look for the end of the current track at the moment it is due."""
