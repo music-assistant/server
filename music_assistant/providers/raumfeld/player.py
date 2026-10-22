@@ -1351,14 +1351,19 @@ class RaumfeldPlayer(Player):
             if isinstance(room := self.mass.players.get_player(pid), RaumfeldPlayer)
             and (url := self.raumfeld.room_transport_url(room.room)) is not None
         }
-        deadline = time.time() + JOIN_SETTLE_TIME
-        while waiting and time.time() < deadline:
-            await asyncio.sleep(JOIN_SETTLE_INTERVAL)
-            for url in list(waiting):
-                state = await self._read_room_state(url) or {}
-                if _map_transport_state(state.get("TransportState")) == PlaybackState.PLAYING:
-                    waiting.discard(url)
-        if waiting:
+        if not waiting:
+            return
+        try:
+            # one budget for all of it, so slow reads cannot stretch it
+            async with asyncio.timeout(JOIN_SETTLE_TIME):
+                while waiting:
+                    await asyncio.sleep(JOIN_SETTLE_INTERVAL)
+                    for url in list(waiting):
+                        state = await self._read_room_state(url) or {}
+                        # only PLAYING itself: a room still TRANSITIONING is being hooked in
+                        if (state.get("TransportState") or "").upper() == "PLAYING":
+                            waiting.discard(url)
+        except TimeoutError:
             self.logger.debug("Rooms that joined %s did not report playing in time", self.room)
 
     async def _restart_for_group_rates(self) -> None:

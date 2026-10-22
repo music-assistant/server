@@ -14,7 +14,7 @@ from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.providers.raumfeld.constants import GROUP_SETTLE_TIME, JOIN_SETTLE_TIME
+from music_assistant.providers.raumfeld.constants import GROUP_SETTLE_TIME
 from music_assistant.providers.raumfeld.player import RaumfeldPlayer
 from music_assistant.providers.raumfeld.provider import RaumfeldPlayerProvider
 
@@ -1126,37 +1126,42 @@ async def test_a_restart_for_the_rate_waits_for_the_rooms_to_play(
 
 
 async def test_the_wait_ends_once_the_joined_room_plays() -> None:
-    """The wait ends as soon as the joined room's own renderer reports playing."""
+    """The wait ends once the joined room reports PLAYING itself, not while it transitions."""
     bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
     sofa_id = bar._attr_group_members[1]
-    states = iter(["NO_MEDIA_PRESENT", "STOPPED", "PLAYING"])
+    states = iter(["NO_MEDIA_PRESENT", "TRANSITIONING", "PLAYING"])
     reads = AsyncMock(side_effect=lambda _url: {"TransportState": next(states)})
     with (
         patch.object(bar.raumfeld, "room_transport_url", return_value="http://sofa/ctrl"),
-        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()) as sleep,
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
         patch.object(bar, "_read_room_state", reads),
     ):
         await bar._wait_for_rooms_playing([sofa_id])
     assert reads.await_count == 3
-    assert sleep.await_count == 3
 
 
-async def test_the_wait_for_a_joined_room_gives_up_in_time() -> None:
-    """A room that never reports playing holds the restart up for JOIN_SETTLE_TIME at most."""
-    bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
-    sofa_id = bar._attr_group_members[1]
-    clock = iter(range(100))
-    stopped = AsyncMock(return_value={"TransportState": "STOPPED"})
+async def test_the_wait_for_slow_rooms_keeps_to_its_budget() -> None:
+    """Rooms whose reads hang hold the restart up for JOIN_SETTLE_TIME in all, not per read."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    rooms = [bar._attr_group_members[1], "raumfeld_kitchen", "raumfeld_office"]
+    players = {pid: MagicMock(spec=RaumfeldPlayer, room=pid) for pid in rooms[1:]}
+    players[rooms[0]] = mass.players.get_player(rooms[0])
+    mass.players.get_player.side_effect = players.get
+
+    async def hangs(_url: str) -> dict[str, str]:
+        await asyncio.Event().wait()
+        return {}
+
+    loop = asyncio.get_running_loop()
     with (
-        patch.object(bar.raumfeld, "room_transport_url", return_value="http://sofa/ctrl"),
-        patch("music_assistant.providers.raumfeld.player.asyncio.sleep", AsyncMock()),
-        patch(
-            "music_assistant.providers.raumfeld.player.time.time", side_effect=lambda: next(clock)
-        ),
-        patch.object(bar, "_read_room_state", stopped),
+        patch.object(bar.raumfeld, "room_transport_url", side_effect=lambda room: f"http://{room}"),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_INTERVAL", 0),
+        patch("music_assistant.providers.raumfeld.player.JOIN_SETTLE_TIME", 0.05),
+        patch.object(bar, "_read_room_state", AsyncMock(side_effect=hangs)),
     ):
-        await bar._wait_for_rooms_playing([sofa_id])
-    assert 0 < stopped.await_count <= JOIN_SETTLE_TIME
+        started = loop.time()
+        await bar._wait_for_rooms_playing(rooms)
+    assert loop.time() - started < 1
 
 
 async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
