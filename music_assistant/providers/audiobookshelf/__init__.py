@@ -33,6 +33,10 @@ from aioaudiobookshelf.exceptions import (
 from aioaudiobookshelf.exceptions import (
     SessionSyncNotFoundError as AbsSessionSyncNotFoundError,
 )
+from aioaudiobookshelf.exceptions import (
+    UnsupportedServerVersionError as AbsUnsupportedServerVersionError,
+)
+from aioaudiobookshelf.helpers import MIN_ABS_VERSION
 from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_items import (
     PlaybackSessionParameters as AbsPlaybackSessionParameters,
@@ -95,6 +99,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    SetupFailedError,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -300,6 +305,13 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                 translation_key="login_failed",
                 translation_owner=self.translation_owner,
                 translation_args=[base_url],
+            ) from exc
+        except AbsUnsupportedServerVersionError as exc:
+            raise SetupFailedError(
+                str(exc),
+                translation_key="unsupported_server_version",
+                translation_owner=self.translation_owner,
+                translation_args=[base_url, ".".join(str(part) for part in MIN_ABS_VERSION)],
             ) from exc
         except (AbsServiceUnavailableError, socketio.exceptions.ConnectionError) as exc:
             # lets mass retry the load once the server is reachable again
@@ -2022,6 +2034,8 @@ for more details.
             self.logger.debug("Discarded item %s ", discarded_progress_id)
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
+        if progress.library_item_id is None:
+            return
         # helper progress also ensures no useless progress updates,
         # see comment above
         self.progress_guard.add_progress(progress.library_item_id)
@@ -2048,6 +2062,8 @@ for more details.
             )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
+        if progress.library_item_id is None:
+            return
         # helper progress also ensures no useless progress updates,
         # see comment above
         self.progress_guard.add_progress(progress.library_item_id, progress.episode_id)
