@@ -57,6 +57,7 @@ class _JoinRestartWatch:
     """The leader's stream and queue position captured when its first follower joins."""
 
     uri: str
+    queue_id: str
     anchor: float
     anchor_at: float
     speed: float
@@ -684,13 +685,13 @@ class WiimPlayer(Player):
             return None
         if [m for m in self._native_groups.members_of(self.player_id) if m != self.player_id]:
             return None
-        if (
-            self._attr_playback_state != PlaybackState.PLAYING
-            or self._attr_active_source != self.player_id
-        ):
+        if self._attr_playback_state != PlaybackState.PLAYING:
             return None
-        queue = self.mass.player_queues.get(self.player_id)
-        if not queue or not queue.active or not queue.current_item:
+        # the leader's own queue or the syncgroup queue it renders, never an external source
+        queue = self.mass.players.get_active_queue(self)
+        if not queue or queue.queue_id != self.state.active_source:
+            return None
+        if not queue.active or not queue.current_item:
             return None
         # live streams have no duration and cannot be seeked, the restart is harmless there
         if not queue.current_item.duration:
@@ -700,6 +701,7 @@ class WiimPlayer(Player):
             return None
         return _JoinRestartWatch(
             uri=media.uri,
+            queue_id=queue.queue_id,
             anchor=queue.elapsed_time,
             anchor_at=queue.elapsed_time_last_updated,
             speed=queue.playback_speed,
@@ -727,7 +729,7 @@ class WiimPlayer(Player):
         # seek republishes the target position before rebuilding the stream, and a stream
         # started while grouped is never restarted by the firmware again
         try:
-            await self.mass.player_queues.seek(self.player_id, position)
+            await self.mass.player_queues.seek(watch.queue_id, position)
         except MusicAssistantError as err:
             self.logger.warning(
                 "Failed to resume %s after the stream restart: %s", self._attr_name, err

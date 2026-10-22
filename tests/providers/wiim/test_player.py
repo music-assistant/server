@@ -922,7 +922,9 @@ class TestFirstFollowerJoinRestart:
         queue.elapsed_time = 100.0
         queue.elapsed_time_last_updated = time.time()
         queue.playback_speed = 1.0
-        provider.mass.player_queues.get.return_value = queue
+        queue.queue_id = player.player_id
+        player._state.active_source = player.player_id
+        provider.mass.players.get_active_queue.return_value = queue
         provider.mass.player_queues.seek = seek or AsyncMock()
         return player
 
@@ -939,7 +941,9 @@ class TestFirstFollowerJoinRestart:
         """A TRANSITIONING report on the same uri during the join seeks to the anchor."""
         player = self._make_playing_leader(mock_provider, mock_wiim_device)
         self._restart_on_join(player, mock_wiim_device)
-        anchor_at = mock_provider.mass.player_queues.get.return_value.elapsed_time_last_updated
+        anchor_at = (
+            mock_provider.mass.players.get_active_queue.return_value.elapsed_time_last_updated
+        )
 
         await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
 
@@ -985,7 +989,7 @@ class TestFirstFollowerJoinRestart:
     ) -> None:
         """A position beyond the duration is clamped so the queue completes the track itself."""
         player = self._make_playing_leader(mock_provider, mock_wiim_device)
-        queue = mock_provider.mass.player_queues.get.return_value
+        queue = mock_provider.mass.players.get_active_queue.return_value
         queue.elapsed_time = 239.0
         queue.elapsed_time_last_updated = time.time() - 3
         self._restart_on_join(player, mock_wiim_device)
@@ -1012,12 +1016,39 @@ class TestFirstFollowerJoinRestart:
 
         mock_provider.mass.player_queues.seek.assert_awaited_once()
 
+    async def test_syncgroup_leader_resumes_the_group_queue(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A leader rendering a syncgroup queue seeks that queue, not its own."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+        player._state.active_source = "syncgroup_abc"
+        mock_provider.mass.players.get_active_queue.return_value.queue_id = "syncgroup_abc"
+        self._restart_on_join(player, mock_wiim_device)
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        seek = mock_provider.mass.player_queues.seek
+        seek.assert_awaited_once()
+        assert seek.await_args.args[0] == "syncgroup_abc"
+
+    async def test_external_source_is_not_watched(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Playback from another source has no queue to resume."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+        player._state.active_source = "spotify"
+        self._restart_on_join(player, mock_wiim_device)
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        mock_provider.mass.player_queues.seek.assert_not_awaited()
+
     async def test_join_on_item_without_duration_is_not_watched(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
         """A live stream cannot be seeked, so the restart is left alone."""
         player = self._make_playing_leader(mock_provider, mock_wiim_device)
-        mock_provider.mass.player_queues.get.return_value.current_item.duration = None
+        mock_provider.mass.players.get_active_queue.return_value.current_item.duration = None
         self._restart_on_join(player, mock_wiim_device)
 
         await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
