@@ -105,3 +105,26 @@ async def test_analysis_move_waits_for_space_and_retries_on_next_start(
     with closing(sqlite3.connect(os.path.join(mass_minimal.storage_path, "library.db"))) as db:
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert DB_TABLE_AUDIO_ANALYSIS not in tables
+
+
+async def test_failed_analysis_size_probe_keeps_library(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A size probe that fails on a damaged analysis table skips the move and keeps the library."""
+    music = await _library_at_previous_version(mass_minimal)
+    await music._setup_database()
+    await music.database.execute(LEGACY_ANALYSIS_DDL)
+    await music.database.insert_or_replace(
+        DB_TABLE_SETTINGS, {"key": "version", "value": str(PREV_VERSION), "type": "str"}
+    )
+    await music.database.commit()
+    await music.database.close()
+    monkeypatch.setattr(
+        migrations, "_tables_size", AsyncMock(side_effect=sqlite3.DatabaseError("malformed"))
+    )
+    mass_minimal.cache.clear = AsyncMock()  # type: ignore[method-assign]
+
+    await music._setup_database()
+    await music.database.close()
+
+    assert _library_state(mass_minimal) == (str(DB_SCHEMA_VERSION), 1)

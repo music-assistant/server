@@ -1471,7 +1471,13 @@ async def move_legacy_audio_analysis(
     """
     if not (tables := await _legacy_audio_analysis_tables(database)):
         return
-    needed_gb = (await _tables_size(database, tables) + DB_FREE_SPACE_MARGIN) / (1 << 30)
+    try:
+        needed_gb = (await _tables_size(database, tables) + DB_FREE_SPACE_MARGIN) / (1 << 30)
+    except sqlite3.Error as err:
+        logger.warning(
+            "Could not size the audio analysis in library.db (%s); retrying on the next start", err
+        )
+        return
     free_gb = await get_free_space(mass.storage_path)
     if free_gb < needed_gb:
         logger.warning(
