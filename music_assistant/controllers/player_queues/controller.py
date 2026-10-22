@@ -2087,16 +2087,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Advance the queue to the next item and schedule its start."""
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
-        self._set_transitioning(queue_id, True)
         idx = self._queue_data[queue_id].queue.current_index
         if idx is None:
             self.logger.warning("Queue %s has no current index", queue.display_name)
-            self._set_transitioning(queue_id, False)
             return
         next_index = self._get_next_index(queue_id, idx, True)
         if next_index is None:
-            self._set_transitioning(queue_id, False)
+            # a no-op leaves the flag of a start still running for the last item in place
             return
+        self._set_transitioning(queue_id, True)
 
         # immediately update current item so UI shows the new track right away
         queue.current_index = next_index
@@ -2114,11 +2113,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Step the queue back (or restart the item) and schedule its start."""
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
-        self._set_transitioning(queue_id, True)
         current_index = self._queue_data[queue_id].queue.current_index
         if current_index is None:
-            self._set_transitioning(queue_id, False)
             return
+        self._set_transitioning(queue_id, True)
         prev_index = int(current_index)
         # restart current track if elapsed > 5s, otherwise go to previous
         if queue.corrected_elapsed_time < 5:

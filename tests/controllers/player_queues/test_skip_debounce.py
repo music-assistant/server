@@ -194,3 +194,33 @@ async def test_a_press_past_the_end_leaves_the_running_start_alone(
     start = ctrl.mass._tracked_tasks[f"queue_play_index_{QUEUE_ID}"]
     assert not start.done()
     start.cancel()
+
+
+async def test_overlapping_presses_past_the_end_keep_the_queue_transitioning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two presses waiting on the lock: the one that finds no successor must not clear the flag."""
+    monkeypatch.setattr(controller_module, "SKIP_DEBOUNCE_DELAY", 0.05)
+    ctrl, queue = _controller(real_scheduling=True)
+    ctrl.mass.loop = asyncio.get_running_loop()
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    del ctrl._set_transitioning
+    queue.current_index = 1
+    started: list[int] = []
+
+    async def _play_index(_self: PlayerQueuesController, _queue_id: str, index: int) -> None:
+        started.append(index)
+        await asyncio.sleep(10)
+
+    ctrl.play_index = MethodType(handle_play_action(_play_index), ctrl)  # type: ignore[method-assign]
+
+    await ctrl.next(QUEUE_ID)
+    await asyncio.sleep(0.01)
+    # both presses pass the successor check while the start of item 2 holds the lock
+    await asyncio.gather(ctrl.next(QUEUE_ID), ctrl.next(QUEUE_ID))
+    await asyncio.sleep(0.2)
+
+    assert queue.current_index == 3
+    assert started == [2, 3]
+    assert queue_data.transitioning is True
+    ctrl.mass._tracked_tasks[f"queue_play_index_{QUEUE_ID}"].cancel()
