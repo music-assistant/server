@@ -186,6 +186,9 @@ class RaumfeldPlayer(Player):
     _external_source: PlayerSource | None = None
     # the transport actions the host allows for the external source
     _external_actions: frozenset[str] | set[str] = frozenset()
+    # shuffle and repeat share one play mode, so a change reads the other and sends both;
+    # held across that, so two changes at once do not undo each other
+    _play_mode_lock: asyncio.Lock | None = None
     # bumped when a command that changes what plays starts and when it ends, and the
     # number of such commands running, so a poll can tell its readings no longer apply
     _playback_generation = 0
@@ -494,11 +497,12 @@ class RaumfeldPlayer(Player):
 
         :param shuffle_enabled: Whether the source should play its content shuffled.
         """
-        repeat = self._external_repeat_mode()
-        if shuffle_enabled and repeat == RepeatMode.ONE:
-            # no mode shuffles and repeats one track; the Raumfeld app repeats all then
-            repeat = RepeatMode.ALL
-        await self._set_play_mode(shuffle_enabled, repeat)
+        async with self._play_mode_guard():
+            repeat = self._external_repeat_mode()
+            if shuffle_enabled and repeat == RepeatMode.ONE:
+                # no mode shuffles and repeats one track; the Raumfeld app repeats all then
+                repeat = RepeatMode.ALL
+            await self._set_play_mode(shuffle_enabled, repeat)
 
     async def set_repeat(self, repeat_mode: RepeatMode) -> None:
         """
@@ -510,9 +514,10 @@ class RaumfeldPlayer(Player):
             # Spotify Connect repeats no single track here; MA's repeat button steps from
             # all to one to off, so it moves on to off rather than stopping at all
             repeat_mode = RepeatMode.OFF
-        source = self._external_source
-        shuffle = bool(source and source.shuffle_enabled) and repeat_mode != RepeatMode.ONE
-        await self._set_play_mode(shuffle, repeat_mode)
+        async with self._play_mode_guard():
+            source = self._external_source
+            shuffle = bool(source and source.shuffle_enabled) and repeat_mode != RepeatMode.ONE
+            await self._set_play_mode(shuffle, repeat_mode)
 
     @_changes_playback
     async def seek(self, position: int) -> None:
@@ -1499,6 +1504,7 @@ class RaumfeldPlayer(Player):
         # poll fast for a while so the new state and track show up promptly
         self._play_started_at = time.time()
 
+    @_changes_playback
     async def _set_play_mode(self, shuffle: bool, repeat: RepeatMode) -> None:
         """
         Set the external source's play mode and show it right away.
@@ -1510,6 +1516,12 @@ class RaumfeldPlayer(Player):
         if (source := self._external_source) is not None:
             source.shuffle_enabled, source.repeat_mode = shuffle, repeat
         self.update_state()
+
+    def _play_mode_guard(self) -> asyncio.Lock:
+        """Return the lock a shuffle or repeat change holds while it combines the two."""
+        if self._play_mode_lock is None:
+            self._play_mode_lock = asyncio.Lock()
+        return self._play_mode_lock
 
     def _external_repeat_mode(self) -> RepeatMode:
         """Return the external source's repeat mode, off when it is not known."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -1929,3 +1930,65 @@ async def test_the_zone_poll_reads_the_play_mode_of_an_external_source() -> None
     source = player._external_source
     assert source is not None
     assert (source.shuffle_enabled, source.repeat_mode) == (True, RepeatMode.ALL)
+
+
+async def test_shuffle_and_repeat_at_once_do_not_undo_each_other() -> None:
+    """Two changes arriving together end in the play mode that holds both."""
+    player, _ = _external_player()
+    player._set_external(
+        _ALBUM_META,
+        "Pause,Next,Previous,RepeatTrack,Repeat,Shuffle",
+        240,
+        via_room=False,
+        play_mode="NORMAL",
+    )
+    sent: list[str] = []
+
+    async def slow_command(_action: str, **arguments: str) -> None:
+        # the renderer takes a moment to answer
+        await asyncio.sleep(0)
+        sent.append(arguments["NewPlayMode"])
+
+    with (
+        patch.object(player, "_external_command", AsyncMock(side_effect=slow_command)),
+        patch.object(player, "update_state"),
+    ):
+        await asyncio.gather(player.set_shuffle(True), player.set_repeat(RepeatMode.ALL))
+    assert sent == ["SHUFFLE", "RANDOM"]
+
+
+async def test_a_poll_from_before_a_play_mode_change_is_not_applied() -> None:
+    """A room poll that read the old play mode while the change ran leaves the new one."""
+    player, _ = _external_player()
+    player._set_external(
+        _SPOTIFY_META, "Pause,Next,Previous,Repeat,Shuffle", 315, via_room=True, play_mode="NORMAL"
+    )
+    position_asked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_position(_location: str, _action: str) -> dict[str, str]:
+        position_asked.set()
+        await release.wait()
+        return {"TrackDuration": "0:05:15", "RelTime": "0:00:20"}
+
+    old_state = {
+        "TransportState": "PLAYING",
+        "CurrentTransportActions": "Pause,Next,Previous,Repeat,Shuffle",
+        "CurrentPlayMode": "NORMAL",
+        "AVTransportURIMetaData": _SPOTIFY_TRACK_DIDL,
+    }
+    with (
+        patch.object(player, "_update_volume", AsyncMock()),
+        patch.object(player, "_read_room_state", AsyncMock(return_value=old_state)),
+        patch.object(player, "_call_transport", AsyncMock(side_effect=slow_position)),
+        patch.object(player, "_external_command", AsyncMock()),
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        poll = asyncio.create_task(player._poll_room_playback(MagicMock()))
+        await position_asked.wait()
+        await player.set_shuffle(True)
+        release.set()
+        await poll
+    source = player._external_source
+    assert source is not None
+    assert source.shuffle_enabled is True
