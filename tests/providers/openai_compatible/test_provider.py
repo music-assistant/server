@@ -680,11 +680,16 @@ async def test_image_generation_goes_straight_to_a_known_images_endpoint(mass: A
 
 
 def _download_response(
-    chunks: list[bytes], content_length: int | None = None, *, status: int = 200
+    chunks: list[bytes],
+    content_length: int | None = None,
+    *,
+    status: int = 200,
+    retry_after: str = "",
 ) -> MagicMock:
     """Build a fake aiohttp response streaming a downloaded image in the given chunks."""
     response = MagicMock()
     response.status = status
+    response.headers = {"Retry-After": retry_after} if retry_after else {}
     response.content_length = content_length
     response.content.read = AsyncMock(side_effect=[*chunks, b""])
     return response
@@ -838,6 +843,33 @@ async def test_a_redirect_of_an_image_link_is_not_followed(mass: AsyncMock) -> N
 
     with pytest.raises(InvalidDataError, match="302"):
         await _generate_by_url(mass, "http://192.168.1.20:8080/generated/x.png")
+
+
+@pytest.mark.parametrize("status", [408, 500, 503])
+async def test_a_failing_image_download_is_reported_as_unavailable(
+    mass: AsyncMock, status: int
+) -> None:
+    """The endpoint failing to hand out the image is an outage, not a failed generation."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"busy"], status=status))
+    )
+
+    with pytest.raises(ProviderUnavailableError, match=str(status)):
+        await _generate_by_url(mass, "http://192.168.1.20:8080/generated/x.png")
+
+
+async def test_a_rate_limited_image_download_asks_for_the_backoff(mass: AsyncMock) -> None:
+    """A 429 on the image download is a rate limit, for as long as the endpoint asks."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(
+            response=_download_response([b"slow down"], status=429, retry_after="120")
+        )
+    )
+
+    with pytest.raises(RateLimited) as limited:
+        await _generate_by_url(mass, "http://192.168.1.20:8080/generated/x.png")
+
+    assert limited.value.backoff_time == 120
 
 
 async def test_an_ipv6_endpoint_links_to_itself(mass: AsyncMock) -> None:

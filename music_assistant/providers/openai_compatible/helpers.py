@@ -259,13 +259,19 @@ async def _download(mass: MusicAssistant, base_url: str, url: str, timeout: int)
             url, timeout=ClientTimeout(total=timeout), allow_redirects=False
         ) as response:
             status = response.status
+            retry_after = response.headers.get("Retry-After", "")
             body = await _read_limited(response, MAX_IMAGE_BYTES)
     except (TimeoutError, aiohttp.ClientError) as err:
         msg = f"Could not download the generated image: {err}"
         raise ProviderUnavailableError(msg) from err
+    msg = f"Could not download the generated image ({status})"
+    if status == 429:
+        raise RateLimited(msg, backoff_time=int(retry_after) if retry_after.isdigit() else 0)
+    if status == 408 or status >= 500:
+        # the service is down or overloaded, rather than refusing this image
+        raise ProviderUnavailableError(msg)
     # a redirect could lead anywhere, so it is not followed
     if status >= 300 or not body:
-        msg = f"Could not download the generated image ({status})"
         raise InvalidDataError(msg)
     return body
 
