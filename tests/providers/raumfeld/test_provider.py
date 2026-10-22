@@ -869,6 +869,24 @@ async def test_a_button_item_is_only_described_when_it_is_new() -> None:
     ]
 
 
+async def test_the_periodic_read_keeps_the_buttons_of_a_room_it_cannot_read() -> None:
+    """A failed periodic read leaves a room's buttons; an empty read clears them."""
+    provider, _ = _button_provider()
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player.room = "Bar"
+    player.set_station_buttons = MagicMock()  # type: ignore[method-assign]
+    with (
+        patch.object(
+            RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[player]
+        ),
+        patch.object(provider, "_read_station_buttons", AsyncMock(side_effect=[None, []])),
+    ):
+        await provider._load_library_sources()
+        player.set_station_buttons.assert_not_called()
+        await provider._load_library_sources()
+    player.set_station_buttons.assert_called_once_with([])
+
+
 async def test_buttons_that_cannot_be_read_are_reported_as_unknown() -> None:
     """A media server that does not answer gives no buttons, not an empty list of them."""
     provider, _ = _button_provider()

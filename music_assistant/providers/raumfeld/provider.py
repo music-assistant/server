@@ -336,7 +336,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Read each room's station buttons, and offer them as sources."""
         for player in self.players:
             if isinstance(player, RaumfeldPlayer):
-                player.set_station_buttons(await self._read_station_buttons(player.room) or [])
+                await self.refresh_station_buttons(player)
 
     async def _read_station_buttons(self, room: str) -> list[tuple[int, str, str, bool]] | None:
         """
