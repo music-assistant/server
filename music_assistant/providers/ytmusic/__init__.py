@@ -915,7 +915,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
+                    url=(
+                        f"{YTM_DOMAIN}/playlist?list={playlist_id}"
+                        if (playlist_id := album_obj.get("audioPlaylistId"))
+                        else f"{YTM_DOMAIN}/browse/{album_id}"
+                    ),
                 )
             },
             favorite=album_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
