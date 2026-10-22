@@ -36,3 +36,28 @@ async def test_move_command_reorders_a_builtin_playlist(e2e_mass: MusicAssistant
     )
     await move(db_playlist_id=playlist.item_id, from_position=4, to_position=1)
     assert await _names() == [seeds[3].name, seeds[0].name, seeds[1].name, seeds[2].name]
+
+
+@pytest.mark.asyncio
+async def test_batch_move_command_reorders_a_builtin_playlist(e2e_mass: MusicAssistant) -> None:
+    """A block move lands the tracks together, in their playlist order."""
+    test_prov = cast("MusicProvider", e2e_mass.get_provider("test"))
+    seeds = [await test_prov.get_track(f"0_0_{index}") for index in range(4)]
+    playlists = e2e_mass.music.playlists
+    playlist = await playlists.create_playlist("Block", provider_instance_or_domain="builtin")
+    for seed in seeds:
+        assert seed.uri is not None
+        await playlists.add_playlist_track(playlist.item_id, seed.uri)
+
+    move = cast(
+        "Callable[..., Awaitable[None]]",
+        e2e_mass.command_handlers["music/playlists/move_playlist_tracks"].target,
+    )
+    await move(db_playlist_id=playlist.item_id, positions=[4, 2], to_position=1)
+    items = await playlists.tracks(playlist.item_id, "library")
+    assert [item.name for item in items] == [
+        seeds[1].name,
+        seeds[3].name,
+        seeds[0].name,
+        seeds[2].name,
+    ]

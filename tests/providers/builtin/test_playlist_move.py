@@ -78,3 +78,31 @@ async def test_move_outside_the_playlist_is_refused(from_position: int, to_posit
         await prov.move_playlist_track("playlist_1", from_position, to_position)
 
     cast("Any", prov)._write_m3u_file.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position", "expected"),
+    [
+        pytest.param([1, 2], 3, ["Three", "Four", "One", "Two"], id="block-to-bottom"),
+        pytest.param([2, 4], 1, ["Two", "Four", "One", "Three"], id="scattered-to-top"),
+    ],
+)
+async def test_move_tracks_places_the_block(
+    positions: list[int], to_position: int, expected: list[str]
+) -> None:
+    """The moved tracks land together at to_position in their playlist order, in one write."""
+    prov = _make_provider(TITLES)
+
+    await prov.move_playlist_tracks("playlist_1", positions, to_position)
+
+    assert _written_titles(prov) == expected
+
+
+async def test_move_tracks_that_do_not_fit_are_refused() -> None:
+    """A block that runs past the end raises and leaves the file untouched."""
+    prov = _make_provider(TITLES)
+
+    with pytest.raises(InvalidDataError):
+        await prov.move_playlist_tracks("playlist_1", [1, 2], 4)
+
+    cast("Any", prov)._write_m3u_file.assert_not_awaited()
