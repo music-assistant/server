@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 from collections import defaultdict, deque
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import suppress
@@ -92,6 +91,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u,
     parse_m3u_playlist_image,
     parse_m3u_playlist_name,
+    sanitize_playlist_filename,
 )
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
@@ -133,9 +133,9 @@ if TYPE_CHECKING:
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
 
-# accepted prefixes for a manual item image: a remote stream URL (embedded art carries
-# the track's own stream URL as its path) or an inline data URI, never a local file path
-REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = (*BUILTIN_URL_SCHEMES, "data:image")
+# accepted prefixes for a manual item image: an http(s) URL or an inline data URI, never a
+# local file path or a stream-only scheme the image loader does not fetch
+REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = ("http://", "https://", "data:image")
 
 # maximum number of detail rows rendered per table in the import matching report
 _IMPORT_REPORT_DETAIL_LIMIT: Final[int] = 200
@@ -165,6 +165,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_CREATE_RADIOS,
     ProviderFeature.PLAYLIST_CREATE_MIXED,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_MOVE,
 }
 
 
@@ -583,8 +584,9 @@ class BuiltinProvider(MusicProvider):
                     continue
                 try:
                     entry = await self._build_m3u_entry_from_uri(uri)
-                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                     self.logger.warning("Can't add %s to playlist - item not found", uri)
+                    report_current_task_failure(f"Can't add {uri} to playlist: {err}")
                     continue
                 # check dedup against the newly built entry's providers too
                 new_ids = {entry.path}
@@ -618,6 +620,25 @@ class BuiltinProvider(MusicProvider):
                 prov_playlist_id,
                 playlist.name,
                 list(existing_items),
+                self._get_playlist_image_url(playlist),
+            )
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of a playlist to another position (both 1-based)."""
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+            items = list(parse_m3u(m3u_data))
+            if not (1 <= from_position <= len(items) and 1 <= to_position <= len(items)):
+                msg = f"Position out of range for a playlist of {len(items)} item(s)"
+                raise InvalidDataError(msg)
+            items.insert(to_position - 1, items.pop(from_position - 1))
+            playlist = await self.get_playlist(prov_playlist_id)
+            await self._write_m3u_file(
+                prov_playlist_id,
+                playlist.name,
+                items,
                 self._get_playlist_image_url(playlist),
             )
 
@@ -844,7 +865,9 @@ class BuiltinProvider(MusicProvider):
                 provider_mappings=provider_mappings,
             )
 
-        if media_info.has_cover_image:
+        # embedded art is served from the stream's own URL, which the image loader
+        # only fetches over http(s)
+        if media_info.has_cover_image and url.startswith(("http://", "https://")):
             media_item.metadata.images = UniqueList(
                 [
                     MediaItemImage(
@@ -1520,16 +1543,16 @@ class BuiltinProvider(MusicProvider):
         """
         Guard against a manual item image that points at a local filesystem path.
 
-        A manually added track or radio image must be a remote URL or data URI. A local
+        A manually added track or radio image must be an http(s) URL or data URI. A local
         path would let the image route read an arbitrary server file.
 
         :param image_url: The image reference supplied for a manual item.
-        :raises MediaNotFoundError: If image_url is not a remote URL or data URI.
+        :raises MediaNotFoundError: If image_url is not an http(s) URL or data URI.
         """
         if not image_url.startswith(REMOTE_IMAGE_PREFIXES):
             raise MediaNotFoundError(
-                "The builtin provider only supports remote image URLs or data URIs "
-                "for manual items, not local file paths"
+                "The builtin provider only supports http(s) image URLs or data URIs "
+                "for manual items"
             )
 
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
@@ -1599,7 +1622,7 @@ class BuiltinProvider(MusicProvider):
             extra_query_params={"excluded_album_type": "single"},
         ):
             tracks = await self.mass.music.albums.tracks(
-                random_album.item_id, random_album.provider
+                random_album.item_id, random_album.provider, limit=None
             )
             for idx, track in enumerate(tracks, 1):
                 track.position = idx
@@ -1615,11 +1638,11 @@ class BuiltinProvider(MusicProvider):
                 ):
                     if source == "library":
                         tracks = await self.mass.music.artists.tracks(
-                            random_artist.item_id, "library"
+                            random_artist.item_id, "library", limit=None
                         )
                     else:
                         tracks = await self.mass.music.artists.top_tracks(
-                            random_artist.item_id, random_artist.provider
+                            random_artist.item_id, random_artist.provider, limit=None
                         )
                     if len(tracks) < min_tracks_required:
                         continue
@@ -1783,7 +1806,7 @@ class BuiltinProvider(MusicProvider):
         :param entries: The initial playlist items to write.
         :param playlist_image_url: Optional playlist image URL to embed in the header.
         """
-        base_id = self._sanitize_playlist_id(name)
+        base_id = sanitize_playlist_filename(name)
         playlist_id = base_id
         counter = 1
         while True:
@@ -1961,15 +1984,6 @@ class BuiltinProvider(MusicProvider):
             msg = f"Unsupported media type for playlist: {uri}"
             raise InvalidDataError(msg)
         return media_item_to_playlist_item(full_item)
-
-    @staticmethod
-    def _sanitize_playlist_id(name: str) -> str:
-        """Sanitize a playlist name for use as a filename (without extension)."""
-        # replace invalid filename characters
-        sanitized = re.sub(r'[<>:"/\\|?*]', "_", name)
-        # remove leading/trailing spaces and dots
-        sanitized = sanitized.strip(" .")
-        return sanitized or "untitled"
 
     async def _migrate_playlists(self) -> None:  # noqa: PLR0915
         """

@@ -69,7 +69,7 @@ def get_item_mapping(instance_id: str, media_type: MediaType, key: str, name: st
     )
 
 
-def parse_track(  # noqa: PLR0915
+def parse_track(  # noqa: C901, PLR0912, PLR0915
     logger: logging.Logger,
     instance_id: str,
     sonic_song: SonicSong,
@@ -471,6 +471,9 @@ def parse_playlist(instance_id: str, sonic_playlist: SonicPlaylist) -> Playlist:
             )
         },
     )
+
+    if sonic_playlist.comment:
+        playlist.metadata.description = sonic_playlist.comment
 
     if sonic_playlist.cover_art:
         playlist.metadata.add_image(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
@@ -53,6 +54,8 @@ _LINE_BREAK_TABLE: Final = str.maketrans(dict.fromkeys(_LINE_BREAK_CHARS, " "))
 # playlist content-type does not pull an endless body into memory
 MAX_PLAYLIST_SIZE = 64 * 1024
 PLAYLIST_READ_TIMEOUT = 5
+# the only image references a playlist file may contribute: fetched over http(s) or inline
+_REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = ("http://", "https://", "data:image")
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -392,6 +395,13 @@ def sanitize_m3u_value(value: str) -> str:
     return value.translate(_LINE_BREAK_TABLE)
 
 
+def sanitize_playlist_filename(name: str) -> str:
+    """Return the playlist name made safe to use as a file name."""
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", name)
+    sanitized = sanitized.strip(" .")
+    return sanitized or "untitled"
+
+
 def escape_markdown(value: str, table: bool = False) -> str:
     """
     Escape provider text before adding it to a Markdown import/migration report.
@@ -605,6 +615,13 @@ def construct_media_item_from_playlist_item(
         try:
             image_type = ImageType(img.type)
         except ValueError:
+            continue
+        # nothing in the file proves who owns a local path, so only remote references are
+        # imported, and only from builtin or a provider that is loaded
+        if not img.path.startswith(_REMOTE_IMAGE_PREFIXES) or not (
+            img.provider == "builtin" or mass.get_provider(img.provider) is not None
+        ):
+            LOGGER.debug("Skipping playlist image %s of provider %s", img.path, img.provider)
             continue
         media_item.metadata.add_image(
             MediaItemImage(

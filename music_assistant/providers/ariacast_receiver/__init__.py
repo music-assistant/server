@@ -937,7 +937,7 @@ class AriaCastReceiver(PluginProvider):
                 lambda: _Proto(holder, self._build_discovery_payload, self.logger),
                 # Senders find us by broadcast, which is only delivered to a socket
                 # bound to the wildcard address, so this cannot follow streams.bind_ip.
-                local_addr=("0.0.0.0", DISCOVERY_PORT),
+                local_addr=("0.0.0.0", DISCOVERY_PORT),  # noqa: S104 - broadcast discovery
                 allow_broadcast=True,
             )
             self._discovery_transport = transport

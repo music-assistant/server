@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.nugs import (
     CONF_QUALITY,
     QUALITY_LOSSLESS,
@@ -28,4 +29,7 @@ def provider() -> NugsProvider:
         "log_level": "GLOBAL",
         CONF_QUALITY: QUALITY_LOSSLESS,
     }.get(key, default)
-    return NugsProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    provider = NugsProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    # the class-level legacy search gate would carry its one-per-second budget across tests
+    provider.search_throttler = ThrottlerManager(rate_limit=1000)
+    return provider

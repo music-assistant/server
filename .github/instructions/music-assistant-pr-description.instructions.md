@@ -14,3 +14,5 @@ Raise a `[PROBLEM]` when the description:
 - is vague or generic, or does not match what the diff actually changes.
 
 When you raise it, say: "This needs to more clearly describe the issue you're having and what it's fixing," name any extra template sections to remove, and you may offer one concise rewrite (a few sentences) the author can validate and use. Judge the description, not the author.
+
+Do not question which "Types of changes" box is ticked. That choice belongs to the author and the maintainers: `bugfix` is reserved for bugs somebody reported, and hardening, robustness or consistency work that nobody reported is `maintenance` even when it changes runtime behaviour. Raise nothing about the selected type, or about the label and release-notes category that follow from it. This covers only which type is selected; a required checklist item left unticked is still worth raising.

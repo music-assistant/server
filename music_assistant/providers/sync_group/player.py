@@ -566,7 +566,7 @@ class SyncGroupPlayer(Player):
         """
         await self._require_sync_leader().set_repeat(repeat_mode)
 
-    async def set_members(  # noqa: PLR0915
+    async def set_members(  # noqa: PLR0912, PLR0915
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
@@ -999,6 +999,10 @@ class SyncGroupPlayer(Player):
         self.sync_leader = None
         self._update_attributes()
         self.update_state()
+        # members derive active_group from our session; when the dissolve leaves our own
+        # state unchanged (idle grace after the queue ended) no event would refresh them
+        for member_id in self._attr_group_members:
+            self.mass.players.trigger_player_update(member_id)
 
     def _select_sync_leader(
         self,
@@ -1073,12 +1077,12 @@ class SyncGroupPlayer(Player):
     #     (_active_session_player) so leader/handoff bookkeeping is done on
     #     the right object
     #   - choose new leaders that keep protocol continuity
-    #     (_member_supports_protocol_domain / _select_sync_leader)
+    #     (_member_supports_protocol_domain / _select_sync_leader)  # noqa: ERA001
     #   - downshift to the native protocol once every remaining member can play
     #     on it (_all_members_can_play_on_domain)
     #   - stay aligned with the protocol's own view of the group, both in member
     #     order (_align_members_with_session) and in who leads it
-    #     (_protocol_group_leader)
+    #     (_protocol_group_leader)  # noqa: ERA001
     # The helpers below cover those needs. Composition decisions (which protocol
     # to use given the current member mix) intentionally live in the group:
     # individual protocol providers don't have visibility into the rest of the
@@ -1234,11 +1238,11 @@ class SyncGroupPlayer(Player):
         self._attr_playback_state = new_state
         self._attr_elapsed_time = sync_leader.state.elapsed_time
         self._attr_elapsed_time_last_updated = sync_leader.state.elapsed_time_last_updated
-        # don't use 'state' for current_media here since that points back to this group
-        # player when we're active_group, we need the 'raw' value from the sync leader
-        # itself to avoid circular dependency and ensure it reflects the actual media
-        # on the leader rather than the group.
-        self._attr_current_media = sync_leader.current_media
+        # Don't use state.current_media here: active_group routes it back to this group.
+        # Read raw media from the active session instead; the native leader may only
+        # report its input (e.g. AirPlay), without the queue identity needed for updates.
+        session_player = self._active_session_player() or sync_leader
+        self._attr_current_media = session_player.current_media
         self._attr_active_source = sync_leader.active_source
         self._attr_poll_interval = 1 if new_state == PlaybackState.PLAYING else 30
         # idle grace handling: schedule a debounced dissolve when the leader

@@ -91,6 +91,8 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE,
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
+    CONF_STREAM_SOURCE_MODE,
+    CONF_UPGRADE_BELOW_QUALITY,
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
@@ -104,12 +106,14 @@ from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
     LiveAnnouncementManager,
 )
+from music_assistant.controllers.streams.stream_sources import StreamSourceMode, UpgradeQuality
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
     calculate_content_length,
     create_streaming_wave_header,
     get_content_length,
     get_mime_type,
+    pcm_container_bit_depth,
     store_content_length_in_cache,
 )
 from music_assistant.helpers.ffmpeg import (
@@ -145,6 +149,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
@@ -261,7 +266,7 @@ class StreamsController(CoreController):
         self.manifest.icon = "cast-audio"
         self.announcement_renderer = AnnouncementRenderer()
         self.live_announcements = LiveAnnouncementManager(mass, self.logger)
-        self._bind_ip: str = "0.0.0.0"
+        self._bind_ip: str = "0.0.0.0"  # noqa: S104 - listen on all interfaces by default
         self._base_url: str = ""
         self._configured_publish_ip: str | None = None
         # every address players may reach this host on, best candidate first; publish_ip is
@@ -276,7 +281,10 @@ class StreamsController(CoreController):
         # stale ones: some players (Sonos) sit out their old stream before they
         # load the new session, and a response blocked in a write never notices
         # on its own that its session is gone
-        self._open_item_streams: dict[str, list[tuple[str, web.BaseRequest]]] = {}
+        self._open_item_streams: dict[str, list[tuple[str, web.Request]]] = {}
+        # Per queue, the session and the items whose GET requests ended in it since the
+        # player last asked for another item, which that next request checks
+        self._ended_item_streams: dict[str, tuple[str, set[str]]] = {}
         # Number of queue streams (single item or flow) actively serving a player right now,
         # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -284,6 +292,7 @@ class StreamsController(CoreController):
         self._active_output_streams = 0
         # owners (e.g. a plugin) that require flow mode for a queue, by queue id
         self._flow_mode_owners: dict[str, set[str]] = {}
+        self._boundary_mix_owners: dict[str, set[str]] = {}
 
     @property
     def audio_analysis(self) -> AudioAnalysisController:
@@ -438,14 +447,7 @@ class StreamsController(CoreController):
         :param owner: Identifier of the requester, e.g. a provider instance id.
         :param required: True to require flow mode, False to release this owner's claim.
         """
-        if required:
-            self._flow_mode_owners.setdefault(queue_id, set()).add(owner)
-            return
-        if (owners := self._flow_mode_owners.get(queue_id)) is None:
-            return
-        owners.discard(owner)
-        if not owners:
-            del self._flow_mode_owners[queue_id]
+        self._set_required(self._flow_mode_owners, queue_id, owner, required)
 
     def flow_mode_required(self, queue_id: str) -> bool:
         """
@@ -454,6 +456,41 @@ class StreamsController(CoreController):
         :param queue_id: Queue to check.
         """
         return queue_id in self._flow_mode_owners
+
+    def set_boundary_mix_required(self, queue_id: str, owner: str, required: bool) -> None:
+        """
+        Require (or release) that the queue's item boundaries are mixed, on behalf of an owner.
+
+        A queue with items that declare a tail overlap needs them mixed into the next
+        item. A player that plays gapless does that between its item streams; any other
+        player is streamed in flow mode while an owner requires it, decided at each play
+        start from the output protocol that start selects.
+
+        :param queue_id: Queue whose boundaries must be mixed.
+        :param owner: Identifier of the requester, e.g. a provider instance id.
+        :param required: True to require it, False to release this owner's claim.
+        """
+        self._set_required(self._boundary_mix_owners, queue_id, owner, required)
+
+    def boundary_mix_required(self, queue_id: str) -> bool:
+        """
+        Return whether any owner requires the queue's item boundaries to be mixed.
+
+        :param queue_id: Queue to check.
+        """
+        return queue_id in self._boundary_mix_owners
+
+    def mixes_item_boundaries(self, queue_id: str) -> bool:
+        """
+        Return whether the server mixes the boundary between two items for the queue's player.
+
+        True when the player streams in flow mode or plays gapless; a declared tail
+        overlap only plays on such a player.
+
+        :param queue_id: Queue to check.
+        """
+        player = self.mass.players.get_player(queue_id)
+        return player is not None and (player.flow_mode or player.supports_gapless)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -503,6 +540,20 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
                 category="playback",
+            ),
+            ConfigEntry(
+                key=CONF_STREAM_SOURCE_MODE,
+                type=ConfigEntryType.STRING,
+                default_value=StreamSourceMode.BEST_QUALITY,
+                options=[ConfigValueOption(mode.value) for mode in StreamSourceMode],
+                category="source_selection",
+            ),
+            ConfigEntry(
+                key=CONF_UPGRADE_BELOW_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=UpgradeQuality.OFF,
+                options=[ConfigValueOption(quality.value) for quality in UpgradeQuality],
+                category="source_selection",
             ),
             ConfigEntry(
                 key=CONF_PUBLISH_IP,
@@ -720,7 +771,7 @@ class StreamsController(CoreController):
                 protocol_player.flow_mode
                 or crossfade_needs_flow_mode
                 or overlay_needs_flow_mode
-                or (queue_id is not None and self.flow_mode_required(queue_id))
+                or (queue_id is not None and self._needs_flow_mode(queue_id, protocol_player))
             )
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
@@ -745,7 +796,7 @@ class StreamsController(CoreController):
             if (transport := request.transport) is not None:
                 transport.abort()
 
-    async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
+    async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
         """Stream single queueitem audio to a player."""
         self._log_request(request)
         # what a stream request asks of a provider is playback
@@ -767,7 +818,14 @@ class StreamsController(CoreController):
         # the player may be asking for a track out of a stale cached copy of the queue
         # (its refresh signal can get lost): refusing it makes the player re-read the
         # queue, where serving it would silently play a track the user moved away
-        self._raise_if_stale_item_request(player, queue_id, queue_item)
+        # both checks measure from what the player asked for before this request: once
+        # recorded below, this request no longer vouches for itself
+        requested_after = pq_data.last_requested_item_id
+        self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
+        if request.method == "GET":
+            # recorded before any audio goes out: a player that gives up waiting on a slow
+            # item asks for the one after it, which must not be refused as stale
+            pq_data.last_requested_item_id = queue_item_id
 
         is_audio_source = (
             queue_item.media_item is not None
@@ -829,13 +887,18 @@ class StreamsController(CoreController):
         # registered before any await below: a session rotation mid-setup must be
         # able to abort this response too, or a stale request keeps its connection
         # open (gating some players' cutover) until the player times it out
-        stream_entry = (session_id, cast("web.BaseRequest", request))
+        stream_entry = (session_id, request)
         self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
         try:
             if pq_data.session_id != session_id:
                 # rotated between the validation above and the registration: the
                 # sweep may already have run, so nothing else catches this one
                 raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
+            if request.method == "GET":
+                # a track the player gave up on may still fill a source that holds the stream
+                # slot this request needs; this request counts as open, so asking for a track
+                # again keeps its source
+                await self._release_abandoned_item_sources(queue_id, session_id, pq_data)
             if (
                 is_audio_source
                 and queue_item.media_item is not None
@@ -890,14 +953,14 @@ class StreamsController(CoreController):
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
                     )
 
-            if queue_item.streamdetails.tail_overlap is not None:
-                self.logger.debug(
-                    "Ignoring the tail overlap of %s: it only plays in flow mode", queue_item.name
-                )
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
-            if queue_item.media_type != MediaType.TRACK:
+            if queue_item.streamdetails.tail_overlap is not None:
+                # a declared overlap plays into the item it was planned against,
+                # whatever the queue's crossfade setting
+                crossfade_mode = CrossfadeMode.VOICE_OVER
+            elif queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
                 # a realtime source gets a fade decided from what its boundary
@@ -907,19 +970,29 @@ class StreamsController(CoreController):
                 crossfade_mode != CrossfadeMode.DISABLED
                 and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
             ):
-                self.logger.warning(
-                    "Crossfade disabled: Player %s does not support gapless playback, "
-                    "consider enabling flow mode to enable crossfade on this player.",
-                    player.state.name,
-                )
+                if crossfade_mode == CrossfadeMode.VOICE_OVER:
+                    self.logger.debug(
+                        "Ignoring the tail overlap of %s: player %s does not play gapless",
+                        queue_item.name,
+                        player.state.name,
+                    )
+                else:
+                    self.logger.warning(
+                        "Crossfade disabled: Player %s does not support gapless playback, "
+                        "consider enabling flow mode to enable crossfade on this player.",
+                        player.state.name,
+                    )
                 crossfade_mode = CrossfadeMode.DISABLED
+            # the item before may have mixed (or be mixing) a fade into this one,
+            # which only the smart fade stream plays
+            fade_in_pending = self.audio.fade_into_pending(queue_id, queue_item.queue_item_id)
 
             mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
             # pick output format based on the streamdetails and player capabilities
             pcm_format = await self.audio.select_pcm_format(
                 player=player,
                 streamdetails=queue_item.streamdetails,
-                crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED,
+                crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED or fade_in_pending,
                 overlay_active=mix_overlay,
             )
             output_format = await self.audio.get_output_format(
@@ -969,7 +1042,7 @@ class StreamsController(CoreController):
 
             # re-check right before audio is handed out: a queue edit landing during
             # the awaited setup above must not hand the player a stale track after all
-            self._raise_if_stale_item_request(player, queue_id, queue_item)
+            self._raise_if_stale_item_request(player, queue_id, queue_item, requested_after)
 
             await resp.prepare(request)
 
@@ -985,10 +1058,16 @@ class StreamsController(CoreController):
                 session_id=session_id,
             )
 
-            if crossfade_mode != CrossfadeMode.DISABLED:
-                # crossfade is enabled, use special crossfaded single item stream
-                # where the crossfade of the next track is present in the stream of
-                # a single track. This only works if the player supports gapless playback!
+            # a player that gives up while its audio is still being prepared closes its
+            # connection, which nothing below would notice before a source got opened for it
+            def _player_connected() -> bool:
+                return request.transport is not None
+
+            if crossfade_mode != CrossfadeMode.DISABLED or fade_in_pending:
+                # crossfade is enabled (or a fade into this item waits), use special
+                # crossfaded single item stream where the crossfade of the next track is
+                # present in the stream of a single track. This only works if the player
+                # supports gapless playback!
                 audio_input = self.audio.get_queue_item_stream_with_smartfade(
                     player=player,
                     queue_item=queue_item,
@@ -996,6 +1075,7 @@ class StreamsController(CoreController):
                     crossfade_mode=crossfade_mode,
                     standard_crossfade_duration=standard_crossfade_duration,
                     session_id=session_id,
+                    consumer_connected=_player_connected,
                 )
             else:
                 # no crossfade, just a regular single item stream
@@ -1007,6 +1087,7 @@ class StreamsController(CoreController):
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
                     session_id=session_id,
+                    consumer_connected=_player_connected,
                 )
             if mix_overlay:
                 audio_input = self.audio.get_overlay_mixed_stream(queue, audio_input, pcm_format)
@@ -1156,11 +1237,29 @@ class StreamsController(CoreController):
                 )
             return resp
         finally:
+            # read while this request is still registered: only what the player asked for
+            # after it tells whether the player moved on from this track
+            newer_item_ids = self._requested_item_ids(queue_id, session_id, after=stream_entry)
             if entries := self._open_item_streams.get(queue_id):
                 with suppress(ValueError):
                     entries.remove(stream_entry)
                 if not entries:
                     del self._open_item_streams[queue_id]
+            if request.method == "GET" and pq_data.session_id == session_id:
+                # a request for another track that only comes in later is not open yet to
+                # count as newer here, so it finds this one in the record instead
+                self._ended_item_ids(queue_id, session_id).add(queue_item_id)
+                if newer_item_ids and queue_item_id not in self._requested_item_ids(
+                    queue_id, session_id
+                ):
+                    # the player asked for another track after this one and nothing streams
+                    # this one any more: if its source still fills, the player gave up on it
+                    # and the newer request may wait for its stream slot. Released in the
+                    # background, so a failing release cannot skip the source teardown below
+                    self.mass.create_task(
+                        self.mass.player_queues.release_failed_item_source(queue_id, queue_item_id),
+                        task_name=f"release_dropped_item_source_{queue_id}",
+                    )
             # Paired with on_source_selected — fires regardless of how streaming
             # ended (normal completion, client disconnect, exception). Lets
             # NAMED_PIPE plugins release ownership without depending on an
@@ -1336,10 +1435,11 @@ class StreamsController(CoreController):
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            # a declared tail overlap is mixed like a crossfade, and a queue held in flow
-            # mode by a plugin is about to carry such items
+            # a declared tail overlap is mixed like a crossfade, and a queue a plugin holds
+            # in flow mode or has the boundaries mixed of is about to carry such items
             crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED
             or self.flow_mode_required(queue_id)
+            or self.boundary_mix_required(queue_id)
             or (
                 start_queue_item.streamdetails is not None
                 and start_queue_item.streamdetails.tail_overlap is not None
@@ -1449,14 +1549,14 @@ class StreamsController(CoreController):
         # same registry as the single-item route: a forced-flow player (overlay)
         # seeks through the same session rotation and its stale response must be
         # abortable the same way
-        stream_entry = (session_id, cast("web.BaseRequest", request))
+        stream_entry = (session_id, request)
         self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
         try:
             if queue_data.session_id != session_id:
                 # rotated during the setup above: the sweep could not see this
                 # response yet, so it must end itself instead of streaming stale
                 client_disconnected = True
-                raise AbortFlowStream
+                raise AbortFlowStream  # noqa: TRY301 - handled by except below
             # aclosing guarantees the flow stream (and thus the ffmpeg process chain
             # behind it) is torn down immediately when the player disconnects
             # mid-stream, instead of lingering until garbage collection finalizes
@@ -1732,7 +1832,7 @@ class StreamsController(CoreController):
                 or (protocol_player is not None and protocol_player.flow_mode)
                 or crossfade_needs_flow_mode
                 or overlay_needs_flow_mode
-                or self.flow_mode_required(queue_id)
+                or self._needs_flow_mode(queue_id, protocol_player)
             )
             if media.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
                 # flow_mode for live/infinite streams is pointless
@@ -1768,7 +1868,9 @@ class StreamsController(CoreController):
             assert queue  # the item was found in that queue's data, so the queue exists
             if queue_item.streamdetails and queue_item.streamdetails.tail_overlap is not None:
                 self.logger.debug(
-                    "Ignoring the tail overlap of %s: it only plays in flow mode", queue_item.name
+                    "Ignoring the tail overlap of %s: a direct PCM stream of a single item "
+                    "never mixes its boundary",
+                    queue_item.name,
                 )
             mix_overlay = overlay_mixed_in(queue, queue_item, flow_mode=False)
             self._update_audio_processing_context(
@@ -1848,7 +1950,7 @@ class StreamsController(CoreController):
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
             sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=streamdetails.audio_format.bit_depth,
+            bit_depth=pcm_container_bit_depth(streamdetails.audio_format.bit_depth),
             channels=streamdetails.audio_format.channels,
         )
         async for chunk in get_ffmpeg_stream(
@@ -2400,12 +2502,25 @@ class StreamsController(CoreController):
         resp.force_close()
 
     def _raise_if_stale_item_request(
-        self, player: Player, queue_id: str, queue_item: QueueItem
+        self,
+        player: Player,
+        queue_id: str,
+        queue_item: QueueItem,
+        requested_after: str | None,
     ) -> None:
-        """Refuse (404) the request if the item fell out of the queue's playhead window."""
+        """
+        Refuse (404) the request if the item fell out of the queue's playhead window.
+
+        :param player: The player that requested the item.
+        :param queue_id: The queue the item belongs to.
+        :param queue_item: The requested queue item.
+        :param requested_after: The queue item id the player asked for before this one.
+        """
         if not player.strict_queue_item_requests:
             return
-        if self.mass.player_queues.is_current_window_item(queue_id, queue_item.queue_item_id):
+        if self.mass.player_queues.is_current_window_item(
+            queue_id, queue_item.queue_item_id, requested_after
+        ):
             return
         self.logger.debug(
             "Denying stream request from %s for %s: the queue has moved on",
@@ -2413,6 +2528,81 @@ class StreamsController(CoreController):
             queue_item.name,
         )
         raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item.queue_item_id}")
+
+    def _requested_item_ids(
+        self,
+        queue_id: str,
+        session_id: str,
+        after: tuple[str, web.Request] | None = None,
+    ) -> set[str]:
+        """
+        Return the ids of the queue items that players still have an open GET request for.
+
+        :param queue_id: The queue whose stream requests to look at.
+        :param session_id: The playback session the requests must belong to.
+        :param after: Only count the requests that came in after this registered one.
+        """
+        entries = self._open_item_streams.get(queue_id) or []
+        if after is not None:
+            entries = entries[entries.index(after) + 1 :] if after in entries else []
+        # a request whose player closed the connection no longer counts, even while its
+        # handler has yet to notice that on its next write
+        return {
+            request.match_info["queue_item_id"]
+            for entry_session_id, request in entries
+            if entry_session_id == session_id
+            and request.method == "GET"
+            and request.transport is not None
+        }
+
+    def _ended_item_ids(self, queue_id: str, session_id: str) -> set[str]:
+        """
+        Return the items whose GET requests ended since the player last asked for another one.
+
+        :param queue_id: The queue the requests belong to.
+        :param session_id: The playback session the requests belong to; what an earlier
+            session recorded is dropped.
+        """
+        record = self._ended_item_streams.get(queue_id)
+        if record is None or record[0] != session_id:
+            record = self._ended_item_streams[queue_id] = (session_id, set())
+        return record[1]
+
+    async def _release_abandoned_item_sources(
+        self, queue_id: str, session_id: str, queue_data: PlayerQueueData
+    ) -> None:
+        """
+        Release the sources of the tracks a player moved away from to ask for another one.
+
+        These are the track it fetched last, the tracks whose requests ended since it last
+        asked for another one and the tracks it hung up on, unless an open request still
+        streams them.
+
+        :param queue_id: The queue the player streams.
+        :param session_id: The playback session the player streams in.
+        :param queue_data: The queue's server-side record.
+        """
+        candidate_ids = set(self._ended_item_ids(queue_id, session_id))
+        if queue_data.last_served_item_id is not None:
+            candidate_ids.add(queue_data.last_served_item_id)
+        # a player that hung up before its first audio left a request that has not ended
+        # yet, while its source may already hold the slot
+        candidate_ids.update(
+            request.match_info["queue_item_id"]
+            for entry_session_id, request in self._open_item_streams.get(queue_id) or []
+            if entry_session_id == session_id
+            and request.method == "GET"
+            and request.transport is None
+        )
+        for item_id in candidate_ids:
+            # checked anew for every track, as each release suspends while the source stops
+            if queue_data.session_id != session_id:
+                return
+            if item_id in self._requested_item_ids(queue_id, session_id):
+                # still, or again, streamed: it keeps its source and stays recorded
+                continue
+            self._ended_item_ids(queue_id, session_id).discard(item_id)
+            await self.mass.player_queues.release_failed_item_source(queue_id, item_id)
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
@@ -2511,6 +2701,43 @@ class StreamsController(CoreController):
     async def _handle_info_preflight(self, request: web.Request) -> web.Response:
         """Answer the CORS preflight a browser may send ahead of a probe."""
         return web.Response(status=204, headers=_INFO_CORS_HEADERS)
+
+    def _needs_flow_mode(self, queue_id: str, protocol_player: Player | None) -> bool:
+        """
+        Return whether a plugin's requirements put the queue in flow mode on this player.
+
+        :param queue_id: Queue about to be streamed.
+        :param protocol_player: The player (protocol) that will render the stream.
+        """
+        if self.flow_mode_required(queue_id):
+            return True
+        # mixed boundaries only need flow mode on a player that cannot play gapless
+        return (
+            self.boundary_mix_required(queue_id)
+            and protocol_player is not None
+            and not protocol_player.supports_gapless
+        )
+
+    @staticmethod
+    def _set_required(
+        owners: dict[str, set[str]], queue_id: str, owner: str, required: bool
+    ) -> None:
+        """
+        Record or release one owner's requirement on a queue.
+
+        :param owners: The registry of owners per queue.
+        :param queue_id: Queue the requirement applies to.
+        :param owner: Identifier of the requester.
+        :param required: True to record the requirement, False to release it.
+        """
+        if required:
+            owners.setdefault(queue_id, set()).add(owner)
+            return
+        if (queue_owners := owners.get(queue_id)) is None:
+            return
+        queue_owners.discard(owner)
+        if not queue_owners:
+            del owners[queue_id]
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:

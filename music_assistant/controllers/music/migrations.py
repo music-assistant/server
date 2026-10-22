@@ -16,6 +16,7 @@ import sqlite3
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError, ProviderUnavailableError
@@ -32,9 +33,11 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
+    DB_TABLE_LEGACY_PLAYLOG,
     DB_TABLE_LOUDNESS_MEASUREMENTS,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PLAYLISTS,
-    DB_TABLE_PLAYLOG,
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
@@ -102,7 +105,7 @@ async def ensure_legacy_audio_analysis_table(database: DatabaseConnection) -> No
     )
 
 
-async def migrate_database(  # noqa: PLR0915
+async def migrate_database(  # noqa: C901, PLR0912, PLR0915
     mass: MusicAssistant,
     database: DatabaseConnection,
     logger: logging.Logger,
@@ -120,6 +123,24 @@ async def migrate_database(  # noqa: PLR0915
 
     if prev_version < 15:
         raise MusicAssistantError("Database schema version too old to migrate")
+
+    if prev_version <= 64:
+        tables = {
+            row["name"]
+            for row in await database.get_rows_from_query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN (:legacy_table, :progress_table)",
+                {
+                    "legacy_table": DB_TABLE_LEGACY_PLAYLOG,
+                    "progress_table": DB_TABLE_MEDIA_PROGRESS,
+                },
+                limit=0,
+            )
+        }
+        if DB_TABLE_MEDIA_PROGRESS in tables and DB_TABLE_LEGACY_PLAYLOG not in tables:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_MEDIA_PROGRESS} RENAME TO {DB_TABLE_LEGACY_PLAYLOG}"
+            )
 
     if prev_version <= 15:
         # add search_name and search_sort_name columns to all tables
@@ -223,7 +244,7 @@ async def migrate_database(  # noqa: PLR0915
     if prev_version <= 22:
         # add userid column to playlog table
         try:
-            await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN userid TEXT")
+            await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN userid TEXT")
         except Exception as err:
             if "duplicate column" not in str(err):
                 raise
@@ -231,10 +252,10 @@ async def migrate_database(  # noqa: PLR0915
         # The UNIQUE constraint will be updated when the table is recreated
         # For now, we'll keep the old constraint and add a new one via unique index
         try:
-            await database.execute(f"DROP INDEX IF EXISTS {DB_TABLE_PLAYLOG}_unique_idx")
+            await database.execute(f"DROP INDEX IF EXISTS {DB_TABLE_LEGACY_PLAYLOG}_unique_idx")
             await database.execute(
-                f"CREATE UNIQUE INDEX {DB_TABLE_PLAYLOG}_unique_idx "
-                f"ON {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid)"
+                f"CREATE UNIQUE INDEX {DB_TABLE_LEGACY_PLAYLOG}_unique_idx "
+                f"ON {DB_TABLE_LEGACY_PLAYLOG}(item_id,provider,media_type,userid)"
             )
         except Exception as err:
             # If we can't create the index due to duplicate entries, log and continue
@@ -253,13 +274,15 @@ async def migrate_database(  # noqa: PLR0915
     if prev_version <= 24:
         # add queue_id and user_initiated columns to playlog table
         try:
-            await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN queue_id TEXT")
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN queue_id TEXT"
+            )
         except Exception as err:
             if "duplicate column" not in str(err):
                 raise
         try:
             await database.execute(
-                f"ALTER TABLE {DB_TABLE_PLAYLOG} "
+                f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} "
                 "ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
             )
         except Exception as err:
@@ -708,7 +731,7 @@ async def migrate_database(  # noqa: PLR0915
         # add playback_speed column to playlog (per-item speed for audiobooks/episodes)
         try:
             await database.execute(
-                f"ALTER TABLE {DB_TABLE_PLAYLOG} "
+                f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} "
                 "ADD COLUMN playback_speed REAL NOT NULL DEFAULT 1.0"
             )
         except Exception as err:
@@ -751,7 +774,7 @@ async def migrate_database(  # noqa: PLR0915
         # add artists column to playlog (lightweight artist mappings for track rows) so
         # recency matching can recognize the same song across different releases/providers
         try:
-            await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN artists json")
+            await database.execute(f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} ADD COLUMN artists json")
         except Exception as err:
             if "duplicate column" not in str(err):
                 raise
@@ -764,7 +787,7 @@ async def migrate_database(  # noqa: PLR0915
         # inline constraint by rebuilding the table.
         stale_unique = False
         for index in await database.get_rows_from_query(
-            f"PRAGMA index_list({DB_TABLE_PLAYLOG})", limit=0
+            f"PRAGMA index_list({DB_TABLE_LEGACY_PLAYLOG})", limit=0
         ):
             if not index["unique"]:
                 continue
@@ -780,10 +803,10 @@ async def migrate_database(  # noqa: PLR0915
         if stale_unique:
             logger.info("Rebuilding playlog table to update its unique constraint")
             await database.execute(
-                f"ALTER TABLE {DB_TABLE_PLAYLOG} RENAME TO {DB_TABLE_PLAYLOG}_old"
+                f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} RENAME TO {DB_TABLE_LEGACY_PLAYLOG}_old"
             )
             await database.execute(
-                f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+                f"""CREATE TABLE {DB_TABLE_LEGACY_PLAYLOG}(
                     [id] INTEGER PRIMARY KEY AUTOINCREMENT,
                     [item_id] TEXT NOT NULL,
                     [provider] TEXT NOT NULL,
@@ -803,15 +826,15 @@ async def migrate_database(  # noqa: PLR0915
             # rows from before the userid column existed have no owner and cannot be
             # kept under the NOT NULL schema
             await database.execute(
-                f"INSERT INTO {DB_TABLE_PLAYLOG} "
+                f"INSERT INTO {DB_TABLE_LEGACY_PLAYLOG} "
                 "(id, item_id, provider, media_type, name, image, artists, timestamp, "
                 "fully_played, seconds_played, userid, queue_id, user_initiated, "
                 "playback_speed) "
                 "SELECT id, item_id, provider, media_type, name, image, artists, timestamp, "
                 "fully_played, seconds_played, userid, queue_id, user_initiated, "
-                f"playback_speed FROM {DB_TABLE_PLAYLOG}_old WHERE userid IS NOT NULL"
+                f"playback_speed FROM {DB_TABLE_LEGACY_PLAYLOG}_old WHERE userid IS NOT NULL"
             )
-            await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}_old")
+            await database.execute(f"DROP TABLE {DB_TABLE_LEGACY_PLAYLOG}_old")
 
     if prev_version <= 50:
         # external id matching moved from a (unindexable) LIKE scan on the external_ids
@@ -1036,7 +1059,7 @@ async def migrate_database(  # noqa: PLR0915
         for table, column in (
             (DB_TABLE_PLAYLISTS, "[translation_key] TEXT"),
             (DB_TABLE_PLAYLISTS, "[translation_params] json"),
-            (DB_TABLE_PLAYLOG, "[playback_speed] REAL NOT NULL DEFAULT 1.0"),
+            (DB_TABLE_LEGACY_PLAYLOG, "[playback_speed] REAL NOT NULL DEFAULT 1.0"),
         ):
             try:
                 await database.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
@@ -1230,14 +1253,14 @@ async def migrate_database(  # noqa: PLR0915
         playlog_columns = {
             x["name"]
             for x in await database.get_rows_from_query(
-                f"PRAGMA table_info({DB_TABLE_PLAYLOG})", limit=0
+                f"PRAGMA table_info({DB_TABLE_LEGACY_PLAYLOG})", limit=0
             )
         }
         if {"image", "media_type"} <= playlog_columns:
             # the playlog keeps the image a playlist had when it was played, so a collage
             # would show as a broken image in the recently played listing
             await database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET image = NULL "
+                f"UPDATE {DB_TABLE_LEGACY_PLAYLOG} SET image = NULL "
                 "WHERE media_type = 'playlist' AND image LIKE '%\"/collage/%' "
                 "AND image LIKE '%\"builtin\"%'"
             )
@@ -1282,12 +1305,12 @@ async def migrate_database(  # noqa: PLR0915
         playlog_columns = {
             x["name"]
             for x in await database.get_rows_from_query(
-                f"PRAGMA table_info({DB_TABLE_PLAYLOG})", limit=0
+                f"PRAGMA table_info({DB_TABLE_LEGACY_PLAYLOG})", limit=0
             )
         }
         if "image" in playlog_columns:
             await database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET image = NULL "
+                f"UPDATE {DB_TABLE_LEGACY_PLAYLOG} SET image = NULL "
                 "WHERE CASE WHEN json_valid(image) THEN json_extract(image, '$.path') END = ''"
             )
 
@@ -1314,6 +1337,92 @@ async def migrate_database(  # noqa: PLR0915
             await mass.music.genres.restore_default_genres(full_restore=False)
         except Exception as err:
             logger.warning("Could not seed default podcast/audiobook genres: %s", err)
+
+    if prev_version <= 65:
+        await database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}(
+                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [item_id] TEXT NOT NULL,
+                [provider] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [userid] TEXT NOT NULL,
+                [queue_id] TEXT,
+                [timestamp] INTEGER NOT NULL,
+                [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                [name] TEXT NOT NULL,
+                [image] json,
+                [artists] json
+            );"""
+        )
+        tables = {
+            row["name"]
+            for row in await database.get_rows_from_query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN (:legacy_table, :progress_table)",
+                {
+                    "legacy_table": DB_TABLE_LEGACY_PLAYLOG,
+                    "progress_table": DB_TABLE_MEDIA_PROGRESS,
+                },
+                limit=0,
+            )
+        }
+        if DB_TABLE_LEGACY_PLAYLOG in tables and DB_TABLE_MEDIA_PROGRESS not in tables:
+            for index_name in (
+                f"{DB_TABLE_LEGACY_PLAYLOG}_unique_idx",
+                f"{DB_TABLE_LEGACY_PLAYLOG}_userid_timestamp_idx",
+                f"{DB_TABLE_LEGACY_PLAYLOG}_provider_media_type_idx",
+            ):
+                await database.execute(f"DROP INDEX IF EXISTS {index_name}")
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_LEGACY_PLAYLOG} RENAME TO {DB_TABLE_MEDIA_PROGRESS}"
+            )
+
+    if prev_version <= 66:
+        # add is_endless to radios; every existing row is an endless stream or feed,
+        # so the default is right
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_RADIOS} ADD COLUMN is_endless BOOLEAN DEFAULT 1 NOT NULL"
+            )
+        except Exception as err:
+            # create_tables makes a missing radios table with the column already in place
+            if "duplicate column" not in str(err) and "no such table" not in str(err):
+                raise
+
+    if prev_version <= 67:
+        # audiobookshelf image urls carried its api token, which must not reach clients
+        await _drop_audiobookshelf_image_tokens(database)
+
+    if prev_version <= 68:
+        # more classical genre aliases that are not classical music move to the genre they
+        # belong to, and the words for classical and chamber music in other languages join
+        await _move_more_classical_genre_aliases(database, logger)
+
+    if prev_version <= 69:
+        # Apple Music radio stations are dynamic radios instead of dynamic playlists.
+        await _move_apple_music_stations_to_radios(database)
+
+    if prev_version <= 70:
+        if await database.get_row(
+            "sqlite_master", {"type": "table", "name": DB_TABLE_PLAY_HISTORY}
+        ):
+            columns = {
+                row["name"]
+                for row in await database.get_rows_from_query(
+                    f"PRAGMA table_info({DB_TABLE_PLAY_HISTORY})", limit=0
+                )
+            }
+            required_columns = {"userid", "timestamp", "media_type", "provider", "item_id"}
+            if required_columns <= columns:
+                for index_name in (
+                    f"{DB_TABLE_PLAY_HISTORY}_user_timestamp_idx",
+                    f"{DB_TABLE_PLAY_HISTORY}_user_media_timestamp_idx",
+                ):
+                    await database.execute(f"DROP INDEX IF EXISTS {index_name}")
+                await database.execute(
+                    f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx "
+                    f"ON {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id)"
+                )
 
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
@@ -1399,6 +1508,80 @@ async def _move_classical_genre_aliases(
         "K-Pop",
         "Soundtracks and Musicals",
     )
+    await _change_classical_genre_aliases(database, logger, moved_aliases, dropped_aliases)
+
+
+async def _move_more_classical_genre_aliases(
+    database: DatabaseConnection, logger: logging.Logger
+) -> None:
+    """
+    Move more misplaced aliases out of the default music classical genre.
+
+    Also adds the words for classical and chamber music in other languages.
+
+    :param database: The library database connection.
+    :param logger: The logger to report progress on.
+    """
+    # frozen copy of the genre_mapping.json change: target translation_key -> moved aliases
+    moved_aliases: dict[str, tuple[str, ...]] = {
+        "soundtrack": ("Cinematic Classical",),
+        "new_age": ("Post-Classical", "Solo Piano"),
+    }
+    # not classical music, or already owned by another default genre
+    dropped_aliases = (
+        "Duets",
+        "March",
+        "Modern Classical",
+        "Quartets",
+        "Quintets",
+        "Secular Vocal Music",
+        "Third Stream",
+        "Trios",
+        "Vocal Music",
+        "Vocal Music (Secular and Sacred)",
+    )
+    added_aliases = (
+        "Kamermuziek",
+        "Kammermusik",
+        "Kammermusikk",
+        "Klassiek",
+        "Klassik",
+        "Klassisk",
+        "Klassisk Musik",
+        "Klassische Musik",
+        "Musica Classica",
+        "Musica da Camera",
+        "Musique Classique",
+        "Musique de Chambre",  # codespell:ignore chambre
+        "Muzyka Kameralna",
+        "Muzyka Klasyczna",
+        "Música Clásica",
+        "Música de Cámara",
+    )
+    await _change_classical_genre_aliases(
+        database, logger, moved_aliases, dropped_aliases, added_aliases
+    )
+
+
+async def _change_classical_genre_aliases(
+    database: DatabaseConnection,
+    logger: logging.Logger,
+    moved_aliases: dict[str, tuple[str, ...]],
+    dropped_aliases: tuple[str, ...],
+    added_aliases: tuple[str, ...] = (),
+) -> None:
+    """
+    Change the aliases of the default music classical genre.
+
+    Mappings created through a removed alias are dropped, so the next genre scan maps
+    those items again.
+
+    :param database: The library database connection.
+    :param logger: The logger to report progress on.
+    :param moved_aliases: Aliases to move to another default genre, by its translation_key.
+    :param dropped_aliases: Aliases to remove from the classical genre only.
+    :param added_aliases: Aliases to add to the classical genre.
+    """
     removed_norms = {
         create_safe_string(alias, True, True)
         for alias in (*dropped_aliases, *(a for x in moved_aliases.values() for a in x))
@@ -1439,13 +1622,23 @@ async def _move_classical_genre_aliases(
             removed = [
                 x for x in aliases or [] if create_safe_string(x, True, True) in removed_norms
             ]
-            if aliases and removed:
+            kept = [x for x in aliases or [] if x not in removed]
+            kept_norms = {create_safe_string(x, True, True) for x in kept}
+            added = [
+                x for x in added_aliases if create_safe_string(x, True, True) not in kept_norms
+            ]
+            if aliases is not None and (removed or added):
                 await database.update(
                     DB_TABLE_GENRES,
                     {"item_id": row["item_id"]},
-                    {"genre_aliases": serialize_to_json([x for x in aliases if x not in removed])},
+                    {"genre_aliases": serialize_to_json([*kept, *added])},
                 )
-                logger.info("Removed %d misplaced alias(es) from the classical genre", len(removed))
+                if removed:
+                    logger.info(
+                        "Removed %d misplaced alias(es) from the classical genre", len(removed)
+                    )
+                if added:
+                    logger.info("Added %d alias(es) to the classical genre", len(added))
             # mappings are cleaned up even when the alias list was already clean, as an
             # earlier alias edit can have left them behind
             if has_mapping_table:
@@ -1737,3 +1930,165 @@ def _pack_audio_analysis_rows(
             }
         )
     return packed, unreadable_ids
+
+
+async def _drop_audiobookshelf_image_tokens(database: DatabaseConnection) -> None:
+    """Drop the api token from the stored urls of audiobookshelf images."""
+    for table in (
+        DB_TABLE_ARTISTS,
+        DB_TABLE_AUDIOBOOKS,
+        DB_TABLE_PODCASTS,
+        DB_TABLE_MEDIA_PROGRESS,
+        DB_TABLE_PLAY_HISTORY,
+    ):
+        columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+        }
+        # media items keep a list of images in their metadata, played items a single image
+        if "metadata" in columns:
+            id_column, column = "item_id", "metadata"
+        elif "image" in columns:
+            id_column, column = "id", "image"
+        else:
+            continue
+        for db_row in await database.get_rows_from_query(
+            f"SELECT {id_column}, {column} FROM {table} WHERE {column} LIKE '%token=%'", limit=0
+        ):
+            try:
+                value = json_loads(db_row[column])
+            except ValueError:
+                continue
+            if not isinstance(value, dict):
+                continue
+            images = value.get("images") if column == "metadata" else [value]
+            changed = False
+            for image in images if isinstance(images, list) else []:
+                if not (
+                    isinstance(image, dict)
+                    and str(image.get("provider")).startswith("audiobookshelf")
+                    and isinstance(path := image.get("path"), str)
+                ):
+                    continue
+                url = urlsplit(path)
+                query = parse_qsl(url.query, keep_blank_values=True)
+                kept = [(key, val) for key, val in query if key != "token"]
+                if len(kept) == len(query):
+                    continue
+                image["path"] = urlunsplit(url._replace(query=urlencode(kept)))
+                changed = True
+            if changed:
+                await database.update(
+                    table, {id_column: db_row[id_column]}, {column: serialize_to_json(value)}
+                )
+
+
+async def _move_apple_music_stations_to_radios(database: DatabaseConnection) -> None:
+    """Move the library playlists and plays of Apple Music radio stations to radios."""
+    copied_columns = (
+        "name",
+        "sort_name",
+        "metadata",
+        "play_count",
+        "last_played",
+        "timestamp_added",
+        "timestamp_modified",
+        "search_name",
+        "search_sort_name",
+    )
+    if (
+        {"media_type", "item_id", "provider_domain", "provider_item_id"}
+        <= await _table_columns(database, DB_TABLE_PROVIDER_MAPPINGS)
+        and set(copied_columns) <= await _table_columns(database, DB_TABLE_PLAYLISTS)
+        and {*copied_columns, "is_dynamic", "is_endless"}
+        <= await _table_columns(database, DB_TABLE_RADIOS)
+    ):
+        # (table, id column, scope) of every row that refers to a library item by its id
+        references = [
+            (table, id_column, scope)
+            for table, id_column, scope in (
+                (DB_TABLE_PROVIDER_MAPPINGS, "item_id", ""),
+                (DB_TABLE_FAVORITES, "item_id", ""),
+                (DB_TABLE_EXTERNAL_ID_LOOKUP, "item_id", ""),
+                (DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, "media_id", ""),
+                (DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, "media_id", ""),
+                (DB_TABLE_MEDIA_PROGRESS, "item_id", " AND provider = 'library'"),
+                (DB_TABLE_PLAY_HISTORY, "item_id", " AND provider = 'library'"),
+            )
+            if {"media_type", id_column, *(("provider",) if scope else ())}
+            <= await _table_columns(database, table)
+        ]
+        for row in await database.get_rows_from_query(
+            f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "WHERE media_type = 'playlist' AND provider_domain = 'apple_music' "
+            "AND provider_item_id GLOB 'ra.*'",
+            limit=0,
+        ):
+            playlist = await database.get_row(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
+            if playlist is None:
+                continue
+            values = {column: playlist[column] for column in copied_columns}
+            values["metadata"] = _station_radio_metadata(values["metadata"])
+            radio_id = await database.insert(
+                DB_TABLE_RADIOS,
+                {
+                    **{key: value for key, value in values.items() if value is not None},
+                    "is_dynamic": True,
+                    "is_endless": True,
+                },
+            )
+            for table, id_column, scope in references:
+                where = f"media_type = 'playlist' AND {id_column} = :old_id{scope}"
+                params = {"old_id": row["item_id"], "new_id": radio_id}
+                await database.execute(
+                    f"UPDATE OR IGNORE {table} SET media_type = 'radio', {id_column} = :new_id "
+                    f"WHERE {where}",
+                    params,
+                )
+                await database.execute(f"DELETE FROM {table} WHERE {where}", params)
+            await database.delete(DB_TABLE_PLAYLISTS, {"item_id": row["item_id"]})
+    # plays of a station outside the library are keyed by the station id
+    for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+        columns = await _table_columns(database, table)
+        if not {"media_type", "item_id", "provider"} <= columns:
+            continue
+        where = (
+            "media_type = 'playlist' AND item_id GLOB 'ra.*' "
+            "AND (provider = 'apple_music' OR provider GLOB 'apple_music--*')"
+        )
+        await database.execute(f"UPDATE OR IGNORE {table} SET media_type = 'radio' WHERE {where}")
+        await database.execute(f"DELETE FROM {table} WHERE {where}")
+        if "image" in columns:
+            await database.execute(
+                f"UPDATE {table} SET image = REPLACE(image, "
+                '\'"path":"playlist/ra.\', \'"path":"radio/ra.\') '
+                "WHERE media_type = 'radio' AND image GLOB '*\"path\":\"playlist/ra.*'"
+            )
+
+
+def _station_radio_metadata(metadata: Any) -> Any:
+    """Return station playlist metadata with its artwork tokens turned into radio tokens."""
+    try:
+        value = json_loads(metadata)
+    except ValueError:
+        return metadata
+    images = value.get("images") if isinstance(value, dict) else None
+    changed = False
+    for image in images if isinstance(images, list) else []:
+        if (
+            isinstance(image, dict)
+            and not image.get("remotely_accessible")
+            and isinstance(path := image.get("path"), str)
+            and path.startswith("playlist/ra.")
+        ):
+            image["path"] = f"radio/{path.removeprefix('playlist/')}"
+            changed = True
+    return serialize_to_json(value) if changed else metadata
+
+
+async def _table_columns(database: DatabaseConnection, table: str) -> set[str]:
+    """Return the column names of a table, empty when the table does not exist."""
+    return {
+        x["name"]
+        for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+    }

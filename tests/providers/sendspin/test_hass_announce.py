@@ -15,6 +15,7 @@ from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
+    from aiosendspin.server.client import SendspinClient
     from music_assistant_models.config_entries import PlayerConfig
 
     from music_assistant.mass import MusicAssistant
@@ -23,12 +24,18 @@ MAC = "aa:bb:cc:dd:ee:ff"
 ENTITY_ID = "media_player.kitchen_speaker"
 
 
-def _player(*, manufacturer: str = "ESPHome", player_id: str = MAC) -> SendspinPlayer:
+def _player(*, player_id: str = MAC, hello_mac: str | None = None) -> SendspinPlayer:
     player = SendspinPlayer.__new__(SendspinPlayer)
     player._player_id = player_id
+    player.api = cast(
+        "SendspinClient",
+        SimpleNamespace(
+            info_or_none=SimpleNamespace(device_info=SimpleNamespace(mac_address=hello_mac))
+        ),
+    )
     player._cache = {}
     player._attr_supported_features = set()
-    player._attr_device_info = DeviceInfo(manufacturer=manufacturer)
+    player._attr_device_info = DeviceInfo(manufacturer="ESPHome")
     player._attr_name = "hello name"
     player._config = cast("PlayerConfig", SimpleNamespace(name=None, default_name=None))
     player.logger = Mock()
@@ -80,10 +87,20 @@ async def test_enrichment_applies_name_and_announce_entity() -> None:
     hass.get_media_player_device_infos.assert_awaited_once_with([MAC], platform="esphome")
 
 
-async def test_enrichment_ignores_non_esphome_players() -> None:
-    """Players not backed by ESPHome are left alone entirely."""
+async def test_enrichment_matches_an_encrypted_client_by_its_hello_mac() -> None:
+    """A key-based client id is no MAC, so the MAC reported in the hello is looked up."""
+    hass = _hass_provider({MAC: {"name": "Kitchen Speaker", "announce_entity_id": ENTITY_ID}})
+    player = _player(player_id="jyu3dS9mC2xHq0yGm7Hn3oUuZz8kPq1wLr5tXv0aB4c", hello_mac=MAC)
+    await _provider(hass)._apply_hass_esphome_enrichment([player])
+    assert player._attr_name == "Kitchen Speaker"
+    assert player._hass_announce_entity_id == ENTITY_ID
+    hass.get_media_player_device_infos.assert_awaited_once_with([MAC], platform="esphome")
+
+
+async def test_enrichment_ignores_players_without_a_mac_address() -> None:
+    """Players that report no MAC address can not be matched, so they are left alone."""
     hass = _hass_provider({})
-    player = _player(manufacturer="Music Assistant")
+    player = _player(player_id="ma_8vpwr9yhy6")
     await _provider(hass)._apply_hass_esphome_enrichment([player])
     hass.get_media_player_device_infos.assert_not_awaited()
     assert player._attr_name == "hello name"

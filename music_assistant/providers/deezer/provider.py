@@ -89,7 +89,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
 }
 
-CONF_ARL_TOKEN = "arl_token"
+CONF_ARL_TOKEN = "arl_token"  # noqa: S105 - config key
 CONF_FAMILY_PROFILE = "family_profile"
 
 
@@ -126,7 +126,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
             me = await self.gql_client.get_me()
             if not me:
                 msg = "Authentication returned no user data"
-                raise GraphQLClientError(msg)
+                raise GraphQLClientError(msg)  # noqa: TRY301 - converted to LoginFailed below
             self.user_id = me.id
             self.gw_client = GWClient(self.mass.http_session, arl_token, family_profile)
             await self.gw_client.setup()

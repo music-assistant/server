@@ -304,6 +304,18 @@ class TestActiveSourceMapping:
 
         assert player._attr_active_source == SOURCE_UNKNOWN
 
+    def test_aux_in_is_the_active_source(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A device playing from Aux In reports aux_in as its active source."""
+        mock_wiim_device.play_mode = "Aux In"
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_active_source == "aux_in"
+
 
 class TestSupportedFeatures:
     """Test that required features are declared."""
@@ -469,6 +481,17 @@ class TestSourceList:
         await player.setup()
         source_ids = [s.id for s in player._attr_source_list]
         assert "futuremode" not in source_ids
+
+    @pytest.mark.asyncio
+    async def test_setup_adds_aux_in(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """setup() should add Aux In when the device supports it."""
+        mock_wiim_device.supported_input_modes = ("Network", "Aux In")
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        await player.setup()
+        source_ids = [s.id for s in player._attr_source_list]
+        assert "aux_in" in source_ids
 
 
 class TestVolumeCommand:
@@ -723,6 +746,43 @@ class TestStalePositionOnNewStream:
         await player._sync_position()
 
         assert player._attr_elapsed_time == 55
+
+    @pytest.mark.asyncio
+    async def test_sync_position_ignores_new_stream_reported_at_its_end(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Right after a seek the device reports our new stream at its full length."""
+        stream_url = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_provider.mass.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        # a seek to 120 in a 1200 s item hands over a 1080 s stream
+        await player.play_media(
+            PlayerMedia(
+                uri="library://audiobook/1",
+                title="Book",
+                duration=1200,
+                stream_duration=1080,
+                queue_item_id="book",
+            )
+        )
+        device_media = MagicMock()
+        device_media.uri = stream_url
+        device_media.title = "Book"
+        device_media.duration = 1080
+        device_media.position = 1080
+        mock_wiim_device.current_media = device_media
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 0
+
+        device_media.position = 3
+        await player._sync_position()
+
+        assert player._attr_elapsed_time == 3
 
     @pytest.mark.asyncio
     async def test_sync_position_accepts_device_when_ma_not_driving_playback(

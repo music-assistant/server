@@ -33,7 +33,8 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_PLAYERS,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     HOMEASSISTANT_SYSTEM_USER,
     MASS_LOGGER_NAME,
 )
@@ -49,6 +50,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_custom_role_scopes,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
+    AuthFailure,
     AuthResult,
     BuiltinLoginProvider,
     HomeAssistantOAuthProvider,
@@ -99,8 +101,8 @@ TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
 # Max number of (newest first) tokens returned by the auth/tokens command
 TOKEN_LIST_LIMIT = 100
 
-HA_TOKEN_SETTING_KEY = "ha_integration_token"
-HA_TOKEN_NAME = "Home Assistant Integration"
+HA_TOKEN_SETTING_KEY = "ha_integration_token"  # noqa: S105 - config key
+HA_TOKEN_NAME = "Home Assistant Integration"  # noqa: S105 - display name
 
 # English names of the builtin user roles, in the order the roles are listed
 BUILTIN_ROLE_NAMES = {
@@ -1016,7 +1018,7 @@ class AuthenticationManager:
         provider_id: str = "builtin",
         device_name: str | None = None,
         **extra_credentials: Any,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | AuthFailure:
         """
         Authenticate user with credentials via WebSocket.
 
@@ -1046,16 +1048,12 @@ class AuthenticationManager:
                 username or "<not provided>",
                 provider_id,
             )
-            return {
-                "success": False,
-                "error": auth_result.error or "Authentication failed",
-            }
+            return AuthFailure(
+                auth_result.error or "Authentication failed", auth_result.translation_key
+            )
 
         if not auth_result.user:
-            return {
-                "success": False,
-                "error": "Authentication failed: no user returned",
-            }
+            return AuthFailure("Authentication failed: no user returned")
 
         # Create short-lived access token with device name if provided
         token_name = device_name or f"WebSocket Session - {auth_result.user.username}"
@@ -1260,7 +1258,7 @@ class AuthenticationManager:
     @api_command("auth/exchange", authenticated=False)
     async def exchange_authorization_code(
         self, state: str, code: str, code_verifier: str, device_name: str | None = None
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | AuthFailure:
         """
         Complete a sign-in that returned to the remote app, for an access token.
 
@@ -1282,11 +1280,10 @@ class AuthenticationManager:
                 rate_limit_key,
                 remaining_delay,
             )
-            return {
-                "success": False,
-                "error": f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
-                "translation_key": RateLimited.translation_key,
-            }
+            return AuthFailure(
+                f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                RateLimited.translation_key,
+            )
 
         try:
             user = await self._complete_app_sign_in(
@@ -1295,7 +1292,7 @@ class AuthenticationManager:
         except AuthenticationFailed as err:
             await self._auth_exchange_rate_limiter.record_failed_attempt(rate_limit_key)
             self.logger.warning("Sign-in exchange failed: %s", err)
-            return {"success": False, "error": str(err), "translation_key": err.translation_key}
+            return AuthFailure(str(err), err.translation_key, err.translation_args)
         if key_is_exclusive:
             await self._auth_exchange_rate_limiter.clear_attempts(rate_limit_key)
 
@@ -1437,6 +1434,8 @@ class AuthenticationManager:
         # key enforcement is off on our connections, so remove those rows here.
         for table in ("auth_tokens", "join_codes", "user_auth_providers"):
             await self.database.delete(table, {"user_id": user_id})
+        await self.mass.music.database.delete(DB_TABLE_MEDIA_PROGRESS, {"userid": user_id})
+        await self.mass.music.database.delete(DB_TABLE_PLAY_HISTORY, {"userid": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
@@ -1977,7 +1976,7 @@ class AuthenticationManager:
         return datetime.fromisoformat(str(row["expires_at"])) if row else None
 
     @api_command("auth/join_code/exchange", authenticated=False)
-    async def exchange_join_code(self, code: str) -> dict[str, Any]:
+    async def exchange_join_code(self, code: str) -> dict[str, Any] | AuthFailure:
         """
         Exchange a join code for an access token (public API).
 
@@ -1999,10 +1998,7 @@ class AuthenticationManager:
                 await self._join_code_global_rate_limiter.record_failed_attempt(
                     JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
                 )
-                return {
-                    "success": False,
-                    "error": "Invalid or expired join code",
-                }
+                return AuthFailure("Invalid or expired join code", "join_code_invalid")
 
             # A bucket is only cleared when it belongs to one caller alone, so presenting a
             # valid code never lifts the throttle for anyone else.
@@ -2022,10 +2018,7 @@ class AuthenticationManager:
                 },
             }
         except pyjwt.InvalidTokenError:
-            return {
-                "success": False,
-                "error": "Failed to create access token",
-            }
+            return AuthFailure("Failed to create access token")
 
     @api_command("auth/join_codes", required_scope=Scope.USERS_MANAGE)
     async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
@@ -2568,7 +2561,7 @@ class AuthenticationManager:
         try:
             # Update all playlog entries with NULL userid to this user
             await self.mass.music.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
+                f"UPDATE {DB_TABLE_MEDIA_PROGRESS} SET userid = :userid WHERE userid IS NULL",
                 {"userid": user_id},
             )
             await self.mass.music.database.commit()
@@ -2603,7 +2596,7 @@ class AuthenticationManager:
         else:
             self.logger.info("Password changed for user %s", target_user.username)
 
-    async def _check_join_code_rate_limit(self, key: str) -> dict[str, Any] | None:
+    async def _check_join_code_rate_limit(self, key: str) -> AuthFailure | None:
         """
         Check the join code exchange throttles that apply to the calling client.
 
@@ -2633,12 +2626,10 @@ class AuthenticationManager:
                 ),
                 remaining_delay,
             )
-            return {
-                "success": False,
-                "error": (
-                    f"Too many failed attempts. Please try again in {remaining_delay} seconds."
-                ),
-            }
+            return AuthFailure(
+                f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
+                RateLimited.translation_key,
+            )
         return None
 
     async def _exchange_join_code(self, code: str) -> str | None:

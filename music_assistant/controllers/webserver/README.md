@@ -161,7 +161,7 @@ Manages individual WebSocket connections:
 **Sign-in flow ([helpers/login_flow.py](helpers/login_flow.py)):**
 - Pending sign-ins (`PendingLoginStore`): 10 minutes each, single use, at most 100 at once
 - How a client reaches the server (`AuthTransport`: direct, Remote Access or Ingress)
-- PKCE S256 helpers
+- PKCE S256 verification of client code verifiers
 
 ## Authentication System
 
@@ -524,7 +524,12 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>` (or a tuple of scopes, one of which the caller needs)
 4. Optionally set `allow_impersonation=True` to let callers execute the command on behalf of
    another user via the injected `user` argument (requires the `users.impersonate` scope
-   when targeting another user)
+   when targeting another user). The impersonated user must hold the command's
+   `required_scope` as well, so impersonation never grants more than that user's own role.
+   Inside the handler, `get_current_user()` is the impersonated user; any music provider
+   resolved for the caller must be one of that user's music sources
+   (`helpers/provider_access.py` `visible_provider`, which leaves the other provider types
+   unrestricted), never the plain `mass.get_provider` lookup
 
 ### Testing Authentication
 
@@ -607,7 +612,7 @@ webserver/
 ├── helpers/
 │   ├── auth_middleware.py              # HTTP/WebSocket auth helpers
 │   ├── auth_providers.py               # Authentication providers
-│   ├── login_flow.py                   # Pending sign-ins, transport and PKCE helpers
+│   ├── login_flow.py                   # Pending sign-ins, transport and PKCE verification
 │   └── ssl.py                          # SSL certificate helpers
 └── remote_access/
     ├── __init__.py                     # Remote access manager

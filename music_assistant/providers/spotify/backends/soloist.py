@@ -157,6 +157,10 @@ _DATA_DIR_BUSY_MARKER: Final[str] = "another session is running"
 # and then sits there until the startup budget runs out. The engine reports no
 # other way that a stored session is gone.
 _UNPAIRED_MARKER: Final[str] = "waiting for login"
+# A sign-in Spotify turns down leaves the daemon running and silent, with no
+# event and no exit: the line is its only report. Seen as a one-off that the
+# very next daemon did not repeat, so it fails the item, not the pairing.
+_LOGIN_FAILED_MARKER: Final[str] = "login failed"
 # how long the log reader is given to catch up on a daemon's parting words
 _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
 
@@ -930,13 +934,13 @@ class _SingleTrackRun:
 
     def _raise_startup_error(self, detail: str) -> NoReturn:
         """Raise the most specific startup failure for the requested item."""
-        # a pairing that never logged in is checked first: it also fails the
-        # run, and its recovery (back through the setup flow) beats failing
-        # every track with a generic error
-        if self._unpaired or self._logged_in is False:
-            # the stored session no longer logs in: route the user through the
-            # setup flow instead of failing every item (mirrors librespot's
-            # INVALID_CREDENTIALS handling)
+        # a lost pairing is checked first: it also fails the run, and its
+        # recovery (back through the setup flow) beats failing every track with
+        # a generic error. Only the confirmed loss counts: a sign-in that never
+        # arrived looks the same when Spotify is slow or another player took
+        # the account over, and pairing again cures neither
+        if self._unpaired:
+            # mirrors librespot's INVALID_CREDENTIALS handling
             error = LoginFailed(
                 "Spotify Soloist pairing lost",
                 translation_key="soloist_pairing_required",
@@ -991,6 +995,14 @@ class _SingleTrackRun:
                 self._data_dir_busy = True
             if _UNPAIRED_MARKER in text and not self._unpaired:
                 await self._check_pairing_lost()
+            if _LOGIN_FAILED_MARKER in text and not self._started.is_set():
+                # only a sign-in refused before the item started is this run's
+                # failure; once it plays, the engine's own recovery (or the
+                # stall timeout) decides
+                self._fail(
+                    "Spotify Soloist could not sign in for this track (the next track "
+                    "tries again; check the API key if this keeps happening)"
+                )
             self.logger.debug("[soloist] %s", text)
 
     async def _check_pairing_lost(self) -> None:
@@ -1203,7 +1215,10 @@ class _SingleTrackRun:
             if data.position is not None:
                 self._observe_position(data.position.position_ms)
             playing = data.status == "playing"
-            self._engine_playing = playing
+            was_playing, self._engine_playing = self._engine_playing, playing
+            # the engine repeats a pause across events: act on the transition only
+            if was_playing and data.status == "paused":
+                self._observe_external_pause()
             if self._started.is_set() and self._reader is not None:
                 # pause silence stays out of the delivered PCM; the cushion gate
                 # takes priority over resuming
@@ -1248,6 +1263,24 @@ class _SingleTrackRun:
             "Spotify is already streaming somewhere else - an account "
             "can only play in one place at a time"
         )
+
+    def _observe_external_pause(self) -> None:
+        """Stop the queue when Spotify paused this run's item from outside Music Assistant."""
+        if (
+            self.queue_id is None
+            # still starting up (or seeking): no audio has been released yet
+            or self._reader is None
+            or self._stopped
+            or self._item_over
+            or self._engine_exited
+            or self._delivery_done
+            or self._error is not None
+        ):
+            return
+        # only the Spotify app or Web API pauses the engine, and a paused engine stalls
+        # the stream; a stop keeps the resume position, so play restarts at it
+        self.logger.info("Spotify paused %s, stopping queue %s", self.spotify_uri, self.queue_id)
+        self.mass.create_task(self.mass.player_queues.stop(self.queue_id))
 
     def _observe_position(self, position_ms: int) -> None:
         """Confirm an armed seek once the engine reports at (or past) its target."""

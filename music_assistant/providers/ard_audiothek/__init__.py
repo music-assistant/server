@@ -64,7 +64,7 @@ if TYPE_CHECKING:
 
 # Config for login
 CONF_EMAIL = "email"
-CONF_TOKEN_BEARER = "token"
+CONF_TOKEN_BEARER = "token"  # noqa: S105 - config key
 CONF_EXPIRY_TIME = "token_expiry"
 CONF_USERID = "user_id"
 CONF_DISPLAY_NAME = "display_name"
@@ -78,7 +78,7 @@ CONF_MAX_BITRATE = "max_num_episodes"
 CONF_PODCAST_FINISHED = "podcast_finished_time"
 
 IDENTITY_TOOLKIT_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts"
-IDENTITY_TOOLKIT_TOKEN = "AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90"
+IDENTITY_TOOLKIT_TOKEN = "AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90"  # noqa: S105 - public API key of the ARD web app
 ARD_ACCOUNTS_URL = "https://accounts.ard.de"
 ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
 
@@ -109,28 +109,16 @@ async def _login(session: ClientSession, email: str, password: str) -> tuple[str
     )
     data = await response.json()
     if "error" in data:
-        if data["error"]["message"] == "EMAIL_NOT_FOUND":
+        message = data["error"].get("message", "")
+        if message == "EMAIL_NOT_FOUND":
             raise LoginFailed("Email address is not registered")
-        if data["error"]["message"] == "INVALID_PASSWORD":
+        if message == "INVALID_PASSWORD":
             raise LoginFailed("Password is wrong")
-    token = data["idToken"]
-    uid = data["localId"]
+        if message == "INVALID_LOGIN_CREDENTIALS":
+            raise LoginFailed("Email address or password is wrong")
+        raise LoginFailed(f"Login failed: {message}")
 
-    response = await session.post(
-        f"{IDENTITY_TOOLKIT_BASE_URL}:lookup?key={IDENTITY_TOOLKIT_TOKEN}",
-        headers={"User-Agent": "Music Assistant", "Origin": ARD_ACCOUNTS_URL},
-        json={
-            "idToken": token,
-        },
-    )
-    data = await response.json()
-    if "error" in data:
-        if data["error"]["message"] == "EMAIL_NOT_FOUND":
-            raise LoginFailed("Email address is not registered")
-        if data["error"]["message"] == "INVALID_PASSWORD":
-            raise LoginFailed("Password is wrong")
-
-    return token, uid, data["users"][0]["displayName"]
+    return data["idToken"], data["localId"], data.get("displayName", "")
 
 
 def _create_aiohttptransport(headers: dict[str, str] | None = None) -> AIOHTTPTransport:

@@ -19,10 +19,10 @@ from music_assistant.controllers.webserver.helpers.login_flow import (
     PENDING_LOGIN_TTL,
     AuthTransport,
     PendingLoginStore,
-    pkce_challenge,
     verify_pkce,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
+from music_assistant.helpers.pkce import pkce_challenge
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

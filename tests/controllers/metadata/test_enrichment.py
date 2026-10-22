@@ -9,6 +9,7 @@ import aiohttp
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    MediaNotFoundError,
     ProviderUnavailableError,
     RateLimited,
     ResourceTemporarilyUnavailable,
@@ -25,6 +26,7 @@ from music_assistant.controllers.metadata.constants import (
 )
 from music_assistant.controllers.metadata.enrichment import MetadataEnrichmentMixin
 from music_assistant.controllers.music.helpers import fill_track_from_recording
+from music_assistant.controllers.music.listing_cache import Listing
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzRecording,
@@ -33,6 +35,7 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzReleaseGroup,
     MusicBrainzUrl,
 )
+from music_assistant.providers.musicbrainz.provider import IdentifiedArtist
 
 _ENRICHMENT_TIME = "music_assistant.controllers.metadata.enrichment.time"
 NOW = 1_700_000_000
@@ -344,18 +347,57 @@ def _enrichment_with_musicbrainz(
     :param albums: Library albums of the artist.
     :param tracks: Library tracks of the artist.
     :param top_tracks: Top tracks the providers list for the artist.
-    :param resolutions: What MusicBrainz answers each successive resolve_artist call with.
-    :return: The mixin and the resolve_artist mock.
+    :param resolutions: The artist MusicBrainz identifies through a streaming link on each
+        successive identify_artist call.
+    :return: The mixin and the identify_artist mock.
     """
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
     enrichment.mass.music.artists.albums = AsyncMock(return_value=albums)
     enrichment.mass.music.artists.tracks = AsyncMock(return_value=tracks)
-    enrichment.mass.music.artists.top_tracks = AsyncMock(return_value=top_tracks)
-    resolve_artist = AsyncMock(side_effect=list(resolutions))
-    enrichment.mass.get_provider.return_value.resolve_artist = resolve_artist
-    return enrichment, resolve_artist
+    enrichment.mass.music.artists.get_library_artist_toptracks = AsyncMock(
+        return_value=Listing(top_tracks)
+    )
+    enrichment.mass.get_providers_supporting_feature.return_value = []
+    musicbrainz = MagicMock()
+    identify_artist = AsyncMock(
+        side_effect=[IdentifiedArtist(r, False) if r else None for r in resolutions]
+    )
+    musicbrainz.identify_artist = identify_artist
+    musicbrainz.get_artist_by_track_titles = AsyncMock(return_value=None)
+    # every music provider the artist is mapped to ranks its top tracks, except local files
+    ranking_provider = MagicMock(supported_features={ProviderFeature.ARTIST_TOPTRACKS})
+    local_provider = MagicMock(supported_features=set())
+    enrichment.mass.get_provider = MagicMock(
+        side_effect=lambda domain, **_kwargs: (
+            musicbrainz
+            if domain == "musicbrainz"
+            else local_provider
+            if domain.startswith("filesystem")
+            else ranking_provider
+        )
+    )
+    return enrichment, identify_artist
+
+
+def _musicbrainz_of(enrichment: MetadataEnrichmentMixin) -> MagicMock:
+    """Return the stubbed MusicBrainz provider of an enrichment mixin."""
+    return cast("MagicMock", enrichment.mass.get_provider("musicbrainz"))
+
+
+def _with_title_providers(enrichment: MetadataEnrichmentMixin, *providers: MagicMock) -> None:
+    """Make the given providers the ones that list the artist's top track titles."""
+    _mass(enrichment).get_providers_supporting_feature.return_value = list(providers)
+
+
+def _title_provider(titles: list[str] | Exception) -> MagicMock:
+    """Return a metadata provider stub that lists the given top track titles, or raises."""
+    provider = MagicMock()
+    provider.get_artist_toptrack_titles = AsyncMock(
+        side_effect=titles if isinstance(titles, Exception) else None, return_value=titles
+    )
+    return provider
 
 
 def _library(enrichment: MetadataEnrichmentMixin) -> MagicMock:
@@ -363,25 +405,41 @@ def _library(enrichment: MetadataEnrichmentMixin) -> MagicMock:
     return cast("MagicMock", enrichment.mass.music.artists)
 
 
-def _artist(name: str = "Radiohead") -> Artist:
-    """Return a library artist without a MusicBrainz id."""
-    return Artist(item_id="1", provider="library", name=name, provider_mappings=set())
+def _artist(name: str = "Radiohead", ranked: bool = False) -> Artist:
+    """
+    Return a library artist without a MusicBrainz id.
+
+    :param name: Name of the artist.
+    :param ranked: Whether the artist is mapped to a music provider that ranks its top tracks.
+    """
+    mappings = (
+        {
+            ProviderMapping(
+                item_id="4Z8W4fKeB5YxbusRsdQVPb",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+            )
+        }
+        if ranked
+        else set()
+    )
+    return Artist(item_id="1", provider="library", name=name, provider_mappings=mappings)
 
 
 @pytest.mark.asyncio
 async def test_artist_mbid_by_streaming_link_reads_nothing_else() -> None:
     """An artist MusicBrainz knows by its streaming links costs no library or provider read."""
-    enrichment, resolve_artist = _enrichment_with_musicbrainz(
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
         [_library_album("a")], [_library_track("t")], [], MB_ARTIST
     )
     artist = _artist()
 
-    assert await enrichment._get_artist_mbid(artist) == MBID
+    assert await enrichment._get_artist_mbid(artist) == (MBID, False)
 
-    resolve_artist.assert_awaited_once_with(artist, [], [])
+    identify_artist.assert_awaited_once_with(artist, [], [])
     _library(enrichment).albums.assert_not_awaited()
     _library(enrichment).tracks.assert_not_awaited()
-    _library(enrichment).top_tracks.assert_not_awaited()
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -402,17 +460,17 @@ async def test_artist_mbid_is_resolved_through_the_best_library_items() -> None:
         _library_track("recording", {(ExternalID.MB_RECORDING, MBID)}),
         _library_track("plain-2"),
     ]
-    enrichment, resolve_artist = _enrichment_with_musicbrainz(albums, tracks, [], None, MB_ARTIST)
+    enrichment, identify_artist = _enrichment_with_musicbrainz(albums, tracks, [], None, MB_ARTIST)
     artist = _artist()
 
-    assert await enrichment._get_artist_mbid(artist) == MBID
+    assert await enrichment._get_artist_mbid(artist) == (MBID, False)
 
-    assert resolve_artist.await_count == 2
-    called_artist, ref_albums, ref_tracks = resolve_artist.await_args_list[1].args
+    assert identify_artist.await_count == 2
+    called_artist, ref_albums, ref_tracks = identify_artist.await_args_list[1].args
     assert called_artist is artist
     assert [album.item_id for album in ref_albums] == ["rg", "barcode-1", "barcode-2"]
     assert [track.item_id for track in ref_tracks] == ["recording", "isrc", "plain"]
-    _library(enrichment).top_tracks.assert_not_awaited()
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -420,43 +478,214 @@ async def test_artist_mbid_falls_back_to_the_providers_top_tracks() -> None:
     """Only once the library items fail are the providers asked for top tracks, untried ones."""
     tracks = [_library_track("plain")]
     top = [_library_track("plain"), *(_library_track(f"top-{i}") for i in range(4))]
-    enrichment, resolve_artist = _enrichment_with_musicbrainz(
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
         [], tracks, top, None, None, MB_ARTIST
     )
 
-    assert await enrichment._get_artist_mbid(_artist()) == MBID
+    assert await enrichment._get_artist_mbid(_artist(ranked=True)) == (MBID, False)
 
-    _library(enrichment).top_tracks.assert_awaited_once()
-    assert resolve_artist.await_count == 3
-    _, ref_albums, ref_tracks = resolve_artist.await_args_list[2].args
+    _library(enrichment).get_library_artist_toptracks.assert_awaited_once_with(
+        "1", provider_filter=["spotify_1"]
+    )
+    assert identify_artist.await_count == 3
+    _, ref_albums, ref_tracks = identify_artist.await_args_list[2].args
     assert ref_albums == []
     assert [track.item_id for track in ref_tracks] == ["top-0", "top-1", "top-2"]
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_moves_on_to_titles_after_an_empty_ranking() -> None:
+    """An empty ranking from the artist's own provider is followed by the title search."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [_library_track("plain")], [], None, None)
+    _with_title_providers(enrichment, _title_provider(["Creep"]))
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.return_value = MB_ARTIST
+
+    assert await enrichment._get_artist_mbid(_artist(ranked=True)) == (MBID, True)
+
+    # the listing is narrowed to the artist's provider, so it cannot fall back to Last.fm
+    _library(enrichment).get_library_artist_toptracks.assert_awaited_once_with(
+        "1", provider_filter=["spotify_1"]
+    )
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.assert_awaited_once_with(
+        "Radiohead", ["Creep"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_asks_its_ranking_providers_in_one_listing() -> None:
+    """All ranking providers are asked together, so the listing removes their duplicates."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [], [], None, None, None)
+    artist = _artist(ranked=True)
+    artist.provider_mappings.add(
+        ProviderMapping(item_id="3106", provider_domain="tidal", provider_instance="tidal_1")
+    )
+
+    await enrichment._get_artist_mbid(artist)
+
+    _library(enrichment).get_library_artist_toptracks.assert_awaited_once()
+    call = _library(enrichment).get_library_artist_toptracks.await_args
+    assert sorted(call.kwargs["provider_filter"]) == ["spotify_1", "tidal_1"]
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_only_asks_ranking_providers_the_user_may_see() -> None:
+    """A source the user may not see is left out, and none visible moves on to the titles."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [], [], None, None, None)
+    _with_title_providers(enrichment, _title_provider(["Creep"]))
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.return_value = MB_ARTIST
+
+    with (
+        patch(
+            "music_assistant.controllers.metadata.enrichment.get_current_user",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "music_assistant.controllers.metadata.enrichment.visible_music_sources",
+            return_value=["tidal_1"],
+        ),
+    ):
+        assert await enrichment._get_artist_mbid(_artist(ranked=True)) == (MBID, True)
+
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_asks_every_ranking_provider_without_a_user() -> None:
+    """A background refresh, which runs without a user, also asks private sources."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [], [], None, None, None)
+
+    with (
+        patch(
+            "music_assistant.controllers.metadata.enrichment.get_current_user", return_value=None
+        ),
+        patch(
+            "music_assistant.controllers.metadata.enrichment.visible_music_sources",
+            return_value=[],
+        ) as visible,
+    ):
+        await enrichment._get_artist_mbid(_artist(ranked=True))
+
+    visible.assert_not_called()
+    _library(enrichment).get_library_artist_toptracks.assert_awaited_once_with(
+        "1", provider_filter=["spotify_1"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_skips_top_tracks_no_music_provider_ranks() -> None:
+    """Top tracks no music provider ranks are not resolved, so cost no streaming searches."""
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
+        [], [_library_track("plain")], [_library_track("top")], None, None
+    )
+
+    assert await enrichment._get_artist_mbid(_artist()) is None
+
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
+    assert identify_artist.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_skips_top_tracks_of_an_artist_only_on_local_files() -> None:
+    """A music provider that does not rank top tracks leaves them unresolved too."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [_library_track("plain")], [], None, None)
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Radiohead",
+        provider_mappings={
+            ProviderMapping(
+                item_id="radiohead",
+                provider_domain="filesystem_local",
+                provider_instance="filesystem_local_1",
+            )
+        },
+    )
+
+    assert await enrichment._get_artist_mbid(artist) is None
+
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_tries_library_tracks_named_like_top_tracks_first() -> None:
+    """Library tracks named like the artist's top tracks are tried, in the ranking's order."""
+    tracks = [_library_track(name) for name in ("plain-1", "plain-2", "Creep", "Airbag", "Nude")]
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
+        [], tracks, [], None, None, MB_ARTIST
+    )
+    titles = _title_provider(["Track nude", "Unknown", "track creep", "Track airbag"])
+    _with_title_providers(enrichment, titles)
+    artist = _artist()
+
+    assert await enrichment._get_artist_mbid(artist) == (MBID, False)
+
+    titles.get_artist_toptrack_titles.assert_awaited_once_with(artist, 25)
+    _, _, ref_tracks = identify_artist.await_args_list[2].args
+    # the first three library tracks were already tried
+    assert [track.item_id for track in ref_tracks] == ["Nude", "Airbag"]
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_searches_musicbrainz_by_top_track_titles() -> None:
+    """Without a library track of that name, MusicBrainz is searched by the titles."""
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
+        [], [_library_track("plain")], [], None, None
+    )
+    _with_title_providers(enrichment, _title_provider(["Creep", "Karma Police"]))
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.return_value = MB_ARTIST
+
+    assert await enrichment._get_artist_mbid(_artist()) == (MBID, True)
+
+    assert identify_artist.await_count == 2
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.assert_awaited_once_with(
+        "Radiohead", ["Creep", "Karma Police"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_survives_a_failing_title_provider() -> None:
+    """A title provider that fails is logged and skipped for the next one."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [], [], None, None)
+    failing = _title_provider(ResourceTemporarilyUnavailable("rate limited"))
+    _with_title_providers(enrichment, failing, _title_provider(["Creep"]))
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.return_value = MB_ARTIST
+
+    assert await enrichment._get_artist_mbid(_artist()) == (MBID, True)
+
+    failing.get_artist_toptrack_titles.assert_awaited_once()
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.assert_awaited_once_with(
+        "Radiohead", ["Creep"]
+    )
 
 
 @pytest.mark.asyncio
 async def test_artist_mbid_is_none_when_musicbrainz_does_not_know_the_artist() -> None:
     """An unresolved artist yields no id and is logged; tracks already tried are not resent."""
     track = _library_track("t")
-    enrichment, resolve_artist = _enrichment_with_musicbrainz(
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
         [_library_album("a")], [track], [track], None, None
     )
 
     assert await enrichment._get_artist_mbid(_artist()) is None
 
-    assert resolve_artist.await_count == 2
+    assert identify_artist.await_count == 2
     cast("MagicMock", enrichment.logger).debug.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_artist_mbid_shortcuts_skip_musicbrainz() -> None:
     """A known id or the Various Artists name never reaches MusicBrainz."""
-    enrichment, resolve_artist = _enrichment_with_musicbrainz([], [], [])
+    enrichment, identify_artist = _enrichment_with_musicbrainz([], [], [])
     known = _artist()
     known.mbid = MBID
 
-    assert await enrichment._get_artist_mbid(known) == MBID
-    assert await enrichment._get_artist_mbid(_artist("Various Artists")) == VARIOUS_ARTISTS_MBID
-    resolve_artist.assert_not_awaited()
+    assert await enrichment._get_artist_mbid(known) == (MBID, False)
+    assert await enrichment._get_artist_mbid(_artist("Various Artists")) == (
+        VARIOUS_ARTISTS_MBID,
+        True,
+    )
+    identify_artist.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +743,7 @@ def _musicbrainz(
     musicbrainz = MagicMock()
     musicbrainz.resolve_release = AsyncMock(return_value=release)
     musicbrainz.resolve_recording = AsyncMock(return_value=recording)
-    musicbrainz.resolve_artist = AsyncMock(return_value=None)
+    musicbrainz.identify_artist = AsyncMock(return_value=None)
     musicbrainz.get_artist_details = AsyncMock(return_value=artist)
     return musicbrainz
 
@@ -932,6 +1161,51 @@ async def test_identity_step_reports_whether_its_lookup_failed_temporarily(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK])
+async def test_identity_step_passes_on_an_item_removed_from_the_library(
+    media_type: MediaType,
+) -> None:
+    """An item removed from the library while it is linked ends the update, not as a warning."""
+    recording = MusicBrainzRecording(id=RECORDING_ID, title="15 Step", isrcs=[], relations=[])
+    details = MusicBrainzArtist(id=OTHER_MBID, name="Radiohead", sort_name="Radiohead")
+    enrichment = _enrichment(_musicbrainz(release=_release(), recording=recording, artist=details))
+    item: Artist | Album | Track
+    if media_type == MediaType.ARTIST:
+        item = _artist()
+        item.mbid = OTHER_MBID
+    elif media_type == MediaType.ALBUM:
+        item = _album()
+    else:
+        item = _track()
+    music = _mass(enrichment).music
+    getattr(music, f"{media_type.value}s").link_musicbrainz_mappings = AsyncMock(
+        side_effect=MediaNotFoundError("removed")
+    )
+    music.get_controller.return_value.get_library_item = AsyncMock(
+        side_effect=MediaNotFoundError("removed")
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await getattr(enrichment, f"_link_{media_type.value}_to_musicbrainz")(item)
+
+    _logger(enrichment).warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_album_identity_step_warns_on_a_track_removed_from_the_library() -> None:
+    """A track of the album merged away while it is linked is a link error of an album still there."""
+    enrichment = _enrichment(_musicbrainz(release=_release()))
+    album = _album()
+    music = _mass(enrichment).music
+    music.albums.link_album_tracks = AsyncMock(side_effect=MediaNotFoundError("track merged"))
+    music.get_controller.return_value.get_library_item = AsyncMock(return_value=album)
+
+    assert await enrichment._link_album_to_musicbrainz(album) is False
+
+    _logger(enrichment).warning.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_artist_identity_marks_various_artists_without_looking_it_up() -> None:
     """Various Artists is nobody's discography: marked as looked up, never linked."""
     musicbrainz = _musicbrainz()
@@ -953,7 +1227,7 @@ async def test_artist_identity_marks_an_artist_musicbrainz_does_not_know() -> No
     """An artist that stays without an id is marked as looked up and not linked."""
     musicbrainz = _musicbrainz()
     enrichment = _enrichment(musicbrainz)
-    for listing in ("albums", "tracks", "top_tracks"):
+    for listing in ("albums", "tracks", "get_library_artist_toptracks"):
         setattr(_mass(enrichment).music.artists, listing, AsyncMock(return_value=[]))
     artist = Artist(item_id="1", provider="library", name="Nobody", provider_mappings=set())
 
