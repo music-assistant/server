@@ -1512,6 +1512,9 @@ class RaumfeldPlayer(Player):
         :param shuffle: Whether to play shuffled.
         :param repeat: The repeat mode.
         """
+        if self._presented_external() is None:
+            # Music Assistant's own playback took over while this waited for the lock
+            raise PlayerCommandFailed(f"{self.room} no longer plays the source to change")
         await self._external_command("SetPlayMode", NewPlayMode=play_mode_for(shuffle, repeat))
         if (source := self._external_source) is not None:
             source.shuffle_enabled, source.repeat_mode = shuffle, repeat

@@ -1992,3 +1992,29 @@ async def test_a_poll_from_before_a_play_mode_change_is_not_applied() -> None:
     source = player._external_source
     assert source is not None
     assert source.shuffle_enabled is True
+
+
+async def test_a_play_mode_change_after_ma_took_over_is_refused() -> None:
+    """A change that waited while MA's own playback replaced the source sends nothing."""
+    player, _ = _external_player()
+    player._set_external(
+        _ALBUM_META,
+        "Pause,Next,Previous,RepeatTrack,Repeat,Shuffle",
+        240,
+        via_room=False,
+        play_mode="NORMAL",
+    )
+    lock = player._play_mode_guard()
+    await lock.acquire()
+    with (
+        patch.object(player, "_external_command", AsyncMock()) as external,
+        patch.object(player, "update_state"),
+    ):
+        change = asyncio.create_task(player.set_repeat(RepeatMode.ALL))
+        await asyncio.sleep(0)
+        # play_media() starts MA's own stream meanwhile
+        player._clear_external()
+        lock.release()
+        with pytest.raises(PlayerCommandFailed, match="no longer plays"):
+            await change
+    external.assert_not_awaited()
