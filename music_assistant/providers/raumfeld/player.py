@@ -1379,33 +1379,38 @@ class RaumfeldPlayer(Player):
         # A check started by a join in the Raumfeld app runs on its own, so it waits for a
         # play, seek or stop in progress and looks at the playback that leaves.
         # a Sync Group this room renders for owns the queue, so its lock goes first
-        async with self.mass.players.get_group_and_player_lock(self.player_id):
-            if not (self.leads_group and self.plays_own_queue):
-                return
-            if self._stream_rates is None or set(self._stream_rates) <= set(
-                self.get_supported_sample_rates()
-            ):
-                return
-            # the queue that plays here: the room's own, or that of a Sync Group it renders
-            queue = self.mass.players.get_active_queue(self)
-            if queue is None or queue.current_item is None:
-                return
-            self.logger.debug(
-                "A room that joined %s may not play the format of its stream; restarting",
-                self.room,
-            )
-            try:
-                if queue.current_item.duration:
-                    await self.mass.player_queues.seek(
-                        queue.queue_id, int(queue.corrected_elapsed_time)
-                    )
-                else:
-                    # a live stream (radio) has no position to seek to, so it starts again live
-                    await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
-            except MusicAssistantError as err:
+        # strict: the check never looks at playback without the lock
+        try:
+            async with self.mass.players.get_group_and_player_lock(self.player_id, strict=True):
+                if not (self.leads_group and self.plays_own_queue):
+                    return
+                if self._stream_rates is None or set(self._stream_rates) <= set(
+                    self.get_supported_sample_rates()
+                ):
+                    return
+                # the queue that plays here: the room's own, or that of a Sync Group it renders
+                queue = self.mass.players.get_active_queue(self)
+                if queue is None or queue.current_item is None:
+                    return
                 self.logger.debug(
-                    "Failed to restart %s at a format its group plays: %r", self.room, err
+                    "A room that joined %s may not play the format of its stream; restarting",
+                    self.room,
                 )
+                try:
+                    if queue.current_item.duration:
+                        await self.mass.player_queues.seek(
+                            queue.queue_id, int(queue.corrected_elapsed_time)
+                        )
+                    else:
+                        # a live stream (radio) has no position to seek to, so it starts again live
+                        await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
+                except MusicAssistantError as err:
+                    self.logger.debug(
+                        "Failed to restart %s at a format its group plays: %r", self.room, err
+                    )
+        except ResourceBusyError:
+            # another playback action held the player all that time; it decides what plays
+            self.logger.debug("Gave up checking %s after a join: the player stays busy", self.room)
 
     def _zones_without_leader(self) -> list[list[str]]:
         """Return the zones this leading room's members are in, other than its own."""

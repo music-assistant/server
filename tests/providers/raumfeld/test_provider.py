@@ -1378,3 +1378,26 @@ async def test_a_next_item_that_never_gets_the_lock_is_not_started() -> None:
     with patch.object(bar, "play_media", AsyncMock()) as play:
         await bar._play_next(PlayerMedia(uri="library://track/2"))
     play.assert_not_awaited()
+
+
+async def test_the_rate_check_takes_the_lock_strictly() -> None:
+    """The check never looks at playback without the lock, and gives up if it stays taken."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    taken: list[dict[str, Any]] = []
+
+    @contextlib.asynccontextmanager
+    async def player_lock(*_args: Any, **kwargs: Any) -> AsyncIterator[None]:
+        taken.append(kwargs)
+        yield
+
+    mass.players.get_group_and_player_lock = player_lock
+    await bar._restart_for_group_rates()
+    assert taken == [{"strict": True}]
+    mass.player_queues.seek.assert_awaited_once()
+
+    busy = MagicMock()
+    busy.return_value.__aenter__ = AsyncMock(side_effect=ResourceBusyError("busy"))
+    mass.players.get_group_and_player_lock = busy
+    mass.player_queues.seek.reset_mock()
+    await bar._restart_for_group_rates()
+    mass.player_queues.seek.assert_not_awaited()
