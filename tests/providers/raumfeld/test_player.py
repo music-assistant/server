@@ -1892,18 +1892,22 @@ async def test_shuffle_and_repeat_set_the_play_mode(
     )
 
 
-async def test_repeat_one_is_refused_where_the_host_does_not_allow_it() -> None:
-    """Spotify Connect lists Repeat but not RepeatTrack, so a single track cannot repeat."""
+async def test_repeat_one_moves_on_to_off_where_the_host_does_not_allow_it() -> None:
+    """Spotify Connect lists Repeat but not RepeatTrack: the repeat button skips one."""
     player, _ = _external_player()
     player._set_external(
-        _SPOTIFY_META, "Pause,Next,Previous,Repeat,Shuffle", 315, via_room=True, play_mode="NORMAL"
+        _SPOTIFY_META, "Pause,Next,Previous,Repeat,Shuffle", 315, via_room=True, play_mode="RANDOM"
     )
     with (
         patch.object(player, "_external_command", AsyncMock()) as external,
-        pytest.raises(PlayerCommandFailed, match="single track"),
+        patch.object(player, "update_state"),
     ):
         await player.set_repeat(RepeatMode.ONE)
-    external.assert_not_awaited()
+    # off, with shuffle kept
+    external.assert_awaited_once_with("SetPlayMode", NewPlayMode="SHUFFLE")
+    source = player._external_source
+    assert source is not None
+    assert source.repeat_mode == RepeatMode.OFF
 
 
 async def test_the_zone_poll_reads_the_play_mode_of_an_external_source() -> None:

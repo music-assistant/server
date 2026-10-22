@@ -507,7 +507,9 @@ class RaumfeldPlayer(Player):
         :param repeat_mode: The repeat mode the source should apply.
         """
         if repeat_mode == RepeatMode.ONE and "RepeatTrack" not in self._external_actions:
-            raise PlayerCommandFailed(f"{self.room} cannot repeat a single track of this source")
+            # Spotify Connect repeats no single track here; MA's repeat button steps from
+            # all to one to off, so it moves on to off rather than stopping at all
+            repeat_mode = RepeatMode.OFF
         source = self._external_source
         shuffle = bool(source and source.shuffle_enabled) and repeat_mode != RepeatMode.ONE
         await self._set_play_mode(shuffle, repeat_mode)
