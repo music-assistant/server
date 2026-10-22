@@ -2,18 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import AlbumType, PlaybackState, PlayerType
+from music_assistant_models.enums import (
+    AlbumType,
+    ContentType,
+    MediaType,
+    PlaybackState,
+    PlayerType,
+    StreamType,
+)
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.media_items import Album, ItemMapping, Track
+from music_assistant_models.media_items import Album, AudioFormat, ItemMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 
 
 class _DummyACM:
@@ -44,6 +54,7 @@ def _fake_controller(source_id: str, target_player: MagicMock) -> MagicMock:
     fake = MagicMock()
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == source_id else target_queue)
     fake.stop = AsyncMock()
+    fake._cleanup_queue_audio_data = AsyncMock()
     fake.load = AsyncMock()
     fake.resume = AsyncMock()
     fake.clear = MagicMock()
@@ -175,6 +186,7 @@ def _shuffle_controller(
         ),
     }
     fake.stop = AsyncMock()
+    fake._cleanup_queue_audio_data = AsyncMock()
     fake.load = AsyncMock()
     fake.resume = AsyncMock()
     fake._clear = MagicMock()
@@ -303,3 +315,75 @@ async def test_transfer_queue_carries_pinned_toggle_overrides() -> None:
     assert target_data.autoplay_override is False
     assert target_data.queue.crossfade_enabled is True
     assert target_data.queue.autoplay_enabled is False
+
+
+async def test_transfer_queue_waits_for_the_source_teardown_before_the_target_starts() -> None:
+    """
+    The target starts only after the source has released its audio.
+
+    A single-stream provider would otherwise keep its only slot on the source.
+    """
+    source_queue = PlayerQueue(
+        queue_id="src", active=True, display_name="Src", available=True, items=1
+    )
+    source_queue.state = PlaybackState.PLAYING
+    target_queue = PlayerQueue(
+        queue_id="tgt", active=True, display_name="Tgt", available=True, items=0
+    )
+    playing = QueueItem(queue_id="src", queue_item_id="i1", name="i1", duration=180)
+    playing.streamdetails = StreamDetails(
+        provider="spotify--1",
+        item_id="i1",
+        audio_format=AudioFormat(content_type=ContentType.OGG),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.CUSTOM,
+        queue_id="src",
+    )
+    playing.streamdetails.queue_session_id = "sess-src"
+    source_released = asyncio.Event()
+    source_buffer = MagicMock(spec=AudioBuffer)
+    source_buffer.clear = AsyncMock(side_effect=source_released.wait)
+    playing.streamdetails.buffer = source_buffer
+    source_queue.current_item = playing
+    source_queue.current_index = 0
+
+    ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
+    ctrl.logger = MagicMock()
+    ctrl._queue_data = {
+        "src": PlayerQueueData(queue=source_queue, items=[playing], session_id="sess-src"),
+        "tgt": PlayerQueueData(queue=target_queue),
+    }
+    ctrl.mass = MagicMock()
+    # mass.create_task starts tasks eagerly
+    ctrl.mass.create_task = lambda coro, *_args, **_kwargs: asyncio.Task(
+        coro, loop=asyncio.get_running_loop(), eager_start=True
+    )
+    ctrl.mass.players.get_group_and_player_lock = MagicMock(return_value=_DummyACM())
+    ctrl.mass.players._handle_cmd_stop = AsyncMock()
+    target_player = MagicMock()
+    target_player.state.type = PlayerType.PLAYER
+    target_player.state.synced_to = None
+    target_player.state.active_group = None
+    ctrl.mass.players.get_player = MagicMock(return_value=target_player)
+    ctrl.mass.streams.is_smart_fades_active = MagicMock(return_value=False)
+    ctrl._check_player_permission = MagicMock()  # type: ignore[method-assign]
+    ctrl.signal_update = MagicMock()  # type: ignore[method-assign]
+    ctrl.store_sources = MagicMock()  # type: ignore[method-assign]
+    ctrl._set_transitioning = MagicMock()  # type: ignore[method-assign]
+    ctrl._resolve_default_toggles = MagicMock()  # type: ignore[method-assign]
+    ctrl.is_smart_shuffle_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+
+    def _update_items(queue_id: str, queue_items: list[QueueItem]) -> None:
+        ctrl._queue_data[queue_id].items = queue_items
+
+    ctrl.update_items = _update_items  # type: ignore[method-assign]
+    ctrl.load = AsyncMock()  # type: ignore[method-assign]
+    ctrl.resume = AsyncMock()  # type: ignore[method-assign]
+
+    transfer = asyncio.create_task(ctrl.transfer_queue("src", "tgt", auto_play=True))
+    await asyncio.sleep(0.05)
+    ctrl.resume.assert_not_awaited()
+
+    source_released.set()
+    await asyncio.wait_for(transfer, 1)
+    ctrl.resume.assert_awaited_once_with("tgt")
