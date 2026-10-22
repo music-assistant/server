@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from music_assistant_models.enums import RepeatMode
+
 from music_assistant.providers.raumfeld.constants import RENDERER_QUERY_TIMEOUT
 from music_assistant.providers.raumfeld.helpers import (
     container_object_id,
@@ -17,7 +20,9 @@ from music_assistant.providers.raumfeld.helpers import (
     parse_library_items,
     parse_line_in,
     parse_model_name,
+    parse_play_mode,
     parse_serial_number,
+    play_mode_for,
     query_last_change,
     room_udn_to_player_id,
     serial_to_player_id,
@@ -262,3 +267,17 @@ def test_container_object_id() -> None:
     single = library_uri("uuid:media-server", "0/RadioTime/Search/s-s25777", container=False)
     assert container_object_id(single) is None
     assert container_object_id(None) is None
+
+
+@pytest.mark.parametrize("play_mode", ["NORMAL", "SHUFFLE", "REPEAT_ALL", "RANDOM", "REPEAT_ONE"])
+def test_a_play_mode_comes_back_the_same(play_mode: str) -> None:
+    """Every play mode the renderer reports is the one its own state sets again."""
+    shuffle, repeat = parse_play_mode(play_mode)
+    assert shuffle is not None
+    assert play_mode_for(shuffle, repeat) == play_mode
+
+
+def test_an_unknown_play_mode_is_not_guessed() -> None:
+    """A play mode the renderer did not report, or one not seen before, stays unknown."""
+    assert parse_play_mode(None) == (None, RepeatMode.UNKNOWN)
+    assert parse_play_mode("INTRO") == (None, RepeatMode.UNKNOWN)
