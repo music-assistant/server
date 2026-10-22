@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
+from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION, CONF_ENTRY_FLOW_STREAM_LEAD
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.controllers.streams.controller import StreamsController
 
@@ -145,3 +145,8 @@ def test_the_flow_stream_takes_the_lead_a_player_asked_for(
         default if setting is None else setting
     )
     assert controller._flow_pacing(player) == profile
+
+
+def test_changing_the_flow_lead_restarts_a_playing_queue() -> None:
+    """The pace is set when the flow stream starts, so a change has to restart it."""
+    assert CONF_ENTRY_FLOW_STREAM_LEAD.requires_reload

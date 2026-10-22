@@ -142,6 +142,8 @@ def test_a_larger_flow_lead_is_on_by_default() -> None:
     """The zone renderer gets a larger lead on the flow stream unless it is switched off."""
     entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_FLOW_STREAM_LEAD)
     assert entry.default_value is True
+    # switching it in the Raumfeld player's settings restarts a playing queue too
+    assert entry.requires_reload
 
 
 def test_near_track_end() -> None:

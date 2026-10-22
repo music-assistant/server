@@ -414,6 +414,8 @@ CONF_ENTRY_FLOW_STREAM_LEAD = ConfigEntry(
     default_value=False,
     category="protocol_generic",
     advanced=True,
+    # the pace is set when the stream starts, so a playing queue restarts to take it
+    requires_reload=True,
 )
 
 
