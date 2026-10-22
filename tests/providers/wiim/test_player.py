@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
-from music_assistant_models.errors import InvalidCommand
+from music_assistant_models.errors import InvalidCommand, PlayerCommandFailed
 from wiim import PlayingStatus
 from wiim.exceptions import (
     WiimDeviceException,
@@ -980,21 +980,37 @@ class TestFirstFollowerJoinRestart:
 
         mock_provider.mass.player_queues.seek.assert_not_awaited()
 
-    async def test_restart_past_the_track_end_advances_to_the_next_item(
+    async def test_restart_past_the_track_end_seeks_to_the_last_second(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """A position beyond the duration cannot be seeked, so the queue moves on instead."""
+        """A position beyond the duration is clamped so the queue completes the track itself."""
         player = self._make_playing_leader(mock_provider, mock_wiim_device)
         queue = mock_provider.mass.player_queues.get.return_value
         queue.elapsed_time = 239.0
         queue.elapsed_time_last_updated = time.time() - 3
-        mock_provider.mass.player_queues.next = AsyncMock()
         self._restart_on_join(player, mock_wiim_device)
 
         await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
 
-        mock_provider.mass.player_queues.seek.assert_not_awaited()
-        mock_provider.mass.player_queues.next.assert_awaited_once_with(player.player_id)
+        mock_provider.mass.player_queues.seek.assert_awaited_once_with(player.player_id, 239)
+
+    async def test_restart_before_a_grouping_error_is_still_resumed(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A restart signalled before a later follower fails is resumed, the error still raised."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+
+        async def _join(*_args: Any) -> None:
+            mock_wiim_device.event_data = {"TransportState": "TRANSITIONING"}
+            player._handle_sdk_av_transport_event(MagicMock(), [])
+            raise PlayerCommandFailed("second follower refused")
+
+        cast("AsyncMock", player._native_groups.set_members).side_effect = _join
+
+        with pytest.raises(PlayerCommandFailed):
+            await player.set_members(player_ids_to_add=["wiim_uuid:a", "wiim_uuid:b"])
+
+        mock_provider.mass.player_queues.seek.assert_awaited_once()
 
     async def test_join_on_item_without_duration_is_not_watched(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock

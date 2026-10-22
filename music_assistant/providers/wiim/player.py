@@ -387,8 +387,9 @@ class WiimPlayer(Player):
         self._join_restart_watch = self._create_join_restart_watch(player_ids_to_add)
         try:
             await self._native_groups.set_members(self, player_ids_to_add, player_ids_to_remove)
-            await self._resume_after_join_restart()
         finally:
+            # a restart that fired before a later follower failed still needs the resume
+            await self._resume_after_join_restart()
             self._join_restart_watch = None
             exit_sdk_uri = self.device.current_media.uri if self.device.current_media else None
             self.logger.debug(
@@ -714,7 +715,10 @@ class WiimPlayer(Player):
         except TimeoutError:
             return
         self._join_restart_watch = None
-        position = int(watch.anchor + (time.time() - watch.anchor_at) * watch.speed)
+        # past the end the last second plays out and the queue completes the track as usual
+        position = min(
+            int(watch.anchor + (time.time() - watch.anchor_at) * watch.speed), watch.duration - 1
+        )
         self.logger.info(
             "WiiM firmware restarted the stream of %s on the first follower join, resuming at %s s",
             self._attr_name,
@@ -723,10 +727,7 @@ class WiimPlayer(Player):
         # seek republishes the target position before rebuilding the stream, and a stream
         # started while grouped is never restarted by the firmware again
         try:
-            if position >= watch.duration:
-                await self.mass.player_queues.next(self.player_id)
-            else:
-                await self.mass.player_queues.seek(self.player_id, position)
+            await self.mass.player_queues.seek(self.player_id, position)
         except MusicAssistantError as err:
             self.logger.warning(
                 "Failed to resume %s after the stream restart: %s", self._attr_name, err
