@@ -247,8 +247,7 @@ class WiimPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        # a newer command owns playback, so a resume still pending after a join is dropped
-        self._pending_join_resume = None
+        self._drop_join_restart_resume()
         stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url=stream_url)
         self.set_current_media(
@@ -304,7 +303,7 @@ class WiimPlayer(Player):
 
     async def pause(self) -> None:
         """Pause command."""
-        self._pending_join_resume = None
+        self._drop_join_restart_resume()
         try:
             await self.device.async_pause()
         except WiimException as err:
@@ -314,7 +313,7 @@ class WiimPlayer(Player):
 
     async def stop(self) -> None:
         """Stop command."""
-        self._pending_join_resume = None
+        self._drop_join_restart_resume()
         self._attr_active_source = None
         self._attr_current_media = None
         self._ma_stream_uri = None
@@ -721,6 +720,9 @@ class WiimPlayer(Player):
             await asyncio.wait_for(watch.restarted.wait(), timeout=JOIN_RESTART_TIMEOUT)
         except TimeoutError:
             return
+        # pause takes no playback lock, so a newer command can land while the join runs
+        if self._join_restart_watch is not watch:
+            return
         self._join_restart_watch = None
         # past the end the last second plays out and the queue completes the track as usual
         position = min(
@@ -735,6 +737,11 @@ class WiimPlayer(Player):
         # the player's lock alone, so it waits for the join to return to keep that order
         self._pending_join_resume = watch
         self.mass.create_task(self._seek_after_join_restart(watch, position))
+
+    def _drop_join_restart_resume(self) -> None:
+        """Let a newer playback command win over a join-restart resume."""
+        self._join_restart_watch = None
+        self._pending_join_resume = None
 
     async def _seek_after_join_restart(self, watch: _JoinRestartWatch, position: int) -> None:
         """Seek the queue, which rebuilds the stream at a position the firmware keeps."""

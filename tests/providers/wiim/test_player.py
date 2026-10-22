@@ -1073,6 +1073,23 @@ class TestFirstFollowerJoinRestart:
 
         mock_provider.mass.player_queues.seek.assert_not_awaited()
 
+    async def test_pause_during_the_join_is_not_undone(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A pause that lands after the restart report but before the join returns wins."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+
+        async def _join(*_args: Any) -> None:
+            mock_wiim_device.event_data = {"TransportState": "TRANSITIONING"}
+            player._handle_sdk_av_transport_event(MagicMock(), [])
+            await player.pause()
+
+        cast("AsyncMock", player._native_groups.set_members).side_effect = _join
+
+        await self._join(player, ["wiim_uuid:follower"])
+
+        mock_provider.mass.player_queues.seek.assert_not_awaited()
+
     async def test_join_on_item_without_duration_is_not_watched(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
