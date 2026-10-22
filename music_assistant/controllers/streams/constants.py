@@ -90,6 +90,9 @@ class PacingProfile(StrEnum):
     # A pace close to playback speed leaves most of that on the server. The burst is
     # the least a player holds at a session start, before a slow source earned it a lead.
     NEAR_REALTIME = "near_realtime"
+    # the flow stream for a player that asked for a larger lead: one that re-requests the
+    # stream when its buffer runs low while a slow source opens the next track
+    FLOW_LEAD = "flow_lead"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay
     LOW_LATENCY = "low_latency"
@@ -98,6 +101,7 @@ class PacingProfile(StrEnum):
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
     PacingProfile.DEFAULT: ("1.1", "60"),
     PacingProfile.NEAR_REALTIME: ("1.01", "3"),
+    PacingProfile.FLOW_LEAD: ("1.03", "3"),
     PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
 

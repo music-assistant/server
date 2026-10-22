@@ -13,7 +13,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_FLOW_MODE, CONF_SAMPLE_RATES
+from music_assistant.constants import CONF_FLOW_MODE, CONF_FLOW_STREAM_LEAD, CONF_SAMPLE_RATES
 from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
 from music_assistant.providers.raumfeld.helpers import library_uri
 from music_assistant.providers.raumfeld.player import (
@@ -136,6 +136,12 @@ def test_flow_mode_is_on_by_default() -> None:
     entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_FLOW_MODE)
     assert entry.default_value is True
     assert not entry.hidden
+
+
+def test_a_larger_flow_lead_is_on_by_default() -> None:
+    """The zone renderer gets a larger lead on the flow stream unless it is switched off."""
+    entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_FLOW_STREAM_LEAD)
+    assert entry.default_value is True
 
 
 def test_near_track_end() -> None:

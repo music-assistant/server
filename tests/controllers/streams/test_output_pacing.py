@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from typing import cast
+from unittest.mock import MagicMock
+
+import pytest
 
 from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
+from music_assistant.controllers.streams.controller import StreamsController
 
 # A track of ordinary length from a source that delivers just-in-time, at the low end
 # of what the Spotify Soloist backend delivered when measured (1.07x to 1.1x).
@@ -98,3 +102,46 @@ def test_the_opening_burst_outlasts_a_source_starting_up() -> None:
 def test_the_low_latency_burst_stays_under_a_second() -> None:
     """A live source's burst is listening delay: the player buffers it ahead of real time."""
     assert _value(output_pacing_args(PacingProfile.LOW_LATENCY), "-readrate_initial_burst") <= 1
+
+
+def test_the_flow_lead_profile_gives_more_lead_and_still_banks() -> None:
+    """
+    A player that asked for a larger lead gets a pace above the flow stream's usual one.
+
+    It still stays well under what a just-in-time source delivers, so such a source keeps
+    banking ahead for its crossfades, only less than at the usual pace.
+    """
+    lead = _value(output_pacing_args(PacingProfile.FLOW_LEAD), "-readrate")
+    assert lead > _value(output_pacing_args(PacingProfile.NEAR_REALTIME), "-readrate")
+    assert lead < SLOW_SOURCE_RATE
+    assert _value(output_pacing_args(PacingProfile.FLOW_LEAD), "-readrate_initial_burst") <= 5
+
+
+def test_the_flow_lead_pacing_is_the_measured_one() -> None:
+    """The pace a Raumfeld zone renderer played on without re-requesting the flow stream."""
+    assert output_pacing_args(PacingProfile.FLOW_LEAD) == [
+        "-readrate",
+        "1.03",
+        "-readrate_initial_burst",
+        "3",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("setting", "profile"),
+    [
+        (None, PacingProfile.NEAR_REALTIME),
+        (False, PacingProfile.NEAR_REALTIME),
+        (True, PacingProfile.FLOW_LEAD),
+    ],
+)
+def test_the_flow_stream_takes_the_lead_a_player_asked_for(
+    setting: bool | None, profile: PacingProfile
+) -> None:
+    """The flow stream keeps its usual pace unless the player's setting asks for a lead."""
+    controller = StreamsController.__new__(StreamsController)
+    player = MagicMock()
+    player.get_config_value.side_effect = lambda _key, default: (
+        default if setting is None else setting
+    )
+    assert controller._flow_pacing(player) == profile

@@ -49,6 +49,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
     CONF_ENTRY_ENABLE_ICY_METADATA,
+    CONF_ENTRY_FLOW_STREAM_LEAD,
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_HTTP_PROFILE,
@@ -1542,7 +1543,7 @@ class StreamsController(CoreController):
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
             # one continuous stream, so the player gains nothing from running far ahead
-            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
+            extra_input_args=output_pacing_args(self._flow_pacing(player)),
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
         client_disconnected = False
@@ -2738,6 +2739,16 @@ class StreamsController(CoreController):
         queue_owners.discard(owner)
         if not queue_owners:
             del owners[queue_id]
+
+    def _flow_pacing(self, player: Player) -> PacingProfile:
+        """
+        Return the pace at which the flow stream is handed to a player.
+
+        :param player: The player the flow stream is for.
+        """
+        # the active config carries the player's own default, which a provider may raise
+        flow_lead = player.get_config_value(CONF_ENTRY_FLOW_STREAM_LEAD.key, False)
+        return PacingProfile.FLOW_LEAD if flow_lead is True else PacingProfile.NEAR_REALTIME
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:

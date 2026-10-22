@@ -7,6 +7,7 @@ from music_assistant_models.config_entries import ConfigEntry
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_FLOW_STREAM_LEAD,
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
     create_sample_rates_config_entry,
@@ -72,6 +73,11 @@ PLAYER_CONFIG_ENTRIES = [
     # forced_content_length reproduces it); a chunked response carries none, so the host
     # relays the flow as one continuous connection.
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+    # A larger lead on the flow stream by default. Spotify on its Soloist backend opens the
+    # next track only once the current one is over; at a pace close to playback speed the
+    # zone renderer runs dry meanwhile and requests the flow again, which starts it over at
+    # its first item.
+    ConfigEntry.from_dict({**CONF_ENTRY_FLOW_STREAM_LEAD.to_dict(), "default_value": True}),
     # ICY on by default. The stream never changes - it is one flow for the whole queue - so
     # the ICY StreamTitle, which the host parses out of the relayed stream, is the only way
     # the Raumfeld app can follow the queue. It carries the title only: the app's clock and

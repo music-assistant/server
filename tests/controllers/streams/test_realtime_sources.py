@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_FLOW_STREAM_LEAD
 from music_assistant.controllers.streams import controller as controller_mod
 from music_assistant.controllers.streams.audio import (
     MIN_CROSSFADE_DURATION,
@@ -2279,7 +2280,7 @@ async def test_single_item_handler_reports_its_player_connection(
 
 
 def _flow_handler(
-    monkeypatch: pytest.MonkeyPatch, *, is_realtime: bool
+    monkeypatch: pytest.MonkeyPatch, *, is_realtime: bool, flow_lead: bool = False
 ) -> tuple[Any, MagicMock, dict[str, Any]]:
     """Return a flow stream handler rigged to stop at the encode ffmpeg call."""
     start_queue_item = SimpleNamespace(
@@ -2311,7 +2312,11 @@ def _flow_handler(
     mass.player_queues.get_item.return_value = start_queue_item
     mass.config.get_raw_player_config_value.return_value = "disabled"
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
-    player.get_config_value = MagicMock(return_value="default")
+    player.get_config_value = MagicMock(
+        side_effect=lambda key, _default=None: (
+            flow_lead if key == CONF_FLOW_STREAM_LEAD else "default"
+        )
+    )
     player.state.name = "Player"
     mass.players.get_player.return_value = player
 
@@ -2375,6 +2380,18 @@ async def test_flow_is_always_paced_close_to_playback(
         await controller.serve_queue_flow_stream(request)
 
     assert seen["extra_input_args"] == output_pacing_args(PacingProfile.NEAR_REALTIME)
+
+
+async def test_a_player_that_asked_for_a_lead_gets_it_on_the_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player with the flow stream lead setting on gets the flow at the lead pace."""
+    controller, request, seen = _flow_handler(monkeypatch, is_realtime=True, flow_lead=True)
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_flow_stream(request)
+
+    assert seen["extra_input_args"] == output_pacing_args(PacingProfile.FLOW_LEAD)
 
 
 async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:

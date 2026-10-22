@@ -141,6 +141,7 @@ DSP_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
+CONF_FLOW_STREAM_LEAD: Final[str] = "flow_stream_lead"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
@@ -403,6 +404,16 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
+)
+
+# A player that re-requests the flow stream when its buffer runs low at a track boundary
+# (and so hears the flow start over) gets a larger lead on the flow stream with this on.
+CONF_ENTRY_FLOW_STREAM_LEAD = ConfigEntry(
+    key=CONF_FLOW_STREAM_LEAD,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    category="protocol_generic",
+    advanced=True,
 )
 
 

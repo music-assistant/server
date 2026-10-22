@@ -42,6 +42,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
+    CONF_ENTRY_FLOW_STREAM_LEAD,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
@@ -764,6 +765,7 @@ class PlayerConfigMixin:
                     forced_sample_rate_entry = deepcopy(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
                     forced_sample_rate_entry.depends_on = None
                     default_entries.append(forced_sample_rate_entry)
+                default_entries.append(CONF_ENTRY_FLOW_STREAM_LEAD)
         if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
             default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries

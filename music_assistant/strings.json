@@ -82,6 +82,10 @@
       "label": "Enable queue flow mode",
       "description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream.\nUse for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks."
     },
+    "flow_stream_lead": {
+      "label": "Larger lead on the flow stream",
+      "description": "Sends the continuous flow stream slightly ahead of playback, so the player has more buffered at a track change.\nTurn this on if the player starts the queue over, or stops, at the end of a track from a slow source (such as radio or Spotify)."
+    },
     "flow_mode_sample_rate": {
       "label": "Flow Mode sample rate",
       "description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.",

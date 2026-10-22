@@ -112,6 +112,8 @@
   "common.config_entries.flow_mode_sample_rate.options.bit_perfect": "Bit-perfect",
   "common.config_entries.flow_mode_sample_rate.options.highest": "Highest supported by player",
   "common.config_entries.flow_mode_sample_rate.options.smart": "Smart",
+  "common.config_entries.flow_stream_lead.description": "Sends the continuous flow stream slightly ahead of playback, so the player has more buffered at a track change.\nTurn this on if the player starts the queue over, or stops, at the end of a track from a slow source (such as radio or Spotify).",
+  "common.config_entries.flow_stream_lead.label": "Larger lead on the flow stream",
   "common.config_entries.hide_in_ui.description": "Hide this player from the main players list and dashboard selection menus.  The player remains fully controllable and still appears in any sync group it currently belongs to and in the settings. Disable the player to exclude it everywhere.",
   "common.config_entries.hide_in_ui.label": "Hide this player in the user interface",
   "common.config_entries.http_profile.description": "This is considered to be a very advanced setting, only adjust this if needed, for example if your player stops playing halfway streams or if you experience other playback related issues. In most cases the default setting is fine.",
