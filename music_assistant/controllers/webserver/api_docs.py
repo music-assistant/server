@@ -1168,7 +1168,8 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                     "description": (
                         "Optional user_id or username of the user to execute this "
                         "command on behalf of. Requires the users.impersonate scope "
-                        "when targeting another user."
+                        "when targeting another user, who must hold the command's "
+                        "required scope as well."
                     ),
                 }
             )

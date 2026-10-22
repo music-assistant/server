@@ -188,8 +188,8 @@ class AsyncProcess:
         self._stdin_lock = asyncio.Lock()
         self._close_called = False
         self._stdin_eof = False
-        # set by close() when a reader kept stdout past the release budget: that
-        # reader then stays in charge of the stream until EOF
+        # set by close() or kill() when a reader still held stdout: that reader then
+        # stays in charge of the stream until EOF
         self._stdout_left_to_reader = False
         self._returncode: int | None = None
 
@@ -381,7 +381,7 @@ class AsyncProcess:
         # keyed on the close flag rather than the returncode (like read() and
         # readexactly()): a process that already exited still has its last
         # lines sitting in the stream buffer, and those must still be readable.
-        # A reader close() left the stream to reads on until EOF.
+        # A reader close() or kill() left the stream to reads on until EOF.
         if self._close_called and not self._stdout_left_to_reader:
             return b""
         assert self.proc is not None  # for type checking
@@ -528,7 +528,13 @@ class AsyncProcess:
         Use this for forceful termination when the process doesn't respond to
         normal termination signals. Unlike close(), this doesn't attempt graceful
         shutdown - it immediately sends SIGKILL.
+
+        A reader the caller still has on stdout or stderr is left in place: it
+        keeps draining its stream until the kill closes the pipe.
         """
+        # only the first close() or kill() may leave stdout to a reader: a lock a
+        # concurrent close() holds is not a reader's
+        first_close = not self._close_called
         self._close_called = True
         if not self.proc or self.returncode is not None:
             return
@@ -555,9 +561,21 @@ class AsyncProcess:
 
         # SIGKILL leaves whatever the child already wrote in the pipes, and the reap
         # below only completes once they disconnect - so drain them here rather than
-        # waiting that out for output nobody is going to read
+        # waiting that out for output nobody is going to read. A pipe with a reader
+        # still on it cannot be read here as well (asyncio refuses the concurrent
+        # read), so it is left to that reader, which reads on through EOF
+        if first_close:
+            self._stdout_left_to_reader = self._stdout_lock.locked()
+        drains = [
+            self._drain_under_lock(stream, lock)
+            for stream, lock in (
+                (self.proc.stdout, self._stdout_lock),
+                (self.proc.stderr, self._stderr_lock),
+            )
+            if stream is not None and not lock.locked()
+        ]
         try:
-            await asyncio.wait_for(self.proc.communicate(), 2)
+            await asyncio.wait_for(asyncio.gather(*drains), 2)
         except TimeoutError:
             pass  # the escalation below takes over
         except Exception as err:
@@ -668,6 +686,16 @@ class AsyncProcess:
         except asyncio.CancelledError as err:
             return cancelled or err
         return cancelled
+
+    async def _drain_under_lock(self, stream: asyncio.StreamReader, lock: asyncio.Lock) -> None:
+        """
+        Read one of the process' pipes through to EOF, with no reader joining in meanwhile.
+
+        :param stream: The stream to drain.
+        :param lock: The lock guarding that stream's readers.
+        """
+        async with lock:
+            await stream.read(-1)
 
     async def _drain_stdin_locked(self, timeout: float) -> bool:
         """

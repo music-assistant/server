@@ -247,33 +247,24 @@ def test_dir_matches_album_date_prefix_path_rejects_reordered_words() -> None:
     assert compare_strings("Alpha Beta", stripped, True) is False
 
 
-@pytest.mark.parametrize(
-    ("name", "expected"),
-    [
-        ("Disc 1", True),
-        ("disc1", True),
-        ("CD2", True),
-        ("cd 03", True),
-        ("Disk 1", True),
-        ("DVD1", True),
-        ("Volume 2", True),
-        ("Vol. 2", True),
-        ("Album", False),
-        ("weird-disc-name", False),
-        ("", False),
-    ],
-)
-def test_is_disc_dir(name: str, expected: bool) -> None:
-    """Only a recognized disc/volume naming pattern is treated as a disc subfolder."""
-    assert helpers.is_disc_dir(name) is expected
-
-
 def test_parse_nfo_root_returns_the_named_root_element() -> None:
     """A well-formed NFO with the expected root element returns it as a dict."""
     data = b"<album><title>My Album</title></album>"
     root = helpers.parse_nfo_root(data, "album")
     assert root is not None
     assert root["title"] == "My Album"
+
+
+def test_parse_nfo_root_matches_tag_names_case_insensitively() -> None:
+    """Tag names are lowercased, so Kodi's camelCase tags match the lowercase lookups."""
+    data = (
+        b"<artist><name>Name</name><musicBrainzArtistID>abc</musicBrainzArtistID>"
+        b'<thumb Aspect="thumb">x</thumb></artist>'
+    )
+    root = helpers.parse_nfo_root(data, "artist")
+    assert root is not None
+    assert root["musicbrainzartistid"] == "abc"
+    assert root["thumb"] == {"@aspect": "thumb", "#text": "x"}
 
 
 @pytest.mark.parametrize(

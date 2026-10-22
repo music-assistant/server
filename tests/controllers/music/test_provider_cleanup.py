@@ -432,8 +432,7 @@ async def test_item_without_provider_mappings_raises_media_not_found(
     )
 
     with pytest.raises(MediaNotFoundError):
-        async for _ in playlists.tracks(str(db_id), "library"):
-            pass
+        await playlists.tracks(str(db_id), "library")
 
 
 async def test_database_cleanup_removes_relations_of_deleted_items(mass: MusicAssistant) -> None:

@@ -23,6 +23,7 @@ from .constants import (
     CONF_EXPIRY_TIME,
     CONF_REFRESH_TOKEN,
     CONF_USER_ID,
+    DOMAIN,
 )
 
 if TYPE_CHECKING:
@@ -58,11 +59,14 @@ async def run_setup(session: SetupSession) -> None:
         except LoginFailed as err:
             raise AbortFlow("login_failed") from err
 
+        user_id = str(auth_data["userId"])
+        if await _account_in_use(session, user_id):
+            raise AbortFlow("account_already_configured")
         collected: dict[str, ConfigValueType] = {
             CONF_AUTH_TOKEN: auth_data["access_token"],
             CONF_REFRESH_TOKEN: auth_data["refresh_token"],
             CONF_EXPIRY_TIME: auth_data["expires_at"],
-            CONF_USER_ID: str(auth_data["userId"]),
+            CONF_USER_ID: user_id,
         }
         await session.finish(collected)
         return
@@ -72,3 +76,20 @@ def _verification_url(device: dict[str, str]) -> str:
     """Return the full (scheme-prefixed) verification URL with the code pre-filled."""
     url = str(device.get("verificationUriComplete") or device["verificationUri"])
     return url if url.startswith("http") else f"https://{url}"
+
+
+async def _account_in_use(session: SetupSession, user_id: str) -> bool:
+    """
+    Return whether another Tidal provider instance is already set up for this account.
+
+    :param session: The setup session driving the flow.
+    :param user_id: The Tidal user id that just signed in.
+    """
+    mass = session.mass
+    for config in await mass.config.get_provider_configs(provider_domain=DOMAIN):
+        if config.instance_id == session.context.instance_id:
+            continue
+        stored = mass.config.get_provider_setup_value(config.instance_id, CONF_USER_ID)
+        if stored and str(stored) == user_id:
+            return True
+    return False

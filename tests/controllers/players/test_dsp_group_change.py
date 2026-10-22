@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -13,7 +14,7 @@ from music_assistant.controllers.players import PlayerController
 from tests.common import scheduled_call
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
 
 
 @pytest.fixture
@@ -81,7 +82,7 @@ class TestDspChangeRestart:
 
         mock_mass.player_queues.is_playing_queue.assert_called_once_with("player_1", player)
         mock_mass.call_later.assert_called_once_with(
-            0, mock_mass.player_queues.resume, "player_1", False
+            0, controller._resume_queue_after_dsp_change, "player_1"
         )
         _stop_and_play(controller)[0].assert_not_awaited()
 
@@ -113,7 +114,7 @@ class TestDspChangeRestart:
 
         mock_mass.player_queues.is_playing_queue.assert_not_called()
         mock_mass.call_later.assert_called_once_with(
-            0, mock_mass.player_queues.resume, "player_1", False
+            0, controller._resume_queue_after_dsp_change, "player_1"
         )
 
     async def test_does_nothing_when_not_playing(self, mock_mass: MagicMock) -> None:
@@ -180,8 +181,30 @@ class TestDspChangeRestart:
 
         mock_mass.player_queues.is_playing_queue.assert_called_once_with("leader", child)
         mock_mass.call_later.assert_called_once_with(
-            0, mock_mass.player_queues.resume, "leader", False
+            0, controller._resume_queue_after_dsp_change, "leader"
         )
+
+    async def test_restart_skips_a_queue_emptied_while_waiting_for_the_lock(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A queue transferred away while the restart waited for the lock is not resumed."""
+        controller = _controller(mock_mass, _player())
+        queue = MagicMock(queue_id="player_1", items=3)
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        mock_mass.player_queues.resume = AsyncMock()
+
+        @asynccontextmanager
+        async def _lock_held_by_transfer(*_args: object, **_kwargs: object) -> AsyncIterator[None]:
+            queue.items = 0
+            yield
+
+        controller.get_group_and_player_lock = _lock_held_by_transfer  # type: ignore[method-assign]
+
+        await controller.on_player_dsp_change("player_1", after_group_change=True)
+        _delay, target, *args = mock_mass.call_later.call_args.args
+        await target(*args)
+
+        mock_mass.player_queues.resume.assert_not_awaited()
 
 
 class TestGroupDspChange:

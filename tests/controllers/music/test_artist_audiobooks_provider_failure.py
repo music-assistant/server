@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from unittest.mock import patch
+from typing import Literal
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.enums import ArtistType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ArtistType, ProviderSharing
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
@@ -20,6 +23,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
 
 pytestmark = pytest.mark.asyncio
 
@@ -88,6 +92,102 @@ def _failing_provider_fetch(
         return []
 
     return _fetch
+
+
+async def test_author_audiobooks_filter_source_before_paging(mass: MusicAssistant) -> None:
+    """A selected provider excludes other library books and provider requests before paging."""
+    db_author = await _seed_author(mass, library_audiobooks=("Other Book",))
+    books = [
+        Audiobook(
+            item_id=f"book_{index}",
+            provider="streaming_inst",
+            name=f"Selected Book {index}",
+            provider_mappings={_mapping("streaming_inst", f"book_{index}")},
+            authors=UniqueList([db_author]),
+        )
+        for index in range(2)
+    ]
+    fetch = AsyncMock(return_value=books)
+    with (
+        patch.object(mass.music, "get_unique_providers", return_value=_PROVIDERS),
+        patch.object(mass.music.artists, "get_provider_author_audiobooks", fetch),
+    ):
+        items = await mass.music.artists.audiobooks(
+            "author_streaming",
+            "streaming_inst",
+            provider_filter="streaming_inst",
+            limit=1,
+            offset=1,
+        )
+
+    assert [item.name for item in items] == ["Selected Book 1"]
+    fetch.assert_awaited_once_with("author_streaming", "streaming_inst")
+
+
+@pytest.mark.parametrize("collapse_collections", [False, True])
+async def test_author_library_audiobooks_filter_source(
+    mass: MusicAssistant, collapse_collections: Literal[False, True]
+) -> None:
+    """The source filter also excludes other providers' books and collapsed collections."""
+    db_author = await _seed_author(
+        mass, library_audiobooks=("Other Book",), collection_name="Other Series"
+    )
+    items = await mass.music.artists.audiobooks(
+        db_author.item_id,
+        "library",
+        in_library_only=True,
+        provider_filter="streaming_inst",
+        collapse_collections=collapse_collections,
+    )
+    assert items == []
+
+    items = await mass.music.artists.audiobooks(
+        db_author.item_id,
+        "library",
+        in_library_only=True,
+        provider_filter="local_inst",
+        collapse_collections=collapse_collections,
+    )
+    assert [item.name for item in items] == (
+        ["Other Series"] if collapse_collections else ["Other Book"]
+    )
+
+
+async def test_author_library_audiobooks_follow_the_users_music_sources(
+    mass: MusicAssistant,
+) -> None:
+    """A restricted user does not see the author's library audiobooks on another user's source."""
+    db_author = await _seed_author(mass, library_audiobooks=("Local Book",))
+    await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name="Streaming Book",
+            provider_mappings={_mapping("streaming_inst", "book_streaming")},
+            authors=UniqueList([db_author]),
+        )
+    )
+    set_music_source_access(
+        mass,
+        {
+            "local_inst": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            "streaming_inst": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+
+    all_books = await mass.music.artists.audiobooks(
+        db_author.item_id, "library", in_library_only=True
+    )
+    assert {item.name for item in all_books} == {"Local Book", "Streaming Book"}
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=User(user_id="user-a", username="user-a", role=UserRole.USER),
+    ):
+        own_books = await mass.music.artists.audiobooks(
+            db_author.item_id, "library", in_library_only=True
+        )
+    assert [item.name for item in own_books] == ["Local Book"]
 
 
 async def test_author_audiobooks_skip_failing_provider(

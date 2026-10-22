@@ -2014,3 +2014,16 @@ async def test_parse_album_warns_for_every_folder_missing_an_album_artist() -> N
     )
 
     assert provider.logger.warning.call_count == 2
+
+
+async def test_parse_album_folder_name_fallback_uses_track_artists_at_share_root() -> None:
+    """An album folder at the share root has no artist folder, so track artists are used."""
+    provider = _missing_album_artist_provider(
+        b"<album><title>My Album</title></album>", fallback_action="folder_name"
+    )
+
+    album = await provider._parse_album(
+        track_path="Track Artist - My Album/t1.mp3", track_tags=_missing_album_artist_tags()
+    )
+
+    assert [artist.name for artist in album.artists] == ["Track Artist"]

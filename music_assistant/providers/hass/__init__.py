@@ -282,6 +282,9 @@ class HomeAssistantProvider(PluginProvider):
         )
         try:
             await self.hass.connect()
+        except asyncio.CancelledError:
+            await self._cleanup_failed_init()
+            raise
         except BaseHassClientError as err:
             await self._cleanup_failed_init()
             err_msg = str(err) or err.__class__.__name__
@@ -748,6 +751,10 @@ class HomeAssistantProvider(PluginProvider):
             media_type=MediaType.SOUND_EFFECT,
             stream_type=StreamType.HTTP,
             path=url,
+            # the add-on reaches HA through the supervisor, and HA's own https certificate
+            # is self-signed on most installs
+            verify_ssl=not self.mass.running_as_hass_addon
+            and bool(self.get_setup_value(CONF_VERIFY_SSL, True)),
         )
 
     async def _hass_listener(self) -> None:
@@ -757,6 +764,12 @@ class HomeAssistantProvider(PluginProvider):
             await self.hass.start_listening()
         except BaseHassClientError as err:
             self.logger.warning("Connection to HA lost due to error: %s", err)
+        except Exception as err:
+            # any other error would end the listener without arming the reconnect below,
+            # leaving the provider loaded but permanently disconnected
+            self.logger.warning(
+                "Home Assistant listener stopped unexpectedly: %s", err, exc_info=err
+            )
         if not self._startup_complete:
             return
         self.logger.info("Connection to HA lost. Connection will be automatically retried later.")

@@ -279,14 +279,6 @@ def is_image_file(item: FileSystemItem) -> bool:
 
 # folder names that denote a disc/volume subfolder underneath an album folder; its own NFO is
 # never trusted as the album's identity, only the parent's is
-_DISC_DIR_RE = re.compile(r"^(?:disc|disk|cd|dvd|vol(?:ume)?)[\s._-]*\d+\b", re.IGNORECASE)
-
-
-def is_disc_dir(name: str) -> bool:
-    """Return True when a folder name looks like a disc subfolder (e.g. ``Disc 1``, ``CD2``)."""
-    return bool(_DISC_DIR_RE.match(name.strip()))
-
-
 def parse_nfo_root(data: bytes, root_tag: str) -> dict[str, Any] | None:
     """
     Parse an NFO file's bytes and return its expected root element, or None when malformed.
@@ -296,7 +288,8 @@ def parse_nfo_root(data: bytes, root_tag: str) -> dict[str, Any] | None:
     """
     try:
         text = data.decode("utf-8")
-        parsed = xmltodict.parse(text)
+        # tag names are matched case-insensitively: Kodi writes e.g. <musicBrainzArtistID>
+        parsed = xmltodict.parse(text, postprocessor=_lowercase_nfo_key)
     except UnicodeDecodeError, ExpatError, ValueError:
         return None
     root = parsed.get(root_tag)
@@ -882,3 +875,8 @@ def _real_path_of(fd: int) -> str:
         # 1024 is MAXPATHLEN, the buffer size F_GETPATH writes the path into
         return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0])
     return str(Path(f"/proc/self/fd/{fd}").readlink())
+
+
+def _lowercase_nfo_key(_path: Any, key: str, value: Any) -> tuple[str, Any]:
+    """Lowercase an NFO element/attribute name (xmltodict postprocessor)."""
+    return key.lower(), value

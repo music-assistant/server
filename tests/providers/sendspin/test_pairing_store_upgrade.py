@@ -61,8 +61,8 @@ async def test_legacy_pair_methods_load_under_the_new_names(tmp_path: Path) -> N
     assert static_record.psk_id == "psk-static"
 
 
-async def test_legacy_store_is_rewritten_with_the_new_names(tmp_path: Path) -> None:
-    """Once the upgraded store saves, the old names are gone from the file."""
+async def test_saved_store_keeps_the_legacy_names(tmp_path: Path) -> None:
+    """A saved store keeps the old names, so rolling back to 9.1.1 can still read it."""
     store_path = tmp_path / "pairing_store.json"
     _write_legacy_store(store_path)
     store = await FileServerPairingStore.open(store_path)
@@ -71,4 +71,4 @@ async def test_legacy_store_is_rewritten_with_the_new_names(tmp_path: Path) -> N
 
     saved = json.loads(store_path.read_text(encoding="utf-8"))
     methods = saved["records"]["client-pin"]["pair_methods"]
-    assert methods == [PairMethod.DYNAMIC_PAIRING_CODE.value]
+    assert methods == ["dynamic_pin"]

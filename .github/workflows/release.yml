@@ -169,7 +169,7 @@ jobs:
 
       - name: Create immutable-settings token
         id: immutable_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -433,7 +433,7 @@ jobs:
       - name: Create appvars token
         if: needs.resolve.outputs.assets_ready != 'true'
         id: appvars_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -528,7 +528,7 @@ jobs:
             --directory source/dist
 
       - name: Preserve release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -570,7 +570,7 @@ jobs:
           persist-credentials: false
 
       - name: Restore release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -862,7 +862,7 @@ jobs:
 
       - name: Restore release assets
         if: needs.resolve.outputs.release_state != 'published'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -1095,7 +1095,7 @@ jobs:
 
       - name: Restore draft assets
         if: steps.publication_state.outputs.already_published != 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-dists-${{ github.run_id }}
           path: source/dist/
@@ -1124,7 +1124,7 @@ jobs:
       - name: Create publication settings token
         if: steps.publication_state.outputs.already_published != 'true'
         id: immutable_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -1433,7 +1433,7 @@ jobs:
 
       - name: Create add-on repository token
         id: addon_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
@@ -1611,7 +1611,7 @@ jobs:
 
       - name: Create app repository token
         id: app_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}

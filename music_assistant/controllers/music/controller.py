@@ -9,7 +9,7 @@ from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
@@ -52,9 +52,12 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
+    RecommendationFolder,
     SearchResults,
     SoundEffect,
     Track,
+    media_from_dict,
 )
 from music_assistant_models.media_items.media_item import MediaCollection
 from music_assistant_models.playlog_update import PlaylogUpdate
@@ -72,8 +75,10 @@ from music_assistant.constants import (
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.controllers.music.constants import (
+    BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
     CONF_DELETED_PROVIDERS,
+    CONF_KEEP_REMASTERS_APART,
     CONF_RESET_DB,
     CONF_TRACK_RECONCILIATION_CURSOR,
     CONF_TRACK_RECONCILIATION_RESCAN_DUE,
@@ -102,7 +107,12 @@ from music_assistant.controllers.music.helpers import (
     sibling_instance_mappings,
     sort_search_result,
 )
-from music_assistant.controllers.music.listing_cache import invalidate_listings
+from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
+from music_assistant.controllers.music.listing_cache import (
+    Listing,
+    cached_listing,
+    invalidate_listings,
+)
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.audiobooks import AudiobooksController
@@ -137,6 +147,7 @@ from music_assistant.helpers.compare import (
     compare_strings,
     compare_track,
     compare_version,
+    set_keep_remasters_apart,
 )
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
@@ -151,8 +162,10 @@ from music_assistant.helpers.provider_access import (
     own_music_sources,
     playback_instance_for,
     source_owner,
+    visible_items,
     visible_music_sources,
     visible_playback_sources,
+    visible_provider,
 )
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
@@ -160,7 +173,11 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.media_capabilities import MediaCatalogMixin
-from music_assistant.models.music_provider import LIBRARY_FEATURE_BY_MEDIA_TYPE, MusicProvider
+from music_assistant.models.music_provider import (
+    LIBRARY_FEATURE_BY_MEDIA_TYPE,
+    MusicProvider,
+    NothingToSync,
+)
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -208,6 +225,78 @@ def _album_title_match(base: str, other: str) -> str:
             f"substr({base}.search_name, 1, length({base}.search_name) - {len(suffix)}))"
         )
     return " OR ".join(matches)
+
+
+# the library folders the default MusicProvider.browse lists, by their path
+_LIBRARY_FOLDERS: Final[dict[str, MediaType]] = {
+    "artists": MediaType.ARTIST,
+    "albums": MediaType.ALBUM,
+    "tracks": MediaType.TRACK,
+    "radios": MediaType.RADIO,
+    "playlists": MediaType.PLAYLIST,
+    "audiobooks": MediaType.AUDIOBOOK,
+    "podcasts": MediaType.PODCAST,
+}
+# the folders the default MusicProvider.browse lists at the root, by the feature behind each
+_ROOT_FOLDERS: Final[dict[ProviderFeature, str]] = {
+    ProviderFeature.LIBRARY_ARTISTS: "artists",
+    ProviderFeature.LIBRARY_ALBUMS: "albums",
+    ProviderFeature.LIBRARY_TRACKS: "tracks",
+    ProviderFeature.LIBRARY_PLAYLISTS: "playlists",
+    ProviderFeature.LIBRARY_RADIOS: "radios",
+    ProviderFeature.LIBRARY_AUDIOBOOKS: "audiobooks",
+    ProviderFeature.LIBRARY_PODCASTS: "podcasts",
+    ProviderFeature.SOUND_EFFECTS: "sound_effects",
+    ProviderFeature.RECOMMENDATIONS: "recommendations",
+}
+
+
+def _library_folder(provider: MusicProvider, sub_path: str) -> MediaType | None:
+    """
+    Return the media type of the standard library folder a path of the provider lists, if any.
+
+    A root that holds a single folder lists the items of that folder, as the default browse does.
+    """
+    if not sub_path:
+        folders = [
+            folder
+            for feature, folder in _ROOT_FOLDERS.items()
+            if feature in provider.supported_features
+        ]
+        sub_path = folders[0] if len(folders) == 1 else ""
+    return _LIBRARY_FOLDERS.get(sub_path)
+
+
+async def _browse_folder(provider: MusicProvider, path: str) -> Listing[Any]:
+    """
+    Return a provider's folder as the provider lists it.
+
+    A folder of library items, such as a service's own library folders, is not kept.
+
+    :param provider: The provider the folder belongs to.
+    :param path: The path of the folder.
+    """
+    # typed loosely: a folder holds browse folders and item mappings next to its media items
+    items = list(await provider.browse(path=path))
+    # library items come from the database, which a later page reads just as cheaply
+    return Listing(items, complete=not any(item.provider == "library" for item in items))
+
+
+class _BrowseItem:
+    """The items of a cached browse listing, rebuilt as the kind each was stored as."""
+
+    @staticmethod
+    def from_dict(raw: dict[str, Any]) -> MediaItemType | ItemMapping | BrowseFolder:
+        """
+        Return the browse item a stored dict holds.
+
+        :param raw: The item as the cache stored it.
+        """
+        if raw.get("media_type") == MediaType.FOLDER:
+            # only a recommendation folder carries the items of its row
+            folder_cls = RecommendationFolder if "items" in raw else BrowseFolder
+            return folder_cls.from_dict(raw)
+        return media_from_dict(raw)
 
 
 # Selects pairs of library track rows that are likely the same recording held twice,
@@ -322,6 +411,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.favorites = FavoritesStore(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
+        # a sync ran that MUSIC_SYNC_COMPLETED has not announced yet
+        self._sync_completion_pending = False
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
@@ -338,6 +429,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         return (
+            ConfigEntry(
+                key=CONF_KEEP_REMASTERS_APART,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+                immediate_apply=True,
+            ),
             ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
@@ -385,6 +483,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self.config = config
+        set_keep_remasters_apart(bool(config.get_value(CONF_KEEP_REMASTERS_APART)))
         # setup library database
         await self._setup_database()
 
@@ -406,6 +505,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Cleanup on exit."""
         if self._database:
             await self._database.close()
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        set_keep_remasters_apart(bool(config.get_value(CONF_KEEP_REMASTERS_APART)))
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this controller to include in diagnostics reports."""
@@ -839,15 +943,59 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
     async def browse(
-        self, path: str | None = None, *, player_id: str | None = None
+        self,
+        path: str | None = None,
+        *,
+        player_id: str | None = None,
+        search: str | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        limit: int | None = 500,
+        offset: int = 0,
+        random_seed: int | None = None,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
-        Browse Music providers.
+        Browse Music providers, searched, sorted and paged.
+
+        A provider's standard library folders are read a page at a time from the library, and
+        a streaming provider's other folders are browsed once and served from the cache for a
+        while. The entry that leads back up a level always comes first.
 
         :param path: The path to browse; None or "root" for the root level.
         :param player_id: Scope audio-source listings to the sources bound to this
             player (sources of player-unbound plugins are always included).
+        :param search: Only list the items whose name, album name or artist name contains
+            this text.
+        :param sort_field: Sort field, the order of the folder (ORIGINAL) when omitted; sorted
+            by name, the folders come before the other items.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param limit: Maximum number of items to return; 0 returns them all.
+        :param offset: Number of items to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :raises InvalidDataError: When the sort field is not offered for browsing.
         """
+        sort_field, sort_direction = resolve_listing_sort(
+            ListingType.BROWSE, sort_field, sort_direction
+        )
+
+        def _listed(
+            back_items: Sequence[BrowseFolder],
+            items: Sequence[MediaItemType | ItemMapping | BrowseFolder],
+        ) -> list[MediaItemType | ItemMapping | BrowseFolder]:
+            listed = apply_listing(
+                items,
+                ListingType.BROWSE,
+                search=search,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+                random_seed=random_seed,
+            )
+            if sort_field == SortField.NAME:
+                # the folders come before the other items, as in a file browser
+                listed.sort(key=lambda item: not isinstance(item, BrowseFolder))
+            listing = [*back_items, *listed]
+            return listing[offset : offset + limit] if limit else listing[offset:]
+
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
             root_items: list[MediaItemType | BrowseFolder] = []
@@ -892,7 +1040,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                             name=prov.name,
                         )
                     )
-            return root_items
+            return _listed([], root_items)
 
         # provider level
         prepend_items: list[BrowseFolder] = []
@@ -906,7 +1054,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
             if not browse_prov:
-                return prepend_items
+                return _listed(prepend_items, [])
         else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
@@ -927,10 +1075,48 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for source in await self._get_plugin_audio_sources(browse_prov, player_id)
                 if source.can_initiate
             ]
-            return [*prepend_items, *initiable_items]
-        # limit -1 to account for the prepended items
-        prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
-        return [*prepend_items, *prov_items]
+            return _listed(prepend_items, initiable_items)
+        if (
+            isinstance(browse_prov, MusicProvider)
+            and ProviderFeature.BROWSE in browse_prov.supported_features
+            and (media_type := _library_folder(browse_prov, sub_path)) is not None
+            # a provider's own browse may list these folders its own way
+            and type(browse_prov).browse is MusicProvider.browse
+            and (
+                page := await self._library_folder_page(
+                    browse_prov,
+                    media_type,
+                    prepend_items,
+                    search=search,
+                    sort_field=sort_field,
+                    sort_direction=sort_direction,
+                    limit=limit or 0,
+                    offset=offset,
+                    random_seed=random_seed,
+                )
+            )
+            is not None
+        ):
+            return page
+        if (
+            isinstance(browse_prov, MusicProvider)
+            and browse_prov.is_streaming_provider
+            # not when another account of the service answers for an unavailable one
+            and browse_prov.instance_id == provider_instance
+        ):
+            # a streaming service is browsed once for the pages, sorts and searches of a
+            # folder; a local or own-server source is read anew, so a change shows right away
+            prov_items: Sequence[MediaItemType | ItemMapping | BrowseFolder] = await cached_listing(
+                self.mass,
+                ListingType.BROWSE,
+                path,
+                lambda: _browse_folder(browse_prov, path),
+                item_type=_BrowseItem,
+                expiration=BROWSE_CACHE_EXPIRATION,
+            )
+        else:
+            prov_items = await cast("MediaCatalogMixin", browse_prov).browse(path=path)
+        return _listed(prepend_items, prov_items)
 
     @api_command("music/sort_options", required_scope=Scope.LIBRARY_READ)
     def sort_options(self, listing: ListingType) -> list[SortOptionInfo]:
@@ -1441,6 +1627,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 full_item = await cast(
                     "MediaControllerBase[MediaItemType]", ctrl
                 ).add_item_to_library(full_item)
+                await self._link_genres_if_unmapped(full_item)
         elif (
             favorite
             and (own_mappings := self._write_target_mappings(full_item.provider_mappings))
@@ -1610,6 +1797,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self._import_album_tracks_if_enabled(cast("Album", library_item))
         # perform full metadata scan
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
+        if isinstance(library_item, Artist):
+            library_item = await self.artists.get_merged_library_item(library_item)
+        await self._link_genres_if_unmapped(library_item)
         return library_item
 
     @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
@@ -1721,6 +1911,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         )
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        if isinstance(library_item, Artist):
+            library_item = await self.artists.get_merged_library_item(library_item)
         # the item's listings (album tracks, ...) are assembled anew from here on, after
         # every change the refresh made
         await invalidate_listings(self.mass, library_item)
@@ -1807,14 +1999,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             user = provider_user
 
         play_history_written = False
-        user_ids: list[str] = []
+        user_ids = await self._get_playlog_user_ids(user) if not is_playing else []
         # update generic playlog table (when not playing)
         if not is_playing:
-            if user:
-                user_ids = [user.user_id]
-            else:
-                # NOTE: if no user was found, we will alter the playlog for all users
-                user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
             # Leaving the speed out keeps whatever is already stored for this item/user
             # (a provider sync reporting progress has no speed to offer), and falls back to
             # the column default of 1.0 for a brand new row.
@@ -1849,12 +2036,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played = media_item.duration
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        self._forward_play_report(
+        await self._forward_play_report(
             media_item,
             user,
             fully_played=fully_played,
             position=seconds_played,
             is_playing=is_playing,
+            provider_instance_id=provider_instance_id,
         )
 
         # also update playcount in library table (if fully played)
@@ -1952,7 +2140,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        self._forward_play_report(media_item, user, fully_played=False, position=0)
+        await self._forward_play_report(
+            media_item,
+            user,
+            fully_played=False,
+            position=0,
+            provider_instance_id=provider_instance_id,
+        )
 
     @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
@@ -2036,7 +2230,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return None
 
     async def get_resume_position(
-        self, media_item: Audiobook | PodcastEpisode, userid: str | None = None
+        self,
+        media_item: Audiobook | PodcastEpisode,
+        userid: str | None = None,
+        pinned: tuple[str, str] | None = None,
     ) -> tuple[bool, int]:
         """
         Get progress (resume point) details for the given audiobook or episode.
@@ -2048,6 +2245,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         Returns a boolean with the fully_played status
         and an integer with the resume position in ms.
+
+        :param media_item: The audiobook or episode to get the resume point of.
+        :param userid: The user to get the resume point for, by default the session user.
+        :param pinned: The (provider instance, item id) of the copy the item plays from, whose
+            resume point is asked for first.
         """
         provider_fully_played = False
         provider_position_ms = 0
@@ -2073,11 +2275,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             preferred_provider_instances = provider_instances
 
-        preferred_providers = [
-            x
-            for x in media_item.provider_mappings
-            if x.provider_instance in preferred_provider_instances
-        ]
+        preferred_providers = sorted(
+            (
+                x
+                for x in media_item.provider_mappings
+                if x.provider_instance in preferred_provider_instances
+            ),
+            # the copy the item plays from first, then the others in a fixed order
+            key=lambda x: (
+                (x.provider_instance, x.item_id) != pinned,
+                x.provider_instance,
+                x.item_id,
+            ),
+        )
 
         # Try to get position from providers
         for prov_mapping in preferred_providers:
@@ -2501,6 +2711,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Add provider mapping to the given library item."""
         ctrl = self.get_controller(media_type)
+        # only a mapping the provider itself returns as this media type is accepted
+        await ctrl.get_provider_item(
+            mapping.item_id,
+            mapping.provider_instance,
+            allow_fallback=False,
+            strict_provider_instance=True,
+        )
+        provider = self.mass.get_provider(mapping.provider_instance)
+        if provider is None or provider.domain != mapping.provider_domain:
+            msg = f"Provider domain {mapping.provider_domain} does not match {mapping.provider_instance}"
+            raise InvalidDataError(msg)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
     @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)
@@ -2723,6 +2944,57 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         msg = f"{item.name} is not available on any music source of this user"
         raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
 
+    async def _library_folder_page(
+        self,
+        provider: MusicProvider,
+        media_type: MediaType,
+        back_items: list[BrowseFolder],
+        *,
+        search: str | None,
+        sort_field: SortField,
+        sort_direction: SortDirection | None,
+        limit: int,
+        offset: int,
+        random_seed: int | None = None,
+    ) -> list[MediaItemType | BrowseFolder] | None:
+        """
+        Return a page of one of a provider's standard library folders, read from the library.
+
+        :param provider: The provider the folder belongs to.
+        :param media_type: The media type the folder lists.
+        :param back_items: The entries leading back up a level, which come first.
+        :param search: Only list the items whose name contains this text.
+        :param sort_field: Sort field; the folder's own order (ORIGINAL) is the library's.
+        :param sort_direction: Sort direction.
+        :param limit: Maximum number of entries to return; 0 returns them all.
+        :param offset: Number of entries to skip.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        :returns: None while the library holds none of the provider's items of this type,
+            so the provider lists the folder itself.
+        """
+        controller = self.get_controller(media_type)
+        # the entries back up a level count as the first ones of the listing
+        page: list[MediaItemType | BrowseFolder] = list(back_items[offset:])
+        if limit and len(page) >= limit:
+            return page[:limit]
+        typed_sort = sort_field != SortField.ORIGINAL
+        items = await controller.library_items(
+            search=search,
+            limit=limit - len(page) if limit else 0,
+            offset=max(offset - len(back_items), 0),
+            provider=provider.instance_id,
+            sort_field=sort_field if typed_sort else None,
+            sort_direction=sort_direction if typed_sort else None,
+            summary=False,
+            random_seed=random_seed,
+        )
+        if not items and not await controller.library_items(
+            provider=provider.instance_id, limit=1, random_seed=random_seed
+        ):
+            return None
+        page.extend(items)
+        return page
+
     async def _get_plugin_audio_sources(
         self, provider: PluginProvider, player_id: str | None
     ) -> list[AudioSource]:
@@ -2751,6 +3023,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for allowed_player_id in player_filter:
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
+
+    async def _link_genres_if_unmapped(self, item: MediaItemType) -> None:
+        """Link a library item to the genres it carries, if it has no genre links yet."""
+        if item.metadata.genres and not await self.genres.has_genre_mappings(
+            item.media_type, item.item_id
+        ):
+            await self.genres.sync_media_item_genres(
+                item.media_type, item.item_id, set(item.metadata.genres)
+            )
 
     def _write_target_mappings(
         self,
@@ -2803,12 +3084,23 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         :param mapping: The provider mapping to resolve.
         """
-        # an unavailable account of a streaming service resolves to another loaded account
-        # of that service, so the account actually serving the mapping is the one to check
-        provider = self.mass.get_provider(mapping.provider_instance)
-        if provider is None or not self._apply_user_provider_filter([provider]):
-            return None
-        return provider
+        return visible_provider(self.mass, mapping.provider_instance, get_current_user())
+
+    def _visible_search_results(self, results: SearchResults) -> SearchResults:
+        """Return the search results with only the items the current user may see."""
+        if (user := get_current_user()) is None:
+            return results
+        return SearchResults(
+            artists=visible_items(self.mass, results.artists, user),
+            albums=visible_items(self.mass, results.albums, user),
+            genres=visible_items(self.mass, results.genres, user),
+            tracks=visible_items(self.mass, results.tracks, user),
+            playlists=visible_items(self.mass, results.playlists, user),
+            radio=visible_items(self.mass, results.radio, user),
+            audiobooks=visible_items(self.mass, results.audiobooks, user),
+            podcasts=visible_items(self.mass, results.podcasts, user),
+            sound_effects=visible_items(self.mass, results.sound_effects, user),
+        )
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """
@@ -2848,6 +3140,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return SearchResults(audiobooks=[cast("Audiobook", item)])
         if media_type == MediaType.PODCAST:
             return SearchResults(podcasts=[cast("Podcast", item)])
+        if media_type == MediaType.RADIO:
+            return SearchResults(radio=[cast("Radio", item)])
         return SearchResults()
 
     async def _search_provider(
@@ -2900,7 +3194,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 base_class=SearchResults,
             )
         ) is not None:
-            return filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
+            # the cache is shared by all users, so the results are narrowed on every read
+            return self._visible_search_results(
+                filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
+            )
         # run the provider search as a separate task (deduplicated by task_id so
         # identical concurrent searches share a single provider call); with a soft
         # timeout a slow provider contributes no results now, while its search
@@ -2921,7 +3218,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return None
         if prov_search_results is None:
             return None
-        return filter_search_results(prov_search_results, prov.domain, skip_item_ids)
+        return self._visible_search_results(
+            filter_search_results(prov_search_results, prov.domain, skip_item_ids)
+        )
 
     async def _execute_provider_search(
         self,
@@ -3081,6 +3380,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Create the coroutine used for a managed provider sync task."""
 
         async def run_sync() -> None:
+            skipped = False
             try:
                 async with self._sync_lock:
                     # suppress per-item events during sync; a large library would otherwise
@@ -3089,14 +3389,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
                     try:
                         await provider.sync_library(media_type)
+                    except NothingToSync:
+                        skipped = True
+                        self.logger.info(
+                            "%s %ss unchanged, sync skipped", provider.name, media_type.value
+                        )
+                        update_current_task_progress_text("Library unchanged, sync skipped")
                     finally:
                         SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
             finally:
-                self.mass.call_later(
-                    0,
-                    self._handle_sync_completion_check,
-                    task_id=MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
-                )
+                if not skipped:
+                    self._sync_completion_pending = True
+                # a skipped sync only announces completion when a real one is still unannounced
+                if self._sync_completion_pending:
+                    self.mass.call_later(
+                        0,
+                        self._handle_sync_completion_check,
+                        task_id=MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
+                    )
 
         return run_sync
 
@@ -3145,6 +3455,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Run follow-up maintenance when no provider sync tasks remain active."""
         if self.active_sync_tasks:
             return
+        self._sync_completion_pending = False
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
         # cached search results carry the favorite state of the moment they were filled
         self.mass.create_task(
@@ -3448,7 +3759,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise MediaNotFoundError(msg)
         return resolved
 
-    def _forward_play_report(
+    async def _forward_play_report(
         self,
         media_item: MediaItemType,
         user: User | None,
@@ -3456,18 +3767,35 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         fully_played: bool,
         position: int,
         is_playing: bool = False,
+        provider_instance_id: str | None = None,
     ) -> None:
         """
         Report the play to the music sources that may serve this user, once per account.
+
+        A pause, stop or end of a podcast episode, or marking one (un)played, returns once the
+        music sources took the report in; any other report is made in the background.
 
         :param media_item: The played item, whose mappings name the accounts to report to.
         :param user: The user the playback is for; None for anonymous playback.
         :param fully_played: Whether the item was played to the end.
         :param position: The last known position of the item in seconds.
         :param is_playing: Whether the item is still playing.
+        :param provider_instance_id: The provider instance reporting the play of its own
+            account, which then is not reported to any music source.
         """
+        # the cached episode listing of a podcast holds the played state its music sources
+        # report, so it is assembled anew from what they took in
+        podcast = (
+            media_item.podcast
+            if not is_playing and isinstance(media_item, PodcastEpisode)
+            else None
+        )
         allowed = visible_playback_sources(self.mass, user) if user else None
+        if provider_instance_id:
+            # a report of a provider's own account must not reach any other account
+            allowed = []
         reported_to: set[str] = set()
+        reports: list[Coroutine[Any, Any, None]] = []
         for prov_mapping in media_item.provider_mappings:
             # a mapping on another account of a service the user has their own of is
             # reported on that own account, which is where the stream came from too
@@ -3479,18 +3807,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     continue
                 music_prov = cast("MusicProvider", music_prov)
                 reported_to.add(target)
+                report = music_prov.on_played(
+                    media_type=media_item.media_type,
+                    prov_item_id=prov_mapping.item_id,
+                    fully_played=fully_played,
+                    position=position,
+                    media_item=media_item,
+                    is_playing=is_playing,
+                )
+                if podcast:
+                    reports.append(report)
+                    continue
                 # a play report is background work
                 with request_priority(RequestPriority.LOW):
-                    self.mass.create_task(
-                        music_prov.on_played(
-                            media_type=media_item.media_type,
-                            prov_item_id=prov_mapping.item_id,
-                            fully_played=fully_played,
-                            position=position,
-                            media_item=media_item,
-                            is_playing=is_playing,
-                        )
-                    )
+                    self.mass.create_task(report)
+        if not podcast:
+            return
+        with request_priority(RequestPriority.LOW):
+            results = await asyncio.gather(*reports, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.warning("Unable to report the play of %s: %s", media_item.name, result)
+        await invalidate_listings(self.mass, podcast)
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """
@@ -3557,6 +3895,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             progress,
         )
         return True
+
+    async def _get_playlog_user_ids(self, user: User | None) -> list[str]:
+        """Return users whose playlog rows are updated by this report."""
+        if user:
+            return [user.user_id]
+        return [user.user_id for user in await self.mass.webserver.auth.list_users()]
 
     def _signal_playlog_updated(
         self,

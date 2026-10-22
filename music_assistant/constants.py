@@ -46,9 +46,15 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.SOUND_EFFECT,
 )
 
-# API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
-# or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 89
+# API_SCHEMA_VERSION: bump this when a client that is not bundled with the server (the Home
+# Assistant integration, the companion apps, third-party API consumers) gets something new to
+# gate on: a new API command, a new or changed parameter on an existing command, a new model
+# field the server now sends to clients, or a new remote-access channel label. Do not bump it
+# for a model field that nothing sends to clients yet (a models pin bump on its own included),
+# a new enum value or error code, a change in what an existing field holds, or a command that
+# only the bundled frontend uses: the frontend ships in lockstep with the server and never
+# gates on this.
+API_SCHEMA_VERSION: Final[int] = 99
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -103,6 +109,9 @@ CONF_SERVER_ID: Final[str] = "server_id"
 CONF_ENCRYPTION_KEY: Final[str] = "encryption_key"
 CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_NFS_SUBFOLDER_MIGRATED: Final[str] = "nfs_subfolder_migrated"
+CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED: Final[str] = "apple_music_sync_schedule_migrated"
+CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED: Final[str] = "emby_album_artists_heal_migrated"
+CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
@@ -345,6 +354,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "music",
     "player_queues",
     "tasks",
+    "statistics",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")

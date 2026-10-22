@@ -1,14 +1,16 @@
 """Unit tests for AirPlay provider helpers."""
 
 import plistlib
+import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientError
 
 from music_assistant.providers.airplay.helpers import (
     _CLI_BINARY_CHECK_TIMEOUT,
+    cli_clock_time,
     default_buffer_depth,
     get_cli_binary,
     get_decoded_property,
@@ -20,6 +22,18 @@ from music_assistant.providers.airplay.helpers import (
 
 ALAC_44100_24 = 1 << 19
 ALAC_48000_24 = 1 << 21
+
+
+def test_cli_clock_time_ignores_wall_clock_steps() -> None:
+    """A wall clock step does not move the cliairplay timeline."""
+    before = cli_clock_time()
+    with (
+        patch("time.time", return_value=time.time() + 3600),
+        patch("time.time_ns", return_value=time.time_ns() + 3600 * 10**9),
+    ):
+        during = cli_clock_time()
+
+    assert 0 <= during - before < 1
 
 
 def test_get_decoded_property_matches_case_insensitively() -> None:
