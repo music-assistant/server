@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from aiohttp.client_exceptions import ClientError
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
 
 from .constants import PLAYLISTS
 from .parsers import parse_playlist
@@ -89,3 +89,31 @@ class TidalPlaylistManager:
             )
         except ClientError as err:
             raise ResourceTemporarilyUnavailable("Failed to remove tracks") from err
+
+    async def move_track(self, prov_playlist_id: str, from_position: int, to_position: int) -> None:
+        """
+        Move one track of a playlist to another position.
+
+        :param prov_playlist_id: The Tidal playlist uuid.
+        :param from_position: The current position of the track, 1-based.
+        :param to_position: The position the track ends up at after the move, 1-based.
+        :raises InvalidDataError: A position is outside the playlist.
+        """
+        # v1 moves by 0-based index and toIndex is the final index of the moved item
+        # (tidalapi's move_by_index live tests: index 0 -> toIndex n-2 lands at n-2).
+        # The ETag guards against a lost update, as for add and remove.
+        try:
+            playlist_obj, etag = await self.api.get_with_etag(f"{PLAYLISTS}/{prov_playlist_id}")
+            num_tracks = playlist_obj.get("numberOfTracks", 0)
+            if not (1 <= from_position <= num_tracks and 1 <= to_position <= num_tracks):
+                msg = f"Position out of range for a playlist of {num_tracks} item(s)"
+                raise InvalidDataError(msg)
+            headers = {"If-None-Match": etag} if etag else {}
+            await self.api.post(
+                f"{PLAYLISTS}/{prov_playlist_id}/items/{from_position - 1}",
+                data={"toIndex": to_position - 1},
+                as_form=True,
+                headers=headers,
+            )
+        except ClientError as err:
+            raise ResourceTemporarilyUnavailable("Failed to move track") from err

@@ -73,6 +73,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_MOVE,
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.LYRICS,
     ProviderFeature.TRACK_BY_EXTERNAL_ID,
@@ -324,6 +325,12 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         await self.playlists.remove_tracks(prov_playlist_id, positions_to_remove)
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of a playlist to another position (both 1-based)."""
+        await self.playlists.move_track(prov_playlist_id, from_position, to_position)
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's available recommendation rows, without items."""

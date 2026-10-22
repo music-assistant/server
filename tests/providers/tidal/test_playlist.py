@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiohttp.client_exceptions import ClientError
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
 
 from music_assistant.providers.tidal.playlist import TidalPlaylistManager
 
@@ -187,3 +187,72 @@ async def test_remove_playlist_tracks_failure(
 
     with pytest.raises(ResourceTemporarilyUnavailable):
         await playlist_manager.remove_tracks("1", (1,))
+
+
+@pytest.mark.parametrize(
+    ("from_position", "to_position", "from_index", "to_index"),
+    [
+        (2, 4, 1, 3),  # down
+        (4, 2, 3, 1),  # up
+        (3, 1, 2, 0),  # to top
+        (1, 5, 0, 4),  # to bottom
+    ],
+)
+async def test_move_playlist_track(
+    playlist_manager: TidalPlaylistManager,
+    provider_mock: Mock,
+    from_position: int,
+    to_position: int,
+    from_index: int,
+    to_index: int,
+) -> None:
+    """Test move_track posts the 0-based source index and final 0-based toIndex."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 5}, "etag-m")
+
+    await playlist_manager.move_track("1", from_position, to_position)
+
+    provider_mock.api.get_with_etag.assert_called_once_with("playlists/1")
+    provider_mock.api.post.assert_called_once_with(
+        f"playlists/1/items/{from_index}",
+        data={"toIndex": to_index},
+        as_form=True,
+        headers={"If-None-Match": "etag-m"},
+    )
+
+
+async def test_move_playlist_track_without_etag(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test move_track omits the If-None-Match header when no ETag is returned."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 3}, "")
+
+    await playlist_manager.move_track("1", 1, 2)
+
+    assert provider_mock.api.post.call_args.kwargs["headers"] == {}
+
+
+@pytest.mark.parametrize(("from_position", "to_position"), [(0, 2), (2, 0), (4, 1), (1, 4)])
+async def test_move_playlist_track_out_of_range(
+    playlist_manager: TidalPlaylistManager,
+    provider_mock: Mock,
+    from_position: int,
+    to_position: int,
+) -> None:
+    """Test move_track rejects positions outside the playlist without posting."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 3}, "etag-m")
+
+    with pytest.raises(InvalidDataError):
+        await playlist_manager.move_track("1", from_position, to_position)
+
+    provider_mock.api.post.assert_not_called()
+
+
+async def test_move_playlist_track_failure(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test move_track raises ResourceTemporarilyUnavailable on a client error."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 3}, "etag-m")
+    provider_mock.api.post.side_effect = ClientError()
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await playlist_manager.move_track("1", 1, 2)
