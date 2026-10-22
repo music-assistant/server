@@ -1280,6 +1280,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if source_queue.state == PlaybackState.PLAYING:
             # use the live playback clock while actively playing
             source_resume_pos = int(source_queue.corrected_elapsed_time)
+        elif source_queue.ended:
+            # a queue that played to its end starts over, so it has no position to carry
+            source_resume_pos = 0
         else:
             # when not playing the live clock is stale, so use the stored resume position
             source_resume_pos = int(
@@ -1322,6 +1325,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._queue_data[source_queue_id].credited_albums
         )
         target_queue.resume_pos = source_resume_pos
+        target_queue.elapsed_time = source_resume_pos
+        target_queue.elapsed_time_last_updated = time.time()
+        target_queue.ended = source_queue.ended
         target_queue.current_index = source_current_index
         if source_current_item:
             target_queue.current_item = source_current_item
@@ -1332,7 +1338,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         for item in source_items:
             item.queue_id = target_queue_id
         self.update_items(target_queue_id, source_items)
-        if auto_play:
+        if (
+            auto_play
+            and not target_queue.ended
+            and (current_item := source_current_item)
+            and self.index_by_id(target_queue_id, current_item.queue_item_id) is not None
+        ):
+            # the target's player can still report the media it played before, which resume()
+            # would read as this item's position: start the item where the source was instead
+            position = 0 if current_item.media_type == MediaType.RADIO else source_resume_pos
+            await self.play_index(target_queue_id, current_item.queue_item_id, position)
+        elif auto_play:
             await self.resume(target_queue_id)
 
     # Interaction with player

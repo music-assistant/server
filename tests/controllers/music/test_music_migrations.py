@@ -1324,6 +1324,51 @@ async def test_migration_adds_is_endless_column_to_radios(
     assert [(row["item_id"], row["is_endless"]) for row in rows] == [(1, 1), (2, 1)]
 
 
+async def test_migration_replaces_play_history_indexes(database: DatabaseConnection) -> None:
+    """Schema 70 replaces the two play-history indexes with its covering index."""
+    await database.execute(
+        f"""CREATE TABLE {DB_TABLE_PLAY_HISTORY}(
+            userid TEXT, timestamp REAL, media_type TEXT, provider TEXT, item_id TEXT
+        )"""
+    )
+    await database.execute(
+        f"CREATE INDEX {DB_TABLE_PLAY_HISTORY}_user_timestamp_idx "
+        f"ON {DB_TABLE_PLAY_HISTORY}(userid,timestamp)"
+    )
+    await database.execute(
+        f"CREATE INDEX {DB_TABLE_PLAY_HISTORY}_user_media_timestamp_idx "
+        f"ON {DB_TABLE_PLAY_HISTORY}(userid,media_type,timestamp)"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=69,
+            create_tables=AsyncMock(),
+        )
+
+    indexes = await database.get_rows_from_query(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = :table",
+        {"table": DB_TABLE_PLAY_HISTORY},
+    )
+    assert {row["name"] for row in indexes} == {f"{DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx"}
+    columns = await database.get_rows_from_query(
+        f"PRAGMA index_info({DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx)", limit=0
+    )
+    assert [row["name"] for row in columns] == [
+        "userid",
+        "timestamp",
+        "media_type",
+        "provider",
+        "item_id",
+    ]
+
+
 async def test_migration_drops_the_token_from_audiobookshelf_image_urls(
     database: DatabaseConnection,
 ) -> None:

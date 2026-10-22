@@ -62,6 +62,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     MASS_LOGGER_NAME,
@@ -3724,7 +3725,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
 
     async def _merge_library_playlog(self, target_id: int, source_id: int) -> None:
-        """Transfer library-keyed playlog rows using the normal latest-entry semantics."""
+        """Transfer playback references while preserving individual completed plays."""
         values = {
             "target_id": target_id,
             "source_id": source_id,
@@ -3772,3 +3773,51 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "media_type": self.media_type.value,
             },
         )
+        await self.mass.music.database.execute_write(
+            f"UPDATE {DB_TABLE_PLAY_HISTORY} SET item_id = :target_id "
+            "WHERE item_id = :source_id AND provider = 'library' AND media_type = :media_type",
+            values,
+        )
+        if self.media_type != MediaType.ARTIST:
+            return
+
+        matching_credit = """
+            CASE WHEN credit.type = 'object' THEN
+                json_extract(credit.value, '$.provider') = 'library'
+                AND CAST(json_extract(credit.value, '$.item_id') AS TEXT) = :source_id
+            ELSE 0 END
+        """
+        # These are playback snapshots, not live artist records: only redirect their
+        # identity, keeping the historical names, artwork and separate play events.
+        for table in (DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PLAY_HISTORY):
+            await self.mass.music.database.execute_write(
+                f"""
+                UPDATE {table}
+                SET artists = (
+                    SELECT json_group_array(json(
+                        CASE WHEN {matching_credit}
+                            THEN json_set(
+                                credit.value,
+                                '$.item_id', :target_id,
+                                '$.uri', :target_uri
+                            )
+                            ELSE {table}.artists -> credit.key
+                        END
+                    ))
+                    FROM json_each({table}.artists) AS credit
+                )
+                WHERE CASE WHEN json_valid(artists) THEN json_type(artists) END = 'array'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM json_each(
+                            CASE WHEN json_valid(artists) THEN artists ELSE '[]' END
+                        ) AS credit
+                        WHERE {matching_credit}
+                    )
+                """,
+                {
+                    "source_id": str(source_id),
+                    "target_id": str(target_id),
+                    "target_uri": create_uri(MediaType.ARTIST, "library", str(target_id)),
+                },
+            )

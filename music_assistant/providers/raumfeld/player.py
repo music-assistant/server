@@ -13,7 +13,13 @@ from async_upnp_client.exceptions import UpnpActionError, UpnpError
 from hassfeld import upnp as hassfeld_upnp
 from hassfeld import webservice as hassfeld_ws
 from hassfeld.constants import SERVICE_AV_TRANSPORT
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    RepeatMode,
+)
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
@@ -32,6 +38,8 @@ from .helpers import (
     library_uri,
     parse_didl_metadata,
     parse_duration,
+    parse_play_mode,
+    play_mode_for,
     query_last_change,
 )
 
@@ -176,6 +184,11 @@ class RaumfeldPlayer(Player):
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
     # set before the player is fully constructed, as the base class reads the features
     _external_source: PlayerSource | None = None
+    # the transport actions the host allows for the external source
+    _external_actions: frozenset[str] | set[str] = frozenset()
+    # shuffle and repeat share one play mode, so a change reads the other and sends both;
+    # held across that, so two changes at once do not undo each other
+    _play_mode_lock: asyncio.Lock | None = None
     # bumped when a command that changes what plays starts and when it ends, and the
     # number of such commands running, so a poll can tell its readings no longer apply
     _playback_generation = 0
@@ -478,6 +491,34 @@ class RaumfeldPlayer(Player):
         """Send PREVIOUS TRACK command (only offered while an external source is playing)."""
         await self._external_command("Previous")
 
+    async def set_shuffle(self, shuffle_enabled: bool) -> None:
+        """
+        Handle SET SHUFFLE for the external source.
+
+        :param shuffle_enabled: Whether the source should play its content shuffled.
+        """
+        async with self._play_mode_guard():
+            repeat = self._external_repeat_mode()
+            if shuffle_enabled and repeat == RepeatMode.ONE:
+                # no mode shuffles and repeats one track; the Raumfeld app repeats all then
+                repeat = RepeatMode.ALL
+            await self._set_play_mode(shuffle_enabled, repeat)
+
+    async def set_repeat(self, repeat_mode: RepeatMode) -> None:
+        """
+        Handle SET REPEAT for the external source.
+
+        :param repeat_mode: The repeat mode the source should apply.
+        """
+        if repeat_mode == RepeatMode.ONE and "RepeatTrack" not in self._external_actions:
+            # Spotify Connect repeats no single track here; MA's repeat button steps from
+            # all to one to off, so it moves on to off rather than stopping at all
+            repeat_mode = RepeatMode.OFF
+        async with self._play_mode_guard():
+            source = self._external_source
+            shuffle = bool(source and source.shuffle_enabled) and repeat_mode != RepeatMode.ONE
+            await self._set_play_mode(shuffle, repeat_mode)
+
     @_changes_playback
     async def seek(self, position: int) -> None:
         """Send SEEK command (only offered while an external source is playing)."""
@@ -550,12 +591,16 @@ class RaumfeldPlayer(Player):
     @_changes_playback
     async def select_source(self, source: str) -> None:
         """Handle SELECT_SOURCE: play the Line-In or one of the station buttons."""
-        if (library_item := self._library_sources.get(source)) is not None:
+        if source in self._library_sources:
             context = self._resume_context
             if context is not None and self._resume_source == source and self._announcing():
                 # MA selects the button again after an announcement: go on where it was
                 await self._restore_zone_source(context)
                 return
+            # the button may have been given another item since the buttons were last read
+            await self.raumfeld.refresh_station_buttons(self)
+            if (library_item := self._library_sources.get(source)) is None:
+                raise PlayerCommandFailed(f"{source} has nothing assigned on {self.room} any more")
             await self._play_library_item(source, *library_item)
             return
         if source != SOURCE_LINE_IN or self._line_in is None:
@@ -951,6 +996,7 @@ class RaumfeldPlayer(Player):
                 state.get("CurrentTransportActions"),
                 parse_duration(state.get("CurrentTrackDuration")),
                 via_room=True,
+                play_mode=state.get("CurrentPlayMode"),
             )
         elif not active:
             self._clear_external()
@@ -993,6 +1039,7 @@ class RaumfeldPlayer(Player):
             return
         # also while stopped: the zone keeps the item loaded and can start it again
         actions = await self._read_zone_actions(zone)
+        play_mode = await self._read_zone_play_mode(zone) if actions else None
         # the track metadata names the playing track, not the album or playlist a button
         # started, so those are recognised by what the zone has loaded
         loaded_container = (
@@ -1009,6 +1056,7 @@ class RaumfeldPlayer(Player):
             parse_duration(pos.get("TrackDuration")),
             via_room=False,
             loaded_container=loaded_container,
+            play_mode=play_mode,
         )
         source = self._external_source
         if (
@@ -1034,6 +1082,13 @@ class RaumfeldPlayer(Player):
         response = await self._call_transport(location, "GetCurrentTransportActions")
         actions: str | None = (response or {}).get("Actions")
         return actions
+
+    async def _read_zone_play_mode(self, zone: list[str]) -> str | None:
+        """Read the zone's play mode (shuffle and repeat), or ``None``."""
+        if (location := self.raumfeld.zone_location(zone)) is None:
+            return None
+        response = await self._call_transport(location, "GetTransportSettings")
+        return (response or {}).get("PlayMode")
 
     async def _call_transport(self, location: str, action_name: str) -> dict[str, str] | None:
         """
@@ -1073,6 +1128,7 @@ class RaumfeldPlayer(Player):
         duration: int | None,
         via_room: bool,
         loaded_container: str | None = None,
+        play_mode: str | None = None,
     ) -> None:
         """
         Report an external source as active, with the controls the host allows for it.
@@ -1082,6 +1138,7 @@ class RaumfeldPlayer(Player):
         :param duration: The duration of the playing item in seconds, if it has one.
         :param via_room: Whether the room's own renderer plays it rather than its zone.
         :param loaded_container: The library album or playlist the zone has loaded, if any.
+        :param play_mode: The renderer's play mode (shuffle and repeat), if known.
         """
         if self._advance_armed or self._next_media is not None:
             # a queue item MA handed over must not start when this source's track ends
@@ -1111,7 +1168,12 @@ class RaumfeldPlayer(Player):
             # one capability covers both commands, so the host has to allow both
             can_next_previous={"Next", "Previous"} <= allowed,
             can_seek="Seek" in allowed,
+            can_shuffle="Shuffle" in allowed,
+            can_repeat=bool(allowed & {"Repeat", "RepeatTrack"}),
         )
+        if source.can_shuffle or source.can_repeat:
+            source.shuffle_enabled, source.repeat_mode = parse_play_mode(play_mode)
+        self._external_actions = allowed
         self._external_source = source
         self._external_via_room = via_room
         self._attr_active_source = source.id
@@ -1290,6 +1352,7 @@ class RaumfeldPlayer(Player):
         if self._attr_active_source == self._external_source.id:
             self._attr_active_source = None
         self._external_source = None
+        self._external_actions = frozenset()
         self._external_via_room = False
         self._attr_source_list = list(self._static_sources)
         self._attr_supported_features -= EXTERNAL_SOURCE_FEATURES
@@ -1308,7 +1371,9 @@ class RaumfeldPlayer(Player):
         uri = library_uri(host.media_server_udn, object_id, container)
         try:
             # the host wants the item's own description along with the reference
-            metadata = await host.async_browse_media_server(object_id, "BrowseMetadata") or ""
+            metadata = await host.async_browse_media_server(object_id, "BrowseMetadata")
+            if not metadata:
+                raise PlayerCommandFailed(f"{object_id} is not available on the Raumfeld host")
             zone = await self._ensure_playable_zone()
             await self._wake_rooms(zone)
             await self._stop_before_switching(zone)
@@ -1438,6 +1503,35 @@ class RaumfeldPlayer(Player):
             raise PlayerCommandFailed(f"{action_name} failed on {self.room}: {err!r}") from err
         # poll fast for a while so the new state and track show up promptly
         self._play_started_at = time.time()
+
+    @_changes_playback
+    async def _set_play_mode(self, shuffle: bool, repeat: RepeatMode) -> None:
+        """
+        Set the external source's play mode and show it right away.
+
+        :param shuffle: Whether to play shuffled.
+        :param repeat: The repeat mode.
+        """
+        if self._presented_external() is None:
+            # Music Assistant's own playback took over while this waited for the lock
+            raise PlayerCommandFailed(f"{self.room} no longer plays the source to change")
+        await self._external_command("SetPlayMode", NewPlayMode=play_mode_for(shuffle, repeat))
+        if (source := self._external_source) is not None:
+            source.shuffle_enabled, source.repeat_mode = shuffle, repeat
+        self.update_state()
+
+    def _play_mode_guard(self) -> asyncio.Lock:
+        """Return the lock a shuffle or repeat change holds while it combines the two."""
+        if self._play_mode_lock is None:
+            self._play_mode_lock = asyncio.Lock()
+        return self._play_mode_lock
+
+    def _external_repeat_mode(self) -> RepeatMode:
+        """Return the external source's repeat mode, off when it is not known."""
+        source = self._external_source
+        if source is None or source.repeat_mode in (None, RepeatMode.UNKNOWN):
+            return RepeatMode.OFF
+        return source.repeat_mode
 
     def _update_poll_interval(self) -> None:
         """Poll at the playing rate while something plays, and slowly otherwise."""

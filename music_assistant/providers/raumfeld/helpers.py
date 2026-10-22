@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import aiohttp
 import defusedxml.ElementTree as DefusedET
+from music_assistant_models.enums import RepeatMode
 
 from music_assistant.helpers.util import try_parse_duration
 
@@ -336,3 +337,39 @@ def container_object_id(uri: str | None) -> str | None:
         return None
     container_ids = parse_qs(urlsplit(uri).query).get("cid")
     return container_ids[0] if container_ids else None
+
+
+def parse_play_mode(play_mode: str | None) -> tuple[bool | None, RepeatMode]:
+    """
+    Return the shuffle state and repeat mode a Raumfeld play mode stands for.
+
+    :param play_mode: The renderer's play mode, such as ``SHUFFLE`` or ``REPEAT_ALL``.
+    """
+    return _PLAY_MODES.get(play_mode or "", (None, RepeatMode.UNKNOWN))
+
+
+def play_mode_for(shuffle: bool, repeat: RepeatMode) -> str:
+    """
+    Return the Raumfeld play mode for a shuffle state and repeat mode.
+
+    The renderer has no mode that shuffles and repeats one track; repeating one wins.
+
+    :param shuffle: Whether to play shuffled.
+    :param repeat: The repeat mode.
+    """
+    if repeat == RepeatMode.ONE:
+        return "REPEAT_ONE"
+    if shuffle:
+        return "RANDOM" if repeat == RepeatMode.ALL else "SHUFFLE"
+    return "REPEAT_ALL" if repeat == RepeatMode.ALL else "NORMAL"
+
+
+# the play modes as the Raumfeld app sets and the renderers report them (measured):
+# RANDOM is shuffle and repeat all together
+_PLAY_MODES: dict[str, tuple[bool | None, RepeatMode]] = {
+    "NORMAL": (False, RepeatMode.OFF),
+    "SHUFFLE": (True, RepeatMode.OFF),
+    "REPEAT_ALL": (False, RepeatMode.ALL),
+    "RANDOM": (True, RepeatMode.ALL),
+    "REPEAT_ONE": (False, RepeatMode.ONE),
+}

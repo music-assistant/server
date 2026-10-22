@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import AlbumType, PlaybackState, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.media_items import Album, ItemMapping, Track
+from music_assistant_models.media_items import Album, ItemMapping, Radio, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
@@ -303,3 +304,226 @@ async def test_transfer_queue_carries_pinned_toggle_overrides() -> None:
     assert target_data.autoplay_override is False
     assert target_data.queue.crossfade_enabled is True
     assert target_data.queue.autoplay_enabled is False
+
+
+def _playing_transfer(
+    target_state: PlaybackState,
+    media_item: Track | Radio,
+    *,
+    source_position: float = 20,
+    item_in_queue: bool = True,
+    target_ended: bool = False,
+) -> tuple[MagicMock, QueueItem]:
+    """
+    Build a controller stand-in whose source plays an item, with a target on its own clock at 150 s.
+
+    :param target_state: Playback state of the target queue.
+    :param media_item: The media the source queue is playing.
+    :param source_position: Where the source is in that item, in seconds.
+    :param item_in_queue: Whether the current item is still among the transferred items.
+    :param target_ended: Whether the target's own queue had played to its end.
+    """
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    item = QueueItem.from_media_item("src", media_item)
+    source_queue = fake.get("src")
+    source_queue.state = PlaybackState.PLAYING
+    source_queue.elapsed_time = source_position
+    source_queue.elapsed_time_last_updated = time.time()
+    source_queue.current_item = item
+    target_queue = fake.get("tgt")
+    target_queue.state = target_state
+    target_queue.elapsed_time = 150
+    target_queue.elapsed_time_last_updated = time.time()
+    target_queue.ended = target_ended
+    fake._queue_data["src"].items = [item]
+    fake.index_by_id = MagicMock(return_value=0 if item_in_queue else None)
+    fake.play_index = AsyncMock()
+    return fake, item
+
+
+async def test_transfer_queue_resumes_a_replacement_for_a_missing_item_from_the_start() -> None:
+    """
+    An item the queue moved on to, as the source's own was gone, does not inherit its position.
+
+    The source's current item was deleted while it was paused; the target still has a buffered
+    index from what it played before, so loading the items moves it onto the item at that index.
+    """
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    for name in ("load", "update_items", "_resync_position", "index_by_id", "get_item"):
+        method = getattr(PlayerQueuesController, name)
+        setattr(fake, name, method.__get__(fake))
+    fake.play_index = AsyncMock()
+    deleted = QueueItem.from_media_item(
+        "src", Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    )
+    remaining = QueueItem.from_media_item(
+        "src", Track(item_id="t2", provider="library", name="T2", provider_mappings=set())
+    )
+    source_queue = fake.get("src")
+    source_queue.state = PlaybackState.PAUSED
+    source_queue.resume_pos = 150
+    source_queue.current_index = 0
+    source_queue.current_item = deleted
+    fake._queue_data["src"].items = [remaining]
+    target_queue = fake.get("tgt")
+    target_queue.index_in_buffer = 0
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=True
+    )
+
+    assert target_queue.current_item is remaining
+    assert target_queue.resume_pos == 0
+    fake.play_index.assert_not_awaited()
+    fake.resume.assert_awaited_once_with("tgt")
+
+
+@pytest.mark.parametrize(
+    ("target_state", "target_ended"),
+    [
+        (PlaybackState.PLAYING, False),
+        (PlaybackState.PAUSED, False),
+        (PlaybackState.IDLE, False),
+        (PlaybackState.IDLE, True),
+    ],
+)
+async def test_transfer_queue_starts_the_item_at_the_source_position(
+    target_state: PlaybackState, target_ended: bool
+) -> None:
+    """
+    The transferred item starts where the source was, whatever the target played before.
+
+    :param target_state: Playback state of the target queue.
+    :param target_ended: Whether the target's own queue had played to its end.
+    """
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, item = _playing_transfer(target_state, track, target_ended=target_ended)
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=True
+    )
+
+    fake.play_index.assert_awaited_once_with("tgt", item.queue_item_id, 20)
+    fake.resume.assert_not_awaited()
+
+
+async def test_transfer_queue_starts_an_item_the_source_just_began_at_zero() -> None:
+    """A source at 0 s does not let the target fall back to its own last position."""
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, item = _playing_transfer(PlaybackState.PAUSED, track, source_position=0)
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=True
+    )
+
+    fake.play_index.assert_awaited_once_with("tgt", item.queue_item_id, 0)
+
+
+async def test_transfer_queue_starts_radio_from_the_start() -> None:
+    """A radio stream is not started part way in."""
+    radio = Radio(item_id="r1", provider="library", name="R1", provider_mappings=set())
+    fake, item = _playing_transfer(PlaybackState.PLAYING, radio)
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=True
+    )
+
+    fake.play_index.assert_awaited_once_with("tgt", item.queue_item_id, 0)
+
+
+@pytest.mark.parametrize("current_item", ["missing", "none"])
+async def test_transfer_queue_resumes_without_a_current_item_in_the_queue(
+    current_item: str,
+) -> None:
+    """
+    Without a current item that is in the queue, resume() picks where to start.
+
+    :param current_item: Whether the current item is missing from the items or not set at all.
+    """
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.PLAYING, track, item_in_queue=False)
+    if current_item == "none":
+        fake.get("src").current_item = None
+        fake.get("tgt").current_item = None
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=True
+    )
+
+    fake.resume.assert_awaited_once_with("tgt")
+    fake.play_index.assert_not_awaited()
+    assert fake.get("tgt").resume_pos == 20
+
+
+async def test_transfer_queue_clears_the_targets_own_ended_state() -> None:
+    """A target whose own queue had ended is not left marked ended with the new items."""
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.IDLE, track, target_ended=True)
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake.get("tgt").ended is False
+
+
+async def test_transfer_queue_restarts_a_queue_that_had_ended() -> None:
+    """A queue that played to its end stays ended on the target, so resume() starts it over."""
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.PLAYING, track, source_position=0)
+    source_queue = fake.get("src")
+    source_queue.state = PlaybackState.IDLE
+    source_queue.ended = True
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=True
+    )
+
+    fake.resume.assert_awaited_once_with("tgt")
+    fake.play_index.assert_not_awaited()
+    assert fake.get("tgt").ended is True
+
+
+async def test_transfer_queue_carries_the_source_clock_without_auto_play() -> None:
+    """A later resume() on the target reads the source's position, not the target's own clock."""
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.IDLE, track, source_position=0)
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    target_queue = fake.get("tgt")
+    assert target_queue.elapsed_time == 0
+    assert (
+        PlayerQueuesController._last_played_position(
+            cast("PlayerQueuesController", fake), target_queue
+        )
+        == 0
+    )
+
+
+async def test_transfer_queue_carries_no_position_from_a_queue_that_had_ended() -> None:
+    """An ended queue arrives at 0 s, not at the end of the item it finished on."""
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, item = _playing_transfer(PlaybackState.IDLE, track, source_position=0)
+    source_queue = fake.get("src")
+    source_queue.state = PlaybackState.IDLE
+    source_queue.ended = True
+    source_queue.resume_pos = 0
+    fake._queue_data["src"].prev_state = {
+        "current_item_id": item.queue_item_id,
+        "last_playing_elapsed_time": 238,
+    }
+    fake._last_played_position = lambda queue: PlayerQueuesController._last_played_position(
+        cast("PlayerQueuesController", fake), queue
+    )
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    target_queue = fake.get("tgt")
+    assert target_queue.ended is True
+    assert target_queue.resume_pos == 0
+    assert target_queue.elapsed_time == 0

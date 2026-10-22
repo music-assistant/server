@@ -51,6 +51,7 @@ from music_assistant.controllers.music.constants import (
     AUDIO_ANALYSIS_MOVE_BATCH_SIZE,
     AUDIO_ANALYSIS_PACK_BATCH_SIZE,
     AUDIO_ANALYSIS_PACK_PROGRESS_ROWS,
+    DB_FREE_SPACE_MARGIN,
     DB_SCHEMA_VERSION,
 )
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
@@ -60,6 +61,7 @@ from music_assistant.controllers.streams.audio_analysis_database import create_a
 from music_assistant.controllers.streams.constants import AA_DB_FILENAME
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
+from music_assistant.helpers.util import get_free_space
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 if TYPE_CHECKING:
@@ -1314,9 +1316,9 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                 "WHERE CASE WHEN json_valid(image) THEN json_extract(image, '$.path') END = ''"
             )
 
-    if prev_version <= 63:
-        # audio analysis moved out of library.db into a database file of its own
-        await _move_audio_analysis_out(mass, database, logger)
+    # audio analysis lives in a database file of its own; not version gated so a move
+    # that earlier ran out of disk space is retried
+    await move_legacy_audio_analysis(mass, database, logger)
 
     if prev_version <= 64:
         # the default classical genre carried aliases of genres that are not classical
@@ -1399,8 +1401,30 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         await _move_more_classical_genre_aliases(database, logger)
 
     if prev_version <= 69:
-        # apple music radio stations are dynamic radios instead of dynamic playlists
+        # Apple Music radio stations are dynamic radios instead of dynamic playlists.
         await _move_apple_music_stations_to_radios(database)
+
+    if prev_version <= 70:
+        if await database.get_row(
+            "sqlite_master", {"type": "table", "name": DB_TABLE_PLAY_HISTORY}
+        ):
+            columns = {
+                row["name"]
+                for row in await database.get_rows_from_query(
+                    f"PRAGMA table_info({DB_TABLE_PLAY_HISTORY})", limit=0
+                )
+            }
+            required_columns = {"userid", "timestamp", "media_type", "provider", "item_id"}
+            if required_columns <= columns:
+                for index_name in (
+                    f"{DB_TABLE_PLAY_HISTORY}_user_timestamp_idx",
+                    f"{DB_TABLE_PLAY_HISTORY}_user_media_timestamp_idx",
+                ):
+                    await database.execute(f"DROP INDEX IF EXISTS {index_name}")
+                await database.execute(
+                    f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAY_HISTORY}_user_timestamp_cov_idx "
+                    f"ON {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id)"
+                )
 
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
@@ -1426,8 +1450,44 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
     # save changes
     await database.commit()
 
-    # always clear the cache after a db migration
-    await mass.cache.clear()
+    # always clear the cache after a db migration; a failure here must not reset the library
+    try:
+        await mass.cache.clear()
+    except Exception as err:
+        logger.warning("Could not clear the cache after the migration: %s", err)
+
+
+async def move_legacy_audio_analysis(
+    mass: MusicAssistant, database: DatabaseConnection, logger: logging.Logger
+) -> None:
+    """
+    Move audio analysis rows still in library.db into audio_analysis.db if the disk has room.
+
+    Never raises: rows that cannot be moved stay in library.db for a next attempt.
+
+    :param mass: The MusicAssistant instance, for the storage path.
+    :param database: The music library connection.
+    :param logger: Logger to report progress on.
+    """
+    if not (tables := await _legacy_audio_analysis_tables(database)):
+        return
+    try:
+        needed_gb = (await _tables_size(database, tables) + DB_FREE_SPACE_MARGIN) / (1 << 30)
+    except sqlite3.Error as err:
+        logger.warning(
+            "Could not size the audio analysis in library.db (%s); retrying on the next start", err
+        )
+        return
+    free_gb = await get_free_space(mass.storage_path)
+    if free_gb < needed_gb:
+        logger.warning(
+            "Not enough disk space to move audio analysis out of library.db "
+            "(%.1f GB needed, %.1f GB free); retrying on the next start",
+            needed_gb,
+            free_gb,
+        )
+        return
+    await _move_audio_analysis_out(mass, database, logger)
 
 
 async def _move_classical_genre_aliases(
@@ -1679,16 +1739,7 @@ async def _move_audio_analysis_out(
     :param database: The music library connection.
     :param logger: Logger to report progress on.
     """
-    tables = [
-        table
-        for table in (DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES)
-        if await database.get_rows_from_query(
-            "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = :name",
-            {"name": table},
-            limit=1,
-        )
-    ]
-    if not tables:
+    if not (tables := await _legacy_audio_analysis_tables(database)):
         return
     db_path = os.path.join(mass.storage_path, AA_DB_FILENAME)
     try:
@@ -1722,6 +1773,37 @@ async def _move_audio_analysis_out(
         with suppress(sqlite3.Error):
             await database.commit()
             await database.execute(f"DETACH DATABASE {_AUDIO_ANALYSIS_SCHEMA}")
+
+
+async def _legacy_audio_analysis_tables(database: DatabaseConnection) -> list[str]:
+    """Return the audio analysis tables still present in library.db."""
+    return [
+        table
+        for table in (DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES)
+        if await database.get_rows_from_query(
+            "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = :name",
+            {"name": table},
+            limit=1,
+        )
+    ]
+
+
+async def _tables_size(database: DatabaseConnection, tables: list[str]) -> int:
+    """Return the bytes the given library.db tables and their indexes occupy."""
+    names = ", ".join(f"'{table}'" for table in tables)
+    try:
+        rows = await database.get_rows_from_query(
+            "SELECT SUM(pgsize) AS size FROM dbstat WHERE name IN "
+            f"(SELECT name FROM main.sqlite_master WHERE tbl_name IN ({names}))",
+            limit=1,
+        )
+    except sqlite3.OperationalError:
+        # sqlite built without dbstat: the whole file is an upper bound
+        rows = await database.get_rows_from_query(
+            "SELECT page_count * page_size AS size FROM pragma_page_count(), pragma_page_size()",
+            limit=1,
+        )
+    return int(rows[0]["size"] or 0)
 
 
 async def _pack_audio_analysis_table(database: DatabaseConnection, logger: logging.Logger) -> None:

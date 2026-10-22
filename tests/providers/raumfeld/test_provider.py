@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterator
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -792,13 +792,31 @@ async def test_a_reading_of_a_zone_the_room_left_is_dropped() -> None:
     assert bar._attr_playback_state == PlaybackState.PLAYING
 
 
+class _Cache:
+    """Keep what the provider caches in memory, until it is expired by the test."""
+
+    def __init__(self) -> None:
+        self.entries: dict[tuple[str, str, int], Any] = {}
+
+    async def get(self, key: str, provider: str = "default", category: int = 0) -> Any:
+        return self.entries.get((key, provider, category))
+
+    async def set(
+        self, key: str, data: Any, expiration: int, provider: str = "default", category: int = 0
+    ) -> None:
+        assert expiration > 0
+        self.entries[(key, provider, category)] = data
+
+
 def _button_provider() -> tuple[RaumfeldPlayerProvider, MagicMock]:
     """Build a provider whose host has a media server, and return the button action."""
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
     provider.host = MagicMock()
     provider.host.media_server_udn = "uuid:media-server"
     provider.host.resolve = {"udn_to_devloc": {"uuid:media-server": "http://host/ms.xml"}}
+    provider.config = MagicMock(instance_id="raumfeld_test")
     provider.mass = MagicMock()
+    provider.mass.cache = _Cache()
     provider.logger = MagicMock()
     provider.resolve_room_renderer = MagicMock(  # type: ignore[method-assign]
         return_value=("renderer-uuid", "192.168.1.42")
@@ -836,11 +854,123 @@ async def test_station_buttons_are_read_with_their_titles() -> None:
     }
 
 
-async def test_a_room_whose_buttons_cannot_be_read_offers_none() -> None:
-    """A media server that does not answer leaves the room without button sources."""
+async def test_a_button_item_is_only_described_when_it_is_new() -> None:
+    """Reading the buttons again describes a reassigned button's item, not the known ones."""
+    provider, action = _button_provider()
+    assigned = {1: "0/RadioTime/Search/s-s25777", 2: "", 3: "", 4: ""}
+    action.async_call = AsyncMock(
+        side_effect=lambda **kwargs: {"ObjectID": assigned[kwargs["Button"]]}
+    )
+    listing = (
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/"><item id="{0}">'
+        "<dc:title>{1}</dc:title></item></DIDL-Lite>"
+    )
+    titles = {"0/RadioTime/Search/s-s25777": "NPO Radio 2", "0/StationButtons/432": "WYWH 50"}
+    provider.host.async_browse_media_server = AsyncMock(
+        side_effect=lambda object_id, _flag: listing.format(object_id, titles[object_id])
+    )
+    with patch(
+        "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
+        AsyncMock(return_value=action),
+    ):
+        await provider._read_station_buttons("Bar")
+        await provider._read_station_buttons("Bar")
+        assert provider.host.async_browse_media_server.await_count == 1
+        assigned[4] = "0/StationButtons/432"
+        buttons = await provider._read_station_buttons("Bar")
+    assert provider.host.async_browse_media_server.await_count == 2
+    assert buttons == [
+        (1, "0/RadioTime/Search/s-s25777", "NPO Radio 2", False),
+        (4, "0/StationButtons/432", "WYWH 50", False),
+    ]
+
+
+async def test_a_renamed_button_item_gets_its_new_title_once_its_cache_expired() -> None:
+    """An item that keeps its object id but is renamed shows the new title after the expiry."""
+    provider, action = _button_provider()
+    action.async_call = AsyncMock(
+        side_effect=lambda **kwargs: {
+            "ObjectID": "0/RadioTime/Search/s-s25777" if kwargs["Button"] == 1 else ""
+        }
+    )
+    titles = iter(["NPO Radio 2", "NPO 2"])
+    provider.host.async_browse_media_server = AsyncMock(
+        side_effect=lambda object_id, _flag: (
+            '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"'
+            ' xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            f'<item id="{object_id}"><dc:title>{next(titles)}</dc:title></item></DIDL-Lite>'
+        )
+    )
+    cache = cast("_Cache", provider.mass.cache)
+    with patch(
+        "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
+        AsyncMock(return_value=action),
+    ):
+        assert (await provider._read_station_buttons("Bar") or [])[0][2] == "NPO Radio 2"
+        cache.entries.clear()
+        assert (await provider._read_station_buttons("Bar") or [])[0][2] == "NPO 2"
+
+
+async def test_the_periodic_read_keeps_the_buttons_of_a_room_it_cannot_read() -> None:
+    """A failed periodic read leaves a room's buttons; an empty read clears them."""
+    provider, _ = _button_provider()
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player.room = "Bar"
+    player.set_station_buttons = MagicMock()  # type: ignore[method-assign]
+    with (
+        patch.object(
+            RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[player]
+        ),
+        patch.object(provider, "_read_station_buttons", AsyncMock(side_effect=[None, []])),
+    ):
+        await provider._load_library_sources()
+        player.set_station_buttons.assert_not_called()
+        await provider._load_library_sources()
+    player.set_station_buttons.assert_called_once_with([])
+
+
+async def test_buttons_that_cannot_be_read_are_reported_as_unknown() -> None:
+    """A media server that does not answer gives no buttons, not an empty list of them."""
     provider, _ = _button_provider()
     with patch(
         "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
         AsyncMock(side_effect=TimeoutError),
     ):
-        assert await provider._read_station_buttons("Bar") == []
+        assert await provider._read_station_buttons("Bar") is None
+
+
+async def test_a_room_whose_buttons_cannot_be_read_again_keeps_them() -> None:
+    """Reading a room's buttons before playing one leaves them as they were on a failure."""
+    provider, _ = _button_provider()
+    player = MagicMock(room="Bar")
+    with patch.object(provider, "_read_station_buttons", AsyncMock(return_value=None)):
+        await provider.refresh_station_buttons(player)
+    player.set_station_buttons.assert_not_called()
+    buttons = [(1, "0/RadioTime/Search/s-s25777", "NPO Radio 2", False)]
+    with patch.object(provider, "_read_station_buttons", AsyncMock(return_value=buttons)):
+        await provider.refresh_station_buttons(player)
+    player.set_station_buttons.assert_called_once_with(buttons)
+
+
+async def test_unload_waits_for_its_tasks_to_end() -> None:
+    """The supervisor, the update loop and the zone watcher have ended once unload returns."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    ended: list[str] = []
+
+    async def runs_until_cancelled(name: str) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # a long-poll that needs a moment to close its connection
+            await asyncio.sleep(0.01)
+            ended.append(name)
+            raise
+
+    provider._supervisor_task = asyncio.create_task(runs_until_cancelled("supervisor"))
+    provider._update_task = asyncio.create_task(runs_until_cancelled("update"))
+    provider._zone_watch_task = asyncio.create_task(runs_until_cancelled("zones"))
+    await asyncio.sleep(0)
+    await provider.unload()
+    assert sorted(ended) == ["supervisor", "update", "zones"]
+    assert provider._supervisor_task is None

@@ -14,7 +14,9 @@ from music_assistant.constants import (
 )
 
 # Errors expected when the host is (temporarily) unreachable or a zone/room cannot be
-# resolved by hassfeld; used to narrow the try/except around host communication.
+# resolved by hassfeld; used to narrow the try/except around host communication. KeyError is
+# one of them: hassfeld looks rooms and zones up in its model of the host, which raises it
+# for a room or zone the host just dropped (a regrouping, a speaker going to deep standby).
 HOST_ERRORS = (aiohttp.ClientError, OSError, TimeoutError, KeyError)
 
 # Default port of the Raumfeld host webservice (the device running the "RaumfeldHost"
@@ -24,6 +26,9 @@ DEFAULT_PORT = 47365
 # How long (seconds) to wait for hassfeld to complete its initial discovery
 # of rooms/zones before giving up on a single connection attempt.
 INITIAL_UPDATE_TIMEOUT = 30
+
+# How long (seconds) unload waits for its cancelled tasks to finish.
+UNLOAD_TIMEOUT = 5
 
 # How long (seconds) to wait for a renderer's device description, which is read once per
 # room to get the hardware serial the player_id is derived from.
@@ -56,8 +61,13 @@ LINE_IN_OBJECT_ID = "0/Line In"
 # The station buttons on a speaker, offered as sources; Raumfeld devices have four.
 STATION_BUTTONS = (1, 2, 3, 4)
 # How often (seconds) the station buttons are read again, as they can be reassigned in the
-# Raumfeld app at any time.
-LIBRARY_REFRESH_INTERVAL = 300
+# Raumfeld app at any time. A read asks each button for its item; only an item not seen
+# before is described, so a read that finds nothing changed costs one call per button.
+LIBRARY_REFRESH_INTERVAL = 60
+# How long (seconds) the title and kind of a button's item are kept in the cache. A reassigned
+# button gets a new object id, so this only bounds how long a renamed item keeps its old title.
+BUTTON_ITEM_CACHE_TTL = 300
+CACHE_CATEGORY_BUTTON_ITEMS = 1
 SOURCE_LINE_IN = "line_in"
 
 # Per-player config entries (MA adds the flow sample-rate entry itself).
