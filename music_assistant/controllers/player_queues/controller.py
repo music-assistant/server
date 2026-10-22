@@ -795,7 +795,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
-        self._cancel_skip_start(queue_id)
+        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         self._set_transitioning(queue_id, False)
         if not (queue := self.get(queue_id)):
             return
@@ -1412,7 +1412,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Call when a player is removed from the registry."""
         self.mass.streams.audio_processing.clear(player_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
-        self._cancel_skip_start(player_id)
+        self.mass.cancel_timer(f"queue_play_index_{player_id}")
         # cancel a pending debounced cache write AND an already-started one, so neither can
         # recreate a deleted entry after the player is gone (the timer becomes a task once it fires)
         self.mass.cancel_timer(f"save_queue_cache_{player_id}")
