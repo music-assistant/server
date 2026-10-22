@@ -47,7 +47,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
-from music_assistant.controllers.music.migrations import migrate_database
+from music_assistant.controllers.music.migrations import (
+    migrate_database,
+    move_legacy_audio_analysis,
+)
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.database import DatabaseConnection
 
@@ -230,6 +233,9 @@ class MusicDatabaseSetupMixin:
                 await self.mass.cache.clear()
                 await self.__create_database_tables()
                 prev_version = 0
+        elif prev_version == DB_SCHEMA_VERSION:
+            # retry an audio analysis move that an earlier start skipped for lack of disk space
+            await move_legacy_audio_analysis(self.mass, self.database, self.logger)
 
         # store current schema version
         await self._database.insert_or_replace(
