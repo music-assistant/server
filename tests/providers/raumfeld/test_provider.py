@@ -951,3 +951,26 @@ async def test_a_room_whose_buttons_cannot_be_read_again_keeps_them() -> None:
     with patch.object(provider, "_read_station_buttons", AsyncMock(return_value=buttons)):
         await provider.refresh_station_buttons(player)
     player.set_station_buttons.assert_called_once_with(buttons)
+
+
+async def test_unload_waits_for_its_tasks_to_end() -> None:
+    """The supervisor, the update loop and the zone watcher have ended once unload returns."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    ended: list[str] = []
+
+    async def runs_until_cancelled(name: str) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # a long-poll that needs a moment to close its connection
+            await asyncio.sleep(0.01)
+            ended.append(name)
+            raise
+
+    provider._supervisor_task = asyncio.create_task(runs_until_cancelled("supervisor"))
+    provider._update_task = asyncio.create_task(runs_until_cancelled("update"))
+    provider._zone_watch_task = asyncio.create_task(runs_until_cancelled("zones"))
+    await asyncio.sleep(0)
+    await provider.unload()
+    assert sorted(ended) == ["supervisor", "update", "zones"]
+    assert provider._supervisor_task is None
