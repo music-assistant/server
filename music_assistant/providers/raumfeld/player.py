@@ -14,7 +14,13 @@ from hassfeld import upnp as hassfeld_upnp
 from hassfeld import webservice as hassfeld_ws
 from hassfeld.constants import SERVICE_AV_TRANSPORT
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    IdentifierType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
@@ -373,8 +379,9 @@ class RaumfeldPlayer(Player):
         added = set(member_ids) - set(self._attr_group_members)
         self._attr_group_members = member_ids
         self.update_state()
-        if added and self.leads_group and self.plays_own_queue:
-            # rooms grouped in the Raumfeld app join the running stream just the same
+        if added and self.leads_group:
+            # rooms grouped in the Raumfeld app join the running stream just the same; the
+            # check looks at playback once a play in progress has finished
             self.mass.create_task(self._restart_for_group_rates())
 
     @property
@@ -549,7 +556,13 @@ class RaumfeldPlayer(Player):
         self._clear_next()
         self._clear_external()
         self._advance_armed = not self.flow_mode
-        self._stream_rates = self.get_supported_sample_rates()
+        # MA picks the format from the rates offered now, except for audio another player
+        # already encoded (a Universal Group's stream, an announcement), which comes as it is
+        self._stream_rates = (
+            None
+            if media.media_type in (MediaType.FLOW_STREAM, MediaType.ANNOUNCEMENT)
+            else self.get_supported_sample_rates()
+        )
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url)
         try:

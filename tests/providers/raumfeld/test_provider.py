@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.raumfeld.constants import GROUP_SETTLE_TIME
 from music_assistant.providers.raumfeld.player import RaumfeldPlayer
@@ -1119,6 +1120,50 @@ async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
         await bar.set_members([sofa.player_id])
     restart.assert_awaited_once_with()
     assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
+
+
+async def test_a_join_seen_while_playback_starts_is_checked_once_it_plays() -> None:
+    """A room grouped in the app while the leader's play still runs is checked after it."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    sofa_id = bar._attr_group_members[1]
+    bar._attr_group_members = [bar.player_id]
+    # the play has not reported playing yet, and holds the playback lock
+    bar._attr_playback_state = PlaybackState.IDLE
+    lock = _held_playback_lock(mass)
+    await lock.acquire()
+    started: list[asyncio.Task[None]] = []
+    mass.create_task.side_effect = lambda coro: started.append(asyncio.create_task(coro))
+    bar.set_group_members([bar.player_id, sofa_id])
+    assert len(started) == 1
+    await asyncio.sleep(0)
+    # the play finishes and reports playing
+    bar._attr_playback_state = PlaybackState.PLAYING
+    lock.release()
+    await started[0]
+    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+
+
+@pytest.mark.parametrize("media_type", [MediaType.FLOW_STREAM, MediaType.ANNOUNCEMENT])
+async def test_audio_another_player_encoded_is_not_restarted_for_its_rate(
+    media_type: MediaType,
+) -> None:
+    """A Universal Group's stream or an announcement comes as it is: no rates to check."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    media = PlayerMedia(uri="http://mass.local:8097/ugp/stream.flac", media_type=media_type)
+    mass.streams.resolve_stream_url = AsyncMock(return_value=media.uri)
+    with (
+        patch.object(bar, "_ensure_playable_zone", AsyncMock(return_value=["Bank", "Bar"])),
+        patch.object(bar, "_wake_rooms", AsyncMock()),
+        patch.object(bar, "_stop_before_switching", AsyncMock()),
+        patch.object(bar, "_zone_command", AsyncMock()),
+        patch.object(bar, "set_current_media"),
+        patch.object(RaumfeldPlayer, "flow_mode", new_callable=PropertyMock, return_value=True),
+    ):
+        await bar.play_media(media)
+    assert bar._stream_rates is None
+    await bar._restart_for_group_rates()
+    mass.player_queues.seek.assert_not_awaited()
+    mass.player_queues.resume.assert_not_awaited()
 
 
 @pytest.mark.parametrize(("joins", "checked"), [(True, True), (False, False)])

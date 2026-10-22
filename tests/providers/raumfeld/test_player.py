@@ -1287,6 +1287,9 @@ def test_the_other_rooms_stay_grouped_when_spotify_takes_the_leader() -> None:
     bank = RaumfeldPlayer.__new__(RaumfeldPlayer)
     bank._player_id = "raumfeld_bank"
     bank._attr_group_members = []
+    bank.mass = mass
+    # leading rooms it did not lead before has its rate checked, which is not run here
+    mass.create_task.side_effect = lambda coro: coro.close()
     mass.players.get_player.return_value = bank
     with (
         patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
