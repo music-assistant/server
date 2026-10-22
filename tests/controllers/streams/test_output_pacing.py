@@ -144,9 +144,23 @@ def test_the_flow_stream_takes_the_lead_a_player_asked_for(
     player.get_config_value.side_effect = lambda _key, default: (
         default if setting is None else setting
     )
-    assert controller._flow_pacing(player) == profile
+    assert controller._flow_pacing(player, "chunked") == profile
 
 
 def test_changing_the_flow_lead_restarts_a_playing_queue() -> None:
     """The pace is set when the flow stream starts, so a change has to restart it."""
     assert CONF_ENTRY_FLOW_STREAM_LEAD.requires_reload
+
+
+def test_a_stream_with_a_fixed_length_keeps_the_usual_pace() -> None:
+    """
+    A forced-content-length flow ends with a lead-out sized for the usual pace.
+
+    The larger lead would leave more buffered at its end than the lead-out lets the player
+    play out, so such a stream keeps the usual pace whatever the setting says.
+    """
+    controller = StreamsController.__new__(StreamsController)
+    player = MagicMock()
+    player.get_config_value.side_effect = lambda _key, _default: True
+    assert controller._flow_pacing(player, "forced_content_length") == PacingProfile.NEAR_REALTIME
+    assert controller._flow_pacing(player, "chunked") == PacingProfile.FLOW_LEAD

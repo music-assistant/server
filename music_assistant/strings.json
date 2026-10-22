@@ -84,7 +84,7 @@
     },
     "flow_stream_lead": {
       "label": "Larger lead on the flow stream",
-      "description": "Sends the continuous flow stream slightly ahead of playback, so the player has more buffered at a track change.\nTurn this on if the player starts the queue over, or stops, at the end of a track from a slow source (such as radio or Spotify)."
+      "description": "Sends the continuous flow stream slightly ahead of playback, so the player has more buffered at a track change.\nTurn this on if the player starts the queue over, or stops, at the end of a track from a slow source (such as radio or Spotify). Has no effect with the forced content length HTTP profile."
     },
     "flow_mode_sample_rate": {
       "label": "Flow Mode sample rate",
