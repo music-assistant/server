@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Iterator
-from typing import cast
+from collections.abc import Callable, Coroutine, Iterator
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -128,7 +128,11 @@ def _zone_provider(
     mass = MagicMock()
     mass.players.get_player.side_effect = by_id.get
     mass.players.all_players.return_value = list(by_id.values())
+    # a task a player starts (a rate check after a join) is not run unless a test runs it
+    mass.create_task.side_effect = lambda coro: coro.close()
     provider.mass = mass
+    for player in players.values():
+        player.mass = mass
     provider.logger = MagicMock()
     return provider, players
 
@@ -873,30 +877,75 @@ def test_a_group_plays_the_rates_every_room_plays() -> None:
     assert sofa.supported_sample_rates is None
 
 
-@pytest.mark.parametrize(("source_rate", "restarts"), [(192000, True), (44100, False)])
-async def test_a_room_joining_restarts_a_stream_it_cannot_play(
-    source_rate: int, restarts: bool
-) -> None:
-    """A stream at a rate a joining room cannot play starts again where it was."""
+def _allow_16_bit(player: RaumfeldPlayer, max_rate: int) -> None:
+    """Give a room a sample rate setting with every rate up to max_rate, at 16 bit only."""
+    values = [
+        f"{rate}{MULTI_VALUE_SPLITTER}16"
+        for rate in (44100, 48000, 88200, 96000, 176400, 192000)
+        if rate <= max_rate
+    ]
+    player._config = MagicMock(get_value=MagicMock(return_value=values))
+
+
+def _joined_group(
+    sofa_rates: Callable[[RaumfeldPlayer], None], stream_started_in_group: bool
+) -> tuple[RaumfeldPlayer, MagicMock, MagicMock]:
+    """Have Sofa join a group Bar leads and plays a stream in; return Bar, mass and queue."""
     provider, players = _zone_provider([["Bar", "Sofa"]])
     mass = _playing_group(provider, players, ["Bar", "Sofa"], [["Bar", "Sofa"]])
     bar, sofa = players["Bar"], players["Sofa"]
     _allow(bar, 192000)
-    _allow(sofa, 96000)
+    sofa_rates(sofa)
+    # the rates offered when the stream started: Bar's own, or the group's
+    bar._stream_rates = (
+        bar.get_supported_sample_rates()
+        if stream_started_in_group
+        else bar._configured_sample_rates()
+    )
     queue = MagicMock(corrected_elapsed_time=63.4)
-    queue.current_item.streamdetails.audio_format.sample_rate = source_rate
+    queue.current_item.duration = 240
     mass.player_queues.get.return_value = queue
     mass.player_queues.seek = AsyncMock()
-    rates_before = bar._configured_sample_rates()
-    await bar._restart_for_group_rates(rates_before)
-    if restarts:
-        mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
-    else:
-        mass.player_queues.seek.assert_not_awaited()
+    mass.player_queues.resume = AsyncMock()
+    return bar, mass, queue
+
+
+async def test_a_room_joining_restarts_a_stream_it_may_not_play() -> None:
+    """A stream started at rates a joining room does not play starts again where it was."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
+    await bar._restart_for_group_rates()
+    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+
+
+async def test_a_stream_the_whole_group_already_plays_is_not_restarted() -> None:
+    """A stream started while the room was in the group already plays at a rate it plays."""
+    bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
+    await bar._restart_for_group_rates()
+    mass.player_queues.seek.assert_not_awaited()
+
+
+async def test_a_room_playing_only_16_bit_restarts_a_stream_at_the_same_rate() -> None:
+    """A bit depth the joining room does not play needs a restart as much as a rate does."""
+    bar, mass, _ = _joined_group(
+        lambda sofa: _allow_16_bit(sofa, 192000), stream_started_in_group=False
+    )
+    await bar._restart_for_group_rates()
+    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+
+
+async def test_radio_is_restarted_live_for_a_room_that_joined() -> None:
+    """A stream without a length has no position to seek to, so it starts again live."""
+    bar, mass, queue = _joined_group(
+        lambda sofa: _allow(sofa, 96000), stream_started_in_group=False
+    )
+    queue.current_item.duration = 0
+    await bar._restart_for_group_rates()
+    mass.player_queues.seek.assert_not_awaited()
+    mass.player_queues.resume.assert_awaited_once_with(bar.player_id, fade_in=False)
 
 
 async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
-    """A join while the leader plays its queue checks the rate against the rates from before."""
+    """A join made in Music Assistant while the leader plays its queue checks the rate."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     _playing_group(provider, players, ["Bar"], [["Bar"]])
     bar, sofa = players["Bar"], players["Sofa"]
@@ -909,7 +958,24 @@ async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
         patch.object(bar, "_restart_for_group_rates", AsyncMock()) as restart,
     ):
         await bar.set_members([sofa.player_id])
-    restart.assert_awaited_once()
-    assert restart.await_args is not None
-    assert max(rate for rate, _ in restart.await_args.args[0]) == 192000
+    restart.assert_awaited_once_with()
     assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
+
+
+@pytest.mark.parametrize(("joins", "checked"), [(True, True), (False, False)])
+async def test_a_room_grouped_in_the_raumfeld_app_has_the_rate_checked(
+    joins: bool, checked: bool
+) -> None:
+    """A room the Raumfeld app adds to a playing group is checked like a join from MA."""
+    provider, players = _zone_provider([["Bar"], ["Sofa"]])
+    mass = _playing_group(provider, players, ["Bar"], [["Bar"]])
+    bar, sofa = players["Bar"], players["Sofa"]
+    bar._attr_group_members = [bar.player_id, sofa.player_id] if not joins else []
+    started: list[Coroutine[Any, Any, None]] = []
+    mass.create_task.side_effect = started.append
+    with patch.object(bar, "_restart_for_group_rates", AsyncMock()) as restart:
+        # what following the zones does once the host shows Sofa in Bar's zone
+        bar.set_group_members([bar.player_id, sofa.player_id])
+        for coro in started:
+            await coro
+    assert restart.await_count == (1 if checked else 0)

@@ -169,18 +169,6 @@ def _near_track_end(pos: dict[str, str]) -> bool:
     return not duration or elapsed >= duration - NEAR_END_WINDOW
 
 
-def _playing_sample_rate(source_rate: int, rates: list[tuple[int, int]]) -> int:
-    """
-    Return the sample rate a source plays at on a player offering the given rates.
-
-    :param source_rate: The sample rate of the source.
-    :param rates: The (sample_rate, bit_depth) pairs the player offers.
-    """
-    # the highest rate not above the source's, as MA picks it; failing that the lowest
-    fitting = [rate for rate, _ in rates if rate <= source_rate]
-    return max(fitting) if fitting else min(rate for rate, _ in rates)
-
-
 class RaumfeldPlayer(Player):
     """A single Raumfeld room, exposed to Music Assistant as a player."""
 
@@ -204,6 +192,9 @@ class RaumfeldPlayer(Player):
     _resume_context: tuple[str, str, str, int, str | None] | None = None
     # the source that was active when the resume context was read
     _resume_source: str | None = None
+    # the (sample_rate, bit_depth) pairs offered when the running stream started: MA picks
+    # its format from these, and does not say which one it picked
+    _stream_rates: list[tuple[int, int]] | None = None
 
     def __init__(
         self,
@@ -379,8 +370,12 @@ class RaumfeldPlayer(Player):
             not member_ids or member_ids[0] == self.player_id
         ):
             return
+        added = set(member_ids) - set(self._attr_group_members)
         self._attr_group_members = member_ids
         self.update_state()
+        if added and self.leads_group and self.plays_own_queue:
+            # rooms grouped in the Raumfeld app join the running stream just the same
+            self.mass.create_task(self._restart_for_group_rates())
 
     @property
     def leads_group(self) -> bool:
@@ -554,6 +549,7 @@ class RaumfeldPlayer(Player):
         self._clear_next()
         self._clear_external()
         self._advance_armed = not self.flow_mode
+        self._stream_rates = self.get_supported_sample_rates()
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url)
         try:
@@ -647,7 +643,6 @@ class RaumfeldPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS: translate MA group changes into Raumfeld zone changes."""
         host = self.raumfeld.host
-        rates_before = self.get_supported_sample_rates()
         with self.raumfeld.changing_group():
             # this player is the group leader and owns the zone: add/drop each member's room
             try:
@@ -687,7 +682,7 @@ class RaumfeldPlayer(Player):
             if (member := self.mass.players.get_player(pid)) is not None:
                 member.update_state()
         if player_ids_to_add and self.plays_own_queue:
-            await self._restart_for_group_rates(rates_before)
+            await self._restart_for_group_rates()
 
     async def leave_group_if_dropped(self) -> bool | None:
         """
@@ -1251,31 +1246,34 @@ class RaumfeldPlayer(Player):
                 rates.append((int(sample_rate), int(bit_depth)))
         return rates or [(44100, 16)]
 
-    async def _restart_for_group_rates(self, rates_before: list[tuple[int, int]]) -> None:
-        """
-        Restart this room's queue where it is, if a room that joined cannot play its rate.
-
-        :param rates_before: The rates the group offered before the rooms joined.
-        """
+    async def _restart_for_group_rates(self) -> None:
+        """Restart this room's queue where it is, if a room that joined cannot play its stream."""
         # the host pulls a joining room into the running stream as it is; a room that
-        # cannot play its rate drops out after a moment (measured), so the stream starts
-        # again at a rate every room plays
-        queue = self.mass.player_queues.get(self.player_id)
-        if queue is None or queue.current_item is None or queue.current_item.streamdetails is None:
+        # cannot play its format drops out after a moment (measured). The stream can be at
+        # any format the group offered when it started, so a group that no longer offers
+        # one of those starts it again, at a format every room plays.
+        if self._stream_rates is None or set(self._stream_rates) <= set(
+            self.get_supported_sample_rates()
+        ):
             return
-        source_rate = queue.current_item.streamdetails.audio_format.sample_rate
-        playing_rate = _playing_sample_rate(source_rate, rates_before)
-        if playing_rate in {rate for rate, _ in self.get_supported_sample_rates()}:
+        queue = self.mass.player_queues.get(self.player_id)
+        if queue is None or queue.current_item is None:
             return
         self.logger.debug(
-            "%s plays at %s Hz, which a room that joined cannot play; restarting",
-            self.room,
-            playing_rate,
+            "A room that joined %s may not play the format of its stream; restarting", self.room
         )
         try:
-            await self.mass.player_queues.seek(self.player_id, int(queue.corrected_elapsed_time))
+            if queue.current_item.duration:
+                await self.mass.player_queues.seek(
+                    self.player_id, int(queue.corrected_elapsed_time)
+                )
+            else:
+                # a live stream (radio) has no position to seek to, so it starts again live
+                await self.mass.player_queues.resume(self.player_id, fade_in=False)
         except MusicAssistantError as err:
-            self.logger.debug("Failed to restart %s at a rate its group plays: %r", self.room, err)
+            self.logger.debug(
+                "Failed to restart %s at a format its group plays: %r", self.room, err
+            )
 
     def _zones_without_leader(self) -> list[list[str]]:
         """Return the zones this leading room's members are in, other than its own."""

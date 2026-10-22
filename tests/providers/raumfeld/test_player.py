@@ -44,6 +44,8 @@ def _flow_player() -> RaumfeldPlayer:
     player._attr_supported_features = set()
     player._library_sources = {}
     player._extra_data = {}
+    # no sample rate setting: the room plays the safe default
+    player._config = MagicMock(get_value=MagicMock(return_value=None))
     mass = MagicMock()
     mass.streams.base_url = BASE_URL
     player.mass = mass
