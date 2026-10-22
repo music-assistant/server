@@ -49,6 +49,7 @@ from .constants import (
     LINE_IN_OBJECT_ID,
     RECONNECT_INTERVAL,
     STATION_BUTTONS,
+    UNLOAD_TIMEOUT,
     ZONE_WATCH_INTERVAL,
 )
 from .helpers import (
@@ -179,9 +180,16 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        for task in (self._supervisor_task, self._update_task, self._zone_watch_task):
-            if task and not task.done():
-                task.cancel()
+        tasks = [
+            task
+            for task in (self._supervisor_task, self._update_task, self._zone_watch_task)
+            if task and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            # let them finish, so hassfeld's long-poll has ended before the provider is gone
+            await asyncio.wait(tasks, timeout=UNLOAD_TIMEOUT)
         self._supervisor_task = None
         self._update_task = None
         self._zone_watch_task = None
@@ -203,9 +211,6 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
         :param room: The Raumfeld room name to look up.
         """
-        # the zone renderer the host exposes is only a control facade and has no
-        # SetNextAVTransportURI; the room's own renderer does, so gapless pre-loading
-        # has to be addressed here rather than at the zone
         try:
             resolve = self.host.resolve
             room_udn = resolve["room_to_udn"].get(room)
