@@ -1010,9 +1010,9 @@ def _joined_group(
         if stream_started_in_group
         else bar._configured_sample_rates()
     )
-    queue = MagicMock(corrected_elapsed_time=63.4)
+    queue = MagicMock(queue_id=bar.player_id, corrected_elapsed_time=63.4)
     queue.current_item.duration = 240
-    mass.player_queues.get.return_value = queue
+    mass.players.get_active_queue.return_value = queue
     mass.player_queues.seek = AsyncMock()
     mass.player_queues.resume = AsyncMock()
     return bar, mass, queue
@@ -1061,7 +1061,7 @@ def _held_playback_lock(mass: MagicMock) -> asyncio.Lock:
         async with lock:
             yield
 
-    mass.players.get_player_lock = player_lock
+    mass.players.get_group_and_player_lock = player_lock
     return lock
 
 
@@ -1085,6 +1085,21 @@ async def test_a_check_waits_for_playback_in_progress_and_looks_again(meanwhile:
     lock.release()
     await check
     mass.player_queues.seek.assert_not_awaited()
+    mass.player_queues.resume.assert_not_awaited()
+
+
+async def test_a_sync_group_that_plays_through_the_room_is_restarted() -> None:
+    """The Sync Group's queue starts again, never the room's own queue parked on radio."""
+    bar, mass, queue = _joined_group(
+        lambda sofa: _allow(sofa, 96000), stream_started_in_group=False
+    )
+    queue.queue_id = "syncgroup_living"
+    own_queue = MagicMock(queue_id=bar.player_id)
+    own_queue.current_item.duration = 0
+    mass.player_queues.get.return_value = own_queue
+    await bar._restart_for_group_rates()
+    mass.players.get_active_queue.assert_called_once_with(bar)
+    mass.player_queues.seek.assert_awaited_once_with("syncgroup_living", 63)
     mass.player_queues.resume.assert_not_awaited()
 
 

@@ -23,7 +23,6 @@ from music_assistant.constants import (
     CONF_SAMPLE_RATES,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
 )
-from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
@@ -1259,14 +1258,16 @@ class RaumfeldPlayer(Player):
         # one of those starts it again, at a format every room plays.
         # A check started by a join in the Raumfeld app runs on its own, so it waits for a
         # play, seek or stop in progress and looks at the playback that leaves.
-        async with self.mass.players.get_player_lock(self.player_id, PlayerLockPurpose.PLAYBACK):
+        # a Sync Group this room renders for owns the queue, so its lock goes first
+        async with self.mass.players.get_group_and_player_lock(self.player_id):
             if not (self.leads_group and self.plays_own_queue):
                 return
             if self._stream_rates is None or set(self._stream_rates) <= set(
                 self.get_supported_sample_rates()
             ):
                 return
-            queue = self.mass.player_queues.get(self.player_id)
+            # the queue that plays here: the room's own, or that of a Sync Group it renders
+            queue = self.mass.players.get_active_queue(self)
             if queue is None or queue.current_item is None:
                 return
             self.logger.debug(
@@ -1276,11 +1277,11 @@ class RaumfeldPlayer(Player):
             try:
                 if queue.current_item.duration:
                     await self.mass.player_queues.seek(
-                        self.player_id, int(queue.corrected_elapsed_time)
+                        queue.queue_id, int(queue.corrected_elapsed_time)
                     )
                 else:
                     # a live stream (radio) has no position to seek to, so it starts again live
-                    await self.mass.player_queues.resume(self.player_id, fade_in=False)
+                    await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
             except MusicAssistantError as err:
                 self.logger.debug(
                     "Failed to restart %s at a format its group plays: %r", self.room, err
