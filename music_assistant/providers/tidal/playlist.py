@@ -12,6 +12,8 @@ from .constants import PLAYLISTS
 from .parsers import parse_playlist
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant_models.media_items import Playlist
 
     from .provider import TidalProvider
@@ -99,21 +101,46 @@ class TidalPlaylistManager:
         :param to_position: The position the track ends up at after the move, 1-based.
         :raises InvalidDataError: A position is outside the playlist.
         """
-        # v1 moves by 0-based index and toIndex is the final index of the moved item
-        # (tidalapi's move_by_index live tests: index 0 -> toIndex n-2 lands at n-2).
+        await self.move_tracks(prov_playlist_id, [from_position], to_position)
+
+    async def move_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int
+    ) -> None:
+        """
+        Move tracks of a playlist as one block to another position.
+
+        The moved tracks keep their order.
+
+        :param prov_playlist_id: The Tidal playlist uuid.
+        :param positions: The current positions of the tracks, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based.
+        :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+        """
+        # v1 moves any set of 0-based indices in one call, and toIndex is the final index of
+        # the first moved item (tidalapi's live tests: index 0 -> toIndex n-2 lands at n-2,
+        # and indices 0-3 -> toIndex n land at the end in order).
         # The ETag guards against a lost update, as for add and remove.
+        selected = sorted(set(positions))
+        if not selected or len(selected) != len(positions):
+            raise InvalidDataError("Each playlist position must be moved exactly once")
         try:
             playlist_obj, etag = await self.api.get_with_etag(f"{PLAYLISTS}/{prov_playlist_id}")
             num_tracks = playlist_obj.get("numberOfTracks", 0)
-            if not (1 <= from_position <= num_tracks and 1 <= to_position <= num_tracks):
+            if selected[0] < 1 or selected[-1] > num_tracks:
                 msg = f"Position out of range for a playlist of {num_tracks} item(s)"
                 raise InvalidDataError(msg)
+            if not 1 <= to_position <= num_tracks - len(selected) + 1:
+                msg = (
+                    f"{len(selected)} item(s) do not fit at position {to_position} of {num_tracks}"
+                )
+                raise InvalidDataError(msg)
+            indices = ",".join(str(position - 1) for position in selected)
             headers = {"If-None-Match": etag} if etag else {}
             await self.api.post(
-                f"{PLAYLISTS}/{prov_playlist_id}/items/{from_position - 1}",
+                f"{PLAYLISTS}/{prov_playlist_id}/items/{indices}",
                 data={"toIndex": to_position - 1},
                 as_form=True,
                 headers=headers,
             )
         except ClientError as err:
-            raise ResourceTemporarilyUnavailable("Failed to move track") from err
+            raise ResourceTemporarilyUnavailable("Failed to move tracks") from err

@@ -256,3 +256,52 @@ async def test_move_playlist_track_failure(
 
     with pytest.raises(ResourceTemporarilyUnavailable):
         await playlist_manager.move_track("1", 1, 2)
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position", "indices", "to_index"),
+    [
+        ([2, 3], 4, "1,2", 3),  # block down
+        ([5, 1], 1, "0,4", 0),  # scattered to top, sent in playlist order
+        ([4, 5], 1, "3,4", 0),  # block to top
+        ([1, 2], 4, "0,1", 3),  # block to bottom
+    ],
+)
+async def test_move_playlist_tracks(
+    playlist_manager: TidalPlaylistManager,
+    provider_mock: Mock,
+    positions: list[int],
+    to_position: int,
+    indices: str,
+    to_index: int,
+) -> None:
+    """Test move_tracks posts every 0-based index in one call with the block's final index."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 5}, "etag-m")
+
+    await playlist_manager.move_tracks("1", positions, to_position)
+
+    provider_mock.api.post.assert_called_once_with(
+        f"playlists/1/items/{indices}",
+        data={"toIndex": to_index},
+        as_form=True,
+        headers={"If-None-Match": "etag-m"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position"),
+    [([], 1), ([2, 2], 1), ([1, 2], 5), ([0, 1], 1), ([5, 6], 1)],
+)
+async def test_move_playlist_tracks_invalid(
+    playlist_manager: TidalPlaylistManager,
+    provider_mock: Mock,
+    positions: list[int],
+    to_position: int,
+) -> None:
+    """Test move_tracks rejects empty, duplicate, out-of-range or ill-fitting moves."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 5}, "etag-m")
+
+    with pytest.raises(InvalidDataError):
+        await playlist_manager.move_tracks("1", positions, to_position)
+
+    provider_mock.api.post.assert_not_called()
