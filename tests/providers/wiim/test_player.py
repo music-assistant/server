@@ -1,6 +1,7 @@
 """Tests for WiiM player provider."""
 
-from typing import cast
+import time
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,6 +14,7 @@ from wiim.exceptions import (
 )
 
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.wiim import player as wiim_player
 from music_assistant.providers.wiim.constants import (
     PLAYER_ID_PREFIX,
     SOURCE_NETWORK,
@@ -889,6 +891,129 @@ class TestSetMembersDelegation:
         mock_provider.native_groups.set_members.assert_awaited_once_with(
             leader, ["wiim_uuid:add"], ["wiim_uuid:remove"]
         )
+
+
+class TestFirstFollowerJoinRestart:
+    """A firmware stream restart on the first follower join resumes at the pre-join position."""
+
+    STREAM_URI = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+
+    def _make_playing_leader(
+        self, provider: MagicMock, device: MagicMock, seek: AsyncMock | None = None
+    ) -> WiimPlayer:
+        device_media = MagicMock()
+        device_media.uri = self.STREAM_URI
+        device.current_media = device_media
+        device.play_mode = SOURCE_NETWORK
+        device.playing_status = PlayingStatus.PLAYING
+        device.event_data = {}
+        player = WiimPlayer(
+            provider=provider,
+            player_id=f"{PLAYER_ID_PREFIX}{device.udn}",
+            device=device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_active_source = player.player_id
+        queue = MagicMock()
+        queue.active = True
+        queue.current_item = MagicMock(duration=240)
+        queue.elapsed_time = 100.0
+        queue.elapsed_time_last_updated = time.time()
+        queue.playback_speed = 1.0
+        provider.mass.player_queues.get.return_value = queue
+        provider.mass.player_queues.seek = seek or AsyncMock()
+        return player
+
+    def _restart_on_join(self, player: WiimPlayer, device: MagicMock) -> None:
+        async def _join(*_args: Any) -> None:
+            device.event_data = {"TransportState": "TRANSITIONING"}
+            player._handle_sdk_av_transport_event(MagicMock(), [])
+
+        cast("AsyncMock", player._native_groups.set_members).side_effect = _join
+
+    async def test_restart_on_first_join_seeks_to_pre_join_position(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A TRANSITIONING report on the same uri during the join seeks to the anchor."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+        self._restart_on_join(player, mock_wiim_device)
+        anchor_at = mock_provider.mass.player_queues.get.return_value.elapsed_time_last_updated
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        seek = mock_provider.mass.player_queues.seek
+        seek.assert_awaited_once()
+        player_id, position = seek.await_args.args
+        assert player_id == player.player_id
+        assert abs(position - (100 + time.time() - anchor_at)) <= 1
+        assert player._join_restart_watch is None
+
+    async def test_join_without_restart_does_not_seek(
+        self,
+        mock_provider: MagicMock,
+        mock_wiim_device: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without a restart report the join completes after the wait and leaves playback be."""
+        monkeypatch.setattr(wiim_player, "JOIN_RESTART_TIMEOUT", 0.05)
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        mock_provider.mass.player_queues.seek.assert_not_awaited()
+        assert player._join_restart_watch is None
+
+    async def test_join_to_existing_group_is_not_watched(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A second follower never triggers the firmware restart, so nothing is watched."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+        mock_provider.native_groups.members_of.return_value = [
+            player.player_id,
+            "wiim_uuid:existing",
+        ]
+        self._restart_on_join(player, mock_wiim_device)
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        mock_provider.mass.player_queues.seek.assert_not_awaited()
+
+    async def test_join_on_item_without_duration_is_not_watched(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A live stream cannot be seeked, so the restart is left alone."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+        mock_provider.mass.player_queues.get.return_value.current_item.duration = None
+        self._restart_on_join(player, mock_wiim_device)
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        mock_provider.mass.player_queues.seek.assert_not_awaited()
+
+    async def test_join_while_paused_is_not_watched(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A paused leader has no running stream to restart."""
+        player = self._make_playing_leader(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.PAUSED
+        self._restart_on_join(player, mock_wiim_device)
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        mock_provider.mass.player_queues.seek.assert_not_awaited()
+
+    async def test_failed_resume_does_not_fail_the_join(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A seek error after the restart is logged, the join itself still succeeds."""
+        seek = AsyncMock(side_effect=RuntimeError("boom"))
+        player = self._make_playing_leader(mock_provider, mock_wiim_device, seek=seek)
+        self._restart_on_join(player, mock_wiim_device)
+
+        await player.set_members(player_ids_to_add=["wiim_uuid:follower"])
+
+        seek.assert_awaited_once()
 
 
 class TestAvailabilityRepublish:

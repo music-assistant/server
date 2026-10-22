@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import typing
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
@@ -45,6 +47,20 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
     PlayingStatus.STOPPED: PlaybackState.IDLE,
     PlayingStatus.LOADING: PlaybackState.PLAYING,
 }
+
+# seconds to wait after a first follower join for the firmware to restart the leader's stream
+JOIN_RESTART_TIMEOUT = 2
+
+
+@dataclass
+class _JoinRestartWatch:
+    """The leader's stream and queue position captured when its first follower joins."""
+
+    uri: str
+    anchor: float
+    anchor_at: float
+    speed: float
+    restarted: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class WiimPlayer(Player):
@@ -101,6 +117,7 @@ class WiimPlayer(Player):
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
         self._ma_stream_uri: str | None = None
+        self._join_restart_watch: _JoinRestartWatch | None = None
         self._native_groups: NativeGroupCoordinator = provider.native_groups
         # a copy of the low-level client's detected capabilities, reused to pre-seed each
         # fresh command client so topology reads do not re-probe the device
@@ -366,9 +383,12 @@ class WiimPlayer(Player):
             entry_sdk_uri,
             self.device.playing_status,
         )
+        self._join_restart_watch = self._create_join_restart_watch(player_ids_to_add)
         try:
             await self._native_groups.set_members(self, player_ids_to_add, player_ids_to_remove)
+            await self._resume_after_join_restart()
         finally:
+            self._join_restart_watch = None
             exit_sdk_uri = self.device.current_media.uri if self.device.current_media else None
             self.logger.debug(
                 "set_members exit on %s: sdk.current_uri=%s, sdk.playing_status=%s, "
@@ -404,6 +424,15 @@ class WiimPlayer(Player):
             except ValueError:
                 pass
             else:
+                watch = self._join_restart_watch
+                media = self.device.current_media
+                if (
+                    watch
+                    and sdk_status == PlayingStatus.LOADING
+                    and media
+                    and media.uri == watch.uri
+                ):
+                    watch.restarted.set()
                 if sdk_status in (
                     PlayingStatus.PLAYING,
                     PlayingStatus.PAUSED,
@@ -643,3 +672,57 @@ class WiimPlayer(Player):
             self._native_groups.refresh_leader(self, force=True),
             task_id=f"wiim_topology_{self.player_id}",
         )
+
+    def _create_join_restart_watch(
+        self, player_ids_to_add: list[str] | None
+    ) -> _JoinRestartWatch | None:
+        """Return a watch when this join makes the playing leader group its first follower."""
+        # the firmware only restarts a stream it started while it had no followers
+        if not player_ids_to_add:
+            return None
+        if [m for m in self._native_groups.members_of(self.player_id) if m != self.player_id]:
+            return None
+        if (
+            self._attr_playback_state != PlaybackState.PLAYING
+            or self._attr_active_source != self.player_id
+        ):
+            return None
+        queue = self.mass.player_queues.get(self.player_id)
+        if not queue or not queue.active or not queue.current_item:
+            return None
+        # live streams have no duration and cannot be seeked, the restart is harmless there
+        if not queue.current_item.duration:
+            return None
+        media = self.device.current_media
+        if not media or not media.uri:
+            return None
+        return _JoinRestartWatch(
+            uri=media.uri,
+            anchor=queue.elapsed_time,
+            anchor_at=queue.elapsed_time_last_updated,
+            speed=queue.playback_speed,
+        )
+
+    async def _resume_after_join_restart(self) -> None:
+        """Seek the queue back to the pre-join position if the firmware restarted the stream."""
+        if not (watch := self._join_restart_watch):
+            return
+        try:
+            await asyncio.wait_for(watch.restarted.wait(), timeout=JOIN_RESTART_TIMEOUT)
+        except TimeoutError:
+            return
+        self._join_restart_watch = None
+        position = int(watch.anchor + (time.time() - watch.anchor_at) * watch.speed)
+        self.logger.info(
+            "WiiM firmware restarted the stream of %s on the first follower join, resuming at %s s",
+            self._attr_name,
+            position,
+        )
+        # seek republishes the target position before rebuilding the stream, and a stream
+        # started while grouped is never restarted by the firmware again
+        try:
+            await self.mass.player_queues.seek(self.player_id, position)
+        except Exception as err:
+            self.logger.warning(
+                "Failed to resume %s after the stream restart: %s", self._attr_name, err
+            )
