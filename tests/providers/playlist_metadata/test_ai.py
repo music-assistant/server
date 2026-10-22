@@ -976,7 +976,65 @@ async def test_a_rate_limit_pauses_as_long_as_the_service_asks(
 
     await _metadata(provider, _smart_playlist())
 
-    assert provider._ai._paused_until["cover"] - time.time() > 3500
+    assert provider._ai._paused_until["image"] - time.time() > 3500
+
+
+async def test_a_rate_limited_concept_pauses_the_text_engine(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A rate-limited concept leaves the text engine alone, and the next covers wait for it."""
+    _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
+    provider.test_text_engine.provider.ai_query = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RateLimited("slow down", backoff_time=3600)
+    )
+
+    await _metadata(provider, _smart_playlist(item_id="1"))
+    await _metadata(provider, _smart_playlist(item_id="2"))
+
+    # the first cover went ahead with the default concept, the second waits for the engine
+    assert _text_calls(provider) == 1
+    assert _engine_calls(provider) == 1
+    assert provider._ai.waiting
+    assert provider._ai._paused_until["text"] - time.time() > 3500
+
+
+async def test_a_paused_text_engine_holds_covers_that_need_a_concept(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A text engine left alone after a failed description is not asked for a concept either."""
+    _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
+    playlist = _smart_playlist()
+    await provider._ai._failed(
+        "description", playlist, "key", ProviderUnavailableError("Ollama is not reachable")
+    )
+
+    await _metadata(provider, playlist)
+
+    assert _text_calls(provider) == 0
+    assert _engine_calls(provider) == 0
+    assert provider._ai.waiting
+
+
+async def test_a_preview_does_not_ask_a_paused_text_engine(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A preview uses the default concept and shows no description while the engine rests."""
+    _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
+    _set_config(
+        provider,
+        **{
+            CONF_PREVIEW_PLAYLIST: "234",
+            CONF_PREVIEW_STYLE: ["bold"],
+            CONF_USE_PROMPT_ENGINE: True,
+        },
+    )
+    provider._ai._paused_until["text"] = time.time() + 600
+
+    with _no_engine_pickers():
+        await provider.handle_config_action(CONF_ACTION_PREVIEW)
+
+    assert _text_calls(provider) == 0
+    assert _engine_calls(provider) == 1
 
 
 async def test_the_newest_generation_times_are_stored_last(
@@ -1791,6 +1849,54 @@ async def test_scheduled_refresh_puts_back_replaced_descriptions(
         replaced.uri, force_refresh=True
     )
     assert _text_calls(provider) == 1
+
+
+async def test_scheduled_refresh_puts_back_a_cover_made_before_while_the_limit_is_full(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A cover that is still on disk is put back at once, as that takes no slot of the limit."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1, CONF_DESCRIPTIONS: False})
+    playlist = _smart_playlist()
+    await _metadata(provider, playlist)
+    assert playlist.image is not None
+    playlist.metadata.images = UniqueList()
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        side_effect=lambda: _async_iter([playlist])
+    )
+    _mass(provider).metadata.update_metadata = AsyncMock()
+
+    await provider._ai.refresh()
+    await _settle(provider)
+
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(
+        playlist.uri, force_refresh=True
+    )
+    assert _engine_calls(provider) == 1
+    assert not provider._ai._pending
+
+
+async def test_scheduled_refresh_puts_back_a_stored_description_while_the_limit_is_full(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A description written before is put back at once, as that takes no slot of the limit."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
+    playlist = _smart_playlist()
+    await _metadata(provider, playlist)
+    assert playlist.metadata.description == DESCRIPTION
+    playlist.metadata.description = "[Smart Playlist] Similar to Innerbloom"
+    _mass(provider).music.playlists.iter_library_items = MagicMock(
+        side_effect=lambda: _async_iter([playlist])
+    )
+    _mass(provider).metadata.update_metadata = AsyncMock()
+
+    await provider._ai.refresh()
+    await _settle(provider)
+
+    _mass(provider).metadata.update_metadata.assert_awaited_once_with(
+        playlist.uri, force_refresh=True
+    )
+    assert _text_calls(provider) == 1
+    assert not provider._ai._pending
 
 
 def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:

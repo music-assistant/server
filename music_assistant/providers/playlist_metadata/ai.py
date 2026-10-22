@@ -126,6 +126,10 @@ THROTTLE_WINDOW_SECONDS: Final = 3600
 # what the worker generates for a playlist
 KIND_COVER: Final = "cover"
 KIND_DESCRIPTION: Final = "description"
+# the engines that are left alone after they could not be reached, and what each one makes
+ENGINE_IMAGE: Final = "image"
+ENGINE_TEXT: Final = "text"
+KIND_ENGINES: Final = {KIND_COVER: ENGINE_IMAGE, KIND_DESCRIPTION: ENGINE_TEXT}
 # the smart playlist provider's plain summary of the rules, which a written description replaces
 SMART_PLAYLIST_SUMMARY_PREFIX: Final = "[Smart Playlist] "
 # the smart playlist rules that end up in the prompts, so a change to them makes a new cover
@@ -208,7 +212,7 @@ class AIArtwork:
     # wakes the worker from waiting for the hourly limit when new work is queued
     _wakeup: asyncio.Event
     _waiting: bool
-    # until when an engine that could not be reached is left alone, per kind
+    # until when an engine that could not be reached is left alone, per engine
     _paused_until: dict[str, float]
     # set when the provider unloads, so nothing queued afterwards starts a worker
     _stopped: bool
@@ -697,37 +701,48 @@ class AIArtwork:
                 continue
             if not in_scope:
                 continue
+            ready = False
             if image_engine is not None and not has_own_artwork:
-                await self._queue_missing_cover(playlist, image_engine)
+                ready = await self._queue_missing_cover(playlist, image_engine)
             if text_engine is not None:
-                await self._queue_missing_description(playlist, text_engine)
+                ready = await self._queue_missing_description(playlist, text_engine) or ready
+            if ready:
+                # applying what was made before takes no generation, so it does not wait for
+                # the hourly limit or the engine in the queue
+                await self._refresh_playlist(playlist)
 
-    async def _queue_missing_cover(self, playlist: Playlist, engine: ImageEngine) -> None:
-        """Queue the playlist's cover when it does not show the one it should."""
+    async def _queue_missing_cover(self, playlist: Playlist, engine: ImageEngine) -> bool:
+        """
+        Queue the playlist's cover when it does not show the one it should.
+
+        Returns whether that cover was made before, so a metadata refresh only has to apply it.
+        """
         if (file_name := await self._file_name(playlist, engine)) is None:
-            return
-        current = playlist.image
-        if (
-            current is not None
-            and self.is_own_image(current)
-            and current.path == file_name
-            and await asyncio.to_thread(_touch, os.path.join(self._images_dir, file_name))
-        ):
-            return
+            return False
+        if await asyncio.to_thread(_touch, os.path.join(self._images_dir, file_name)):
+            current = playlist.image
+            shown = current is not None and self.is_own_image(current) and current.path == file_name
+            return not shown
         if not await self._backing_off(KIND_COVER, playlist, file_name):
             self._enqueue(playlist, KIND_COVER)
+        return False
 
-    async def _queue_missing_description(self, playlist: Playlist, engine: AIEngine) -> None:
-        """Queue the playlist's description when it does not show the one it should."""
+    async def _queue_missing_description(self, playlist: Playlist, engine: AIEngine) -> bool:
+        """
+        Queue the playlist's description when it does not show the one it should.
+
+        Returns whether that description was written before, so a metadata refresh only has to
+        apply it.
+        """
         if not await self._may_describe(playlist):
-            return
+            return False
         if (checksum := await self._description_checksum(playlist, engine)) is None:
-            return
-        stored = await self._stored_description(playlist, checksum)
-        if stored is not None and playlist.metadata.description == stored:
-            return
+            return False
+        if (stored := await self._stored_description(playlist, checksum)) is not None:
+            return playlist.metadata.description != stored
         if not await self._backing_off(KIND_DESCRIPTION, playlist, checksum):
             self._enqueue(playlist, KIND_DESCRIPTION)
+        return False
 
     def _enqueue(self, playlist: Playlist, kind: str) -> None:
         """Queue a cover or description of the playlist for the worker, starting it if needed."""
@@ -943,12 +958,39 @@ class AIArtwork:
         :param key: What identifies it, so a changed one is tried afresh.
         :param err: The error, None for an engine that answered with nothing.
         """
-        transient = isinstance(err, TRANSIENT_ERRORS)
-        if transient:
-            # as long as the service asked for, when it said how long
-            pause = max(ENGINE_RETRY_SECONDS, getattr(err, "backoff_time", 0) or 0)
-            self._paused_until[kind] = time.time() + pause
+        transient = self._pause_if_unreachable(KIND_ENGINES[kind], err)
         await self._record_failure(kind, playlist, key, transient=transient)
+
+    def _pause_if_unreachable(self, engine: str, err: BaseException | None) -> bool:
+        """
+        Leave an engine alone for a while when the error shows it could not be reached.
+
+        Returns whether it could not be reached.
+
+        :param engine: Which engine failed, the image or the text engine.
+        :param err: The error, None for an engine that answered with nothing.
+        """
+        if not isinstance(err, TRANSIENT_ERRORS):
+            return False
+        # as long as the service asked for, when it said how long
+        pause = max(ENGINE_RETRY_SECONDS, getattr(err, "backoff_time", 0) or 0)
+        until = time.time() + pause
+        self._paused_until[engine] = max(self._paused_until.get(engine, 0), until)
+        return True
+
+    def _paused_for(self, kind: str) -> int:
+        """
+        Return the seconds the engines a cover or description needs are left alone, 0 if none.
+
+        A cover also needs the text engine when that writes its visual concept.
+
+        :param kind: Whether it is a cover or a description.
+        """
+        engines = [KIND_ENGINES[kind]]
+        if kind == KIND_COVER and self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
+            engines.append(ENGINE_TEXT)
+        remaining = max(self._paused_until.get(engine, 0) for engine in engines) - time.time()
+        return int(remaining) + 1 if remaining > 0 else 0
 
     def _blocked_for(self, kind: str) -> int | None:
         """
@@ -956,21 +998,23 @@ class AIArtwork:
 
         :param kind: Whether it is a cover or a description.
         """
-        remaining = self._paused_until.get(kind, 0) - time.time()
-        paused = int(remaining) + 1 if remaining > 0 else 0
         timestamps = self._generated_at if kind == KIND_COVER else self._described_at
         limited = self._throttle_delay(timestamps) or 0
-        return max(paused, limited) or None
+        return max(self._paused_for(kind), limited) or None
+
+    def _text_engine_paused(self) -> bool:
+        """Return whether the text engine is left alone after it could not be reached."""
+        return self._paused_until.get(ENGINE_TEXT, 0) > time.time()
 
     def _check_paused(self, kind: str) -> None:
         """
-        Refuse to generate while the engine for a kind is left alone after it was unreachable.
+        Refuse to generate while an engine a kind needs is left alone after it was unreachable.
 
         :param kind: Whether it is a cover or a description.
         :raises LimitReachedError: While the engine is left alone.
         """
-        if (remaining := self._paused_until.get(kind, 0) - time.time()) > 0:
-            raise LimitReachedError(int(remaining) + 1)
+        if paused := self._paused_for(kind):
+            raise LimitReachedError(paused)
 
     async def _record_failure(
         self, kind: str, playlist: Playlist, key: str, *, transient: bool = False
@@ -1096,7 +1140,11 @@ class AIArtwork:
         self, playlist: Playlist, engine: AIEngine | None, context: PlaylistContext
     ) -> str:
         """Return a description to preview for the playlist, empty when none could be written."""
-        if engine is None or self._throttle_delay(self._described_at) is not None:
+        if (
+            engine is None
+            or self._text_engine_paused()
+            or self._throttle_delay(self._described_at) is not None
+        ):
             return ""
         await self._record(self._described_at, CACHE_KEY_DESCRIBED_AT)
         if self._stopped:
@@ -1104,6 +1152,7 @@ class AIArtwork:
         try:
             return await self._write_description(playlist, engine, context)
         except Exception as err:
+            self._pause_if_unreachable(ENGINE_TEXT, err)
             # the covers are still worth showing
             self.logger.warning(
                 "Could not write a preview description for '%s': %s",
@@ -1179,13 +1228,16 @@ class AIArtwork:
         if not self.provider.config.get_value(CONF_USE_PROMPT_ENGINE):
             return DEFAULT_CONCEPT
         engine = await select_ai_engine(self.provider, CONF_TEXT_ENGINE)
-        if engine is None:
+        if engine is None or self._text_engine_paused():
+            # the worker waits for a paused engine, so this serves previews and a cover that
+            # was already under way when the engine was paused
             return DEFAULT_CONCEPT
         query = CONCEPT_PROMPT.format(name=playlist.name, context=context.describe())
         try:
             async with asyncio.timeout(PROMPT_TIMEOUT_SECONDS):
                 concept = await engine.provider.ai_query(query, engine_id=engine.id)
         except Exception as err:
+            self._pause_if_unreachable(ENGINE_TEXT, err)
             self.logger.warning(
                 "The text engine could not write a visual concept for '%s': %s",
                 playlist.name,
