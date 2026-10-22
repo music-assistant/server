@@ -229,6 +229,17 @@ class RaumfeldPlayerProvider(PlayerProvider):
         ip_address = urlparse(devloc).hostname if devloc else None
         return uuid, ip_address
 
+    async def refresh_station_buttons(self, player: RaumfeldPlayer) -> None:
+        """
+        Read a room's station buttons again, as they can be reassigned at any time.
+
+        A room whose buttons cannot be read keeps the ones it has.
+
+        :param player: The player of the room.
+        """
+        if (buttons := await self._read_station_buttons(player.room)) is not None:
+            player.set_station_buttons(buttons)
+
     async def _supervise(self) -> None:
         """Supervise the host connection: connect when reachable, pause when it drops."""
         while True:
@@ -321,17 +332,19 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Read each room's station buttons, and offer them as sources."""
         for player in self.players:
             if isinstance(player, RaumfeldPlayer):
-                player.set_station_buttons(await self._read_station_buttons(player.room))
+                player.set_station_buttons(await self._read_station_buttons(player.room) or [])
 
-    async def _read_station_buttons(self, room: str) -> list[tuple[int, str, str, bool]]:
+    async def _read_station_buttons(self, room: str) -> list[tuple[int, str, str, bool]] | None:
         """
         Return the station buttons of a room's speaker: ``(button, object id, title, container)``.
+
+        Return ``None`` when the buttons could not be read.
 
         :param room: The Raumfeld room name.
         """
         renderer_uuid, _ = self.resolve_room_renderer(room)
         if renderer_uuid is None:
-            return []
+            return None
         try:
             location = self.host.resolve["udn_to_devloc"][self.host.media_server_udn]
             action = await hassfeld_upnp.get_dlna_action(
@@ -351,7 +364,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             ]
         except (*HOST_ERRORS, UpnpError) as err:
             self.logger.debug("Failed to read the station buttons of %s: %r", room, err)
-            return []
+            return None
         buttons = []
         for button, object_id in assigned:
             if not object_id:

@@ -836,11 +836,24 @@ async def test_station_buttons_are_read_with_their_titles() -> None:
     }
 
 
-async def test_a_room_whose_buttons_cannot_be_read_offers_none() -> None:
-    """A media server that does not answer leaves the room without button sources."""
+async def test_buttons_that_cannot_be_read_are_reported_as_unknown() -> None:
+    """A media server that does not answer gives no buttons, not an empty list of them."""
     provider, _ = _button_provider()
     with patch(
         "music_assistant.providers.raumfeld.provider.hassfeld_upnp.get_dlna_action",
         AsyncMock(side_effect=TimeoutError),
     ):
-        assert await provider._read_station_buttons("Bar") == []
+        assert await provider._read_station_buttons("Bar") is None
+
+
+async def test_a_room_whose_buttons_cannot_be_read_again_keeps_them() -> None:
+    """Reading a room's buttons before playing one leaves them as they were on a failure."""
+    provider, _ = _button_provider()
+    player = MagicMock(room="Bar")
+    with patch.object(provider, "_read_station_buttons", AsyncMock(return_value=None)):
+        await provider.refresh_station_buttons(player)
+    player.set_station_buttons.assert_not_called()
+    buttons = [(1, "0/RadioTime/Search/s-s25777", "NPO Radio 2", False)]
+    with patch.object(provider, "_read_station_buttons", AsyncMock(return_value=buttons)):
+        await provider.refresh_station_buttons(player)
+    player.set_station_buttons.assert_called_once_with(buttons)

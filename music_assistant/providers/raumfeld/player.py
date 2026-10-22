@@ -550,12 +550,16 @@ class RaumfeldPlayer(Player):
     @_changes_playback
     async def select_source(self, source: str) -> None:
         """Handle SELECT_SOURCE: play the Line-In or one of the station buttons."""
-        if (library_item := self._library_sources.get(source)) is not None:
+        if source in self._library_sources:
             context = self._resume_context
             if context is not None and self._resume_source == source and self._announcing():
                 # MA selects the button again after an announcement: go on where it was
                 await self._restore_zone_source(context)
                 return
+            # the button may have been given another item since the buttons were last read
+            await self.raumfeld.refresh_station_buttons(self)
+            if (library_item := self._library_sources.get(source)) is None:
+                raise PlayerCommandFailed(f"{source} has nothing assigned on {self.room} any more")
             await self._play_library_item(source, *library_item)
             return
         if source != SOURCE_LINE_IN or self._line_in is None:
@@ -1308,7 +1312,9 @@ class RaumfeldPlayer(Player):
         uri = library_uri(host.media_server_udn, object_id, container)
         try:
             # the host wants the item's own description along with the reference
-            metadata = await host.async_browse_media_server(object_id, "BrowseMetadata") or ""
+            metadata = await host.async_browse_media_server(object_id, "BrowseMetadata")
+            if not metadata:
+                raise PlayerCommandFailed(f"{object_id} is not available on the Raumfeld host")
             zone = await self._ensure_playable_zone()
             await self._wake_rooms(zone)
             await self._stop_before_switching(zone)
