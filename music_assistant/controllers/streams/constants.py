@@ -127,6 +127,11 @@ def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[s
 # the webserver shutdown timeout so a lead-out never stalls a restart of the server.
 FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
 
+# Write size for ICY-framed flow streams. Writes are sized independently of the
+# metadata interval, so the player buffer grows with the encoder's output instead
+# of in interval-sized steps (1.5s of FLAC per step at a 256000 byte interval).
+ICY_WRITE_SIZE: Final[int] = 16384
+
 
 # Configuration keys
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"
