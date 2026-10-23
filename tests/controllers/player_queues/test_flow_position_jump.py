@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,6 +13,9 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+
+if TYPE_CHECKING:
+    from music_assistant.controllers.player_queues.helpers import CompareState
 
 QUEUE_ID = "player-1"
 FIRST_TRACK_STREAMED = 200
@@ -93,7 +96,9 @@ def test_paused_player_position_does_not_move_the_queue() -> None:
 
 def _played_120_s_into_the_second_track(ctrl: PlayerQueuesController) -> PlayerQueue:
     queue_data = ctrl._queue_data[QUEUE_ID]
-    queue_data.prev_state = {"current_item_id": "b", "last_playing_elapsed_time": 120}  # type: ignore[typeddict-item]
+    queue_data.prev_state = cast(
+        "CompareState", {"current_item_id": "b", "last_playing_elapsed_time": 120}
+    )
     queue_data.queue.elapsed_time = 120
     # MA's own pause parks its clock estimate as the resume position.
     queue_data.queue.resume_pos = 120
@@ -116,4 +121,6 @@ def test_paused_position_leaves_the_resume_position_alone() -> None:
     queue = _played_120_s_into_the_second_track(ctrl)
     ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PAUSED, 0))
     assert queue.resume_pos == 120
-    assert ctrl._queue_data[QUEUE_ID].prev_state["last_playing_elapsed_time"] == 120  # type: ignore[index]
+    prev_state = ctrl._queue_data[QUEUE_ID].prev_state
+    assert prev_state is not None
+    assert prev_state["last_playing_elapsed_time"] == 120
