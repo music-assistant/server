@@ -173,10 +173,10 @@ async def test_first_commit_reports_the_anchor(monkeypatch: pytest.MonkeyPatch) 
 async def test_buffered_runahead_keeps_unplayed_history(monkeypatch: pytest.MonkeyPatch) -> None:
     """History is pruned against what plays now, not against the commit tail."""
     t0 = 10_000_000
-    num_chunks = 100
+    num_chunks = 300
     # Contiguous audio, one chunk per commit...
     commit_timestamps = [t0 + i * _CHUNK_DURATION_US for i in range(num_chunks)]
-    # ...produced ten times faster than it plays, so the buffer grows to ~9s.
+    # ...produced ten times faster than it plays, so the buffer grows to ~27s.
     now_timestamps = [
         t0 - _SEND_AHEAD_US + i * (_CHUNK_DURATION_US // 10) for i in range(num_chunks)
     ]
