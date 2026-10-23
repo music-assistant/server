@@ -491,8 +491,15 @@ class SonosPlayer(Player):
                 raise
             return
 
-        if not self.flow_mode and media.source_id and media.queue_item_id:
+        if (
+            not self.flow_mode
+            and media.source_id
+            and media.queue_item_id
+            and media.media_type != MediaType.RADIO
+        ):
             # Regular Queue item playback
+            # radio is excluded: in the cloud queue it becomes a FLAC track without a
+            # duration, which Sonos does not support and drops every now and then
             # create a sonos cloud queue and load it
             self.cloud_queue_id = media.source_id
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"

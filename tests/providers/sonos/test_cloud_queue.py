@@ -574,6 +574,35 @@ async def test_a_forced_flow_load_also_releases_the_replaced_sessions_streams() 
     close_stale.assert_called_once_with(QUEUE_ID, "session-2")
 
 
+async def test_radio_is_played_as_a_stream_url_without_flow_mode() -> None:
+    """Radio from the queue goes out as an AAC stream url, not as a cloud queue track."""
+    player, _ = _make_player([_make_queue_item("radio0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    client.player.group.play_cloud_queue = AsyncMock()
+    client.player.group.play_stream_url = AsyncMock()
+    player.client = client
+    player._provider = MagicMock()
+    player._provider.mass = player.mass
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        await player.play_media(
+            PlayerMedia(
+                uri="http://ma/single/radio0.flac",
+                media_type=MediaType.RADIO,
+                source_id=QUEUE_ID,
+                queue_item_id="radio0",
+                queue_session_id="session-2",
+            )
+        )
+
+    client.player.group.play_cloud_queue.assert_not_awaited()
+    client.player.group.play_stream_url.assert_awaited_once()
+    assert client.player.group.play_stream_url.await_args.args[0] == "http://ma/single/radio0.aac"
+    assert player.cloud_queue_id is None
+
+
 async def test_a_failed_forced_flow_load_keeps_the_old_sessions_streams_alive() -> None:
     """A flow load the speaker refused must not cut the audio that is still playing."""
     player, _ = _make_player([_make_queue_item("track0")])
