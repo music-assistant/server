@@ -3349,18 +3349,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         # additional order options subject to media type
         # single is targeting a single media item, collection the aggregated ones
+        # (group keys aggregate the grouped items, the collection keys select them)
         single_extra_order_keys = ""
+        collection_group_keys = ""
         collection_extra_order_keys = ""
         if self.media_type == MediaType.AUDIOBOOK:
             single_extra_order_keys = "duration,"
-            collection_extra_order_keys = (
-                "(SELECT duration FROM collection_stats WHERE stats_title = collection_title)"
-                " as duration,"
-            )
+            collection_extra_order_keys = "collection_info.duration as duration,"
             supported_sort_fields.add(SortField.DURATION)
         elif self.media_type == MediaType.ALBUM:
             single_extra_order_keys = "year,"
-            collection_extra_order_keys = "MIN(year) as year,"
+            collection_group_keys = "MIN(year) as year,"
+            collection_extra_order_keys = "year,"
             supported_sort_fields.add(SortField.YEAR)
 
         sql_query = f"""
@@ -3401,6 +3401,31 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         )
                     )
                 ),
+                collection_cover_list as (
+                    SELECT
+                        cover_title,
+                        json_group_array(
+                            json_object('rank', cover_rank, 'images', json(images))
+                        ) as covers
+                    FROM collection_covers
+                    WHERE cover_rank <= {COLLECTION_COVER_COUNT}
+                    GROUP BY cover_title
+                ),
+                -- the metadata of each collection, built once and joined onto its row
+                collection_info as (
+                    SELECT
+                        stats_title,
+                        duration,
+                        json_object(
+                            'total_items', total_items,
+                            'duration', duration,
+                            'fully_played', fully_played,
+                            'in_progress', in_progress,
+                            'covers', json(covers)
+                        ) as collection_metadata
+                    FROM collection_stats
+                    LEFT JOIN collection_cover_list ON cover_title = stats_title
+                ),
                 collection_extract as (
                     SELECT
                         item_id,
@@ -3419,44 +3444,36 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     FROM (
                         SELECT * FROM joined_table
                     ), json_each({collections_column}) as iter_coll
-                )
-            SELECT
-                'collection' as type,
-                MIN(item_id) as random_item_id,
-                collection_title as name,
-                COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
-                COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
-                MAX(timestamp_added) as timestamp_added,
-                MAX(timestamp_modified) as timestamp_modified,
-                MAX(last_played) as last_played,
-                SUM(play_count) as play_count,
-                {collection_extra_order_keys}
-                (
-                    SELECT json_object(
-                        'total_items', total_items,
-                        'duration', duration,
-                        'fully_played', fully_played,
-                        'in_progress', in_progress,
-                        'covers', (
-                            SELECT json_group_array(
-                                json_object('rank', cover_rank, 'images', json(images))
-                            )
-                            FROM collection_covers
-                            WHERE cover_title = collection_title
-                                AND cover_rank <= {COLLECTION_COVER_COUNT}
-                        )
+                ),
+                collection_rows as (
+                    SELECT
+                        'collection' as type,
+                        MIN(item_id) as random_item_id,
+                        collection_title as name,
+                        COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
+                        COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
+                        MAX(timestamp_added) as timestamp_added,
+                        MAX(timestamp_modified) as timestamp_modified,
+                        MAX(last_played) as last_played,
+                        SUM(play_count) as play_count,
+                        {collection_group_keys}
+                        json_group_array(media_data) as media_data
+                    FROM (
+                        SELECT * FROM collection_extract
+                        -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
+                        -- Confirmed working with sqlite 3.40.1 & 3.53
+                        -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
+                        ORDER BY collection_title, {sequence_order}
                     )
-                    FROM collection_stats WHERE stats_title = collection_title
-                ) as collection_metadata,
-                json_group_array(media_data) as media_data
-            FROM (
-                SELECT * FROM collection_extract
-                -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
-                -- Confirmed working with sqlite 3.40.1 & 3.53
-                -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
-                ORDER BY collection_title, {sequence_order}
-            )
-            GROUP BY collection_title
+                    GROUP BY collection_title
+                )
+            SELECT type, random_item_id, name, search_name, search_sort_name,
+                timestamp_added, timestamp_modified, last_played, play_count,
+                {collection_extra_order_keys}
+                collection_info.collection_metadata,
+                media_data
+            FROM collection_rows
+            LEFT JOIN collection_info ON collection_info.stats_title = collection_rows.name
 
             UNION ALL
 
