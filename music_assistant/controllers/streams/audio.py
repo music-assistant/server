@@ -105,6 +105,7 @@ from music_assistant.controllers.streams.constants import (
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
+    HLS_RADIO_INPUT_BURST,
     MIN_VOICE_OVER_DURATION,
     NO_TRACK_MATCH_EXPIRATION,
     OUTCOME_ONLY_NORMALIZATION_MODES,
@@ -5096,7 +5097,14 @@ class StreamsAudio:
                 # HLS streams (especially the BBC) struggle when they're played directly
                 # with ffmpeg, where they just stop after some minutes,
                 # so we tell ffmpeg to loop around in this case.
-                extra_input_args += ["-stream_loop", "-1", "-re"]
+                extra_input_args += [
+                    "-stream_loop",
+                    "-1",
+                    "-readrate",
+                    "1",
+                    "-readrate_initial_burst",
+                    str(HLS_RADIO_INPUT_BURST),
+                ]
             return substream.path, seek_position, extra_input_args
 
         # all other stream types (HTTP, FILE, etc)
