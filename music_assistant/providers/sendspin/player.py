@@ -1860,8 +1860,8 @@ class SendspinPlayer(SendspinBasePlayer):
             abort_existing=True,
         )
 
-    def on_flow_timeline_rebased(self) -> None:
-        """Re-publish the beat schedule after the flow stream's timeline moved."""
+    def on_flow_timeline_changed(self) -> None:
+        """Re-publish the beat schedule after the flow stream's timeline was set or moved."""
         if self.synced_to is not None:
             return
         self.mass.create_task(

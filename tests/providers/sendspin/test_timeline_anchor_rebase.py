@@ -84,7 +84,7 @@ class _CommitLoopTrace:
     oldest_retained_start_us: list[int | None] = field(default_factory=list)
     player: MagicMock = field(default_factory=MagicMock)
     # Player-facing calls in the order the commit loop made them: ("elapsed", seconds)
-    # for a published position, ("rebased", None) for a reported anchor rebase.
+    # for a published position, ("timeline", None) for a reported anchor.
     player_calls: list[tuple[str, float | None]] = field(default_factory=list)
 
 
@@ -123,8 +123,8 @@ async def _run_commit_loop(
     )
 
     trace = _CommitLoopTrace(player=player)
-    player.on_flow_timeline_rebased.side_effect = lambda *_: trace.player_calls.append(
-        ("rebased", None)
+    player.on_flow_timeline_changed.side_effect = lambda *_: trace.player_calls.append(
+        ("timeline", None)
     )
     player.update_state.side_effect = lambda: trace.player_calls.append(
         ("elapsed", player._attr_elapsed_time)
@@ -159,6 +159,15 @@ async def test_anchor_absorbs_a_mid_stream_rebase(monkeypatch: pytest.MonkeyPatc
     trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
     assert trace.anchors == [t0, t0, t0 + _STALL_US]
+
+
+async def test_first_commit_reports_the_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first commit reports its anchor, so beats published before it get retimed."""
+    t0 = 10_000_000
+
+    trace = await _run_commit_loop(monkeypatch, [t0, t0 + _CHUNK_DURATION_US])
+
+    assert trace.player_calls == [("elapsed", 0.0), ("timeline", None)]
 
 
 async def test_buffered_runahead_keeps_unplayed_history(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,9 +211,9 @@ async def test_small_schedule_moves_add_up_to_one_rebase(monkeypatch: pytest.Mon
 
     trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
-    rebased_at = [i for i, (kind, _) in enumerate(trace.player_calls) if kind == "rebased"]
-    assert len(rebased_at) == 1
-    assert rebased_at[0] == len(trace.player_calls) - 1
+    reported_at = [i for i, (kind, _) in enumerate(trace.player_calls) if kind == "timeline"]
+    # After the first commit, only the commit where the moves add up.
+    assert reported_at[1:] == [len(trace.player_calls) - 1]
 
 
 async def test_rebase_publishes_its_position_step_on_the_same_commit(
@@ -219,10 +228,11 @@ async def test_rebase_publishes_its_position_step_on_the_same_commit(
     trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
     kinds = [kind for kind, _ in trace.player_calls]
-    assert kinds.count("rebased") == 1
+    # The first commit, then the stall.
+    assert kinds.count("timeline") == 2
 
     # The beat refresh can fall back to elapsed time, so it must already be corrected.
-    assert kinds[-2:] == ["elapsed", "rebased"]
+    assert kinds[-2:] == ["elapsed", "timeline"]
 
     elapsed = [
         seconds for kind, seconds in trace.player_calls if kind == "elapsed" and seconds is not None

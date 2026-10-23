@@ -882,17 +882,17 @@ class SendspinPlaybackSession:
                     self._history.append(committed_history_chunk)
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
-                # Compared against the last reported anchor so small moves add up.
-                anchor_rebased = (
-                    reported_anchor_us is not None
-                    and abs(anchor_us - reported_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
+                # The first commit reports too, since beats published before it were timed
+                # from an estimated start. Later moves are compared against the last reported
+                # anchor so small ones add up.
+                timeline_changed = (
+                    reported_anchor_us is None
+                    or abs(anchor_us - reported_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
                 )
-                if reported_anchor_us is None or anchor_rebased:
-                    reported_anchor_us = anchor_us
                 elapsed_real_s = max(0.0, (commit_now_us - anchor_us) / 1_000_000)
                 # A rebase can step the position backward, which would keep the gate shut.
                 if (
-                    anchor_rebased
+                    timeline_changed
                     or last_elapsed_update_s is None
                     or elapsed_real_s - last_elapsed_update_s >= 1.0
                 ):
@@ -900,8 +900,9 @@ class SendspinPlaybackSession:
                     self.player._attr_elapsed_time = elapsed_real_s
                     self.player._attr_elapsed_time_last_updated = time.time()
                     self.player.update_state()
-                if anchor_rebased:
-                    self.player.on_flow_timeline_rebased()
+                if timeline_changed:
+                    reported_anchor_us = anchor_us
+                    self.player.on_flow_timeline_changed()
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
