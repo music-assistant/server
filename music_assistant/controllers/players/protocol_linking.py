@@ -1060,7 +1060,6 @@ class ProtocolLinkingMixin:
             )
 
             known_protocol_ids = set(self._get_known_protocol_ids(player))
-            claimed_elsewhere: set[str] = set()
 
             if not identifiers_match and not player_id_in_protocols:
                 # The native's stored protocol list claims the wrapped protocols as well, unless
@@ -1069,10 +1068,6 @@ class ProtocolLinkingMixin:
                     self._get_cached_protocol_ids(native_player.player_id)
                 ) or self._owns_domain_of_protocols(native_player.player_id, known_protocol_ids):
                     continue
-                # Outputs another native claims in config stay on the wrapper for that native.
-                claimed_elsewhere = self._protocols_claimed_by_other_natives(
-                    native_player.player_id, known_protocol_ids
-                )
 
             refused_protocol_ids: set[str] = set()
             moved_protocol_ids: set[str] = set()
@@ -1096,7 +1091,7 @@ class ProtocolLinkingMixin:
                     or protocol_player.provider.domain
                     for linked, protocol_player in movable
                 }
-                if not claimed_elsewhere.isdisjoint(domains) or any(
+                if any(
                     self._parent_has_active_protocol_from_domain(
                         native_player, domain, exclude_player_id=protocol_id
                     )
@@ -1206,20 +1201,6 @@ class ProtocolLinkingMixin:
             if str(config.get("provider", "")).split("--", 1)[0] in domains:
                 return True
         return False
-
-    def _protocols_claimed_by_other_natives(
-        self, native_id: str, protocol_ids: set[str]
-    ) -> set[str]:
-        """Return the protocols that another native player's config lists as its own."""
-        all_player_configs: dict[str, dict[str, Any]] = self.mass.config.get(CONF_PLAYERS, {})
-        claimed: set[str] = set()
-        for player_id, config in all_player_configs.items():
-            if player_id == native_id:
-                continue
-            if str(config.get("provider", "")).split("--", 1)[0] == "universal_player":
-                continue
-            claimed.update((config.get("values") or {}).get(CONF_LINKED_PROTOCOL_IDS) or [])
-        return claimed & protocol_ids
 
     def _migrate_universal_player_config(self, universal_id: str, native_id: str) -> None:
         """
