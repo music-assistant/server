@@ -61,3 +61,12 @@ async def test_batch_move_command_reorders_a_builtin_playlist(e2e_mass: MusicAss
         seeds[0].name,
         seeds[2].name,
     ]
+
+    await move(db_playlist_id=playlist.item_id, positions=[1, 2])
+    items = await playlists.tracks(playlist.item_id, "library")
+    assert [item.name for item in items] == [
+        seeds[0].name,
+        seeds[2].name,
+        seeds[1].name,
+        seeds[3].name,
+    ]
