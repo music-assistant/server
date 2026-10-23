@@ -947,6 +947,106 @@ async def test_audiobook_collection_statistics_ignore_view_filters(
     assert collection.metadata == alpha
 
 
+async def _add_collection_book(
+    mass: MusicAssistant,
+    name: str,
+    collection: str | None,
+    sequence: float | str | None = None,
+    duration: int = 0,
+) -> None:
+    await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name=name,
+            duration=duration,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=name,
+                    provider_domain="prov_a",
+                    provider_instance="prov_a_inst",
+                    in_library=True,
+                )
+            },
+            metadata=MediaItemMetadata(
+                collections=UniqueList([MediaItemCollection(title=collection, sequence=sequence)])
+                if collection
+                else None,
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=f"{name}.jpg",
+                            provider="test",
+                            remotely_accessible=True,
+                        )
+                    ]
+                ),
+            ),
+        )
+    )
+
+
+MIXED_SEQUENCE_ORDER = [
+    "Book 1.5",
+    "Book 2",
+    "Book 10",
+    "Book Text A",
+    "Book Text b",
+    "Book Untitled A",
+    "Book Untitled B",
+]
+
+
+@pytest.mark.parametrize("source", ["listing", "collection", "covers"])
+async def test_collection_order_follows_the_sequence(mass: MusicAssistant, source: str) -> None:
+    """Numbers sort by value, then text ignoring case, then books without a sequence by name."""
+    # added in reverse, so the order cannot come from the insertion
+    for name, sequence in (
+        ("Book Untitled B", None),
+        ("Book Untitled A", None),
+        ("Book Text b", "b"),
+        ("Book Text A", "A"),
+        ("Book 10", 10),
+        ("Book 2", "2"),
+        ("Book 1.5", 1.5),
+    ):
+        await _add_collection_book(mass, name, "Mixed Series", sequence)
+    controller = mass.music.audiobooks
+
+    # every book a cover, so the covers show the whole order
+    with patch(f"{MediaControllerBase.__module__}.COLLECTION_COVER_COUNT", 7):
+        (collection,) = await controller.library_items(collapse_collections=True)
+        assert isinstance(collection, MediaCollection)
+        if source == "collection":
+            collection = await controller.get_collection(collection.item_id)
+
+    if source == "covers":
+        names = [image.path.removesuffix(".jpg") for image in collection.metadata.images or []]
+    else:
+        names = [item.name for item in collection.items]
+    assert names == MIXED_SEQUENCE_ORDER
+
+
+async def test_collapsed_audiobook_collections_sort_by_duration(mass: MusicAssistant) -> None:
+    """Collections sort on the total duration of their books, between the single books."""
+    for name, collection, duration in (
+        ("Long 1", "Long Series", 50),
+        ("Long 2", "Long Series", 500),
+        ("Middle Book", None, 300),
+        ("Short 1", "Short Series", 100),
+        ("Short 2", "Short Series", 100),
+    ):
+        await _add_collection_book(mass, name, collection, duration=duration)
+
+    result = await mass.music.audiobooks.library_items(
+        collapse_collections=True,
+        sort_field=SortField.DURATION,
+        sort_direction=SortDirection.ASC,
+    )
+    assert [item.name for item in result] == ["Short Series", "Middle Book", "Long Series"]
+
+
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:
     """Default library listings stream from the sort index without a temp b-tree."""
     database = seeded_mass.music.database
