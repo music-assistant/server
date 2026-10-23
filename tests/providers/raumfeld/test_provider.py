@@ -974,3 +974,62 @@ async def test_unload_waits_for_its_tasks_to_end() -> None:
     await provider.unload()
     assert sorted(ended) == ["supervisor", "update", "zones"]
     assert provider._supervisor_task is None
+
+
+def _supervised(answers: list[bool]) -> tuple[RaumfeldPlayerProvider, AsyncMock]:
+    """Build a connected provider whose host answers the health checks as given."""
+    provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
+    provider._connected = True
+    provider._host_address = "192.168.1.23"
+    provider._host_port = 47365
+    provider._update_task = MagicMock(done=MagicMock(return_value=False))
+    provider.mass = MagicMock()
+    provider.logger = MagicMock()
+    provider._resync = AsyncMock()  # type: ignore[method-assign]
+    disconnect = AsyncMock()
+    provider._disconnect = disconnect  # type: ignore[method-assign]
+    return provider, AsyncMock(side_effect=answers)
+
+
+async def _supervise_cycles(
+    provider: RaumfeldPlayerProvider, check: AsyncMock, cycles: int
+) -> None:
+    """Run the supervisor for the given number of cycles."""
+    sleeps = 0
+
+    async def sleep(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= cycles:
+            raise asyncio.CancelledError
+
+    with (
+        patch("music_assistant.providers.raumfeld.provider.host_is_valid", check),
+        patch("music_assistant.providers.raumfeld.provider.asyncio.sleep", sleep),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await provider._supervise()
+
+
+async def test_a_host_that_misses_a_check_now_and_then_stays_connected() -> None:
+    """Two missed health checks followed by an answer keep the connection."""
+    provider, check = _supervised([False, False, True, False])
+    await _supervise_cycles(provider, check, 4)
+    provider._disconnect.assert_not_called()  # type: ignore[attr-defined]
+    assert provider._host_check_failures == 1
+
+
+async def test_a_host_that_misses_three_checks_in_a_row_is_dropped() -> None:
+    """Three missed health checks in a row count as a lost host."""
+    provider, check = _supervised([False, False, False])
+    await _supervise_cycles(provider, check, 3)
+    provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
+
+
+async def test_an_ended_update_loop_drops_the_connection_at_once() -> None:
+    """Hassfeld's update loop having ended is not a slow host: drop without waiting."""
+    provider, check = _supervised([True])
+    provider._update_task = MagicMock(done=MagicMock(return_value=True))
+    await _supervise_cycles(provider, check, 1)
+    provider._disconnect.assert_awaited_once_with("host connection lost")  # type: ignore[attr-defined]
+    check.assert_not_called()
