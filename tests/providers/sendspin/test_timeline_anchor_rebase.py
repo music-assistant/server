@@ -161,6 +161,32 @@ async def test_anchor_absorbs_a_mid_stream_rebase(monkeypatch: pytest.MonkeyPatc
     assert trace.anchors == [t0, t0, t0 + _STALL_US]
 
 
+async def test_anchor_waits_for_the_audio_sent_before_a_rebase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The anchor moves once the audio scheduled before a rebase has played out."""
+    t0 = 10_000_000
+    # The schedule moves while the first chunk still plays.
+    move_now_us = t0 + 50_000
+    shift_us = move_now_us + _SEND_AHEAD_US - (t0 + 2 * _CHUNK_DURATION_US)
+    commit_timestamps = [
+        t0,
+        t0 + _CHUNK_DURATION_US,
+        t0 + 2 * _CHUNK_DURATION_US + shift_us,
+        t0 + 3 * _CHUNK_DURATION_US + shift_us,
+    ]
+    now_timestamps = [
+        t0 - _SEND_AHEAD_US,
+        t0 - _SEND_AHEAD_US + _CHUNK_DURATION_US,
+        move_now_us,
+        commit_timestamps[2] + 10_000,
+    ]
+
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps, now_timestamps)
+
+    assert trace.anchors == [t0, t0, t0, t0 + shift_us]
+
+
 async def test_first_commit_reports_the_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
     """The first commit reports its anchor, so beats published before it get retimed."""
     t0 = 10_000_000
@@ -208,6 +234,9 @@ async def test_small_schedule_moves_add_up_to_one_rebase(monkeypatch: pytest.Mon
         t0 + 2 * _CHUNK_DURATION_US + shift_us,
         t0 + 3 * _CHUNK_DURATION_US + shift_us,
         t0 + 4 * _CHUNK_DURATION_US + 2 * shift_us,
+        # Keep committing until the second move's audio plays.
+        t0 + 5 * _CHUNK_DURATION_US + 2 * shift_us,
+        t0 + 6 * _CHUNK_DURATION_US + 2 * shift_us,
     ]
 
     trace = await _run_commit_loop(monkeypatch, commit_timestamps)

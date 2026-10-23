@@ -211,6 +211,7 @@ class _HistoryChunk:
     start_time_us: int
     duration_us: int
     pcm: bytes
+    timeline_start_us: int
 
 
 @dataclass(slots=True)
@@ -874,12 +875,13 @@ class SendspinPlaybackSession:
                     start_time_us=int(commit_start_us),
                     duration_us=pending.duration_us,
                     pcm=pending.pcm,
+                    # aiosendspin moves the schedule forward when the producer falls behind.
+                    timeline_start_us=int(commit_start_us) - self._produced_audio_us,
                 )
-                # aiosendspin moves the schedule forward when the producer falls behind.
-                anchor_us = int(commit_start_us) - self._produced_audio_us
                 async with self._state_lock:
-                    self._timeline_start_us = anchor_us
                     self._history.append(committed_history_chunk)
+                    anchor_us = self._playing_timeline_start_us_locked(commit_now_us)
+                    self._timeline_start_us = anchor_us
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
                 # The first commit reports too, since beats published before it were timed
@@ -1490,6 +1492,14 @@ class SendspinPlaybackSession:
         return self._get_or_create_preassigned_channel(player_id)
 
     # -- History ---------------------------------------------------------------
+
+    def _playing_timeline_start_us_locked(self, now_us: int) -> int:
+        """Return the anchor of the chunk playing at ``now_us``, or of the next one in a gap."""
+        # Speakers play audio sent before a schedule move at its old timestamps.
+        for chunk in self._history:
+            if chunk.start_time_us + chunk.duration_us > now_us:
+                return chunk.timeline_start_us
+        return self._history[-1].timeline_start_us
 
     def _prune_history_locked(self, now_monotonic_us: int) -> None:
         """Drop old history chunks that are fully in the past."""
