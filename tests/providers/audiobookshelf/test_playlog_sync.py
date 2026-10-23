@@ -32,10 +32,10 @@ def playlog_provider(provider: Audiobookshelf) -> Audiobookshelf:
     return provider
 
 
-def _progress() -> MediaProgress:
+def _progress(library_item_id: str | None = "book1") -> MediaProgress:
     return MediaProgress(
         id_="progress1",
-        library_item_id="book1",
+        library_item_id=library_item_id,
         duration=3600,
         current_time=3600,
         is_finished=True,
@@ -57,15 +57,27 @@ async def _drain(provider: Audiobookshelf) -> None:
         await provider._user_update_task
 
 
-@pytest.mark.parametrize(("user_id", "played"), [("user1", [True]), ("user2", [])])
+@pytest.mark.parametrize(
+    ("user_id", "library_item_id", "played"),
+    [("user1", "book1", [True]), ("user2", "book1", []), ("user1", None, [])],
+)
 async def test_progress_of_web_ui_applied(
-    playlog_provider: Audiobookshelf, user_id: str, played: list[bool]
+    playlog_provider: Audiobookshelf,
+    user_id: str,
+    library_item_id: str | None,
+    played: list[bool],
 ) -> None:
-    """A progress changed by another abs client is applied, unless it's another user's."""
+    """
+    A progress changed by another abs client is applied.
+
+    Not if it's another user's, or abs could not map it to an item.
+    """
     playlog_provider.abs_user_id = "user1"
 
     with patch("music_assistant.providers.audiobookshelf.USER_UPDATED_DEBOUNCE_SECONDS", 0):
-        await playlog_provider._socket_abs_user_updated(_user(user_id, [_progress()]))
+        await playlog_provider._socket_abs_user_updated(
+            _user(user_id, [_progress(library_item_id)])
+        )
         await _drain(playlog_provider)
 
     mark_item_played = cast("AsyncMock", playlog_provider.mass.music.mark_item_played)
