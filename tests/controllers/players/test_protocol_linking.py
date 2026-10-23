@@ -7761,6 +7761,7 @@ class TestUniversalPlayerReplacement:
         assert config_store["players/cast_1/name"] == "Living Room"
         assert "players/up_old" not in config_store
         assert "player_dsp/up_old" not in config_store
+        mock_mass.player_queues.purge_saved_queue.assert_called_once_with("up_old")
 
     def test_replace_carries_over_nothing_without_user_config(self, mock_mass: MagicMock) -> None:
         """A non-customized universal player migrates nothing (no default-name carry)."""
