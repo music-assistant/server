@@ -265,13 +265,14 @@ async def test_move_playlist_track_failure(
         ([5, 1], 1, "0,4", 0),  # scattered to top, sent in playlist order
         ([4, 5], 1, "3,4", 0),  # block to top
         ([1, 2], 4, "0,1", 3),  # block to bottom
+        ([1, 3], None, "0,2", 3),  # no target moves the block to the end
     ],
 )
 async def test_move_playlist_tracks(
     playlist_manager: TidalPlaylistManager,
     provider_mock: Mock,
     positions: list[int],
-    to_position: int,
+    to_position: int | None,
     indices: str,
     to_index: int,
 ) -> None:

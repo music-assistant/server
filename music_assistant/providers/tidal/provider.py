@@ -333,7 +333,7 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         await self.playlists.move_track(prov_playlist_id, from_position, to_position)
 
     async def move_playlist_tracks(
-        self, prov_playlist_id: str, positions: Sequence[int], to_position: int
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
     ) -> None:
         """Move tracks of a playlist as one block to another position (all 1-based)."""
         await self.playlists.move_tracks(prov_playlist_id, positions, to_position)
