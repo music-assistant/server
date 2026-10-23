@@ -106,6 +106,12 @@ def build_provider_links(item: MediaItemType, media_type: str) -> dict[str, str]
         ):
             links[mapping.provider_domain] = mapping.url
             continue
+        if (
+            mapping.provider_domain == "qobuz"
+            and media_type == "artist"
+            and not mapping.item_id.isdecimal()
+        ):
+            continue
         schema = PROVIDER_URL_SCHEMAS.get((mapping.provider_domain, media_type))
         if schema:
             links[mapping.provider_domain] = schema.format(id=quote(mapping.item_id, safe=""))
