@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+from music_assistant_models.player_queue import PlayLogEntry
+
 from music_assistant.providers.sendspin.player import SendspinPlayer
 
 if TYPE_CHECKING:
@@ -80,10 +82,50 @@ def _player(monkeypatch: pytest.MonkeyPatch) -> SendspinPlayer:
         "SendspinPlaybackSession",
         SimpleNamespace(flow_track_anchor_us=lambda offset_us: _PUBLISHED_ANCHOR_US + offset_us),
     )
-    monkeypatch.setattr(
-        SendspinPlayer, "_flow_track_offset_us", staticmethod(lambda _d, _i, _p: None)
-    )
     return player
+
+
+async def test_a_rebase_moves_the_published_beats_by_the_anchor_delta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rebase republishes the playing track's beats shifted by the anchor delta."""
+    player = _player(monkeypatch)
+    harness = cast("Any", player)
+    visualizer_role = cast("MagicMock", player._visualizer_role)
+    delta_us = 1_500_000
+    # The track plays from 10 s to 30 s into the flow stream, and its repeat is already buffered.
+    old_timeline_start_us = _PUBLISHED_ANCHOR_US - 10_000_000
+    harness.mass.player_queues.queue_data_or_none.return_value = SimpleNamespace(
+        flow_mode_stream_log=[
+            PlayLogEntry("qi-0", seconds_streamed=10.0),
+            PlayLogEntry(_QUEUE_ITEM_ID, seconds_streamed=20.0),
+            PlayLogEntry("qi-2", seconds_streamed=10.0),
+            PlayLogEntry(_QUEUE_ITEM_ID),
+        ]
+    )
+    player.playback_session = cast(
+        "SendspinPlaybackSession",
+        SimpleNamespace(
+            flow_track_anchor_us=lambda offset_us: old_timeline_start_us + delta_us + offset_us
+        ),
+    )
+    harness.mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
+        return_value=SimpleNamespace(beats=[float(b) for b in range(20)], downbeats=[0.0])
+    )
+
+    await player._send_beat_schedule(
+        cast("PlayerQueue", SimpleNamespace(queue_id="q1")),
+        _queue_item(),
+        _PROGRESS_MS,
+        True,
+    )
+
+    new_anchor_us = _PUBLISHED_ANCHOR_US + delta_us
+    assert player._last_beat_anchor_us == new_anchor_us
+    published = visualizer_role.append_beat_schedule.call_args.args[0]
+    assert [beat.timestamp_us for beat in published] == list(
+        range(50_500_000, 61_000_000, 1_000_000)
+    )
 
 
 async def test_a_track_change_during_the_analysis_await_drops_the_stale_publish(
