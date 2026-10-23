@@ -3240,9 +3240,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Return the metadata computed over all items of a collection row."""
         raw_metadata = db_row["collection_metadata"]
         metadata = json_loads(raw_metadata) if raw_metadata else {}
-        # the aggregate order is not guaranteed, the rank is
-        covers = sorted(metadata.get("covers") or [], key=lambda cover: cover["rank"])
-        thumbs = [self._summary_thumb(cover["images"], hidden_sources) for cover in covers]
+        # the images of the books with a thumb, in collection order
+        covers = (metadata.get("covers") or [])[:COLLECTION_COVER_COUNT]
+        thumbs = [self._summary_thumb(images, hidden_sources) for images in covers]
         return MediaCollectionMetadata(
             images=UniqueList(thumb for thumb in thumbs if thumb) or None,
             total_items=metadata.get("total_items"),
@@ -3270,70 +3270,30 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             collection is computed over. None when sql_query applies no view filters
             (favorite, genre, played).
         """
-        cache_key_columns = f"collection_columns_{self.api_base}"
-        columns: list[str] | None = await self.mass.cache.get(
-            key=cache_key_columns, category=int(summary)
-        )
-        if columns is None:
+        cache_key_json_object = f"collection_{self.api_base}"
+        json_object = await self.mass.cache.get(key=cache_key_json_object, category=int(summary))
+        if json_object is None:
             # get column names of base query
             db_rows = await self.mass.music.database.get_rows_from_query(
                 sql_query, query_params, limit=1, offset=0
             )
-            columns = list(db_rows[0].keys()) if db_rows else []
-            if columns:
-                await self.mass.cache.set(
-                    key=cache_key_columns, category=int(summary), data=columns
+            # create a sql json_object which queries all these columns
+            if db_rows:
+                json_object = (
+                    "json_object(" + ",".join([f"'{x}',{x}" for x in db_rows[0].keys()]) + ")"  # noqa: SIM118
                 )
-        # a sql json_object which queries all these columns
-        json_object = "json_object(" + ",".join([f"'{x}',{x}" for x in columns]) + ")"
+                await self.mass.cache.set(
+                    key=cache_key_json_object, category=int(summary), data=json_object
+                )
+            else:
+                json_object = "json_object()"
 
         collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
         images_column = "images" if summary else "json_extract(metadata, '$.images')"
-        sequence_is_numeric = """
-            CASE
-                WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
-                THEN 1
-                WHEN json_type(iter_coll.value, '$.sequence') = 'text'
-                    AND json_valid(json_extract(iter_coll.value, '$.sequence'))
-                THEN CASE
-                    WHEN json_type(json_extract(iter_coll.value, '$.sequence'))
-                        IN ('integer', 'real')
-                    THEN 1
-                    ELSE 0
-                END
-                ELSE 0
-            END"""
-        sequence_order = """
-            -- null case
-            CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-            -- numeric before text
-            CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
-            -- order NUMERIC
-            CASE WHEN collection_sequence_is_numeric
-                THEN CAST(collection_sequence AS REAL)
-            END,
-            -- order TEXT
-            CASE WHEN NOT collection_sequence_is_numeric
-                THEN collection_sequence
-            END COLLATE NOCASE,
-            -- order by media name if no sequence given
-            CASE
-                WHEN collection_sequence IS NULL
-                THEN media_name
-            END COLLATE NOCASE"""
-
-        # statistics over all items of a collection, from the columns this media type has
-        duration_stat = "SUM(duration)" if "duration" in columns else "NULL"
-        fully_played_stat = (
-            "MIN(COALESCE(fully_played, 0))" if "fully_played" in columns else "NULL"
-        )
-        in_progress_stat = (
-            "MAX(COALESCE(fully_played, 0) = 0 AND COALESCE(resume_position_ms, 0) > 0)"
-            if {"fully_played", "resume_position_ms"}.issubset(columns)
-            else "NULL"
-        )
+        # all books in scope make a collection's metadata, the ones in view its items
         scope_table = f"scope_table as ({scope_query})," if scope_query else ""
-        stats_source = "scope_table" if scope_query else "joined_table"
+        extract_source = "scope_table" if scope_query else "joined_table"
+        in_view = "item_id IN (SELECT item_id FROM joined_table)" if scope_query else "1"
 
         # the sort fields a collapsed listing offers: those aggregated per collection below
         supported_sort_fields = {
@@ -3349,18 +3309,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         # additional order options subject to media type
         # single is targeting a single media item, collection the aggregated ones
-        # (group keys aggregate the grouped items, the collection keys select them)
         single_extra_order_keys = ""
-        collection_group_keys = ""
         collection_extra_order_keys = ""
+        # the played state of a collection, from the columns this media type has
+        collection_extract_keys = ""
+        fully_played_stat = in_progress_stat = duration_stat = "NULL"
         if self.media_type == MediaType.AUDIOBOOK:
             single_extra_order_keys = "duration,"
-            collection_extra_order_keys = "collection_info.duration as duration,"
+            collection_extra_order_keys = "SUM(duration) as duration,"
+            collection_extract_keys = "fully_played, resume_position_ms,"
+            duration_stat = "SUM(duration)"
+            fully_played_stat = "MIN(COALESCE(fully_played, 0))"
+            in_progress_stat = (
+                "MAX(COALESCE(fully_played, 0) = 0 AND COALESCE(resume_position_ms, 0) > 0)"
+            )
             supported_sort_fields.add(SortField.DURATION)
         elif self.media_type == MediaType.ALBUM:
             single_extra_order_keys = "year,"
-            collection_group_keys = "MIN(year) as year,"
-            collection_extra_order_keys = "year,"
+            collection_extra_order_keys = "MIN(CASE WHEN in_view THEN year END) as year,"
             supported_sort_fields.add(SortField.YEAR)
 
         sql_query = f"""
@@ -3369,63 +3335,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             WITH
                 joined_table as ({sql_query}),
                 {scope_table}
-                collection_stats as (
-                    SELECT
-                        json_extract(iter_coll.value, '$.title') as stats_title,
-                        COUNT(*) as total_items,
-                        {duration_stat} as duration,
-                        {fully_played_stat} as fully_played,
-                        {in_progress_stat} as in_progress
-                    FROM {stats_source}, json_each({collections_column}) as iter_coll
-                    GROUP BY stats_title
-                ),
-                -- the items with a thumb, ranked in collection order, for the cover stack
-                collection_covers as (
-                    SELECT
-                        cover_title,
-                        images,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY cover_title ORDER BY {sequence_order}
-                        ) as cover_rank
-                    FROM (
-                        SELECT
-                            json_extract(iter_coll.value, '$.title') as cover_title,
-                            json_extract(iter_coll.value, '$.sequence') as collection_sequence,
-                            {sequence_is_numeric} as collection_sequence_is_numeric,
-                            name as media_name,
-                            {images_column} as images
-                        FROM {stats_source}, json_each({collections_column}) as iter_coll
-                        WHERE EXISTS(
-                            SELECT 1 FROM json_each({images_column}) as iter_img
-                            WHERE json_extract(iter_img.value, '$.type') = 'thumb'
-                        )
-                    )
-                ),
-                collection_cover_list as (
-                    SELECT
-                        cover_title,
-                        json_group_array(
-                            json_object('rank', cover_rank, 'images', json(images))
-                        ) as covers
-                    FROM collection_covers
-                    WHERE cover_rank <= {COLLECTION_COVER_COUNT}
-                    GROUP BY cover_title
-                ),
-                -- the metadata of each collection, built once and joined onto its row
-                collection_info as (
-                    SELECT
-                        stats_title,
-                        duration,
-                        json_object(
-                            'total_items', total_items,
-                            'duration', duration,
-                            'fully_played', fully_played,
-                            'in_progress', in_progress,
-                            'covers', json(covers)
-                        ) as collection_metadata
-                    FROM collection_stats
-                    LEFT JOIN collection_cover_list ON cover_title = stats_title
-                ),
                 collection_extract as (
                     SELECT
                         item_id,
@@ -3435,45 +3344,81 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         last_played,
                         play_count,
                         {single_extra_order_keys}
+                        {collection_extract_keys}
+                        {in_view} as in_view,
+                        {images_column} as images,
+                        EXISTS(
+                            SELECT 1 FROM json_each({images_column}) as iter_img
+                            WHERE json_extract(iter_img.value, '$.type') = 'thumb'
+                        ) as has_thumb,
                         json_extract(iter_coll.value, '$.title') as collection_title,
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
                         json_extract(iter_coll.value, '$.search_title') as collection_search_title,
                         json_extract(iter_coll.value, '$.search_sort_title') as collection_search_sort_title,
-                        {sequence_is_numeric} as collection_sequence_is_numeric,
-                        {json_object} as media_data
+                        CASE
+                            WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
+                            THEN 1
+                            WHEN json_type(iter_coll.value, '$.sequence') = 'text'
+                                AND json_valid(json_extract(iter_coll.value, '$.sequence'))
+                            THEN CASE
+                                WHEN json_type(json_extract(iter_coll.value, '$.sequence'))
+                                    IN ('integer', 'real')
+                                THEN 1
+                                ELSE 0
+                            END
+                            ELSE 0
+                        END as collection_sequence_is_numeric,
+                        -- only the items in view are listed, so only they need their data
+                        CASE WHEN {in_view} THEN {json_object} END as media_data
                     FROM (
-                        SELECT * FROM joined_table
+                        SELECT * FROM {extract_source}
                     ), json_each({collections_column}) as iter_coll
-                ),
-                collection_rows as (
-                    SELECT
-                        'collection' as type,
-                        MIN(item_id) as random_item_id,
-                        collection_title as name,
-                        COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
-                        COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
-                        MAX(timestamp_added) as timestamp_added,
-                        MAX(timestamp_modified) as timestamp_modified,
-                        MAX(last_played) as last_played,
-                        SUM(play_count) as play_count,
-                        {collection_group_keys}
-                        json_group_array(media_data) as media_data
-                    FROM (
-                        SELECT * FROM collection_extract
-                        -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
-                        -- Confirmed working with sqlite 3.40.1 & 3.53
-                        -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
-                        ORDER BY collection_title, {sequence_order}
-                    )
-                    GROUP BY collection_title
                 )
-            SELECT type, random_item_id, name, search_name, search_sort_name,
-                timestamp_added, timestamp_modified, last_played, play_count,
+            SELECT
+                'collection' as type,
+                MIN(CASE WHEN in_view THEN item_id END) as random_item_id,
+                collection_title as name,
+                COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
+                COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
+                MAX(CASE WHEN in_view THEN timestamp_added END) as timestamp_added,
+                MAX(CASE WHEN in_view THEN timestamp_modified END) as timestamp_modified,
+                MAX(CASE WHEN in_view THEN last_played END) as last_played,
+                SUM(CASE WHEN in_view THEN play_count END) as play_count,
                 {collection_extra_order_keys}
-                collection_info.collection_metadata,
-                media_data
-            FROM collection_rows
-            LEFT JOIN collection_info ON collection_info.stats_title = collection_rows.name
+                json_object(
+                    'total_items', COUNT(*),
+                    'duration', {duration_stat},
+                    'fully_played', {fully_played_stat},
+                    'in_progress', {in_progress_stat},
+                    'covers', json_group_array(json(images)) FILTER (WHERE has_thumb)
+                ) as collection_metadata,
+                json_group_array(media_data) FILTER (WHERE in_view) as media_data
+            FROM (
+                SELECT * FROM collection_extract
+                -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
+                -- Confirmed working with sqlite 3.40.1 & 3.53
+                -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
+                ORDER BY collection_title,
+                -- null case
+                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+                -- numeric before text
+                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
+                -- order NUMERIC
+                CASE WHEN collection_sequence_is_numeric
+                    THEN CAST(collection_sequence AS REAL)
+                END,
+                -- order TEXT
+                CASE WHEN NOT collection_sequence_is_numeric
+                    THEN collection_sequence
+                END COLLATE NOCASE,
+                -- order by media name if no sequence given
+                CASE
+                    WHEN collection_sequence IS NULL
+                    THEN media_name
+                END COLLATE NOCASE
+            )
+            GROUP BY collection_title
+            HAVING MAX(in_view)
 
             UNION ALL
 
