@@ -1421,6 +1421,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = player.player_id
         if (queue := self.get(queue_id)) is None:
             return
+        if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # an announcement's position is not the music's; keep the music's resume state
+            return
         # queue.active still holds the source from the last update. Requiring it and the
         # live source both skips the position jump of joining or leaving a group.
         if not queue.active or player.state.active_source not in (queue_id, None):

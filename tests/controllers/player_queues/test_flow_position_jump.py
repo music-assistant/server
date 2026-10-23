@@ -11,6 +11,7 @@ from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
@@ -30,6 +31,9 @@ def _controller() -> PlayerQueuesController:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = MagicMock()
     ctrl.mass = MagicMock()
+    ctrl.mass.streams.is_smart_fades_active.return_value = False
+    ctrl.signal_update = MagicMock()  # type: ignore[method-assign]
+    ctrl._handle_playback_progress_report = MagicMock()  # type: ignore[method-assign]
     queue = PlayerQueue(
         queue_id=QUEUE_ID,
         active=True,
@@ -51,14 +55,20 @@ def _controller() -> PlayerQueuesController:
     return ctrl
 
 
-def _player(state: PlaybackState, stream_elapsed: float) -> Any:
+def _player(state: PlaybackState, stream_elapsed: float, announcing: bool = False) -> Any:
     return SimpleNamespace(
         player_id=QUEUE_ID,
         type=PlayerType.PLAYER,
+        extra_data={ATTR_ANNOUNCEMENT_IN_PROGRESS: True} if announcing else {},
+        active_output_protocol=None,
+        current_media=None,
         state=SimpleNamespace(
+            name="P",
+            available=True,
             playback_state=state,
             active_source=QUEUE_ID,
             corrected_elapsed_time=stream_elapsed,
+            group_members=[],
         ),
     )
 
@@ -120,6 +130,38 @@ def test_paused_position_leaves_the_resume_position_alone() -> None:
     ctrl = _controller()
     queue = _played_120_s_into_the_second_track(ctrl)
     ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PAUSED, 0))
+    assert queue.resume_pos == 120
+    prev_state = ctrl._queue_data[QUEUE_ID].prev_state
+    assert prev_state is not None
+    assert prev_state["last_playing_elapsed_time"] == 120
+
+
+def test_correction_into_the_previous_track_then_pause_resumes_there() -> None:
+    """The paused update after a correction from B at 120 s to A at 90 s keeps A at 90 s."""
+    ctrl = _controller()
+    queue = ctrl._queue_data[QUEUE_ID].queue
+    # Playing, by MA's clock 120 s into the second track.
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, FIRST_TRACK_STREAMED + 120))
+    # The Echo reports it paused 90 s into the first track: playing at the offset first...
+    ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PLAYING, 90))
+    # ...then the paused update the queue runs for it.
+    ctrl._update_queue_from_player(_player(PlaybackState.PAUSED, 90))
+    assert queue.current_item is not None
+    assert queue.current_item.queue_item_id == "a"
+    assert ctrl._last_played_position(queue) == pytest.approx(90)
+    # The second track's progress is still reported with its own position.
+    report = cast("MagicMock", ctrl._handle_playback_progress_report)
+    prev_state = report.call_args.args[1]
+    assert (prev_state["current_item_id"], prev_state["last_playing_elapsed_time"]) == ("b", 120)
+
+
+def test_announcement_leaves_the_music_position_alone() -> None:
+    """An announcement restarting at 0 s must not move the music's track or resume position."""
+    ctrl = _controller()
+    queue = _played_120_s_into_the_second_track(ctrl)
+    ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PLAYING, 0, announcing=True))
+    assert queue.current_index == 1
+    assert queue.elapsed_time == 120
     assert queue.resume_pos == 120
     prev_state = ctrl._queue_data[QUEUE_ID].prev_state
     assert prev_state is not None
