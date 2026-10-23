@@ -1,0 +1,17 @@
+{
+  "manifest": {
+    "name": "Share Links",
+    "description": "Generate and open provider-agnostic share links for music items."
+  },
+  "config_entries": {
+    "share_base_url": {
+      "label": "Share base URL",
+      "description": "Base URL of the share landing page."
+    }
+  },
+  "errors": {
+    "invalid_share_payload": "This share link is invalid or unsupported.",
+    "share_payload_not_playlist": "This share link does not contain a playlist.",
+    "share_playlist_empty": "This shared playlist contains no tracks."
+  }
+}

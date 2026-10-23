@@ -12,22 +12,56 @@ Link format:
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
+import binascii
 import logging
-from contextlib import suppress
-from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from dataclasses import replace
+from typing import TYPE_CHECKING, Literal, cast
+from urllib.parse import quote
 
-from aiohttp import web
+from aiohttp import ClientError, ClientTimeout
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ExternalID,
+    MediaType,
+    PlaylistMatchPolicy,
+)
+from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import BrowseFolder, ItemMapping, Track
 
+from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.external_ids import (
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
+from music_assistant.helpers.playlists import (
+    AlbumInfo,
+    ArtistInfo,
+    PlaylistItem,
+    construct_media_item_from_playlist_item,
+    generate_m3u,
+)
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.share_provider.links import (
+    build_provider_refs,
+    compact_artwork_ref,
+    compact_provider_ref,
+    is_valid_artwork_url,
+)
+from music_assistant.providers.share_provider.payload import (
+    SUPPORTED_SHARE_MEDIA_TYPES,
+    SharePayload,
+    TrackStub,
+)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
-    from music_assistant_models.media_items import MediaItemType, Track
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.media_items import MediaItemType, Playlist
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -35,26 +69,8 @@ if TYPE_CHECKING:
 
 CONF_SHARE_BASE_URL = "share_base_url"
 DEFAULT_SHARE_BASE_URL = "https://share.music-assistant.io"
-HTTP_ROUTE = "/api/share/resolve"
-
 LOGGER = logging.getLogger(__name__)
-
-# Known web URL schemas per provider domain, keyed by (provider_domain, media_type).
-# {id} is replaced with the provider item_id from the provider_mappings.
-PROVIDER_URL_SCHEMAS: dict[tuple[str, str], str] = {
-    ("spotify", "track"): "https://open.spotify.com/track/{id}",
-    ("spotify", "artist"): "https://open.spotify.com/artist/{id}",
-    ("tidal", "track"): "https://tidal.com/browse/track/{id}",
-    ("tidal", "artist"): "https://tidal.com/browse/artist/{id}",
-    ("qobuz", "track"): "https://open.qobuz.com/track/{id}",
-    ("qobuz", "artist"): "https://open.qobuz.com/artist/{id}",
-    ("ytmusic", "track"): "https://music.youtube.com/watch?v={id}",
-    ("ytmusic", "artist"): "https://music.youtube.com/channel/{id}",
-    ("deezer", "track"): "https://www.deezer.com/track/{id}",
-    ("deezer", "artist"): "https://www.deezer.com/artist/{id}",
-    ("apple_music", "track"): "https://music.apple.com/album/x/{id}",
-    ("apple_music", "artist"): "https://music.apple.com/artist/x/{id}",
-}
+__all__ = ["SharePayload", "ShareProvider", "TrackStub", "setup"]
 
 
 async def setup(
@@ -64,111 +80,62 @@ async def setup(
     return ShareProvider(mass, manifest, config)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return config entries to set up this provider."""
-    return (
-        ConfigEntry(
-            key=CONF_SHARE_BASE_URL,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_SHARE_BASE_URL,
-            label="Share base URL",
-            description="Base URL of the share landing page.",
-        ),
-    )
-
-
-@dataclass
-class TrackStub:
-    """Minimal track representation inside a playlist payload."""
-
-    title: str
-    artist: str | None = None
-    isrc: str | None = None
-
-
-@dataclass
-class SharePayload:
-    """Provider-agnostic share payload encoded in the share link."""
-
-    v: int
-    type: str  # "track" | "artist" | "playlist"
-    title: str
-    artist: str | None = None
-    album: str | None = None
-    isrc: str | None = None
-    mbid: str | None = None
-    art: str | None = None
-    # Direct provider web URLs keyed by provider domain (tracks only).
-    links: dict[str, str] | None = None
-    # Minimal track list (playlists only).
-    tracks: list[dict[str, Any]] | None = None
-
-    def to_base64(self) -> str:
-        """Encode payload as URL-safe base64 JSON."""
-        data = {k: v for k, v in asdict(self).items() if v is not None}
-        return base64.urlsafe_b64encode(json.dumps(data, separators=(",", ":")).encode()).decode()
-
-    @classmethod
-    def from_base64(cls, encoded: str) -> SharePayload:
-        """Decode payload from URL-safe base64 JSON."""
-        padded = encoded + "==" * ((4 - len(encoded) % 4) % 4)
-        data = json.loads(base64.urlsafe_b64decode(padded))
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
-
-
 class ShareProvider(PluginProvider):
     """Share Links plugin provider."""
 
-    _unregister_route: object | None = None
+    _unregister_api_commands: list[Callable[[], None]]
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the configurable share-link base URL."""
+        return (
+            ConfigEntry(
+                key=CONF_SHARE_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value=DEFAULT_SHARE_BASE_URL,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
-        """Register API commands and HTTP endpoint on startup."""
-        self.mass.register_api_command("share/generate", self.generate_share_link)
-        self.mass.register_api_command("share/resolve", self.resolve_share_link)
-        self._unregister_route = self.mass.webserver.register_dynamic_route(
-            HTTP_ROUTE, self._http_resolve, "POST"
-        )
-        self.mass.webserver.register_dynamic_route(HTTP_ROUTE, self._http_resolve, "OPTIONS")
-        LOGGER.debug("Registered HTTP share resolve endpoint at %s", HTTP_ROUTE)
+        """Register authenticated share commands on startup."""
+        self._unregister_api_commands = []
+        try:
+            self._unregister_api_commands.append(
+                self.mass.register_api_command(
+                    "share/generate",
+                    self.generate_share_link,
+                    required_scope=Scope.LIBRARY_READ,
+                )
+            )
+            self._unregister_api_commands.append(
+                self.mass.register_api_command(
+                    "share/resolve",
+                    self.resolve_share_link,
+                    required_scope=Scope.LIBRARY_READ,
+                )
+            )
+            self._unregister_api_commands.append(
+                self.mass.register_api_command(
+                    "share/import_playlist",
+                    self.import_shared_playlist,
+                    required_scope=Scope.LIBRARY_WRITE,
+                )
+            )
+            self._unregister_api_commands.append(
+                self.mass.register_api_command(
+                    "share/preview_playlist",
+                    self.preview_shared_playlist,
+                    required_scope=Scope.LIBRARY_READ,
+                )
+            )
+        except Exception:
+            await self.unload()
+            raise
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Unregister HTTP route on unload."""
-        if callable(self._unregister_route):
-            self._unregister_route()
-
-    # ------------------------------------------------------------------
-    # HTTP endpoint
-    # ------------------------------------------------------------------
-
-    async def _http_resolve(self, request: web.Request) -> web.Response:
-        """Handle POST /api/share/resolve with CORS headers."""
-        cors_headers = {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-        }
-        if request.method == "OPTIONS":
-            return web.Response(status=204, headers=cors_headers)
-        try:
-            body = await request.json()
-            encoded = body.get("encoded", "")
-        except Exception:
-            return web.Response(status=400, text="Invalid JSON body", headers=cors_headers)
-
-        item = await self.resolve_share_link(encoded)
-        if item is None:
-            return web.Response(status=404, text="Not found", headers=cors_headers)
-
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(item.to_dict()),
-            headers=cors_headers,
-        )
+        """Unregister API commands on unload."""
+        for unregister in getattr(self, "_unregister_api_commands", []):
+            unregister()
+        self._unregister_api_commands = []
 
     # ------------------------------------------------------------------
     # WebSocket API commands
@@ -182,30 +149,131 @@ class ShareProvider(PluginProvider):
         :return: A fully-qualified share URL with the payload in the fragment.
         """
         item = await self.mass.music.get_item_by_uri(uri)
+        if isinstance(item, BrowseFolder):
+            raise InvalidDataError("Sharing browse folders is not supported")
         payload = await self._build_payload(item)
         base_url = self.config.get_value(CONF_SHARE_BASE_URL) or DEFAULT_SHARE_BASE_URL
         return f"{base_url}/#{payload.to_base64()}"
 
-    async def resolve_share_link(self, encoded: str) -> MediaItemType | None:
+    async def resolve_share_link(
+        self, encoded: str, allow_search: bool = True
+    ) -> MediaItemType | None:
         """
         Resolve a share payload to a local MA item.
 
         :param encoded: Base64-encoded share payload.
+        :param allow_search: Allow text search when no external ID matches.
         :return: The resolved MA item, or None if nothing matched.
         """
         try:
             payload = SharePayload.from_base64(encoded)
-        except Exception:
-            LOGGER.warning("Could not decode share payload: %s", encoded)
+        except (binascii.Error, TypeError, ValueError) as err:
+            LOGGER.debug("Could not decode share payload: %s", err)
             return None
 
-        if payload.type == "track":
-            return await self._resolve_track(payload)
-        if payload.type == "artist":
-            return await self._resolve_artist(payload)
         if payload.type == "playlist":
-            return await self._resolve_playlist(payload)
-        return None
+            return None
+        return await self._resolve_media_item(payload, allow_search=allow_search)
+
+    async def preview_shared_playlist(
+        self, encoded: str, offset: int = 0, limit: int = 50
+    ) -> list[Track]:
+        """Return a read-only block of shared tracks, keeping unresolved entries."""
+        if offset < 0 or limit < 1:
+            raise InvalidDataError("Invalid share preview range")
+        try:
+            payload = SharePayload.from_base64(encoded)
+        except (binascii.Error, TypeError, ValueError) as err:
+            raise InvalidDataError("Invalid share payload") from err
+        if payload.type != "playlist":
+            raise InvalidDataError("Share payload is not a playlist")
+        semaphore = asyncio.Semaphore(2)
+
+        async def resolve_track(index: int, stub: TrackStub) -> Track:
+            async with semaphore:
+                track_payload = SharePayload(
+                    v=2,
+                    type="track",
+                    title=stub.title,
+                    artist=stub.artist,
+                    album=stub.album,
+                    isrc=stub.isrc,
+                    mbid=stub.mbid,
+                    mb_track=stub.mb_track,
+                )
+                item = await self._resolve_media_item(track_payload, allow_search=False)
+                if isinstance(item, Track):
+                    return replace(item, position=index + 1)
+                preview = construct_media_item_from_playlist_item(
+                    PlaylistItem(
+                        path=f"share://track/{track_payload.to_base64()}",
+                        title=stub.title,
+                        metadata={"media_type": "track", "name": stub.title},
+                        artists=[ArtistInfo(stub.artist, "", "", "")] if stub.artist else [],
+                        album=AlbumInfo(stub.album, "", "", "") if stub.album else None,
+                    ),
+                    self.mass,
+                )
+                if not isinstance(preview, Track):
+                    raise InvalidDataError("Invalid shared track preview")
+                return replace(preview, position=index + 1)
+
+        tracks = payload.tracks or []
+        return list(
+            await asyncio.gather(
+                *(
+                    resolve_track(offset + index, stub)
+                    for index, stub in enumerate(tracks[offset : offset + limit])
+                )
+            )
+        )
+
+    async def import_shared_playlist(self, encoded: str) -> Playlist:
+        """Import a playlist after the caller has confirmed the operation."""
+        try:
+            payload = SharePayload.from_base64(encoded)
+        except (binascii.Error, TypeError, ValueError) as err:
+            raise InvalidDataError(
+                "Invalid share payload",
+                translation_key="invalid_share_payload",
+                translation_owner=self.translation_owner,
+            ) from err
+        if payload.type != "playlist":
+            raise InvalidDataError(
+                "Share payload is not a playlist",
+                translation_key="share_payload_not_playlist",
+                translation_owner=self.translation_owner,
+            )
+        if not payload.tracks:
+            raise InvalidDataError(
+                "Shared playlist contains no tracks",
+                translation_key="share_playlist_empty",
+                translation_owner=self.translation_owner,
+            )
+
+        playlist_items: list[PlaylistItem] = []
+        for index, track in enumerate(payload.tracks):
+            metadata = {"media_type": MediaType.TRACK.value, "name": track.title}
+            if track.isrc and is_valid_isrc(track.isrc):
+                metadata["isrc"] = normalize_external_id(ExternalID.ISRC, track.isrc)
+            if track.mbid:
+                metadata["mbid"] = normalize_external_id(ExternalID.MB_RECORDING, track.mbid)
+            if track.mb_track:
+                metadata["mb_track"] = normalize_external_id(ExternalID.MB_TRACK, track.mb_track)
+            playlist_items.append(
+                PlaylistItem(
+                    path=f"share://track/{index}",
+                    title=f"{track.artist} - {track.title}" if track.artist else track.title,
+                    metadata=metadata,
+                    artists=[ArtistInfo(track.artist, "", "", "")] if track.artist else [],
+                    album=AlbumInfo(track.album, "", "", "") if track.album else None,
+                )
+            )
+        return await self.mass.music.playlists.import_playlist(
+            generate_m3u(payload.title, playlist_items),
+            library_matching=True,
+            match_policy=PlaylistMatchPolicy.SAME_RECORDING,
+        )
 
     # ------------------------------------------------------------------
     # private helpers — payload building
@@ -218,62 +286,75 @@ class ShareProvider(PluginProvider):
         album_str: str | None = None
         isrc: str | None = None
         mbid: str | None = None
-        art: str | None = None
-        links: dict[str, str] | None = None
-        tracks: list[dict[str, Any]] | None = None
+        mb_track: str | None = None
+        barcode: str | None = None
+        art_ref: str | None = None
+        provider_refs: dict[str, str] | None = None
+        tracks: list[TrackStub] | None = None
 
-        if item.image and item.image.remotely_accessible:
-            art = item.image.path
+        if item.media_type not in SUPPORTED_SHARE_MEDIA_TYPES:
+            raise InvalidDataError(f"Sharing {media_type} items is not supported")
 
-        if media_type == "track":
+        if item.image and item.image.remotely_accessible and is_valid_artwork_url(item.image.path):
+            art_ref = compact_artwork_ref(item.image.path)
+
+        if item.media_type == MediaType.TRACK:
             isrc = item.get_external_id(ExternalID.ISRC)
             mbid = item.get_external_id(ExternalID.MB_RECORDING)
+            mb_track = item.get_external_id(ExternalID.MB_TRACK)
+            apple_music_track_id = next(
+                (
+                    mapping.item_id
+                    for mapping in item.provider_mappings
+                    if mapping.provider_domain == "apple_music" and mapping.item_id.isdecimal()
+                ),
+                None,
+            )
             if hasattr(item, "artist_str"):
                 artist_str = item.artist_str or None
             if hasattr(item, "album") and item.album:
                 album_str = item.album.name
-            links = self._build_provider_links(item, media_type)
-            await self._enrich_links_via_isrc(links, isrc, item.name, artist_str)
+            provider_refs = build_provider_refs(item, media_type)
+            await self._enrich_links_via_isrc(
+                provider_refs, isrc, item.name, artist_str, apple_music_track_id
+            )
 
-        elif media_type == "artist":
+        elif item.media_type == MediaType.ARTIST:
             mbid = item.get_external_id(ExternalID.MB_ARTIST)
-            links = self._build_provider_links(item, media_type)
+            provider_refs = build_provider_refs(item, media_type)
 
-        elif media_type == "album":
+        elif item.media_type == MediaType.ALBUM:
             mbid = item.get_external_id(ExternalID.MB_ALBUM)
+            barcode = item.get_external_id(ExternalID.BARCODE)
             if hasattr(item, "artist_str"):
                 artist_str = item.artist_str or None
+            provider_refs = build_provider_refs(item, media_type)
 
-        elif media_type == "playlist":
+        elif item.media_type == MediaType.PLAYLIST:
             tracks = await self._build_playlist_tracks(item)
 
         return SharePayload(
-            v=1,
-            type=media_type,
+            v=2,
+            type=cast("Literal['track', 'album', 'artist', 'playlist']", media_type),
             title=item.name,
             artist=artist_str,
             album=album_str,
             isrc=isrc,
             mbid=mbid,
-            art=art,
-            links=links or None,
+            mb_track=mb_track,
+            barcode=barcode,
+            art_ref=art_ref,
+            provider_refs=provider_refs or None,
             tracks=tracks,
         )
 
-    def _build_provider_links(self, item: MediaItemType, media_type: str) -> dict[str, str]:
-        """Build direct provider web URLs from provider_mappings."""
-        links: dict[str, str] = {}
-        if not hasattr(item, "provider_mappings"):
-            return links
-        for mapping in item.provider_mappings:
-            domain = mapping.provider_domain
-            schema = PROVIDER_URL_SCHEMAS.get((domain, media_type))
-            if schema:
-                links[domain] = schema.format(id=mapping.item_id)
-        return links
-
     async def _enrich_links_via_isrc(
-        self, links: dict[str, str], isrc: str | None, title: str, artist: str | None
+        self,
+        provider_refs: dict[str, str],
+        isrc: str | None,
+        title: str,
+        artist: str | None,
+        apple_music_track_id: str | None = None,
     ) -> None:
         """
         Add missing provider links using keyless public APIs and active MA providers.
@@ -282,155 +363,271 @@ class ShareProvider(PluginProvider):
         - Apple Music: keyless iTunes Search API (title + artist).
         - YouTube Music: via the active ytmusic MA provider if configured.
 
-        Modifies ``links`` in place — only adds entries for providers not already present.
+        Modifies ``provider_refs`` in place — only adds missing providers.
         """
         if not isrc and not title:
             return
 
         q = f"{artist} {title}" if artist else title
 
-        # Deezer — keyless ISRC lookup
-        if "deezer" not in links and isrc:
-            with suppress(Exception):
-                async with self.mass.http_session.get(
-                    f"https://api.deezer.com/track/isrc:{isrc}",
-                    timeout=4,
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if link := data.get("link"):
-                            links["deezer"] = link
+        if "deezer" not in provider_refs:
+            deezer_link: str | None = None
+            if isrc and is_valid_isrc(isrc):
+                try:
+                    deezer_link = await self._get_deezer_track_url(
+                        normalize_external_id(ExternalID.ISRC, isrc)
+                    )
+                except (ClientError, TimeoutError, ValueError) as err:
+                    LOGGER.debug("Could not look up Deezer track by ISRC: %s", err)
+            if not deezer_link:
+                search_query = f'track:"{title.replace(chr(34), "")}"'
+                if artist:
+                    safe_artist = artist.replace(chr(34), "")
+                    search_query = f'artist:"{safe_artist}" {search_query}'
+                try:
+                    deezer_link = await self._search_deezer_track_url(search_query, title, artist)
+                except (ClientError, TimeoutError, ValueError) as err:
+                    LOGGER.debug("Could not enrich share link with Deezer search: %s", err)
+            if deezer_link:
+                provider_refs["deezer"] = compact_provider_ref("deezer", deezer_link)
 
-        # Apple Music — keyless iTunes Search
-        if "apple_music" not in links:
-            with suppress(Exception):
-                async with self.mass.http_session.get(
-                    "https://itunes.apple.com/search",
-                    params={"term": q, "entity": "song", "limit": 5},
-                    timeout=4,
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        for r in data.get("results", []):
-                            if r.get("kind") == "song":
-                                links["apple_music"] = r["trackViewUrl"]
-                                break
+        # Apple Music — exact catalog lookup first, then keyless text search
+        if "apple_music" not in provider_refs:
+            try:
+                apple_link = None
+                if apple_music_track_id:
+                    apple_link = await self._get_apple_music_track_url_by_id(apple_music_track_id)
+                if not apple_link:
+                    apple_link = await self._get_apple_music_track_url(q, title, artist)
+                if apple_link:
+                    provider_refs["apple_music"] = compact_provider_ref("apple_music", apple_link)
+            except (ClientError, TimeoutError, ValueError) as err:
+                LOGGER.debug("Could not enrich share link with Apple Music: %s", err)
 
         # YouTube Music — via active ytmusic MA provider
-        if "ytmusic" not in links:
-            ytmusic_prov = next(
-                (
-                    p
-                    for p in (
-                        self.mass.get_provider(pid)
-                        for pid in self.mass.music.get_unique_providers()
-                    )
-                    if p and p.domain == "ytmusic"
-                ),
-                None,
-            )
-            if ytmusic_prov:
-                with suppress(Exception):
-                    results = await ytmusic_prov.search(q, [MediaType.TRACK], limit=3)  # type: ignore[attr-defined]
-                    for track in results.tracks or []:
-                        for mapping in track.provider_mappings:
-                            if mapping.provider_domain == "ytmusic":
-                                links["ytmusic"] = (
-                                    f"https://music.youtube.com/watch?v={mapping.item_id}"
-                                )
-                                break
-                        if "ytmusic" in links:
+        if "ytmusic" not in provider_refs:
+            try:
+                results = await self.mass.music.search(
+                    q, [MediaType.TRACK], limit=3, providers=["ytmusic"]
+                )
+                for track in results.tracks or []:
+                    if isinstance(track, ItemMapping):
+                        continue
+                    if not compare_strings(title, track.name, strict=False) or (
+                        artist and not compare_strings(artist, track.artist_str, strict=False)
+                    ):
+                        continue
+                    for mapping in track.provider_mappings:
+                        if mapping.provider_domain == "ytmusic":
+                            ytmusic_link = (
+                                f"https://music.youtube.com/watch?v="
+                                f"{quote(mapping.item_id, safe='')}"
+                            )
+                            provider_refs["ytmusic"] = compact_provider_ref("ytmusic", ytmusic_link)
                             break
+                    if "ytmusic" in provider_refs:
+                        break
+            except PROVIDER_FETCH_ERRORS as err:
+                LOGGER.debug("Could not enrich share link with YouTube Music: %s", err)
 
-    async def _build_playlist_tracks(self, playlist: MediaItemType) -> list[dict[str, Any]]:
+    async def _build_playlist_tracks(self, playlist: MediaItemType) -> list[TrackStub]:
         """Fetch and serialize playlist tracks as minimal stubs (no provider links)."""
-        result: list[dict[str, Any]] = []
-        with suppress(Exception):
-            async for track in self.mass.music.playlists.tracks(
-                playlist.item_id, playlist.provider
-            ):
-                stub: dict[str, Any] = {"title": track.name}
-                if hasattr(track, "artist_str") and track.artist_str:
-                    stub["artist"] = track.artist_str
-                isrc = track.get_external_id(ExternalID.ISRC)
-                if isrc:
-                    stub["isrc"] = isrc
-                result.append(stub)
+        result: list[TrackStub] = []
+        for track in await self.mass.music.playlists.tracks(
+            playlist.item_id, playlist.provider, limit=0
+        ):
+            if not isinstance(track, Track):
+                continue
+            result.append(
+                TrackStub(
+                    title=track.name,
+                    artist=getattr(track, "artist_str", None) or None,
+                    isrc=track.get_external_id(ExternalID.ISRC),
+                    mbid=track.get_external_id(ExternalID.MB_RECORDING),
+                    mb_track=track.get_external_id(ExternalID.MB_TRACK),
+                    album=track.album.name if track.album else None,
+                    provider_refs=build_provider_refs(track, MediaType.TRACK.value),
+                )
+            )
         return result
 
     # ------------------------------------------------------------------
     # private helpers — resolution
     # ------------------------------------------------------------------
 
-    async def _resolve_track(self, payload: SharePayload) -> MediaItemType | None:
-        """Resolve a track share payload."""
-        if payload.isrc:
-            result = await self._lookup_by_isrc(payload.isrc)
-            if result:
-                return result
-        if payload.title:
-            query = f"{payload.artist} {payload.title}" if payload.artist else payload.title
-            results = await self.mass.music.search(query, media_types=[MediaType.TRACK], limit=5)
-            if results.tracks:
-                return results.tracks[0]
-        return None
+    async def _resolve_media_item(
+        self, payload: SharePayload, allow_search: bool = True
+    ) -> MediaItemType | None:
+        """Resolve a shared track, album, or artist using known IDs before search."""
+        media_type = MediaType(payload.type)
+        external_ids: tuple[tuple[ExternalID, str | None], ...]
+        if media_type == MediaType.TRACK:
+            external_ids = (
+                (ExternalID.ISRC, payload.isrc),
+                (ExternalID.MB_RECORDING, payload.mbid),
+                (ExternalID.MB_TRACK, payload.mb_track),
+            )
+        elif media_type == MediaType.ALBUM:
+            external_ids = (
+                (ExternalID.BARCODE, payload.barcode),
+                (ExternalID.MB_ALBUM, payload.mbid),
+            )
+        else:
+            external_ids = ((ExternalID.MB_ARTIST, payload.mbid),)
 
-    async def _resolve_artist(self, payload: SharePayload) -> MediaItemType | None:
-        """Resolve an artist share payload."""
-        results = await self.mass.music.search(
-            payload.title, media_types=[MediaType.ARTIST], limit=5
-        )
-        return results.artists[0] if results.artists else None
-
-    async def _resolve_playlist(self, payload: SharePayload) -> MediaItemType | None:
-        """
-        Resolve a playlist payload by searching for each track and creating
-        a new MA playlist with the matches.
-        """
-        if not payload.tracks:
-            return None
-
-        # Resolve tracks in parallel (capped to avoid hammering the providers)
-        sem = asyncio.Semaphore(5)
-
-        async def _resolve_one(stub: dict[str, Any]) -> MediaItemType | None:
-            async with sem:
-                title = stub.get("title", "")
-                artist = stub.get("artist")
-                isrc = stub.get("isrc")
-                if isrc:
-                    result = await self._lookup_by_isrc(isrc)
-                    if result:
-                        return result
-                if title:
-                    q = f"{artist} {title}" if artist else title
-                    sr = await self.mass.music.search(q, media_types=[MediaType.TRACK], limit=3)
-                    if sr.tracks:
-                        return sr.tracks[0]
-            return None
-
-        resolved = await asyncio.gather(*[_resolve_one(t) for t in payload.tracks])
-        matched = [t for t in resolved if t is not None]
-        if not matched:
-            return None
-
-        # Create a new library playlist with the resolved tracks
-        new_playlist = await self.mass.music.playlists.create_playlist(payload.title)
-        uris = [t.uri for t in matched if t.uri]
-        if uris:
-            await self.mass.music.playlists.add_playlist_tracks(new_playlist.item_id, uris)
-        return new_playlist
-
-    async def _lookup_by_isrc(self, isrc: str) -> MediaItemType | None:
-        """Look up a track by ISRC via each provider's search."""
-        for provider_id in self.mass.music.get_unique_providers():
-            prov = self.mass.get_provider(provider_id)
-            if prov is None:
+        controller = self.mass.music.get_controller(media_type)
+        for external_id_type, external_id in external_ids:
+            if not external_id:
                 continue
-            with suppress(Exception):
-                results = await prov.search(  # type: ignore[attr-defined]
-                    f"isrc:{isrc}", [MediaType.TRACK], limit=1
+            if external_id_type == ExternalID.ISRC and not is_valid_isrc(external_id):
+                continue
+            if external_id_type == ExternalID.BARCODE and not is_valid_barcode(external_id):
+                continue
+            try:
+                try:
+                    item = await controller.get_item_by_external_id(
+                        normalize_external_id(external_id_type, external_id), external_id_type
+                    )
+                except PROVIDER_FETCH_ERRORS as err:
+                    LOGGER.debug(
+                        "External ID lookup failed for %s (%s): %s",
+                        external_id_type,
+                        external_id,
+                        err,
+                    )
+                    continue
+            except PROVIDER_FETCH_ERRORS as err:
+                LOGGER.debug(
+                    "External ID lookup failed for %s (%s): %s",
+                    external_id_type,
+                    external_id,
+                    err,
                 )
-                if results and results.tracks:
-                    return results.tracks[0]
+                continue
+            if item is not None and not isinstance(item, ItemMapping):
+                if media_type == MediaType.TRACK:
+                    return await self.mass.music.tracks.get(
+                        item.item_id, item.provider, allow_update_metadata=False
+                    )
+                return item
+
+        if not allow_search:
+            return None
+
+        query = f"{payload.artist} {payload.title}" if payload.artist else payload.title
+        results = await self.mass.music.search(query, media_types=[media_type], limit=5)
+        if media_type == MediaType.TRACK:
+            return next(
+                (item for item in results.tracks or [] if not isinstance(item, ItemMapping)), None
+            )
+        if media_type == MediaType.ALBUM:
+            return next(
+                (item for item in results.albums or [] if not isinstance(item, ItemMapping)), None
+            )
+        return next(
+            (item for item in results.artists or [] if not isinstance(item, ItemMapping)), None
+        )
+
+    @use_cache(3600 * 24 * 30)
+    async def _get_deezer_track_url(self, isrc: str) -> str | None:
+        """Return the public Deezer track URL for an ISRC, if available."""
+        async with self.mass.http_session.get(
+            f"https://api.deezer.com/track/isrc:{isrc}", timeout=ClientTimeout(total=4)
+        ) as response:
+            if response.status != 200:
+                return None
+            link = (await response.json()).get("link")
+            return cast("str | None", link) if isinstance(link, str) else None
+
+    @use_cache(3600 * 24 * 30)
+    async def _search_deezer_track_url(
+        self, query: str, title: str, artist: str | None
+    ) -> str | None:
+        """Find a Deezer track by title and artist when ISRC lookup misses."""
+        async with self.mass.http_session.get(
+            "https://api.deezer.com/search",
+            params={"q": query, "limit": 5},
+            timeout=ClientTimeout(total=4),
+        ) as response:
+            if response.status != 200:
+                return None
+            data = (await response.json()).get("data", [])
+            return self._find_matching_track_url(data, title, artist)
+
+    @use_cache(3600 * 24 * 30)
+    async def _get_apple_music_track_url(
+        self, query: str, title: str, artist: str | None
+    ) -> str | None:
+        """Return the public Apple Music track URL for a text query, if available."""
+        async with self.mass.http_session.get(
+            "https://itunes.apple.com/search",
+            params={"term": query, "entity": "song", "limit": 5},
+            timeout=ClientTimeout(total=4),
+        ) as response:
+            if response.status != 200:
+                return None
+            results = (await response.json()).get("results", [])
+            return self._find_matching_track_url(results, title, artist)
+
+    @use_cache(3600 * 24 * 30)
+    async def _get_apple_music_track_url_by_id(self, track_id: str) -> str | None:
+        """Return the canonical Apple Music URL for a catalog track ID."""
+        async with self.mass.http_session.get(
+            "https://itunes.apple.com/lookup",
+            params={"id": track_id, "entity": "song", "limit": 1},
+            timeout=ClientTimeout(total=4),
+        ) as response:
+            if response.status != 200:
+                return None
+            results = (await response.json()).get("results", [])
+            for result in results:
+                if (
+                    isinstance(result, dict)
+                    and result.get("kind") == "song"
+                    and isinstance(result.get("trackViewUrl"), str)
+                ):
+                    return cast("str", result["trackViewUrl"])
         return None
+
+    @staticmethod
+    def _find_matching_track_url(results: object, title: str, artist: str | None) -> str | None:
+        if not isinstance(results, list):
+            return None
+        best_score = (-1, -1)
+        best_url: str | None = None
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            if result.get("kind") not in (None, "song"):
+                continue
+            result_title = result.get("trackName") or result.get("title")
+            result_artist = result.get("artistName")
+            if result_artist is None and isinstance(result.get("artist"), dict):
+                result_artist = result["artist"].get("name")
+            result_url = result.get("trackViewUrl") or result.get("link")
+            if (
+                not isinstance(result_title, str)
+                or not isinstance(result_url, str)
+                or not compare_strings(title, result_title, strict=False)
+                or (artist and not isinstance(result_artist, str))
+                or (
+                    artist
+                    and isinstance(result_artist, str)
+                    and not compare_strings(artist, result_artist, strict=False)
+                )
+            ):
+                continue
+            score = (
+                int(compare_strings(title, result_title, strict=True)),
+                int(
+                    not artist
+                    or (
+                        isinstance(result_artist, str)
+                        and compare_strings(artist, result_artist, strict=True)
+                    )
+                ),
+            )
+            if score > best_score:
+                best_score = score
+                best_url = result_url
+        return best_url
