@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-from niconico.objects.video.watch import (  # noqa: TC002 - Using by StreamConversionData(BaseModel Serialization)
+from niconico.objects.video.watch import (  # noqa: TC002 - pydantic resolves the StreamConversionData field types at runtime
     WatchData,
     WatchMediaAudio,
 )

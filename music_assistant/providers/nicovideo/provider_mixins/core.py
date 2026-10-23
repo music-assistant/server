@@ -62,7 +62,7 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
         """Handle async initialization of the provider."""
         try:
             if self.nicovideo_config.auth.user_session:
-                # Try login if credentials are provided
+                # Try login if a user_session is configured
                 login_success = await self.service_manager.auth.try_login()
                 if not login_success:
                     raise LoginFailed(  # noqa: TRY301 - logged by except below
@@ -71,7 +71,7 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
                     )
                 self.logger.debug("nicovideo provider initialized successfully with login")
             else:
-                # No credentials provided - initialize without login
+                # No user_session configured - initialize without login
                 self.logger.debug("nicovideo provider initialized successfully without login")
         except Exception as err:
             self.logger.error("Failed to initialize nicovideo provider: %s", err)

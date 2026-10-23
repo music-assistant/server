@@ -421,11 +421,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         return images
 
     def is_video_available(self, video: EssentialVideo | WatchVideo) -> bool:
-        """
-        Check if a video is available for playback.
-
-        :param video: Either EssentialVideo or WatchVideo object.
-        """
+        """Check if a video is available for playback."""
         # Common check: duration must be greater than 0
         if video.duration <= 0:
             return False
