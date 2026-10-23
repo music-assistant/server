@@ -17,9 +17,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, cast
-from urllib.parse import quote
 
-from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -28,10 +26,11 @@ from music_assistant_models.enums import (
     MediaType,
     PlaylistMatchPolicy,
 )
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import (
+    InvalidDataError,
+)
 from music_assistant_models.media_items import BrowseFolder, ItemMapping, Track
 
-from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.external_ids import (
     is_valid_barcode,
@@ -47,10 +46,10 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.share_provider.enrichment import ShareLinkEnricher
 from music_assistant.providers.share_provider.links import (
     build_provider_refs,
     compact_artwork_ref,
-    compact_provider_ref,
     is_valid_artwork_url,
 )
 from music_assistant.providers.share_provider.payload import (
@@ -84,6 +83,7 @@ class ShareProvider(PluginProvider):
     """Share Links plugin provider."""
 
     _unregister_api_commands: list[Callable[[], None]]
+    _link_enricher: ShareLinkEnricher
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the configurable share-link base URL."""
@@ -98,6 +98,7 @@ class ShareProvider(PluginProvider):
     async def handle_async_init(self) -> None:
         """Register authenticated share commands on startup."""
         self._unregister_api_commands = []
+        self._link_enricher = ShareLinkEnricher(self.mass, self.instance_id)
         try:
             self._unregister_api_commands.append(
                 self.mass.register_api_command(
@@ -192,7 +193,6 @@ class ShareProvider(PluginProvider):
         async def resolve_track(index: int, stub: TrackStub) -> Track:
             async with semaphore:
                 track_payload = SharePayload(
-                    v=2,
                     type="track",
                     title=stub.title,
                     artist=stub.artist,
@@ -206,7 +206,8 @@ class ShareProvider(PluginProvider):
                     return replace(item, position=index + 1)
                 preview = construct_media_item_from_playlist_item(
                     PlaylistItem(
-                        path=f"share://track/{track_payload.to_base64()}",
+                        path=f"share-preview://track/{track_payload.to_base64()}",
+                        length=(str(stub.duration) if stub.duration is not None else None),
                         title=stub.title,
                         metadata={"media_type": "track", "name": stub.title},
                         artists=[ArtistInfo(stub.artist, "", "", "")] if stub.artist else [],
@@ -252,7 +253,17 @@ class ShareProvider(PluginProvider):
             )
 
         playlist_items: list[PlaylistItem] = []
-        for index, track in enumerate(payload.tracks):
+        for track in payload.tracks:
+            track_payload = SharePayload(
+                type="track",
+                title=track.title,
+                artist=track.artist,
+                album=track.album,
+                isrc=track.isrc,
+                mbid=track.mbid,
+                mb_track=track.mb_track,
+                provider_refs=track.provider_refs,
+            )
             metadata = {"media_type": MediaType.TRACK.value, "name": track.title}
             if track.isrc and is_valid_isrc(track.isrc):
                 metadata["isrc"] = normalize_external_id(ExternalID.ISRC, track.isrc)
@@ -262,7 +273,8 @@ class ShareProvider(PluginProvider):
                 metadata["mb_track"] = normalize_external_id(ExternalID.MB_TRACK, track.mb_track)
             playlist_items.append(
                 PlaylistItem(
-                    path=f"share://track/{index}",
+                    path=f"share://track/{track_payload.to_base64()}",
+                    length=(str(track.duration) if track.duration is not None else None),
                     title=f"{track.artist} - {track.title}" if track.artist else track.title,
                     metadata=metadata,
                     artists=[ArtistInfo(track.artist, "", "", "")] if track.artist else [],
@@ -315,7 +327,7 @@ class ShareProvider(PluginProvider):
             if hasattr(item, "album") and item.album:
                 album_str = item.album.name
             provider_refs = build_provider_refs(item, media_type)
-            await self._enrich_links_via_isrc(
+            await self._link_enricher.enrich(
                 provider_refs, isrc, item.name, artist_str, apple_music_track_id
             )
 
@@ -334,7 +346,6 @@ class ShareProvider(PluginProvider):
             tracks = await self._build_playlist_tracks(item)
 
         return SharePayload(
-            v=2,
             type=cast("Literal['track', 'album', 'artist', 'playlist']", media_type),
             title=item.name,
             artist=artist_str,
@@ -347,88 +358,6 @@ class ShareProvider(PluginProvider):
             provider_refs=provider_refs or None,
             tracks=tracks,
         )
-
-    async def _enrich_links_via_isrc(
-        self,
-        provider_refs: dict[str, str],
-        isrc: str | None,
-        title: str,
-        artist: str | None,
-        apple_music_track_id: str | None = None,
-    ) -> None:
-        """
-        Add missing provider links using keyless public APIs and active MA providers.
-
-        - Deezer: keyless ISRC lookup via public API.
-        - Apple Music: keyless iTunes Search API (title + artist).
-        - YouTube Music: via the active ytmusic MA provider if configured.
-
-        Modifies ``provider_refs`` in place — only adds missing providers.
-        """
-        if not isrc and not title:
-            return
-
-        q = f"{artist} {title}" if artist else title
-
-        if "deezer" not in provider_refs:
-            deezer_link: str | None = None
-            if isrc and is_valid_isrc(isrc):
-                try:
-                    deezer_link = await self._get_deezer_track_url(
-                        normalize_external_id(ExternalID.ISRC, isrc)
-                    )
-                except (ClientError, TimeoutError, ValueError) as err:
-                    LOGGER.debug("Could not look up Deezer track by ISRC: %s", err)
-            if not deezer_link:
-                search_query = f'track:"{title.replace(chr(34), "")}"'
-                if artist:
-                    safe_artist = artist.replace(chr(34), "")
-                    search_query = f'artist:"{safe_artist}" {search_query}'
-                try:
-                    deezer_link = await self._search_deezer_track_url(search_query, title, artist)
-                except (ClientError, TimeoutError, ValueError) as err:
-                    LOGGER.debug("Could not enrich share link with Deezer search: %s", err)
-            if deezer_link:
-                provider_refs["deezer"] = compact_provider_ref("deezer", deezer_link)
-
-        # Apple Music — exact catalog lookup first, then keyless text search
-        if "apple_music" not in provider_refs:
-            try:
-                apple_link = None
-                if apple_music_track_id:
-                    apple_link = await self._get_apple_music_track_url_by_id(apple_music_track_id)
-                if not apple_link:
-                    apple_link = await self._get_apple_music_track_url(q, title, artist)
-                if apple_link:
-                    provider_refs["apple_music"] = compact_provider_ref("apple_music", apple_link)
-            except (ClientError, TimeoutError, ValueError) as err:
-                LOGGER.debug("Could not enrich share link with Apple Music: %s", err)
-
-        # YouTube Music — via active ytmusic MA provider
-        if "ytmusic" not in provider_refs:
-            try:
-                results = await self.mass.music.search(
-                    q, [MediaType.TRACK], limit=3, providers=["ytmusic"]
-                )
-                for track in results.tracks or []:
-                    if isinstance(track, ItemMapping):
-                        continue
-                    if not compare_strings(title, track.name, strict=False) or (
-                        artist and not compare_strings(artist, track.artist_str, strict=False)
-                    ):
-                        continue
-                    for mapping in track.provider_mappings:
-                        if mapping.provider_domain == "ytmusic":
-                            ytmusic_link = (
-                                f"https://music.youtube.com/watch?v="
-                                f"{quote(mapping.item_id, safe='')}"
-                            )
-                            provider_refs["ytmusic"] = compact_provider_ref("ytmusic", ytmusic_link)
-                            break
-                    if "ytmusic" in provider_refs:
-                        break
-            except PROVIDER_FETCH_ERRORS as err:
-                LOGGER.debug("Could not enrich share link with YouTube Music: %s", err)
 
     async def _build_playlist_tracks(self, playlist: MediaItemType) -> list[TrackStub]:
         """Fetch and serialize playlist tracks as minimal stubs (no provider links)."""
@@ -446,6 +375,7 @@ class ShareProvider(PluginProvider):
                     mbid=track.get_external_id(ExternalID.MB_RECORDING),
                     mb_track=track.get_external_id(ExternalID.MB_TRACK),
                     album=track.album.name if track.album else None,
+                    duration=track.duration,
                     provider_refs=build_provider_refs(track, MediaType.TRACK.value),
                 )
             )
@@ -506,9 +436,13 @@ class ShareProvider(PluginProvider):
                 continue
             if item is not None and not isinstance(item, ItemMapping):
                 if media_type == MediaType.TRACK:
-                    return await self.mass.music.tracks.get(
-                        item.item_id, item.provider, allow_update_metadata=False
-                    )
+                    try:
+                        return await self.mass.music.tracks.get(
+                            item.item_id, item.provider, allow_update_metadata=False
+                        )
+                    except PROVIDER_FETCH_ERRORS as err:
+                        LOGGER.debug("Could not load details for shared track: %s", err)
+                        continue
                 return item
 
         if not allow_search:
@@ -518,116 +452,44 @@ class ShareProvider(PluginProvider):
         results = await self.mass.music.search(query, media_types=[media_type], limit=5)
         if media_type == MediaType.TRACK:
             return next(
-                (item for item in results.tracks or [] if not isinstance(item, ItemMapping)), None
+                (
+                    item
+                    for item in results.tracks or []
+                    if not isinstance(item, ItemMapping)
+                    and compare_strings(payload.title, item.name, strict=False)
+                    and (
+                        not payload.artist
+                        or (
+                            bool(item.artist_str)
+                            and compare_strings(payload.artist, item.artist_str, strict=False)
+                        )
+                    )
+                ),
+                None,
             )
         if media_type == MediaType.ALBUM:
             return next(
-                (item for item in results.albums or [] if not isinstance(item, ItemMapping)), None
-            )
-        return next(
-            (item for item in results.artists or [] if not isinstance(item, ItemMapping)), None
-        )
-
-    @use_cache(3600 * 24 * 30)
-    async def _get_deezer_track_url(self, isrc: str) -> str | None:
-        """Return the public Deezer track URL for an ISRC, if available."""
-        async with self.mass.http_session.get(
-            f"https://api.deezer.com/track/isrc:{isrc}", timeout=ClientTimeout(total=4)
-        ) as response:
-            if response.status != 200:
-                return None
-            link = (await response.json()).get("link")
-            return cast("str | None", link) if isinstance(link, str) else None
-
-    @use_cache(3600 * 24 * 30)
-    async def _search_deezer_track_url(
-        self, query: str, title: str, artist: str | None
-    ) -> str | None:
-        """Find a Deezer track by title and artist when ISRC lookup misses."""
-        async with self.mass.http_session.get(
-            "https://api.deezer.com/search",
-            params={"q": query, "limit": 5},
-            timeout=ClientTimeout(total=4),
-        ) as response:
-            if response.status != 200:
-                return None
-            data = (await response.json()).get("data", [])
-            return self._find_matching_track_url(data, title, artist)
-
-    @use_cache(3600 * 24 * 30)
-    async def _get_apple_music_track_url(
-        self, query: str, title: str, artist: str | None
-    ) -> str | None:
-        """Return the public Apple Music track URL for a text query, if available."""
-        async with self.mass.http_session.get(
-            "https://itunes.apple.com/search",
-            params={"term": query, "entity": "song", "limit": 5},
-            timeout=ClientTimeout(total=4),
-        ) as response:
-            if response.status != 200:
-                return None
-            results = (await response.json()).get("results", [])
-            return self._find_matching_track_url(results, title, artist)
-
-    @use_cache(3600 * 24 * 30)
-    async def _get_apple_music_track_url_by_id(self, track_id: str) -> str | None:
-        """Return the canonical Apple Music URL for a catalog track ID."""
-        async with self.mass.http_session.get(
-            "https://itunes.apple.com/lookup",
-            params={"id": track_id, "entity": "song", "limit": 1},
-            timeout=ClientTimeout(total=4),
-        ) as response:
-            if response.status != 200:
-                return None
-            results = (await response.json()).get("results", [])
-            for result in results:
-                if (
-                    isinstance(result, dict)
-                    and result.get("kind") == "song"
-                    and isinstance(result.get("trackViewUrl"), str)
-                ):
-                    return cast("str", result["trackViewUrl"])
-        return None
-
-    @staticmethod
-    def _find_matching_track_url(results: object, title: str, artist: str | None) -> str | None:
-        if not isinstance(results, list):
-            return None
-        best_score = (-1, -1)
-        best_url: str | None = None
-        for result in results:
-            if not isinstance(result, dict):
-                continue
-            if result.get("kind") not in (None, "song"):
-                continue
-            result_title = result.get("trackName") or result.get("title")
-            result_artist = result.get("artistName")
-            if result_artist is None and isinstance(result.get("artist"), dict):
-                result_artist = result["artist"].get("name")
-            result_url = result.get("trackViewUrl") or result.get("link")
-            if (
-                not isinstance(result_title, str)
-                or not isinstance(result_url, str)
-                or not compare_strings(title, result_title, strict=False)
-                or (artist and not isinstance(result_artist, str))
-                or (
-                    artist
-                    and isinstance(result_artist, str)
-                    and not compare_strings(artist, result_artist, strict=False)
-                )
-            ):
-                continue
-            score = (
-                int(compare_strings(title, result_title, strict=True)),
-                int(
-                    not artist
-                    or (
-                        isinstance(result_artist, str)
-                        and compare_strings(artist, result_artist, strict=True)
+                (
+                    item
+                    for item in results.albums or []
+                    if not isinstance(item, ItemMapping)
+                    and compare_strings(payload.title, item.name, strict=False)
+                    and (
+                        not payload.artist
+                        or (
+                            bool(item.artist_str)
+                            and compare_strings(payload.artist, item.artist_str, strict=False)
+                        )
                     )
                 ),
+                None,
             )
-            if score > best_score:
-                best_score = score
-                best_url = result_url
-        return best_url
+        return next(
+            (
+                item
+                for item in results.artists or []
+                if not isinstance(item, ItemMapping)
+                and compare_strings(payload.title, item.name, strict=False)
+            ),
+            None,
+        )

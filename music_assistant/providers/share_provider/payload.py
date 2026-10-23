@@ -30,6 +30,7 @@ class TrackStub:
     mbid: str | None = None
     mb_track: str | None = None
     album: str | None = None
+    duration: int | None = None
     provider_refs: dict[str, str] | None = None
 
 
@@ -37,7 +38,6 @@ class TrackStub:
 class SharePayload:
     """Provider-agnostic share payload encoded in the share link."""
 
-    v: Literal[2]
     type: Literal["track", "album", "artist", "playlist"]
     title: str
     artist: str | None = None
@@ -65,12 +65,7 @@ class SharePayload:
             raise ValueError("Invalid share payload") from err
         if not isinstance(data, dict):
             raise TypeError("Invalid share payload")
-        if (
-            type(data.get("v")) is not int
-            or data["v"] != 2
-            or data.get("type")
-            not in {media_type.value for media_type in SUPPORTED_SHARE_MEDIA_TYPES}
-        ):
+        if data.get("type") not in {media_type.value for media_type in SUPPORTED_SHARE_MEDIA_TYPES}:
             raise ValueError("Unsupported share payload")
         if not isinstance(data.get("title"), str) or not data["title"].strip():
             raise ValueError("Share payload title is missing")
@@ -101,6 +96,9 @@ class SharePayload:
                     for key in optional_fields
                 ):
                     raise ValueError("Invalid share playlist track metadata")
+                duration = raw_track.get("duration")
+                if duration is not None and (type(duration) is not int or duration < 0):
+                    raise ValueError("Invalid share playlist track duration")
                 tracks.append(
                     TrackStub(
                         title=raw_track["title"],
@@ -109,6 +107,7 @@ class SharePayload:
                         mbid=raw_track.get("mbid"),
                         mb_track=raw_track.get("mb_track"),
                         album=raw_track.get("album"),
+                        duration=duration,
                         provider_refs=_validated_provider_refs(
                             raw_track.get("provider_refs"),
                             "Invalid share playlist provider references",
@@ -116,7 +115,6 @@ class SharePayload:
                     )
                 )
         return cls(
-            v=data["v"],
             type=data["type"],
             title=data["title"],
             artist=data.get("artist"),
