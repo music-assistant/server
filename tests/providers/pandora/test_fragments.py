@@ -143,14 +143,14 @@ def test_mark_resolved_unknown_track_is_a_noop() -> None:
     fragment.mark_resolved("nope", NOW + 100)
     assert fragment.spent is False
     assert fragment.last_activity_at == NOW
-    assert fragment.served == set()
+    assert fragment.served == {}
 
 
 def test_mark_resolved_records_the_served_id() -> None:
-    """Handing out a track records its pandora id so pending can withhold it later."""
+    """Handing out a track records its pandora id and when, so a rating finds this copy."""
     fragment = _fragment()
     fragment.mark_resolved("TR:S1", NOW)
-    assert fragment.served == {"TR:S1"}
+    assert fragment.served == {"TR:S1": NOW}
 
 
 def test_pending_returns_all_tracks_when_nothing_served() -> None:
