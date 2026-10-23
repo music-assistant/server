@@ -290,7 +290,7 @@ async def test_move_tracks_already_in_place_changes_nothing(
 async def test_move_tracks_without_a_target_moves_them_to_the_end(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:
-    """Without to_position the block goes to the end of the two-item playlist."""
+    """Without to_position the provider is asked to move the block to the end."""
     added = await _add(playlists)
     provider = _provider()
     prov_item_id = next(iter(added.provider_mappings)).item_id
@@ -302,26 +302,8 @@ async def test_move_tracks_without_a_target_moves_them_to_the_end(
     ):
         await playlists.move_playlist_tracks(added.item_id, [1])
 
-    provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [1], 2)
+    provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [1], None)
     signal_event.assert_called_once()
-
-
-async def test_move_tracks_already_at_the_end_changes_nothing(
-    playlists: PlaylistController, music_mass_module: MusicAssistant
-) -> None:
-    """Moving the last item to the end is neither written nor announced."""
-    added = await _add(playlists)
-    provider = _provider()
-
-    with (
-        _as_user(OWNER),
-        patch.object(music_mass_module, "get_provider", return_value=provider),
-        patch.object(music_mass_module, "signal_event") as signal_event,
-    ):
-        await playlists.move_playlist_tracks(added.item_id, [2])
-
-    provider.move_playlist_tracks.assert_not_awaited()
-    signal_event.assert_not_called()
 
 
 @pytest.mark.parametrize(

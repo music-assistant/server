@@ -681,7 +681,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         raise NotImplementedError
 
     async def move_playlist_tracks(
-        self, prov_playlist_id: str, positions: Sequence[int], to_position: int
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
     ) -> None:
         """
         Move tracks of a playlist as one block to another position.
@@ -691,16 +691,21 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
         :param prov_playlist_id: The playlist id on the provider.
         :param positions: The current positions of the tracks, 1-based.
-        :param to_position: The position the block's first track ends up at, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based. None
+            moves the tracks to the end of the playlist.
         :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
         """
-        # replay the block as single moves, which every provider with the feature implements;
-        # the length comes from the same (possibly cached) listing the positions were read from
+        # replay the block as single moves, which every provider with the feature implements.
+        # The listing can leave out entries it cannot resolve while keeping the positions of
+        # the others, so the highest listed position bounds the playlist too. Entries left out
+        # after the last listed track stay unknown, and "the end" is then after that track.
         length = 0
         page = 0
         while page_items := await self.get_playlist_tracks(prov_playlist_id, page=page):
-            length += len(page_items)
+            length = max(length + len(page_items), *(item.position or 0 for item in page_items))
             page += 1
+        if to_position is None:
+            to_position = length - len(positions) + 1
         for from_position, step_to_position in playlist_block_move_steps(
             length, positions, to_position
         ):

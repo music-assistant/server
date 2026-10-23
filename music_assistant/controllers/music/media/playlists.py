@@ -554,13 +554,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if min(positions) < 1 or (to_position is not None and to_position < 1):
             msg = "Playlist positions start at 1"
             raise InvalidDataError(msg)
-        if to_position is None:
-            length = await self._count_provider_playlist_tracks(
-                playlist_prov_item_id, provider.instance_id
-            )
-            to_position = length - len(positions) + 1
         selected = sorted(positions)
-        if selected == list(range(to_position, to_position + len(selected))):
+        if to_position is not None and selected == list(
+            range(to_position, to_position + len(selected))
+        ):
             return
         try:
             await provider.move_playlist_tracks(playlist_prov_item_id, selected, to_position)
@@ -2153,26 +2150,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             msg = f"Provider {provider.name} does not support reordering playlists"
             raise InvalidDataError(msg)
         return playlist, provider, playlist_prov_item_id
-
-    async def _count_provider_playlist_tracks(
-        self, prov_playlist_id: str, provider_instance_id: str
-    ) -> int:
-        """
-        Return the number of items in a provider playlist.
-
-        Counts the same (possibly cached) listing the playlist positions are read from.
-
-        :param prov_playlist_id: The playlist id on the provider.
-        :param provider_instance_id: The provider instance the playlist is on.
-        """
-        length = 0
-        page = 0
-        while page_items := await self._get_provider_playlist_tracks(
-            prov_playlist_id, provider_instance_id, page=page, strict_provider_instance=True
-        ):
-            length += len(page_items)
-            page += 1
-        return length
 
     async def _refresh_provider_playlist_tracks(
         self, prov_playlist_id: str, provider_instance_id: str

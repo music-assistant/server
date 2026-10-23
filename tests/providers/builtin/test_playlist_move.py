@@ -85,10 +85,11 @@ async def test_move_outside_the_playlist_is_refused(from_position: int, to_posit
     [
         pytest.param([1, 2], 3, ["Three", "Four", "One", "Two"], id="block-to-bottom"),
         pytest.param([2, 4], 1, ["Two", "Four", "One", "Three"], id="scattered-to-top"),
+        pytest.param([1, 3], None, ["Two", "Four", "One", "Three"], id="to-end"),
     ],
 )
 async def test_move_tracks_places_the_block(
-    positions: list[int], to_position: int, expected: list[str]
+    positions: list[int], to_position: int | None, expected: list[str]
 ) -> None:
     """The moved tracks land together at to_position in their playlist order, in one write."""
     prov = _make_provider(TITLES)
