@@ -89,3 +89,31 @@ def test_paused_player_position_does_not_move_the_queue() -> None:
     queue = ctrl._queue_data[QUEUE_ID].queue
     assert queue.current_index == 1
     assert queue.elapsed_time == 10
+
+
+def _played_120_s_into_the_second_track(ctrl: PlayerQueuesController) -> PlayerQueue:
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    queue_data.prev_state = {"current_item_id": "b", "last_playing_elapsed_time": 120}  # type: ignore[typeddict-item]
+    queue_data.queue.elapsed_time = 120
+    # MA's own pause parks its clock estimate as the resume position.
+    queue_data.queue.resume_pos = 120
+    return queue_data.queue
+
+
+def test_backward_correction_moves_the_resume_position_back() -> None:
+    """Resuming after a correction to 90 s starts at 90 s, not the estimate of 120 s."""
+    ctrl = _controller()
+    queue = _played_120_s_into_the_second_track(ctrl)
+    ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PLAYING, FIRST_TRACK_STREAMED + 90))
+    assert queue.resume_pos == 90
+    queue.resume_pos = 0  # after the parked position is used once
+    assert ctrl._last_played_position(queue) == pytest.approx(90)
+
+
+def test_paused_position_leaves_the_resume_position_alone() -> None:
+    """Players that reset their position when paused must not move the resume position."""
+    ctrl = _controller()
+    queue = _played_120_s_into_the_second_track(ctrl)
+    ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.PAUSED, 0))
+    assert queue.resume_pos == 120
+    assert ctrl._queue_data[QUEUE_ID].prev_state["last_playing_elapsed_time"] == 120  # type: ignore[index]

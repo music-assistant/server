@@ -1458,6 +1458,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         queue.playback_speed = speed
+        if player.state.playback_state == PlaybackState.PLAYING:
+            # A playing player's corrected position is where the item really is, also
+            # when it is behind positions saved from the clock estimate; resuming from
+            # those would skip unheard audio. A paused position stays untrusted.
+            prev_state = self._queue_data[queue_id].prev_state
+            if (
+                prev_state
+                and queue.current_item
+                and prev_state["current_item_id"] == queue.current_item.queue_item_id
+            ):
+                prev_state["last_playing_elapsed_time"] = int(elapsed_time)
+            if queue.resume_pos:
+                queue.resume_pos = int(elapsed_time)
         self.mass.signal_event(
             EventType.QUEUE_TIME_UPDATED,
             object_id=queue_id,
