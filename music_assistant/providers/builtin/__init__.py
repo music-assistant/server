@@ -644,12 +644,15 @@ class BuiltinProvider(MusicProvider):
             )
 
     async def move_playlist_tracks(
-        self, prov_playlist_id: str, positions: Sequence[int], to_position: int
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
     ) -> None:
         """Move tracks of a playlist as one block to another position (all 1-based)."""
         async with self._get_playlist_lock(prov_playlist_id):
             m3u_data = await self._read_m3u_file(prov_playlist_id)
-            items = move_playlist_block(parse_m3u(m3u_data), positions, to_position)
+            entries = parse_m3u(m3u_data)
+            if to_position is None:
+                to_position = len(entries) - len(positions) + 1
+            items = move_playlist_block(entries, positions, to_position)
             playlist = await self.get_playlist(prov_playlist_id)
             await self._write_m3u_file(
                 prov_playlist_id,
