@@ -634,6 +634,31 @@ def construct_media_item_from_playlist_item(
     return media_item
 
 
+def validate_playlist_block_move(
+    length: int, positions: Sequence[int], to_position: int
+) -> list[int]:
+    """
+    Return the positions of a block move in playlist order, after checking they fit.
+
+    :param length: The number of items in the playlist.
+    :param positions: The current positions of the items to move, 1-based.
+    :param to_position: The position of the block's first item after the move, 1-based.
+    :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+    """
+    selected = sorted(set(positions))
+    if not selected:
+        raise InvalidDataError("No playlist positions to move")
+    if len(selected) != len(positions):
+        raise InvalidDataError("Each playlist position can only be moved once")
+    if selected[0] < 1 or selected[-1] > length:
+        msg = f"Position out of range for a playlist of {length} item(s)"
+        raise InvalidDataError(msg)
+    if not 1 <= to_position <= length - len(selected) + 1:
+        msg = f"{len(selected)} item(s) do not fit at position {to_position} of {length}"
+        raise InvalidDataError(msg)
+    return selected
+
+
 def move_playlist_block[ItemT](
     items: Sequence[ItemT], positions: Sequence[int], to_position: int
 ) -> list[ItemT]:
@@ -647,7 +672,7 @@ def move_playlist_block[ItemT](
     :param to_position: The position of the block's first item after the move, 1-based.
     :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
     """
-    selected = _validate_block_move(len(items), positions, to_position)
+    selected = validate_playlist_block_move(len(items), positions, to_position)
     chosen = set(selected)
     moved = [items[position - 1] for position in selected]
     rest = [item for position, item in enumerate(items, start=1) if position not in chosen]
@@ -668,7 +693,7 @@ def playlist_block_move_steps(
     :param to_position: The position of the block's first track after the move, 1-based.
     :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
     """
-    selected = _validate_block_move(length, positions, to_position)
+    selected = validate_playlist_block_move(length, positions, to_position)
     chosen = set(selected)
     # Track every item by its original position. Each selected item is placed right after
     # the item that precedes it in the result (the item before the block, then the item
@@ -1158,26 +1183,3 @@ def _parse_extpodcast_line(line: str) -> PodcastInfo | None:
         item_id=parts[2],
         provider_instance=parts[3],
     )
-
-
-def _validate_block_move(length: int, positions: Sequence[int], to_position: int) -> list[int]:
-    """
-    Return the positions of a block move in playlist order, after checking they fit.
-
-    :param length: The number of items in the playlist.
-    :param positions: The current positions of the items to move, 1-based.
-    :param to_position: The position of the block's first item after the move, 1-based.
-    :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
-    """
-    selected = sorted(set(positions))
-    if not selected:
-        raise InvalidDataError("No playlist positions to move")
-    if len(selected) != len(positions):
-        raise InvalidDataError("Each playlist position can only be moved once")
-    if selected[0] < 1 or selected[-1] > length:
-        msg = f"Position out of range for a playlist of {length} item(s)"
-        raise InvalidDataError(msg)
-    if not 1 <= to_position <= length - len(selected) + 1:
-        msg = f"{len(selected)} item(s) do not fit at position {to_position} of {length}"
-        raise InvalidDataError(msg)
-    return selected
