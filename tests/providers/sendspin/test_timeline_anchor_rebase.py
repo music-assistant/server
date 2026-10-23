@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -185,6 +185,34 @@ async def test_anchor_waits_for_the_audio_sent_before_a_rebase(
     trace = await _run_commit_loop(monkeypatch, commit_timestamps, now_timestamps)
 
     assert trace.anchors == [t0, t0, t0, t0 + shift_us]
+
+
+async def test_a_queued_move_applies_while_the_stream_drains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A move queued behind the playing audio is reported once it plays, with no further commit."""
+    t0 = 10_000_000
+    send_ahead_us = 1_000_000
+    move_now_us = t0 + 50_000
+    shift_us = move_now_us + send_ahead_us - (t0 + 2 * _CHUNK_DURATION_US)
+    commit_timestamps = [t0, t0 + _CHUNK_DURATION_US, t0 + 2 * _CHUNK_DURATION_US + shift_us]
+    now_timestamps = [t0 - send_ahead_us, t0 - send_ahead_us + _CHUNK_DURATION_US, move_now_us]
+
+    async def _drain_until_the_move_plays(self: SendspinPlaybackSession) -> None:
+        call_later = cast("MagicMock", self.player.mass.call_later)
+        delay_s, apply_move = call_later.call_args.args[:2]
+        push_stream = cast("_FakePushStream", self._push_stream)
+        push_stream._now_us += round(delay_s * 1_000_000)
+        await apply_move()
+
+    monkeypatch.setattr(
+        SendspinPlaybackSession, "_wait_for_buffer_drain", _drain_until_the_move_plays
+    )
+
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps, now_timestamps)
+
+    # The moved chunk starts 0.2 s into the flow stream.
+    assert trace.player_calls[-2:] == [("elapsed", 0.2), ("timeline", None)]
 
 
 async def test_first_commit_reports_the_anchor(monkeypatch: pytest.MonkeyPatch) -> None:

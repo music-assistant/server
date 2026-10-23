@@ -820,15 +820,21 @@ class SendspinPlaybackSession:
                         await close_task
                         raise
 
-        def _report_timeline(anchor_us: int, now_us: int) -> None:
+        anchor_move_task_id = f"sendspin_anchor_move_{uuid4().hex}"
+
+        async def _report_timeline(anchor_us: int, now_us: int) -> None:
             nonlocal last_elapsed_update_s, reported_anchor_us
             # The first commit reports too, since beats published before it were timed
             # from an estimated start. Later moves are compared against the last reported
             # anchor so small ones add up.
-            timeline_changed = (
+            if (
                 reported_anchor_us is None
                 or abs(anchor_us - reported_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
-            )
+            ):
+                timeline_changed = True
+                reported_anchor_us = anchor_us
+            else:
+                timeline_changed = False
             elapsed_real_s = max(0.0, (now_us - anchor_us) / 1_000_000)
             # A rebase can step the position backward, which would keep the gate shut.
             if (
@@ -841,8 +847,27 @@ class SendspinPlaybackSession:
                 self.player._attr_elapsed_time_last_updated = time.time()
                 self.player.update_state()
             if timeline_changed:
-                reported_anchor_us = anchor_us
                 self.player.on_flow_timeline_changed()
+            # A move queued behind the playing audio must apply even if no commit follows.
+            async with self._state_lock:
+                move_start_us = self._queued_move_start_us_locked(now_us, reported_anchor_us)
+            if move_start_us is None:
+                self.player.mass.cancel_timer(anchor_move_task_id)
+            else:
+                self.player.mass.call_later(
+                    (move_start_us - now_us) / 1_000_000,
+                    _apply_queued_move,
+                    task_id=anchor_move_task_id,
+                )
+
+        async def _apply_queued_move() -> None:
+            now_us = push_stream.now_us()
+            async with self._state_lock:
+                if not self._history:
+                    return
+                anchor_us = self._playing_timeline_start_us_locked(now_us)
+                self._timeline_start_us = anchor_us
+            await _report_timeline(anchor_us, now_us)
 
         async def _commit_pending_chunks() -> None:
             nonlocal pending_duration_us
@@ -909,7 +934,7 @@ class SendspinPlaybackSession:
                     self._timeline_start_us = anchor_us
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
-                _report_timeline(anchor_us, commit_now_us)
+                await _report_timeline(anchor_us, commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
@@ -962,6 +987,8 @@ class SendspinPlaybackSession:
                     # non-clean stop so we skip group.stop() below
                     # and let the new playback handle the transition.
                     producer_stopped_cleanly = False
+            self.player.mass.cancel_timer(anchor_move_task_id)
+            self.player.mass.cancel_task(anchor_move_task_id)
             with suppress(Exception):
                 # Same condition as the group.stop() below, so we snapshot on exactly the
                 # paths where a group STOP is already emitted. That stop resets the reported
@@ -1505,6 +1532,17 @@ class SendspinPlaybackSession:
             if chunk.start_time_us + chunk.duration_us > now_us:
                 return chunk.timeline_start_us
         return self._history[-1].timeline_start_us
+
+    def _queued_move_start_us_locked(self, now_us: int, reported_anchor_us: int) -> int | None:
+        """Return when the first unplayed chunk that moves the reported anchor starts playing."""
+        for chunk in self._history:
+            if (
+                chunk.start_time_us > now_us
+                and abs(chunk.timeline_start_us - reported_anchor_us)
+                >= ANCHOR_REBASE_SIGNIFICANT_US
+            ):
+                return chunk.start_time_us
+        return None
 
     def _prune_history_locked(self, now_monotonic_us: int) -> None:
         """Drop old history chunks that are fully in the past."""
