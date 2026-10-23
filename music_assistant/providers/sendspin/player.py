@@ -2631,10 +2631,15 @@ class SendspinPlayer(SendspinBasePlayer):
         if pq_data is None or queue_item.streamdetails is None:
             return None
         log = pq_data.flow_mode_stream_log
-        if not log or log[-1].queue_item_id != queue_item.queue_item_id:
+        # Search from the end: the stream runs ahead, so the playing track may not be
+        # the last entry yet.
+        for index in range(len(log) - 1, -1, -1):
+            if log[index].queue_item_id == queue_item.queue_item_id:
+                break
+        else:
             return None
-        track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:-1])
-        file_seek_s = log[-1].seek_position
+        track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:index])
+        file_seek_s = log[index].seek_position
         if file_seek_s is None:
             file_seek_s = float(queue_item.streamdetails.seek_position or 0)
         return int((track_flow_start_s - file_seek_s) * 1_000_000)

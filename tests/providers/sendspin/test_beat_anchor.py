@@ -46,6 +46,22 @@ def test_flow_offset_sums_prior_tracks() -> None:
     assert offset_us == int((100.0 + 200.5) * 1_000_000)
 
 
+def test_flow_offset_finds_the_playing_track_after_the_stream_moved_on() -> None:
+    """The playing track keeps its offset once the stream has started the next track."""
+    data = cast(
+        "PlayerQueueData",
+        SimpleNamespace(
+            flow_mode_stream_log=[
+                _log_entry("t1", 100.0),
+                _log_entry("t2", 200.5),
+                _log_entry("t3", None),
+            ]
+        ),
+    )
+
+    assert SendspinPlayer._flow_track_offset_us(data, _queue_item("t2")) == 100_000_000
+
+
 @pytest.mark.parametrize(
     ("recorded_seek", "shared_seek", "expected"),
     [(59.0, 0, -59_000_000), (0.0, 59, 0), (None, 59, -59_000_000)],
