@@ -35,6 +35,7 @@ from music_assistant.providers.jellyfin.parsers import (
     parse_artist,
     parse_playlist,
     parse_track,
+    set_api_key,
 )
 
 from .const import (
@@ -142,7 +143,11 @@ class JellyfinProvider(MusicProvider):
 
         :param path: Artwork URL or provider path to resolve.
         """
-        return _normalize_jellyfin_media_url(path)
+        if not path.startswith(f"{self._client.base_url}/"):
+            # never hand the token to a host other than the configured Jellyfin server
+            return set_api_key(path, None)
+        # aiojellyfin has no public accessor for the access token
+        return set_api_key(path, self._client._access_token)
 
     async def _search_track(self, search_query: str, limit: int) -> list[Track]:
         resultset = (
