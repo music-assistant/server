@@ -193,8 +193,9 @@ async def test_buffered_runahead_keeps_unplayed_history(monkeypatch: pytest.Monk
     assert oldest_start_us <= final_now_us
     assert trace.retained[-1] * _CHUNK_DURATION_US >= commit_tail_us - final_now_us
 
-    # Chunks that finished rendering more than _HISTORY_KEEP_PAST_US ago are still dropped.
-    assert oldest_start_us >= final_now_us - _HISTORY_KEEP_PAST_US - _CHUNK_DURATION_US
+    # The oldest retained chunk is the one that was playing _HISTORY_KEEP_PAST_US ago.
+    cutoff_us = final_now_us - _HISTORY_KEEP_PAST_US
+    assert oldest_start_us <= cutoff_us < oldest_start_us + _CHUNK_DURATION_US
 
 
 async def test_small_schedule_moves_add_up_to_one_rebase(monkeypatch: pytest.MonkeyPatch) -> None:
