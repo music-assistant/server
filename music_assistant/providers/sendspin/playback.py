@@ -820,8 +820,32 @@ class SendspinPlaybackSession:
                         await close_task
                         raise
 
+        def _report_timeline(anchor_us: int, now_us: int) -> None:
+            nonlocal last_elapsed_update_s, reported_anchor_us
+            # The first commit reports too, since beats published before it were timed
+            # from an estimated start. Later moves are compared against the last reported
+            # anchor so small ones add up.
+            timeline_changed = (
+                reported_anchor_us is None
+                or abs(anchor_us - reported_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
+            )
+            elapsed_real_s = max(0.0, (now_us - anchor_us) / 1_000_000)
+            # A rebase can step the position backward, which would keep the gate shut.
+            if (
+                timeline_changed
+                or last_elapsed_update_s is None
+                or elapsed_real_s - last_elapsed_update_s >= 1.0
+            ):
+                last_elapsed_update_s = elapsed_real_s
+                self.player._attr_elapsed_time = elapsed_real_s
+                self.player._attr_elapsed_time_last_updated = time.time()
+                self.player.update_state()
+            if timeline_changed:
+                reported_anchor_us = anchor_us
+                self.player.on_flow_timeline_changed()
+
         async def _commit_pending_chunks() -> None:
-            nonlocal pending_duration_us, last_elapsed_update_s, reported_anchor_us
+            nonlocal pending_duration_us
             while True:
                 pending = await pending_chunks.get()
                 if pending is None:
@@ -885,27 +909,7 @@ class SendspinPlaybackSession:
                     self._timeline_start_us = anchor_us
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
-                # The first commit reports too, since beats published before it were timed
-                # from an estimated start. Later moves are compared against the last reported
-                # anchor so small ones add up.
-                timeline_changed = (
-                    reported_anchor_us is None
-                    or abs(anchor_us - reported_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
-                )
-                elapsed_real_s = max(0.0, (commit_now_us - anchor_us) / 1_000_000)
-                # A rebase can step the position backward, which would keep the gate shut.
-                if (
-                    timeline_changed
-                    or last_elapsed_update_s is None
-                    or elapsed_real_s - last_elapsed_update_s >= 1.0
-                ):
-                    last_elapsed_update_s = elapsed_real_s
-                    self.player._attr_elapsed_time = elapsed_real_s
-                    self.player._attr_elapsed_time_last_updated = time.time()
-                    self.player.update_state()
-                if timeline_changed:
-                    reported_anchor_us = anchor_us
-                    self.player.on_flow_timeline_changed()
+                _report_timeline(anchor_us, commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
