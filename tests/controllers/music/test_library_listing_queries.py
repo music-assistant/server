@@ -20,7 +20,14 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import AlbumType, ArtistType, MediaType, SortDirection, SortField
+from music_assistant_models.enums import (
+    AlbumType,
+    ArtistType,
+    ImageType,
+    MediaType,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
@@ -28,6 +35,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     MediaCollection,
     MediaItemCollection,
+    MediaItemImage,
     MediaItemMetadata,
     ProviderMapping,
     Track,
@@ -838,24 +846,48 @@ async def test_audiobook_collection_statistics_ignore_view_filters(
 ) -> None:
     """A favorites-only listing narrows a collection's items, but not its statistics."""
     controller = mass.music.audiobooks
-    # name, collection, duration, fully played, seconds played
+    # name, collection, sequence, cover, duration, fully played, seconds played;
+    # added out of order, so the covers prove they follow the sequence
     books = (
-        ("Alpha 1", "Alpha Series", 100, True, 100),
-        ("Alpha 2", "Alpha Series", 200, False, 50),
-        ("Alpha 3", "Alpha Series", 300, None, None),
-        ("Beta 1", "Beta Series", 400, True, 400),
+        ("Alpha 4", "Alpha Series", 4, "alpha_4.jpg", 400, None, None),
+        ("Alpha 1", "Alpha Series", 1, None, 100, True, 100),
+        ("Alpha 2", "Alpha Series", 2, "alpha_2.jpg", 200, False, 50),
+        ("Alpha 5", "Alpha Series", 5, "alpha_5.jpg", 500, None, None),
+        ("Alpha 3", "Alpha Series", 3, "alpha_3.jpg", 300, None, None),
+        ("Beta 1", "Beta Series", 1, None, 400, True, 400),
     )
     db_books = {}
-    for name, collection_name, duration, fully_played, seconds_played in books:
+    for name, collection_name, sequence, cover, duration, fully_played, seconds_played in books:
         db_book = await controller.add_item_to_library(
             Audiobook(
                 item_id="0",
                 provider="library",
                 name=name,
                 duration=duration,
-                provider_mappings={_mapping()},
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=name,
+                        provider_domain="prov_a",
+                        provider_instance="prov_a_inst",
+                        in_library=True,
+                    )
+                },
                 metadata=MediaItemMetadata(
-                    collections=UniqueList([MediaItemCollection(title=collection_name, sequence=1)])
+                    collections=UniqueList(
+                        [MediaItemCollection(title=collection_name, sequence=sequence)]
+                    ),
+                    images=UniqueList(
+                        [
+                            MediaItemImage(
+                                type=ImageType.THUMB,
+                                path=cover,
+                                provider="test",
+                                remotely_accessible=True,
+                            )
+                        ]
+                    )
+                    if cover
+                    else None,
                 ),
             )
         )
@@ -877,16 +909,16 @@ async def test_audiobook_collection_statistics_ignore_view_filters(
             },
         )
     await mass.music.database.commit()
-    await _like(mass, MediaType.AUDIOBOOK, str(db_books["Alpha 3"].item_id), True)
+    await _like(mass, MediaType.AUDIOBOOK, str(db_books["Alpha 5"].item_id), True)
 
     with patch(GET_CURRENT_USER, return_value=LISTING_USER):
         everything = await controller.library_items(collapse_collections=True)
         favorites = await controller.library_items(favorite=True, collapse_collections=True)
     collections = {item.name: item for item in everything if isinstance(item, MediaCollection)}
-    alpha, beta = collections["Alpha Series"], collections["Beta Series"]
+    alpha, beta = collections["Alpha Series"].metadata, collections["Beta Series"].metadata
     assert (alpha.total_items, alpha.duration, alpha.fully_played, alpha.in_progress) == (
-        3,
-        600,
+        5,
+        1500,
         False,
         True,
     )
@@ -896,19 +928,23 @@ async def test_audiobook_collection_statistics_ignore_view_filters(
         True,
         False,
     )
+    # the first three books with a cover, in sequence order
+    assert [image.path for image in alpha.images or []] == [
+        "alpha_2.jpg",
+        "alpha_3.jpg",
+        "alpha_4.jpg",
+    ]
+    assert beta.images is None
 
-    # the collection without a favorite is left out, the other keeps its statistics
+    # the collection without a favorite is left out, the other keeps its metadata
     assert [item.name for item in favorites] == ["Alpha Series"]
     favorite_alpha = favorites[0]
     assert isinstance(favorite_alpha, MediaCollection)
-    assert [item.name for item in favorite_alpha.items] == ["Alpha 3"]
-    assert favorite_alpha.total_items == alpha.total_items
-    assert favorite_alpha.duration == alpha.duration
-    assert favorite_alpha.fully_played == alpha.fully_played
-    assert favorite_alpha.in_progress == alpha.in_progress
+    assert [item.name for item in favorite_alpha.items] == ["Alpha 5"]
+    assert favorite_alpha.metadata == alpha
 
-    collection = await controller.get_collection(alpha.item_id)
-    assert (collection.total_items, collection.duration) == (3, 600)
+    collection = await controller.get_collection(collections["Alpha Series"].item_id)
+    assert collection.metadata == alpha
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:

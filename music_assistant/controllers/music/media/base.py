@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     ItemMappingSummary,
     MediaCollection,
+    MediaCollectionMetadata,
     MediaItem,
     MediaItemImage,
     MediaItemMetadata,
@@ -70,6 +71,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import (
     BASE_SORT_FIELD_SQL,
     CACHE_CATEGORY_SEARCH_RESULTS,
+    COLLECTION_COVER_COUNT,
     RANDOM_SORT_FIELDS,
 )
 from music_assistant.controllers.music.helpers import (
@@ -892,7 +894,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider="library",
                 provider_mappings=set(),
                 items=items,
-                **self._parse_collection_statistics(db_rows[0]),
+                metadata=self._parse_collection_metadata(db_rows[0], hidden_sources),
             ),
         )
 
@@ -2000,7 +2002,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if collapse_collections:
             if search:
                 query_params["search"] = f"%{search}%"
-            # the statistics of a collection ignore the filters that only narrow the view
+            # the metadata of a collection ignores the filters that only narrow the view
             scope_query = None
             if favorite is not None or played_only or genre_ids:
                 scope_parts = list(extra_query_parts) if extra_query_parts else []
@@ -2056,7 +2058,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             items=UniqueList(
                                 [_parse_method(x) for x in json_loads(db_row["media_data"])]
                             ),
-                            **self._parse_collection_statistics(db_row),
+                            metadata=self._parse_collection_metadata(db_row, hidden_sources),
                         )
                     )
             return items
@@ -3232,16 +3234,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for raw_mapping in json_loads(db_row["artists"])
         )
 
-    @staticmethod
-    def _parse_collection_statistics(db_row: Mapping[str, Any]) -> dict[str, Any]:
-        """Return the MediaCollection fields computed over all items of a collection row."""
-        statistics = json_loads(db_row["statistics"]) if db_row["statistics"] else {}
-        return {
-            "total_items": statistics.get("total_items"),
-            "duration": statistics.get("duration"),
-            "fully_played": parse_optional_bool(statistics.get("fully_played")),
-            "in_progress": parse_optional_bool(statistics.get("in_progress")),
-        }
+    def _parse_collection_metadata(
+        self, db_row: Mapping[str, Any], hidden_sources: set[str]
+    ) -> MediaCollectionMetadata:
+        """Return the metadata computed over all items of a collection row."""
+        raw_metadata = db_row["collection_metadata"]
+        metadata = json_loads(raw_metadata) if raw_metadata else {}
+        # the aggregate order is not guaranteed, the rank is
+        covers = sorted(metadata.get("covers") or [], key=lambda cover: cover["rank"])
+        thumbs = [self._summary_thumb(cover["images"], hidden_sources) for cover in covers]
+        return MediaCollectionMetadata(
+            images=UniqueList(thumb for thumb in thumbs if thumb) or None,
+            total_items=metadata.get("total_items"),
+            duration=metadata.get("duration"),
+            fully_played=parse_optional_bool(metadata.get("fully_played")),
+            in_progress=parse_optional_bool(metadata.get("in_progress")),
+        )
 
     async def _adapt_query_for_collections(
         self,
@@ -3258,8 +3266,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Wrap a listing query so the items of a collection come back as one collection row.
 
-        :param scope_query: The query of all items in scope, which the statistics of a
-            collection are computed over. None when sql_query applies no view filters
+        :param scope_query: The query of all items in scope, which the metadata of a
+            collection is computed over. None when sql_query applies no view filters
             (favorite, genre, played).
         """
         cache_key_columns = f"collection_columns_{self.api_base}"
@@ -3280,6 +3288,39 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         json_object = "json_object(" + ",".join([f"'{x}',{x}" for x in columns]) + ")"
 
         collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
+        images_column = "images" if summary else "json_extract(metadata, '$.images')"
+        sequence_is_numeric = """
+            CASE
+                WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
+                THEN 1
+                WHEN json_type(iter_coll.value, '$.sequence') = 'text'
+                    AND json_valid(json_extract(iter_coll.value, '$.sequence'))
+                THEN CASE
+                    WHEN json_type(json_extract(iter_coll.value, '$.sequence'))
+                        IN ('integer', 'real')
+                    THEN 1
+                    ELSE 0
+                END
+                ELSE 0
+            END"""
+        sequence_order = """
+            -- null case
+            CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+            -- numeric before text
+            CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
+            -- order NUMERIC
+            CASE WHEN collection_sequence_is_numeric
+                THEN CAST(collection_sequence AS REAL)
+            END,
+            -- order TEXT
+            CASE WHEN NOT collection_sequence_is_numeric
+                THEN collection_sequence
+            END COLLATE NOCASE,
+            -- order by media name if no sequence given
+            CASE
+                WHEN collection_sequence IS NULL
+                THEN media_name
+            END COLLATE NOCASE"""
 
         # statistics over all items of a collection, from the columns this media type has
         duration_stat = "SUM(duration)" if "duration" in columns else "NULL"
@@ -3338,6 +3379,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     FROM {stats_source}, json_each({collections_column}) as iter_coll
                     GROUP BY stats_title
                 ),
+                -- the items with a thumb, ranked in collection order, for the cover stack
+                collection_covers as (
+                    SELECT
+                        cover_title,
+                        images,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY cover_title ORDER BY {sequence_order}
+                        ) as cover_rank
+                    FROM (
+                        SELECT
+                            json_extract(iter_coll.value, '$.title') as cover_title,
+                            json_extract(iter_coll.value, '$.sequence') as collection_sequence,
+                            {sequence_is_numeric} as collection_sequence_is_numeric,
+                            name as media_name,
+                            {images_column} as images
+                        FROM {stats_source}, json_each({collections_column}) as iter_coll
+                        WHERE EXISTS(
+                            SELECT 1 FROM json_each({images_column}) as iter_img
+                            WHERE json_extract(iter_img.value, '$.type') = 'thumb'
+                        )
+                    )
+                ),
                 collection_extract as (
                     SELECT
                         item_id,
@@ -3351,19 +3414,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
                         json_extract(iter_coll.value, '$.search_title') as collection_search_title,
                         json_extract(iter_coll.value, '$.search_sort_title') as collection_search_sort_title,
-                        CASE
-                            WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
-                            THEN 1
-                            WHEN json_type(iter_coll.value, '$.sequence') = 'text'
-                                AND json_valid(json_extract(iter_coll.value, '$.sequence'))
-                            THEN CASE
-                                WHEN json_type(json_extract(iter_coll.value, '$.sequence'))
-                                    IN ('integer', 'real')
-                                THEN 1
-                                ELSE 0
-                            END
-                            ELSE 0
-                        END as collection_sequence_is_numeric,
+                        {sequence_is_numeric} as collection_sequence_is_numeric,
                         {json_object} as media_data
                     FROM (
                         SELECT * FROM joined_table
@@ -3385,34 +3436,25 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'total_items', total_items,
                         'duration', duration,
                         'fully_played', fully_played,
-                        'in_progress', in_progress
+                        'in_progress', in_progress,
+                        'covers', (
+                            SELECT json_group_array(
+                                json_object('rank', cover_rank, 'images', json(images))
+                            )
+                            FROM collection_covers
+                            WHERE cover_title = collection_title
+                                AND cover_rank <= {COLLECTION_COVER_COUNT}
+                        )
                     )
                     FROM collection_stats WHERE stats_title = collection_title
-                ) as statistics,
+                ) as collection_metadata,
                 json_group_array(media_data) as media_data
             FROM (
                 SELECT * FROM collection_extract
                 -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
                 -- Confirmed working with sqlite 3.40.1 & 3.53
                 -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
-                ORDER BY collection_title,
-                -- null case
-                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-                -- numeric before text
-                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
-                -- order NUMERIC
-                CASE WHEN collection_sequence_is_numeric
-                    THEN CAST(collection_sequence AS REAL)
-                END,
-                -- order TEXT
-                CASE WHEN NOT collection_sequence_is_numeric
-                    THEN collection_sequence
-                END COLLATE NOCASE,
-                -- order by media name if no sequence given
-                CASE
-                    WHEN collection_sequence IS NULL
-                    THEN media_name
-                END COLLATE NOCASE
+                ORDER BY collection_title, {sequence_order}
             )
             GROUP BY collection_title
 
@@ -3421,7 +3463,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             SELECT 'single', item_id as random_item_id, name, search_name, search_sort_name,
                 timestamp_added, timestamp_modified, last_played, play_count,
                 {single_extra_order_keys}
-                NULL as statistics,
+                NULL as collection_metadata,
                 {json_object} FROM joined_table
                 WHERE {collections_column} IS NULL
                     OR {collections_column} = '[]'
