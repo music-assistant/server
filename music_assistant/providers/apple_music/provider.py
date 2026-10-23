@@ -6,6 +6,7 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+import jwt
 from aiohttp import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
@@ -41,7 +42,7 @@ from .constants import (
     SUPPORTED_FEATURES,
 )
 from .helpers import browse_playlists
-from .helpers.utils import is_apple_id, token_expiry
+from .helpers.utils import is_apple_id
 from .library import AppleMusicLibraryManager
 from .media import AppleMusicMediaManager
 from .recommendations import AppleMusicRecommendationManager
@@ -468,4 +469,9 @@ def _pick_app_token(stored: str | None, bundled: str) -> str | None:
     # into the setup flow (because the bundled one was rejected) is newer than the bundle
     if not stored or not bundled:
         return stored or bundled
-    return stored if token_expiry(stored) > token_expiry(bundled) else bundled
+    return stored if _token_expiry(stored) > _token_expiry(bundled) else bundled
+
+
+def _token_expiry(token: str) -> int:
+    """Return the expiry (unix timestamp) of an app token."""
+    return int(jwt.decode(token, options={"verify_signature": False})["exp"])

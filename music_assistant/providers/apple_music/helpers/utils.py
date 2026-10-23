@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import json
 import re
 from typing import Any
 
@@ -37,13 +35,6 @@ def is_apple_id(item_id: Any) -> bool:
     # catalog ids are numeric; library songs, albums, playlists and artists, catalog playlists
     # and stations carry their own type prefix
     return bool(re.fullmatch(r"\d+|(?:a|i|l|p|r|pl|ra)\.[A-Za-z0-9_-]+", item_id))
-
-
-def token_expiry(token: str) -> int:
-    """Return the expiry (unix timestamp) of an Apple Music developer (app) token."""
-    payload = token.split(".")[1]
-    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-    return int(claims["exp"])
 
 
 def translate_media_type_to_apple_type(media_type: MediaType) -> str:
