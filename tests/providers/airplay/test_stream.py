@@ -3710,6 +3710,37 @@ async def test_text_refinement_keeps_delivered_artwork_settled() -> None:
     assert "TITLE=Track (Remastered)" in commands[-1]
 
 
+@pytest.mark.asyncio
+async def test_next_track_with_the_same_cover_resends_artwork() -> None:
+    """A new queue item re-sends a cover it shares with the previous track."""
+    stream = AirPlayStream(_make_player())
+
+    def make_metadata(item_id: str, title: str) -> MagicMock:
+        return MagicMock(
+            queue_item_id=item_id,
+            duration=180,
+            title=title,
+            artist="Artist",
+            album="Album",
+            image_url="album-cover",
+        )
+
+    artwork_path = "/cache/thumbnails/album-cover.jpg"
+
+    with (
+        patch.object(stream, "_prepare_artwork", new=AsyncMock(return_value=artwork_path)),
+        patch.object(
+            stream, "send_cli_command", new_callable=AsyncMock, return_value=True
+        ) as send_command,
+    ):
+        await stream.send_metadata(None, make_metadata("item-1", "Track 1"))
+        await stream.send_metadata(None, make_metadata("item-2", "Track 2"))
+
+    last_bundle = send_command.await_args_list[-1].args[0]
+    assert "ITEMID=item-2\n" in last_bundle
+    assert f"ARTWORKFILE={artwork_path}\n" in last_bundle
+
+
 # --- Structured connect failures reported by the binary ---
 
 
