@@ -80,7 +80,9 @@ def _player(monkeypatch: pytest.MonkeyPatch) -> SendspinPlayer:
         "SendspinPlaybackSession",
         SimpleNamespace(flow_track_anchor_us=lambda offset_us: _PUBLISHED_ANCHOR_US + offset_us),
     )
-    monkeypatch.setattr(SendspinPlayer, "_flow_track_offset_us", staticmethod(lambda _d, _i: None))
+    monkeypatch.setattr(
+        SendspinPlayer, "_flow_track_offset_us", staticmethod(lambda _d, _i, _p: None)
+    )
     return player
 
 

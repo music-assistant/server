@@ -2614,7 +2614,9 @@ class SendspinPlayer(SendspinBasePlayer):
         )
 
     @staticmethod
-    def _flow_track_offset_us(pq_data: PlayerQueueData | None, queue_item: QueueItem) -> int | None:
+    def _flow_track_offset_us(
+        pq_data: PlayerQueueData | None, queue_item: QueueItem, flow_position_s: float
+    ) -> int | None:
         """
         Return the current track's flow-stream start offset (minus file seek), in µs.
 
@@ -2622,6 +2624,8 @@ class SendspinPlayer(SendspinBasePlayer):
         one in the queue-flow stream, so beats anchor to this track's start
         rather than the first track's. Returns None when the flow log hasn't
         recorded this track yet, so the caller falls back to the progress anchor.
+        A track that appears more than once resolves to its latest pass that has
+        started by ``flow_position_s``, the flow-stream position playing now.
 
         A track whose intro was crossfade-trimmed loses its raw seek position
         (only the elapsed-inflated value survives), so its anchor can be off by
@@ -2631,15 +2635,18 @@ class SendspinPlayer(SendspinBasePlayer):
         if pq_data is None or queue_item.streamdetails is None:
             return None
         log = pq_data.flow_mode_stream_log
-        # Search from the end: the stream runs ahead, so the playing track may not be
-        # the last entry yet.
-        for index in range(len(log) - 1, -1, -1):
-            if log[index].queue_item_id == queue_item.queue_item_id:
-                break
-        else:
+        match_index: int | None = None
+        track_flow_start_s = 0.0
+        entry_start_s = 0.0
+        for index, entry in enumerate(log):
+            if entry.queue_item_id == queue_item.queue_item_id and (
+                match_index is None or entry_start_s <= flow_position_s
+            ):
+                match_index, track_flow_start_s = index, entry_start_s
+            entry_start_s += entry.seconds_streamed or 0.0
+        if match_index is None:
             return None
-        track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:index])
-        file_seek_s = log[index].seek_position
+        file_seek_s = log[match_index].seek_position
         if file_seek_s is None:
             file_seek_s = float(queue_item.streamdetails.seek_position or 0)
         return int((track_flow_start_s - file_seek_s) * 1_000_000)
@@ -2685,9 +2692,13 @@ class SendspinPlayer(SendspinBasePlayer):
         # chunk commits or while the flow log hasn't recorded this track yet.
         anchor_us: int | None = None
         pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
-        offset_us = self._flow_track_offset_us(pq_data, queue_item)
-        if offset_us is not None:
-            anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
+        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
+        if timeline_start_us is not None:
+            offset_us = self._flow_track_offset_us(
+                pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
+            )
+            if offset_us is not None:
+                anchor_us = timeline_start_us + offset_us
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
         # Re-push only on track change, seek or timeline rebase (anchor jumps beyond natural drift).
