@@ -79,6 +79,7 @@ from music_assistant.controllers.music.helpers import (
     provider_mappings_from_urls,
     search_name_match_clause,
     sibling_instance_mappings,
+    usable_thumb,
 )
 from music_assistant.controllers.music.listing import (
     apply_listing,
@@ -3240,9 +3241,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Return the metadata computed over all items of a collection row."""
         raw_metadata = db_row["collection_metadata"]
         metadata = json_loads(raw_metadata) if raw_metadata else {}
-        # the images of the books with a thumb, in collection order
-        covers = (metadata.get("covers") or [])[:COLLECTION_COVER_COUNT]
-        thumbs = [self._summary_thumb(images, hidden_sources) for images in covers]
+        # the first books, in collection order, whose thumb the viewer can be shown
+        usable = [
+            thumb
+            for images in metadata.get("covers") or []
+            if (thumb := usable_thumb(images, hidden_sources))
+        ]
+        thumbs = [
+            self._summary_thumb([thumb], hidden_sources)
+            for thumb in usable[:COLLECTION_COVER_COUNT]
+        ]
         return MediaCollectionMetadata(
             images=UniqueList(thumb for thumb in thumbs if thumb) or None,
             total_items=metadata.get("total_items"),

@@ -28,7 +28,11 @@ from music_assistant_models.enums import (
     SortDirection,
     SortField,
 )
-from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.helpers import (
+    create_safe_string,
+    get_global_cache_value,
+    set_global_cache_values,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -953,6 +957,7 @@ async def _add_collection_book(
     collection: str | None,
     sequence: float | str | None = None,
     duration: int = 0,
+    cover_remote: bool = True,
 ) -> None:
     await mass.music.audiobooks.add_item_to_library(
         Audiobook(
@@ -978,7 +983,7 @@ async def _add_collection_book(
                             type=ImageType.THUMB,
                             path=f"{name}.jpg",
                             provider="test",
-                            remotely_accessible=True,
+                            remotely_accessible=cover_remote,
                         )
                     ]
                 ),
@@ -1045,6 +1050,35 @@ async def test_collapsed_audiobook_collections_sort_by_duration(mass: MusicAssis
         sort_direction=SortDirection.ASC,
     )
     assert [item.name for item in result] == ["Short Series", "Middle Book", "Long Series"]
+
+
+async def test_collection_covers_skip_thumbs_the_viewer_cannot_be_shown(
+    mass: MusicAssistant,
+) -> None:
+    """The cover stack takes the first books whose thumb can be shown, in collection order."""
+    # the first two covers belong to a provider that is not loaded
+    for name, sequence, cover_remote in (
+        ("Book 1", 1, False),
+        ("Book 2", 2, False),
+        ("Book 3", 3, True),
+        ("Book 4", 4, True),
+        ("Book 5", 5, True),
+        ("Book 6", 6, True),
+    ):
+        await _add_collection_book(mass, name, "Saga", sequence, cover_remote=cover_remote)
+
+    available_providers = get_global_cache_value("available_providers")
+    await set_global_cache_values({"available_providers": {"prov_a_inst"}})
+    try:
+        (collection,) = await mass.music.audiobooks.library_items(collapse_collections=True)
+    finally:
+        await set_global_cache_values({"available_providers": available_providers})
+    assert isinstance(collection, MediaCollection)
+    assert [image.path for image in collection.metadata.images or []] == [
+        "Book 3.jpg",
+        "Book 4.jpg",
+        "Book 5.jpg",
+    ]
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:
