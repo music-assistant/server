@@ -11,7 +11,11 @@ import pytest
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import EventType, ProviderFeature, ProviderSharing
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import Playlist, ProviderMapping
 
 from music_assistant.controllers.cache import BYPASS_CACHE
@@ -241,6 +245,26 @@ async def test_move_tracks_reaches_the_provider_in_playlist_order(
         await playlists.move_playlist_tracks(added.item_id, [5, 2], 1)
 
     provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [2, 5], 1)
+    assert provider.bypass_seen == [True, True, True]
+    signal_event.assert_called_once()
+
+
+async def test_move_tracks_that_fail_part_way_still_read_the_playlist_back(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A provider error mid-move still refreshes and announces the partly moved playlist."""
+    added = await _add(playlists)
+    provider = _provider()
+    provider.move_playlist_tracks.side_effect = ResourceTemporarilyUnavailable("second move")
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(music_mass_module, "signal_event") as signal_event,
+        pytest.raises(ResourceTemporarilyUnavailable),
+    ):
+        await playlists.move_playlist_tracks(added.item_id, [5, 2], 1)
+
     assert provider.bypass_seen == [True, True, True]
     signal_event.assert_called_once()
 

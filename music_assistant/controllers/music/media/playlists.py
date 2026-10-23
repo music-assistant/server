@@ -534,7 +534,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         Move items of a playlist as one block to another position.
 
         The moved items keep their order. Returns once the provider holds the new order, so
-        the caller can reload the playlist.
+        the caller can reload the playlist. When the move fails part way, the playlist is
+        still read back and announced, so a reload shows the order the provider holds.
 
         :param db_playlist_id: Library playlist id.
         :param positions: The current positions of the items, 1-based.
@@ -561,9 +562,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         selected = sorted(positions)
         if selected == list(range(to_position, to_position + len(selected))):
             return
-        await provider.move_playlist_tracks(playlist_prov_item_id, selected, to_position)
-        await self._refresh_provider_playlist_tracks(playlist_prov_item_id, provider.instance_id)
-        await self._request_metadata_refresh(playlist)
+        try:
+            await provider.move_playlist_tracks(playlist_prov_item_id, selected, to_position)
+        finally:
+            # a provider that replays the block as single moves can fail part way and leave
+            # the playlist partly moved, so read it back and announce it even then
+            await self._refresh_provider_playlist_tracks(
+                playlist_prov_item_id, provider.instance_id
+            )
+            await self._request_metadata_refresh(playlist)
 
     async def match_providers(self, db_item: Playlist) -> None:
         """
