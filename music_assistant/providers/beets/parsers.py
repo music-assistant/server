@@ -50,7 +50,6 @@ class ParseContext:
     instance_id: str
     domain: str
     music_directory: str
-    beets_directory: str | None
     replaygain_target_level: int = 89
     r128_target_level: int = 84
 
@@ -98,28 +97,20 @@ def decode_path(value: object) -> str | None:
     return None
 
 
-def expand_path(value: object, music_directory: str, beets_directory: str | None) -> str | None:
+def expand_path(value: object, music_directory: str) -> str | None:
     """
-    Return the absolute path, as seen by Music Assistant, of a path stored by beets.
+    Return the absolute path, as seen by Music Assistant, of a beets path.
 
     Returns None for a path that does not lie inside music_directory, so the database
     can never point Music Assistant at files outside the library.
 
-    :param value: The raw path value from beets.
+    :param value: The path beets returns for an item or album.
     :param music_directory: Where beets' music directory is mounted for Music Assistant.
-    :param beets_directory: beets' own music directory, whose prefix is swapped for
-        music_directory on absolute paths.
     """
     path = decode_path(value)
     if path is None:
         return None
-    if not posixpath.isabs(path):
-        path = posixpath.join(music_directory, path)
-    elif beets_directory:
-        prefix = beets_directory.rstrip("/")
-        if path == prefix or path.startswith(f"{prefix}/"):
-            path = f"{music_directory.rstrip('/')}{path[len(prefix) :]}"
-    path = posixpath.normpath(path)
+    path = posixpath.normpath(posixpath.join(music_directory, path))
     if not is_safe_path(path, music_directory):
         return None
     return path

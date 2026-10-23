@@ -9,7 +9,6 @@ from music_assistant_models.enums import AlbumType, ConfigEntryType
 
 CONF_LIBRARY_DB: Final = "library_db"
 CONF_MUSIC_DIRECTORY: Final = "music_directory"
-CONF_BEETS_DIRECTORY: Final = "beets_directory"
 CONF_REPLAYGAIN_TARGET_LEVEL: Final = "replaygain_target_level"
 CONF_R128_TARGET_LEVEL: Final = "r128_target_level"
 
@@ -22,12 +21,6 @@ CONF_ENTRY_MUSIC_DIRECTORY = ConfigEntry(
     key=CONF_MUSIC_DIRECTORY,
     type=ConfigEntryType.STRING,
     default_value="/media/music",
-)
-CONF_ENTRY_BEETS_DIRECTORY = ConfigEntry(
-    key=CONF_BEETS_DIRECTORY,
-    type=ConfigEntryType.STRING,
-    default_value="",
-    required=False,
 )
 
 # beets' replaygain targetlevel and r128_targetlevel, in its dB scale; the stored gains are
@@ -50,11 +43,6 @@ CONF_ENTRY_R128_TARGET_LEVEL = ConfigEntry(
 )
 # beets converts its dB target levels to LUFS by subtracting this
 BEETS_DB_TO_LUFS_OFFSET: Final = 107
-
-# beets joins multi-valued fields (artists, genres, ...) with this in the database
-BEETS_MULTI_VALUE_DELIMITER: Final = "\\␀"
-# albumtypes, and multi-valued fields written before the delimiter above existed
-BEETS_LIST_DELIMITER: Final = "; "
 
 # the first beets album type found in this order decides the MA album type
 ALBUM_TYPE_PRIORITY: Final[tuple[tuple[str, AlbumType], ...]] = (

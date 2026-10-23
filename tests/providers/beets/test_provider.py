@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import beets as beets_package
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import (
@@ -58,7 +60,7 @@ async def test_setup_fails_for_missing_music_directory(
         await provider.handle_async_init()
     assert err.value.translation_key == "music_directory_not_found"
     with pytest.raises(ProviderUnavailableError):
-        await provider.library.count_items()
+        await provider.library.max_item_id()
 
 
 async def test_setup_opens_library(make_provider: MakeProvider, beets_db: BeetsDb) -> None:
@@ -66,7 +68,7 @@ async def test_setup_opens_library(make_provider: MakeProvider, beets_db: BeetsD
     beets_db.add_item(**item_fields())
     provider = await make_provider(open_library=False)
     await provider.handle_async_init()
-    assert await provider.library.count_items() == 1
+    assert await provider.library.max_item_id() == 1
 
 
 def test_only_track_sync_is_offered() -> None:
@@ -404,12 +406,30 @@ async def test_manifest_is_not_self_service() -> None:
     assert manifest.self_service is False
 
 
-def test_setup_error_strings_have_no_placeholders() -> None:
-    """Setup error strings resolve without params, so a placeholder would show up literally."""
+def test_only_the_upgrade_error_takes_a_parameter() -> None:
+    """Setup errors are shown with their own parameters, and only the upgrade error has one."""
     strings_path = Path(beets.__file__).parent / "strings.json"
     strings = json.loads(strings_path.read_text())
-    for message in strings["errors"].values():
-        assert "{" not in message
+    with_placeholders = {key for key, message in strings["errors"].items() if "{" in message}
+    assert with_placeholders == {"library_db_needs_upgrade"}
+
+
+async def test_setup_asks_to_migrate_a_database_with_newer_beets(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """A database beets has not migrated yet fails setup naming the beets version to run."""
+    beets_db.close()
+    connection = sqlite3.connect(beets_db.path)
+    connection.execute("DROP TABLE migrations")
+    connection.commit()
+    connection.close()
+    provider = await make_provider(open_library=False)
+
+    with pytest.raises(SetupFailedError) as err:
+        await provider.handle_async_init()
+
+    assert err.value.translation_key == "library_db_needs_upgrade"
+    assert err.value.translation_args == [beets_package.__version__]
 
 
 async def test_options_hold_the_beets_target_levels(make_provider: MakeProvider) -> None:

@@ -9,6 +9,7 @@ from collections.abc import Collection
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+import beets
 from aiofiles.os import wrap
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import (
@@ -31,7 +32,6 @@ from music_assistant.models.music_provider import MusicProvider
 from .constants import (
     ARTIST_MBID_ID_PREFIX,
     ARTIST_NAME_ID_PREFIX,
-    CONF_BEETS_DIRECTORY,
     CONF_ENTRY_R128_TARGET_LEVEL,
     CONF_ENTRY_REPLAYGAIN_TARGET_LEVEL,
     CONF_LIBRARY_DB,
@@ -41,7 +41,7 @@ from .constants import (
     IMAGE_PATH_PREFIX,
     ITEM_BATCH_SIZE,
 )
-from .library import BeetsLibrary, BeetsRow
+from .library import BeetsLibrary, BeetsRow, BeetsUpgradeRequiredError
 from .parsers import (
     ParseContext,
     expand_path,
@@ -85,16 +85,14 @@ class BeetsProvider(MusicProvider):
     ) -> None:
         """Initialize the provider from its setup data."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self.library = BeetsLibrary(str(self.get_setup_value(CONF_LIBRARY_DB)))
         self.music_directory = str(self.get_setup_value(CONF_MUSIC_DIRECTORY))
-        self.beets_directory: str | None = (
-            str(self.get_setup_value(CONF_BEETS_DIRECTORY) or "") or None
+        self.library = BeetsLibrary(
+            str(self.get_setup_value(CONF_LIBRARY_DB)), self.music_directory
         )
         self._ctx = ParseContext(
             instance_id=self.instance_id,
             domain=self.domain,
             music_directory=self.music_directory,
-            beets_directory=self.beets_directory,
             replaygain_target_level=self.get_config_value(
                 CONF_REPLAYGAIN_TARGET_LEVEL, return_type=int
             ),
@@ -127,6 +125,13 @@ class BeetsProvider(MusicProvider):
             )
         try:
             await self.library.open()
+        except BeetsUpgradeRequiredError as err:
+            raise SetupFailedError(
+                str(err),
+                translation_key="library_db_needs_upgrade",
+                translation_args=[beets.__version__],
+                translation_owner=self.translation_owner,
+            ) from err
         except ProviderUnavailableError as err:
             msg = f"Unable to read beets library database {db_path}: {err}"
             raise SetupFailedError(
@@ -236,7 +241,7 @@ class BeetsProvider(MusicProvider):
 
         :param value: The raw path value from beets.
         """
-        path = expand_path(value, self.music_directory, self.beets_directory)
+        path = expand_path(value, self.music_directory)
         if path is None or not await isfile(path):
             return None
         real_path, real_root = await asyncio.to_thread(
@@ -277,11 +282,7 @@ class BeetsProvider(MusicProvider):
         paths = {
             album.id: path
             for album in albums
-            if (
-                path := expand_path(
-                    album.fields.get("artpath"), self.music_directory, self.beets_directory
-                )
-            )
+            if (path := expand_path(album.fields.get("artpath"), self.music_directory))
         }
 
         def _stat_all() -> dict[int, str]:
@@ -303,7 +304,7 @@ class BeetsProvider(MusicProvider):
         previous = await self._get_previous_checksums()
         current_ids: set[str] = set()
         try:
-            total = await self.library.count_items()
+            max_item_id = await self.library.max_item_id()
             album_rows = await self.library.get_albums()
             await self._stamp_art(album_rows.values())
             albums: dict[int, BeetsRow | None] = dict(album_rows)
@@ -321,9 +322,11 @@ class BeetsProvider(MusicProvider):
                             item, album, checksum, overwrite=item_id in previous
                         )
                 processed += len(batch)
-                # beets may have added items after count_items() ran, including from 0
+                # beets ids rise with every import, so the share of the id range read so far
+                # tracks the progress; beets may have added items since max_item_id() ran
+                last_id = batch[-1].id
                 update_current_task_progress_from_index(
-                    processed, max(total, processed), f"Read {processed}/{total} beets items"
+                    last_id, max(max_item_id, last_id), f"Read {processed} beets items"
                 )
         except ProviderUnavailableError as err:
             self.logger.error("Aborting sync for %s: %s", self.name, err)

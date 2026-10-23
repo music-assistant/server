@@ -436,7 +436,7 @@ class TestTwoBeetsLibraries:
         tmp_path: Path,
     ) -> None:
         """Every track stays its own library item, and deleting from one library leaves the other."""
-        other_db = BeetsDb(tmp_path / "other.db")
+        other_db = BeetsDb(tmp_path / "other.db", beets_db.music_directory)
         first_items: dict[str, int] = {}
         for library, db in (("A", beets_db), ("B", other_db)):
             artist = _artist_fields(f"{library} Artist", str(uuid4()))

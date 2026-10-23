@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -37,23 +37,19 @@ def album_prov_id(beets_id: int) -> str:
 
 
 @pytest.fixture
-def beets_db(tmp_path: Path) -> BeetsDb:
-    """Return an empty current-schema beets database."""
-    return BeetsDb(tmp_path / "library.db")
-
-
-@pytest.fixture
-def legacy_beets_db(tmp_path: Path) -> BeetsDb:
-    """Return an empty beets database with the pre-multi-value columns."""
-    return BeetsDb(tmp_path / "legacy.db", legacy=True)
-
-
-@pytest.fixture
 def music_dir(tmp_path: Path) -> Path:
     """Return an existing, empty music directory."""
     path = tmp_path / "music"
     path.mkdir()
     return path
+
+
+@pytest.fixture
+def beets_db(tmp_path: Path, music_dir: Path) -> Generator[BeetsDb]:
+    """Return an empty beets database, created by beets itself."""
+    database = BeetsDb(tmp_path / "library.db", music_dir)
+    yield database
+    database.close()
 
 
 @pytest.fixture
@@ -66,7 +62,6 @@ async def make_provider(
     async def _make(
         *,
         db_path: Path | None = None,
-        beets_directory: str | None = None,
         open_library: bool = True,
         instance_id: str = INSTANCE_ID,
     ) -> BeetsProvider:
@@ -76,14 +71,12 @@ async def make_provider(
         provider.config.name = "beets"
         provider.logger = MagicMock()
         provider.mass = _mock_mass()
-        provider.library = BeetsLibrary(str(db_path or beets_db.path))
+        provider.library = BeetsLibrary(str(db_path or beets_db.path), str(music_dir))
         provider.music_directory = str(music_dir)
-        provider.beets_directory = beets_directory
         provider._ctx = ParseContext(
             instance_id=instance_id,
             domain="beets",
             music_directory=str(music_dir),
-            beets_directory=beets_directory,
         )
         if open_library:
             await provider.library.open()

@@ -7,7 +7,7 @@
   "codeowners": ["@stellar-aria"],
   "documentation": "https://music-assistant.io/music-providers/beets/",
   "credits": ["[beets logo © Adrian Sampson, MIT License](https://github.com/beetbox/beets)"],
-  "requirements": [],
+  "requirements": ["beets==2.14.1"],
   "multi_instance": true,
   "self_service": false
 }

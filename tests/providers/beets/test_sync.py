@@ -102,7 +102,7 @@ async def test_sync_with_zero_initial_count_does_not_crash_on_progress(
     """Beets reporting 0 items at count time, with an item arriving before the first batch, syncs."""
     beets_db.add_item(**item_fields())
     provider = await make_provider()
-    provider.library.count_items = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    provider.library.max_item_id = AsyncMock(return_value=0)  # type: ignore[method-assign]
 
     def _update_progress(current: int, total: int, _text: str | None = None) -> int | None:
         # a real task context raises when total <= 0, exactly like production

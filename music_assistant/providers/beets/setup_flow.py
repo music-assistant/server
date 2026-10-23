@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 from music_assistant.models.setup_flow import SetupFlowError
 
 from .constants import (
-    CONF_ENTRY_BEETS_DIRECTORY,
     CONF_ENTRY_LIBRARY_DB,
     CONF_ENTRY_MUSIC_DIRECTORY,
     CONF_LIBRARY_DB,
@@ -21,8 +20,7 @@ from .constants import (
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
-_ENTRIES = (CONF_ENTRY_LIBRARY_DB, CONF_ENTRY_MUSIC_DIRECTORY, CONF_ENTRY_BEETS_DIRECTORY)
-# the paths Music Assistant itself reads; beets_directory only names a path on beets' host
+_ENTRIES = (CONF_ENTRY_LIBRARY_DB, CONF_ENTRY_MUSIC_DIRECTORY)
 _LOCAL_PATH_KEYS = (CONF_LIBRARY_DB, CONF_MUSIC_DIRECTORY)
 
 

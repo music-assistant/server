@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,11 @@ from unittest.mock import patch
 import pytest
 from music_assistant_models.errors import ProviderUnavailableError
 
-from music_assistant.providers.beets.library import BeetsArtist, BeetsLibrary
+from music_assistant.providers.beets.library import (
+    BeetsArtist,
+    BeetsLibrary,
+    BeetsUpgradeRequiredError,
+)
 from tests.providers.beets.beets_db import (
     ALBUM_MBID,
     ARTIST_MBID,
@@ -24,7 +29,7 @@ from tests.providers.beets.beets_db import (
 
 async def test_open_fails_for_missing_file_without_creating_it(tmp_path: Path) -> None:
     """A path without a database is reported as an error and never created."""
-    library = BeetsLibrary(str(tmp_path / "missing.db"))
+    library = BeetsLibrary(str(tmp_path / "missing.db"), str(tmp_path))
     with pytest.raises(ProviderUnavailableError):
         await library.open()
     assert not (tmp_path / "missing.db").exists()
@@ -34,7 +39,7 @@ async def test_open_of_non_sqlite_file_does_not_double_wrap_the_error(tmp_path: 
     """A read error while opening is raised as-is, not wrapped again as an open failure."""
     db_path = tmp_path / "junk.db"
     db_path.write_bytes(b"not a sqlite database at all")
-    library = BeetsLibrary(str(db_path))
+    library = BeetsLibrary(str(db_path), str(tmp_path))
     with pytest.raises(ProviderUnavailableError) as err:
         await library.open()
     assert not ("Unable to open" in str(err.value) and "Unable to read" in str(err.value))
@@ -47,7 +52,7 @@ async def test_reads_albums_and_items_with_flex_attributes(beets_db: BeetsDb) ->
     other_id = beets_db.add_item(**item_fields(title="Other", album_id=album_id))
     beets_db.set_item_flex(item_id, "rating", "0.9")
     beets_db.set_album_flex(album_id, "mood", "calm")
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         albums = await library.get_albums()
@@ -60,26 +65,11 @@ async def test_reads_albums_and_items_with_flex_attributes(beets_db: BeetsDb) ->
     items = {row.id: row for batch in batches for row in batch}
     assert items[item_id].flex == {"rating": "0.9"}
     assert items[other_id].flex == {}
-    assert items[item_id].fields["path"] == b"Artist/Album/01 Song.flac"
-    assert items[item_id].album_id == album_id
-
-
-async def test_legacy_database_keeps_its_own_columns(legacy_beets_db: BeetsDb) -> None:
-    """A database without the multi-value columns is read as-is."""
-    item_id = legacy_beets_db.add_item(
-        path=b"/home/kate/Music/old.mp3", title="Old", artist="Old Artist", genre="Jazz"
+    # beets resolves the stored relative path against the music directory
+    assert items[item_id].fields["path"] == os.fsencode(
+        beets_db.music_directory / "Artist" / "Album" / "01 Song.flac"
     )
-    library = BeetsLibrary(str(legacy_beets_db.path))
-    await library.open()
-    try:
-        row = await library.get_item(item_id)
-    finally:
-        await library.close()
-
-    assert row is not None
-    assert "genres" not in row.fields
-    assert row.fields["genre"] == "Jazz"
-    assert row.album_id is None
+    assert items[item_id].album_id == album_id
 
 
 async def test_lookups_by_id_and_artist(beets_db: BeetsDb) -> None:
@@ -88,10 +78,10 @@ async def test_lookups_by_id_and_artist(beets_db: BeetsDb) -> None:
     second = beets_db.add_item(**item_fields(album_id=album_id, track=2, title="Second"))
     first = beets_db.add_item(**item_fields(album_id=album_id, track=1, title="First"))
     beets_db.add_item(**item_fields(title="Loose", **_single_artist("Solo", "Solo, The")))
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
-        assert await library.count_items() == 3
+        assert await library.max_item_id() == 3
         assert await library.get_item(9999) is None
         assert await library.get_album(9999) is None
         assert [row.id for row in await library.get_album_items(album_id)] == [first, second]
@@ -112,7 +102,7 @@ async def test_find_artist_by_name_skips_artists_with_a_musicbrainz_id(
     beets_db.add_item(**item_fields(**_single_artist("Twin", "Twin, MB", ARTIST_MBID)))
     beets_db.add_item(**item_fields(**_single_artist("Twin", "Twin, Plain")))
     beets_db.add_item(**item_fields(**_single_artist("Tagged", "Tagged", GUEST_MBID)))
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         assert await library.find_artist(name="Twin") == BeetsArtist("Twin", "Twin, Plain", None)
@@ -127,7 +117,7 @@ async def test_find_artist_keeps_same_named_artists_apart_by_musicbrainz_id(
     """Two artists sharing a name are found separately by their MusicBrainz ids."""
     beets_db.add_item(**item_fields(**_single_artist("Twin", "Twin, One", ARTIST_MBID)))
     beets_db.add_item(**item_fields(**_single_artist("Twin", "Twin, Two", GUEST_MBID)))
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         assert await library.find_artist(mbid=ARTIST_MBID) == BeetsArtist(
@@ -143,7 +133,7 @@ async def test_find_artist_keeps_same_named_artists_apart_by_musicbrainz_id(
 async def test_find_artist_matches_non_canonical_musicbrainz_ids(beets_db: BeetsDb) -> None:
     """An id beets stores in upper case or padded is matched by its canonical form."""
     beets_db.add_item(**item_fields(**_single_artist("Loud", "Loud", f" {GUEST_MBID.upper()} ")))
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         assert await library.find_artist(mbid=GUEST_MBID) == BeetsArtist("Loud", "Loud", GUEST_MBID)
@@ -154,7 +144,7 @@ async def test_find_artist_matches_non_canonical_musicbrainz_ids(beets_db: Beets
 async def test_find_artist_finds_featured_artist_in_list_column(beets_db: BeetsDb) -> None:
     """An artist that only appears inside the multi-valued artists list is still found."""
     beets_db.add_item(**item_fields())
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         assert await library.find_artist(mbid=GUEST_MBID) == BeetsArtist(
@@ -167,7 +157,7 @@ async def test_find_artist_finds_featured_artist_in_list_column(beets_db: BeetsD
 async def test_find_artist_ignores_surrounding_whitespace(beets_db: BeetsDb) -> None:
     """A single-valued name stored with stray spaces is found by the name the parsers read."""
     beets_db.add_item(**item_fields(**_single_artist(" Padded ", " Padded, The ")))
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         assert await library.find_artist(name="Padded") == BeetsArtist(
@@ -180,7 +170,7 @@ async def test_find_artist_ignores_surrounding_whitespace(beets_db: BeetsDb) -> 
 async def test_find_artist_requires_an_exact_element_match(beets_db: BeetsDb) -> None:
     """A substring of a list element, or a name using LIKE wildcard characters, is not a match."""
     beets_db.add_item(**item_fields(mb_artistid=None, mb_artistids=None))
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         assert await library.find_artist(name="Guest") == BeetsArtist("Guest", "Guest", None)
@@ -257,7 +247,7 @@ async def test_find_artist_finds_featured_artist_after_many_substring_matches(
     """A featured artist whose name is a substring of many earlier rows is still found."""
     _add_substring_decoys(beets_db, 25)
     _add_featuring_mo(beets_db, None, "Mo, The")
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         assert await library.find_artist(name="Mo") == BeetsArtist("Mo", "Mo, The", None)
@@ -273,7 +263,7 @@ async def test_find_artist_pages_through_candidates_and_picks_the_first_by_id(
     _add_featuring_mo(beets_db, GUEST_MBID, "Mo, Tagged")
     _add_featuring_mo(beets_db, None, "Mo, The")
     _add_featuring_mo(beets_db, None, "Mo, Other")
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         with patch("music_assistant.providers.beets.library.ITEM_BATCH_SIZE", 10):
@@ -282,27 +272,11 @@ async def test_find_artist_pages_through_candidates_and_picks_the_first_by_id(
         await library.close()
 
 
-async def test_find_artist_from_list_column_skips_legacy_database(
-    legacy_beets_db: BeetsDb,
-) -> None:
-    """A legacy database without the list columns returns None instead of raising."""
-    legacy_beets_db.add_item(
-        path=b"/home/kate/Music/old.mp3", title="Old", artist="Old Artist", genre="Jazz"
-    )
-    library = BeetsLibrary(str(legacy_beets_db.path))
-    await library.open()
-    try:
-        assert await library.find_artist(name="Guest") is None
-        assert await library.find_artist(mbid=GUEST_MBID) is None
-    finally:
-        await library.close()
-
-
 async def test_reading_a_closed_library_raises(beets_db: BeetsDb) -> None:
     """Reads before open() and after close() raise ProviderUnavailableError."""
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     with pytest.raises(ProviderUnavailableError):
-        await library.count_items()
+        await library.max_item_id()
     with pytest.raises(ProviderUnavailableError):
         await library.get_albums()
     with pytest.raises(ProviderUnavailableError):
@@ -311,7 +285,7 @@ async def test_reading_a_closed_library_raises(beets_db: BeetsDb) -> None:
     await library.open()
     await library.close()
     with pytest.raises(ProviderUnavailableError):
-        await library.count_items()
+        await library.max_item_id()
     with pytest.raises(ProviderUnavailableError):
         await library.get_albums()
     with pytest.raises(ProviderUnavailableError):
@@ -322,13 +296,13 @@ async def test_locked_database_raises_library_error(beets_db: BeetsDb) -> None:
     """A read while beets holds a write lock surfaces as a library error."""
     beets_db.add_item(**item_fields())
     with patch("music_assistant.providers.beets.library.SQLITE_BUSY_TIMEOUT", 0.1):
-        library = BeetsLibrary(str(beets_db.path))
+        library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
         await library.open()
     locker = sqlite3.connect(beets_db.path)
     try:
         locker.execute("BEGIN EXCLUSIVE")
         with pytest.raises(ProviderUnavailableError, match="locked"):
-            await library.count_items()
+            await library.max_item_id()
     finally:
         locker.rollback()
         locker.close()
@@ -336,20 +310,70 @@ async def test_locked_database_raises_library_error(beets_db: BeetsDb) -> None:
 
 
 async def test_never_writes_to_the_database(beets_db: BeetsDb) -> None:
-    """Reading leaves the file byte-identical and the connection refuses writes."""
+    """Reading leaves the file byte-identical and beets' own connection refuses writes."""
     album_id = beets_db.add_album(**album_fields())
     item_id = beets_db.add_item(**item_fields(album_id=album_id))
     beets_db.set_item_flex(item_id, "rating", "0.9")
     before = beets_db.path.read_bytes()
-    library = BeetsLibrary(str(beets_db.path))
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
     await library.open()
     try:
         await library.get_albums()
         _ = [batch async for batch in library.iter_items()]
         await library.get_item(item_id)
-        assert library._db is not None
-        with pytest.raises(sqlite3.OperationalError, match="readonly"):
-            await library._db.execute("DELETE FROM items")
+        with pytest.raises(ProviderUnavailableError, match="readonly"):
+            await library._run(
+                lambda beets_library: beets_library._connection().execute("DELETE FROM items")
+            )
     finally:
         await library.close()
     assert beets_db.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "outdate",
+    [
+        "DELETE FROM migrations WHERE name = 'instrumental_lyrics_in_flex_field'",
+        "DROP TABLE migrations",
+        "ALTER TABLE items DROP COLUMN arrangers",
+        "DROP INDEX idx_item_album_id",
+    ],
+)
+async def test_open_refuses_a_database_beets_has_not_migrated_yet(
+    beets_db: BeetsDb, outdate: str
+) -> None:
+    """A database that still needs beets' schema changes or migrations is left untouched."""
+    beets_db.add_item(**item_fields())
+    beets_db.close()
+    connection = sqlite3.connect(beets_db.path)
+    connection.execute(outdate)
+    connection.commit()
+    connection.close()
+    before = beets_db.path.read_bytes()
+    files_before = set(beets_db.path.parent.iterdir())
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
+
+    with pytest.raises(BeetsUpgradeRequiredError):
+        await library.open()
+
+    assert beets_db.path.read_bytes() == before
+    assert set(beets_db.path.parent.iterdir()) == files_before
+
+
+async def test_open_never_reads_or_creates_a_beets_config_directory(
+    beets_db: BeetsDb, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Beets only uses its built-in defaults, never the config of the user MA runs as."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.delenv("BEETSDIR", raising=False)
+    library = BeetsLibrary(str(beets_db.path), str(beets_db.music_directory))
+
+    await library.open()
+    try:
+        await library.max_item_id()
+    finally:
+        await library.close()
+
+    assert not home.exists()

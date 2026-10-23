@@ -1,13 +1,13 @@
-"""Build beets-shaped SQLite library databases for the beets provider tests."""
+"""Build beets library databases for the beets provider tests, with beets itself."""
 
 from __future__ import annotations
 
-import sqlite3
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-MULTI_VALUE_DELIMITER = "\\␀"
+import beets
+from beets.dbcore.types import MULTI_VALUE_DELIMITER
+from beets.library import Album, Item, Library
 
 ARTIST_MBID = "0383dadf-2a4e-4d10-a46a-e9e041da8eb3"
 GUEST_MBID = "65f4f0c5-ef9e-490c-aee3-909e7ae6b2ab"
@@ -15,82 +15,12 @@ ALBUM_MBID = "1dc4c347-a1db-32aa-b14f-bc9cc507b843"
 RELEASE_GROUP_MBID = "5b11f4ce-a62d-471e-81fc-a69a8278c7da"
 TRACK_MBID = "b1a9c0e9-d987-4042-ae91-78d6a3267d69"
 
-_ITEM_COLUMNS = (
-    "path BLOB",
-    "album_id INTEGER",
-    "title TEXT",
-    "artist TEXT",
-    "artist_sort TEXT",
-    "mb_artistid TEXT",
-    "artists TEXT",
-    "artists_sort TEXT",
-    "mb_artistids TEXT",
-    "albumartist TEXT",
-    "album TEXT",
-    "genres TEXT",
-    "style TEXT",
-    "grouping TEXT",
-    "lyrics TEXT",
-    "label TEXT",
-    "comments TEXT",
-    "year INTEGER",
-    "month INTEGER",
-    "day INTEGER",
-    "track INTEGER",
-    "disc INTEGER",
-    "length REAL",
-    "bitrate INTEGER",
-    "samplerate INTEGER",
-    "bitdepth INTEGER",
-    "channels INTEGER",
-    "format TEXT",
-    "mb_trackid TEXT",
-    "isrc TEXT",
-    "acoustid_id TEXT",
-    "added REAL",
-    "mtime REAL",
-    "rg_track_gain REAL",
-    "rg_album_gain REAL",
-    "r128_track_gain REAL",
-    "r128_album_gain REAL",
-)
-_ALBUM_COLUMNS = (
-    "artpath BLOB",
-    "album TEXT",
-    "albumartist TEXT",
-    "albumartist_sort TEXT",
-    "mb_albumartistid TEXT",
-    "albumartists TEXT",
-    "albumartists_sort TEXT",
-    "mb_albumartistids TEXT",
-    "albumtype TEXT",
-    "albumtypes TEXT",
-    "comp INTEGER",
-    "year INTEGER",
-    "original_year INTEGER",
-    "mb_albumid TEXT",
-    "mb_releasegroupid TEXT",
-    "barcode TEXT",
-    "asin TEXT",
-    "label TEXT",
-    "genres TEXT",
-)
-# older beets databases predate the multi-value columns and hold a single genre string
-_LEGACY_ONLY_SINGLE = {"artists", "artists_sort", "mb_artistids", "genres"}
-_LEGACY_ALBUM_ONLY_SINGLE = {"albumartists", "albumartists_sort", "mb_albumartistids", "genres"}
-_LEGACY_ITEM_COLUMNS = (
-    *(column for column in _ITEM_COLUMNS if column.split()[0] not in _LEGACY_ONLY_SINGLE),
-    "genre TEXT",
-)
-_LEGACY_ALBUM_COLUMNS = (
-    *(column for column in _ALBUM_COLUMNS if column.split()[0] not in _LEGACY_ALBUM_ONLY_SINGLE),
-    "genre TEXT",
-)
+__all__ = ["MULTI_VALUE_DELIMITER"]
 
 
 def album_fields(**overrides: Any) -> dict[str, Any]:
     """
-    Return the fields of a typical current-schema beets album row.
+    Return the fields of a typical beets album.
 
     :param overrides: Fields to replace or add.
     """
@@ -99,12 +29,12 @@ def album_fields(**overrides: Any) -> dict[str, Any]:
         "albumartist": "Artist",
         "albumartist_sort": "Artist",
         "mb_albumartistid": ARTIST_MBID,
-        "albumartists": "Artist",
-        "albumartists_sort": "Artist",
-        "mb_albumartistids": ARTIST_MBID,
+        "albumartists": ["Artist"],
+        "albumartists_sort": ["Artist"],
+        "mb_albumartistids": [ARTIST_MBID],
         "albumtype": "album",
-        "albumtypes": "album",
-        "comp": 0,
+        "albumtypes": ["album"],
+        "comp": False,
         "year": 2001,
         "original_year": 1999,
         "mb_albumid": ALBUM_MBID,
@@ -112,14 +42,14 @@ def album_fields(**overrides: Any) -> dict[str, Any]:
         "barcode": "0123456789012",
         "asin": "B000002UAL",
         "label": "Label",
-        "genres": f"Rock{MULTI_VALUE_DELIMITER}Indie",
+        "genres": ["Rock", "Indie"],
         **overrides,
     }
 
 
 def item_fields(**overrides: Any) -> dict[str, Any]:
     """
-    Return the fields of a typical current-schema beets item row.
+    Return the fields of a typical beets item.
 
     :param overrides: Fields to replace or add.
     """
@@ -129,12 +59,12 @@ def item_fields(**overrides: Any) -> dict[str, Any]:
         "artist": "Artist feat. Guest",
         "artist_sort": "Artist feat. Guest",
         "mb_artistid": ARTIST_MBID,
-        "artists": f"Artist{MULTI_VALUE_DELIMITER}Guest",
-        "artists_sort": f"Artist{MULTI_VALUE_DELIMITER}Guest",
-        "mb_artistids": f"{ARTIST_MBID}{MULTI_VALUE_DELIMITER}{GUEST_MBID}",
+        "artists": ["Artist", "Guest"],
+        "artists_sort": ["Artist", "Guest"],
+        "mb_artistids": [ARTIST_MBID, GUEST_MBID],
         "albumartist": "Artist",
         "album": "Album",
-        "genres": f"Rock{MULTI_VALUE_DELIMITER}Indie",
+        "genres": ["Rock", "Indie"],
         "style": "Shoegaze",
         "grouping": "Side A",
         "lyrics": "la la la",
@@ -161,83 +91,77 @@ def item_fields(**overrides: Any) -> dict[str, Any]:
 
 
 class BeetsDb:
-    """A beets-shaped library database on disk that tests can fill and edit."""
+    """A beets library database on disk, written by beets, that tests can fill and edit."""
 
-    def __init__(self, path: Path, legacy: bool = False) -> None:
+    def __init__(self, path: Path, music_directory: Path) -> None:
         """
-        Create the database file with beets' tables.
+        Create the database with beets, so it holds every table and migration of beets.
 
         :param path: Where to create the database.
-        :param legacy: Use the columns of a beets database from before the multi-value fields.
+        :param music_directory: beets' music directory, which relative item paths sit under.
         """
         self.path = path
-        item_columns = _LEGACY_ITEM_COLUMNS if legacy else _ITEM_COLUMNS
-        album_columns = _LEGACY_ALBUM_COLUMNS if legacy else _ALBUM_COLUMNS
-        self._execute(f"CREATE TABLE items (id INTEGER PRIMARY KEY, {', '.join(item_columns)})")
-        self._execute(f"CREATE TABLE albums (id INTEGER PRIMARY KEY, {', '.join(album_columns)})")
-        for table in ("item_attributes", "album_attributes"):
-            self._execute(
-                f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, entity_id INTEGER, key TEXT, "
-                "value TEXT, UNIQUE(entity_id, key) ON CONFLICT REPLACE)"
-            )
+        self.music_directory = music_directory
+        # the tests never read the user's beets configuration, nor back up on migration
+        beets.config.clear()
+        beets.config.read(user=False, defaults=True)
+        beets.config["create_backup_before_migrations"] = False
+        self._library = Library(str(path), directory=str(music_directory), set_music_dir=False)
+
+    def close(self) -> None:
+        """Close the beets connections of the test database."""
+        self._library._close()
 
     def add_album(self, **fields: Any) -> int:
-        """Insert an album row and return its id."""
-        return self._insert("albums", fields)
+        """Add an album without items and return its id."""
+        with self._library.music_dir_context():
+            album = Album(self._library, **fields)
+            album.add(self._library)
+        return int(album.id or 0)
 
     def add_item(self, **fields: Any) -> int:
-        """Insert an item row and return its id."""
-        return self._insert("items", fields)
+        """Add an item and return its id."""
+        with self._library.music_dir_context():
+            return int(self._library.add(Item(**fields)) or 0)
 
     def update_album(self, album_id: int, **fields: Any) -> None:
-        """Change fields of an album row."""
-        self._update("albums", album_id, fields)
+        """Change fields of an album, without writing them to its items."""
+        with self._library.music_dir_context():
+            album = self._album(album_id)
+            album.update(fields)
+            album.store(inherit=False)
 
     def update_item(self, item_id: int, **fields: Any) -> None:
-        """Change fields of an item row."""
-        self._update("items", item_id, fields)
+        """Change fields of an item."""
+        with self._library.music_dir_context():
+            item = self._item(item_id)
+            item.update(fields)
+            item.store()
 
     def delete_item(self, item_id: int) -> None:
-        """Delete an item row."""
-        self._execute("DELETE FROM items WHERE id = ?", (item_id,))
+        """Delete an item, keeping its album even when it was the last item."""
+        with self._library.music_dir_context():
+            self._item(item_id).remove(with_album=False)
 
     def delete_album(self, album_id: int) -> None:
-        """Delete an album row together with its items, the way `beet remove -a` does."""
-        self._execute("DELETE FROM items WHERE album_id = ?", (album_id,))
-        self._execute("DELETE FROM albums WHERE id = ?", (album_id,))
+        """Delete an album together with its items, the way `beet remove -a` does."""
+        with self._library.music_dir_context():
+            self._album(album_id).remove(with_items=True)
 
     def set_item_flex(self, item_id: int, key: str, value: Any) -> None:
         """Set a flexible attribute on an item."""
-        self._execute(
-            "INSERT INTO item_attributes (entity_id, key, value) VALUES (?, ?, ?)",
-            (item_id, key, value),
-        )
+        self.update_item(item_id, **{key: value})
 
     def set_album_flex(self, album_id: int, key: str, value: Any) -> None:
         """Set a flexible attribute on an album."""
-        self._execute(
-            "INSERT INTO album_attributes (entity_id, key, value) VALUES (?, ?, ?)",
-            (album_id, key, value),
-        )
+        self.update_album(album_id, **{key: value})
 
-    def _insert(self, table: str, fields: dict[str, Any]) -> int:
-        if not fields:
-            return self._execute(f"INSERT INTO {table} DEFAULT VALUES")
-        columns = ", ".join(fields)
-        placeholders = ", ".join("?" for _ in fields)
-        return self._execute(
-            f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", tuple(fields.values())
-        )
+    def _item(self, item_id: int) -> Item:
+        item = self._library.get_item(item_id)
+        assert item is not None
+        return item
 
-    def _update(self, table: str, row_id: int, fields: dict[str, Any]) -> None:
-        assignments = ", ".join(f"{column} = ?" for column in fields)
-        self._execute(f"UPDATE {table} SET {assignments} WHERE id = ?", (*fields.values(), row_id))
-
-    def _execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        connection = sqlite3.connect(self.path)
-        try:
-            cursor = connection.execute(sql, params)
-            connection.commit()
-            return int(cursor.lastrowid or 0)
-        finally:
-            connection.close()
+    def _album(self, album_id: int) -> Album:
+        album = self._library.get_album(album_id)
+        assert album is not None
+        return album

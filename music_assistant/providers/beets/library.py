@@ -1,55 +1,58 @@
-"""Read-only access to a beets library database."""
+"""Read-only access to a beets library through beets' own library API."""
 
 from __future__ import annotations
 
+import asyncio
+import re
 import sqlite3
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
-import aiosqlite
+import beets
+from beets.dbcore import MatchQuery, Query
+from beets.dbcore.db import DBAccessError
+from beets.dbcore.query import NumericQuery, RegexpQuery
+from beets.dbcore.sort import FixedFieldSort, MultipleSort
+from beets.dbcore.types import MULTI_VALUE_DELIMITER, MULTI_VALUE_DSV
+from beets.library import Album, Item, Library
 from music_assistant_models.errors import ProviderUnavailableError
 
 from music_assistant.helpers.tags import clean_mbid
 
-from .constants import (
-    BEETS_LIST_DELIMITER,
-    BEETS_MULTI_VALUE_DELIMITER,
-    ITEM_BATCH_SIZE,
-    SQLITE_BUSY_TIMEOUT,
-)
+from .constants import ITEM_BATCH_SIZE, SQLITE_BUSY_TIMEOUT
 
-# databases from older beets versions lack some columns, such as the multi-valued fields
-_COLUMN_CHECKED_TABLES = ("items", "albums")
 # album artists are looked up before track artists and, like the parsers read them, the
-# multi-valued lists before the single-valued columns: (table, list columns, single columns)
-_ARTIST_LOOKUPS = (
+# multi-valued lists before the single-valued fields: (model, list fields, single fields)
+_ARTIST_LOOKUPS: tuple[
+    tuple[type[Album | Item], tuple[str, str, str], tuple[str, str, str]], ...
+] = (
     (
-        "albums",
+        Album,
         ("albumartists", "albumartists_sort", "mb_albumartistids"),
         ("albumartist", "albumartist_sort", "mb_albumartistid"),
     ),
     (
-        "items",
+        Item,
         ("artists", "artists_sort", "mb_artistids"),
         ("artist", "artist_sort", "mb_artistid"),
     ),
 )
-_LIKE_ESCAPE_CHAR = "\\"
+_DELIMITER_PATTERN = re.escape(MULTI_VALUE_DELIMITER)
 
 
 def split_multi_value(value: object) -> list[str]:
     """
-    Split a beets multi-valued field into its values, keeping empty positions.
+    Return the values of a beets multi-valued field, keeping empty positions.
 
-    :param value: The raw database value.
+    :param value: The field value, as a list or as beets' delimited text.
     """
-    if not isinstance(value, str) or not value:
-        return []
-    if BEETS_MULTI_VALUE_DELIMITER in value:
-        return value.split(BEETS_MULTI_VALUE_DELIMITER)
-    return value.split(BEETS_LIST_DELIMITER)
+    if isinstance(value, list):
+        return [str(element) for element in value]
+    if isinstance(value, str) and value:
+        return MULTI_VALUE_DSV.parse(value)
+    return []
 
 
 def value_at(values: list[str], index: int) -> str | None:
@@ -68,9 +71,13 @@ class BeetsArtist:
     mbid: str | None
 
 
+class BeetsUpgradeRequiredError(ProviderUnavailableError):
+    """Raised when the database still needs schema changes or migrations of the pinned beets."""
+
+
 @dataclass
 class BeetsRow:
-    """A row of the beets items or albums table plus its flexible attributes."""
+    """A beets item or album with its fixed fields and its flexible attributes."""
 
     id: int
     fields: dict[str, Any]
@@ -85,59 +92,64 @@ class BeetsRow:
         return int(value) if value else None
 
 
-class BeetsLibrary:
-    """Read-only reader for a beets library.db."""
+class _ReadOnlyLibrary(Library):
+    """A beets library whose database connections never write."""
 
-    def __init__(self, db_path: str) -> None:
+    def _create_connection(self) -> sqlite3.Connection:
+        """Return a beets database connection that refuses every write."""
+        conn = super()._create_connection()
+        # opening runs beets' schema setup and data migrations; a database that still needs
+        # any of them fails to open instead of being changed
+        conn.execute("PRAGMA query_only = ON")
+        return conn
+
+
+class BeetsLibrary:
+    """Read-only reader for a beets library."""
+
+    def __init__(self, db_path: str, music_directory: str) -> None:
         """
         Initialize the reader.
 
         :param db_path: Path to the beets library database.
+        :param music_directory: Where beets' music directory is mounted for Music Assistant;
+            the paths beets stores relative to its music directory resolve against it.
         """
         self.db_path = db_path
-        self._db: aiosqlite.Connection | None = None
-        self._columns: dict[str, frozenset[str]] = {}
+        self.music_directory = music_directory
+        self._library: Library | None = None
 
     async def open(self) -> None:
         """
-        Open the database read-only.
+        Open the beets library read-only.
 
+        :raises BeetsUpgradeRequiredError: If the database still needs schema changes or
+            migrations of the beets version Music Assistant uses.
         :raises ProviderUnavailableError: If the database cannot be opened or read.
         """
         await self.close()
-        try:
-            self._db = await aiosqlite.connect(
-                f"file:{quote(self.db_path)}?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT
-            )
-            self._db.row_factory = aiosqlite.Row
-            self._columns = {
-                table: await self._table_columns(table) for table in _COLUMN_CHECKED_TABLES
-            }
-        except ProviderUnavailableError:
-            # already reports its own reason (from _fetch_all); do not wrap it again
-            await self.close()
-            raise
-        except sqlite3.Error as err:
-            await self.close()
-            msg = f"Unable to open {self.db_path}: {err}"
-            raise ProviderUnavailableError(msg) from err
+        self._library = await asyncio.to_thread(self._open_library)
 
     async def close(self) -> None:
-        """Close the database connection if it is open."""
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
-        self._columns = {}
+        """Close the database connections if the library is open."""
+        if (library := self._library) is not None:
+            self._library = None
+            # beets has no public close; this closes the connections of every thread
+            await asyncio.to_thread(library._close)
 
-    async def count_items(self) -> int:
-        """Return the number of items in the library."""
-        rows = await self._fetch_all("SELECT COUNT(*) AS total FROM items")
-        return int(rows[0]["total"])
+    async def max_item_id(self) -> int:
+        """Return the highest beets item id, or 0 for an empty library."""
+        newest = await self._run(
+            lambda library: [
+                _row(item)
+                for item in library.items(sort=FixedFieldSort("id", ascending=False), limit=1)
+            ]
+        )
+        return newest[0].id if newest else 0
 
     async def get_albums(self) -> dict[int, BeetsRow]:
         """Return every album keyed by its beets id."""
-        rows = await self._fetch_all("SELECT * FROM albums")
-        return {row.id: row for row in await self._with_flex(rows, "album_attributes")}
+        return await self._run(lambda library: {row.id: row for row in map(_row, library.albums())})
 
     async def iter_items(self, batch_size: int = ITEM_BATCH_SIZE) -> AsyncGenerator[list[BeetsRow]]:
         """
@@ -149,13 +161,22 @@ class BeetsLibrary:
         """
         last_id = 0
         while True:
-            rows = await self._fetch_all(
-                "SELECT * FROM items WHERE id > ? ORDER BY id LIMIT ?", (last_id, batch_size)
-            )
-            if not rows:
+
+            def _batch(library: Library, after: int = last_id) -> list[BeetsRow]:
+                return [
+                    _row(item)
+                    for item in library.items(
+                        NumericQuery("id", f"{after + 1}.."),
+                        sort=FixedFieldSort("id"),
+                        limit=batch_size,
+                    )
+                ]
+
+            batch = await self._run(_batch)
+            if not batch:
                 return
-            yield await self._with_flex(rows, "item_attributes")
-            last_id = int(rows[-1]["id"])
+            yield batch
+            last_id = batch[-1].id
 
     async def get_item(self, item_id: int) -> BeetsRow | None:
         """
@@ -163,8 +184,9 @@ class BeetsLibrary:
 
         :param item_id: The beets item id.
         """
-        rows = await self._fetch_all("SELECT * FROM items WHERE id = ?", (item_id,))
-        return next(iter(await self._with_flex(rows, "item_attributes")), None)
+        return await self._run(
+            lambda library: _row(item) if (item := library.get_item(item_id)) else None
+        )
 
     async def get_album(self, album_id: int) -> BeetsRow | None:
         """
@@ -172,8 +194,9 @@ class BeetsLibrary:
 
         :param album_id: The beets album id.
         """
-        rows = await self._fetch_all("SELECT * FROM albums WHERE id = ?", (album_id,))
-        return next(iter(await self._with_flex(rows, "album_attributes")), None)
+        return await self._run(
+            lambda library: _row(album) if (album := library.get_album(album_id)) else None
+        )
 
     async def get_album_items(self, album_id: int) -> list[BeetsRow]:
         """
@@ -181,10 +204,12 @@ class BeetsLibrary:
 
         :param album_id: The beets album id.
         """
-        rows = await self._fetch_all(
-            "SELECT * FROM items WHERE album_id = ? ORDER BY disc, track, id", (album_id,)
+        order = MultipleSort([FixedFieldSort(name) for name in ("disc", "track", "id")])
+        return await self._run(
+            lambda library: [
+                _row(item) for item in library.items(MatchQuery("album_id", album_id), sort=order)
+            ]
         )
-        return await self._with_flex(rows, "item_attributes")
 
     async def find_artist(
         self, name: str | None = None, mbid: str | None = None
@@ -201,102 +226,131 @@ class BeetsLibrary:
         """
         if mbid is None and not name:
             return None
-        for table, list_columns, single_columns in _ARTIST_LOOKUPS:
-            columns = self._columns.get(table, frozenset())
-            for lookup, multi_valued in ((list_columns, True), (single_columns, False)):
-                if artist := await self._find_artist_in(
-                    table, columns, lookup, multi_valued, name, mbid
-                ):
-                    return artist
-        return None
+        return await self._run(lambda library: _find_artist(library, name, mbid))
 
-    async def _find_artist_in(
-        self,
-        table: str,
-        columns: frozenset[str],
-        lookup: tuple[str, str, str],
-        multi_valued: bool,
-        name: str | None,
-        mbid: str | None,
-    ) -> BeetsArtist | None:
-        """Return the first matching artist in one set of artist columns of a table."""
-        name_column, sort_column, mbid_column = lookup
-        key_column = mbid_column if mbid else name_column
-        if name_column not in columns or key_column not in columns:
-            return None
-        sort_expr = sort_column if sort_column in columns else "NULL"
-        mbid_expr = mbid_column if mbid_column in columns else "NULL"
-        if mbid or multi_valued:
-            # LIKE only prefilters substrings (case-insensitively), so every candidate is
-            # checked for an exact element match below
-            condition = f"{key_column} LIKE ? ESCAPE '{_LIKE_ESCAPE_CHAR}'"
-            value = _like_pattern(mbid or name or "")
-        else:
-            condition = f"TRIM({name_column}) = ?"
-            value = name or ""
-        last_id = 0
-        while rows := await self._fetch_all(
-            f"SELECT id, {name_column} AS names, {sort_expr} AS sort_names, "
-            f"{mbid_expr} AS mbids FROM {table} WHERE {condition} AND id > ? "
-            "ORDER BY id LIMIT ?",
-            (value, last_id, ITEM_BATCH_SIZE),
-        ):
-            for row in rows:
-                if artist := _matching_artist(row, multi_valued, name, mbid):
-                    return artist
-            last_id = int(rows[-1]["id"])
-        return None
-
-    async def _table_columns(self, table: str) -> frozenset[str]:
-        rows = await self._fetch_all(f"PRAGMA table_info({table})")
-        return frozenset(str(row["name"]) for row in rows)
-
-    async def _with_flex(self, rows: list[sqlite3.Row], flex_table: str) -> list[BeetsRow]:
-        result = [BeetsRow(id=int(row["id"]), fields=dict(row)) for row in rows]
-        if not result:
-            return result
-        by_id = {row.id: row for row in result}
-        ids = list(by_id)
-        # chunked so a large album list stays below SQLite's bound-parameter limit
-        for start in range(0, len(ids), ITEM_BATCH_SIZE):
-            chunk = ids[start : start + ITEM_BATCH_SIZE]
-            placeholders = ", ".join("?" for _ in chunk)
-            attributes = await self._fetch_all(
-                f"SELECT entity_id, key, value FROM {flex_table} "
-                f"WHERE entity_id IN ({placeholders})",
-                chunk,
+    def _open_library(self) -> Library:
+        """Open the beets library; runs in a worker thread."""
+        # beets would otherwise create its library file when the path holds none
+        if not Path(self.db_path).is_file():
+            msg = f"{self.db_path} does not exist"
+            raise ProviderUnavailableError(msg)
+        _configure_beets()
+        try:
+            return _ReadOnlyLibrary(
+                self.db_path, directory=self.music_directory, set_music_dir=False
             )
-            for attribute in attributes:
-                if (row := by_id.get(int(attribute["entity_id"]))) is not None:
-                    row.flex[str(attribute["key"])] = attribute["value"]
-        return result
+        except (DBAccessError, sqlite3.Error) as err:
+            if _is_write_refusal(err):
+                msg = (
+                    f"{self.db_path} needs schema changes or migrations of beets "
+                    f"{beets.__version__}; run any beet command with beets {beets.__version__} "
+                    "or newer once"
+                )
+                raise BeetsUpgradeRequiredError(msg) from err
+            msg = f"Unable to open {self.db_path}: {err}"
+            raise ProviderUnavailableError(msg) from err
 
-    async def _fetch_all(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
-        if self._db is None:
+    async def _run[T](self, read: Callable[[Library], T]) -> T:
+        """
+        Run a read against the open library in a worker thread.
+
+        :param read: The read, given the beets library.
+        :raises ProviderUnavailableError: If the library is not open or cannot be read.
+        """
+        if (library := self._library) is None:
             msg = f"The beets library {self.db_path} is not open"
             raise ProviderUnavailableError(msg)
+
+        def _read() -> T:
+            # beets resolves its stored relative paths against the music directory bound here
+            with library.music_dir_context():
+                return read(library)
+
         try:
-            return list(await self._db.execute_fetchall(sql, tuple(params)))
-        except sqlite3.Error as err:
+            return await asyncio.to_thread(_read)
+        except (DBAccessError, sqlite3.Error) as err:
             msg = f"Unable to read {self.db_path}: {err}"
             raise ProviderUnavailableError(msg) from err
 
 
-def _like_pattern(name: str) -> str:
-    """Return a SQL LIKE pattern that matches name as a literal substring."""
-    escaped = name
-    for char in (_LIKE_ESCAPE_CHAR, "%", "_"):
-        escaped = escaped.replace(char, f"{_LIKE_ESCAPE_CHAR}{char}")
-    return f"%{escaped}%"
+def _configure_beets() -> None:
+    """Point beets' global configuration at its defaults only."""
+    # reading the user configuration would also create a beets config directory for the user
+    # Music Assistant runs as; the backup beets makes before a migration would be a new file
+    # next to the database
+    beets.config.clear()
+    beets.config.read(user=False, defaults=True)
+    beets.config["create_backup_before_migrations"] = False
+    beets.config["timeout"] = SQLITE_BUSY_TIMEOUT
+
+
+def _is_write_refusal(err: BaseException) -> bool:
+    """Return whether an error, or an error it was raised from, is a refused write."""
+    current: BaseException | None = err
+    while current is not None:
+        if (
+            isinstance(current, sqlite3.Error)
+            and (current.sqlite_errorcode & 0xFF) == sqlite3.SQLITE_READONLY
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _row(model: Album | Item) -> BeetsRow:
+    """Return the row of a beets album or item, read without an item's album fields."""
+    if isinstance(model, Item):
+        values = {key: model.get(key, with_album=False) for key in model.keys(with_album=False)}
+    else:
+        values = {key: model.get(key) for key in model}
+    fixed = type(model)._fields
+    return BeetsRow(
+        id=model.id or 0,
+        fields={key: value for key, value in values.items() if key in fixed},
+        flex={key: value for key, value in values.items() if key not in fixed},
+    )
+
+
+def _find_artist(library: Library, name: str | None, mbid: str | None) -> BeetsArtist | None:
+    """Return the first matching artist in the album artists, then the track artists."""
+    for model, list_fields, single_fields in _ARTIST_LOOKUPS:
+        for fields, multi_valued in ((list_fields, True), (single_fields, False)):
+            query = _artist_query(fields, multi_valued, name, mbid)
+            sort = FixedFieldSort("id")
+            candidates = (
+                library.albums(query, sort) if model is Album else library.items(query, sort)
+            )
+            for candidate in candidates:
+                if artist := _matching_artist(candidate, fields, multi_valued, name, mbid):
+                    return artist
+    return None
+
+
+def _artist_query(
+    fields: tuple[str, str, str], multi_valued: bool, name: str | None, mbid: str | None
+) -> Query:
+    """Return a query for the rows that may hold the artist, checked exactly afterwards."""
+    name_field, _sort_field, mbid_field = fields
+    if mbid:
+        # stored ids may be in another case or padded, so the match is made on the clean id
+        return RegexpQuery(mbid_field, f"(?i){re.escape(mbid)}")
+    escaped = re.escape(name or "")
+    if multi_valued:
+        return RegexpQuery(
+            name_field, rf"(?:^|{_DELIMITER_PATTERN})\s*{escaped}\s*(?:{_DELIMITER_PATTERN}|$)"
+        )
+    return RegexpQuery(name_field, rf"^\s*{escaped}\s*$")
 
 
 def _matching_artist(
-    row: sqlite3.Row, multi_valued: bool, name: str | None, mbid: str | None
+    model: Album | Item,
+    fields: tuple[str, str, str],
+    multi_valued: bool,
+    name: str | None,
+    mbid: str | None,
 ) -> BeetsArtist | None:
     """Return the artist of a row with this MusicBrainz id, or with this name and no id."""
-    names = _column_values(row["names"], multi_valued)
-    sort_names = _column_values(row["sort_names"], multi_valued)
-    mbids = _column_values(row["mbids"], multi_valued)
+    names, sort_names, mbids = (_field_values(model, key, multi_valued) for key in fields)
     for index, raw_name in enumerate(names):
         artist_name = raw_name.strip()
         if not artist_name or (mbid is None and artist_name != name):
@@ -307,8 +361,9 @@ def _matching_artist(
     return None
 
 
-def _column_values(value: object, multi_valued: bool) -> list[str]:
-    """Return the values of a multi-valued column, or a single-valued column as a list."""
+def _field_values(model: Album | Item, key: str, multi_valued: bool) -> list[str]:
+    """Return the values of a multi-valued field, or a single-valued field as a list."""
+    value = model.get(key, with_album=False) if isinstance(model, Item) else model.get(key)
     if multi_valued:
         return split_multi_value(value)
     return [value] if isinstance(value, str) else []

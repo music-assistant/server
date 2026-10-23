@@ -44,7 +44,6 @@ CTX = ParseContext(
     instance_id="beets--test",
     domain="beets",
     music_directory="/media/music",
-    beets_directory="/home/kate/Music",
 )
 
 
@@ -71,33 +70,24 @@ def test_split_multi_value(value: object, expected: list[str]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "beets_directory", "expected"),
+    ("value", "expected"),
     [
-        (b"Artist/Album/01.flac", "/home/kate/Music", "/media/music/Artist/Album/01.flac"),
-        ("Artist/01.mp3", None, "/media/music/Artist/01.mp3"),
-        (b"/home/kate/Music/Artist/01.flac", "/home/kate/Music", "/media/music/Artist/01.flac"),
-        (b"/home/kate/Music/Artist/01.flac", "/home/kate/Music/", "/media/music/Artist/01.flac"),
-        (b"/media/music/Artist/01.flac", None, "/media/music/Artist/01.flac"),
-        (b"/home/kate/MusicExtra/01.flac", "/home/kate/Music", None),
-        (b"/srv/other/01.flac", "/home/kate/Music", None),
-        (b"/srv/other/01.flac", None, None),
-        (b"/media/musicextra/01.flac", None, None),
-        ("../../etc/passwd", None, None),
-        ("Artist/../../secret.jpg", None, None),
-        (b"/home/kate/Music/../secret.jpg", "/home/kate/Music", None),
-        (b"/media/music/Artist/../../secret.jpg", None, None),
-        ("Artist/./01.mp3", None, "/media/music/Artist/01.mp3"),
-        (b"", "/home/kate/Music", None),
-        (None, "/home/kate/Music", None),
+        (b"/media/music/Artist/01.flac", "/media/music/Artist/01.flac"),
+        (b"Artist/Album/01.flac", "/media/music/Artist/Album/01.flac"),
+        ("Artist/./01.mp3", "/media/music/Artist/01.mp3"),
+        (b"/home/kate/Music/Artist/01.flac", None),
+        (b"/srv/other/01.flac", None),
+        (b"/media/musicextra/01.flac", None),
+        ("../../etc/passwd", None),
+        ("Artist/../../secret.jpg", None),
+        (b"/media/music/Artist/../../secret.jpg", None),
+        (b"", None),
+        (None, None),
     ],
 )
-def test_expand_path(value: object, beets_directory: str | None, expected: str | None) -> None:
-    """
-    Relative paths join the music directory and the beets prefix is swapped on a boundary.
-
-    Paths that end up outside the music directory are rejected.
-    """
-    assert expand_path(value, "/media/music", beets_directory) == expected
+def test_expand_path(value: object, expected: str | None) -> None:
+    """Paths resolve inside the music directory, and any path that ends up outside is rejected."""
+    assert expand_path(value, "/media/music") == expected
 
 
 @pytest.mark.parametrize(
