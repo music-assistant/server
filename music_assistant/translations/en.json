@@ -1184,6 +1184,7 @@
   "provider.audiobookshelf.config_entries.url.description": "The URL of the Audiobookshelf server to connect to. For example https://abs.domain.tld/ or http://192.168.1.4:13378/",
   "provider.audiobookshelf.config_entries.url.label": "Server",
   "provider.audiobookshelf.errors.login_failed": "Login to the Audiobookshelf server at {0} failed.",
+  "provider.audiobookshelf.errors.unsupported_server_version": "The Audiobookshelf server at {0} runs a version older than {1}, which is not supported. Please update it to the latest Audiobookshelf release.",
   "provider.audiobookshelf.manifest.description": "Stream audiobooks and podcasts from your personal Audiobookshelf server.",
   "provider.audiobookshelf.media.folder.audiobooks_library.name": "{} (Audiobooks library)",
   "provider.audiobookshelf.media.folder.authors.name": "Authors",
