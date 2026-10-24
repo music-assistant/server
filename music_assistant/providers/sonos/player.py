@@ -1349,15 +1349,7 @@ class SonosPlayer(Player):
         generation: int,
         new_coordinator_generation: int,
     ) -> None:
-        """
-        Hand the queue of this player's former group to the player that coordinates it now.
-
-        :param new_coordinator: The player the speakers made the group's coordinator.
-        :param queue_id: The queue the group carried when it moved.
-        :param generation: This player's cloud_queue_item_generation when its group moved.
-        :param new_coordinator_generation: The new coordinator's cloud_queue_item_generation
-            when the group moved.
-        """
+        """Hand the queue of this player's former group to the player that coordinates it now."""
         # only the player's own queue moves, as core hands over only the leader's own
         # queue; a group player's queue stops with the group instead
         own_queue = queue_id == self.player_id
@@ -1429,14 +1421,7 @@ class SonosPlayer(Player):
     async def _wait_for_moved_group(
         self, new_coordinator: SonosPlayer, queue_id: str, own_queue: bool
     ) -> bool:
-        """
-        Wait until the new coordinator leads the moved group, and our queue is done here.
-
-        :param new_coordinator: The player the speakers made the group's coordinator.
-        :param queue_id: The queue the group carried when it moved.
-        :param own_queue: Whether that is this player's own queue, which is handed over.
-        :return: False when that did not happen within MOVED_GROUP_TIMEOUT.
-        """
+        """Wait until the new coordinator leads the moved group, and our queue is done here."""
         ready = asyncio.Event()
 
         def _check(_event: object = None) -> None:
@@ -1477,11 +1462,7 @@ class SonosPlayer(Player):
 
     @staticmethod
     def _leads_moved_group(new_coordinator: SonosPlayer) -> bool:
-        """
-        Return whether a player leads the group the speakers moved to it.
-
-        :param new_coordinator: The player the speakers made the group's coordinator.
-        """
+        """Return whether a player leads the group the speakers moved to it."""
         # its own connection reports the role, and then reads what the group plays, a
         # moment after the former coordinator hears of the move
         player = new_coordinator.client.player
@@ -1509,12 +1490,7 @@ class SonosPlayer(Player):
 
     @staticmethod
     def _plays_queue(group: SonosGroup, queue_id: str) -> bool:
-        """
-        Return whether a group plays the given MA queue, as a cloud queue or as one stream.
-
-        :param group: The group, as its coordinator's connection reports it.
-        :param queue_id: The MA queue to look for.
-        """
+        """Return whether a group plays the given MA queue, as a cloud queue or as one stream."""
         # the speaker reports the container we served: mass:<queue> for a cloud queue,
         # mass:<queue>:<item> for a stream
         container = group.playback_metadata.get("container")
@@ -1553,12 +1529,7 @@ class SonosPlayer(Player):
         self._release_evicted_queue(queue_id)
 
     def _bind_loaded_session(self, queue_id: str) -> bool:
-        """
-        Tie our queue to the playback session the speaker loaded it into.
-
-        :param queue_id: The queue just loaded.
-        :return: False when the speaker lost that session during the load.
-        """
+        """Tie our queue to the playback session the speaker loaded it into."""
         # an eviction counts only for the session the queue went into: the speaker
         # can report one for the session it replaces after this load has started
         self._queue_session_id = self.group_controller.active_session_id
@@ -1575,15 +1546,7 @@ class SonosPlayer(Player):
         previous_queue_id: str | None,
         replaced_session_id: str | None = None,
     ) -> None:
-        """
-        Settle our queue after a load of it failed or was cancelled.
-
-        :param err: What the load raised.
-        :param queue_id: The queue that was being loaded.
-        :param previous_queue_id: The queue the speaker played before this load, if any.
-        :param replaced_session_id: A session the load does not play in, for a load that
-            always makes a new one.
-        """
+        """Settle our queue after a load of it failed or was cancelled."""
         if isinstance(err, FailedCommand) and err.error_code == SESSION_EVICTED_ERROR:
             # the speakers carry on with what played before, so a coordinator move that
             # follows still finds that queue
@@ -1605,11 +1568,7 @@ class SonosPlayer(Player):
         self._forget_queue()
 
     def _release_evicted_queue(self, queue_id: str) -> None:
-        """
-        Let go of our queue on a speaker another app or source took over.
-
-        :param queue_id: The queue the speaker no longer plays.
-        """
+        """Let go of our queue on a speaker another app or source took over."""
         # the speaker no longer plays our queue and must not be sent commands for it;
         # Music Assistant does not take it back without the user asking
         self.logger.info(
@@ -1621,11 +1580,7 @@ class SonosPlayer(Player):
         self.update_state()
 
     async def _play_stream(self, media: PlayerMedia) -> None:
-        """
-        Play media as one stream: a queue in flow mode, or media that is no MA queue item.
-
-        :param media: The media to play.
-        """
+        """Play media as one stream: a queue in flow mode, or media that is no MA queue item."""
         # this path loads no cloud queue, so the speaker must not be signalled about one
         previous_queue_id = self._playing_queue_id()
         self._queue_session_id = None
